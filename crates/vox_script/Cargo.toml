@@ -1,0 +1,8 @@
+[package]
+name = "vox_script"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+vox_core = { path = "../vox_core" }
+thiserror = { workspace = true }

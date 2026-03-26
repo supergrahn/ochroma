@@ -7,6 +7,12 @@ members = [
     "crates/vox_app",
     "crates/vox_nn",
     "crates/vox_sim",
+    "crates/vox_net",
+    "crates/vox_script",
+    "crates/vox_audio",
+    "crates/vox_physics",
+    "crates/vox_terrain",
+    "crates/vox_ui",
 ]
 
 [workspace.package]

@@ -1,0 +1,9 @@
+[package]
+name = "vox_net"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+vox_core = { path = "../vox_core" }
+serde = { workspace = true }
+thiserror = { workspace = true }

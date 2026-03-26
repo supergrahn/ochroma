@@ -1,0 +1,8 @@
+[package]
+name = "vox_audio"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+vox_core = { path = "../vox_core" }
+glam = { workspace = true }
