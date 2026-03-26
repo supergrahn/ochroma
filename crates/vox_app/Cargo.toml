@@ -10,4 +10,5 @@ vox_render = { path = "../vox_render" }
 winit = "0.30"
 pollster = "0.4"
 glam = { workspace = true }
+half = { workspace = true }
 uuid = { workspace = true }

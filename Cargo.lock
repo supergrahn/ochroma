@@ -1813,6 +1813,7 @@ name = "vox_app"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "half",
  "pollster",
  "uuid",
  "vox_core",
@@ -1856,6 +1857,7 @@ dependencies = [
  "raw-window-handle",
  "vox_core",
  "wgpu",
+ "winit",
 ]
 
 [[package]]
