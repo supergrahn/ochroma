@@ -2328,6 +2328,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vox_nn"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+ "vox_core",
+ "vox_data",
+]
+
+[[package]]
 name = "vox_render"
 version = "0.1.0"
 dependencies = [
@@ -2339,6 +2352,16 @@ dependencies = [
  "vox_core",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "vox_sim"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "uuid",
+ "vox_core",
 ]
 
 [[package]]
