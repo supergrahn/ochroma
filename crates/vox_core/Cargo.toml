@@ -9,3 +9,5 @@ uuid = { workspace = true }
 half = { workspace = true }
 bytemuck = { workspace = true }
 serde = { workspace = true }
+bevy_ecs = { workspace = true }
+dashmap = { workspace = true }
