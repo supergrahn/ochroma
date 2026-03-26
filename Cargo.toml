@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vox_core",
+    "crates/vox_data",
+    "crates/vox_render",
+    "crates/vox_app",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+glam = "0.29"
+uuid = { version = "1", features = ["v4", "serde"] }
+half = { version = "2", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+zstd = "0.13"

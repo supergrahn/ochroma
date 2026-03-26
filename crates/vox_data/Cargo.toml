@@ -1,0 +1,13 @@
+[package]
+name = "vox_data"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+vox_core = { path = "../vox_core" }
+zstd = { workspace = true }
+thiserror = { workspace = true }
+bytemuck = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+half = { workspace = true }

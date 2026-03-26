@@ -1,0 +1,13 @@
+[package]
+name = "vox_render"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+vox_core = { path = "../vox_core" }
+wgpu = "24"
+raw-window-handle = "0.6"
+pollster = "0.4"
+bytemuck = { workspace = true }
+half = { workspace = true }
+glam = { workspace = true }

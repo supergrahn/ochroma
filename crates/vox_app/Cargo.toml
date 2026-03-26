@@ -1,0 +1,13 @@
+[package]
+name = "vox_app"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+vox_core = { path = "../vox_core" }
+vox_data = { path = "../vox_data" }
+vox_render = { path = "../vox_render" }
+winit = "0.30"
+pollster = "0.4"
+glam = { workspace = true }
+uuid = { workspace = true }
