@@ -7,6 +7,16 @@ version.workspace = true
 vox_core = { path = "../vox_core" }
 vox_data = { path = "../vox_data" }
 vox_render = { path = "../vox_render" }
+vox_nn = { path = "../vox_nn" }
+vox_sim = { path = "../vox_sim" }
+vox_net = { path = "../vox_net" }
+vox_script = { path = "../vox_script" }
+vox_audio = { path = "../vox_audio" }
+vox_physics = { path = "../vox_physics" }
+vox_terrain = { path = "../vox_terrain" }
+vox_ui = { path = "../vox_ui" }
+bevy_ecs = { workspace = true }
+bevy_app = { workspace = true }
 winit = "0.30"
 pollster = "0.4"
 glam = { workspace = true }
