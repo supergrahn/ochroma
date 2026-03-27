@@ -3258,6 +3258,7 @@ name = "vox_nn"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "rand",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3283,6 +3284,7 @@ dependencies = [
  "half",
  "pollster",
  "puffin",
+ "rand",
  "raw-window-handle",
  "tokio",
  "vox_core",
@@ -3304,6 +3306,7 @@ name = "vox_sim"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "rand",
  "serde",
  "uuid",
  "vox_core",
