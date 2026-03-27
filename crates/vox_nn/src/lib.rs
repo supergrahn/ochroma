@@ -6,3 +6,5 @@ pub mod layout;
 pub mod street_layout;
 pub mod multi_tile;
 pub mod text_to_city;
+pub mod scene_query;
+pub mod nl_commands;
