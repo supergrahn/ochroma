@@ -20,14 +20,34 @@ pub struct ScriptModule {
     pub cpu_budget_ms: f32,
 }
 
+/// Events that mods can subscribe to.
+#[derive(Debug, Clone)]
+pub enum GameEvent {
+    BuildingPlaced { position: [f32; 3], asset_id: String },
+    ZoneChanged { position: [f32; 2], zone_type: String },
+    CitizenBorn { citizen_id: u32 },
+    CitizenDied { citizen_id: u32 },
+    BudgetTick { funds: f64 },
+    Custom { name: String, data: Vec<u8> },
+}
+
+/// A mod's event handler registration.
+pub struct EventSubscription {
+    pub module_name: String,
+    /// Event name to match, or "*" for all events.
+    pub event_pattern: String,
+}
+
 pub struct ScriptRuntime {
     modules: HashMap<String, ScriptModule>,
+    subscriptions: Vec<EventSubscription>,
 }
 
 impl ScriptRuntime {
     pub fn new() -> Self {
         Self {
             modules: HashMap::new(),
+            subscriptions: Vec::new(),
         }
     }
 
@@ -39,6 +59,31 @@ impl ScriptRuntime {
         };
         self.modules.insert(name.to_string(), module);
         Ok(())
+    }
+
+    pub fn subscribe(&mut self, module_name: &str, event_pattern: &str) {
+        self.subscriptions.push(EventSubscription {
+            module_name: module_name.to_string(),
+            event_pattern: event_pattern.to_string(),
+        });
+    }
+
+    /// Dispatch an event and return the names of all matching module handlers.
+    pub fn dispatch_event(&self, event: &GameEvent) -> Vec<String> {
+        let event_name = match event {
+            GameEvent::BuildingPlaced { .. } => "BuildingPlaced",
+            GameEvent::ZoneChanged { .. } => "ZoneChanged",
+            GameEvent::CitizenBorn { .. } => "CitizenBorn",
+            GameEvent::CitizenDied { .. } => "CitizenDied",
+            GameEvent::BudgetTick { .. } => "BudgetTick",
+            GameEvent::Custom { name, .. } => name.as_str(),
+        };
+
+        self.subscriptions
+            .iter()
+            .filter(|s| s.event_pattern == "*" || s.event_pattern == event_name)
+            .map(|s| s.module_name.clone())
+            .collect()
     }
 
     pub fn tick(&mut self, _dt: f32) {
