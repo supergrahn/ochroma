@@ -103,6 +103,9 @@ struct EngineApp {
     // Exposure
     exposure: f32,
 
+    // Fast render mode: skip spectral pipeline (P key toggle)
+    spectral_bypass: bool,
+
     // CLI asset path
     asset_path: Option<String>,
 
@@ -285,18 +288,21 @@ impl EngineApp {
         let mut engine = EngineRuntime::new(config);
         engine.load_scene("Default");
 
+        let dlss = DlssPipeline::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DlssQuality::Performance);
+        let (render_w, render_h) = dlss.render_resolution();
+
         Self {
             engine,
             window: None,
             backend: None,
-            rasteriser: SoftwareRasteriser::new(DEFAULT_WIDTH, DEFAULT_HEIGHT),
+            rasteriser: SoftwareRasteriser::new(render_w, render_h),
             camera: CameraController::new(DEFAULT_WIDTH as f32 / DEFAULT_HEIGHT as f32),
             particles: ParticleSystem::new(10_000),
             light_manager: LightManager::new(51.5), // London latitude
-            spectral_fb: SpectralFramebuffer::new(DEFAULT_WIDTH, DEFAULT_HEIGHT),
-            temporal: TemporalAccumulator::new(DEFAULT_WIDTH, DEFAULT_HEIGHT),
+            spectral_fb: SpectralFramebuffer::new(render_w, render_h),
+            temporal: TemporalAccumulator::new(render_w, render_h),
             tonemap: ToneMapSettings::default(),
-            dlss: DlssPipeline::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DlssQuality::Off),
+            dlss,
             scene_splats: Vec::new(),
             clas_cluster_count: 0,
             clas_bvh_depth: 0,
@@ -319,6 +325,7 @@ impl EngineApp {
             editor,
             editor_visible: false,
             exposure: 1.0,
+            spectral_bypass: true, // fast mode by default
             asset_path,
             placed_objects: Vec::new(),
         }
@@ -569,14 +576,14 @@ impl EngineApp {
             }
         }
 
-        // LOD selection on visible splats
+        // LOD selection on visible splats — aggressive reduction for distant splats
         let cam_pos = self.camera.position;
         let lod_indices: Vec<usize> = (0..visible_splats.len())
             .filter(|&i| {
                 let dist = cam_pos.distance(Vec3::from(visible_splats[i].position));
                 match lod::select_lod(dist) {
                     lod::LodLevel::Full => true,
-                    lod::LodLevel::Reduced => i % 2 == 0, // skip every other for reduced
+                    lod::LodLevel::Reduced => i % 4 == 0, // keep every 4th for distant
                 }
             })
             .collect();
@@ -609,65 +616,78 @@ impl EngineApp {
         let illuminant = illuminant_for_time(self.engine.scene.time_of_day);
 
         // 1. Software rasterise at internal resolution
+        let render_start = Instant::now();
         let fb = self.rasteriser.render(&render_splats, &render_camera, &illuminant);
 
-        // 2. Write to spectral framebuffer
-        self.spectral_fb.clear();
-        for (i, pixel) in fb.pixels.iter().enumerate() {
-            let x = (i % render_w as usize) as u32;
-            let y = (i / render_w as usize) as u32;
-            let r = pixel[0] as f32 / 255.0;
-            let g = pixel[1] as f32 / 255.0;
-            let b = pixel[2] as f32 / 255.0;
+        let upscaled = if self.spectral_bypass {
+            // FAST PATH: skip spectral pipeline, just DLSS upscale the rasterised output
+            let pixel_count = (render_w * render_h) as usize;
+            let depth = vec![1.0f32; pixel_count];
+            let motion = vec![[0.0f32; 2]; pixel_count];
+            self.dlss.upscale(&fb.pixels, render_w, render_h, &depth, &motion)
+        } else {
+            // QUALITY PATH: full spectral pipeline
+            // 2. Write to spectral framebuffer
+            self.spectral_fb.clear();
+            for (i, pixel) in fb.pixels.iter().enumerate() {
+                let x = (i % render_w as usize) as u32;
+                let y = (i / render_w as usize) as u32;
+                let r = pixel[0] as f32 / 255.0;
+                let g = pixel[1] as f32 / 255.0;
+                let b = pixel[2] as f32 / 255.0;
 
-            let spectral = [
-                b * 0.3,
-                b * 0.7,
-                b * 0.8 + g * 0.1,
-                g * 0.4 + b * 0.2,
-                g * 0.9 + r * 0.05,
-                r * 0.4 + g * 0.3,
-                r * 0.8 + g * 0.05,
-                r * 0.6,
-            ];
+                let spectral = [
+                    b * 0.3,
+                    b * 0.7,
+                    b * 0.8 + g * 0.1,
+                    g * 0.4 + b * 0.2,
+                    g * 0.9 + r * 0.05,
+                    r * 0.4 + g * 0.3,
+                    r * 0.8 + g * 0.05,
+                    r * 0.6,
+                ];
 
-            self.spectral_fb.write_sample(x, y, spectral, 1.0, [0.0, 1.0, 0.0], 0, spectral);
-        }
+                self.spectral_fb.write_sample(x, y, spectral, 1.0, [0.0, 1.0, 0.0], 0, spectral);
+            }
 
-        // 3. Temporal accumulation
-        self.temporal.accumulate(&self.spectral_fb);
-        self.temporal.write_to_framebuffer(&mut self.spectral_fb);
+            // 3. Temporal accumulation
+            self.temporal.accumulate(&self.spectral_fb);
+            self.temporal.write_to_framebuffer(&mut self.spectral_fb);
 
-        // 4. Tone map
-        self.tonemap.exposure = self.exposure;
-        let tonemapped = tonemap_spectral_framebuffer(&self.spectral_fb, &illuminant, &self.tonemap);
+            // 4. Tone map
+            self.tonemap.exposure = self.exposure;
+            let tonemapped = tonemap_spectral_framebuffer(&self.spectral_fb, &illuminant, &self.tonemap);
 
-        // 5. DLSS upscale
-        let pixel_count = (render_w * render_h) as usize;
-        let depth = vec![1.0f32; pixel_count];
-        let motion = vec![[0.0f32; 2]; pixel_count];
-        let upscaled = self.dlss.upscale(&tonemapped, render_w, render_h, &depth, &motion);
+            // 5. DLSS upscale
+            let pixel_count = (render_w * render_h) as usize;
+            let depth = vec![1.0f32; pixel_count];
+            let motion = vec![[0.0f32; 2]; pixel_count];
+            self.dlss.upscale(&tonemapped, render_w, render_h, &depth, &motion)
+        };
 
         // 6. DLSS frame generation
         let display_count = (display_w * display_h) as usize;
         let display_motion = vec![[0.0f32; 2]; display_count];
         let _generated = self.dlss.generate_frame(&upscaled, &display_motion);
+        let render_ms = render_start.elapsed().as_secs_f32() * 1000.0;
 
         let mut final_pixels = upscaled;
 
         // 7. HUD overlay
+        let mode_label = if self.spectral_bypass { "FAST" } else { "SPECTRAL" };
         let y_off = 4u32;
         burn_text(&mut final_pixels, display_w, 4, y_off,
-            &format!("OCHROMA ENGINE  {:.0} FPS  {} splats ({} culled, {} lod-reduced)  {} particles",
+            &format!("OCHROMA ENGINE  {:.0} FPS  {:.1}ms  {} visible ({} culled, {} lod)  [{}]",
                 self.fps,
+                render_ms,
                 render_splats.len(),
                 culled_count,
                 lod_culled,
-                self.particles.particle_count(),
+                mode_label,
             ),
             [220, 220, 220]);
         burn_text(&mut final_pixels, display_w, 4, y_off + 10,
-            &format!("TIME {:.0}:00  EV {:.2}  {}  DLSS {}  CLAS:{}  TILES:{}  LIGHTS:{}",
+            &format!("TIME {:.0}:00  EV {:.2}  {}  DLSS {}  CLAS:{}  TILES:{}  LIGHTS:{}  PARTICLES:{}",
                 self.engine.scene.time_of_day,
                 self.exposure,
                 tonemap_operator_name(self.tonemap.operator),
@@ -675,10 +695,11 @@ impl EngineApp {
                 self.clas_cluster_count,
                 self.mega_tile_count,
                 self.light_manager.point_light_count(),
+                self.particles.particle_count(),
             ),
             [180, 180, 180]);
         burn_text(&mut final_pixels, display_w, 4, y_off + 20,
-            &format!("ENTITIES: {}  SCRIPTS: {}  FRAME: {}",
+            &format!("ENTITIES: {}  SCRIPTS: {}  FRAME: {}  [P] toggle spectral",
                 self.engine.stats.entity_count,
                 self.engine.scripts.registered_scripts().len(),
                 self.engine.stats.frame_number,
@@ -793,6 +814,7 @@ impl ApplicationHandler for EngineApp {
         println!("    +/-           Adjust exposure");
         println!("    M             Cycle tone mapper");
         println!("    Q             Cycle DLSS quality");
+        println!("    P             Toggle fast/spectral render");
         println!("    G             Toggle frame generation");
         println!("    Tab           Toggle editor");
         println!("    Arrows        Move selected (editor)");
@@ -864,6 +886,14 @@ impl ApplicationHandler for EngineApp {
                                     "[ochroma] DLSS: {} (render {}x{} -> display {}x{})",
                                     dlss_quality_name(self.dlss.quality),
                                     rw, rh, self.dlss.display_width, self.dlss.display_height,
+                                );
+                            }
+                            KeyCode::KeyP => {
+                                self.spectral_bypass = !self.spectral_bypass;
+                                self.temporal.reset();
+                                println!(
+                                    "[ochroma] Render mode: {}",
+                                    if self.spectral_bypass { "FAST (direct RGB)" } else { "QUALITY (spectral pipeline)" }
                                 );
                             }
                             KeyCode::KeyG => {
@@ -1034,15 +1064,16 @@ impl ApplicationHandler for EngineApp {
                         } else {
                             String::new()
                         };
+                        let mode_label = if self.spectral_bypass { "FAST" } else { "SPECTRAL" };
                         w.set_title(&format!(
-                            "Ochroma -- {:.0} FPS | {} splats | CLAS:{} | {:.0}:00 | EV {:.2} | {} | {}{}{}",
+                            "Ochroma -- {:.0} FPS | {} total | CLAS:{} | {:.0}:00 | {} | {} | {}{}{}",
                             self.fps,
                             self.total_splat_count(),
                             self.clas_cluster_count,
                             self.engine.scene.time_of_day,
-                            self.exposure,
-                            tonemap_operator_name(self.tonemap.operator),
+                            mode_label,
                             dlss_label,
+                            tonemap_operator_name(self.tonemap.operator),
                             fg_label,
                             editor_label,
                         ));
