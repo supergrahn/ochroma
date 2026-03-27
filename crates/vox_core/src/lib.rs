@@ -14,3 +14,4 @@ pub mod i18n;
 pub mod script_interface;
 pub mod engine_runtime;
 pub mod character_controller;
+pub mod hot_reload_system;
