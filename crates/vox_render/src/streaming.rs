@@ -59,3 +59,29 @@ impl Default for TileManager {
         Self::new()
     }
 }
+
+use vox_data::vxm::{VxmFile, VxmError};
+
+pub struct AsyncAssetLoader;
+
+impl AsyncAssetLoader {
+    pub fn new() -> Self { Self }
+
+    pub async fn load_from_bytes(&self, bytes: &[u8]) -> Result<VxmFile, VxmError> {
+        let bytes = bytes.to_vec();
+        tokio::task::spawn_blocking(move || VxmFile::read(&bytes[..]))
+            .await
+            .map_err(|e| VxmError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+    }
+
+    pub async fn load_from_path(&self, path: &std::path::Path) -> Result<VxmFile, VxmError> {
+        let bytes = tokio::fs::read(path).await?;
+        self.load_from_bytes(&bytes).await
+    }
+}
+
+impl Default for AsyncAssetLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
