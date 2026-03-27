@@ -1,8 +1,10 @@
 mod turnaround;
+pub mod build;
 
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use turnaround::run_turnaround;
+use build::{BuildTarget, BuildConfig, BuildManifest};
 
 #[derive(Parser)]
 #[command(name = "vox_tools", about = "Ochroma engine asset pipeline tools")]
@@ -27,6 +29,16 @@ enum Commands {
         #[arg(long)]
         material_map: Option<String>,
     },
+
+    /// Build the game for a target platform.
+    Build {
+        #[arg(long, default_value = "linux")]
+        target: String,
+        #[arg(long, default_value = "release")]
+        config: String,
+        #[arg(long, default_value = "OchromaCity")]
+        name: String,
+    },
 }
 
 fn main() {
@@ -43,6 +55,22 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+        Commands::Build { target, config, name } => {
+            let target = match target.as_str() {
+                "windows" => BuildTarget::Windows,
+                "macos" => BuildTarget::MacOS,
+                "steamos" => BuildTarget::SteamOS,
+                _ => BuildTarget::Linux,
+            };
+            let config = match config.as_str() {
+                "debug" => BuildConfig::Debug,
+                "shipping" => BuildConfig::Shipping,
+                _ => BuildConfig::Release,
+            };
+            let manifest = BuildManifest::new(&name, target, config);
+            println!("Build command: {}", manifest.build_command());
+            println!("Output: {}", manifest.output_binary_name());
         }
     }
 }
