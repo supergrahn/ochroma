@@ -10,4 +10,5 @@ pub mod scene_serialize;
 pub mod scene_format;
 pub mod asset_catalog;
 pub mod marketplace;
+pub mod neural_compress;
 pub mod templates;
