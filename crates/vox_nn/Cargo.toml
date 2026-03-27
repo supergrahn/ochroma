@@ -12,3 +12,4 @@ glam = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 rand = "0.9"
+half = { workspace = true }
