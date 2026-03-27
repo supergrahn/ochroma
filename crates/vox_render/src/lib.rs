@@ -40,3 +40,6 @@ pub mod spectral_framebuffer;
 pub mod spectral_tonemapper;
 pub mod temporal;
 pub mod dlss;
+pub mod shadows;
+pub mod rigid_animation;
+pub mod gizmos;
