@@ -11,3 +11,4 @@ pub mod input;
 pub mod navmesh;
 pub mod game_loop;
 pub mod i18n;
+pub mod script_interface;
