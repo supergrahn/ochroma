@@ -4481,6 +4481,7 @@ dependencies = [
  "vox_sim",
  "vox_terrain",
  "vox_ui",
+ "wgpu",
  "winit",
 ]
 

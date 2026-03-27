@@ -29,6 +29,7 @@ use vox_render::camera::CameraController;
 use vox_render::clas;
 use vox_render::dlss::{DlssPipeline, DlssQuality, FrameGeneration};
 use vox_render::frustum::Frustum;
+use vox_render::gpu::gpu_rasteriser::GpuRasteriser;
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::gpu::wgpu_backend::WgpuBackend;
 use vox_render::lighting::{LightManager, PointLight};
@@ -57,8 +58,9 @@ struct EngineApp {
     // Window + GPU
     window: Option<Arc<Window>>,
     backend: Option<WgpuBackend>,
+    gpu_rasteriser: Option<GpuRasteriser>,
 
-    // Rendering pipeline
+    // Rendering pipeline (software fallback)
     rasteriser: SoftwareRasteriser,
     camera: CameraController,
     particles: ParticleSystem,
@@ -310,6 +312,7 @@ impl EngineApp {
             engine,
             window: None,
             backend: None,
+            gpu_rasteriser: None,
             rasteriser: SoftwareRasteriser::new(render_w, render_h),
             camera: CameraController::new(DEFAULT_WIDTH as f32 / DEFAULT_HEIGHT as f32),
             particles: ParticleSystem::new(10_000),
@@ -825,11 +828,19 @@ impl ApplicationHandler for EngineApp {
         match WgpuBackend::new(Arc::clone(&window), DEFAULT_WIDTH, DEFAULT_HEIGHT) {
             Ok(backend) => {
                 println!("[ochroma] GPU backend initialised");
+                let gpu_rast = GpuRasteriser::new(
+                    backend.device(),
+                    backend.surface_format(),
+                    DEFAULT_WIDTH,
+                    DEFAULT_HEIGHT,
+                );
+                println!("[ochroma] GPU rasteriser created (primary render path)");
+                self.gpu_rasteriser = Some(gpu_rast);
                 self.backend = Some(backend);
             }
             Err(e) => {
                 eprintln!("[ochroma] GPU init failed: {}", e);
-                eprintln!("[ochroma] Running headless -- frames render but may not display");
+                eprintln!("[ochroma] Falling back to software rasteriser");
             }
         }
 
@@ -1066,6 +1077,9 @@ impl ApplicationHandler for EngineApp {
                 if let Some(backend) = &mut self.backend {
                     backend.resize(w, h);
                 }
+                if let Some(gpu_rast) = &mut self.gpu_rasteriser {
+                    gpu_rast.resize(w, h);
+                }
             }
 
             // ---------------------------------------------------------------
@@ -1079,9 +1093,36 @@ impl ApplicationHandler for EngineApp {
                 // 1. Update camera from input
                 self.update_camera(dt);
 
-                // 2. Handle left-click placement
+                // 2. Handle left-click: editor pick or object placement
                 if self.left_click_pending {
-                    self.place_object_at_cursor();
+                    if self.editor_visible {
+                        // 3D click-to-select in editor
+                        let forward = self.camera_forward();
+                        let target = self.camera.position + forward;
+                        let view = Mat4::look_at_rh(self.camera.position, target, Vec3::Y);
+                        let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
+                        let proj = Mat4::perspective_rh(
+                            self.camera.fov,
+                            dw as f32 / dh as f32,
+                            self.camera.near,
+                            self.camera.far,
+                        );
+                        let inv_vp = (proj * view).inverse();
+                        if let Some(id) = self.editor.pick_entity_at_screen_pos(
+                            self.mouse_x as f32,
+                            self.mouse_y as f32,
+                            dw,
+                            dh,
+                            inv_vp,
+                        ) {
+                            self.editor.select(id);
+                            if let Some(name) = self.editor.selected_name() {
+                                println!("[ochroma] Editor: picked entity '{}' (id={})", name, id);
+                            }
+                        }
+                    } else {
+                        self.place_object_at_cursor();
+                    }
                     self.left_click_pending = false;
                 }
 
@@ -1120,13 +1161,102 @@ impl ApplicationHandler for EngineApp {
                     }
                 }
 
-                // 5. Full render pipeline: frustum cull -> LOD -> rasterise ->
-                //    spectral FB -> temporal accumulation -> tonemap -> DLSS -> present
-                let pixels = self.render_frame();
+                // 5. Render + present
+                //    Primary path: GPU rasteriser directly to surface texture.
+                //    Fallback: software rasteriser -> blit via backend.
+                if self.gpu_rasteriser.is_some() && self.backend.is_some() {
+                    // --- GPU primary render path ---
+                    let backend = self.backend.as_ref().unwrap();
+                    let surface_tex = match backend.surface().get_current_texture() {
+                        Ok(t) => t,
+                        Err(e) => {
+                            eprintln!("[ochroma] GPU surface error: {}", e);
+                            // Fall through to software path below
+                            let pixels = self.render_frame();
+                            if let Some(b) = &self.backend {
+                                b.present_framebuffer(&pixels, self.dlss.display_width, self.dlss.display_height);
+                            }
+                            // skip to FPS counter
+                            self.frame_count += 1;
+                            let elapsed = now.duration_since(self.fps_timer).as_secs_f32();
+                            if elapsed >= 1.0 {
+                                self.fps = self.frame_count as f32 / elapsed;
+                                self.frame_count = 0;
+                                self.fps_timer = now;
+                            }
+                            if let Some(w) = &self.window { w.request_redraw(); }
+                            return;
+                        }
+                    };
+                    let view = surface_tex.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-                // 6. Present to window
-                if let Some(backend) = &self.backend {
-                    backend.present_framebuffer(&pixels, self.dlss.display_width, self.dlss.display_height);
+                    // Build visible splats (frustum cull + LOD) for GPU path
+                    let forward = self.camera_forward();
+                    let target = self.camera.position + forward;
+                    let render_camera = RenderCamera {
+                        view: Mat4::look_at_rh(self.camera.position, target, Vec3::Y),
+                        proj: Mat4::perspective_rh(
+                            self.camera.fov,
+                            self.dlss.display_width as f32 / self.dlss.display_height as f32,
+                            self.camera.near,
+                            self.camera.far,
+                        ),
+                    };
+                    let vp = render_camera.view_proj();
+                    let frustum = Frustum::from_view_proj(vp);
+                    let cam_pos = self.camera.position;
+
+                    let mut visible_splats: Vec<GaussianSplat> = Vec::with_capacity(self.scene_splats.len());
+                    for splat in &self.scene_splats {
+                        let pos = Vec3::from(splat.position);
+                        let radius = splat.scale[0].max(splat.scale[1]).max(splat.scale[2]) + 1.0;
+                        if frustum.contains_sphere(pos, radius) {
+                            visible_splats.push(*splat);
+                        }
+                    }
+                    // LOD
+                    let lod_splats: Vec<GaussianSplat> = visible_splats.iter().enumerate()
+                        .filter(|&(i, s)| {
+                            let dist = cam_pos.distance(Vec3::from(s.position));
+                            match lod::select_lod(dist) {
+                                lod::LodLevel::Full => true,
+                                lod::LodLevel::Reduced => i % 4 == 0,
+                            }
+                        })
+                        .map(|(_, s)| *s)
+                        .collect();
+
+                    // Add placed objects + particles
+                    let mut render_splats = lod_splats;
+                    for (pos, splats) in &self.placed_objects {
+                        for s in splats {
+                            let mut ws = *s;
+                            ws.position[0] += pos.x;
+                            ws.position[1] += pos.y;
+                            ws.position[2] += pos.z;
+                            render_splats.push(ws);
+                        }
+                    }
+                    render_splats.extend(&self.particles.to_splats());
+
+                    let illuminant = illuminant_for_time(self.engine.scene.time_of_day);
+
+                    let gpu_rast = self.gpu_rasteriser.as_ref().unwrap();
+                    gpu_rast.render(
+                        backend.device(),
+                        backend.queue(),
+                        &view,
+                        &render_splats,
+                        &render_camera,
+                        &illuminant,
+                    );
+                    surface_tex.present();
+                } else {
+                    // --- Software fallback render path ---
+                    let pixels = self.render_frame();
+                    if let Some(backend) = &self.backend {
+                        backend.present_framebuffer(&pixels, self.dlss.display_width, self.dlss.display_height);
+                    }
                 }
 
                 // 7. FPS counter + title update

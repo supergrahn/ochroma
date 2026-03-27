@@ -16,6 +16,21 @@ use crate::script_interface::{ScriptRegistry, ScriptContext, ScriptCommand};
 use crate::undo::{UndoStack, UndoEntry};
 use crate::error::EngineError;
 
+/// Physics backend selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicsBackend {
+    /// Built-in AABB collision detection.
+    Simple,
+    /// Full Rapier3D physics (when `rapier` feature is enabled in vox_physics).
+    Rapier,
+}
+
+impl Default for PhysicsBackend {
+    fn default() -> Self {
+        PhysicsBackend::Simple
+    }
+}
+
 /// Engine configuration.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -29,6 +44,7 @@ pub struct EngineConfig {
     pub enable_physics: bool,
     pub enable_audio: bool,
     pub enable_editor: bool,
+    pub physics_backend: PhysicsBackend,
 }
 
 impl Default for EngineConfig {
@@ -44,6 +60,7 @@ impl Default for EngineConfig {
             enable_physics: true,
             enable_audio: true,
             enable_editor: false,
+            physics_backend: PhysicsBackend::default(),
         }
     }
 }

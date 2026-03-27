@@ -17,6 +17,7 @@ vox_terrain = { path = "../vox_terrain" }
 vox_ui = { path = "../vox_ui" }
 bevy_ecs = { workspace = true }
 bevy_app = { workspace = true }
+wgpu = "24"
 winit = "0.30"
 pollster = "0.4"
 glam = { workspace = true }

@@ -440,6 +440,66 @@ impl SceneEditor {
         });
     }
 
+    /// Cast a ray from camera and find the nearest entity hit.
+    pub fn pick_entity_at_screen_pos(
+        &self,
+        screen_x: f32,
+        screen_y: f32,
+        screen_width: u32,
+        screen_height: u32,
+        inv_view_proj: glam::Mat4,
+    ) -> Option<u32> {
+        // Convert screen coords to NDC
+        let ndc_x = (2.0 * screen_x / screen_width as f32) - 1.0;
+        let ndc_y = 1.0 - (2.0 * screen_y / screen_height as f32);
+
+        // Unproject to get ray using two NDC depths
+        // Use Vec4 with manual perspective divide for robustness across all projection conventions.
+        let unproject = |ndc_z: f32| -> glam::Vec3 {
+            let clip = glam::Vec4::new(ndc_x, ndc_y, ndc_z, 1.0);
+            let world = inv_view_proj * clip;
+            glam::Vec3::new(world.x / world.w, world.y / world.w, world.z / world.w)
+        };
+        let near = unproject(-1.0);
+        let far = unproject(1.0);
+        let ray_dir = (far - near).normalize();
+        let ray_origin = near;
+
+        // Test against all entity bounding spheres
+        let mut best_hit: Option<(u32, f32)> = None;
+
+        for entity in &self.entities {
+            if !entity.visible {
+                continue;
+            }
+
+            let entity_pos = entity.position;
+            let radius = entity.scale.max_element() * 5.0; // approximate bounding sphere
+
+            // Ray-sphere intersection
+            let oc = ray_origin - entity_pos;
+            let a = ray_dir.dot(ray_dir);
+            let b = 2.0 * oc.dot(ray_dir);
+            let c = oc.dot(oc) - radius * radius;
+            let discriminant = b * b - 4.0 * a * c;
+
+            if discriminant >= 0.0 {
+                let sqrt_disc = discriminant.sqrt();
+                let t1 = (-b - sqrt_disc) / (2.0 * a);
+                let t2 = (-b + sqrt_disc) / (2.0 * a);
+                // Use the nearest positive intersection
+                let t = if t1 > 0.0 { t1 } else { t2 };
+                if t > 0.0 {
+                    if best_hit.is_none() || t < best_hit.unwrap().1 {
+                        best_hit = Some((entity.id, t));
+                    }
+                }
+            }
+        }
+
+        best_hit.map(|(id, _)| id)
+    }
+
     pub fn entity_count(&self) -> usize {
         self.entities.len()
     }
@@ -553,6 +613,27 @@ mod tests {
         editor2.import_from_map(&map);
         assert_eq!(editor2.entity_count(), 2);
         assert_eq!(editor2.entities[0].name, "House");
+    }
+
+    #[test]
+    fn pick_entity_with_ray() {
+        use glam::Mat4;
+
+        let mut editor = SceneEditor::new();
+        editor.add_entity("Near", "near.ply", Vec3::new(0.0, 0.0, -5.0));
+        editor.add_entity("Far", "far.ply", Vec3::new(0.0, 0.0, -20.0));
+
+        // Camera at origin looking down -Z
+        let view = Mat4::look_at_rh(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
+        let inv_vp = (proj * view).inverse();
+
+        // Click center of screen -- should hit the near entity
+        let hit = editor.pick_entity_at_screen_pos(128.0, 128.0, 256, 256, inv_vp);
+        assert!(hit.is_some(), "Should hit an entity");
+        // Near entity should be picked (closest)
+        let picked = editor.entities.iter().find(|e| e.id == hit.unwrap()).unwrap();
+        assert_eq!(picked.name, "Near", "Should pick the nearest entity");
     }
 
     #[test]
