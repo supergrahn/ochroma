@@ -181,11 +181,12 @@ impl Default for PhysicsWorld {
 }
 
 // ---------------------------------------------------------------------------
-// Rapier3D integration (behind feature flag)
+// Rapier3D integration — always enabled, the real physics engine
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "rapier")]
 pub mod rapier;
 
-#[cfg(feature = "rapier")]
 pub use rapier::RapierPhysicsWorld;
+
+// Re-export Rapier handle types so consumers don't need a direct rapier3d dependency
+pub use rapier3d::prelude::{ColliderHandle, RigidBodyHandle};

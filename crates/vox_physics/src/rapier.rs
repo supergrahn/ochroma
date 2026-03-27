@@ -2,7 +2,7 @@
 //!
 //! Provides a full rigid-body physics world with collision detection,
 //! raycasting, character controllers, and force application.
-//! Enable with: `cargo build --features rapier`
+//! Always enabled — this is the real physics engine.
 
 use rapier3d::prelude::*;
 
@@ -203,6 +203,38 @@ impl RapierPhysicsWorld {
                 let hit = ray.point_at(toi);
                 ([hit.x, hit.y, hit.z], toi)
             })
+    }
+
+    /// Cast a ray and return the collider handle, hit point, and distance.
+    pub fn raycast_with_collider(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_dist: f32,
+    ) -> Option<(ColliderHandle, [f32; 3], f32)> {
+        let ray = Ray::new(
+            point![origin[0], origin[1], origin[2]],
+            vector![direction[0], direction[1], direction[2]],
+        );
+
+        self.query_pipeline
+            .cast_ray(
+                &self.rigid_body_set,
+                &self.collider_set,
+                &ray,
+                max_dist,
+                true,
+                QueryFilter::default(),
+            )
+            .map(|(handle, toi)| {
+                let hit = ray.point_at(toi);
+                (handle, [hit.x, hit.y, hit.z], toi)
+            })
+    }
+
+    /// Get the parent rigid body of a collider (if any).
+    pub fn collider_parent_body(&self, handle: ColliderHandle) -> Option<RigidBodyHandle> {
+        self.collider_set.get(handle).and_then(|c| c.parent())
     }
 
     /// Number of rigid bodies in the world.

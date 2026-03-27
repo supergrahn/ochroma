@@ -29,6 +29,7 @@ use vox_render::shadows::ShadowMapper;
 use vox_render::spectral::RenderCamera;
 use vox_render::spectral_framebuffer::SpectralFramebuffer;
 use vox_render::spectral_tonemapper::{tonemap_spectral_framebuffer, ToneMapSettings};
+use vox_physics::rapier::RapierPhysicsWorld;
 use vox_script::rhai_runtime::RhaiRuntime;
 
 const WIDTH: u32 = 1280;
@@ -235,6 +236,9 @@ struct WalkingSim {
 
     // Scripting
     rhai: RhaiRuntime,
+
+    // Rapier physics world
+    physics: RapierPhysicsWorld,
 }
 
 impl WalkingSim {
@@ -321,6 +325,13 @@ impl WalkingSim {
             clas_cluster_count: 0,
             clas_bvh_depth: 0,
             rhai: RhaiRuntime::new(),
+            physics: {
+                let mut phys = RapierPhysicsWorld::new();
+                // Ground plane at y=0
+                phys.add_static_collider([0.0, -0.5, 0.0], [500.0, 0.5, 500.0]);
+                println!("[walking_sim] Physics: Rapier3D world initialised (ground plane)");
+                phys
+            },
         }
     }
 
@@ -368,11 +379,17 @@ impl WalkingSim {
                     bz + building_depth * 0.5,
                 ),
             });
+            // Register building in Rapier physics world
+            self.physics.add_static_collider(
+                [bx, building_height * 0.5, bz],
+                [building_width * 0.5, building_height * 0.5, building_depth * 0.5],
+            );
         }
         println!(
-            "[walking_sim]   Buildings: {} splats ({} collision boxes)",
+            "[walking_sim]   Buildings: {} splats ({} collision boxes, {} Rapier colliders)",
             self.building_splats.len(),
             self.building_boxes.len(),
+            self.physics.collider_count(),
         );
 
         // Trees scattered around
@@ -533,7 +550,28 @@ impl WalkingSim {
             dt,
         );
 
-        // Building collision still applied post-integration
+        // Step Rapier physics world
+        self.physics.step();
+
+        // Use Rapier ground raycast for ground detection: cast ray downward from feet
+        let feet_y = self.cc_transform.position.y - self.cc.height * 0.5;
+        if let Some((_hit_pos, dist)) = self.physics.raycast(
+            [self.cc_transform.position.x, feet_y + 0.1, self.cc_transform.position.z],
+            [0.0, -1.0, 0.0],
+            0.3, // short ray: just checking if ground is within 0.3m below feet
+        ) {
+            // Ground detected by Rapier — snap to ground if falling
+            if self.cc.velocity.y <= 0.0 {
+                let ground_y = feet_y + 0.1 - dist;
+                self.cc_transform.position.y = ground_y + self.cc.height * 0.5;
+                self.cc.grounded = true;
+                if self.cc.velocity.y < 0.0 {
+                    self.cc.velocity.y = 0.0;
+                }
+            }
+        }
+
+        // Building collision still applied post-integration (AABB fallback alongside Rapier)
         check_building_collision(&mut self.cc_transform.position, &self.building_boxes);
 
         // ---------------------------------------------------------------
