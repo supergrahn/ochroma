@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AssetType {
     Building,
     Prop,
@@ -12,7 +12,7 @@ pub enum AssetType {
     Vehicle,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AssetPipeline {
     ProcGS,
     Turnaround,
@@ -20,14 +20,21 @@ pub enum AssetPipeline {
     LyraCapture,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AssetEntry {
     pub uuid: Uuid,
     pub name: String,
+    pub path: String,
+    pub style: String,
     pub asset_type: AssetType,
     pub pipeline: AssetPipeline,
     pub tags: Vec<String>,
     pub description: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct IndexWrapper {
+    assets: Vec<AssetEntry>,
 }
 
 pub struct AssetLibrary {
@@ -43,8 +50,8 @@ impl AssetLibrary {
         self.entries.insert(entry.uuid, entry);
     }
 
-    pub fn get(&self, uuid: &Uuid) -> Option<&AssetEntry> {
-        self.entries.get(uuid)
+    pub fn get(&self, uuid: Uuid) -> Option<&AssetEntry> {
+        self.entries.get(&uuid)
     }
 
     pub fn search_by_tag(&self, tag: &str) -> Vec<&AssetEntry> {
@@ -67,6 +74,25 @@ impl AssetLibrary {
 
     pub fn count(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn save_index(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
+        let entries: Vec<AssetEntry> = self.entries.values().cloned().collect();
+        let wrapper = IndexWrapper { assets: entries };
+        let toml_str = toml::to_string_pretty(&wrapper)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(path, toml_str)
+    }
+
+    pub fn load_index(path: &std::path::Path) -> Result<Self, std::io::Error> {
+        let content = std::fs::read_to_string(path)?;
+        let wrapper: IndexWrapper = toml::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let mut lib = Self::new();
+        for entry in wrapper.assets {
+            lib.register(entry);
+        }
+        Ok(lib)
     }
 }
 

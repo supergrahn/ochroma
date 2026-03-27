@@ -8,12 +8,14 @@ fn register_and_lookup_by_uuid() {
     lib.register(AssetEntry {
         uuid,
         name: "Test Building".to_string(),
+        path: "buildings/test.vxm".to_string(),
+        style: "".to_string(),
         asset_type: AssetType::Building,
         pipeline: AssetPipeline::ProcGS,
         tags: vec!["victorian".to_string(), "residential".to_string()],
         description: "A test building".to_string(),
     });
-    let entry = lib.get(&uuid).unwrap();
+    let entry = lib.get(uuid).unwrap();
     assert_eq!(entry.name, "Test Building");
 }
 
@@ -24,6 +26,8 @@ fn search_by_tag() {
         lib.register(AssetEntry {
             uuid: Uuid::new_v4(),
             name: format!("Building {i}"),
+            path: "".to_string(),
+            style: "".to_string(),
             asset_type: AssetType::Building,
             pipeline: AssetPipeline::ProcGS,
             tags: vec!["tagged".to_string()],
@@ -33,6 +37,8 @@ fn search_by_tag() {
     lib.register(AssetEntry {
         uuid: Uuid::new_v4(),
         name: "Untagged".to_string(),
+        path: "".to_string(),
+        style: "".to_string(),
         asset_type: AssetType::Prop,
         pipeline: AssetPipeline::Turnaround,
         tags: vec![],
@@ -49,6 +55,8 @@ fn search_by_type() {
     lib.register(AssetEntry {
         uuid: Uuid::new_v4(),
         name: "Tree".to_string(),
+        path: "".to_string(),
+        style: "".to_string(),
         asset_type: AssetType::Vegetation,
         pipeline: AssetPipeline::LyraCapture,
         tags: vec![],
@@ -57,6 +65,8 @@ fn search_by_type() {
     lib.register(AssetEntry {
         uuid: Uuid::new_v4(),
         name: "Car".to_string(),
+        path: "".to_string(),
+        style: "".to_string(),
         asset_type: AssetType::Vehicle,
         pipeline: AssetPipeline::Turnaround,
         tags: vec![],
@@ -79,6 +89,8 @@ fn count_and_all() {
         lib.register(AssetEntry {
             uuid: Uuid::new_v4(),
             name: "x".to_string(),
+            path: "".to_string(),
+            style: "".to_string(),
             asset_type: AssetType::Terrain,
             pipeline: AssetPipeline::NeuralInfill,
             tags: vec![],
