@@ -179,4 +179,24 @@ impl WgpuBackend {
     pub fn height(&self) -> u32 {
         self.height
     }
+
+    /// Returns a reference to the wgpu device.
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// Returns a reference to the wgpu queue.
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    /// Returns the surface texture format.
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.config.format
+    }
+
+    /// Returns a reference to the wgpu surface.
+    pub fn surface(&self) -> &wgpu::Surface<'static> {
+        &self.surface
+    }
 }
