@@ -4256,6 +4256,7 @@ dependencies = [
  "rand",
  "raw-window-handle",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
  "uuid",
