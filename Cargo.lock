@@ -2819,6 +2819,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ochroma_engine"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "uuid",
+ "vox_audio",
+ "vox_core",
+ "vox_data",
+ "vox_net",
+ "vox_nn",
+ "vox_physics",
+ "vox_render",
+ "vox_script",
+ "vox_sim",
+ "vox_terrain",
+ "vox_ui",
+]
+
+[[package]]
 name = "ogg"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4132,6 +4151,9 @@ dependencies = [
  "pollster",
  "puffin",
  "puffin_http",
+ "serde",
+ "serde_json",
+ "toml",
  "uuid",
  "vox_audio",
  "vox_core",
@@ -4194,6 +4216,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "uuid",
  "vox_core",
 ]
 
@@ -4225,6 +4248,7 @@ name = "vox_render"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "dirs-next",
  "glam",
  "half",
  "pollster",
@@ -4246,7 +4270,9 @@ dependencies = [
 name = "vox_script"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "thiserror 2.0.18",
+ "toml",
  "vox_core",
  "wasmtime",
 ]
@@ -4277,6 +4303,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "half",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "uuid",
  "vox_core",
