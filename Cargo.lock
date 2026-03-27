@@ -4263,6 +4263,7 @@ dependencies = [
  "vox_core",
  "vox_data",
  "vox_sim",
+ "vox_terrain",
  "wgpu",
  "winit",
 ]
@@ -4296,6 +4297,8 @@ name = "vox_terrain"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "half",
+ "rand",
  "serde",
  "vox_core",
 ]

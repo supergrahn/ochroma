@@ -24,3 +24,4 @@ serde_json = "1"
 
 [dev-dependencies]
 vox_sim = { path = "../vox_sim" }
+vox_terrain = { path = "../vox_terrain" }
