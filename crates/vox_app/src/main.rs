@@ -1,6 +1,7 @@
 mod demo_asset;
 pub mod autosave;
 pub mod debug_console;
+pub mod render_to_file;
 pub mod screenshot;
 pub mod shortcut_help;
 pub mod daytime;
