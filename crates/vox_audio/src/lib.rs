@@ -1,4 +1,7 @@
 pub mod acoustic_raytracer;
+pub mod synth;
+
+pub use synth::{generate_click, generate_collect_sound, generate_place_sound, generate_tone, save_wav};
 
 use glam::Vec3;
 
