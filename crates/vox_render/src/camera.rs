@@ -76,6 +76,11 @@ impl CameraController {
         self.update_position();
     }
 
+    /// Public wrapper to recalculate position from orbit parameters.
+    pub fn update_position_public(&mut self) {
+        self.update_position();
+    }
+
     fn update_position(&mut self) {
         self.position = Vec3::new(
             self.target.x + self.orbit_angle.cos() * self.orbit_distance,
