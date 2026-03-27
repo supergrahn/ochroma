@@ -2,6 +2,7 @@ mod demo_asset;
 pub mod daytime;
 pub mod growth;
 pub mod headless;
+pub mod overlays;
 pub mod persistence;
 pub mod placement;
 pub mod road_builder;
@@ -77,7 +78,6 @@ struct App {
     fps_timer: Instant,
     frame_count: u64,
     plop_ui: PlopUi,
-    simulation: SimulationState,
     /// The UUID of the demo building asset, for populating the asset browser.
     demo_asset_uuid: Uuid,
     /// Mouse state for interactive camera.
@@ -91,6 +91,8 @@ struct App {
     environment: EnvironmentState,
     /// Tracks whether Ctrl is currently held.
     ctrl_pressed: bool,
+    /// Accumulates real time for growth ticks (fires every 2 seconds).
+    growth_timer: f32,
 }
 
 impl App {
@@ -105,6 +107,7 @@ impl App {
             view_proj: Mat4::IDENTITY,
         });
         world.insert_resource(VisibleSplats::default());
+        world.insert_resource(SimulationState::new());
 
         // Spawn asset entity.
         let asset_uuid = asset.header.uuid();
@@ -164,6 +167,7 @@ impl App {
             undo_system: GameUndoSystem::new(),
             environment: EnvironmentState::default(),
             ctrl_pressed: false,
+            growth_timer: 0.0,
         }
     }
 
@@ -411,6 +415,13 @@ impl ApplicationHandler for App {
 
                 // --- Tick simulation ---
                 self.simulation.tick(dt);
+
+                // --- Growth tick every 2 seconds ---
+                self.growth_timer += dt;
+                if self.growth_timer >= 2.0 {
+                    self.growth_timer = 0.0;
+                    growth::growth_tick(&mut self.world);
+                }
 
                 // --- Update ECS camera state resource ---
                 if let Some(mut cam_state) = self.world.get_resource_mut::<CameraState>() {
