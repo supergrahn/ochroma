@@ -23,6 +23,7 @@ pub mod minimap;
 pub mod settings;
 pub mod soundscape;
 pub mod tutorial;
+pub mod content_browser;
 
 use std::sync::Arc;
 use std::time::Instant;
