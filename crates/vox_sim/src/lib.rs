@@ -24,3 +24,6 @@ pub mod history;
 pub mod trade;
 pub mod vehicles;
 pub mod weather;
+pub mod bdi_agent;
+pub mod social_network;
+pub mod city_council;
