@@ -34,3 +34,4 @@ pub mod memory_pool;
 pub mod perf_inspector;
 pub mod comparison;
 pub mod spectra_render;
+pub mod clas;
