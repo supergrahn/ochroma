@@ -6,3 +6,7 @@ version.workspace = true
 [dependencies]
 vox_core = { path = "../vox_core" }
 glam = { workspace = true }
+rodio = { version = "0.19", optional = true }
+
+[features]
+audio-backend = ["dep:rodio"]

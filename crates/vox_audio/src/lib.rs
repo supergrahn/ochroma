@@ -1,5 +1,10 @@
 use glam::Vec3;
 
+#[cfg(feature = "audio-backend")]
+use rodio::{OutputStream, OutputStreamHandle, Sink};
+#[cfg(feature = "audio-backend")]
+use std::collections::HashMap;
+
 #[derive(Debug, Clone)]
 pub struct AudioSource {
     pub id: u32,
@@ -9,11 +14,62 @@ pub struct AudioSource {
     pub clip: String,
 }
 
+#[cfg(feature = "audio-backend")]
+pub struct AudioBackend {
+    _stream: OutputStream, // must keep alive
+    stream_handle: OutputStreamHandle,
+    sinks: HashMap<u32, Sink>,
+}
+
+#[cfg(feature = "audio-backend")]
+impl AudioBackend {
+    pub fn new() -> Option<Self> {
+        match OutputStream::try_default() {
+            Ok((stream, handle)) => Some(Self {
+                _stream: stream,
+                stream_handle: handle,
+                sinks: HashMap::new(),
+            }),
+            Err(e) => {
+                eprintln!("[ochroma-audio] Failed to initialize audio: {}", e);
+                None
+            }
+        }
+    }
+
+    pub fn play_sine(&mut self, id: u32, frequency: f32, duration_secs: f32, volume: f32) {
+        if let Ok(sink) = Sink::try_new(&self.stream_handle) {
+            let source = rodio::source::SineWave::new(frequency)
+                .take_duration(std::time::Duration::from_secs_f32(duration_secs))
+                .amplify(volume);
+            sink.append(source);
+            self.sinks.insert(id, sink);
+        }
+    }
+
+    pub fn stop(&mut self, id: u32) {
+        if let Some(sink) = self.sinks.remove(&id) {
+            sink.stop();
+        }
+    }
+
+    pub fn is_playing(&self, id: u32) -> bool {
+        self.sinks.get(&id).map(|s| !s.empty()).unwrap_or(false)
+    }
+
+    /// Clean up finished sinks.
+    pub fn tick(&mut self) {
+        self.sinks.retain(|_, sink| !sink.empty());
+    }
+}
+
 pub struct AudioEngine {
     max_sources: usize,
     pub sources: Vec<AudioSource>,
     next_id: u32,
     pub listener_position: Vec3,
+    #[cfg(feature = "audio-backend")]
+    pub backend: Option<AudioBackend>,
 }
 
 impl AudioEngine {
@@ -23,7 +79,14 @@ impl AudioEngine {
             sources: Vec::new(),
             next_id: 1,
             listener_position: Vec3::ZERO,
+            #[cfg(feature = "audio-backend")]
+            backend: None,
         }
+    }
+
+    #[cfg(feature = "audio-backend")]
+    pub fn init_backend(&mut self) {
+        self.backend = AudioBackend::new();
     }
 
     pub fn set_listener(&mut self, pos: Vec3) {
@@ -87,6 +150,10 @@ impl AudioEngine {
             } else {
                 break;
             }
+        }
+        #[cfg(feature = "audio-backend")]
+        if let Some(backend) = &mut self.backend {
+            backend.tick();
         }
     }
 }
