@@ -8,18 +8,24 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use vox_core::character_controller::{CharacterController, character_controller_tick};
+use vox_core::ecs::TransformComponent;
+use vox_core::game_ui::{GameState, GameUI, UIElement, UIPosition, UISize};
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
+use vox_audio::spatial::SpatialAudioManager;
 use vox_render::clas;
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::gpu::wgpu_backend::WgpuBackend;
+use vox_render::rigid_animation::RigidClip;
+use vox_render::shadows::ShadowMapper;
 use vox_render::spectral::RenderCamera;
 use vox_render::spectral_framebuffer::SpectralFramebuffer;
 use vox_render::spectral_tonemapper::{tonemap_spectral_framebuffer, ToneMapSettings};
@@ -28,80 +34,8 @@ use vox_script::rhai_runtime::RhaiRuntime;
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
 
-// ---------------------------------------------------------------------------
-// Bitmap font (5x7 pixel glyphs)
-// ---------------------------------------------------------------------------
-
-const CHAR_WIDTH: u32 = 6;
-#[allow(dead_code)]
-const CHAR_HEIGHT: u32 = 8;
-
-fn char_bitmap(ch: char) -> [u8; 7] {
-    match ch {
-        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
-        '3' => [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        '6' => [0b01110, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
-        'A' | 'a' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'B' | 'b' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
-        'C' | 'c' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
-        'D' | 'd' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-        'E' | 'e' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'F' | 'f' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-        'G' | 'g' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
-        'H' | 'h' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'I' | 'i' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        'J' | 'j' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
-        'K' | 'k' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
-        'L' | 'l' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'M' | 'm' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-        'N' | 'n' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-        'O' | 'o' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'P' | 'p' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-        'R' | 'r' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'S' | 's' => [0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110],
-        'T' | 't' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        'U' | 'u' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'V' | 'v' => [0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100],
-        'W' | 'w' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
-        'X' | 'x' => [0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001],
-        'Y' | 'y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
-        'Z' | 'z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
-        '/' => [0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b00000, 0b00000],
-        ':' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000],
-        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
-        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100],
-        ' ' => [0; 7],
-        _ => [0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111],
-    }
-}
-
-fn burn_text(pixels: &mut [[u8; 4]], width: u32, x: u32, y: u32, text: &str, color: [u8; 3]) {
-    for (ci, ch) in text.chars().enumerate() {
-        let bitmap = char_bitmap(ch);
-        let base_x = x + ci as u32 * CHAR_WIDTH;
-        for (row, &bits) in bitmap.iter().enumerate() {
-            for col in 0..5u32 {
-                if bits & (1 << (4 - col)) != 0 {
-                    let px = base_x + col;
-                    let py = y + row as u32;
-                    if px < width {
-                        let idx = (py * width + px) as usize;
-                        if idx < pixels.len() {
-                            pixels[idx] = [color[0], color[1], color[2], 255];
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
+// Sun direction (normalized, pointing toward ground = positive Y component negative)
+const SUN_DIR: Vec3 = Vec3::new(0.4, -0.8, 0.3);
 
 // ---------------------------------------------------------------------------
 // AABB collision
@@ -152,6 +86,98 @@ struct Orb {
     bob_phase: f32,
 }
 
+/// Windmill entity — base splats + blade splats with rigid animation.
+struct Windmill {
+    base_splats: Vec<GaussianSplat>,
+    blade_splats_local: Vec<GaussianSplat>,   // splats in local space (around origin)
+    blade_splats_world: Vec<GaussianSplat>,   // splats after applying animated rotation
+    position: Vec3,
+    clip: RigidClip,
+    anim_time: f32,
+}
+
+impl Windmill {
+    fn new(position: Vec3) -> Self {
+        // Build base: a column of splats
+        let mut base_splats = Vec::new();
+        let base_spd: [u16; 8] = std::array::from_fn(|i| {
+            let v: f32 = if i < 4 { 0.6 } else { 0.3 };
+            half::f16::from_f32(v).to_bits()
+        });
+        for iy in 0..8 {
+            let y = iy as f32 * 0.5;
+            base_splats.push(GaussianSplat {
+                position: [position.x, position.y + y, position.z],
+                scale: [0.25, 0.25, 0.25],
+                rotation: [0, 0, 0, 32767],
+                opacity: 200,
+                _pad: [0; 3],
+                spectral: base_spd,
+            });
+        }
+
+        // Build blade splats in local space (4 blades radiating outward)
+        let mut blade_splats_local = Vec::new();
+        let blade_height = 4.0; // attach blades at this height on the base
+        let blade_spd: [u16; 8] = std::array::from_fn(|i| {
+            let v: f32 = if (2..=5).contains(&i) { 0.85 } else { 0.4 };
+            half::f16::from_f32(v).to_bits()
+        });
+
+        for blade in 0..4 {
+            let angle = blade as f32 * std::f32::consts::FRAC_PI_2;
+            // Each blade is a row of splats along one radial direction
+            for r in 1..=5 {
+                let radius = r as f32 * 0.4;
+                blade_splats_local.push(GaussianSplat {
+                    position: [radius * angle.cos(), 0.0, radius * angle.sin()],
+                    scale: [0.18, 0.18, 0.18],
+                    rotation: [0, 0, 0, 32767],
+                    opacity: 210,
+                    _pad: [0; 3],
+                    spectral: blade_spd,
+                });
+            }
+        }
+
+        let blade_splats_world = blade_splats_local.clone();
+
+        // Spin at 0.4 rotations/second around Y axis
+        let clip = RigidClip::rotation_loop(Vec3::Y, 0.4);
+
+        Windmill {
+            base_splats,
+            blade_splats_local,
+            blade_splats_world,
+            position: position + Vec3::new(0.0, blade_height, 0.0),
+            clip,
+            anim_time: 0.0,
+        }
+    }
+
+    /// Advance animation and recompute world-space blade splats.
+    fn tick(&mut self, dt: f32) {
+        self.anim_time += dt;
+        let kf = self.clip.sample(self.anim_time);
+        let rot = kf.rotation;
+
+        // Apply rotation + translation to each blade splat
+        for (src, dst) in self
+            .blade_splats_local
+            .iter()
+            .zip(self.blade_splats_world.iter_mut())
+        {
+            let local_pos = Vec3::from(src.position);
+            let rotated = rot * local_pos;
+            let world_pos = rotated + self.position;
+            *dst = GaussianSplat {
+                position: [world_pos.x, world_pos.y, world_pos.z],
+                ..*src
+            };
+        }
+    }
+}
+
 struct WalkingSim {
     window: Option<Arc<Window>>,
     backend: Option<WgpuBackend>,
@@ -167,13 +193,26 @@ struct WalkingSim {
     orbs: Vec<Orb>,
     orbs_collected: u32,
     total_orbs: u32,
-    game_won: bool,
     game_time: f32,
 
-    // Player
-    player_pos: Vec3,
+    // Character controller (replaces ad-hoc player state)
+    cc: CharacterController,
+    cc_transform: TransformComponent,
     player_yaw: f32,
     player_pitch: f32,
+
+    // Game UI
+    game_ui: GameUI,
+    fps_display: f32,
+
+    // Spatial audio
+    audio: SpatialAudioManager,
+
+    // Shadow mapper
+    shadow_mapper: ShadowMapper,
+
+    // Windmill
+    windmill: Windmill,
 
     // Input
     keys_held: std::collections::HashSet<KeyCode>,
@@ -184,6 +223,7 @@ struct WalkingSim {
     last_frame: Instant,
     frame_count: u64,
     fps_timer: Instant,
+    current_fps: f32,
 
     // Spectral pipeline
     spectral_fb: SpectralFramebuffer,
@@ -221,6 +261,33 @@ impl WalkingSim {
             })
             .collect();
 
+        // Character controller — start at eye level above ground
+        let mut cc = CharacterController::default();
+        cc.speed = 8.0;
+        let cc_transform = TransformComponent {
+            position: Vec3::new(0.0, cc.height * 0.5, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        };
+
+        // Game UI — start on main menu; player presses Enter to begin
+        let mut game_ui = GameUI::default();
+        game_ui.game_state = GameState::MainMenu;
+
+        // Spatial audio — gracefully silent if no hardware
+        let audio = SpatialAudioManager::new();
+        if audio.is_available() {
+            println!("[walking_sim] Spatial audio: available");
+        } else {
+            println!("[walking_sim] Spatial audio: silent mode (no hardware or rodio feature)");
+        }
+
+        // Shadow mapper — small resolution for software performance
+        let shadow_mapper = ShadowMapper::new(128);
+
+        // Windmill placed at the side of the scene
+        let windmill = Windmill::new(Vec3::new(18.0, 0.0, -8.0));
+
         Self {
             window: None,
             backend: None,
@@ -232,17 +299,23 @@ impl WalkingSim {
             orbs,
             orbs_collected: 0,
             total_orbs: 10,
-            game_won: false,
             game_time: 0.0,
-            player_pos: Vec3::new(0.0, 2.0, 0.0),
+            cc,
+            cc_transform,
             player_yaw: 0.0,
             player_pitch: 0.0,
+            game_ui,
+            fps_display: 0.0,
+            audio,
+            shadow_mapper,
+            windmill,
             keys_held: std::collections::HashSet::new(),
             mouse_captured: false,
             last_mouse: None,
             last_frame: Instant::now(),
             frame_count: 0,
             fps_timer: Instant::now(),
+            current_fps: 0.0,
             spectral_fb: SpectralFramebuffer::new(WIDTH, HEIGHT),
             tonemap_settings: ToneMapSettings::default(),
             clas_cluster_count: 0,
@@ -266,7 +339,7 @@ impl WalkingSim {
         // Buildings (with bounding boxes for collision)
         let building_width = 6.0;
         let building_depth = 8.0;
-        let building_height = 10.0; // approximate visual height
+        let building_height = 10.0;
         for i in 0..3 {
             let bx = i as f32 * 12.0 - 12.0;
             let bz = 25.0;
@@ -283,7 +356,6 @@ impl WalkingSim {
                 ws.position[2] += bz;
                 self.building_splats.push(ws);
             }
-            // Store AABB for collision
             self.building_boxes.push(BoundingBox {
                 min: Vec3::new(
                     bx - building_width * 0.5,
@@ -337,6 +409,41 @@ impl WalkingSim {
             "[walking_sim] CLAS: {} clusters, BVH depth {}, avg {:.0} splats/cluster",
             stats.cluster_count, stats.bvh_depth, stats.avg_splats_per_cluster,
         );
+
+        // Prime the shadow mapper with the initial camera state
+        let sun_dir = SUN_DIR.normalize();
+        self.shadow_mapper.update(
+            self.cc_transform.position,
+            Vec3::new(self.player_yaw.sin(), 0.0, -self.player_yaw.cos()).normalize(),
+            sun_dir,
+        );
+        // Render shadow map from building splat positions
+        let occluder_positions: Vec<Vec3> = self
+            .building_splats
+            .iter()
+            .map(|s| Vec3::from(s.position))
+            .collect();
+        let occluder_radii: Vec<f32> = self
+            .building_splats
+            .iter()
+            .map(|s| s.scale[0])
+            .collect();
+        self.shadow_mapper
+            .render_shadow_map(&occluder_positions, &occluder_radii);
+        println!("[walking_sim] Shadow mapper primed.");
+    }
+
+    fn player_pos(&self) -> Vec3 {
+        self.cc_transform.position
+    }
+
+    fn forward(&self) -> Vec3 {
+        Vec3::new(
+            self.player_yaw.sin() * self.player_pitch.cos(),
+            self.player_pitch.sin(),
+            -self.player_yaw.cos() * self.player_pitch.cos(),
+        )
+        .normalize()
     }
 
     fn generate_orb_splats(&self) -> Vec<GaussianSplat> {
@@ -385,52 +492,79 @@ impl WalkingSim {
         splats
     }
 
-    fn forward(&self) -> Vec3 {
-        Vec3::new(
-            self.player_yaw.sin() * self.player_pitch.cos(),
-            self.player_pitch.sin(),
-            -self.player_yaw.cos() * self.player_pitch.cos(),
-        )
-        .normalize()
-    }
-
     fn update(&mut self, dt: f32) {
-        if self.game_won {
+        // Only update game logic when Playing
+        if self.game_ui.game_state != GameState::Playing {
             return;
         }
         self.game_time += dt;
 
-        // Movement
-        let speed = 8.0 * dt;
-        let forward =
+        // ---------------------------------------------------------------
+        // 1. CharacterController movement (replaces ad-hoc WASD code)
+        // ---------------------------------------------------------------
+        let forward_xz =
             Vec3::new(self.player_yaw.sin(), 0.0, -self.player_yaw.cos()).normalize();
-        let right = forward.cross(Vec3::Y).normalize();
+        let right_xz = forward_xz.cross(Vec3::Y).normalize();
 
+        let mut move_input = Vec3::ZERO;
         if self.keys_held.contains(&KeyCode::KeyW) {
-            self.player_pos += forward * speed;
+            move_input += forward_xz;
         }
         if self.keys_held.contains(&KeyCode::KeyS) {
-            self.player_pos -= forward * speed;
+            move_input -= forward_xz;
         }
         if self.keys_held.contains(&KeyCode::KeyA) {
-            self.player_pos -= right * speed;
+            move_input -= right_xz;
         }
         if self.keys_held.contains(&KeyCode::KeyD) {
-            self.player_pos += right * speed;
+            move_input += right_xz;
+        }
+        if move_input.length_squared() > 0.0 {
+            move_input = move_input.normalize();
         }
 
-        // Keep player above ground
-        self.player_pos.y = 2.0;
+        let jump_pressed = self.keys_held.contains(&KeyCode::Space);
 
-        // Building collision: push player out of any overlapping building
-        check_building_collision(&mut self.player_pos, &self.building_boxes);
+        character_controller_tick(
+            &mut self.cc,
+            &mut self.cc_transform,
+            move_input,
+            jump_pressed,
+            dt,
+        );
 
-        // Check orb collection
+        // Building collision still applied post-integration
+        check_building_collision(&mut self.cc_transform.position, &self.building_boxes);
+
+        // ---------------------------------------------------------------
+        // 2. Shadow mapper update each frame
+        // ---------------------------------------------------------------
+        let sun_dir = SUN_DIR.normalize();
+        let cam_fwd = self.forward();
+        self.shadow_mapper
+            .update(self.cc_transform.position, cam_fwd, sun_dir);
+
+        // ---------------------------------------------------------------
+        // 3. Windmill animation tick
+        // ---------------------------------------------------------------
+        self.windmill.tick(dt);
+
+        // ---------------------------------------------------------------
+        // 4. Spatial audio listener update
+        // ---------------------------------------------------------------
+        self.audio
+            .set_listener(self.cc_transform.position, self.forward(), Vec3::Y);
+        self.audio.tick(dt);
+
+        // ---------------------------------------------------------------
+        // 5. Orb collection
+        // ---------------------------------------------------------------
+        let player_pos = self.cc_transform.position;
         for orb in &mut self.orbs {
             if orb.collected {
                 continue;
             }
-            let dist = (orb.position - self.player_pos).length();
+            let dist = (orb.position - player_pos).length();
             if dist < 2.5 {
                 orb.collected = true;
                 self.orbs_collected += 1;
@@ -439,7 +573,12 @@ impl WalkingSim {
                     self.orbs_collected, self.total_orbs
                 );
 
-                // Generate collect sound WAV (proves audio pipeline works)
+                // SpatialAudio: play a tone on collect
+                // Each successive orb plays a slightly higher frequency
+                let freq = 440.0 + self.orbs_collected as f32 * 110.0;
+                self.audio.play_tone(freq, 0.3, 0.8);
+
+                // Also save a WAV for proof (legacy path)
                 let sound = vox_audio::synth::generate_collect_sound();
                 let path = std::env::temp_dir()
                     .join(format!("ochroma_collect_{}.wav", self.orbs_collected));
@@ -449,20 +588,38 @@ impl WalkingSim {
                 }
 
                 if self.orbs_collected >= self.total_orbs {
-                    self.game_won = true;
                     println!(
                         "[walking_sim] YOU WIN! All orbs collected in {:.1} seconds!",
                         self.game_time
                     );
+                    self.game_ui.game_state = GameState::GameOver {
+                        message: "YOU WIN!".to_string(),
+                    };
                 }
             }
         }
+
+        // ---------------------------------------------------------------
+        // 6. Update HUD elements with current values
+        // ---------------------------------------------------------------
+        let pos = self.cc_transform.position;
+        self.game_ui.set_text(
+            "orbs",
+            &format!("ORBS: {}/{}", self.orbs_collected, self.total_orbs),
+        );
+        self.game_ui.set_text(
+            "pos",
+            &format!("X:{:.0} Y:{:.1} Z:{:.0}", pos.x, pos.y, pos.z),
+        );
+        self.game_ui
+            .set_text("fps", &format!("FPS: {:.0}", self.current_fps));
     }
 
     fn render(&mut self) -> Vec<[u8; 4]> {
-        let target = self.player_pos + self.forward();
+        let eye = self.player_pos();
+        let target = eye + self.forward();
         let camera = RenderCamera {
-            view: Mat4::look_at_rh(self.player_pos, target, Vec3::Y),
+            view: Mat4::look_at_rh(eye, target, Vec3::Y),
             proj: Mat4::perspective_rh(
                 std::f32::consts::FRAC_PI_4,
                 WIDTH as f32 / HEIGHT as f32,
@@ -471,18 +628,21 @@ impl WalkingSim {
             ),
         };
 
-        // Combine all splats
+        // Combine all scene splats
         let mut all = self.terrain_splats.clone();
         all.extend_from_slice(&self.building_splats);
         all.extend_from_slice(&self.tree_splats);
         all.extend(self.generate_orb_splats());
+        // Windmill base + animated blades
+        all.extend_from_slice(&self.windmill.base_splats);
+        all.extend_from_slice(&self.windmill.blade_splats_world);
 
         let illuminant = Illuminant::d65();
 
         // 1. Rasterise
         let fb = self.rasteriser.render(&all, &camera, &illuminant);
 
-        // 2. Write to spectral framebuffer (approximate: RGB -> spectral bands)
+        // 2. Write to spectral framebuffer with shadow darkening on terrain
         self.spectral_fb.clear();
         for (i, pixel) in fb.pixels.iter().enumerate() {
             let x = (i % WIDTH as usize) as u32;
@@ -490,6 +650,54 @@ impl WalkingSim {
             let r = pixel[0] as f32 / 255.0;
             let g = pixel[1] as f32 / 255.0;
             let b = pixel[2] as f32 / 255.0;
+
+            // Shadow: check if this terrain pixel's world position is shadowed.
+            // We reconstruct an approximate world position from pixel coordinates
+            // via the camera's inverse projection (simple ground-plane approximation).
+            // For a software renderer this is an approximation — good enough for a demo.
+            let shadow_factor = {
+                // Map screen pixel to NDC
+                let ndc_x = (x as f32 / WIDTH as f32) * 2.0 - 1.0;
+                let ndc_y = 1.0 - (y as f32 / HEIGHT as f32) * 2.0;
+
+                // Only check pixels in the lower half of the screen (ground region heuristic)
+                if ndc_y < -0.1 {
+                    // Use a world-space grid probe at estimated ground position
+                    let ray_dir_view = Vec3::new(
+                        ndc_x / camera.proj.col(0)[0],
+                        ndc_y / camera.proj.col(1)[1],
+                        -1.0,
+                    )
+                    .normalize();
+                    // Transform ray direction to world space
+                    let view_inv = camera.view.inverse();
+                    let world_dir =
+                        (view_inv * ray_dir_view.extend(0.0)).truncate().normalize();
+
+                    // Intersect with y=0 ground plane
+                    let t = if world_dir.y.abs() > 1e-4 {
+                        -eye.y / world_dir.y
+                    } else {
+                        -1.0
+                    };
+                    if t > 0.0 && t < 200.0 {
+                        let world_pos = eye + world_dir * t;
+                        if self.shadow_mapper.is_in_shadow(world_pos, 0.01) {
+                            0.6 // darken shadowed terrain by 40%
+                        } else {
+                            1.0
+                        }
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                }
+            };
+
+            let r = r * shadow_factor;
+            let g = g * shadow_factor;
+            let b = b * shadow_factor;
 
             let spectral = [
                 b * 0.3,
@@ -503,9 +711,8 @@ impl WalkingSim {
             ];
             let albedo = spectral;
 
-            self.spectral_fb.write_sample(
-                x, y, spectral, 1.0, [0.0, 1.0, 0.0], 0, albedo,
-            );
+            self.spectral_fb
+                .write_sample(x, y, spectral, 1.0, [0.0, 1.0, 0.0], 0, albedo);
         }
 
         // 3. Tone map spectral framebuffer to RGBA8
@@ -515,20 +722,8 @@ impl WalkingSim {
             &self.tonemap_settings,
         );
 
-        // 4. Draw HUD text (burn into framebuffer)
-        let orb_text = format!(
-            "ORBS: {}/{}",
-            self.orbs_collected, self.total_orbs
-        );
-        burn_text(&mut pixels, WIDTH, 10, 10, &orb_text, [255, 255, 255]);
-
-        if self.game_won {
-            // Center "YOU WIN!" in yellow
-            let text = "YOU WIN!";
-            let text_w = text.len() as u32 * CHAR_WIDTH;
-            let cx = WIDTH / 2 - text_w / 2;
-            burn_text(&mut pixels, WIDTH, cx, HEIGHT / 2, text, [255, 255, 0]);
-        }
+        // 4. Render GameUI HUD (orbs, position, fps, game-over overlay)
+        self.game_ui.render_to_pixels(&mut pixels, WIDTH, HEIGHT);
 
         pixels
     }
@@ -553,16 +748,36 @@ impl ApplicationHandler for WalkingSim {
         self.window = Some(window);
         self.build_scene();
 
+        // Set up GameUI HUD elements (shown when Playing)
+        let mut orb_el = UIElement::new("orbs", "ORBS: 0/10", UIPosition::TopLeft);
+        orb_el.size = UISize::Normal;
+        orb_el.color = [255, 255, 100];
+        self.game_ui.add_element(orb_el);
+
+        let pos = self.cc_transform.position;
+        let mut pos_el = UIElement::new(
+            "pos",
+            &format!("X:{:.0} Y:{:.1} Z:{:.0}", pos.x, pos.y, pos.z),
+            UIPosition::BottomLeft,
+        );
+        pos_el.size = UISize::Small;
+        pos_el.color = [180, 255, 180];
+        self.game_ui.add_element(pos_el);
+
+        let mut fps_el = UIElement::new("fps", "FPS: --", UIPosition::TopRight);
+        fps_el.size = UISize::Small;
+        fps_el.color = [180, 220, 255];
+        self.game_ui.add_element(fps_el);
+
         // Load game config via Rhai scripting
         let config_script = r#"
-            // Game configuration — edit this and hot-reload!
             let orb_count = 10;
             let player_speed = 8.0;
             let collect_distance = 2.5;
             let orb_bob_speed = 2.0;
             let orb_pulse_speed = 3.0;
             log("Game config loaded via Rhai!");
-            orb_count  // return value
+            orb_count
         "#;
         match self.rhai.load_script("config", config_script) {
             Ok(idx) => {
@@ -573,14 +788,13 @@ impl ApplicationHandler for WalkingSim {
             Err(e) => eprintln!("[walking_sim] Rhai error: {}", e),
         }
 
-        // Test Rhai eval (debug console proof-of-concept)
         match self.rhai.eval("2 + 2") {
             Ok(result) => println!("[walking_sim] Rhai eval test: 2 + 2 = {}", result),
             Err(e) => eprintln!("[walking_sim] Rhai eval error: {}", e),
         }
 
         println!("[walking_sim] Walk around and collect all 10 glowing orbs to win!");
-        println!("Controls: WASD move, right-click look, ` Rhai eval, Escape quit");
+        println!("Controls: ENTER start, WASD move, SPACE jump, right-click look, ` Rhai eval, Escape quit");
     }
 
     fn window_event(
@@ -597,12 +811,45 @@ impl ApplicationHandler for WalkingSim {
                     if event.state == ElementState::Pressed {
                         self.keys_held.insert(key);
                         match key {
-                            KeyCode::Escape => event_loop.exit(),
+                            KeyCode::Escape => {
+                                // If playing, pause; if paused, quit (or resume on second press)
+                                match &self.game_ui.game_state {
+                                    GameState::Playing => {
+                                        self.game_ui.game_state = GameState::Paused;
+                                    }
+                                    GameState::Paused => {
+                                        event_loop.exit();
+                                    }
+                                    _ => event_loop.exit(),
+                                }
+                            }
+                            KeyCode::Enter => {
+                                match &self.game_ui.game_state {
+                                    GameState::MainMenu | GameState::Paused => {
+                                        self.game_ui.game_state = GameState::Playing;
+                                    }
+                                    GameState::GameOver { .. } => {
+                                        // Restart: reset orbs, player position, game time
+                                        for orb in &mut self.orbs {
+                                            orb.collected = false;
+                                        }
+                                        self.orbs_collected = 0;
+                                        self.game_time = 0.0;
+                                        self.cc = CharacterController::default();
+                                        self.cc.speed = 8.0;
+                                        self.cc_transform.position =
+                                            Vec3::new(0.0, self.cc.height * 0.5, 0.0);
+                                        self.game_ui.game_state = GameState::Playing;
+                                    }
+                                    _ => {}
+                                }
+                            }
                             KeyCode::Backquote => {
-                                // Debug Rhai eval — evaluate a test expression
                                 let expr = "42 * 2 + 1";
                                 match self.rhai.eval(expr) {
-                                    Ok(result) => println!("[rhai-console] {} = {}", expr, result),
+                                    Ok(result) => {
+                                        println!("[rhai-console] {} = {}", expr, result)
+                                    }
                                     Err(e) => eprintln!("[rhai-console] Error: {}", e),
                                 }
                             }
@@ -650,19 +897,25 @@ impl ApplicationHandler for WalkingSim {
                     backend.present_framebuffer(&pixels, WIDTH, HEIGHT);
                 }
 
-                // FPS
+                // FPS tracking
                 self.frame_count += 1;
-                if now.duration_since(self.fps_timer).as_secs_f32() >= 1.0 {
-                    let fps = self.frame_count as f32
-                        / now.duration_since(self.fps_timer).as_secs_f32();
+                let fps_elapsed = now.duration_since(self.fps_timer).as_secs_f32();
+                if fps_elapsed >= 1.0 {
+                    self.current_fps = self.frame_count as f32 / fps_elapsed;
+                    self.fps_display = self.current_fps;
                     if let Some(w) = &self.window {
                         w.set_title(&format!(
-                            "Ochroma Walking Sim -- {:.0} FPS | Orbs: {}/{} | CLAS: {} clusters{}",
-                            fps,
+                            "Ochroma Walking Sim -- {:.0} FPS | Orbs: {}/{} | CLAS: {} clusters | {}",
+                            self.current_fps,
                             self.orbs_collected,
                             self.total_orbs,
                             self.clas_cluster_count,
-                            if self.game_won { " | YOU WIN!" } else { "" }
+                            match &self.game_ui.game_state {
+                                GameState::Playing => "Playing",
+                                GameState::MainMenu => "Main Menu",
+                                GameState::Paused => "Paused",
+                                GameState::GameOver { .. } => "YOU WIN!",
+                            }
                         ));
                     }
                     self.frame_count = 0;
@@ -683,6 +936,7 @@ fn main() {
     println!("========================================");
     println!("  Ochroma Walking Simulator");
     println!("  Collect all 10 glowing orbs to win!");
+    println!("  Press ENTER on the main menu to start");
     println!("========================================");
 
     let event_loop = EventLoop::new().unwrap();
