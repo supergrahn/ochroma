@@ -15,3 +15,4 @@ pub mod templates;
 pub mod creator_tools;
 pub mod osm_import;
 pub mod ply_loader;
+pub mod map_file;
