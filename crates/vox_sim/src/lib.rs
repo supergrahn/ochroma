@@ -27,3 +27,5 @@ pub mod weather;
 pub mod bdi_agent;
 pub mod social_network;
 pub mod city_council;
+pub mod sharding;
+pub mod deterministic;
