@@ -36,3 +36,6 @@ pub mod comparison;
 pub mod spectra_render;
 pub mod clas;
 pub mod mega_geometry;
+pub mod spectral_framebuffer;
+pub mod spectral_tonemapper;
+pub mod temporal;
