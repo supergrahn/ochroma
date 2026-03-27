@@ -16,6 +16,7 @@ pub mod creator_tools;
 pub mod osm_import;
 pub mod ply_loader;
 pub mod map_file;
+pub mod gltf_animation;
 pub mod gltf_import;
 pub mod world_save;
 pub mod material_system;
