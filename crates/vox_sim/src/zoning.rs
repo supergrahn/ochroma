@@ -22,6 +22,10 @@ pub struct ZonePlot {
     pub area_sqm: f32,
     pub developed: bool,
     pub land_value: f32,
+    pub position: [f32; 2],
+    pub size: [f32; 2],
+    pub building_id: Option<u32>,
+    pub district_id: Option<u32>,
 }
 
 impl ZonePlot {
@@ -32,6 +36,10 @@ impl ZonePlot {
             area_sqm,
             developed: false,
             land_value: 100.0,
+            position: [0.0, 0.0],
+            size: [0.0, 0.0],
+            building_id: None,
+            district_id: None,
         }
     }
 }
@@ -71,5 +79,94 @@ impl DemandMeter {
         } else {
             ZoneType::Office
         }
+    }
+}
+
+pub struct ZoningManager {
+    pub plots: Vec<ZonePlot>,
+    pub demand: DemandMeter,
+    next_id: u32,
+}
+
+impl ZoningManager {
+    pub fn new() -> Self {
+        Self { plots: Vec::new(), demand: DemandMeter::default(), next_id: 0 }
+    }
+
+    pub fn zone_plot(&mut self, zone_type: ZoneType, position: [f32; 2], size: [f32; 2]) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        let area_sqm = size[0] * size[1];
+        self.plots.push(ZonePlot {
+            id,
+            zone_type,
+            area_sqm,
+            developed: false,
+            land_value: 1.0,
+            position,
+            size,
+            building_id: None,
+            district_id: None,
+        });
+        id
+    }
+
+    /// Update demand meter based on current zone counts.
+    pub fn update_demand(&mut self, citizen_count: u32) {
+        let res_count = self
+            .plots
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.zone_type,
+                    ZoneType::ResidentialLow | ZoneType::ResidentialMed | ZoneType::ResidentialHigh
+                )
+            })
+            .count();
+        let com_count = self
+            .plots
+            .iter()
+            .filter(|p| {
+                matches!(p.zone_type, ZoneType::CommercialLocal | ZoneType::CommercialRegional)
+            })
+            .count();
+        let ind_count = self
+            .plots
+            .iter()
+            .filter(|p| {
+                matches!(p.zone_type, ZoneType::IndustrialLight | ZoneType::IndustrialHeavy)
+            })
+            .count();
+
+        let citizens_f = citizen_count as f32;
+        self.demand.residential =
+            (citizens_f / (res_count.max(1) as f32 * 10.0)).min(1.0);
+        self.demand.commercial =
+            (citizens_f / (com_count.max(1) as f32 * 50.0)).min(1.0);
+        self.demand.industrial =
+            (citizens_f / (ind_count.max(1) as f32 * 100.0)).min(1.0);
+    }
+
+    /// Get plots ready for development (zoned but no building yet).
+    pub fn undeveloped_plots(&self) -> Vec<&ZonePlot> {
+        self.plots.iter().filter(|p| p.building_id.is_none()).collect()
+    }
+
+    /// Mark a plot as developed.
+    pub fn develop_plot(&mut self, plot_id: u32, building_id: u32) {
+        if let Some(plot) = self.plots.iter_mut().find(|p| p.id == plot_id) {
+            plot.building_id = Some(building_id);
+            plot.developed = true;
+        }
+    }
+
+    pub fn plot_count(&self) -> usize {
+        self.plots.len()
+    }
+}
+
+impl Default for ZoningManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

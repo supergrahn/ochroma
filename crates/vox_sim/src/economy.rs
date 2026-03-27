@@ -43,6 +43,14 @@ impl CityBudget {
     pub fn net(&self) -> f64 {
         self.total_income() - self.total_expenses()
     }
+
+    /// Simulate one budget tick. Updates income based on citizen count and zone data.
+    pub fn tick(&mut self, citizen_count: u32, commercial_count: u32, industrial_count: u32) {
+        self.residential_income = citizen_count as f64 * self.residential_tax_rate as f64 * 100.0;
+        self.commercial_income = commercial_count as f64 * self.commercial_tax_rate as f64 * 500.0;
+        self.industrial_income = industrial_count as f64 * self.industrial_tax_rate as f64 * 800.0;
+        self.funds += self.net();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +61,10 @@ pub enum ResourceType {
     Waste,
     NaturalGas,
     Broadband,
+    Timber,
+    Wheat,
+    Steel,
+    Coal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,5 +87,56 @@ impl ResourceStock {
         } else {
             0.0
         }
+    }
+}
+
+/// Manages resource flow from producers to consumers.
+pub struct SupplyChain {
+    pub stocks: Vec<ResourceStock>,
+}
+
+impl SupplyChain {
+    pub fn new() -> Self {
+        Self { stocks: Vec::new() }
+    }
+
+    pub fn add_stock(&mut self, resource: ResourceType, capacity: f32) {
+        self.stocks.push(ResourceStock {
+            resource_type: resource,
+            capacity,
+            current: 0.0,
+            production_rate: 0.0,
+            consumption_rate: 0.0,
+        });
+    }
+
+    pub fn produce(&mut self, resource: ResourceType, amount: f32) {
+        if let Some(stock) = self.stocks.iter_mut().find(|s| s.resource_type == resource) {
+            stock.current = (stock.current + amount).min(stock.capacity);
+        }
+    }
+
+    pub fn consume(&mut self, resource: ResourceType, amount: f32) -> f32 {
+        if let Some(stock) = self.stocks.iter_mut().find(|s| s.resource_type == resource) {
+            let consumed = amount.min(stock.current);
+            stock.current -= consumed;
+            consumed
+        } else {
+            0.0
+        }
+    }
+
+    pub fn stock_level(&self, resource: ResourceType) -> f32 {
+        self.stocks
+            .iter()
+            .find(|s| s.resource_type == resource)
+            .map(|s| s.current)
+            .unwrap_or(0.0)
+    }
+}
+
+impl Default for SupplyChain {
+    fn default() -> Self {
+        Self::new()
     }
 }
