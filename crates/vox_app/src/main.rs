@@ -1,5 +1,8 @@
 mod demo_asset;
 pub mod autosave;
+pub mod debug_console;
+pub mod screenshot;
+pub mod shortcut_help;
 pub mod daytime;
 pub mod growth;
 pub mod headless;
