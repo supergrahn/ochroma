@@ -1,12 +1,15 @@
 mod demo_asset;
+pub mod daytime;
 pub mod growth;
 pub mod headless;
+pub mod persistence;
 pub mod placement;
 pub mod road_builder;
 pub mod simulation;
 pub mod systems;
 pub mod terrain_setup;
 pub mod ui;
+pub mod undo_integration;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,7 +18,6 @@ use bevy_ecs::prelude::*;
 use glam::{Mat4, Vec3};
 use uuid::Uuid;
 use vox_core::ecs::{LodLevel, SplatAssetComponent, SplatInstanceComponent};
-use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
 use vox_render::camera::CameraController;
 use vox_render::gpu::gpu_rasteriser::GpuRasteriser;
@@ -30,10 +32,12 @@ use winit::window::{Window, WindowId};
 use egui_wgpu::wgpu;
 use ui::PlopUi;
 
+use daytime::EnvironmentState;
 use simulation::SimulationState;
 use systems::{
     CameraState, VisibleSplats, frustum_cull_system, gather_splats_system, lod_select_system,
 };
+use undo_integration::GameUndoSystem;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
@@ -81,6 +85,12 @@ struct App {
     right_pressed: bool,
     last_mouse_x: f32,
     last_mouse_y: f32,
+    /// Undo/redo system for game actions.
+    undo_system: GameUndoSystem,
+    /// Environment state: time of day and weather.
+    environment: EnvironmentState,
+    /// Tracks whether Ctrl is currently held.
+    ctrl_pressed: bool,
 }
 
 impl App {
@@ -151,6 +161,9 @@ impl App {
             right_pressed: false,
             last_mouse_x: 0.0,
             last_mouse_y: 0.0,
+            undo_system: GameUndoSystem::new(),
+            environment: EnvironmentState::default(),
+            ctrl_pressed: false,
         }
     }
 
@@ -340,13 +353,29 @@ impl ApplicationHandler for App {
                 }
             }
 
-            // --- Camera input: WASD keyboard pan ---
+            // --- Track modifier keys ---
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.ctrl_pressed = modifiers.state().control_key();
+            }
+
+            // --- Camera input: WASD keyboard pan + Ctrl shortcuts ---
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state.is_pressed() {
                     match event.physical_key {
                         winit::keyboard::PhysicalKey::Code(
                             winit::keyboard::KeyCode::KeyW,
-                        ) => self.camera.pan(0.0, -2.0),
+                        ) if !self.ctrl_pressed => self.camera.pan(0.0, -2.0),
+                        winit::keyboard::PhysicalKey::Code(
+                            winit::keyboard::KeyCode::KeyS,
+                        ) if self.ctrl_pressed => {
+                            let _ = persistence::save_current(
+                                "MyCity",
+                                self.simulation.game_time_hours,
+                                self.simulation.citizens.count() as u32,
+                                self.simulation.budget.funds,
+                                "quicksave",
+                            );
+                        }
                         winit::keyboard::PhysicalKey::Code(
                             winit::keyboard::KeyCode::KeyS,
                         ) => self.camera.pan(0.0, 2.0),
@@ -356,6 +385,16 @@ impl ApplicationHandler for App {
                         winit::keyboard::PhysicalKey::Code(
                             winit::keyboard::KeyCode::KeyD,
                         ) => self.camera.pan(2.0, 0.0),
+                        winit::keyboard::PhysicalKey::Code(
+                            winit::keyboard::KeyCode::KeyZ,
+                        ) if self.ctrl_pressed => {
+                            self.undo_system.undo();
+                        }
+                        winit::keyboard::PhysicalKey::Code(
+                            winit::keyboard::KeyCode::KeyY,
+                        ) if self.ctrl_pressed => {
+                            self.undo_system.redo();
+                        }
                         _ => {}
                     }
                 }
@@ -401,6 +440,12 @@ impl ApplicationHandler for App {
                 let window_clone = self.window.clone();
                 let plop_ui = &mut self.plop_ui;
                 let sim = &mut self.simulation;
+                let env = &self.environment;
+
+                // Current illuminant from time-of-day environment.
+                let illuminant = env.current_illuminant();
+                let time_label = env.time_label();
+                let weather_label = env.weather_label();
 
                 // Build camera matrices from the interactive controller.
                 let camera = RenderCamera {
@@ -431,7 +476,7 @@ impl ApplicationHandler for App {
                             &view_tex,
                             &splats_to_render,
                             &camera,
-                            &Illuminant::d65(),
+                            &illuminant,
                         );
 
                         // --- egui render on top ---
@@ -449,6 +494,8 @@ impl ApplicationHandler for App {
                                     ui.label(format!("Pop: {}", sim.citizens.count()));
                                     ui.separator();
                                     ui.label(format!("${:.0}", sim.budget.funds));
+                                    ui.separator();
+                                    ui.label(format!("{} | {}", time_label, weather_label));
                                     ui.separator();
                                     if ui.button("⏸").clicked() { sim.game_speed = simulation::GameSpeed::Paused; }
                                     if ui.button("▶").clicked() { sim.game_speed = simulation::GameSpeed::Normal; }
@@ -532,7 +579,7 @@ impl ApplicationHandler for App {
                         let fb = rasteriser.render(
                             &splats_to_render,
                             &camera,
-                            &Illuminant::d65(),
+                            &illuminant,
                         );
                         backend.present_framebuffer(&fb.pixels, fb.width, fb.height);
                     }
@@ -541,7 +588,7 @@ impl ApplicationHandler for App {
                         let _fb = rasteriser.render(
                             &splats_to_render,
                             &camera,
-                            &Illuminant::d65(),
+                            &illuminant,
                         );
                         // No surface to present to — frame computed but discarded.
                     }
