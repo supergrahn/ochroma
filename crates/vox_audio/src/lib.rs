@@ -1,6 +1,8 @@
 pub mod acoustic_raytracer;
+pub mod spatial;
 pub mod synth;
 
+pub use spatial::{compute_spatial, Listener, SpatialAudioManager};
 pub use synth::{generate_click, generate_collect_sound, generate_place_sound, generate_tone, save_wav};
 
 use glam::Vec3;
