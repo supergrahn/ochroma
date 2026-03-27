@@ -1,5 +1,6 @@
 pub mod foliage;
 pub mod heightmap;
+pub mod volume;
 
 use serde::{Deserialize, Serialize};
 
