@@ -49,6 +49,10 @@ name = "walking_sim"
 path = "src/bin/walking_sim.rs"
 
 [[bin]]
+name = "platformer"
+path = "src/bin/platformer.rs"
+
+[[bin]]
 name = "render_showcase"
 path = "src/bin/render_showcase.rs"
 
