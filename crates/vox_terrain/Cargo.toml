@@ -7,3 +7,5 @@ version.workspace = true
 vox_core = { path = "../vox_core" }
 glam = { workspace = true }
 serde = { workspace = true }
+half = { workspace = true }
+rand = "0.9"

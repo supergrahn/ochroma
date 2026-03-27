@@ -1,3 +1,6 @@
+pub mod foliage;
+pub mod heightmap;
+
 use serde::{Deserialize, Serialize};
 
 pub const HEIGHTMAP_SIZE: usize = 4096;
