@@ -19,3 +19,7 @@ pub mod lod_crossfade;
 pub mod svt;
 pub mod spectra_bridge;
 pub mod lighting;
+pub mod gi_cache;
+pub mod atmosphere;
+pub mod water;
+pub mod subsurface;
