@@ -7,3 +7,6 @@ pub mod svo;
 pub mod lwc;
 pub mod terrain;
 pub mod mapgen;
+pub mod input;
+pub mod navmesh;
+pub mod game_loop;
