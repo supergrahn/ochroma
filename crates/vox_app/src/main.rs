@@ -1,6 +1,8 @@
 mod demo_asset;
 pub mod headless;
+pub mod simulation;
 pub mod systems;
+pub mod terrain_setup;
 pub mod ui;
 
 use std::sync::Arc;
@@ -24,6 +26,7 @@ use winit::window::{Window, WindowId};
 use egui_wgpu::wgpu;
 use ui::PlopUi;
 
+use simulation::SimulationState;
 use systems::{
     CameraState, VisibleSplats, frustum_cull_system, gather_splats_system, lod_select_system,
 };
@@ -66,6 +69,7 @@ struct App {
     fps_timer: Instant,
     frame_count: u64,
     plop_ui: PlopUi,
+    simulation: SimulationState,
     /// Mouse state for interactive camera.
     middle_pressed: bool,
     right_pressed: bool,
@@ -107,6 +111,9 @@ impl App {
             });
         }
 
+        // Spawn terrain ground plane under the buildings.
+        terrain_setup::spawn_terrain(&mut world, 200.0, 200.0, "grass");
+
         // Set up ECS schedule with chained systems.
         let mut schedule = Schedule::default();
         schedule.add_systems(
@@ -132,6 +139,7 @@ impl App {
             fps_timer: now,
             frame_count: 0,
             plop_ui: PlopUi::default(),
+            simulation: SimulationState::new(),
             middle_pressed: false,
             right_pressed: false,
             last_mouse_x: 0.0,
@@ -328,8 +336,11 @@ impl ApplicationHandler for App {
 
                 // --- Timing ---
                 let now = Instant::now();
-                let _dt = now.duration_since(self.last_frame).as_secs_f32();
+                let dt = now.duration_since(self.last_frame).as_secs_f32();
                 self.last_frame = now;
+
+                // --- Tick simulation ---
+                self.simulation.tick(dt);
 
                 // --- Update ECS camera state resource ---
                 if let Some(mut cam_state) = self.world.get_resource_mut::<CameraState>() {
@@ -349,6 +360,7 @@ impl ApplicationHandler for App {
                 // Pre-compute values that need &self before we mutably borrow render_mode.
                 let window_clone = self.window.clone();
                 let plop_ui = &mut self.plop_ui;
+                let sim = &mut self.simulation;
 
                 // Build camera matrices from the interactive controller.
                 let camera = RenderCamera {
@@ -386,6 +398,24 @@ impl ApplicationHandler for App {
                         let window = window_clone.as_ref().unwrap();
                         let raw_input = egui_state.take_egui_input(window);
                         let full_output = egui_ctx.run(raw_input, |ctx| {
+                            egui::TopBottomPanel::top("game_info").show(ctx, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("Day {} — {:02}:{:02}",
+                                        sim.day(),
+                                        sim.time_of_day() as u32,
+                                        ((sim.time_of_day() % 1.0) * 60.0) as u32,
+                                    ));
+                                    ui.separator();
+                                    ui.label(format!("Pop: {}", sim.citizens.count()));
+                                    ui.separator();
+                                    ui.label(format!("${:.0}", sim.budget.funds));
+                                    ui.separator();
+                                    if ui.button("⏸").clicked() { sim.game_speed = simulation::GameSpeed::Paused; }
+                                    if ui.button("▶").clicked() { sim.game_speed = simulation::GameSpeed::Normal; }
+                                    if ui.button("▶▶").clicked() { sim.game_speed = simulation::GameSpeed::Fast; }
+                                    if ui.button("▶▶▶").clicked() { sim.game_speed = simulation::GameSpeed::VeryFast; }
+                                });
+                            });
                             plop_ui.show(ctx, &[]);
                         });
 
