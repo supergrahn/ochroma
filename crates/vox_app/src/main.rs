@@ -8,6 +8,7 @@ pub mod persistence;
 pub mod placement;
 pub mod road_builder;
 pub mod simulation;
+pub mod steam;
 pub mod systems;
 pub mod terrain_setup;
 pub mod ui;
