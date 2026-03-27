@@ -3,6 +3,11 @@ name = "vox_script"
 edition.workspace = true
 version.workspace = true
 
+[features]
+default = []
+wasm-runtime = ["wasmtime"]
+
 [dependencies]
 vox_core = { path = "../vox_core" }
 thiserror = { workspace = true }
+wasmtime = { version = "27", optional = true }

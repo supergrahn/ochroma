@@ -1,12 +1,19 @@
 use std::collections::HashMap;
 use thiserror::Error;
 
+#[cfg(feature = "wasm-runtime")]
+mod wasm;
+#[cfg(feature = "wasm-runtime")]
+pub use wasm::{LoadedModule, WasmEngine};
+
 #[derive(Debug, Error)]
 pub enum ScriptError {
     #[error("module not found: {0}")]
     ModuleNotFound(String),
     #[error("wasm compilation failed: {0}")]
     CompilationFailed(String),
+    #[error("load failed: {0}")]
+    LoadFailed(String),
     #[error("memory budget exceeded")]
     MemoryBudgetExceeded,
     #[error("cpu budget exceeded")]
@@ -41,6 +48,10 @@ pub struct EventSubscription {
 pub struct ScriptRuntime {
     modules: HashMap<String, ScriptModule>,
     subscriptions: Vec<EventSubscription>,
+    #[cfg(feature = "wasm-runtime")]
+    wasm_engine: Option<WasmEngine>,
+    #[cfg(feature = "wasm-runtime")]
+    wasm_modules: Vec<LoadedModule>,
 }
 
 impl ScriptRuntime {
@@ -48,7 +59,38 @@ impl ScriptRuntime {
         Self {
             modules: HashMap::new(),
             subscriptions: Vec::new(),
+            #[cfg(feature = "wasm-runtime")]
+            wasm_engine: None,
+            #[cfg(feature = "wasm-runtime")]
+            wasm_modules: Vec::new(),
         }
+    }
+
+    /// Initialize the Wasm engine. Only available with the `wasm-runtime` feature.
+    #[cfg(feature = "wasm-runtime")]
+    pub fn init_wasm(&mut self) -> Result<(), ScriptError> {
+        self.wasm_engine = Some(WasmEngine::new()?);
+        Ok(())
+    }
+
+    /// Load a Wasm module from raw bytes. Requires `init_wasm()` to have been called first.
+    #[cfg(feature = "wasm-runtime")]
+    pub fn load_wasm_module(&mut self, name: &str, wasm_bytes: &[u8]) -> Result<(), ScriptError> {
+        if let Some(engine) = &self.wasm_engine {
+            let module = engine.compile(name, wasm_bytes)?;
+            self.wasm_modules.push(module);
+            Ok(())
+        } else {
+            Err(ScriptError::LoadFailed(
+                "Wasm engine not initialized".into(),
+            ))
+        }
+    }
+
+    /// Returns the number of loaded Wasm modules.
+    #[cfg(feature = "wasm-runtime")]
+    pub fn wasm_module_count(&self) -> usize {
+        self.wasm_modules.len()
     }
 
     pub fn load_module(&mut self, name: &str, _wasm_bytes: &[u8]) -> Result<(), ScriptError> {
