@@ -1,4 +1,5 @@
 mod demo_asset;
+pub mod systems;
 pub mod ui;
 
 use std::sync::Arc;
