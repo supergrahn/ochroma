@@ -1,8 +1,11 @@
 pub mod agent;
+pub mod buildings;
 pub mod citizen;
 pub mod economy;
 pub mod roads;
+pub mod routines;
 pub mod services;
+pub mod supply_chain;
 pub mod traffic;
 pub mod transport;
 pub mod utilities;

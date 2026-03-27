@@ -84,6 +84,11 @@ pub enum ResourceType {
     Wheat,
     Steel,
     Coal,
+    Stone,
+    Iron,
+    Planks,
+    Tools,
+    Bread,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

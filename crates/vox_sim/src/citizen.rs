@@ -1,6 +1,15 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DailyState {
+    AtHome,
+    Commuting,
+    AtWork,
+    Shopping,
+    Returning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LifecycleStage {
     Child,
     Student,
@@ -65,6 +74,8 @@ pub struct Citizen {
     pub residence: Option<u32>,
     pub satisfaction: f32,
     pub needs: Needs,
+    pub daily_state: DailyState,
+    pub workplace: Option<u32>,
 }
 
 impl Citizen {
@@ -104,6 +115,8 @@ impl CitizenManager {
             residence,
             satisfaction: 0.5,
             needs: Needs::default(),
+            daily_state: DailyState::AtHome,
+            workplace: None,
         });
         id
     }
@@ -142,6 +155,10 @@ impl CitizenManager {
 
     pub fn all(&self) -> &[Citizen] {
         &self.citizens
+    }
+
+    pub fn all_mut(&mut self) -> &mut [Citizen] {
+        &mut self.citizens
     }
 }
 
