@@ -4271,6 +4271,7 @@ name = "vox_script"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "toml",
  "vox_core",
