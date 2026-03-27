@@ -1,0 +1,16 @@
+[package]
+name = "vox_tools"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "vox_tools"
+path = "src/main.rs"
+
+[dependencies]
+vox_core = { path = "../vox_core" }
+vox_data = { path = "../vox_data" }
+clap = { version = "4", features = ["derive"] }
+uuid = { workspace = true }
+half = { workspace = true }
+thiserror = { workspace = true }
