@@ -5,3 +5,4 @@ pub mod ecs;
 pub mod svo;
 pub mod lwc;
 pub mod terrain;
+pub mod mapgen;
