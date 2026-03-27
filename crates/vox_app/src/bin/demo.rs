@@ -14,6 +14,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use vox_app::editor::SceneEditor;
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
 use vox_render::dlss::{DlssPipeline, DlssQuality, FrameGeneration};
@@ -70,6 +71,10 @@ struct DemoApp {
 
     // DLSS
     dlss: DlssPipeline,
+
+    // Scene editor
+    editor: SceneEditor,
+    ctrl_held: bool,
 }
 
 /// Map time-of-day (0-24) to an illuminant that shifts from warm sunrise
@@ -149,6 +154,25 @@ fn next_tonemap_operator(op: ToneMapOperator) -> ToneMapOperator {
 
 impl DemoApp {
     fn new(ply_path: Option<String>) -> Self {
+        // Set up scene editor with default entities
+        let mut editor = SceneEditor::new();
+        editor.visible = false; // hidden by default, Tab to toggle
+        editor.add_entity("Terrain", "terrain", Vec3::ZERO);
+        for i in 0..4 {
+            editor.add_entity(
+                &format!("Building {}", i + 1),
+                "building.ply",
+                Vec3::new(i as f32 * 10.0 - 15.0, 0.0, 20.0),
+            );
+        }
+        for i in 0..6 {
+            editor.add_entity(
+                &format!("Tree {}", i + 1),
+                "tree.ply",
+                Vec3::new(i as f32 * 8.0 - 20.0, 0.0, 10.0),
+            );
+        }
+
         Self {
             window: None,
             backend: None,
@@ -176,6 +200,8 @@ impl DemoApp {
             time_of_day: 12.0, // Start at noon
             exposure: 1.0,
             dlss: DlssPipeline::new(WIDTH, HEIGHT, DlssQuality::Off),
+            editor,
+            ctrl_held: false,
         }
     }
 
@@ -440,6 +466,10 @@ impl ApplicationHandler for DemoApp {
         println!("  M           -- cycle tone map operator");
         println!("  Q           -- cycle DLSS quality (Off/Quality/Balanced/Performance/Ultra)");
         println!("  G           -- toggle frame generation");
+        println!("  Tab         -- toggle scene editor");
+        println!("  Arrow keys  -- move selected entity (editor)");
+        println!("  Delete      -- delete selected entity (editor)");
+        println!("  Ctrl+S      -- save scene to .ochroma_map file");
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -524,12 +554,63 @@ impl ApplicationHandler for DemoApp {
                                     self.dlss.frame_gen
                                 );
                             }
+                            KeyCode::Tab => {
+                                self.editor.visible = !self.editor.visible;
+                                println!(
+                                    "[ochroma] Editor {}",
+                                    if self.editor.visible { "OPEN" } else { "CLOSED" }
+                                );
+                            }
+                            KeyCode::Delete => {
+                                if self.editor.visible {
+                                    self.editor.delete_selected();
+                                }
+                            }
+                            KeyCode::ArrowUp => {
+                                if self.editor.visible {
+                                    self.editor.move_selected(Vec3::new(0.0, 0.0, -1.0));
+                                }
+                            }
+                            KeyCode::ArrowDown => {
+                                if self.editor.visible {
+                                    self.editor.move_selected(Vec3::new(0.0, 0.0, 1.0));
+                                }
+                            }
+                            KeyCode::ArrowLeft => {
+                                if self.editor.visible {
+                                    self.editor.move_selected(Vec3::new(-1.0, 0.0, 0.0));
+                                }
+                            }
+                            KeyCode::ArrowRight => {
+                                if self.editor.visible {
+                                    self.editor.move_selected(Vec3::new(1.0, 0.0, 0.0));
+                                }
+                            }
+                            KeyCode::KeyS if self.ctrl_held => {
+                                let map = self.editor.export_to_map("My Scene");
+                                let path =
+                                    std::env::temp_dir().join("ochroma_scene.ochroma_map");
+                                match map.save(&path) {
+                                    Ok(()) => println!(
+                                        "[ochroma] Scene saved to {}",
+                                        path.display()
+                                    ),
+                                    Err(e) => eprintln!(
+                                        "[ochroma] Save failed: {}",
+                                        e
+                                    ),
+                                }
+                            }
                             _ => {}
                         }
                     } else {
                         self.keys_held.remove(&key);
                     }
                 }
+            }
+
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.ctrl_held = modifiers.state().control_key();
             }
 
             WindowEvent::MouseInput { state, button, .. } => match button {
@@ -620,8 +701,13 @@ impl ApplicationHandler for DemoApp {
                             FrameGeneration::On => " | FrameGen ON",
                             FrameGeneration::Off => "",
                         };
+                        let editor_label = if self.editor.visible {
+                            format!(" | Editor ({} entities)", self.editor.entity_count())
+                        } else {
+                            String::new()
+                        };
                         w.set_title(&format!(
-                            "Ochroma -- {:.0} FPS | {} splats | {:.0}:00 | EV {:.2} | {} | {}{}",
+                            "Ochroma -- {:.0} FPS | {} splats | {:.0}:00 | EV {:.2} | {} | {}{}{}",
                             self.fps_display,
                             self.total_splat_count(),
                             self.time_of_day,
@@ -629,6 +715,7 @@ impl ApplicationHandler for DemoApp {
                             tonemap_operator_name(self.tonemap_settings.operator),
                             dlss_label,
                             fg_label,
+                            editor_label,
                         ));
                     }
                     self.frame_count = 0;
