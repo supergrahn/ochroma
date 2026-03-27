@@ -1,7 +1,9 @@
 use thiserror::Error;
 
 pub mod replication;
-pub use replication::{EntityDelta, ReplicationClient, ReplicationServer};
+pub mod transport;
+pub use replication::{EntityDelta, NetMessage, PlayerAction, ReplicationClient, ReplicationServer};
+pub use transport::{GameClient, GameServer};
 
 #[derive(Debug, Error)]
 pub enum NetError {
@@ -15,4 +17,6 @@ pub enum NetError {
     Deserialization(String),
     #[error("protocol error: {0}")]
     Protocol(String),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 }
