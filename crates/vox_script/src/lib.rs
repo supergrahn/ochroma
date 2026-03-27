@@ -4,6 +4,7 @@ use thiserror::Error;
 pub mod mod_manager;
 pub mod visual_script;
 pub mod plugin_system;
+pub mod rhai_runtime;
 
 #[cfg(feature = "wasm-runtime")]
 mod wasm;
