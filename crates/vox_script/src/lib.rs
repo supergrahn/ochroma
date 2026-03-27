@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 pub mod mod_manager;
+pub mod visual_script;
 
 #[cfg(feature = "wasm-runtime")]
 mod wasm;
