@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 
 [features]
-default = []
+default = ["rapier"]
 rapier = ["dep:rapier3d"]
 
 [dependencies]

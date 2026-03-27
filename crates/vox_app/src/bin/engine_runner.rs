@@ -10,7 +10,7 @@
 //!   cargo run --bin ochroma -- level.ochroma_map    # load a map file
 //!   cargo run --bin ochroma -- scene.ply            # load a .ply file
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -39,6 +39,9 @@ use vox_render::spectral::RenderCamera;
 use vox_render::spectral_framebuffer::SpectralFramebuffer;
 use vox_render::spectral_tonemapper::{tonemap_spectral_framebuffer, ToneMapOperator, ToneMapSettings};
 use vox_render::temporal::TemporalAccumulator;
+
+use vox_audio::AudioEngine;
+use vox_physics::rapier::RapierPhysicsWorld;
 
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
@@ -111,6 +114,18 @@ struct EngineApp {
 
     // Placed objects (from editor left-click)
     placed_objects: Vec<(Vec3, Vec<GaussianSplat>)>,
+
+    // Audio engine (with rodio backend)
+    audio: AudioEngine,
+    click_counter: u32,
+
+    // Rapier physics world
+    physics: RapierPhysicsWorld,
+
+    // Entity -> splat range mapping: entity_id -> (start_index, end_index) in scene_splats
+    entity_splat_ranges: HashMap<u32, (usize, usize)>,
+    // Original entity positions at scene build time (for computing deltas)
+    entity_original_positions: HashMap<u32, [f32; 3]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +343,21 @@ impl EngineApp {
             spectral_bypass: true, // fast mode by default
             asset_path,
             placed_objects: Vec::new(),
+            audio: {
+                let audio = AudioEngine::new(64);
+                println!("[ochroma] Audio: synth mode (WAV generation)");
+                audio
+            },
+            click_counter: 0,
+            physics: {
+                let mut physics = RapierPhysicsWorld::new();
+                // Ground plane collider
+                physics.add_static_collider([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+                println!("[ochroma] Physics world initialised (Rapier3D)");
+                physics
+            },
+            entity_splat_ranges: HashMap::new(),
+            entity_original_positions: HashMap::new(),
         }
     }
 
@@ -366,34 +396,6 @@ impl EngineApp {
         let terrain_splats = vox_terrain::volume::volume_to_splats(&vol, &materials, 42);
         println!("[ochroma]   Terrain: {} splats", terrain_splats.len());
 
-        // Buildings
-        let mut building_splats = Vec::new();
-        for i in 0..4 {
-            let b = vox_data::proc_gs_advanced::generate_detailed_building(
-                42 + i, 6.0, 8.0, 2 + (i % 3) as u32, "victorian",
-            );
-            for s in &b {
-                let mut ws = *s;
-                ws.position[0] += i as f32 * 10.0 - 15.0;
-                ws.position[2] += 20.0;
-                building_splats.push(ws);
-            }
-        }
-        println!("[ochroma]   Buildings: {} splats", building_splats.len());
-
-        // Trees
-        let mut tree_splats = Vec::new();
-        for i in 0..6 {
-            let t = vox_data::proc_gs_advanced::generate_tree(100 + i, 6.0 + i as f32, 2.5);
-            for s in &t {
-                let mut ws = *s;
-                ws.position[0] += i as f32 * 8.0 - 20.0;
-                ws.position[2] += 10.0;
-                tree_splats.push(ws);
-            }
-        }
-        println!("[ochroma]   Trees: {} splats", tree_splats.len());
-
         // Populate editor entities
         self.editor.add_entity("Terrain", "terrain", Vec3::ZERO);
         for i in 0..4 {
@@ -430,10 +432,58 @@ impl EngineApp {
             );
         }
 
-        self.scene_splats = terrain_splats;
-        self.scene_splats.extend(building_splats);
-        self.scene_splats.extend(tree_splats);
-        println!("[ochroma] Total scene: {} splats", self.scene_splats.len());
+        // Build scene_splats with entity-splat range tracking
+        self.scene_splats.clear();
+        self.entity_splat_ranges.clear();
+        self.entity_original_positions.clear();
+
+        // Entity 0 = Terrain
+        let terrain_start = self.scene_splats.len();
+        self.scene_splats.extend(terrain_splats);
+        let terrain_end = self.scene_splats.len();
+        self.entity_splat_ranges.insert(0, (terrain_start, terrain_end));
+        self.entity_original_positions.insert(0, [0.0, 0.0, 0.0]);
+
+        // Entities 1..4 = Buildings
+        for i in 0..4u32 {
+            let entity_id = i + 1;
+            let pos = [i as f32 * 10.0 - 15.0, 0.0, 20.0];
+            let start = self.scene_splats.len();
+            let b = vox_data::proc_gs_advanced::generate_detailed_building(
+                42 + i as u64, 6.0, 8.0, 2 + (i % 3), "victorian",
+            );
+            for s in &b {
+                let mut ws = *s;
+                ws.position[0] += pos[0];
+                ws.position[2] += pos[2];
+                self.scene_splats.push(ws);
+            }
+            let end = self.scene_splats.len();
+            self.entity_splat_ranges.insert(entity_id, (start, end));
+            self.entity_original_positions.insert(entity_id, pos);
+            // Add physics collider for building
+            self.physics.add_static_collider(pos, [5.0, 10.0, 8.0]);
+        }
+
+        // Entities 5..10 = Trees
+        for i in 0..6u32 {
+            let entity_id = i + 5;
+            let pos = [i as f32 * 8.0 - 20.0, 0.0, 10.0];
+            let start = self.scene_splats.len();
+            let t = vox_data::proc_gs_advanced::generate_tree(100 + i as u64, 6.0 + i as f32, 2.5);
+            for s in &t {
+                let mut ws = *s;
+                ws.position[0] += pos[0];
+                ws.position[2] += pos[2];
+                self.scene_splats.push(ws);
+            }
+            let end = self.scene_splats.len();
+            self.entity_splat_ranges.insert(entity_id, (start, end));
+            self.entity_original_positions.insert(entity_id, pos);
+        }
+
+        println!("[ochroma] Total scene: {} splats ({} entities tracked)",
+            self.scene_splats.len(), self.entity_splat_ranges.len());
 
         // Set up particles
         self.particles.add_emitter(ParticleEmitter::smoke(Vec3::new(0.0, 5.0, 20.0)));
@@ -980,6 +1030,11 @@ impl ApplicationHandler for EngineApp {
                 }
                 MouseButton::Left if state == ElementState::Pressed => {
                     self.left_click_pending = true;
+                    // Generate a click sound (saved as WAV for proof)
+                    self.click_counter += 1;
+                    let sound = vox_audio::synth::generate_click();
+                    let path = std::env::temp_dir().join(format!("ochroma_click_{}.wav", self.click_counter));
+                    let _ = vox_audio::synth::save_wav(&sound, 44100, &path);
                 }
                 _ => {}
             },
@@ -1035,6 +1090,35 @@ impl ApplicationHandler for EngineApp {
 
                 // 4. Tick engine runtime (scripts, time advance)
                 self.engine.tick(dt);
+
+                // 4b. Step physics
+                self.physics.step();
+
+                // 4c. Tick audio
+                self.audio.tick(dt);
+                self.audio.set_listener(self.camera.position);
+
+                // 4d. Sync entity positions to splats — when scripts move entities,
+                //     the corresponding splats move with them.
+                for entity in &self.engine.scene.entities {
+                    if let Some(&(start, end)) = self.entity_splat_ranges.get(&entity.id) {
+                        if let Some(&orig_pos) = self.entity_original_positions.get(&entity.id) {
+                            let dx = entity.position[0] - orig_pos[0];
+                            let dy = entity.position[1] - orig_pos[1];
+                            let dz = entity.position[2] - orig_pos[2];
+                            // Only apply if the entity actually moved
+                            if dx.abs() > 1e-6 || dy.abs() > 1e-6 || dz.abs() > 1e-6 {
+                                for i in start..end.min(self.scene_splats.len()) {
+                                    self.scene_splats[i].position[0] += dx;
+                                    self.scene_splats[i].position[1] += dy;
+                                    self.scene_splats[i].position[2] += dz;
+                                }
+                                // Update original position so delta is relative
+                                self.entity_original_positions.insert(entity.id, entity.position);
+                            }
+                        }
+                    }
+                }
 
                 // 5. Full render pipeline: frustum cull -> LOD -> rasterise ->
                 //    spectral FB -> temporal accumulation -> tonemap -> DLSS -> present

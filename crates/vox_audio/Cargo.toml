@@ -6,7 +6,9 @@ version.workspace = true
 [dependencies]
 vox_core = { path = "../vox_core" }
 glam = { workspace = true }
+# rodio requires libasound2-dev on Linux: sudo apt-get install libasound2-dev
 rodio = { version = "0.19", optional = true }
 
 [features]
+default = []
 audio-backend = ["dep:rodio"]

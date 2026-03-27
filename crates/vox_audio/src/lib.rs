@@ -94,6 +94,13 @@ impl AudioEngine {
         self.backend = AudioBackend::new();
     }
 
+    #[cfg(not(feature = "audio-backend"))]
+    pub fn init_backend(&mut self) {
+        // No audio backend available — rodio requires libasound2-dev on Linux.
+        // Install with: sudo apt-get install libasound2-dev
+        // Then build with: cargo build --features audio-backend
+    }
+
     pub fn set_listener(&mut self, pos: Vec3) {
         self.listener_position = pos;
     }
@@ -135,6 +142,19 @@ impl AudioEngine {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         sources
+    }
+
+    /// Play a sine tone through the backend (if available).
+    #[cfg(feature = "audio-backend")]
+    pub fn play_sine_backend(&mut self, id: u32, frequency: f32, duration_secs: f32, volume: f32) {
+        if let Some(ref mut backend) = self.backend {
+            backend.play_sine(id, frequency, duration_secs, volume);
+        }
+    }
+
+    #[cfg(not(feature = "audio-backend"))]
+    pub fn play_sine_backend(&mut self, _id: u32, _frequency: f32, _duration_secs: f32, _volume: f32) {
+        // No backend — silent
     }
 
     /// Tick: evict lowest-priority sources if over budget.
