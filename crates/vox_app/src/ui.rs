@@ -6,6 +6,31 @@ pub enum UiAction {
     PlaceAsset { asset_uuid: Uuid, position: Vec3 },
     SelectInstance { instance_id: u32 },
     Deselect,
+    PlaceService { service_type: String, position: Vec3 },
+    ZoneArea { zone_type: String, position: Vec3 },
+    ChangeGameSpeed { speed: u8 }, // 0=pause, 1=normal, 2=fast, 3=veryfast
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiMode {
+    Place,
+    Select,
+    Zone,
+    Service,
+    Road,
+}
+
+/// Simulation state snapshot populated by main.rs each frame.
+pub struct SimInfo {
+    pub funds: f64,
+    pub total_income: f64,
+    pub total_expenses: f64,
+    pub net: f64,
+    pub citizen_count: u32,
+    pub avg_satisfaction: f32,
+    pub demand_residential: f32,
+    pub demand_commercial: f32,
+    pub demand_industrial: f32,
 }
 
 pub struct PlopUi {
@@ -17,12 +42,8 @@ pub struct PlopUi {
     pub spectral_shift: f32,
     pub actions: Vec<UiAction>,
     pub click_position: Option<Vec3>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UiMode {
-    Place,
-    Select,
+    pub selected_zone_type: String,
+    pub selected_service_type: String,
 }
 
 impl Default for PlopUi {
@@ -36,6 +57,8 @@ impl Default for PlopUi {
             spectral_shift: 0.0,
             actions: Vec::new(),
             click_position: None,
+            selected_zone_type: "Residential Low".to_string(),
+            selected_service_type: "School".to_string(),
         }
     }
 }
@@ -62,6 +85,21 @@ impl PlopUi {
                     self.actions.push(UiAction::Deselect);
                 }
             }
+            UiMode::Zone => {
+                self.actions.push(UiAction::ZoneArea {
+                    zone_type: self.selected_zone_type.clone(),
+                    position: world_pos,
+                });
+            }
+            UiMode::Service => {
+                self.actions.push(UiAction::PlaceService {
+                    service_type: self.selected_service_type.clone(),
+                    position: world_pos,
+                });
+            }
+            UiMode::Road => {
+                println!("[ochroma] Road point at ({:.1}, {:.1})", world_pos.x, world_pos.z);
+            }
         }
     }
 
@@ -70,7 +108,7 @@ impl PlopUi {
         std::mem::take(&mut self.actions)
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, asset_names: &[(Uuid, String)]) {
+    pub fn show(&mut self, ctx: &egui::Context, asset_names: &[(Uuid, String)], sim_info: Option<&SimInfo>) {
         // Left panel: asset browser
         egui::SidePanel::left("asset_browser").show(ctx, |ui| {
             ui.heading("Asset Browser");
@@ -95,7 +133,30 @@ impl PlopUi {
             });
         });
 
-        // Bottom panel: tool bar
+        // Right panel: budget and simulation info
+        egui::SidePanel::right("budget_panel").resizable(true).default_width(200.0).show(ctx, |ui| {
+            ui.heading("Budget");
+            if let Some(sim) = sim_info {
+                ui.label(format!("Funds: ${:.0}", sim.funds));
+                ui.separator();
+                ui.label(format!("Income: ${:.0}/mo", sim.total_income));
+                ui.label(format!("Expenses: ${:.0}/mo", sim.total_expenses));
+                ui.label(format!("Net: ${:.0}/mo", sim.net));
+                ui.separator();
+                ui.heading("Population");
+                ui.label(format!("Citizens: {}", sim.citizen_count));
+                ui.label(format!("Satisfaction: {:.0}%", sim.avg_satisfaction * 100.0));
+                ui.separator();
+                ui.heading("Demand");
+                ui.add(egui::ProgressBar::new(sim.demand_residential).text("Residential"));
+                ui.add(egui::ProgressBar::new(sim.demand_commercial).text("Commercial"));
+                ui.add(egui::ProgressBar::new(sim.demand_industrial).text("Industrial"));
+            } else {
+                ui.label("No simulation running.");
+            }
+        });
+
+        // Bottom panel: toolbar
         egui::TopBottomPanel::bottom("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.selectable_label(self.mode == UiMode::Place, "Place").clicked() {
@@ -104,8 +165,45 @@ impl PlopUi {
                 if ui.selectable_label(self.mode == UiMode::Select, "Select").clicked() {
                     self.mode = UiMode::Select;
                 }
+                if ui.selectable_label(self.mode == UiMode::Zone, "Zone").clicked() {
+                    self.mode = UiMode::Zone;
+                }
+                if ui.selectable_label(self.mode == UiMode::Service, "Service").clicked() {
+                    self.mode = UiMode::Service;
+                }
+                if ui.selectable_label(self.mode == UiMode::Road, "Road").clicked() {
+                    self.mode = UiMode::Road;
+                }
+
                 ui.separator();
-                if self.selected_instance.is_some() {
+
+                // Zone type selector (when in Zone mode)
+                if self.mode == UiMode::Zone {
+                    ui.label("Zone:");
+                    egui::ComboBox::from_id_salt("zone_type")
+                        .selected_text(&self.selected_zone_type)
+                        .show_ui(ui, |ui| {
+                            for zt in &["Residential Low", "Residential Med", "Residential High", "Commercial", "Industrial"] {
+                                ui.selectable_value(&mut self.selected_zone_type, zt.to_string(), *zt);
+                            }
+                        });
+                }
+
+                // Service type selector (when in Service mode)
+                if self.mode == UiMode::Service {
+                    ui.label("Service:");
+                    egui::ComboBox::from_id_salt("service_type")
+                        .selected_text(&self.selected_service_type)
+                        .show_ui(ui, |ui| {
+                            for st in &["School", "Hospital", "Fire Station", "Police Station"] {
+                                ui.selectable_value(&mut self.selected_service_type, st.to_string(), *st);
+                            }
+                        });
+                }
+
+                // Spectral controls when selecting
+                if self.mode == UiMode::Select && self.selected_instance.is_some() {
+                    ui.separator();
                     ui.label("Wear:");
                     ui.add(egui::Slider::new(&mut self.spectral_wear, 0.0..=1.0));
                     ui.label("Color shift:");
@@ -114,7 +212,7 @@ impl PlopUi {
             });
         });
 
-        // Top panel: info
+        // Top panel: info bar
         egui::TopBottomPanel::top("info_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Ochroma — Phase 1");
@@ -133,6 +231,15 @@ impl PlopUi {
                         } else {
                             ui.label("Click an asset to select it");
                         }
+                    }
+                    UiMode::Zone => {
+                        ui.label(format!("Click to zone: {}", self.selected_zone_type));
+                    }
+                    UiMode::Service => {
+                        ui.label(format!("Click to place service: {}", self.selected_service_type));
+                    }
+                    UiMode::Road => {
+                        ui.label("Click to set road points");
                     }
                 }
             });
