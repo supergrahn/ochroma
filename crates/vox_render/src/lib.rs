@@ -12,3 +12,5 @@ pub mod particles;
 pub mod animation;
 pub mod postprocess;
 pub mod material_graph;
+pub mod vr;
+pub mod upscaling;
