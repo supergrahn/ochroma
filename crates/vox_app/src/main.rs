@@ -1,4 +1,5 @@
 mod demo_asset;
+pub mod ui;
 
 use std::sync::Arc;
 use std::time::Instant;

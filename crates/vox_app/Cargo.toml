@@ -22,3 +22,8 @@ pollster = "0.4"
 glam = { workspace = true }
 half = { workspace = true }
 uuid = { workspace = true }
+puffin = { workspace = true }
+puffin_http = "0.16"
+egui = { workspace = true }
+egui-wgpu = "0.31"
+egui-winit = "0.31"
