@@ -10,3 +10,4 @@ pub mod mapgen;
 pub mod input;
 pub mod navmesh;
 pub mod game_loop;
+pub mod i18n;
