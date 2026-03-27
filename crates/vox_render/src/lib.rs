@@ -14,3 +14,4 @@ pub mod postprocess;
 pub mod material_graph;
 pub mod vr;
 pub mod upscaling;
+pub mod denoiser;
