@@ -80,3 +80,73 @@ impl Citizen {
         }
     }
 }
+
+pub struct CitizenManager {
+    citizens: Vec<Citizen>,
+    next_id: u32,
+}
+
+impl CitizenManager {
+    pub fn new() -> Self {
+        Self { citizens: Vec::new(), next_id: 0 }
+    }
+
+    pub fn spawn(&mut self, age: f32, residence: Option<u32>) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.citizens.push(Citizen {
+            id,
+            agent_id: id,
+            age,
+            lifecycle: Citizen::lifecycle_for_age(age),
+            education: if age > 18.0 { EducationLevel::Secondary } else { EducationLevel::None },
+            employment: None,
+            residence,
+            satisfaction: 0.5,
+            needs: Needs::default(),
+        });
+        id
+    }
+
+    pub fn count(&self) -> usize {
+        self.citizens.len()
+    }
+
+    pub fn get(&self, id: u32) -> Option<&Citizen> {
+        self.citizens.iter().find(|c| c.id == id)
+    }
+
+    /// Advance all citizens by dt game-years.
+    pub fn tick(&mut self, dt_years: f32) {
+        let mut deaths = Vec::new();
+        for citizen in &mut self.citizens {
+            citizen.age += dt_years;
+            citizen.lifecycle = Citizen::lifecycle_for_age(citizen.age);
+            citizen.satisfaction = citizen.needs.satisfaction();
+
+            // Death check (probabilistic after 70)
+            if citizen.age > 70.0 {
+                let death_prob = (citizen.age - 70.0) * 0.02 * dt_years;
+                if death_prob > 0.5 {
+                    deaths.push(citizen.id);
+                }
+            }
+        }
+        self.citizens.retain(|c| !deaths.contains(&c.id));
+    }
+
+    /// Count citizens that would migrate out (satisfaction below threshold for too long).
+    pub fn count_unhappy(&self, threshold: f32) -> usize {
+        self.citizens.iter().filter(|c| c.satisfaction < threshold).count()
+    }
+
+    pub fn all(&self) -> &[Citizen] {
+        &self.citizens
+    }
+}
+
+impl Default for CitizenManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
