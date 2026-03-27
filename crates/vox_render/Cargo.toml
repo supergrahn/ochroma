@@ -12,3 +12,4 @@ bytemuck = { workspace = true }
 half = { workspace = true }
 glam = { workspace = true }
 winit = "0.30"
+puffin = { workspace = true }

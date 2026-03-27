@@ -2,3 +2,6 @@ pub mod gpu;
 pub mod spectral;
 pub mod spectral_shift;
 pub mod streaming;
+pub mod profiling;
+pub mod frustum;
+pub mod lod;
