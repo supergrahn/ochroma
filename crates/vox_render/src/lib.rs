@@ -5,3 +5,5 @@ pub mod streaming;
 pub mod profiling;
 pub mod frustum;
 pub mod lod;
+pub mod destruction;
+pub mod telemetry;
