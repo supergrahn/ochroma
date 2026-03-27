@@ -39,3 +39,4 @@ pub mod mega_geometry;
 pub mod spectral_framebuffer;
 pub mod spectral_tonemapper;
 pub mod temporal;
+pub mod dlss;
