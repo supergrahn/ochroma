@@ -13,73 +13,116 @@ pub struct WgpuBackend {
 
 impl WgpuBackend {
     /// Create a new backend for the given window.
-    pub fn new(window: Arc<Window>, width: u32, height: u32) -> Self {
+    ///
+    /// Tries Vulkan first, then GL, then all available backends.
+    /// Returns `Err(String)` if no suitable adapter or device can be created.
+    pub fn new(window: Arc<Window>, width: u32, height: u32) -> Result<Self, String> {
         pollster::block_on(Self::new_async(window, width, height))
     }
 
-    async fn new_async(window: Arc<Window>, width: u32, height: u32) -> Self {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
-            ..Default::default()
-        });
+    async fn new_async(window: Arc<Window>, width: u32, height: u32) -> Result<Self, String> {
+        // Try backends in order: Vulkan → GL → all available
+        let backend_attempts: &[(&str, wgpu::Backends)] = &[
+            ("Vulkan", wgpu::Backends::VULKAN),
+            ("GL", wgpu::Backends::GL),
+            ("all", wgpu::Backends::all()),
+        ];
 
-        // SAFETY: The surface must not outlive the window it was created from.
-        // We hold an Arc<Window> for the lifetime of WgpuBackend so this is safe.
-        let surface = instance
-            .create_surface(Arc::clone(&window))
-            .expect("failed to create wgpu surface");
+        let mut last_error = String::from("no backends available");
 
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("failed to find a suitable adapter");
+        for (name, backends) in backend_attempts {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: *backends,
+                ..Default::default()
+            });
 
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("ochroma-device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::default(),
-            }, None)
-            .await
-            .expect("failed to create device");
+            let surface = match instance.create_surface(Arc::clone(&window)) {
+                Ok(s) => s,
+                Err(e) => {
+                    last_error = format!("{name} backend: surface creation failed: {e}");
+                    eprintln!("[wgpu] {last_error}");
+                    continue;
+                }
+            };
 
-        let surface_caps = surface.get_capabilities(&adapter);
-        // Prefer Bgra8UnormSrgb or Rgba8UnormSrgb; fall back to first available format.
-        let format = surface_caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| {
-                *f == wgpu::TextureFormat::Bgra8UnormSrgb
-                    || *f == wgpu::TextureFormat::Rgba8UnormSrgb
-            })
-            .unwrap_or(surface_caps.formats[0]);
+            let adapter = match instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                })
+                .await
+            {
+                Some(a) => a,
+                None => {
+                    last_error = format!("{name} backend: no suitable adapter found");
+                    eprintln!("[wgpu] {last_error}");
+                    continue;
+                }
+            };
 
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width,
-            height,
-            present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: 2,
-            alpha_mode: surface_caps.alpha_modes[0],
-            view_formats: vec![],
-        };
-        surface.configure(&device, &config);
+            let (device, queue) = match adapter
+                .request_device(
+                    &wgpu::DeviceDescriptor {
+                        label: Some("ochroma-device"),
+                        required_features: wgpu::Features::empty(),
+                        required_limits: wgpu::Limits::downlevel_defaults(),
+                        memory_hints: wgpu::MemoryHints::default(),
+                    },
+                    None,
+                )
+                .await
+            {
+                Ok(dq) => dq,
+                Err(e) => {
+                    last_error = format!("{name} backend: device creation failed: {e}");
+                    eprintln!("[wgpu] {last_error}");
+                    continue;
+                }
+            };
 
-        Self {
-            surface,
-            device,
-            queue,
-            config,
-            width,
-            height,
+            let surface_caps = surface.get_capabilities(&adapter);
+            if surface_caps.formats.is_empty() {
+                last_error = format!("{name} backend: no surface formats available");
+                eprintln!("[wgpu] {last_error}");
+                continue;
+            }
+
+            // Prefer Bgra8UnormSrgb or Rgba8UnormSrgb; fall back to first available format.
+            let format = surface_caps
+                .formats
+                .iter()
+                .copied()
+                .find(|f| {
+                    *f == wgpu::TextureFormat::Bgra8UnormSrgb
+                        || *f == wgpu::TextureFormat::Rgba8UnormSrgb
+                })
+                .unwrap_or(surface_caps.formats[0]);
+
+            let config = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format,
+                width,
+                height,
+                present_mode: wgpu::PresentMode::Fifo,
+                desired_maximum_frame_latency: 2,
+                alpha_mode: surface_caps.alpha_modes[0],
+                view_formats: vec![],
+            };
+            surface.configure(&device, &config);
+
+            eprintln!("[wgpu] Successfully initialised with {name} backend");
+            return Ok(Self {
+                surface,
+                device,
+                queue,
+                config,
+                width,
+                height,
+            });
         }
+
+        Err(last_error)
     }
 
     /// Write raw RGBA8 pixel data into the current surface texture and present it.
