@@ -21,6 +21,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use vox_app::content_browser::ContentBrowser;
 use vox_app::editor::SceneEditor;
 use vox_core::engine_runtime::{EngineConfig, EngineRuntime};
 use vox_core::spectral::Illuminant;
@@ -104,6 +105,12 @@ struct EngineApp {
     // Editor
     editor: SceneEditor,
     editor_visible: bool,
+    content_browser: ContentBrowser,
+
+    // egui integration
+    egui_ctx: egui::Context,
+    egui_state: Option<egui_winit::State>,
+    egui_renderer: Option<egui_wgpu::Renderer>,
 
     // Exposure
     exposure: f32,
@@ -123,6 +130,11 @@ struct EngineApp {
 
     // Rapier physics world
     physics: RapierPhysicsWorld,
+
+    // ECS entity index -> Rapier body handle (for entities with ColliderComponent)
+    entity_rapier_bodies: HashMap<u32, vox_physics::RigidBodyHandle>,
+    // Rapier collider handle -> ECS entity index (for raycast picking)
+    collider_to_entity: HashMap<vox_physics::ColliderHandle, u32>,
 
     // Entity -> splat range mapping: entity_id -> (start_index, end_index) in scene_splats
     entity_splat_ranges: HashMap<u32, (usize, usize)>,
@@ -341,6 +353,10 @@ impl EngineApp {
             fps: 0.0,
             editor,
             editor_visible: false,
+            content_browser: ContentBrowser::new(std::path::Path::new(".")),
+            egui_ctx: egui::Context::default(),
+            egui_state: None,
+            egui_renderer: None,
             exposure: 1.0,
             spectral_bypass: true, // fast mode by default
             asset_path,
@@ -354,11 +370,13 @@ impl EngineApp {
             click_counter: 0,
             physics: {
                 let mut physics = RapierPhysicsWorld::new();
-                // Ground plane collider
-                physics.add_static_collider([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
-                println!("[ochroma] Physics world initialised (Rapier3D)");
+                // Ground plane collider — 1km x 1km
+                physics.add_static_collider([0.0, -0.5, 0.0], [500.0, 0.5, 500.0]);
+                println!("[ochroma] Physics: Rapier3D world initialised (ground plane 1000x1000)");
                 physics
             },
+            entity_rapier_bodies: HashMap::new(),
+            collider_to_entity: HashMap::new(),
             entity_splat_ranges: HashMap::new(),
             entity_original_positions: HashMap::new(),
         }
@@ -458,8 +476,9 @@ impl EngineApp {
             let end = self.scene_splats.len();
             self.entity_splat_ranges.insert(entity_id, (start, end));
             self.entity_original_positions.insert(entity_id, pos);
-            // Add physics collider for building
-            self.physics.add_static_collider(pos, [5.0, 10.0, 8.0]);
+            // Add Rapier static collider for building and track entity mapping
+            let col_handle = self.physics.add_static_collider(pos, [5.0, 10.0, 8.0]);
+            self.collider_to_entity.insert(col_handle, entity_id);
         }
 
         // Entities 5..10 = Trees
@@ -477,8 +496,17 @@ impl EngineApp {
             let end = self.scene_splats.len();
             self.entity_splat_ranges.insert(entity_id, (start, end));
             self.entity_original_positions.insert(entity_id, pos);
+            // Add Rapier static collider for tree trunk
+            let tree_height = 6.0 + i as f32;
+            let col_handle = self.physics.add_static_collider(
+                [pos[0], tree_height * 0.5, pos[2]],
+                [1.5, tree_height * 0.5, 1.5],
+            );
+            self.collider_to_entity.insert(col_handle, entity_id);
         }
 
+        println!("[ochroma] Physics: {} bodies, {} colliders in Rapier world",
+            self.physics.body_count(), self.physics.collider_count());
         println!("[ochroma] Total scene: {} splats ({} entities tracked)",
             self.scene_splats.len(), self.entity_splat_ranges.len());
 
@@ -842,6 +870,28 @@ impl ApplicationHandler for EngineApp {
             }
         }
 
+        // Initialise egui on top of the GPU backend
+        if let Some(backend) = &self.backend {
+            let egui_state = egui_winit::State::new(
+                self.egui_ctx.clone(),
+                egui::ViewportId::ROOT,
+                &window,
+                Some(window.scale_factor() as f32),
+                None,
+                None,
+            );
+            let egui_renderer = egui_wgpu::Renderer::new(
+                backend.device(),
+                backend.surface_format(),
+                None,
+                1,
+                false,
+            );
+            self.egui_state = Some(egui_state);
+            self.egui_renderer = Some(egui_renderer);
+            println!("[ochroma] egui overlay initialised");
+        }
+
         self.window = Some(window);
 
         // Build scene + CLAS + particles + lights
@@ -883,6 +933,13 @@ impl ApplicationHandler for EngineApp {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // Forward events to egui
+        if let Some(egui_state) = &mut self.egui_state {
+            if let Some(window) = &self.window {
+                let _ = egui_state.on_window_event(window, &event);
+            }
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 self.engine.stop();
@@ -1090,13 +1147,13 @@ impl ApplicationHandler for EngineApp {
                 // 1. Update camera from input
                 self.update_camera(dt);
 
-                // 2. Handle left-click: editor pick or object placement
+                // 2. Handle left-click: Rapier raycast for editor pick, or object placement
                 if self.left_click_pending {
                     if self.editor_visible {
-                        // 3D click-to-select in editor
+                        // Unproject screen coords to get a world-space ray
                         let forward = self.camera_forward();
-                        let target = self.camera.position + forward;
-                        let view = Mat4::look_at_rh(self.camera.position, target, Vec3::Y);
+                        let cam_target = self.camera.position + forward;
+                        let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
                         let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
                         let proj = Mat4::perspective_rh(
                             self.camera.fov,
@@ -1105,16 +1162,46 @@ impl ApplicationHandler for EngineApp {
                             self.camera.far,
                         );
                         let inv_vp = (proj * view).inverse();
-                        if let Some(id) = self.editor.pick_entity_at_screen_pos(
-                            self.mouse_x as f32,
-                            self.mouse_y as f32,
-                            dw,
-                            dh,
-                            inv_vp,
+                        let ndc_x = (2.0 * self.mouse_x as f32 / dw as f32) - 1.0;
+                        let ndc_y = 1.0 - (2.0 * self.mouse_y as f32 / dh as f32);
+                        let unproject = |ndc_z: f32| -> Vec3 {
+                            let clip = glam::Vec4::new(ndc_x, ndc_y, ndc_z, 1.0);
+                            let world = inv_vp * clip;
+                            Vec3::new(world.x / world.w, world.y / world.w, world.z / world.w)
+                        };
+                        let near_pt = unproject(-1.0);
+                        let far_pt = unproject(1.0);
+                        let ray_dir = (far_pt - near_pt).normalize();
+
+                        // Try Rapier raycast first for precise physics-based picking
+                        let mut picked = false;
+                        if let Some((col_handle, _hit_pos, _dist)) = self.physics.raycast_with_collider(
+                            [near_pt.x, near_pt.y, near_pt.z],
+                            [ray_dir.x, ray_dir.y, ray_dir.z],
+                            1000.0,
                         ) {
-                            self.editor.select(id);
-                            if let Some(name) = self.editor.selected_name() {
-                                println!("[ochroma] Editor: picked entity '{}' (id={})", name, id);
+                            if let Some(&entity_id) = self.collider_to_entity.get(&col_handle) {
+                                self.editor.select(entity_id);
+                                if let Some(name) = self.editor.selected_name() {
+                                    println!("[ochroma] Rapier pick: '{}' (id={})", name, entity_id);
+                                }
+                                picked = true;
+                            }
+                        }
+
+                        // Fall back to editor ray-sphere test if Rapier didn't match an entity
+                        if !picked {
+                            if let Some(id) = self.editor.pick_entity_at_screen_pos(
+                                self.mouse_x as f32,
+                                self.mouse_y as f32,
+                                dw,
+                                dh,
+                                inv_vp,
+                            ) {
+                                self.editor.select(id);
+                                if let Some(name) = self.editor.selected_name() {
+                                    println!("[ochroma] Editor pick: '{}' (id={})", name, id);
+                                }
                             }
                         }
                     } else {
@@ -1129,8 +1216,26 @@ impl ApplicationHandler for EngineApp {
                 // 4. Tick engine runtime (scripts, time advance)
                 self.engine.tick(dt);
 
-                // 4b. Step physics
+                // 4b. Step Rapier physics and sync dynamic bodies back to ECS
                 self.physics.step();
+                // Sync: read positions from Rapier dynamic bodies back into ECS transforms
+                {
+                    use vox_core::ecs::TransformComponent;
+                    let body_map: Vec<(u32, vox_physics::RigidBodyHandle)> =
+                        self.entity_rapier_bodies.iter().map(|(&e, &h)| (e, h)).collect();
+                    for (eid, handle) in body_map {
+                        if let Some(pos) = self.physics.body_position(handle) {
+                            // Update the ECS transform from Rapier
+                            let mut query = self.engine.world.query::<(bevy_ecs::prelude::Entity, &mut TransformComponent)>();
+                            for (entity, mut transform) in query.iter_mut(&mut self.engine.world) {
+                                if entity.index() == eid {
+                                    transform.position = Vec3::new(pos[0], pos[1], pos[2]);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // 4c. Tick audio
                 self.audio.tick(dt);
@@ -1252,9 +1357,107 @@ impl ApplicationHandler for EngineApp {
                         &render_camera,
                         &illuminant,
                     );
+
+                    // --- egui render on top of scene ---
+                    if let (Some(egui_state), Some(egui_renderer)) =
+                        (&mut self.egui_state, &mut self.egui_renderer)
+                    {
+                        let window = self.window.as_ref().unwrap();
+                        let raw_input = egui_state.take_egui_input(window);
+                        let splat_count = render_splats.len();
+                        let fps = self.fps;
+                        let dlss_mode = dlss_quality_name(self.dlss.quality);
+                        let editor_visible = self.editor_visible;
+                        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+                            if editor_visible {
+                                self.editor.show(ctx);
+                                self.content_browser.show(ctx);
+                            }
+                            // Always show HUD
+                            egui::Area::new(egui::Id::new("hud_overlay"))
+                                .fixed_pos(egui::pos2(4.0, 4.0))
+                                .show(ctx, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{:.0} FPS | {} splats | DLSS {}",
+                                            fps, splat_count, dlss_mode,
+                                        ))
+                                        .color(egui::Color32::from_rgb(220, 220, 220))
+                                        .background_color(egui::Color32::from_rgba_premultiplied(0, 0, 0, 160)),
+                                    );
+                                });
+                        });
+
+                        egui_state.handle_platform_output(window, full_output.platform_output);
+                        let tris = self.egui_ctx.tessellate(
+                            full_output.shapes,
+                            self.egui_ctx.pixels_per_point(),
+                        );
+                        for (id, image_delta) in &full_output.textures_delta.set {
+                            egui_renderer.update_texture(
+                                backend.device(),
+                                backend.queue(),
+                                *id,
+                                image_delta,
+                            );
+                        }
+
+                        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+                            size_in_pixels: [backend.width(), backend.height()],
+                            pixels_per_point: window.scale_factor() as f32,
+                        };
+
+                        let mut encoder = backend.device().create_command_encoder(
+                            &wgpu::CommandEncoderDescriptor {
+                                label: Some("egui_encoder"),
+                            },
+                        );
+
+                        egui_renderer.update_buffers(
+                            backend.device(),
+                            backend.queue(),
+                            &mut encoder,
+                            &tris,
+                            &screen_descriptor,
+                        );
+
+                        {
+                            let rp_desc = wgpu::RenderPassDescriptor {
+                                label: Some("egui_render_pass"),
+                                color_attachments: &[Some(
+                                    wgpu::RenderPassColorAttachment {
+                                        view: &view,
+                                        resolve_target: None,
+                                        ops: wgpu::Operations {
+                                            load: wgpu::LoadOp::Load,
+                                            store: wgpu::StoreOp::Store,
+                                        },
+                                    },
+                                )],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                            };
+                            let mut render_pass = encoder
+                                .begin_render_pass(&rp_desc)
+                                .forget_lifetime();
+                            egui_renderer.render(
+                                &mut render_pass,
+                                &tris,
+                                &screen_descriptor,
+                            );
+                        }
+
+                        backend.queue().submit(std::iter::once(encoder.finish()));
+
+                        for id in &full_output.textures_delta.free {
+                            egui_renderer.free_texture(id);
+                        }
+                    }
+
                     surface_tex.present();
                 } else {
-                    // --- Software fallback render path ---
+                    // --- Software fallback render path (bitmap font HUD) ---
                     let pixels = self.render_frame();
                     if let Some(backend) = &self.backend {
                         backend.present_framebuffer(&pixels, self.dlss.display_width, self.dlss.display_height);
