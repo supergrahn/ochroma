@@ -15,3 +15,8 @@ half = { workspace = true }
 glam = { workspace = true }
 toml = { workspace = true }
 rand = "0.9"
+
+[dev-dependencies]
+vox_render = { path = "../vox_render" }
+vox_core = { path = "../vox_core" }
+glam = { workspace = true }
