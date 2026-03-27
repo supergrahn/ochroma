@@ -1,4 +1,5 @@
 mod demo_asset;
+pub mod autosave;
 pub mod daytime;
 pub mod growth;
 pub mod headless;
