@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use thiserror::Error;
 
+pub mod mod_manager;
+
 #[cfg(feature = "wasm-runtime")]
 mod wasm;
 #[cfg(feature = "wasm-runtime")]

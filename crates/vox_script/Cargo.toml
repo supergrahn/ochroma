@@ -9,5 +9,7 @@ wasm-runtime = ["wasmtime"]
 
 [dependencies]
 vox_core = { path = "../vox_core" }
+serde = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }
 wasmtime = { version = "27", optional = true }
