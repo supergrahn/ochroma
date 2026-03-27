@@ -1,6 +1,8 @@
 mod demo_asset;
+pub mod growth;
 pub mod headless;
 pub mod placement;
+pub mod road_builder;
 pub mod simulation;
 pub mod systems;
 pub mod terrain_setup;
