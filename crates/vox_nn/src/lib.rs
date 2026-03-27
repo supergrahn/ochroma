@@ -1,4 +1,5 @@
 pub mod city_block;
+pub mod history_gen;
 pub mod llm_client;
 pub mod scene_graph;
 pub mod layout;
