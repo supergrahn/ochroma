@@ -185,6 +185,9 @@ impl Default for PhysicsWorld {
 // ---------------------------------------------------------------------------
 
 pub mod cloth;
+pub mod destruction;
+pub mod fluid;
+pub mod vehicle;
 
 pub mod rapier;
 
