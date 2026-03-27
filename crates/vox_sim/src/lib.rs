@@ -1,10 +1,13 @@
 pub mod agent;
 pub mod buildings;
 pub mod citizen;
+pub mod disasters;
 pub mod districts;
 pub mod economy;
 pub mod land_value;
 pub mod migration;
+pub mod milestones;
+pub mod pollution;
 pub mod roads;
 pub mod routines;
 pub mod seasons;
