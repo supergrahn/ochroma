@@ -13,3 +13,4 @@ pub mod marketplace;
 pub mod neural_compress;
 pub mod templates;
 pub mod creator_tools;
+pub mod osm_import;
