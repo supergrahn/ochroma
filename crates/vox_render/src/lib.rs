@@ -25,3 +25,6 @@ pub mod water;
 pub mod subsurface;
 pub mod cinematic;
 pub mod web_renderer;
+pub mod spatial_ui;
+pub mod hand_tracking;
+pub mod ar_placement;
