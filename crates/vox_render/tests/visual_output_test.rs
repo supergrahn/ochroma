@@ -178,6 +178,122 @@ fn render_full_city_scene() {
 }
 
 #[test]
+fn render_detailed_building_windows_differ_from_walls() {
+    // Generate a detailed Victorian building
+    let building = vox_data::proc_gs_advanced::generate_detailed_building(
+        42, 8.0, 10.0, 3, "victorian",
+    );
+    assert!(building.len() > 500, "Detailed building should have many splats: {}", building.len());
+
+    let mut rast = SoftwareRasteriser::new(256, 256);
+    let cam = make_camera(
+        Vec3::new(4.0, 6.0, 18.0),
+        Vec3::new(4.0, 5.0, 0.0),
+        256, 256,
+    );
+    let fb = rast.render(&building, &cam, &Illuminant::d65());
+
+    let non_black = fb.pixels.iter()
+        .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+        .count();
+    let coverage = non_black as f32 / fb.pixels.len() as f32 * 100.0;
+
+    let dir = std::env::temp_dir().join("ochroma_visual");
+    std::fs::create_dir_all(&dir).unwrap();
+    save_ppm(&fb, &dir.join("detailed_building_victorian.ppm"));
+
+    println!(
+        "Detailed Victorian building: {} splats, {:.1}% coverage, saved to {}",
+        building.len(), coverage,
+        dir.join("detailed_building_victorian.ppm").display(),
+    );
+    assert!(coverage > 5.0, "Building should be visible: {:.1}%", coverage);
+
+    // Verify that we have distinct colour regions (windows vs. walls)
+    // Collect unique colour values (quantised to 8-level bins)
+    let unique_colours: std::collections::HashSet<(u8, u8, u8)> = fb.pixels.iter()
+        .filter(|p| p[0] > 5 || p[1] > 5 || p[2] > 5)
+        .map(|p| (p[0] / 32, p[1] / 32, p[2] / 32))
+        .collect();
+
+    println!("Unique colour bins: {}", unique_colours.len());
+    assert!(
+        unique_colours.len() >= 2,
+        "Should have at least 2 distinct colour regions (walls vs. windows): got {}",
+        unique_colours.len()
+    );
+}
+
+#[test]
+fn render_detailed_building_modern_style() {
+    let building = vox_data::proc_gs_advanced::generate_detailed_building(
+        99, 10.0, 8.0, 5, "modern",
+    );
+    assert!(building.len() > 500);
+
+    let mut rast = SoftwareRasteriser::new(256, 256);
+    let cam = make_camera(
+        Vec3::new(5.0, 10.0, 25.0),
+        Vec3::new(5.0, 8.0, 0.0),
+        256, 256,
+    );
+    let fb = rast.render(&building, &cam, &Illuminant::d65());
+
+    let non_black = fb.pixels.iter()
+        .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+        .count();
+    let coverage = non_black as f32 / fb.pixels.len() as f32 * 100.0;
+
+    let dir = std::env::temp_dir().join("ochroma_visual");
+    std::fs::create_dir_all(&dir).unwrap();
+    save_ppm(&fb, &dir.join("detailed_building_modern.ppm"));
+
+    println!("Modern building: {} splats, {:.1}% coverage", building.len(), coverage);
+    assert!(coverage > 5.0, "Modern building should be visible");
+}
+
+#[test]
+fn render_with_spectra_renderer() {
+    use vox_render::spectra_render::render_with_spectra_u8;
+
+    let building = vox_data::proc_gs_advanced::generate_detailed_building(
+        42, 8.0, 10.0, 3, "victorian",
+    );
+
+    let cam = make_camera(
+        Vec3::new(4.0, 6.0, 18.0),
+        Vec3::new(4.0, 5.0, 0.0),
+        256, 256,
+    );
+    let pixels = render_with_spectra_u8(&building, &cam, 256, 256, &Illuminant::d65());
+    assert_eq!(pixels.len(), 256 * 256);
+
+    // Count non-black pixels
+    let non_black = pixels.iter()
+        .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+        .count();
+    let coverage = non_black as f32 / pixels.len() as f32 * 100.0;
+
+    // Save as PPM
+    let dir = std::env::temp_dir().join("ochroma_visual");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("spectra_building.ppm");
+    let mut data = format!("P6\n256 256\n255\n").into_bytes();
+    for pixel in &pixels {
+        data.push(pixel[0]);
+        data.push(pixel[1]);
+        data.push(pixel[2]);
+    }
+    std::fs::write(&path, &data).unwrap();
+
+    println!(
+        "Spectra renderer: {} splats, {:.1}% coverage, saved to {}",
+        building.len(), coverage, path.display(),
+    );
+    assert!(coverage > 1.0, "Spectra renderer should produce some visible pixels: {:.1}%", coverage);
+}
+
+#[test]
 fn empty_scene_is_black() {
     let mut rast = SoftwareRasteriser::new(64, 64);
     let cam = make_camera(Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, 64, 64);
