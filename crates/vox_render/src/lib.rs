@@ -23,4 +23,5 @@ pub mod gi_cache;
 pub mod atmosphere;
 pub mod water;
 pub mod subsurface;
+pub mod cinematic;
 pub mod web_renderer;
