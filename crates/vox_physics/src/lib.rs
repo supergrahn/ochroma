@@ -179,3 +179,13 @@ impl Default for PhysicsWorld {
         Self::new()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Rapier3D integration (behind feature flag)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "rapier")]
+pub mod rapier;
+
+#[cfg(feature = "rapier")]
+pub use rapier::RapierPhysicsWorld;

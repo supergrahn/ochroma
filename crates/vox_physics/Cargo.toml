@@ -3,6 +3,11 @@ name = "vox_physics"
 edition.workspace = true
 version.workspace = true
 
+[features]
+default = []
+rapier = ["dep:rapier3d"]
+
 [dependencies]
 vox_core = { path = "../vox_core" }
 glam = { workspace = true }
+rapier3d = { version = "0.22", optional = true }
