@@ -4,6 +4,7 @@ pub mod crdt;
 pub mod lobby;
 pub mod replication;
 pub mod transport;
+pub mod world_hosting;
 pub use replication::{EntityDelta, NetMessage, PlayerAction, ReplicationClient, ReplicationServer};
 pub use transport::{GameClient, GameServer};
 
