@@ -560,6 +560,15 @@ impl ApplicationHandler for DemoApp {
                                     "[ochroma] Editor {}",
                                     if self.editor.visible { "OPEN" } else { "CLOSED" }
                                 );
+                                // Print entity list to console when editor is opened
+                                self.editor.show_console();
+                                // Auto-select first entity if none selected
+                                if self.editor.visible && self.editor.selected.is_none()
+                                    && !self.editor.entities.is_empty()
+                                {
+                                    let first_id = self.editor.entities[0].id;
+                                    self.editor.select(first_id);
+                                }
                             }
                             KeyCode::Delete => {
                                 if self.editor.visible {
@@ -702,7 +711,13 @@ impl ApplicationHandler for DemoApp {
                             FrameGeneration::Off => "",
                         };
                         let editor_label = if self.editor.visible {
-                            format!(" | Editor ({} entities)", self.editor.entity_count())
+                            let sel_name = self.editor.selected_name()
+                                .unwrap_or("none");
+                            format!(
+                                " | Editor ({} entities, sel: {})",
+                                self.editor.entity_count(),
+                                sel_name,
+                            )
                         } else {
                             String::new()
                         };

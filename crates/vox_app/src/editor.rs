@@ -443,6 +443,31 @@ impl SceneEditor {
     pub fn entity_count(&self) -> usize {
         self.entities.len()
     }
+
+    /// Get the name of the currently selected entity (if any).
+    pub fn selected_name(&self) -> Option<&str> {
+        self.selected_entity().map(|e| e.name.as_str())
+    }
+
+    /// Print the entity list to the console (for when egui is not available).
+    pub fn show_console(&self) {
+        if !self.visible {
+            return;
+        }
+        println!("[editor] === Scene Hierarchy ({} entities) ===", self.entities.len());
+        for entity in &self.entities {
+            let sel = if self.selected == Some(entity.id) { " <-- SELECTED" } else { "" };
+            let vis = if entity.visible { "V" } else { " " };
+            let lock = if entity.locked { "L" } else { " " };
+            println!(
+                "[editor]  [{}][{}] #{}: {} @ ({:.1}, {:.1}, {:.1}) [{}]{}",
+                vis, lock, entity.id, entity.name,
+                entity.position.x, entity.position.y, entity.position.z,
+                entity.asset_path, sel,
+            );
+        }
+        println!("[editor] ================================");
+    }
 }
 
 #[cfg(test)]

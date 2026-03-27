@@ -20,9 +20,129 @@ use vox_core::types::GaussianSplat;
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::gpu::wgpu_backend::WgpuBackend;
 use vox_render::spectral::RenderCamera;
+use vox_render::spectral_framebuffer::SpectralFramebuffer;
+use vox_render::spectral_tonemapper::{tonemap_spectral_framebuffer, ToneMapSettings};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
+
+// ---------------------------------------------------------------------------
+// Bitmap font (5x7 pixel glyphs)
+// ---------------------------------------------------------------------------
+
+const CHAR_WIDTH: u32 = 6;
+#[allow(dead_code)]
+const CHAR_HEIGHT: u32 = 8;
+
+fn char_bitmap(ch: char) -> [u8; 7] {
+    match ch {
+        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
+        '3' => [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110],
+        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+        '6' => [0b01110, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
+        'A' | 'a' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'B' | 'b' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+        'C' | 'c' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'D' | 'd' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+        'E' | 'e' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'F' | 'f' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'G' | 'g' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
+        'H' | 'h' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'I' | 'i' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        'J' | 'j' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+        'K' | 'k' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+        'L' | 'l' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'M' | 'm' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+        'N' | 'n' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+        'O' | 'o' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'P' | 'p' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'R' | 'r' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        'S' | 's' => [0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110],
+        'T' | 't' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'U' | 'u' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'V' | 'v' => [0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100],
+        'W' | 'w' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+        'X' | 'x' => [0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001],
+        'Y' | 'y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        'Z' | 'z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+        '/' => [0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b00000, 0b00000],
+        ':' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
+        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100],
+        ' ' => [0; 7],
+        _ => [0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111],
+    }
+}
+
+fn burn_text(pixels: &mut [[u8; 4]], width: u32, x: u32, y: u32, text: &str, color: [u8; 3]) {
+    for (ci, ch) in text.chars().enumerate() {
+        let bitmap = char_bitmap(ch);
+        let base_x = x + ci as u32 * CHAR_WIDTH;
+        for (row, &bits) in bitmap.iter().enumerate() {
+            for col in 0..5u32 {
+                if bits & (1 << (4 - col)) != 0 {
+                    let px = base_x + col;
+                    let py = y + row as u32;
+                    if px < width {
+                        let idx = (py * width + px) as usize;
+                        if idx < pixels.len() {
+                            pixels[idx] = [color[0], color[1], color[2], 255];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AABB collision
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct BoundingBox {
+    min: Vec3,
+    max: Vec3,
+}
+
+fn check_building_collision(player_pos: &mut Vec3, buildings: &[BoundingBox]) {
+    let radius = 1.0;
+    for bb in buildings {
+        if player_pos.x > bb.min.x - radius
+            && player_pos.x < bb.max.x + radius
+            && player_pos.z > bb.min.z - radius
+            && player_pos.z < bb.max.z + radius
+            && player_pos.y < bb.max.y
+        {
+            // Push player out via nearest face
+            let dx_min = (player_pos.x - (bb.min.x - radius)).abs();
+            let dx_max = (player_pos.x - (bb.max.x + radius)).abs();
+            let dz_min = (player_pos.z - (bb.min.z - radius)).abs();
+            let dz_max = (player_pos.z - (bb.max.z + radius)).abs();
+
+            let min_d = dx_min.min(dx_max).min(dz_min).min(dz_max);
+            if min_d == dx_min {
+                player_pos.x = bb.min.x - radius;
+            } else if min_d == dx_max {
+                player_pos.x = bb.max.x + radius;
+            } else if min_d == dz_min {
+                player_pos.z = bb.min.z - radius;
+            } else {
+                player_pos.z = bb.max.z + radius;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Game structs
+// ---------------------------------------------------------------------------
 
 struct Orb {
     position: Vec3,
@@ -39,6 +159,7 @@ struct WalkingSim {
     terrain_splats: Vec<GaussianSplat>,
     building_splats: Vec<GaussianSplat>,
     tree_splats: Vec<GaussianSplat>,
+    building_boxes: Vec<BoundingBox>,
 
     // Game state
     orbs: Vec<Orb>,
@@ -61,11 +182,14 @@ struct WalkingSim {
     last_frame: Instant,
     frame_count: u64,
     fps_timer: Instant,
+
+    // Spectral pipeline
+    spectral_fb: SpectralFramebuffer,
+    tonemap_settings: ToneMapSettings,
 }
 
 impl WalkingSim {
     fn new() -> Self {
-        // Generate orb positions
         let orb_positions = vec![
             Vec3::new(15.0, 1.5, 15.0),
             Vec3::new(-10.0, 1.5, 20.0),
@@ -84,7 +208,7 @@ impl WalkingSim {
             .map(|pos| Orb {
                 position: pos,
                 collected: false,
-                bob_phase: pos.x * 0.1, // offset bobbing so they don't all sync
+                bob_phase: pos.x * 0.1,
             })
             .collect();
 
@@ -95,6 +219,7 @@ impl WalkingSim {
             terrain_splats: Vec::new(),
             building_splats: Vec::new(),
             tree_splats: Vec::new(),
+            building_boxes: Vec::new(),
             orbs,
             orbs_collected: 0,
             total_orbs: 10,
@@ -109,6 +234,8 @@ impl WalkingSim {
             last_frame: Instant::now(),
             frame_count: 0,
             fps_timer: Instant::now(),
+            spectral_fb: SpectralFramebuffer::new(WIDTH, HEIGHT),
+            tonemap_settings: ToneMapSettings::default(),
         }
     }
 
@@ -119,27 +246,49 @@ impl WalkingSim {
         let vol = vox_terrain::volume::generate_demo_volume(42);
         let materials = vox_terrain::volume::default_volume_materials();
         self.terrain_splats = vox_terrain::volume::volume_to_splats(&vol, &materials, 42);
-        println!("[walking_sim]   Terrain: {} splats", self.terrain_splats.len());
+        println!(
+            "[walking_sim]   Terrain: {} splats",
+            self.terrain_splats.len()
+        );
 
-        // Buildings
+        // Buildings (with bounding boxes for collision)
+        let building_width = 6.0;
+        let building_depth = 8.0;
+        let building_height = 10.0; // approximate visual height
         for i in 0..3 {
+            let bx = i as f32 * 12.0 - 12.0;
+            let bz = 25.0;
             let b = vox_data::proc_gs_advanced::generate_detailed_building(
                 i as u64,
-                6.0,
-                8.0,
+                building_width,
+                building_depth,
                 2,
                 "victorian",
             );
             for s in &b {
                 let mut ws = *s;
-                ws.position[0] += i as f32 * 12.0 - 12.0;
-                ws.position[2] += 25.0;
+                ws.position[0] += bx;
+                ws.position[2] += bz;
                 self.building_splats.push(ws);
             }
+            // Store AABB for collision
+            self.building_boxes.push(BoundingBox {
+                min: Vec3::new(
+                    bx - building_width * 0.5,
+                    0.0,
+                    bz - building_depth * 0.5,
+                ),
+                max: Vec3::new(
+                    bx + building_width * 0.5,
+                    building_height,
+                    bz + building_depth * 0.5,
+                ),
+            });
         }
         println!(
-            "[walking_sim]   Buildings: {} splats",
-            self.building_splats.len()
+            "[walking_sim]   Buildings: {} splats ({} collision boxes)",
+            self.building_splats.len(),
+            self.building_boxes.len(),
         );
 
         // Trees scattered around
@@ -166,7 +315,6 @@ impl WalkingSim {
 
     fn generate_orb_splats(&self) -> Vec<GaussianSplat> {
         let mut splats = Vec::new();
-        // Glowing yellow-white spectral values
         let orb_spd: [u16; 8] = std::array::from_fn(|i| {
             let v = if (3..=6).contains(&i) { 0.9 } else { 0.5 };
             half::f16::from_f32(v).to_bits()
@@ -180,16 +328,13 @@ impl WalkingSim {
             let bob_y = (self.game_time * 2.0 + orb.bob_phase).sin() * 0.3;
             let pos = orb.position + Vec3::new(0.0, bob_y, 0.0);
 
-            // Rotation animation: spin splat positions around Y axis
             let rotation_angle = self.game_time * 1.5 + orb.bob_phase;
             let cos_a = rotation_angle.cos();
             let sin_a = rotation_angle.sin();
 
-            // Pulsing scale: orbs grow and shrink slightly
             let pulse = 1.0 + (self.game_time * 3.0 + orb.bob_phase).sin() * 0.2;
             let scale = 0.1 * pulse;
 
-            // Create a small cluster of bright splats
             for dx in -2..=2 {
                 for dy in -2..=2 {
                     for dz in -2..=2 {
@@ -197,15 +342,10 @@ impl WalkingSim {
                         if d > 6.0 {
                             continue;
                         }
-                        // Rotate splat positions around Y axis
                         let rx = dx as f32 * 0.15 * cos_a - dz as f32 * 0.15 * sin_a;
                         let rz = dx as f32 * 0.15 * sin_a + dz as f32 * 0.15 * cos_a;
                         splats.push(GaussianSplat {
-                            position: [
-                                pos.x + rx,
-                                pos.y + dy as f32 * 0.15,
-                                pos.z + rz,
-                            ],
+                            position: [pos.x + rx, pos.y + dy as f32 * 0.15, pos.z + rz],
                             scale: [scale, scale, scale],
                             rotation: [0, 0, 0, 32767],
                             opacity: 230,
@@ -256,6 +396,9 @@ impl WalkingSim {
         // Keep player above ground
         self.player_pos.y = 2.0;
 
+        // Building collision: push player out of any overlapping building
+        check_building_collision(&mut self.player_pos, &self.building_boxes);
+
         // Check orb collection
         for orb in &mut self.orbs {
             if orb.collected {
@@ -269,6 +412,16 @@ impl WalkingSim {
                     "[walking_sim] Orb collected! {}/{}",
                     self.orbs_collected, self.total_orbs
                 );
+
+                // Generate collect sound WAV (proves audio pipeline works)
+                let sound = vox_audio::synth::generate_collect_sound();
+                let path = std::env::temp_dir()
+                    .join(format!("ochroma_collect_{}.wav", self.orbs_collected));
+                match vox_audio::synth::save_wav(&sound, 44100, &path) {
+                    Ok(()) => println!("[walking_sim] Sound: {}", path.display()),
+                    Err(e) => eprintln!("[walking_sim] Sound save failed: {}", e),
+                }
+
                 if self.orbs_collected >= self.total_orbs {
                     self.game_won = true;
                     println!(
@@ -298,49 +451,60 @@ impl WalkingSim {
         all.extend_from_slice(&self.tree_splats);
         all.extend(self.generate_orb_splats());
 
-        let fb = self.rasteriser.render(&all, &camera, &Illuminant::d65());
+        let illuminant = Illuminant::d65();
 
-        // Draw HUD text (burn into framebuffer)
-        let mut pixels = fb.pixels;
-        burn_text(
-            &mut pixels,
-            fb.width,
-            10,
-            10,
-            &format!("Orbs: {}/{}", self.orbs_collected, self.total_orbs),
-        );
+        // 1. Rasterise
+        let fb = self.rasteriser.render(&all, &camera, &illuminant);
 
-        if self.game_won {
-            burn_text(
-                &mut pixels,
-                fb.width,
-                fb.width / 2 - 80,
-                fb.height / 2,
-                "YOU WIN!",
+        // 2. Write to spectral framebuffer (approximate: RGB -> spectral bands)
+        self.spectral_fb.clear();
+        for (i, pixel) in fb.pixels.iter().enumerate() {
+            let x = (i % WIDTH as usize) as u32;
+            let y = (i / WIDTH as usize) as u32;
+            let r = pixel[0] as f32 / 255.0;
+            let g = pixel[1] as f32 / 255.0;
+            let b = pixel[2] as f32 / 255.0;
+
+            let spectral = [
+                b * 0.3,
+                b * 0.7,
+                b * 0.8 + g * 0.1,
+                g * 0.4 + b * 0.2,
+                g * 0.9 + r * 0.05,
+                r * 0.4 + g * 0.3,
+                r * 0.8 + g * 0.05,
+                r * 0.6,
+            ];
+            let albedo = spectral;
+
+            self.spectral_fb.write_sample(
+                x, y, spectral, 1.0, [0.0, 1.0, 0.0], 0, albedo,
             );
         }
 
-        pixels
-    }
-}
+        // 3. Tone map spectral framebuffer to RGBA8
+        let mut pixels = tonemap_spectral_framebuffer(
+            &self.spectral_fb,
+            &illuminant,
+            &self.tonemap_settings,
+        );
 
-/// Burn simple text into a pixel buffer (no font rendering, just block letters).
-fn burn_text(pixels: &mut [[u8; 4]], width: u32, x: u32, y: u32, text: &str) {
-    // Simple: draw colored blocks for each character position
-    for (i, _ch) in text.chars().enumerate() {
-        let px = x + i as u32 * 8;
-        for dy in 0..10 {
-            for dx in 0..6 {
-                let fx = px + dx;
-                let fy = y + dy;
-                if fx < width {
-                    let idx = (fy * width + fx) as usize;
-                    if idx < pixels.len() {
-                        pixels[idx] = [255, 255, 255, 255];
-                    }
-                }
-            }
+        // 4. Draw HUD text (burn into framebuffer)
+        let orb_text = format!(
+            "ORBS: {}/{}",
+            self.orbs_collected, self.total_orbs
+        );
+        burn_text(&mut pixels, WIDTH, 10, 10, &orb_text, [255, 255, 255]);
+
+        if self.game_won {
+            // Center "YOU WIN!" in yellow
+            let text = "YOU WIN!";
+            let text_w = text.len() as u32 * CHAR_WIDTH;
+            let cx = WIDTH / 2 - text_w / 2;
+            burn_text(&mut pixels, WIDTH, cx, HEIGHT / 2, text, [255, 255, 0]);
         }
+
+        pixels
     }
 }
 
