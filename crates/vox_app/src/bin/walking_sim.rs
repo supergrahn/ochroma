@@ -180,6 +180,15 @@ impl WalkingSim {
             let bob_y = (self.game_time * 2.0 + orb.bob_phase).sin() * 0.3;
             let pos = orb.position + Vec3::new(0.0, bob_y, 0.0);
 
+            // Rotation animation: spin splat positions around Y axis
+            let rotation_angle = self.game_time * 1.5 + orb.bob_phase;
+            let cos_a = rotation_angle.cos();
+            let sin_a = rotation_angle.sin();
+
+            // Pulsing scale: orbs grow and shrink slightly
+            let pulse = 1.0 + (self.game_time * 3.0 + orb.bob_phase).sin() * 0.2;
+            let scale = 0.1 * pulse;
+
             // Create a small cluster of bright splats
             for dx in -2..=2 {
                 for dy in -2..=2 {
@@ -188,13 +197,16 @@ impl WalkingSim {
                         if d > 6.0 {
                             continue;
                         }
+                        // Rotate splat positions around Y axis
+                        let rx = dx as f32 * 0.15 * cos_a - dz as f32 * 0.15 * sin_a;
+                        let rz = dx as f32 * 0.15 * sin_a + dz as f32 * 0.15 * cos_a;
                         splats.push(GaussianSplat {
                             position: [
-                                pos.x + dx as f32 * 0.15,
+                                pos.x + rx,
                                 pos.y + dy as f32 * 0.15,
-                                pos.z + dz as f32 * 0.15,
+                                pos.z + rz,
                             ],
-                            scale: [0.1, 0.1, 0.1],
+                            scale: [scale, scale, scale],
                             rotation: [0, 0, 0, 32767],
                             opacity: 230,
                             _pad: [0; 3],
