@@ -302,8 +302,7 @@ impl EngineApp {
         let mut editor = SceneEditor::new();
         editor.visible = false;
 
-        let mut engine = EngineRuntime::new(config);
-        engine.load_scene("Default");
+        let engine = EngineRuntime::new(config);
 
         let dlss = DlssPipeline::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DlssQuality::Performance);
         let (render_w, render_h) = dlss.render_resolution();
@@ -418,22 +417,16 @@ impl EngineApp {
         }
 
         // Populate engine scene entities (for scripts)
-        self.engine.add_entity("Terrain", None, [0.0, 0.0, 0.0], None);
+        self.engine.spawn("Terrain").with_position(Vec3::ZERO);
         for i in 0..4u32 {
-            self.engine.add_entity(
-                &format!("Building {}", i + 1),
-                Some("building.ply"),
-                [i as f32 * 10.0 - 15.0, 0.0, 20.0],
-                None,
-            );
+            self.engine.spawn(&format!("Building {}", i + 1))
+                .with_asset("building.ply")
+                .with_position(Vec3::new(i as f32 * 10.0 - 15.0, 0.0, 20.0));
         }
         for i in 0..6u32 {
-            self.engine.add_entity(
-                &format!("Tree {}", i + 1),
-                Some("tree.ply"),
-                [i as f32 * 8.0 - 20.0, 0.0, 10.0],
-                None,
-            );
+            self.engine.spawn(&format!("Tree {}", i + 1))
+                .with_asset("tree.ply")
+                .with_position(Vec3::new(i as f32 * 8.0 - 20.0, 0.0, 10.0));
         }
 
         // Build scene_splats with entity-splat range tracking
@@ -507,9 +500,13 @@ impl EngineApp {
             radius: 20.0,
         });
 
-        // Also register lights in engine scene
-        self.engine.scene.add_point_light([5.0, 8.0, 20.0], [1.0, 0.9, 0.7], 50.0, 30.0);
-        self.engine.scene.add_point_light([-15.0, 4.0, 10.0], [0.7, 0.8, 1.0], 30.0, 20.0);
+        // Also register lights in engine world
+        self.engine.spawn("Light1")
+            .with_position(Vec3::new(5.0, 8.0, 20.0))
+            .with_light([1.0, 0.9, 0.7], 50.0, 30.0);
+        self.engine.spawn("Light2")
+            .with_position(Vec3::new(-15.0, 4.0, 10.0))
+            .with_light([0.7, 0.8, 1.0], 30.0, 20.0);
 
         // CLAS clustering + MegaGeometry
         self.run_clas();
@@ -667,7 +664,7 @@ impl EngineApp {
         render_splats.extend(&particle_splats);
 
         // Time-of-day illuminant
-        let illuminant = illuminant_for_time(self.engine.scene.time_of_day);
+        let illuminant = illuminant_for_time(self.engine.time_of_day());
 
         // 1. Software rasterise at internal resolution
         let render_start = Instant::now();
@@ -742,7 +739,7 @@ impl EngineApp {
             [220, 220, 220]);
         burn_text(&mut final_pixels, display_w, 4, y_off + 10,
             &format!("TIME {:.0}:00  EV {:.2}  {}  DLSS {}  CLAS:{}  TILES:{}  LIGHTS:{}  PARTICLES:{}",
-                self.engine.scene.time_of_day,
+                self.engine.time_of_day(),
                 self.exposure,
                 tonemap_operator_name(self.tonemap.operator),
                 dlss_quality_name(self.dlss.quality),
@@ -755,7 +752,7 @@ impl EngineApp {
         burn_text(&mut final_pixels, display_w, 4, y_off + 20,
             &format!("ENTITIES: {}  SCRIPTS: {}  FRAME: {}  [P] toggle spectral",
                 self.engine.stats.entity_count,
-                self.engine.scripts.registered_scripts().len(),
+                self.engine.registered_script_count(),
                 self.engine.stats.frame_number,
             ),
             [160, 160, 160]);
@@ -858,7 +855,7 @@ impl ApplicationHandler for EngineApp {
         println!("     OCHROMA ENGINE -- RUNNING");
         println!("=============================================");
         println!("  {} entities | {} splats | {} clusters",
-            self.engine.scene.entity_count(),
+            self.engine.entity_count(),
             self.scene_splats.len(),
             self.clas_cluster_count);
         println!("  {} point lights | {} particle emitters",
@@ -925,9 +922,10 @@ impl ApplicationHandler for EngineApp {
                                 println!("[ochroma] Screenshot: {}", path.display());
                             }
                             KeyCode::KeyT => {
-                                self.engine.scene.time_of_day = (self.engine.scene.time_of_day + 1.0) % 24.0;
+                                let new_hour = (self.engine.time_of_day() + 1.0) % 24.0;
+                                self.engine.set_time_of_day(new_hour);
                                 self.temporal.reset();
-                                println!("[ochroma] Time: {:.0}:00", self.engine.scene.time_of_day);
+                                println!("[ochroma] Time: {:.0}:00", self.engine.time_of_day());
                             }
                             KeyCode::Equal => {
                                 self.exposure = (self.exposure * 1.2).min(16.0);
@@ -1140,21 +1138,26 @@ impl ApplicationHandler for EngineApp {
 
                 // 4d. Sync entity positions to splats — when scripts move entities,
                 //     the corresponding splats move with them.
-                for entity in &self.engine.scene.entities {
-                    if let Some(&(start, end)) = self.entity_splat_ranges.get(&entity.id) {
-                        if let Some(&orig_pos) = self.entity_original_positions.get(&entity.id) {
-                            let dx = entity.position[0] - orig_pos[0];
-                            let dy = entity.position[1] - orig_pos[1];
-                            let dz = entity.position[2] - orig_pos[2];
-                            // Only apply if the entity actually moved
-                            if dx.abs() > 1e-6 || dy.abs() > 1e-6 || dz.abs() > 1e-6 {
-                                for i in start..end.min(self.scene_splats.len()) {
-                                    self.scene_splats[i].position[0] += dx;
-                                    self.scene_splats[i].position[1] += dy;
-                                    self.scene_splats[i].position[2] += dz;
+                {
+                    use vox_core::ecs::TransformComponent;
+                    let mut query = self.engine.world.query::<(bevy_ecs::prelude::Entity, &TransformComponent)>();
+                    let entities: Vec<(u32, [f32; 3])> = query.iter(&self.engine.world)
+                        .map(|(e, t)| (e.index(), [t.position.x, t.position.y, t.position.z]))
+                        .collect();
+                    for (eid, pos) in entities {
+                        if let Some(&(start, end)) = self.entity_splat_ranges.get(&eid) {
+                            if let Some(&orig_pos) = self.entity_original_positions.get(&eid) {
+                                let dx = pos[0] - orig_pos[0];
+                                let dy = pos[1] - orig_pos[1];
+                                let dz = pos[2] - orig_pos[2];
+                                if dx.abs() > 1e-6 || dy.abs() > 1e-6 || dz.abs() > 1e-6 {
+                                    for i in start..end.min(self.scene_splats.len()) {
+                                        self.scene_splats[i].position[0] += dx;
+                                        self.scene_splats[i].position[1] += dy;
+                                        self.scene_splats[i].position[2] += dz;
+                                    }
+                                    self.entity_original_positions.insert(eid, pos);
                                 }
-                                // Update original position so delta is relative
-                                self.entity_original_positions.insert(entity.id, entity.position);
                             }
                         }
                     }
@@ -1238,7 +1241,7 @@ impl ApplicationHandler for EngineApp {
                     }
                     render_splats.extend(&self.particles.to_splats());
 
-                    let illuminant = illuminant_for_time(self.engine.scene.time_of_day);
+                    let illuminant = illuminant_for_time(self.engine.time_of_day());
 
                     let gpu_rast = self.gpu_rasteriser.as_ref().unwrap();
                     gpu_rast.render(
@@ -1283,7 +1286,7 @@ impl ApplicationHandler for EngineApp {
                             self.fps,
                             self.total_splat_count(),
                             self.clas_cluster_count,
-                            self.engine.scene.time_of_day,
+                            self.engine.time_of_day(),
                             mode_label,
                             dlss_label,
                             tonemap_operator_name(self.tonemap.operator),

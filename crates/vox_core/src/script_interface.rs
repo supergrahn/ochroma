@@ -81,8 +81,12 @@ impl ScriptContext {
 
 /// Registry of available script types.
 pub struct ScriptRegistry {
-    factories: std::collections::HashMap<String, Box<dyn Fn() -> Box<dyn GameScript>>>,
+    factories: std::collections::HashMap<String, Box<dyn Fn() -> Box<dyn GameScript> + Send + Sync>>,
 }
+
+// Safety: All factory closures are Send + Sync (enforced by register signature).
+unsafe impl Send for ScriptRegistry {}
+unsafe impl Sync for ScriptRegistry {}
 
 impl ScriptRegistry {
     pub fn new() -> Self {
@@ -90,7 +94,7 @@ impl ScriptRegistry {
     }
 
     /// Register a script type so it can be attached to entities by name.
-    pub fn register<F: Fn() -> Box<dyn GameScript> + 'static>(&mut self, name: &str, factory: F) {
+    pub fn register<F: Fn() -> Box<dyn GameScript> + Send + Sync + 'static>(&mut self, name: &str, factory: F) {
         self.factories.insert(name.to_string(), Box::new(factory));
     }
 
