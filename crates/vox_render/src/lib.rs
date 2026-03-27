@@ -17,3 +17,5 @@ pub mod upscaling;
 pub mod denoiser;
 pub mod lod_crossfade;
 pub mod svt;
+pub mod spectra_bridge;
+pub mod lighting;

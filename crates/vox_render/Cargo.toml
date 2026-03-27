@@ -16,6 +16,7 @@ puffin = { workspace = true }
 tokio = { workspace = true }
 vox_data = { path = "../vox_data" }
 rand = "0.9"
+dirs-next = "2"
 serde = { workspace = true }
 toml = { workspace = true }
 uuid = { workspace = true }
