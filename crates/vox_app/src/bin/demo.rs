@@ -16,9 +16,12 @@ use winit::window::{Window, WindowId};
 
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
-use vox_render::gpu::software_rasteriser::{Framebuffer, SoftwareRasteriser};
+use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::gpu::wgpu_backend::WgpuBackend;
 use vox_render::spectral::RenderCamera;
+use vox_render::spectral_framebuffer::SpectralFramebuffer;
+use vox_render::spectral_tonemapper::{tonemap_spectral_framebuffer, ToneMapOperator, ToneMapSettings};
+use vox_render::temporal::TemporalAccumulator;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
@@ -56,6 +59,68 @@ struct DemoApp {
 
     // CLI arg: .ply file to load
     ply_path: Option<String>,
+
+    // Spectral pipeline
+    spectral_fb: SpectralFramebuffer,
+    temporal: TemporalAccumulator,
+    tonemap_settings: ToneMapSettings,
+    time_of_day: f32,  // 0-24 hours
+    exposure: f32,
+}
+
+/// Map time-of-day (0-24) to an illuminant that shifts from warm sunrise
+/// through neutral daylight to warm sunset and cool moonlight.
+fn illuminant_for_time(hour: f32) -> Illuminant {
+    let hour = hour % 24.0;
+    // Blend between key illuminants based on time of day:
+    //   6  = sunrise  (warm, Illuminant A-ish)
+    //  12  = noon     (D65 daylight)
+    //  18  = sunset   (warm, D50-ish)
+    //   0  = midnight (cool moonlight)
+    let d65 = Illuminant::d65();
+    let warm = Illuminant::a();
+    let cool = Illuminant {
+        bands: [30.0, 45.0, 70.0, 60.0, 50.0, 40.0, 30.0, 20.0],
+    };
+
+    let (a, b, t) = if (6.0..12.0).contains(&hour) {
+        // Sunrise -> Noon
+        (&warm, &d65, (hour - 6.0) / 6.0)
+    } else if (12.0..18.0).contains(&hour) {
+        // Noon -> Sunset
+        (&d65, &warm, (hour - 12.0) / 6.0)
+    } else if hour >= 18.0 {
+        // Sunset -> Midnight
+        let t = (hour - 18.0) / 6.0;
+        (&warm, &cool, t)
+    } else {
+        // Midnight -> Sunrise
+        (&cool, &warm, hour / 6.0)
+    };
+
+    let mut bands = [0.0f32; 8];
+    for i in 0..8 {
+        bands[i] = a.bands[i] * (1.0 - t) + b.bands[i] * t;
+    }
+    Illuminant { bands }
+}
+
+fn tonemap_operator_name(op: ToneMapOperator) -> &'static str {
+    match op {
+        ToneMapOperator::None => "Linear",
+        ToneMapOperator::ACES => "ACES",
+        ToneMapOperator::Reinhard => "Reinhard",
+        ToneMapOperator::Filmic => "Filmic",
+    }
+}
+
+fn next_tonemap_operator(op: ToneMapOperator) -> ToneMapOperator {
+    match op {
+        ToneMapOperator::None => ToneMapOperator::ACES,
+        ToneMapOperator::ACES => ToneMapOperator::Reinhard,
+        ToneMapOperator::Reinhard => ToneMapOperator::Filmic,
+        ToneMapOperator::Filmic => ToneMapOperator::None,
+    }
 }
 
 impl DemoApp {
@@ -81,6 +146,11 @@ impl DemoApp {
             fps_display: 0.0,
             placed_objects: Vec::new(),
             ply_path,
+            spectral_fb: SpectralFramebuffer::new(WIDTH, HEIGHT),
+            temporal: TemporalAccumulator::new(WIDTH, HEIGHT),
+            tonemap_settings: ToneMapSettings::default(),
+            time_of_day: 12.0, // Start at noon
+            exposure: 1.0,
         }
     }
 
@@ -185,15 +255,17 @@ impl DemoApp {
         }
     }
 
-    fn render_frame(&mut self) -> Framebuffer {
+    fn render_frame(&mut self) -> Vec<[u8; 4]> {
         let forward = self.camera_forward();
         let target = self.cam_pos + forward;
+        let w = self.rasteriser.width;
+        let h = self.rasteriser.height;
 
         let camera = RenderCamera {
             view: Mat4::look_at_rh(self.cam_pos, target, Vec3::Y),
             proj: Mat4::perspective_rh(
                 std::f32::consts::FRAC_PI_4,
-                self.rasteriser.width as f32 / self.rasteriser.height as f32,
+                w as f32 / h as f32,
                 0.1,
                 500.0,
             ),
@@ -211,8 +283,60 @@ impl DemoApp {
             }
         }
 
-        self.rasteriser
-            .render(&all_splats, &camera, &Illuminant::d65())
+        // Time-of-day illuminant
+        let illuminant = illuminant_for_time(self.time_of_day);
+
+        // 1. Render with software rasteriser (returns RGBA u8 framebuffer)
+        let fb = self.rasteriser.render(&all_splats, &camera, &illuminant);
+
+        // 2. Write to spectral framebuffer (approximate: convert RGB back to spectral bands)
+        self.spectral_fb.clear();
+        for (i, pixel) in fb.pixels.iter().enumerate() {
+            let x = (i % w as usize) as u32;
+            let y = (i / w as usize) as u32;
+            let r = pixel[0] as f32 / 255.0;
+            let g = pixel[1] as f32 / 255.0;
+            let b = pixel[2] as f32 / 255.0;
+
+            // Approximate spectral distribution from RGB.
+            // Maps RGB to 8 bands (380-660nm) using overlap model:
+            //   380nm = violet (blue)
+            //   420nm = blue
+            //   460nm = cyan (blue+green)
+            //   500nm = green-blue
+            //   540nm = green
+            //   580nm = yellow (green+red)
+            //   620nm = orange-red
+            //   660nm = red
+            let spectral = [
+                b * 0.3,                    // 380nm: violet
+                b * 0.7,                    // 420nm: blue
+                b * 0.8 + g * 0.1,          // 460nm: cyan-blue
+                g * 0.4 + b * 0.2,          // 500nm: green-blue
+                g * 0.9 + r * 0.05,         // 540nm: green
+                r * 0.4 + g * 0.3,          // 580nm: yellow
+                r * 0.8 + g * 0.05,         // 620nm: orange-red
+                r * 0.6,                    // 660nm: red
+            ];
+            let albedo = spectral; // Approximate: albedo same as spectral for this path
+
+            self.spectral_fb.write_sample(
+                x, y,
+                spectral,
+                1.0,               // depth (approximate, not per-pixel from rasteriser)
+                [0.0, 1.0, 0.0],  // normal (up)
+                0,                 // object_id
+                albedo,
+            );
+        }
+
+        // 3. Temporal accumulation: blend with previous frame
+        self.temporal.accumulate(&self.spectral_fb);
+        self.temporal.write_to_framebuffer(&mut self.spectral_fb);
+
+        // 4. Tone map spectral framebuffer to RGBA8 for display
+        self.tonemap_settings.exposure = self.exposure;
+        tonemap_spectral_framebuffer(&self.spectral_fb, &illuminant, &self.tonemap_settings)
     }
 
     fn place_object_at_cursor(&mut self) {
@@ -231,6 +355,11 @@ impl DemoApp {
             place_pos.x, place_pos.y, place_pos.z
         );
         self.placed_objects.push((place_pos, tree));
+    }
+
+    fn total_splat_count(&self) -> usize {
+        self.scene_splats.len()
+            + self.placed_objects.iter().map(|(_, s)| s.len()).sum::<usize>()
     }
 }
 
@@ -268,6 +397,9 @@ impl ApplicationHandler for DemoApp {
         println!("  Left-click  -- place a tree");
         println!("  Escape      -- release mouse / quit");
         println!("  F12         -- save screenshot");
+        println!("  T           -- advance time of day (+1 hour)");
+        println!("  +/-         -- adjust exposure");
+        println!("  M           -- cycle tone map operator");
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -291,19 +423,46 @@ impl ApplicationHandler for DemoApp {
                                 }
                             }
                             KeyCode::F12 => {
-                                let fb = self.render_frame();
+                                let pixels = self.render_frame();
                                 let dir = std::env::temp_dir().join("ochroma_visual");
                                 std::fs::create_dir_all(&dir).ok();
                                 let path = dir.join("screenshot.ppm");
+                                let w = self.rasteriser.width;
+                                let h = self.rasteriser.height;
                                 let mut data =
-                                    format!("P6\n{} {}\n255\n", fb.width, fb.height).into_bytes();
-                                for p in &fb.pixels {
+                                    format!("P6\n{} {}\n255\n", w, h).into_bytes();
+                                for p in &pixels {
                                     data.push(p[0]);
                                     data.push(p[1]);
                                     data.push(p[2]);
                                 }
                                 std::fs::write(&path, &data).ok();
                                 println!("[ochroma] Screenshot: {}", path.display());
+                            }
+                            KeyCode::KeyT => {
+                                self.time_of_day = (self.time_of_day + 1.0) % 24.0;
+                                self.temporal.reset(); // Reset accumulation on lighting change
+                                println!(
+                                    "[ochroma] Time of day: {:.0}:00",
+                                    self.time_of_day
+                                );
+                            }
+                            KeyCode::Equal => {
+                                // + key (=/+)
+                                self.exposure = (self.exposure * 1.2).min(16.0);
+                                println!("[ochroma] Exposure: {:.2}", self.exposure);
+                            }
+                            KeyCode::Minus => {
+                                self.exposure = (self.exposure / 1.2).max(0.05);
+                                println!("[ochroma] Exposure: {:.2}", self.exposure);
+                            }
+                            KeyCode::KeyM => {
+                                self.tonemap_settings.operator =
+                                    next_tonemap_operator(self.tonemap_settings.operator);
+                                println!(
+                                    "[ochroma] Tone map: {}",
+                                    tonemap_operator_name(self.tonemap_settings.operator)
+                                );
                             }
                             _ => {}
                         }
@@ -353,6 +512,8 @@ impl ApplicationHandler for DemoApp {
                 let w = size.width.max(1);
                 let h = size.height.max(1);
                 self.rasteriser = SoftwareRasteriser::new(w, h);
+                self.spectral_fb = SpectralFramebuffer::new(w, h);
+                self.temporal.resize(w, h);
                 if let Some(backend) = &mut self.backend {
                     backend.resize(w, h);
                 }
@@ -370,32 +531,27 @@ impl ApplicationHandler for DemoApp {
                     self.left_click_pending = false;
                 }
 
-                // Render
-                let fb = self.render_frame();
+                // Render through spectral pipeline
+                let pixels = self.render_frame();
 
                 // Present to window (if GPU backend available)
                 if let Some(backend) = &self.backend {
-                    backend.present_framebuffer(&fb.pixels, fb.width, fb.height);
+                    backend.present_framebuffer(&pixels, self.rasteriser.width, self.rasteriser.height);
                 }
 
-                // FPS counter
+                // FPS counter + title update
                 self.frame_count += 1;
                 let elapsed = now.duration_since(self.fps_timer).as_secs_f32();
                 if elapsed >= 1.0 {
                     self.fps_display = self.frame_count as f32 / elapsed;
                     if let Some(w) = &self.window {
                         w.set_title(&format!(
-                            "Ochroma Engine -- {:.0} FPS | {} splats | pos ({:.0},{:.0},{:.0})",
+                            "Ochroma -- {:.0} FPS | {} splats | {:.0}:00 | EV {:.2} | {}",
                             self.fps_display,
-                            self.scene_splats.len()
-                                + self
-                                    .placed_objects
-                                    .iter()
-                                    .map(|(_, s)| s.len())
-                                    .sum::<usize>(),
-                            self.cam_pos.x,
-                            self.cam_pos.y,
-                            self.cam_pos.z
+                            self.total_splat_count(),
+                            self.time_of_day,
+                            self.exposure,
+                            tonemap_operator_name(self.tonemap_settings.operator),
                         ));
                     }
                     self.frame_count = 0;
