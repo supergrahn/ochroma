@@ -4285,6 +4285,7 @@ dependencies = [
  "glam",
  "rand",
  "serde",
+ "serde_json",
  "uuid",
  "vox_core",
 ]
