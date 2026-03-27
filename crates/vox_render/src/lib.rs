@@ -10,3 +10,4 @@ pub mod destruction;
 pub mod telemetry;
 pub mod particles;
 pub mod animation;
+pub mod postprocess;
