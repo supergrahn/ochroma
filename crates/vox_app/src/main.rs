@@ -1,5 +1,6 @@
 mod demo_asset;
 pub mod headless;
+pub mod placement;
 pub mod simulation;
 pub mod systems;
 pub mod terrain_setup;
@@ -10,6 +11,7 @@ use std::time::Instant;
 
 use bevy_ecs::prelude::*;
 use glam::{Mat4, Vec3};
+use uuid::Uuid;
 use vox_core::ecs::{LodLevel, SplatAssetComponent, SplatInstanceComponent};
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
@@ -70,6 +72,8 @@ struct App {
     frame_count: u64,
     plop_ui: PlopUi,
     simulation: SimulationState,
+    /// The UUID of the demo building asset, for populating the asset browser.
+    demo_asset_uuid: Uuid,
     /// Mouse state for interactive camera.
     middle_pressed: bool,
     right_pressed: bool,
@@ -140,10 +144,20 @@ impl App {
             frame_count: 0,
             plop_ui: PlopUi::default(),
             simulation: SimulationState::new(),
+            demo_asset_uuid: asset_uuid,
             middle_pressed: false,
             right_pressed: false,
             last_mouse_x: 0.0,
             last_mouse_y: 0.0,
+        }
+    }
+
+    fn egui_wants_input(&self) -> bool {
+        match &self.render_mode {
+            Some(RenderMode::Gpu { egui_ctx, .. }) => {
+                egui_ctx.wants_pointer_input() || egui_ctx.wants_keyboard_input()
+            }
+            _ => false,
         }
     }
 }
@@ -281,13 +295,28 @@ impl ApplicationHandler for App {
                 }
             },
 
-            // --- Camera input: mouse button tracking ---
+            // --- Camera input + placement: mouse button tracking ---
             WindowEvent::MouseInput { state, button, .. } => match button {
                 winit::event::MouseButton::Middle => {
                     self.middle_pressed = state.is_pressed();
                 }
                 winit::event::MouseButton::Right => {
                     self.right_pressed = state.is_pressed();
+                }
+                winit::event::MouseButton::Left => {
+                    if state.is_pressed() && !self.egui_wants_input() {
+                        let inv_vp = self.camera.view_proj().inverse();
+                        let (origin, dir) = placement::screen_to_ray(
+                            self.last_mouse_x,
+                            self.last_mouse_y,
+                            WIDTH,
+                            HEIGHT,
+                            inv_vp,
+                        );
+                        if let Some(ground_pos) = placement::ray_ground_intersection(origin, dir) {
+                            self.plop_ui.handle_viewport_click(ground_pos, None);
+                        }
+                    }
                 }
                 _ => {}
             },
@@ -357,6 +386,15 @@ impl ApplicationHandler for App {
                     visible.splats.clone()
                 };
 
+                // --- Process pending UI actions (placements, selections) ---
+                let actions = self.plop_ui.take_actions();
+                if !actions.is_empty() {
+                    placement::process_actions(&mut self.world, &actions);
+                }
+
+                // Asset names list for the browser: expose the demo building.
+                let asset_names = vec![(self.demo_asset_uuid, "Demo Building".to_string())];
+
                 // Pre-compute values that need &self before we mutably borrow render_mode.
                 let window_clone = self.window.clone();
                 let plop_ui = &mut self.plop_ui;
@@ -416,7 +454,7 @@ impl ApplicationHandler for App {
                                     if ui.button("▶▶▶").clicked() { sim.game_speed = simulation::GameSpeed::VeryFast; }
                                 });
                             });
-                            plop_ui.show(ctx, &[]);
+                            plop_ui.show(ctx, &asset_names);
                         });
 
                         egui_state

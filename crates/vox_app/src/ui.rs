@@ -1,4 +1,12 @@
+use glam::Vec3;
 use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub enum UiAction {
+    PlaceAsset { asset_uuid: Uuid, position: Vec3 },
+    SelectInstance { instance_id: u32 },
+    Deselect,
+}
 
 pub struct PlopUi {
     pub selected_asset: Option<Uuid>,
@@ -7,6 +15,8 @@ pub struct PlopUi {
     pub asset_search: String,
     pub spectral_wear: f32,
     pub spectral_shift: f32,
+    pub actions: Vec<UiAction>,
+    pub click_position: Option<Vec3>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,11 +34,42 @@ impl Default for PlopUi {
             asset_search: String::new(),
             spectral_wear: 0.0,
             spectral_shift: 0.0,
+            actions: Vec::new(),
+            click_position: None,
         }
     }
 }
 
 impl PlopUi {
+    /// Handle a click in the 3D viewport at the given world position.
+    pub fn handle_viewport_click(&mut self, world_pos: Vec3, instance_at_cursor: Option<u32>) {
+        self.click_position = Some(world_pos);
+        match self.mode {
+            UiMode::Place => {
+                if let Some(uuid) = self.selected_asset {
+                    self.actions.push(UiAction::PlaceAsset {
+                        asset_uuid: uuid,
+                        position: world_pos,
+                    });
+                }
+            }
+            UiMode::Select => {
+                if let Some(id) = instance_at_cursor {
+                    self.selected_instance = Some(id);
+                    self.actions.push(UiAction::SelectInstance { instance_id: id });
+                } else {
+                    self.selected_instance = None;
+                    self.actions.push(UiAction::Deselect);
+                }
+            }
+        }
+    }
+
+    /// Take pending actions (drains the queue).
+    pub fn take_actions(&mut self) -> Vec<UiAction> {
+        std::mem::take(&mut self.actions)
+    }
+
     pub fn show(&mut self, ctx: &egui::Context, asset_names: &[(Uuid, String)]) {
         // Left panel: asset browser
         egui::SidePanel::left("asset_browser").show(ctx, |ui| {
