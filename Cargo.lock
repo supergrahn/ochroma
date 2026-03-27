@@ -4202,6 +4202,7 @@ name = "vox_nn"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "half",
  "rand",
  "serde",
  "serde_json",
