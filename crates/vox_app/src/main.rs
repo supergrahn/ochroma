@@ -6,7 +6,7 @@ use std::time::Instant;
 use glam::{Mat4, Vec3};
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
-use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
+use vox_render::gpu::gpu_rasteriser::GpuRasteriser;
 use vox_render::gpu::wgpu_backend::WgpuBackend;
 use vox_render::spectral::RenderCamera;
 use winit::application::ApplicationHandler;
@@ -21,15 +21,15 @@ struct App {
     /// Set once `resumed` fires.
     window: Option<Arc<Window>>,
     backend: Option<WgpuBackend>,
-    rasteriser: SoftwareRasteriser,
+    gpu_rasteriser: Option<GpuRasteriser>,
     /// Combined splat list: two building instances side by side.
-    splats: Vec<GaussianSplat>,
+    world_splats: Vec<GaussianSplat>,
     /// Orbit angle in radians.
-    angle: f32,
+    camera_angle: f32,
     last_frame: Instant,
     /// Instant of last FPS print.
-    last_fps_print: Instant,
-    frame_count: u32,
+    fps_timer: Instant,
+    frame_count: u64,
 }
 
 impl App {
@@ -54,11 +54,11 @@ impl App {
         Self {
             window: None,
             backend: None,
-            rasteriser: SoftwareRasteriser::new(WIDTH, HEIGHT),
-            splats,
-            angle: 0.0,
+            gpu_rasteriser: None,
+            world_splats: splats,
+            camera_angle: 0.0,
             last_frame: now,
-            last_fps_print: now,
+            fps_timer: now,
             frame_count: 0,
         }
     }
@@ -78,6 +78,13 @@ impl ApplicationHandler for App {
 
         let backend = WgpuBackend::new(Arc::clone(&window), WIDTH, HEIGHT);
 
+        let gpu_rasteriser = GpuRasteriser::new(
+            backend.device(),
+            backend.surface_format(),
+            WIDTH, HEIGHT,
+        );
+        self.gpu_rasteriser = Some(gpu_rasteriser);
+
         self.window = Some(window);
         self.backend = Some(backend);
     }
@@ -93,12 +100,14 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
 
-            WindowEvent::Resized(physical_size) => {
+            WindowEvent::Resized(size) => {
                 if let Some(backend) = self.backend.as_mut() {
-                    let w = physical_size.width.max(1);
-                    let h = physical_size.height.max(1);
+                    let w = size.width.max(1);
+                    let h = size.height.max(1);
                     backend.resize(w, h);
-                    self.rasteriser = SoftwareRasteriser::new(w, h);
+                }
+                if let Some(gpu) = &mut self.gpu_rasteriser {
+                    gpu.resize(size.width, size.height);
                 }
             }
 
@@ -109,14 +118,14 @@ impl ApplicationHandler for App {
                 self.last_frame = now;
 
                 // --- Update orbit angle ---
-                self.angle += dt * 0.3;
+                self.camera_angle += dt * 0.3;
 
                 // --- Build camera ---
                 // Orbit around the midpoint between the two instances.
                 let target = Vec3::new(20.0, 7.5, 6.0); // centre of both buildings
                 let radius = 50.0_f32;
-                let cam_x = target.x + radius * self.angle.cos();
-                let cam_z = target.z + radius * self.angle.sin();
+                let cam_x = target.x + radius * self.camera_angle.cos();
+                let cam_z = target.z + radius * self.camera_angle.sin();
                 let cam_y = 18.0_f32;
                 let eye = Vec3::new(cam_x, cam_y, cam_z);
 
@@ -130,23 +139,33 @@ impl ApplicationHandler for App {
                 );
                 let camera = RenderCamera { view, proj };
 
-                // --- Software rasterise ---
-                let illuminant = Illuminant::d65();
-                let fb = self.rasteriser.render(&self.splats, &camera, &illuminant);
+                // --- GPU rasterise + present ---
+                let backend = self.backend.as_ref().unwrap();
+                let output = match backend.surface().get_current_texture() {
+                    Ok(t) => t,
+                    Err(_) => return,
+                };
+                let view_tex = output.texture.create_view(&Default::default());
 
-                // --- Present ---
-                if let Some(backend) = self.backend.as_ref() {
-                    backend.present_framebuffer(&fb.pixels, fb.width, fb.height);
-                }
+                self.gpu_rasteriser.as_ref().unwrap().render(
+                    backend.device(),
+                    backend.queue(),
+                    &view_tex,
+                    &self.world_splats,
+                    &camera,
+                    &Illuminant::d65(),
+                );
+
+                output.present();
 
                 // --- FPS counter ---
                 self.frame_count += 1;
-                let elapsed = now.duration_since(self.last_fps_print).as_secs_f32();
+                let elapsed = now.duration_since(self.fps_timer).as_secs_f32();
                 if elapsed >= 2.0 {
                     let fps = self.frame_count as f32 / elapsed;
                     println!("FPS: {fps:.1}");
                     self.frame_count = 0;
-                    self.last_fps_print = now;
+                    self.fps_timer = now;
                 }
 
                 // --- Request next frame ---
