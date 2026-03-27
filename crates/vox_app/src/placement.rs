@@ -25,6 +25,15 @@ pub fn process_actions(world: &mut World, actions: &[UiAction]) {
                 println!("[ochroma] Selected instance {}", instance_id);
             }
             UiAction::Deselect => {}
+            UiAction::PlaceService { service_type, position } => {
+                println!("[ochroma] Place service '{}' at ({:.1}, {:.1}, {:.1})", service_type, position.x, position.y, position.z);
+            }
+            UiAction::ZoneArea { zone_type, position } => {
+                println!("[ochroma] Zone '{}' at ({:.1}, {:.1}, {:.1})", zone_type, position.x, position.y, position.z);
+            }
+            UiAction::ChangeGameSpeed { speed } => {
+                println!("[ochroma] Game speed changed to {}", speed);
+            }
         }
     }
 }

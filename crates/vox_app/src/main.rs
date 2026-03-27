@@ -503,7 +503,24 @@ impl ApplicationHandler for App {
                                     if ui.button("▶▶▶").clicked() { sim.game_speed = simulation::GameSpeed::VeryFast; }
                                 });
                             });
-                            plop_ui.show(ctx, &asset_names);
+                            let citizens = sim.citizens.all();
+                            let avg_satisfaction = if citizens.is_empty() {
+                                0.0f32
+                            } else {
+                                citizens.iter().map(|c| c.satisfaction).sum::<f32>() / citizens.len() as f32
+                            };
+                            let sim_info = ui::SimInfo {
+                                funds: sim.budget.funds,
+                                total_income: sim.budget.total_income(),
+                                total_expenses: sim.budget.total_expenses(),
+                                net: sim.budget.net(),
+                                citizen_count: sim.citizens.count() as u32,
+                                avg_satisfaction,
+                                demand_residential: sim.zoning.demand.residential,
+                                demand_commercial: sim.zoning.demand.commercial,
+                                demand_industrial: sim.zoning.demand.industrial,
+                            };
+                            plop_ui.show(ctx, &asset_names, Some(&sim_info));
                         });
 
                         egui_state
