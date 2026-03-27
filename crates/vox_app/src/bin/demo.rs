@@ -16,6 +16,7 @@ use winit::window::{Window, WindowId};
 
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
+use vox_render::dlss::{DlssPipeline, DlssQuality, FrameGeneration};
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::gpu::wgpu_backend::WgpuBackend;
 use vox_render::spectral::RenderCamera;
@@ -66,6 +67,9 @@ struct DemoApp {
     tonemap_settings: ToneMapSettings,
     time_of_day: f32,  // 0-24 hours
     exposure: f32,
+
+    // DLSS
+    dlss: DlssPipeline,
 }
 
 /// Map time-of-day (0-24) to an illuminant that shifts from warm sunrise
@@ -114,6 +118,26 @@ fn tonemap_operator_name(op: ToneMapOperator) -> &'static str {
     }
 }
 
+fn dlss_quality_name(q: DlssQuality) -> &'static str {
+    match q {
+        DlssQuality::Off => "Off",
+        DlssQuality::Quality => "Quality",
+        DlssQuality::Balanced => "Balanced",
+        DlssQuality::Performance => "Performance",
+        DlssQuality::UltraPerformance => "Ultra Perf",
+    }
+}
+
+fn next_dlss_quality(q: DlssQuality) -> DlssQuality {
+    match q {
+        DlssQuality::Off => DlssQuality::Quality,
+        DlssQuality::Quality => DlssQuality::Balanced,
+        DlssQuality::Balanced => DlssQuality::Performance,
+        DlssQuality::Performance => DlssQuality::UltraPerformance,
+        DlssQuality::UltraPerformance => DlssQuality::Off,
+    }
+}
+
 fn next_tonemap_operator(op: ToneMapOperator) -> ToneMapOperator {
     match op {
         ToneMapOperator::None => ToneMapOperator::ACES,
@@ -151,6 +175,7 @@ impl DemoApp {
             tonemap_settings: ToneMapSettings::default(),
             time_of_day: 12.0, // Start at noon
             exposure: 1.0,
+            dlss: DlssPipeline::new(WIDTH, HEIGHT, DlssQuality::Off),
         }
     }
 
@@ -258,14 +283,24 @@ impl DemoApp {
     fn render_frame(&mut self) -> Vec<[u8; 4]> {
         let forward = self.camera_forward();
         let target = self.cam_pos + forward;
-        let w = self.rasteriser.width;
-        let h = self.rasteriser.height;
+
+        // When DLSS is active, render at the smaller internal resolution
+        let (render_w, render_h) = self.dlss.render_resolution();
+        let display_w = self.dlss.display_width;
+        let display_h = self.dlss.display_height;
+
+        // Resize rasteriser and spectral buffers if DLSS resolution changed
+        if self.rasteriser.width != render_w || self.rasteriser.height != render_h {
+            self.rasteriser = SoftwareRasteriser::new(render_w, render_h);
+            self.spectral_fb = SpectralFramebuffer::new(render_w, render_h);
+            self.temporal.resize(render_w, render_h);
+        }
 
         let camera = RenderCamera {
             view: Mat4::look_at_rh(self.cam_pos, target, Vec3::Y),
             proj: Mat4::perspective_rh(
                 std::f32::consts::FRAC_PI_4,
-                w as f32 / h as f32,
+                display_w as f32 / display_h as f32, // Use display aspect ratio
                 0.1,
                 500.0,
             ),
@@ -286,28 +321,18 @@ impl DemoApp {
         // Time-of-day illuminant
         let illuminant = illuminant_for_time(self.time_of_day);
 
-        // 1. Render with software rasteriser (returns RGBA u8 framebuffer)
+        // 1. Render with software rasteriser at internal resolution
         let fb = self.rasteriser.render(&all_splats, &camera, &illuminant);
 
         // 2. Write to spectral framebuffer (approximate: convert RGB back to spectral bands)
         self.spectral_fb.clear();
         for (i, pixel) in fb.pixels.iter().enumerate() {
-            let x = (i % w as usize) as u32;
-            let y = (i / w as usize) as u32;
+            let x = (i % render_w as usize) as u32;
+            let y = (i / render_w as usize) as u32;
             let r = pixel[0] as f32 / 255.0;
             let g = pixel[1] as f32 / 255.0;
             let b = pixel[2] as f32 / 255.0;
 
-            // Approximate spectral distribution from RGB.
-            // Maps RGB to 8 bands (380-660nm) using overlap model:
-            //   380nm = violet (blue)
-            //   420nm = blue
-            //   460nm = cyan (blue+green)
-            //   500nm = green-blue
-            //   540nm = green
-            //   580nm = yellow (green+red)
-            //   620nm = orange-red
-            //   660nm = red
             let spectral = [
                 b * 0.3,                    // 380nm: violet
                 b * 0.7,                    // 420nm: blue
@@ -318,14 +343,14 @@ impl DemoApp {
                 r * 0.8 + g * 0.05,         // 620nm: orange-red
                 r * 0.6,                    // 660nm: red
             ];
-            let albedo = spectral; // Approximate: albedo same as spectral for this path
+            let albedo = spectral;
 
             self.spectral_fb.write_sample(
                 x, y,
                 spectral,
-                1.0,               // depth (approximate, not per-pixel from rasteriser)
-                [0.0, 1.0, 0.0],  // normal (up)
-                0,                 // object_id
+                1.0,
+                [0.0, 1.0, 0.0],
+                0,
                 albedo,
             );
         }
@@ -334,9 +359,22 @@ impl DemoApp {
         self.temporal.accumulate(&self.spectral_fb);
         self.temporal.write_to_framebuffer(&mut self.spectral_fb);
 
-        // 4. Tone map spectral framebuffer to RGBA8 for display
+        // 4. Tone map spectral framebuffer to RGBA8
         self.tonemap_settings.exposure = self.exposure;
-        tonemap_spectral_framebuffer(&self.spectral_fb, &illuminant, &self.tonemap_settings)
+        let tonemapped = tonemap_spectral_framebuffer(&self.spectral_fb, &illuminant, &self.tonemap_settings);
+
+        // 5. DLSS upscale from internal resolution to display resolution
+        let pixel_count = (render_w * render_h) as usize;
+        let depth = vec![1.0f32; pixel_count];
+        let motion = vec![[0.0f32; 2]; pixel_count];
+        let upscaled = self.dlss.upscale(&tonemapped, render_w, render_h, &depth, &motion);
+
+        // 6. DLSS frame generation (optional extra interpolated frame)
+        let display_count = (display_w * display_h) as usize;
+        let display_motion = vec![[0.0f32; 2]; display_count];
+        let _generated = self.dlss.generate_frame(&upscaled, &display_motion);
+
+        upscaled
     }
 
     fn place_object_at_cursor(&mut self) {
@@ -400,6 +438,8 @@ impl ApplicationHandler for DemoApp {
         println!("  T           -- advance time of day (+1 hour)");
         println!("  +/-         -- adjust exposure");
         println!("  M           -- cycle tone map operator");
+        println!("  Q           -- cycle DLSS quality (Off/Quality/Balanced/Performance/Ultra)");
+        println!("  G           -- toggle frame generation");
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -464,6 +504,26 @@ impl ApplicationHandler for DemoApp {
                                     tonemap_operator_name(self.tonemap_settings.operator)
                                 );
                             }
+                            KeyCode::KeyQ => {
+                                self.dlss.quality = next_dlss_quality(self.dlss.quality);
+                                let (rw, rh) = self.dlss.render_resolution();
+                                println!(
+                                    "[ochroma] DLSS: {} (render {}x{} -> display {}x{})",
+                                    dlss_quality_name(self.dlss.quality),
+                                    rw, rh,
+                                    self.dlss.display_width, self.dlss.display_height,
+                                );
+                            }
+                            KeyCode::KeyG => {
+                                self.dlss.frame_gen = match self.dlss.frame_gen {
+                                    FrameGeneration::Off => FrameGeneration::On,
+                                    FrameGeneration::On => FrameGeneration::Off,
+                                };
+                                println!(
+                                    "[ochroma] Frame generation: {:?}",
+                                    self.dlss.frame_gen
+                                );
+                            }
                             _ => {}
                         }
                     } else {
@@ -511,9 +571,12 @@ impl ApplicationHandler for DemoApp {
             WindowEvent::Resized(size) => {
                 let w = size.width.max(1);
                 let h = size.height.max(1);
-                self.rasteriser = SoftwareRasteriser::new(w, h);
-                self.spectral_fb = SpectralFramebuffer::new(w, h);
-                self.temporal.resize(w, h);
+                // DLSS manages the display resolution; rasteriser uses internal resolution
+                self.dlss.resize(w, h);
+                let (rw, rh) = self.dlss.render_resolution();
+                self.rasteriser = SoftwareRasteriser::new(rw, rh);
+                self.spectral_fb = SpectralFramebuffer::new(rw, rh);
+                self.temporal.resize(rw, rh);
                 if let Some(backend) = &mut self.backend {
                     backend.resize(w, h);
                 }
@@ -535,8 +598,9 @@ impl ApplicationHandler for DemoApp {
                 let pixels = self.render_frame();
 
                 // Present to window (if GPU backend available)
+                // Pixels are at display resolution after DLSS upscale
                 if let Some(backend) = &self.backend {
-                    backend.present_framebuffer(&pixels, self.rasteriser.width, self.rasteriser.height);
+                    backend.present_framebuffer(&pixels, self.dlss.display_width, self.dlss.display_height);
                 }
 
                 // FPS counter + title update
@@ -545,13 +609,26 @@ impl ApplicationHandler for DemoApp {
                 if elapsed >= 1.0 {
                     self.fps_display = self.frame_count as f32 / elapsed;
                     if let Some(w) = &self.window {
+                        let dlss_label = match self.dlss.quality {
+                            DlssQuality::Off => "DLSS Off".to_string(),
+                            q => {
+                                let (rw, rh) = self.dlss.render_resolution();
+                                format!("DLSS {} ({}x{})", dlss_quality_name(q), rw, rh)
+                            }
+                        };
+                        let fg_label = match self.dlss.frame_gen {
+                            FrameGeneration::On => " | FrameGen ON",
+                            FrameGeneration::Off => "",
+                        };
                         w.set_title(&format!(
-                            "Ochroma -- {:.0} FPS | {} splats | {:.0}:00 | EV {:.2} | {}",
+                            "Ochroma -- {:.0} FPS | {} splats | {:.0}:00 | EV {:.2} | {} | {}{}",
                             self.fps_display,
                             self.total_splat_count(),
                             self.time_of_day,
                             self.exposure,
                             tonemap_operator_name(self.tonemap_settings.operator),
+                            dlss_label,
+                            fg_label,
                         ));
                     }
                     self.frame_count = 0;
