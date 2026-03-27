@@ -22,3 +22,5 @@ pub mod eqs;
 pub mod editor_state;
 pub mod editor_panels;
 pub mod editor_tools;
+pub mod output_log;
+pub mod world_settings;
