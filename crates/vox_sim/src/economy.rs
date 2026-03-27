@@ -31,7 +31,26 @@ impl Default for CityBudget {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BudgetReport {
+    pub total_income: f64,
+    pub total_expenses: f64,
+    pub net: f64,
+    pub funds: f64,
+    pub citizen_count: u32,
+}
+
 impl CityBudget {
+    pub fn generate_report(&self, citizen_count: u32) -> BudgetReport {
+        BudgetReport {
+            total_income: self.total_income(),
+            total_expenses: self.total_expenses(),
+            net: self.net(),
+            funds: self.funds,
+            citizen_count,
+        }
+    }
+
     pub fn total_income(&self) -> f64 {
         self.residential_income + self.commercial_income + self.industrial_income
     }
