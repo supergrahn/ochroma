@@ -35,3 +35,7 @@ toml = { workspace = true }
 [[bin]]
 name = "demo"
 path = "src/bin/demo.rs"
+
+[[example]]
+name = "simple_game"
+path = "examples/simple_game.rs"
