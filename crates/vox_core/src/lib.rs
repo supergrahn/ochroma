@@ -19,3 +19,6 @@ pub mod game_ui;
 pub mod ai;
 pub mod behavior_tree;
 pub mod eqs;
+pub mod editor_state;
+pub mod editor_panels;
+pub mod editor_tools;
