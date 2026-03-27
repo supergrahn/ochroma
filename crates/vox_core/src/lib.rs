@@ -17,3 +17,4 @@ pub mod character_controller;
 pub mod hot_reload_system;
 pub mod game_ui;
 pub mod ai;
+pub mod behavior_tree;
