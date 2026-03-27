@@ -47,3 +47,5 @@ pub mod gizmos;
 pub mod visual_effects;
 pub mod ik;
 pub mod motion_matching;
+pub mod material_nodes;
+pub mod facial_animation;
