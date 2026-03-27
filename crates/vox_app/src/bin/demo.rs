@@ -17,9 +17,11 @@ use winit::window::{Window, WindowId};
 use vox_app::editor::SceneEditor;
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
+use vox_render::clas;
 use vox_render::dlss::{DlssPipeline, DlssQuality, FrameGeneration};
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::gpu::wgpu_backend::WgpuBackend;
+use vox_render::mega_geometry::MegaGeometryDispatch;
 use vox_render::spectral::RenderCamera;
 use vox_render::spectral_framebuffer::SpectralFramebuffer;
 use vox_render::spectral_tonemapper::{tonemap_spectral_framebuffer, ToneMapOperator, ToneMapSettings};
@@ -75,6 +77,14 @@ struct DemoApp {
     // Scene editor
     editor: SceneEditor,
     ctrl_held: bool,
+
+    // CLAS clustering
+    clas_cluster_count: usize,
+    clas_bvh_depth: u32,
+    clas_avg_per_cluster: f32,
+
+    // MegaGeometry
+    mega_tile_count: u32,
 }
 
 /// Map time-of-day (0-24) to an illuminant that shifts from warm sunrise
@@ -152,6 +162,88 @@ fn next_tonemap_operator(op: ToneMapOperator) -> ToneMapOperator {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Bitmap font (5x7 pixel glyphs) for editor HUD
+// ---------------------------------------------------------------------------
+
+const CHAR_WIDTH: u32 = 6;
+
+fn char_bitmap(ch: char) -> [u8; 7] {
+    match ch {
+        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
+        '3' => [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110],
+        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+        '6' => [0b01110, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
+        'A' | 'a' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'B' | 'b' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+        'C' | 'c' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'D' | 'd' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+        'E' | 'e' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'F' | 'f' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'G' | 'g' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
+        'H' | 'h' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'I' | 'i' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        'J' | 'j' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+        'K' | 'k' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+        'L' | 'l' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'M' | 'm' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+        'N' | 'n' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+        'O' | 'o' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'P' | 'p' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'R' | 'r' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        'S' | 's' => [0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110],
+        'T' | 't' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'U' | 'u' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'V' | 'v' => [0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100],
+        'W' | 'w' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+        'X' | 'x' => [0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001],
+        'Y' | 'y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        'Z' | 'z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+        '/' => [0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b00000, 0b00000],
+        ':' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
+        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100],
+        ',' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b01000],
+        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
+        '(' => [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
+        ')' => [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
+        '#' => [0b01010, 0b11111, 0b01010, 0b01010, 0b11111, 0b01010, 0b00000],
+        '[' => [0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110],
+        ']' => [0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110],
+        '<' => [0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010],
+        '>' => [0b01000, 0b00100, 0b00010, 0b00001, 0b00010, 0b00100, 0b01000],
+        ' ' => [0; 7],
+        _ => [0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111],
+    }
+}
+
+fn burn_text(pixels: &mut [[u8; 4]], width: u32, x: u32, y: u32, text: &str, color: [u8; 3]) {
+    for (ci, ch) in text.chars().enumerate() {
+        let bitmap = char_bitmap(ch);
+        let base_x = x + ci as u32 * CHAR_WIDTH;
+        for (row, &bits) in bitmap.iter().enumerate() {
+            for col in 0..5u32 {
+                if bits & (1 << (4 - col)) != 0 {
+                    let px = base_x + col;
+                    let py = y + row as u32;
+                    if px < width {
+                        let idx = (py * width + px) as usize;
+                        if idx < pixels.len() {
+                            pixels[idx] = [color[0], color[1], color[2], 255];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl DemoApp {
     fn new(ply_path: Option<String>) -> Self {
         // Set up scene editor with default entities
@@ -202,6 +294,10 @@ impl DemoApp {
             dlss: DlssPipeline::new(WIDTH, HEIGHT, DlssQuality::Off),
             editor,
             ctrl_held: false,
+            clas_cluster_count: 0,
+            clas_bvh_depth: 0,
+            clas_avg_per_cluster: 0.0,
+            mega_tile_count: 0,
         }
     }
 
@@ -266,6 +362,26 @@ impl DemoApp {
         self.scene_splats.extend(building_splats);
         self.scene_splats.extend(tree_splats);
         println!("[ochroma] Total scene: {} splats", self.scene_splats.len());
+
+        // CLAS clustering
+        let clusters = clas::build_clusters(&self.scene_splats, 128);
+        let bvh = clas::build_cluster_bvh(&clusters);
+        let stats = clas::compute_stats(&clusters, &bvh);
+        self.clas_cluster_count = stats.cluster_count;
+        self.clas_bvh_depth = stats.bvh_depth;
+        self.clas_avg_per_cluster = stats.avg_splats_per_cluster;
+        println!(
+            "[ochroma] CLAS: {} clusters, BVH depth {}, avg {:.0} splats/cluster",
+            stats.cluster_count, stats.bvh_depth, stats.avg_splats_per_cluster,
+        );
+
+        // MegaGeometry tile dispatch proof-of-concept
+        let dispatch = MegaGeometryDispatch::new(self.rasteriser.width, self.rasteriser.height, 500_000);
+        self.mega_tile_count = dispatch.tile_count();
+        println!(
+            "[ochroma] MegaGeometry: {} tiles at {}x{}",
+            self.mega_tile_count, self.rasteriser.width, self.rasteriser.height,
+        );
     }
 
     fn camera_forward(&self) -> Vec3 {
@@ -400,7 +516,42 @@ impl DemoApp {
         let display_motion = vec![[0.0f32; 2]; display_count];
         let _generated = self.dlss.generate_frame(&upscaled, &display_motion);
 
-        upscaled
+        let mut final_pixels = upscaled;
+
+        // 7. Editor HUD overlay (burn text when editor is visible)
+        if self.editor.visible {
+            // Header
+            burn_text(&mut final_pixels, display_w, 10, 10,
+                &format!("EDITOR  {} entities", self.editor.entity_count()),
+                [255, 255, 100]);
+
+            // Entity list on left side
+            for (i, entity) in self.editor.entities.iter().enumerate() {
+                let is_sel = self.editor.selected == Some(entity.id);
+                let prefix = if is_sel { ">" } else { " " };
+                let label = format!("{} #{} {}", prefix, entity.id, entity.name);
+                let color = if is_sel { [0, 255, 0] } else { [200, 200, 200] };
+                burn_text(&mut final_pixels, display_w, 10, 24 + i as u32 * 10, &label, color);
+            }
+
+            // Selected entity properties on right side
+            if let Some(entity) = self.editor.selected_entity() {
+                let rx = display_w.saturating_sub(240);
+                burn_text(&mut final_pixels, display_w, rx, 10,
+                    &format!("SELECTED: {}", entity.name), [0, 255, 0]);
+                burn_text(&mut final_pixels, display_w, rx, 24,
+                    &format!("POS: {:.1},{:.1},{:.1}", entity.position.x, entity.position.y, entity.position.z),
+                    [180, 180, 180]);
+                burn_text(&mut final_pixels, display_w, rx, 34,
+                    &format!("ASSET: {}", entity.asset_path),
+                    [180, 180, 180]);
+                burn_text(&mut final_pixels, display_w, rx, 44,
+                    &format!("VISIBLE: {}  LOCKED: {}", entity.visible, entity.locked),
+                    [180, 180, 180]);
+            }
+        }
+
+        final_pixels
     }
 
     fn place_object_at_cursor(&mut self) {
@@ -722,9 +873,11 @@ impl ApplicationHandler for DemoApp {
                             String::new()
                         };
                         w.set_title(&format!(
-                            "Ochroma -- {:.0} FPS | {} splats | {:.0}:00 | EV {:.2} | {} | {}{}{}",
+                            "Ochroma -- {:.0} FPS | {} splats | CLAS:{} | Tiles:{} | {:.0}:00 | EV {:.2} | {} | {}{}{}",
                             self.fps_display,
                             self.total_splat_count(),
+                            self.clas_cluster_count,
+                            self.mega_tile_count,
                             self.time_of_day,
                             self.exposure,
                             tonemap_operator_name(self.tonemap_settings.operator),

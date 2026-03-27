@@ -17,11 +17,13 @@ use winit::window::{Window, WindowId};
 
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
+use vox_render::clas;
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::gpu::wgpu_backend::WgpuBackend;
 use vox_render::spectral::RenderCamera;
 use vox_render::spectral_framebuffer::SpectralFramebuffer;
 use vox_render::spectral_tonemapper::{tonemap_spectral_framebuffer, ToneMapSettings};
+use vox_script::rhai_runtime::RhaiRuntime;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
@@ -186,6 +188,13 @@ struct WalkingSim {
     // Spectral pipeline
     spectral_fb: SpectralFramebuffer,
     tonemap_settings: ToneMapSettings,
+
+    // CLAS clustering stats
+    clas_cluster_count: usize,
+    clas_bvh_depth: u32,
+
+    // Scripting
+    rhai: RhaiRuntime,
 }
 
 impl WalkingSim {
@@ -236,6 +245,9 @@ impl WalkingSim {
             fps_timer: Instant::now(),
             spectral_fb: SpectralFramebuffer::new(WIDTH, HEIGHT),
             tonemap_settings: ToneMapSettings::default(),
+            clas_cluster_count: 0,
+            clas_bvh_depth: 0,
+            rhai: RhaiRuntime::new(),
         }
     }
 
@@ -311,6 +323,20 @@ impl WalkingSim {
         let total =
             self.terrain_splats.len() + self.building_splats.len() + self.tree_splats.len();
         println!("[walking_sim] Scene: {} splats total", total);
+
+        // CLAS clustering
+        let mut all_splats = self.terrain_splats.clone();
+        all_splats.extend_from_slice(&self.building_splats);
+        all_splats.extend_from_slice(&self.tree_splats);
+        let clusters = clas::build_clusters(&all_splats, 128);
+        let bvh = clas::build_cluster_bvh(&clusters);
+        let stats = clas::compute_stats(&clusters, &bvh);
+        self.clas_cluster_count = stats.cluster_count;
+        self.clas_bvh_depth = stats.bvh_depth;
+        println!(
+            "[walking_sim] CLAS: {} clusters, BVH depth {}, avg {:.0} splats/cluster",
+            stats.cluster_count, stats.bvh_depth, stats.avg_splats_per_cluster,
+        );
     }
 
     fn generate_orb_splats(&self) -> Vec<GaussianSplat> {
@@ -527,8 +553,34 @@ impl ApplicationHandler for WalkingSim {
         self.window = Some(window);
         self.build_scene();
 
+        // Load game config via Rhai scripting
+        let config_script = r#"
+            // Game configuration — edit this and hot-reload!
+            let orb_count = 10;
+            let player_speed = 8.0;
+            let collect_distance = 2.5;
+            let orb_bob_speed = 2.0;
+            let orb_pulse_speed = 3.0;
+            log("Game config loaded via Rhai!");
+            orb_count  // return value
+        "#;
+        match self.rhai.load_script("config", config_script) {
+            Ok(idx) => {
+                if let Ok(()) = self.rhai.run(idx) {
+                    println!("[walking_sim] Rhai config loaded");
+                }
+            }
+            Err(e) => eprintln!("[walking_sim] Rhai error: {}", e),
+        }
+
+        // Test Rhai eval (debug console proof-of-concept)
+        match self.rhai.eval("2 + 2") {
+            Ok(result) => println!("[walking_sim] Rhai eval test: 2 + 2 = {}", result),
+            Err(e) => eprintln!("[walking_sim] Rhai eval error: {}", e),
+        }
+
         println!("[walking_sim] Walk around and collect all 10 glowing orbs to win!");
-        println!("Controls: WASD move, right-click look, Escape quit");
+        println!("Controls: WASD move, right-click look, ` Rhai eval, Escape quit");
     }
 
     fn window_event(
@@ -544,8 +596,17 @@ impl ApplicationHandler for WalkingSim {
                 if let PhysicalKey::Code(key) = event.physical_key {
                     if event.state == ElementState::Pressed {
                         self.keys_held.insert(key);
-                        if key == KeyCode::Escape {
-                            event_loop.exit();
+                        match key {
+                            KeyCode::Escape => event_loop.exit(),
+                            KeyCode::Backquote => {
+                                // Debug Rhai eval — evaluate a test expression
+                                let expr = "42 * 2 + 1";
+                                match self.rhai.eval(expr) {
+                                    Ok(result) => println!("[rhai-console] {} = {}", expr, result),
+                                    Err(e) => eprintln!("[rhai-console] Error: {}", e),
+                                }
+                            }
+                            _ => {}
                         }
                     } else {
                         self.keys_held.remove(&key);
@@ -596,10 +657,11 @@ impl ApplicationHandler for WalkingSim {
                         / now.duration_since(self.fps_timer).as_secs_f32();
                     if let Some(w) = &self.window {
                         w.set_title(&format!(
-                            "Ochroma Walking Sim -- {:.0} FPS | Orbs: {}/{}{}",
+                            "Ochroma Walking Sim -- {:.0} FPS | Orbs: {}/{} | CLAS: {} clusters{}",
                             fps,
                             self.orbs_collected,
                             self.total_orbs,
+                            self.clas_cluster_count,
                             if self.game_won { " | YOU WIN!" } else { "" }
                         ));
                     }
