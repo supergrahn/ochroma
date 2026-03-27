@@ -1,3 +1,5 @@
+pub mod acoustic_raytracer;
+
 use glam::Vec3;
 
 #[cfg(feature = "audio-backend")]
