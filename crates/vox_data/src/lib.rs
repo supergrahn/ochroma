@@ -9,3 +9,5 @@ pub mod proc_gs_advanced;
 pub mod scene_serialize;
 pub mod scene_format;
 pub mod asset_catalog;
+pub mod marketplace;
+pub mod templates;
