@@ -8,3 +8,4 @@ pub mod frustum;
 pub mod lod;
 pub mod destruction;
 pub mod telemetry;
+pub mod particles;
