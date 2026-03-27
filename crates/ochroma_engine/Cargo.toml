@@ -1,0 +1,30 @@
+[package]
+name = "ochroma_engine"
+edition.workspace = true
+version.workspace = true
+description = "Ochroma Spectral Gaussian Splatting Game Engine"
+
+[features]
+default = ["rendering", "simulation", "audio"]
+rendering = []
+simulation = []
+audio = []
+networking = []
+scripting = []
+vr = []
+full = ["rendering", "simulation", "audio", "networking", "scripting", "vr"]
+
+[dependencies]
+vox_core = { path = "../vox_core" }
+vox_data = { path = "../vox_data" }
+vox_render = { path = "../vox_render" }
+vox_sim = { path = "../vox_sim" }
+vox_audio = { path = "../vox_audio" }
+vox_physics = { path = "../vox_physics" }
+vox_terrain = { path = "../vox_terrain" }
+vox_ui = { path = "../vox_ui" }
+vox_net = { path = "../vox_net" }
+vox_script = { path = "../vox_script" }
+vox_nn = { path = "../vox_nn" }
+glam = { workspace = true }
+uuid = { workspace = true }
