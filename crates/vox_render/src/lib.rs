@@ -43,3 +43,4 @@ pub mod dlss;
 pub mod shadows;
 pub mod rigid_animation;
 pub mod gizmos;
+pub mod visual_effects;
