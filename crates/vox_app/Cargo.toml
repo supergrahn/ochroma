@@ -40,6 +40,14 @@ path = "src/bin/demo.rs"
 name = "walking_sim"
 path = "src/bin/walking_sim.rs"
 
+[[bin]]
+name = "render_showcase"
+path = "src/bin/render_showcase.rs"
+
 [[example]]
 name = "simple_game"
 path = "examples/simple_game.rs"
+
+[[example]]
+name = "city_builder_demo"
+path = "examples/city_builder_demo.rs"
