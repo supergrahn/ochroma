@@ -12,6 +12,9 @@ pub mod systems;
 pub mod terrain_setup;
 pub mod ui;
 pub mod undo_integration;
+pub mod notifications;
+pub mod minimap;
+pub mod settings;
 
 use std::sync::Arc;
 use std::time::Instant;
