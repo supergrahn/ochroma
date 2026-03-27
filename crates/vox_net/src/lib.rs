@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+pub mod lobby;
 pub mod replication;
 pub mod transport;
 pub use replication::{EntityDelta, NetMessage, PlayerAction, ReplicationClient, ReplicationServer};
