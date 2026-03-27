@@ -28,3 +28,4 @@ pub mod web_renderer;
 pub mod spatial_ui;
 pub mod hand_tracking;
 pub mod ar_placement;
+pub mod hierarchical_lod;
