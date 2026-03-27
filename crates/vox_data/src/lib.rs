@@ -7,3 +7,4 @@ pub mod vxm_v2;
 pub mod hot_reload;
 pub mod proc_gs_advanced;
 pub mod scene_serialize;
+pub mod scene_format;
