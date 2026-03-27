@@ -9,6 +9,7 @@ zstd = { workspace = true }
 thiserror = { workspace = true }
 bytemuck = { workspace = true }
 serde = { workspace = true }
+serde_json = "1"
 uuid = { workspace = true }
 half = { workspace = true }
 glam = { workspace = true }
