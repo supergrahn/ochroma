@@ -8,6 +8,7 @@ pub enum UiAction {
     Deselect,
     PlaceService { service_type: String, position: Vec3 },
     ZoneArea { zone_type: String, position: Vec3 },
+    BuildRoad { start: Vec3, end: Vec3 },
     ChangeGameSpeed { speed: u8 }, // 0=pause, 1=normal, 2=fast, 3=veryfast
 }
 
@@ -44,6 +45,7 @@ pub struct PlopUi {
     pub click_position: Option<Vec3>,
     pub selected_zone_type: String,
     pub selected_service_type: String,
+    pub road_start: Option<Vec3>,
 }
 
 impl Default for PlopUi {
@@ -59,6 +61,7 @@ impl Default for PlopUi {
             click_position: None,
             selected_zone_type: "Residential Low".to_string(),
             selected_service_type: "School".to_string(),
+            road_start: None,
         }
     }
 }
@@ -98,7 +101,13 @@ impl PlopUi {
                 });
             }
             UiMode::Road => {
-                println!("[ochroma] Road point at ({:.1}, {:.1})", world_pos.x, world_pos.z);
+                if let Some(start) = self.road_start.take() {
+                    self.actions.push(UiAction::BuildRoad { start, end: world_pos });
+                    println!("[ochroma] Road segment: ({:.1}, {:.1}) -> ({:.1}, {:.1})", start.x, start.z, world_pos.x, world_pos.z);
+                } else {
+                    self.road_start = Some(world_pos);
+                    println!("[ochroma] Road start set at ({:.1}, {:.1})", world_pos.x, world_pos.z);
+                }
             }
         }
     }
@@ -239,7 +248,11 @@ impl PlopUi {
                         ui.label(format!("Click to place service: {}", self.selected_service_type));
                     }
                     UiMode::Road => {
-                        ui.label("Click to set road points");
+                        if self.road_start.is_some() {
+                            ui.label("Click to set road end point");
+                        } else {
+                            ui.label("Click to set road start point");
+                        }
                     }
                 }
             });

@@ -1,5 +1,6 @@
 use vox_sim::citizen::CitizenManager;
 use vox_sim::economy::CityBudget;
+use vox_sim::roads::RoadNetwork;
 use vox_sim::zoning::ZoningManager;
 use vox_sim::services::ServiceManager;
 use vox_sim::traffic::TrafficNetwork;
@@ -30,6 +31,7 @@ impl GameSpeed {
 pub struct SimulationState {
     pub citizens: CitizenManager,
     pub budget: CityBudget,
+    pub roads: RoadNetwork,
     pub zoning: ZoningManager,
     pub services: ServiceManager,
     pub traffic: TrafficNetwork,
@@ -50,6 +52,7 @@ impl SimulationState {
         Self {
             citizens,
             budget: CityBudget::default(),
+            roads: RoadNetwork::new(),
             zoning: ZoningManager::new(),
             services: ServiceManager::new(),
             traffic: TrafficNetwork::new(),

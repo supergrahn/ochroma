@@ -1,6 +1,12 @@
 use bevy_ecs::prelude::*;
 use glam::{Mat4, Quat, Vec3};
 use vox_core::ecs::{LodLevel, SplatInstanceComponent};
+use vox_sim::roads::{RoadSegment, RoadType};
+use vox_sim::services::ServiceType;
+use vox_sim::traffic::RoadSegmentTraffic;
+use vox_sim::zoning::ZoneType;
+use crate::road_builder;
+use crate::simulation::SimulationState;
 use crate::ui::UiAction;
 
 static NEXT_INSTANCE_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2000);
@@ -25,11 +31,52 @@ pub fn process_actions(world: &mut World, actions: &[UiAction]) {
                 println!("[ochroma] Selected instance {}", instance_id);
             }
             UiAction::Deselect => {}
+            UiAction::BuildRoad { start, end } => {
+                // Get next segment id from the road network, then build segment
+                let seg_id = {
+                    let sim = world.resource::<SimulationState>();
+                    sim.roads.segment_count() as u32
+                };
+                let segment = RoadSegment {
+                    id: seg_id,
+                    road_type: RoadType::LocalStreet,
+                    start: *start,
+                    end: *end,
+                    control_point: None,
+                };
+                // Spawn visual splats
+                road_builder::spawn_road_visual(world, &segment);
+                // Add to simulation (road network + traffic)
+                let len_km = segment.length() / 1000.0;
+                let mut sim = world.resource_mut::<SimulationState>();
+                sim.roads.add_straight(RoadType::LocalStreet, *start, *end);
+                sim.traffic.add_segment(RoadSegmentTraffic::new(seg_id, len_km, 200.0, 50.0));
+                println!("[ochroma] Built road from ({:.1}, {:.1}) to ({:.1}, {:.1})", start.x, start.z, end.x, end.z);
+            }
             UiAction::PlaceService { service_type, position } => {
-                println!("[ochroma] Place service '{}' at ({:.1}, {:.1}, {:.1})", service_type, position.x, position.y, position.z);
+                let st = match service_type.as_str() {
+                    "School" => ServiceType::PrimarySchool,
+                    "Hospital" => ServiceType::Hospital,
+                    "Fire Station" => ServiceType::FireStation,
+                    "Police Station" => ServiceType::PoliceStation,
+                    _ => ServiceType::PrimarySchool,
+                };
+                let mut sim = world.resource_mut::<SimulationState>();
+                let service_id = sim.services.place_service(st, [position.x, position.z]);
+                println!("[ochroma] Placed {} (id={}) at ({:.1}, {:.1})", service_type, service_id, position.x, position.z);
             }
             UiAction::ZoneArea { zone_type, position } => {
-                println!("[ochroma] Zone '{}' at ({:.1}, {:.1}, {:.1})", zone_type, position.x, position.y, position.z);
+                let zt = match zone_type.as_str() {
+                    "Residential Low" => ZoneType::ResidentialLow,
+                    "Residential Med" => ZoneType::ResidentialMed,
+                    "Residential High" => ZoneType::ResidentialHigh,
+                    "Commercial" => ZoneType::CommercialLocal,
+                    "Industrial" => ZoneType::IndustrialLight,
+                    _ => ZoneType::ResidentialLow,
+                };
+                let mut sim = world.resource_mut::<SimulationState>();
+                let plot_id = sim.zoning.zone_plot(zt, [position.x, position.z], [10.0, 10.0]);
+                println!("[ochroma] Zoned {} (plot {}) at ({:.1}, {:.1})", zone_type, plot_id, position.x, position.z);
             }
             UiAction::ChangeGameSpeed { speed } => {
                 println!("[ochroma] Game speed changed to {}", speed);

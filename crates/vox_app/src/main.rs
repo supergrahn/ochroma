@@ -158,7 +158,6 @@ impl App {
             fps_timer: now,
             frame_count: 0,
             plop_ui: PlopUi::default(),
-            simulation: SimulationState::new(),
             demo_asset_uuid: asset_uuid,
             middle_pressed: false,
             right_pressed: false,
@@ -372,11 +371,15 @@ impl ApplicationHandler for App {
                         winit::keyboard::PhysicalKey::Code(
                             winit::keyboard::KeyCode::KeyS,
                         ) if self.ctrl_pressed => {
+                            let (hours, pop, funds) = {
+                                let sim = self.world.resource::<SimulationState>();
+                                (sim.game_time_hours, sim.citizens.count() as u32, sim.budget.funds)
+                            };
                             let _ = persistence::save_current(
                                 "MyCity",
-                                self.simulation.game_time_hours,
-                                self.simulation.citizens.count() as u32,
-                                self.simulation.budget.funds,
+                                hours,
+                                pop,
+                                funds,
                                 "quicksave",
                             );
                         }
@@ -414,7 +417,7 @@ impl ApplicationHandler for App {
                 self.last_frame = now;
 
                 // --- Tick simulation ---
-                self.simulation.tick(dt);
+                self.world.resource_mut::<SimulationState>().tick(dt);
 
                 // --- Growth tick every 2 seconds ---
                 self.growth_timer += dt;
@@ -450,8 +453,30 @@ impl ApplicationHandler for App {
                 // Pre-compute values that need &self before we mutably borrow render_mode.
                 let window_clone = self.window.clone();
                 let plop_ui = &mut self.plop_ui;
-                let sim = &mut self.simulation;
                 let env = &self.environment;
+
+                // Extract simulation display data from world resource before borrowing render_mode.
+                let (sim_day, sim_tod, sim_pop, sim_funds, sim_info, mut sim_speed) = {
+                    let sim = self.world.resource::<SimulationState>();
+                    let citizens = sim.citizens.all();
+                    let avg_sat = if citizens.is_empty() {
+                        0.0f32
+                    } else {
+                        citizens.iter().map(|c| c.satisfaction).sum::<f32>() / citizens.len() as f32
+                    };
+                    let info = ui::SimInfo {
+                        funds: sim.budget.funds,
+                        total_income: sim.budget.total_income(),
+                        total_expenses: sim.budget.total_expenses(),
+                        net: sim.budget.net(),
+                        citizen_count: sim.citizens.count() as u32,
+                        avg_satisfaction: avg_sat,
+                        demand_residential: sim.zoning.demand.residential,
+                        demand_commercial: sim.zoning.demand.commercial,
+                        demand_industrial: sim.zoning.demand.industrial,
+                    };
+                    (sim.day(), sim.time_of_day(), sim.citizens.count(), sim.budget.funds, info, sim.game_speed)
+                };
 
                 // Current illuminant from time-of-day environment.
                 let illuminant = env.current_illuminant();
@@ -497,40 +522,23 @@ impl ApplicationHandler for App {
                             egui::TopBottomPanel::top("game_info").show(ctx, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(format!("Day {} — {:02}:{:02}",
-                                        sim.day(),
-                                        sim.time_of_day() as u32,
-                                        ((sim.time_of_day() % 1.0) * 60.0) as u32,
+                                        sim_day,
+                                        sim_tod as u32,
+                                        ((sim_tod % 1.0) * 60.0) as u32,
                                     ));
                                     ui.separator();
-                                    ui.label(format!("Pop: {}", sim.citizens.count()));
+                                    ui.label(format!("Pop: {}", sim_pop));
                                     ui.separator();
-                                    ui.label(format!("${:.0}", sim.budget.funds));
+                                    ui.label(format!("${:.0}", sim_funds));
                                     ui.separator();
                                     ui.label(format!("{} | {}", time_label, weather_label));
                                     ui.separator();
-                                    if ui.button("⏸").clicked() { sim.game_speed = simulation::GameSpeed::Paused; }
-                                    if ui.button("▶").clicked() { sim.game_speed = simulation::GameSpeed::Normal; }
-                                    if ui.button("▶▶").clicked() { sim.game_speed = simulation::GameSpeed::Fast; }
-                                    if ui.button("▶▶▶").clicked() { sim.game_speed = simulation::GameSpeed::VeryFast; }
+                                    if ui.button("⏸").clicked() { sim_speed = simulation::GameSpeed::Paused; }
+                                    if ui.button("▶").clicked() { sim_speed = simulation::GameSpeed::Normal; }
+                                    if ui.button("▶▶").clicked() { sim_speed = simulation::GameSpeed::Fast; }
+                                    if ui.button("▶▶▶").clicked() { sim_speed = simulation::GameSpeed::VeryFast; }
                                 });
                             });
-                            let citizens = sim.citizens.all();
-                            let avg_satisfaction = if citizens.is_empty() {
-                                0.0f32
-                            } else {
-                                citizens.iter().map(|c| c.satisfaction).sum::<f32>() / citizens.len() as f32
-                            };
-                            let sim_info = ui::SimInfo {
-                                funds: sim.budget.funds,
-                                total_income: sim.budget.total_income(),
-                                total_expenses: sim.budget.total_expenses(),
-                                net: sim.budget.net(),
-                                citizen_count: sim.citizens.count() as u32,
-                                avg_satisfaction,
-                                demand_residential: sim.zoning.demand.residential,
-                                demand_commercial: sim.zoning.demand.commercial,
-                                demand_industrial: sim.zoning.demand.industrial,
-                            };
                             plop_ui.show(ctx, &asset_names, Some(&sim_info));
                         });
 
@@ -622,6 +630,9 @@ impl ApplicationHandler for App {
                     }
                     None => {}
                 }
+
+                // --- Apply game speed changes from egui ---
+                self.world.resource_mut::<SimulationState>().game_speed = sim_speed;
 
                 // --- FPS counter with frame time ---
                 self.frame_count += 1;
