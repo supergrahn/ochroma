@@ -1,7 +1,9 @@
+use serde::{Serialize, Deserialize};
+
 pub const BAND_WAVELENGTHS: [f32; 8] = [380.0, 420.0, 460.0, 500.0, 540.0, 580.0, 620.0, 660.0];
 pub const BAND_SPACING: f32 = 40.0;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SpectralBands(pub [f32; 8]);
 
 #[derive(Debug, Clone)]

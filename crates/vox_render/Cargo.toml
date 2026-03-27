@@ -16,6 +16,9 @@ puffin = { workspace = true }
 tokio = { workspace = true }
 vox_data = { path = "../vox_data" }
 rand = "0.9"
+serde = { workspace = true }
+toml = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 vox_sim = { path = "../vox_sim" }

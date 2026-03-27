@@ -4230,9 +4230,13 @@ dependencies = [
  "puffin",
  "rand",
  "raw-window-handle",
+ "serde",
  "tokio",
+ "toml",
+ "uuid",
  "vox_core",
  "vox_data",
+ "vox_sim",
  "wgpu",
  "winit",
 ]

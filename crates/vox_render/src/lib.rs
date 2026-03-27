@@ -11,3 +11,4 @@ pub mod telemetry;
 pub mod particles;
 pub mod animation;
 pub mod postprocess;
+pub mod material_graph;
