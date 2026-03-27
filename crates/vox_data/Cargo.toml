@@ -22,3 +22,4 @@ dirs-next = "2"
 vox_render = { path = "../vox_render" }
 vox_core = { path = "../vox_core" }
 glam = { workspace = true }
+tempfile = "3"
