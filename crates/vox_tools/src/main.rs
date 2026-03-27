@@ -30,6 +30,16 @@ enum Commands {
         material_map: Option<String>,
     },
 
+    /// Import a GLTF/GLB file and convert to .vxm Gaussian splats (REFERENCE QUALITY).
+    Import {
+        /// Path to the input .gltf or .glb file
+        #[arg(long)]
+        input: String,
+        /// Path to the output .vxm file
+        #[arg(long)]
+        output: String,
+    },
+
     /// Build the game for a target platform.
     Build {
         #[arg(long, default_value = "linux")]
@@ -52,6 +62,36 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Import { input, output } => {
+            use std::path::Path;
+            match vox_data::gltf_import::import_gltf(Path::new(&input)) {
+                Ok(result) => {
+                    println!(
+                        "Imported: {} splats from {} meshes ({} triangles, {} vertices)",
+                        result.splats.len(),
+                        result.mesh_count,
+                        result.triangle_count,
+                        result.vertex_count,
+                    );
+                    println!("NOTE: This is REFERENCE QUALITY. For production, train proper 3DGS from multi-view captures.");
+                    let file = vox_data::vxm::VxmFile {
+                        header: vox_data::vxm::VxmHeader::new(
+                            uuid::Uuid::new_v4(),
+                            result.splats.len() as u32,
+                            vox_data::vxm::MaterialType::Generic,
+                        ),
+                        splats: result.splats,
+                    };
+                    let mut out = std::fs::File::create(&output).expect("failed to create output file");
+                    file.write(&mut out).expect("failed to write VXM file");
+                    println!("Saved to: {}", output);
+                }
+                Err(e) => {
+                    eprintln!("Import failed: {}", e);
                     std::process::exit(1);
                 }
             }
