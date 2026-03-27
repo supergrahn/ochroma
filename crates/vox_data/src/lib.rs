@@ -12,3 +12,4 @@ pub mod asset_catalog;
 pub mod marketplace;
 pub mod neural_compress;
 pub mod templates;
+pub mod creator_tools;
