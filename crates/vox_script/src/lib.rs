@@ -3,6 +3,7 @@ use thiserror::Error;
 
 pub mod mod_manager;
 pub mod visual_script;
+pub mod plugin_system;
 
 #[cfg(feature = "wasm-runtime")]
 mod wasm;
