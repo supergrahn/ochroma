@@ -15,6 +15,7 @@ pub mod undo_integration;
 pub mod notifications;
 pub mod minimap;
 pub mod settings;
+pub mod soundscape;
 
 use std::sync::Arc;
 use std::time::Instant;
