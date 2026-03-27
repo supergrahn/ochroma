@@ -4,3 +4,4 @@ pub mod materials;
 pub mod proc_gs;
 pub mod library;
 pub mod vxm_v2;
+pub mod hot_reload;
