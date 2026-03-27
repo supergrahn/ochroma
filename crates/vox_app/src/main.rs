@@ -20,6 +20,7 @@ pub mod notifications;
 pub mod minimap;
 pub mod settings;
 pub mod soundscape;
+pub mod tutorial;
 
 use std::sync::Arc;
 use std::time::Instant;
