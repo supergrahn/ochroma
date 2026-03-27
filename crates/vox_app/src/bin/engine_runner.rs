@@ -347,8 +347,9 @@ impl EngineApp {
             asset_path,
             placed_objects: Vec::new(),
             audio: {
-                let audio = AudioEngine::new(64);
-                println!("[ochroma] Audio: synth mode (WAV generation)");
+                let mut audio = AudioEngine::new(64);
+                audio.init_backend();
+                println!("[ochroma] Audio: rodio backend initialised");
                 audio
             },
             click_counter: 0,
@@ -1041,11 +1042,9 @@ impl ApplicationHandler for EngineApp {
                 }
                 MouseButton::Left if state == ElementState::Pressed => {
                     self.left_click_pending = true;
-                    // Generate a click sound (saved as WAV for proof)
+                    // Play click sound through speakers
                     self.click_counter += 1;
-                    let sound = vox_audio::synth::generate_click();
-                    let path = std::env::temp_dir().join(format!("ochroma_click_{}.wav", self.click_counter));
-                    let _ = vox_audio::synth::save_wav(&sound, 44100, &path);
+                    self.audio.play_sine_backend(self.click_counter, 800.0, 0.05, 0.3);
                 }
                 _ => {}
             },

@@ -6,7 +6,7 @@ pub use synth::{generate_click, generate_collect_sound, generate_place_sound, ge
 use glam::Vec3;
 
 #[cfg(feature = "audio-backend")]
-use rodio::{OutputStream, OutputStreamHandle, Sink};
+use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 #[cfg(feature = "audio-backend")]
 use std::collections::HashMap;
 

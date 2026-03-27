@@ -358,3 +358,60 @@ fn load_ply_from_file_path() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn load_real_aetherspectra_ply() {
+    let path = std::path::Path::new("/home/tomespen/git/aetherspectra/output/character_hero.ply");
+    if !path.exists() {
+        println!("Skipping: real PLY file not found at {}", path.display());
+        return;
+    }
+
+    let start = std::time::Instant::now();
+    let splats = vox_data::ply_loader::load_ply(path).unwrap();
+    let load_time = start.elapsed();
+
+    println!("=== REAL PLY FILE LOADED ===");
+    println!("File: {}", path.display());
+    println!("Splats: {}", splats.len());
+    println!("Load time: {:?}", load_time);
+    println!("First splat: pos=({:.3},{:.3},{:.3}) opacity={} scale=({:.4},{:.4},{:.4})",
+        splats[0].position[0], splats[0].position[1], splats[0].position[2],
+        splats[0].opacity, splats[0].scale[0], splats[0].scale[1], splats[0].scale[2]);
+
+    assert_eq!(splats.len(), 308078, "Should load all 308k splats");
+    assert!(load_time.as_secs() < 30, "Should load in under 30 seconds");
+
+    // Render it
+    use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
+    use vox_render::spectral::RenderCamera;
+    use vox_core::spectral::Illuminant;
+    use glam::{Mat4, Vec3};
+
+    let mut rast = SoftwareRasteriser::new(512, 384);
+    let cam = RenderCamera {
+        view: Mat4::look_at_rh(Vec3::new(0.0, 0.5, 2.0), Vec3::new(0.0, 0.3, 0.0), Vec3::Y),
+        proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 512.0/384.0, 0.01, 50.0),
+    };
+
+    let render_start = std::time::Instant::now();
+    let fb = rast.render(&splats, &cam, &Illuminant::d65());
+    let render_time = render_start.elapsed();
+
+    let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();
+    let coverage = non_black as f32 / fb.pixels.len() as f32 * 100.0;
+
+    println!("Render time: {:?}", render_time);
+    println!("Coverage: {:.1}%", coverage);
+
+    // Save image
+    let dir = std::env::temp_dir().join("ochroma_visual");
+    std::fs::create_dir_all(&dir).unwrap();
+    let img_path = dir.join("real_character_hero.ppm");
+    let mut data = format!("P6\n512 384\n255\n").into_bytes();
+    for p in &fb.pixels { data.push(p[0]); data.push(p[1]); data.push(p[2]); }
+    std::fs::write(&img_path, &data).unwrap();
+    println!("Image saved: {}", img_path.display());
+
+    assert!(coverage > 1.0, "Real PLY should render visibly: {:.1}%", coverage);
+}

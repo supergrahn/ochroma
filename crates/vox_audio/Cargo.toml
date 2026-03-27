@@ -10,5 +10,5 @@ glam = { workspace = true }
 rodio = { version = "0.19", optional = true }
 
 [features]
-default = []
+default = ["audio-backend"]
 audio-backend = ["dep:rodio"]
