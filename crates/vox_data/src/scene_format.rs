@@ -18,6 +18,7 @@ pub struct SceneEntity {
     pub name: String,
     pub parent: Option<u32>,
     pub transform: Transform,
+    pub asset_path: Option<String>,  // path to .ply or .vxm file
     pub components: HashMap<String, serde_json::Value>,
 }
 
@@ -78,7 +79,7 @@ impl SceneFile {
         let id = self.entities.len() as u32;
         self.entities.push(SceneEntity {
             id, name: name.to_string(), parent: None,
-            transform, components: HashMap::new(),
+            transform, asset_path: None, components: HashMap::new(),
         });
         id
     }
