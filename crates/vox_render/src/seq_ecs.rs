@@ -73,6 +73,9 @@ pub struct RigidAnimationComponent {
 /// - Clamps to duration and sets `playing = false` for non-looping sequences.
 /// - Wraps time around `duration` for looping sequences.
 /// - Multiplies delta-time by `sequence.playback_speed`.
+///
+/// # Panics / Limitations
+/// `sequence.playback_speed` must be ≥ 0.0. Negative values are not supported.
 pub fn sequence_player_system(
     dt: Res<TimeStep>,
     mut query: Query<(&mut SequencePlayerComponent, &mut vox_core::ecs::TransformComponent)>,
@@ -99,7 +102,7 @@ pub fn sequence_player_system(
                 transform.position = Vec3::from(position);
                 transform.rotation = Quat::from_array(rotation);
                 transform.scale    = Vec3::from(scale);
-                break; // Apply the first Transform track only
+                break; // Apply the first Transform track (tracks are ordered by insertion)
             }
         }
     }
@@ -222,5 +225,58 @@ mod tests {
         let player = world.entity(entity).get::<SequencePlayerComponent>().unwrap();
         assert!(player.is_finished(), "player should be finished after overshooting duration");
         assert!(!player.playing, "playing should be false when sequence ends");
+    }
+
+    #[test]
+    fn sequence_loops_correctly() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+        use crate::sequencer::{TrackType, SequenceKeyframe, Interpolation};
+
+        let mut world = World::new();
+        world.insert_resource(TimeStep(1.5)); // tick past the 1-second duration
+
+        let mut seq = Sequence::new("loop", 1.0);
+        let idx = seq.add_track("cam", TrackType::CameraTransform);
+        seq.add_keyframe(idx, SequenceKeyframe {
+            time: 0.0,
+            value: KeyframeValue::Transform {
+                position: [0.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale:    [1.0, 1.0, 1.0],
+            },
+            interpolation: Interpolation::Linear,
+        });
+        seq.add_keyframe(idx, SequenceKeyframe {
+            time: 1.0,
+            value: KeyframeValue::Transform {
+                position: [0.0, 5.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale:    [1.0, 1.0, 1.0],
+            },
+            interpolation: Interpolation::Linear,
+        });
+
+        let mut player = SequencePlayerComponent::new(seq);
+        player.looping = true;
+        player.play();
+
+        let entity = world.spawn((
+            player,
+            vox_core::ecs::TransformComponent::default(),
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(sequence_player_system);
+        schedule.run(&mut world);
+
+        let player = world.entity(entity).get::<SequencePlayerComponent>().unwrap();
+        // After 1.5s tick on a 1s sequence, current_time should wrap to 0.5s
+        assert!(player.playing, "looping sequence should still be playing");
+        assert!(
+            player.current_time < 1.0,
+            "time should have wrapped, current_time={}",
+            player.current_time
+        );
     }
 }
