@@ -21,3 +21,4 @@ pub mod gltf_import;
 pub mod world_save;
 pub mod material_system;
 pub mod prefab;
+pub mod import_pipeline;

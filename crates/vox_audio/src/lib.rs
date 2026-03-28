@@ -1,4 +1,5 @@
 pub mod acoustic_raytracer;
+pub mod audio_graph;
 pub mod spatial;
 pub mod synth;
 

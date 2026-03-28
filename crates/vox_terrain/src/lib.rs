@@ -1,3 +1,4 @@
+pub mod brushes;
 pub mod foliage;
 pub mod heightmap;
 pub mod volume;

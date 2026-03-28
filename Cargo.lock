@@ -4564,6 +4564,8 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "rodio",
+ "serde",
+ "serde_json",
  "vox_core",
 ]
 
@@ -4577,6 +4579,7 @@ dependencies = [
  "glam",
  "half",
  "serde",
+ "serde_json",
  "uuid",
 ]
 
@@ -4718,6 +4721,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "serde",
+ "serde_json",
  "vox_core",
 ]
 
