@@ -17,6 +17,7 @@ use crate::rigid_animation::RigidStateMachine;
 ///
 /// On spawn: set `playing = true` to start. The system writes the first
 /// Transform-valued track's interpolated value to the entity each frame.
+/// The driving system multiplies delta-time by `sequence.playback_speed` when advancing `current_time`.
 #[derive(Component, Debug, Clone)]
 pub struct SequencePlayerComponent {
     pub sequence: Sequence,
@@ -45,8 +46,10 @@ impl SequencePlayerComponent {
     }
 
     /// True once the sequence has played to the end (non-looping only).
+    /// Only returns true after the system has set `playing = false` on completion,
+    /// so a freshly constructed (never-played) player does not appear finished.
     pub fn is_finished(&self) -> bool {
-        !self.looping && self.current_time >= self.sequence.duration
+        !self.looping && !self.playing && self.current_time >= self.sequence.duration
     }
 }
 
@@ -54,7 +57,7 @@ impl SequencePlayerComponent {
 ///
 /// Each frame the state machine is ticked and the resulting keyframe
 /// position/rotation/scale is written to the entity's `TransformComponent`.
-#[derive(Component)]
+#[derive(Component, Debug, Clone)]
 pub struct RigidAnimationComponent {
     pub machine: RigidStateMachine,
 }
@@ -62,7 +65,6 @@ pub struct RigidAnimationComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rigid_animation::RigidStateMachine;
 
     #[test]
     fn sequence_player_new_is_stopped() {
