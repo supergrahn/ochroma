@@ -7,8 +7,10 @@
 //! should be driven by a `RigidStateMachine`.
 
 use bevy_ecs::prelude::*;
+use glam::{Quat, Vec3};
 
-use crate::sequencer::Sequence;
+use crate::lod_ecs::TimeStep;
+use crate::sequencer::{KeyframeValue, Sequence};
 use crate::rigid_animation::RigidStateMachine;
 
 // ── Components ─────────────────────────────────────────────────────────────
@@ -62,6 +64,47 @@ pub struct RigidAnimationComponent {
     pub machine: RigidStateMachine,
 }
 
+// ── Systems ────────────────────────────────────────────────────────────────
+
+/// Advance each sequence's playback cursor and write the first Transform-valued
+/// track result to the entity's TransformComponent.
+///
+/// - Skips entities where `playing == false`.
+/// - Clamps to duration and sets `playing = false` for non-looping sequences.
+/// - Wraps time around `duration` for looping sequences.
+/// - Multiplies delta-time by `sequence.playback_speed`.
+pub fn sequence_player_system(
+    dt: Res<TimeStep>,
+    mut query: Query<(&mut SequencePlayerComponent, &mut vox_core::ecs::TransformComponent)>,
+) {
+    for (mut player, mut transform) in query.iter_mut() {
+        if !player.playing {
+            continue;
+        }
+
+        player.current_time += dt.0 * player.sequence.playback_speed;
+
+        if player.looping {
+            if player.sequence.duration > 0.0 {
+                player.current_time %= player.sequence.duration;
+            }
+        } else if player.current_time >= player.sequence.duration {
+            player.current_time = player.sequence.duration;
+            player.playing = false;
+        }
+
+        let results = player.sequence.evaluate(player.current_time);
+        for (_track_name, value) in results {
+            if let KeyframeValue::Transform { position, rotation, scale } = value {
+                transform.position = Vec3::from(position);
+                transform.rotation = Quat::from_array(rotation);
+                transform.scale    = Vec3::from(scale);
+                break; // Apply the first Transform track only
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +132,95 @@ mod tests {
         // Compile test: RigidAnimationComponent can be constructed.
         let machine = RigidStateMachine::new("idle");
         let _comp = RigidAnimationComponent { machine };
+    }
+
+    #[test]
+    fn sequence_advances_transform() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+        use crate::sequencer::{TrackType, SequenceKeyframe, Interpolation};
+
+        let mut world = World::new();
+        world.insert_resource(TimeStep(0.5)); // 0.5 s per tick
+
+        // Build a 2-second sequence: y moves from 0 → 10
+        let mut seq = Sequence::new("move", 2.0);
+        let idx = seq.add_track("cam", TrackType::CameraTransform);
+        seq.add_keyframe(idx, SequenceKeyframe {
+            time: 0.0,
+            value: KeyframeValue::Transform {
+                position: [0.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale:    [1.0, 1.0, 1.0],
+            },
+            interpolation: Interpolation::Linear,
+        });
+        seq.add_keyframe(idx, SequenceKeyframe {
+            time: 2.0,
+            value: KeyframeValue::Transform {
+                position: [0.0, 10.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale:    [1.0, 1.0, 1.0],
+            },
+            interpolation: Interpolation::Linear,
+        });
+
+        let mut player = SequencePlayerComponent::new(seq);
+        player.play();
+
+        let entity = world.spawn((
+            player,
+            vox_core::ecs::TransformComponent::default(),
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(sequence_player_system);
+        schedule.run(&mut world);
+
+        let transform = world.entity(entity).get::<vox_core::ecs::TransformComponent>().unwrap();
+        // After 0.5 s on a 0→10 y range over 2 s: should be ~y=2.5
+        assert!(
+            transform.position.y > 0.0,
+            "sequence should have advanced the entity transform, y={}",
+            transform.position.y
+        );
+    }
+
+    #[test]
+    fn sequence_stops_when_finished() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+        use crate::sequencer::{TrackType, SequenceKeyframe, Interpolation};
+
+        let mut world = World::new();
+        world.insert_resource(TimeStep(5.0)); // overshoot a 2 s sequence
+
+        let mut seq = Sequence::new("short", 2.0);
+        let idx = seq.add_track("cam", TrackType::CameraTransform);
+        seq.add_keyframe(idx, SequenceKeyframe {
+            time: 0.0,
+            value: KeyframeValue::Transform {
+                position: [0.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale:    [1.0, 1.0, 1.0],
+            },
+            interpolation: Interpolation::Linear,
+        });
+
+        let mut player = SequencePlayerComponent::new(seq);
+        player.play();
+
+        let entity = world.spawn((
+            player,
+            vox_core::ecs::TransformComponent::default(),
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(sequence_player_system);
+        schedule.run(&mut world);
+
+        let player = world.entity(entity).get::<SequencePlayerComponent>().unwrap();
+        assert!(player.is_finished(), "player should be finished after overshooting duration");
+        assert!(!player.playing, "playing should be false when sequence ends");
     }
 }
