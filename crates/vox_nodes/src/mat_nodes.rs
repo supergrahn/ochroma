@@ -147,7 +147,7 @@ impl CrucibleNode for OneMinusNode {
     fn descriptor(&self) -> NodeDescriptor {
         NodeDescriptor {
             type_name: "OneMinus",
-            inputs: vec![PortSpec { name: "in", data_type: PortDataType::Scalar, optional: false }],
+            inputs: vec![PortSpec { name: "input", data_type: PortDataType::Scalar, optional: false }],
             outputs: vec![PortSpec { name: "out", data_type: PortDataType::Scalar, optional: false }],
         }
     }
@@ -155,8 +155,8 @@ impl CrucibleNode for OneMinusNode {
         Err(CookError::UnknownParam { key: key.into(), node: "OneMinus".into() })
     }
     fn cook(&self, inputs: PortMap) -> Result<PortMap, CookError> {
-        let v = inputs.get("in").and_then(|p| p.as_scalar())
-            .ok_or_else(|| CookError::MissingInput("in".into()))?;
+        let v = inputs.get("input").and_then(|p| p.as_scalar())
+            .ok_or_else(|| CookError::MissingInput("input".into()))?;
         let mut out = PortMap::default();
         out.insert("out".into(), PortData::Scalar(1.0 - v));
         Ok(out)
@@ -240,7 +240,7 @@ mod tests {
     fn one_minus_node() {
         let n = OneMinusNode;
         let mut inputs = PortMap::default();
-        inputs.insert("in".into(), PortData::Scalar(0.3));
+        inputs.insert("input".into(), PortData::Scalar(0.3));
         let out = n.cook(inputs).unwrap();
         assert!((out["out"].as_scalar().unwrap() - 0.7).abs() < 1e-9);
     }
