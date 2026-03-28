@@ -1,35 +1,30 @@
 //! bevy_ecs integration for vox_audio.
 //!
-//! Provides `AudioPlugin` which drives `AudioEngine` from ECS.
+//! # Feature gate
+//! `AudioEngineResource` is only available without the `audio-backend` feature because
+//! `rodio::OutputStream` is `!Send` and cannot satisfy `bevy_ecs::Resource`.
+//! Build and test with `--no-default-features`.
 //!
-//! # Backend note
-//! Rodio backend (audio-backend feature) uses `OutputStream` which is `!Send`.
-//! This ECS layer manages source state only. Backend init is the caller's
-//! responsibility on the main thread before the ECS schedule runs.
+//! Other types like `AudioListenerSettings`, `AudioTimeStep`, and `AudioPlaybackComponent`
+//! are always available since they are plain Send+Sync types.
 
 use bevy_ecs::prelude::*;
 use glam::Vec3;
 
-use crate::{AudioEngine, AudioSource};
+#[cfg(not(feature = "audio-backend"))]
+use crate::AudioEngine;
 
 // ── Resources ──────────────────────────────────────────────────────────────
 
 /// Wraps AudioEngine as a bevy_ecs Resource.
-/// Use this as the primary audio state in an ECS world.
+/// Available only without the `audio-backend` feature.
 #[cfg(not(feature = "audio-backend"))]
 #[derive(Resource)]
 pub struct AudioEngineResource {
     pub engine: AudioEngine,
 }
 
-// With audio-backend feature, AudioEngine contains rodio types (!Send/!Sync).
-// For Send+Sync, we would need a wrapper that gates backend interaction to
-// the main thread only. This is deferred to Task 2 (audio_emitter_system).
-#[cfg(feature = "audio-backend")]
-pub struct AudioEngineResource {
-    pub engine: AudioEngine,
-}
-
+#[cfg(not(feature = "audio-backend"))]
 impl Default for AudioEngineResource {
     fn default() -> Self {
         Self { engine: AudioEngine::new(64) }
@@ -71,6 +66,7 @@ pub struct AudioPlaybackComponent {
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "audio-backend"))]
     #[test]
     fn audio_engine_resource_default_capacity() {
         let r = AudioEngineResource::default();
