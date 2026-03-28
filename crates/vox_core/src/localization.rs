@@ -19,9 +19,8 @@ impl Localization {
 
     /// Load translations from a CSV file. Format: `key,text` per line.
     /// Returns number of entries loaded.
-    pub fn load_csv(&mut self, locale: &str, path: &Path) -> Result<usize, String> {
-        let content =
-            std::fs::read_to_string(path).map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
+    pub fn load_csv(&mut self, locale: &str, path: &Path) -> Result<usize, std::io::Error> {
+        let content = std::fs::read_to_string(path)?;
         Ok(self.load_from_string(locale, &content))
     }
 

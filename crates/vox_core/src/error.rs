@@ -36,6 +36,12 @@ impl From<std::io::Error> for EngineError {
     fn from(e: std::io::Error) -> Self { Self::IoError(e) }
 }
 
+impl From<serde_json::Error> for EngineError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::SaveCorrupted { path: String::new(), reason: e.to_string() }
+    }
+}
+
 /// Log an error without crashing. Returns a default value.
 pub fn recover<T: Default>(error: EngineError) -> T {
     eprintln!("[ochroma-error] {}", error);

@@ -100,12 +100,12 @@ impl BTDefinition {
         self.root.depth()
     }
 
-    pub fn save_json(&self) -> Result<String, String> {
-        serde_json::to_string_pretty(self).map_err(|e| e.to_string())
+    pub fn save_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
     }
 
-    pub fn load_json(json: &str) -> Result<Self, String> {
-        serde_json::from_str(json).map_err(|e| e.to_string())
+    pub fn load_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
     }
 }
 

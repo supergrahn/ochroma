@@ -71,14 +71,15 @@ impl Default for WorldSettings {
 }
 
 impl WorldSettings {
-    pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, json).map_err(|e| e.to_string())
+    pub fn save(&self, path: &std::path::Path) -> Result<(), crate::error::EngineError> {
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)?;
+        Ok(())
     }
 
-    pub fn load(path: &std::path::Path) -> Result<Self, String> {
-        let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&data).map_err(|e| e.to_string())
+    pub fn load(path: &std::path::Path) -> Result<Self, crate::error::EngineError> {
+        let data = std::fs::read_to_string(path)?;
+        Ok(serde_json::from_str(&data)?)
     }
 }
 

@@ -490,7 +490,7 @@ impl SceneEditor {
                 // Use the nearest positive intersection
                 let t = if t1 > 0.0 { t1 } else { t2 };
                 if t > 0.0 {
-                    if best_hit.is_none() || t < best_hit.unwrap().1 {
+                    if best_hit.as_ref().map_or(true, |&(_, best_t)| t < best_t) {
                         best_hit = Some((entity.id, t));
                     }
                 }

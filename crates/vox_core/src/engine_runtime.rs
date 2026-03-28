@@ -210,8 +210,8 @@ fn script_update_system(world: &mut World) {
 
     let fixed_dt = world.resource::<FixedTime>().dt;
 
-    // Run scripts and collect commands.
-    let mut all_commands: Vec<(bevy_ecs::entity::Entity, Vec<ScriptCommand>)> = Vec::new();
+    // Reuse the persistent command buffer — clear without deallocating.
+    world.resource_mut::<PendingScriptCommands>().commands.clear();
 
     for (entity, scripts) in &entity_data {
         // Get or skip context
@@ -238,7 +238,7 @@ fn script_update_system(world: &mut World) {
 
             let commands = ctx.take_commands();
             if !commands.is_empty() {
-                all_commands.push((*entity, commands));
+                world.resource_mut::<PendingScriptCommands>().commands.push((*entity, commands));
             }
 
             // Put context back
@@ -246,9 +246,6 @@ fn script_update_system(world: &mut World) {
             contexts.contexts.insert(*entity, ctx);
         }
     }
-
-    // Store pending commands for processing.
-    world.resource_mut::<PendingScriptCommands>().commands = all_commands;
 }
 
 /// Process pending script commands — runs after script_update_system.
@@ -359,18 +356,20 @@ fn physics_collision_system(world: &mut World) {
             .collect()
     };
 
-    let mut collisions = Vec::new();
+    // Reuse the persistent collision buffer — clear without deallocating.
+    let mut pairs = world.resource_mut::<CollisionPairs>();
+    pairs.0.clear();
+    drop(pairs);
+
     for i in 0..entities.len() {
         for j in (i + 1)..entities.len() {
             let (ea, pos_a, ref col_a) = entities[i];
             let (eb, pos_b, ref col_b) = entities[j];
             if aabb_overlap(pos_a, col_a, pos_b, col_b) {
-                collisions.push((ea, eb));
+                world.resource_mut::<CollisionPairs>().0.push((ea, eb));
             }
         }
     }
-
-    world.resource_mut::<CollisionPairs>().0 = collisions;
 }
 
 /// Frustum cull system — runs in the frame schedule.
