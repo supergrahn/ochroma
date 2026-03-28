@@ -47,6 +47,7 @@ use vox_audio::AudioEngine;
 use vox_audio::SpatialAudioManager;
 use vox_physics::rapier::RapierPhysicsWorld;
 use vox_render::gizmos::GizmoRenderer;
+use vox_ui::theme::apply_ochroma_theme;
 
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
@@ -1327,14 +1328,21 @@ impl EngineApp {
                     egui::Area::new(egui::Id::new("hud_overlay"))
                         .fixed_pos(egui::pos2(4.0, 4.0))
                         .show(ctx, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{:.0} FPS | {} splats | DLSS {}",
-                                    fps, splat_count, dlss_mode,
-                                ))
-                                .color(egui::Color32::from_rgb(220, 220, 220))
-                                .background_color(egui::Color32::from_rgba_premultiplied(0, 0, 0, 160)),
-                            );
+                            egui::Frame::NONE
+                                .fill(egui::Color32::from_rgba_premultiplied(18, 18, 24, 200))
+                                .corner_radius(egui::CornerRadius::same(4))
+                                .inner_margin(egui::Margin::symmetric(8, 4))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{:.0} FPS | {} splats | DLSS {}",
+                                            fps, splat_count, dlss_mode,
+                                        ))
+                                        .color(egui::Color32::from_rgb(140, 145, 160))
+                                        .size(11.0)
+                                        .family(egui::FontFamily::Monospace),
+                                    );
+                                });
                         });
                 });
 
@@ -1513,7 +1521,8 @@ impl ApplicationHandler for EngineApp {
             );
             self.egui_state = Some(egui_state);
             self.egui_renderer = Some(egui_renderer);
-            println!("[ochroma] egui overlay initialised");
+            apply_ochroma_theme(&self.egui_ctx);
+            println!("[ochroma] egui overlay initialised (Ochroma 2026 theme)");
         }
 
         self.window = Some(window);

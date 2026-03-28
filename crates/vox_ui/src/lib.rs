@@ -1,5 +1,6 @@
 pub mod canvas;
 pub mod node_graph_widget;
+pub mod theme;
 
 use serde::{Deserialize, Serialize};
 

@@ -4719,6 +4719,7 @@ dependencies = [
 name = "vox_ui"
 version = "0.1.0"
 dependencies = [
+ "egui",
  "glam",
  "serde",
  "serde_json",
