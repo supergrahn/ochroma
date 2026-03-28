@@ -933,6 +933,31 @@ impl EngineApp {
                             self.editor.move_selected(Vec3::new(1.0, 0.0, 0.0));
                         }
                     }
+                    KeyCode::F5 => {
+                        if self.editor_visible && self.editor.editor_mode == vox_app::editor::EditorPlayMode::Editing {
+                            self.editor.play_requested = true;
+                            self.editor.editor_mode = vox_app::editor::EditorPlayMode::Playing;
+                            println!("[ochroma] Play");
+                        }
+                    }
+                    KeyCode::F6 => {
+                        if self.editor_visible && self.editor.editor_mode != vox_app::editor::EditorPlayMode::Editing {
+                            self.editor.pause_requested = true;
+                            self.editor.editor_mode = if self.editor.editor_mode == vox_app::editor::EditorPlayMode::Playing {
+                                vox_app::editor::EditorPlayMode::Paused
+                            } else {
+                                vox_app::editor::EditorPlayMode::Playing
+                            };
+                            println!("[ochroma] Pause/Resume");
+                        }
+                    }
+                    KeyCode::F7 => {
+                        if self.editor_visible && self.editor.editor_mode != vox_app::editor::EditorPlayMode::Editing {
+                            self.editor.stop_requested = true;
+                            self.editor.editor_mode = vox_app::editor::EditorPlayMode::Editing;
+                            println!("[ochroma] Stop");
+                        }
+                    }
                     KeyCode::KeyS if self.ctrl_held => {
                         let map = self.editor.export_to_map("Ochroma Scene");
                         let path = std::env::temp_dir().join("ochroma_scene.ochroma_map");
@@ -1488,6 +1513,18 @@ impl EngineApp {
             self.engine.stop();
             event_loop.exit();
             return;
+        }
+        if self.editor.play_requested {
+            self.editor.play_requested = false;
+            println!("[ochroma] \u{25b6} PLAY MODE");
+        }
+        if self.editor.pause_requested {
+            self.editor.pause_requested = false;
+            println!("[ochroma] \u{23f8} PAUSE");
+        }
+        if self.editor.stop_requested {
+            self.editor.stop_requested = false;
+            println!("[ochroma] \u{23f9} STOP \u{2014} returning to edit mode");
         }
 
         // 7. FPS counter + title update (throttled to every 0.5s)

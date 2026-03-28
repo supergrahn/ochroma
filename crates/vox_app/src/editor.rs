@@ -43,6 +43,12 @@ pub struct SceneEditor {
     pub show_vfx_editor: bool,
     pub show_perf_stats: bool,
     pub pending_exit: bool,
+
+    // Play mode
+    pub play_requested: bool,
+    pub pause_requested: bool,
+    pub stop_requested: bool,
+    pub editor_mode: EditorPlayMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +56,13 @@ pub enum GizmoMode {
     Translate,
     Rotate,
     Scale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorPlayMode {
+    Editing,
+    Playing,
+    Paused,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +118,10 @@ impl SceneEditor {
             show_vfx_editor: false,
             show_perf_stats: false,
             pending_exit: false,
+            play_requested: false,
+            pause_requested: false,
+            stop_requested: false,
+            editor_mode: EditorPlayMode::Editing,
         }
     }
 
@@ -553,6 +570,45 @@ impl SceneEditor {
                     );
                 }
                 ui.separator();
+
+                // Play button — only enabled in Editing mode
+                let play_color = if self.editor_mode == EditorPlayMode::Editing {
+                    egui::Color32::from_rgb(80, 200, 80)
+                } else {
+                    egui::Color32::GRAY
+                };
+                if ui.add_enabled(
+                    self.editor_mode == EditorPlayMode::Editing,
+                    egui::Button::new(egui::RichText::new("\u{25b6} Play").color(play_color)),
+                ).clicked() {
+                    self.play_requested = true;
+                    self.editor_mode = EditorPlayMode::Playing;
+                }
+
+                // Pause button — only enabled when Playing or Paused
+                let pause_label = if self.editor_mode == EditorPlayMode::Paused { "\u{23e9} Resume" } else { "\u{23f8} Pause" };
+                if ui.add_enabled(
+                    self.editor_mode != EditorPlayMode::Editing,
+                    egui::Button::new(pause_label),
+                ).clicked() {
+                    self.pause_requested = true;
+                    self.editor_mode = if self.editor_mode == EditorPlayMode::Playing {
+                        EditorPlayMode::Paused
+                    } else {
+                        EditorPlayMode::Playing
+                    };
+                }
+
+                // Stop button — only enabled when Playing or Paused
+                if ui.add_enabled(
+                    self.editor_mode != EditorPlayMode::Editing,
+                    egui::Button::new(egui::RichText::new("\u{23f9} Stop").color(egui::Color32::from_rgb(200, 80, 80))),
+                ).clicked() {
+                    self.stop_requested = true;
+                    self.editor_mode = EditorPlayMode::Editing;
+                }
+
+                ui.separator();
                 ui.label(format!("{} entities", self.entities.len()));
                 if let Some(id) = self.selected {
                     ui.label(format!("| Selected: {}", id));
@@ -793,5 +849,28 @@ mod tests {
         editor.selected_entity_mut().unwrap().locked = true;
         editor.move_selected(Vec3::new(10.0, 0.0, 0.0));
         assert_eq!(editor.selected_entity().unwrap().position.x, 0.0);
+    }
+
+    #[test]
+    fn play_mode_flag_set() {
+        let mut editor = SceneEditor::new();
+        assert_eq!(editor.editor_mode, EditorPlayMode::Editing);
+        assert!(!editor.play_requested);
+
+        // Simulate clicking Play
+        editor.play_requested = true;
+        editor.editor_mode = EditorPlayMode::Playing;
+        assert!(editor.play_requested);
+        assert_eq!(editor.editor_mode, EditorPlayMode::Playing);
+
+        // Simulate consuming the flag
+        editor.play_requested = false;
+        assert!(!editor.play_requested);
+        assert_eq!(editor.editor_mode, EditorPlayMode::Playing);
+
+        // Simulate clicking Stop
+        editor.stop_requested = true;
+        editor.editor_mode = EditorPlayMode::Editing;
+        assert_eq!(editor.editor_mode, EditorPlayMode::Editing);
     }
 }
