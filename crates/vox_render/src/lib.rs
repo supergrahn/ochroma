@@ -56,3 +56,7 @@ pub mod vfx_editor;
 pub mod frame_debugger;
 pub mod world_partition;
 pub mod animation_driver;
+pub mod multi_viewport;
+pub mod gpu_particles;
+pub mod movie_render;
+pub mod level_streaming;

@@ -1,6 +1,7 @@
 pub mod brushes;
 pub mod foliage;
 pub mod heightmap;
+pub mod texture_paint;
 pub mod volume;
 
 use serde::{Deserialize, Serialize};

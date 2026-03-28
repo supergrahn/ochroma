@@ -26,3 +26,5 @@ pub mod output_log;
 pub mod world_settings;
 pub mod bt_editor;
 pub mod ui_bridge;
+pub mod drag_drop;
+pub mod localization;

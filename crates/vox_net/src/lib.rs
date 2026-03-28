@@ -3,6 +3,7 @@ use thiserror::Error;
 pub mod crdt;
 pub mod lobby;
 pub mod replication;
+pub mod replication_system;
 pub mod transport;
 pub mod world_hosting;
 pub use replication::{EntityDelta, NetMessage, PlayerAction, ReplicationClient, ReplicationServer};
