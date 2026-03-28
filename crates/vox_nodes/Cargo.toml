@@ -1,0 +1,11 @@
+[package]
+name = "vox_nodes"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+vox_ui         = { path = "../vox_ui" }
+crucible-core  = { workspace = true }
+crucible-types = { workspace = true }
+serde          = { workspace = true }
+thiserror      = { workspace = true }
