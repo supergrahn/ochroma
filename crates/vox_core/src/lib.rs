@@ -25,3 +25,4 @@ pub mod editor_tools;
 pub mod output_log;
 pub mod world_settings;
 pub mod bt_editor;
+pub mod ui_bridge;

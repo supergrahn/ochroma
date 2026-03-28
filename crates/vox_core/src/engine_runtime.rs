@@ -340,6 +340,16 @@ fn process_script_commands_system(world: &mut World) {
                 ScriptCommand::Log { message } => {
                     println!("[script] {}", message);
                 }
+                ScriptCommand::UISetText { id, text } => {
+                    // Will be consumed by the UI render system
+                    println!("[ui] Set text '{}' = '{}'", id, text);
+                }
+                ScriptCommand::UISetProgress { id, value } => {
+                    println!("[ui] Set progress '{}' = {}", id, value);
+                }
+                ScriptCommand::UINotification { message } => {
+                    println!("[ui] Notification: {}", message);
+                }
             }
         }
     }
