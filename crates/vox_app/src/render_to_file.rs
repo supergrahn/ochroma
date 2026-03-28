@@ -3,13 +3,10 @@
 
 use std::path::Path;
 
-use glam::{Mat4, Quat, Vec3};
-use uuid::Uuid;
+use glam::{Mat4, Vec3};
 
-use vox_core::ecs::{LodLevel, SplatAssetComponent, SplatInstanceComponent};
 use vox_core::mapgen::generate_map;
 use vox_core::spectral::Illuminant;
-use vox_core::terrain::{TerrainPlane, generate_terrain_splats};
 use vox_core::types::GaussianSplat;
 use vox_data::proc_gs::emit_splats_simple;
 use vox_data::proc_gs_advanced::{generate_bench, generate_lamp_post, generate_tree};

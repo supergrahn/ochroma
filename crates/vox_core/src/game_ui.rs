@@ -119,8 +119,9 @@ fn text_pixel_width(text: &str, scale: u32) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// Screen-relative anchor for a UI element.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum UIPosition {
+    #[default]
     TopLeft,
     TopCenter,
     TopRight,
@@ -133,24 +134,13 @@ pub enum UIPosition {
     Custom { x: u32, y: u32 },
 }
 
-impl Default for UIPosition {
-    fn default() -> Self {
-        Self::TopLeft
-    }
-}
-
 /// Font scale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UISize {
     Small,
+    #[default]
     Normal,
     Large,
-}
-
-impl Default for UISize {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 impl UISize {
@@ -188,18 +178,13 @@ impl UIElement {
 }
 
 /// Top-level game state (drives menu rendering).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum GameState {
+    #[default]
     MainMenu,
     Playing,
     Paused,
     GameOver { message: String },
-}
-
-impl Default for GameState {
-    fn default() -> Self {
-        Self::MainMenu
-    }
 }
 
 // ---------------------------------------------------------------------------

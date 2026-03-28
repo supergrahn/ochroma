@@ -1,5 +1,5 @@
 use vox_render::vr::*;
-use glam::{Vec3, Quat};
+use glam::Quat;
 
 #[test]
 fn default_headset_at_standing_height() {

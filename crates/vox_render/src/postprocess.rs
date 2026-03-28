@@ -32,7 +32,7 @@ impl Default for PostProcessPipeline {
 
 impl PostProcessPipeline {
     /// Apply all enabled post-processing effects in order.
-    pub fn apply(&self, pixels: &mut Vec<[f32; 4]>, width: usize, height: usize) {
+    pub fn apply(&self, pixels: &mut [[f32; 4]], width: usize, height: usize) {
         if self.bloom_enabled {
             apply_bloom(pixels, width, height, self.bloom_threshold, self.bloom_intensity);
         }
@@ -44,7 +44,7 @@ impl PostProcessPipeline {
 }
 
 /// Apply tone mapping to each pixel in the buffer.
-pub fn apply_tone_mapping(pixels: &mut Vec<[f32; 4]>, method: ToneMapping) {
+pub fn apply_tone_mapping(pixels: &mut [[f32; 4]], method: ToneMapping) {
     match method {
         ToneMapping::None => {}
         ToneMapping::Reinhard => {
@@ -73,7 +73,7 @@ fn aces(x: f32) -> f32 {
 
 /// Extract bright pixels, blur them, and add back to simulate bloom.
 pub fn apply_bloom(
-    pixels: &mut Vec<[f32; 4]>,
+    pixels: &mut [[f32; 4]],
     width: usize,
     height: usize,
     threshold: f32,
@@ -151,7 +151,7 @@ pub fn apply_bloom(
 
 /// Apply a vignette effect, darkening pixels based on distance from center.
 pub fn apply_vignette(
-    pixels: &mut Vec<[f32; 4]>,
+    pixels: &mut [[f32; 4]],
     width: usize,
     height: usize,
     strength: f32,

@@ -103,7 +103,7 @@ pub fn build_clusters(splats: &[GaussianSplat], target_size: usize) -> Vec<Splat
     let mut clusters = Vec::new();
     let mut cluster_id = 0u32;
 
-    for (_cell, indices) in &grid {
+    for indices in grid.values() {
         if indices.len() <= target_size * 2 {
             // Small enough — one cluster
             clusters.push(make_cluster(cluster_id, splats, indices));
@@ -111,7 +111,7 @@ pub fn build_clusters(splats: &[GaussianSplat], target_size: usize) -> Vec<Splat
         } else {
             // Too large — split into sub-clusters
             for chunk in indices.chunks(target_size) {
-                clusters.push(make_cluster(cluster_id, splats, &chunk.to_vec()));
+                clusters.push(make_cluster(cluster_id, splats, chunk));
                 cluster_id += 1;
             }
         }
@@ -227,6 +227,6 @@ pub fn compute_stats(clusters: &[SplatCluster], bvh: &Option<ClusterBVHNode>) ->
         avg_splats_per_cluster: if clusters.is_empty() { 0.0 } else { total as f32 / clusters.len() as f32 },
         min_splats_per_cluster: min,
         max_splats_per_cluster: max,
-        bvh_depth: bvh.as_ref().map(|b| bvh_depth(b)).unwrap_or(0),
+        bvh_depth: bvh.as_ref().map(bvh_depth).unwrap_or(0),
     }
 }

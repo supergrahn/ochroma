@@ -311,7 +311,7 @@ fn style_spds(style: &str) -> ([u16; 8], [u16; 8], [u16; 8], [u16; 8]) {
                 f16::from_f32(0.06).to_bits(),
             ],
         ),
-        "suburban" | _ => (
+        _ => (
             // Painted wood wall (off-white/cream)
             [
                 f16::from_f32(0.40).to_bits(),

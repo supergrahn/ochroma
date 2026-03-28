@@ -15,6 +15,12 @@ pub struct Skeleton {
     pub bones: Vec<Bone>,
 }
 
+impl Default for Skeleton {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Skeleton {
     pub fn new() -> Self {
         Self { bones: Vec::new() }
@@ -217,8 +223,8 @@ impl AnimationPlayer {
         }
 
         // Blend with target if active.
-        if let Some(ref target_state) = self.blend_target {
-            if let Some(target_clip) = self.clips.get(target_state.clip_index) {
+        if let Some(ref target_state) = self.blend_target
+            && let Some(target_clip) = self.clips.get(target_state.clip_index) {
                 for &bone_id in target_clip.bone_keyframes.keys() {
                     if let Some(target_m) = target_clip.sample(bone_id, target_state.time) {
                         let blended = if let Some(&primary_m) = pose.get(&bone_id) {
@@ -230,7 +236,6 @@ impl AnimationPlayer {
                     }
                 }
             }
-        }
 
         pose
     }

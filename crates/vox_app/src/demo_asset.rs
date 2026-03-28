@@ -4,6 +4,7 @@ use vox_core::types::GaussianSplat;
 use vox_data::vxm::{MaterialType, VxmFile, VxmHeader};
 
 /// Encode 8 spectral band values (f32) as [u16; 8] (each stored as f16 bits).
+#[allow(dead_code)]
 fn encode_spectral(bands: [f32; 8]) -> [u16; 8] {
     [
         f16::from_f32(bands[0]).to_bits(),
@@ -17,19 +18,22 @@ fn encode_spectral(bands: [f32; 8]) -> [u16; 8] {
     ]
 }
 
-/// Brick-red SPD: low blue (380–460 nm), high red (620 nm peak).
+/// Brick-red SPD: low blue (380-460 nm), high red (620 nm peak).
 /// Band wavelengths: [380, 420, 460, 500, 540, 580, 620, 660] nm.
+#[allow(dead_code)]
 fn brick_spd() -> [f32; 8] {
     // [380, 420, 460, 500, 540, 580, 620, 660]
     [0.04, 0.05, 0.06, 0.10, 0.18, 0.35, 0.65, 0.55]
 }
 
-/// Slate-grey SPD: flat reflectance ~0.15–0.20 across all bands.
+/// Slate-grey SPD: flat reflectance ~0.15-0.20 across all bands.
+#[allow(dead_code)]
 fn slate_spd() -> [f32; 8] {
     [0.16, 0.16, 0.17, 0.17, 0.18, 0.18, 0.19, 0.19]
 }
 
 /// Build a single GaussianSplat at world position (x, y, z).
+#[allow(dead_code)]
 fn make_splat(x: f32, y: f32, z: f32, spd: [f32; 8]) -> GaussianSplat {
     GaussianSplat {
         position: [x, y, z],
@@ -46,9 +50,10 @@ fn make_splat(x: f32, y: f32, z: f32, spd: [f32; 8]) -> GaussianSplat {
 /// Generate a synthetic test building as a VxmFile.
 ///
 /// Geometry (origin at bottom-front-left corner):
-/// - Front wall : 20 columns × 15 rows, XY plane at Z=0
-/// - Side wall  : 12 columns × 15 rows, YZ plane at X=0
-/// - Roof       : 20 columns × 12 rows, XZ plane at Y=15
+/// - Front wall : 20 columns x 15 rows, XY plane at Z=0
+/// - Side wall  : 12 columns x 15 rows, YZ plane at X=0
+/// - Roof       : 20 columns x 12 rows, XZ plane at Y=15
+#[allow(dead_code)]
 pub fn generate_building() -> VxmFile {
     let brick = brick_spd();
     let slate = slate_spd();

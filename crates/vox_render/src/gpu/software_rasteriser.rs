@@ -107,7 +107,7 @@ impl SoftwareRasteriser {
                 let ndc_z = clip.z / clip.w;
 
                 // Frustum cull (with generous margin for large splats)
-                if ndc_x < -2.0 || ndc_x > 2.0 || ndc_y < -2.0 || ndc_y > 2.0 || ndc_z < -1.0 || ndc_z > 1.0 {
+                if !(-2.0..=2.0).contains(&ndc_x) || !(-2.0..=2.0).contains(&ndc_y) || !(-1.0..=1.0).contains(&ndc_z) {
                     return None;
                 }
 

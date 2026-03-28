@@ -72,25 +72,25 @@ pub fn time_of_day_illuminant_blend(hour: f32) -> (f32, f32, f32) {
     //   18–21: evening -> D50 -> A
     //   21–24: night   -> A dominant
 
-    let (d65, d50, a) = if h >= 7.0 && h < 15.0 {
+    let (d65, d50, a) = if (7.0..15.0).contains(&h) {
         // Full day: pure D65
         (1.0f32, 0.0f32, 0.0f32)
-    } else if h >= 15.0 && h < 17.0 {
+    } else if (15.0..17.0).contains(&h) {
         // Late afternoon: blend D65 -> D50
         let t = (h - 15.0) / 2.0; // 0..1
         (1.0 - t, t, 0.0)
-    } else if h >= 17.0 && h < 19.0 {
+    } else if (17.0..19.0).contains(&h) {
         // Dusk: blend D50 -> A
         let t = (h - 17.0) / 2.0; // 0..1
         (0.0, 1.0 - t, t)
-    } else if h >= 19.0 && h < 21.0 {
+    } else if (19.0..21.0).contains(&h) {
         // Evening: mostly A, small D50 contribution fading out
         let t = (h - 19.0) / 2.0;
         (0.0, (1.0 - t) * 0.2, 1.0 - (1.0 - t) * 0.2)
-    } else if h >= 21.0 || h < 5.0 {
+    } else if !(5.0..21.0).contains(&h) {
         // Night: pure A
         (0.0, 0.0, 1.0)
-    } else if h >= 5.0 && h < 7.0 {
+    } else if (5.0..7.0).contains(&h) {
         // Dawn: blend A -> D65
         let t = (h - 5.0) / 2.0; // 0..1
         (t, 0.0, 1.0 - t)

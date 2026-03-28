@@ -149,16 +149,11 @@ impl Default for TimeOfDay {
 // ---------------------------------------------------------------------------
 
 /// Physics backend selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PhysicsBackend {
+    #[default]
     Simple,
     Rapier,
-}
-
-impl Default for PhysicsBackend {
-    fn default() -> Self {
-        PhysicsBackend::Simple
-    }
 }
 
 // ---------------------------------------------------------------------------

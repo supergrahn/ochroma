@@ -59,6 +59,12 @@ pub struct MarketplaceCache {
     pub listings: Vec<AssetListing>,
 }
 
+impl Default for MarketplaceCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarketplaceCache {
     pub fn new() -> Self {
         Self {

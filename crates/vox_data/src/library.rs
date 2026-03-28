@@ -80,14 +80,14 @@ impl AssetLibrary {
         let entries: Vec<AssetEntry> = self.entries.values().cloned().collect();
         let wrapper = IndexWrapper { assets: entries };
         let toml_str = toml::to_string_pretty(&wrapper)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         std::fs::write(path, toml_str)
     }
 
     pub fn load_index(path: &std::path::Path) -> Result<Self, std::io::Error> {
         let content = std::fs::read_to_string(path)?;
         let wrapper: IndexWrapper = toml::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         let mut lib = Self::new();
         for entry in wrapper.assets {
             lib.register(entry);

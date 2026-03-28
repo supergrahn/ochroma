@@ -1,4 +1,4 @@
-/// Multi-viewport support: single, quad-split, horizontal, vertical layouts.
+//! Multi-viewport support: single, quad-split, horizontal, vertical layouts.
 
 use glam::{Vec3, Mat4};
 use crate::spectral::RenderCamera;

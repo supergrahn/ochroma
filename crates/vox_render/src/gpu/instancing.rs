@@ -26,6 +26,12 @@ pub struct InstanceManager {
     batches: HashMap<Uuid, InstanceBatch>,
 }
 
+impl Default for InstanceManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InstanceManager {
     pub fn new() -> Self {
         Self { batches: HashMap::new() }

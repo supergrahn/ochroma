@@ -200,7 +200,7 @@ pub fn emit_splats(rule: &SplatRule, seed: u64) -> Vec<GaussianSplat> {
                     splats.push(make_splat(&mut rng, Vec3::new(x, y, z), scale, opacity, &spd));
                 }
             }
-            "wall" | _ => {
+            _ => {
                 // 4 walls, each floor
                 for floor in 0..floor_count {
                     let base_y = floor as f32 * floor_height;

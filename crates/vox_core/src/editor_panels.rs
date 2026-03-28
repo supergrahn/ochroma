@@ -1,4 +1,4 @@
-/// Editor panels: Outliner tree + Details panel.
+//! Editor panels: Outliner tree + Details panel.
 
 use std::collections::HashSet;
 
@@ -8,6 +8,12 @@ pub struct OutlinerState {
     pub selected: Vec<u32>,
     pub search_query: String,
     pub context_menu_target: Option<u32>,
+}
+
+impl Default for OutlinerState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl OutlinerState {
@@ -94,6 +100,12 @@ pub enum OutlinerAction {
 /// Details panel auto-generation for entity components.
 pub struct DetailsPanel {
     pub editing_name: Option<String>,
+}
+
+impl Default for DetailsPanel {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DetailsPanel {

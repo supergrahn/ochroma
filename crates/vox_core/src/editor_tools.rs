@@ -1,4 +1,4 @@
-/// Editor tools: Grid, Snapping, Copy/Paste/Duplicate.
+//! Editor tools: Grid, Snapping, Copy/Paste/Duplicate.
 
 use glam::Vec3;
 
@@ -118,6 +118,12 @@ pub struct ClipboardEntity {
     pub asset_path: Option<String>,
     pub scripts: Vec<String>,
     pub tags: Vec<String>,
+}
+
+impl Default for EditorClipboard {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EditorClipboard {

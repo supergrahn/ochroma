@@ -334,11 +334,10 @@ impl GizmoRenderer {
         // Find the closest axis within tolerance
         let mut best: Option<(Axis, f32)> = None;
         for (axis, dist) in [(Axis::X, dist_x), (Axis::Y, dist_y), (Axis::Z, dist_z)] {
-            if dist < HIT_TOLERANCE {
-                if best.is_none() || dist < best.unwrap().1 {
+            if dist < HIT_TOLERANCE
+                && (best.is_none() || dist < best.unwrap().1) {
                     best = Some((axis, dist));
                 }
-            }
         }
         best.map(|(a, _)| a)
     }

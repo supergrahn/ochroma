@@ -31,7 +31,7 @@ impl Localization {
         let table = self
             .tables
             .entry(locale.to_string())
-            .or_insert_with(HashMap::new);
+            .or_default();
         let mut count = 0;
         for line in csv.lines() {
             let line = line.trim();
@@ -54,19 +54,16 @@ impl Localization {
     /// Get a translated string. Falls back to fallback locale, then returns the key itself.
     pub fn get<'a>(&'a self, key: &'a str) -> &'a str {
         // Try current locale
-        if let Some(table) = self.tables.get(&self.current_locale) {
-            if let Some(val) = table.get(key) {
+        if let Some(table) = self.tables.get(&self.current_locale)
+            && let Some(val) = table.get(key) {
                 return val.as_str();
             }
-        }
         // Try fallback
-        if self.current_locale != self.fallback_locale {
-            if let Some(table) = self.tables.get(&self.fallback_locale) {
-                if let Some(val) = table.get(key) {
+        if self.current_locale != self.fallback_locale
+            && let Some(table) = self.tables.get(&self.fallback_locale)
+                && let Some(val) = table.get(key) {
                     return val.as_str();
                 }
-            }
-        }
         // Return key itself
         key
     }

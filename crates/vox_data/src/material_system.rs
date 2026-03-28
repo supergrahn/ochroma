@@ -80,6 +80,12 @@ pub struct MaterialSystem {
     file_paths: HashMap<String, std::path::PathBuf>,
 }
 
+impl Default for MaterialSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MaterialSystem {
     pub fn new() -> Self {
         Self {

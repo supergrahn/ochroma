@@ -75,6 +75,12 @@ pub struct CinematicCamera {
     pub looping: bool,
 }
 
+impl Default for CinematicCamera {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CinematicCamera {
     pub fn new() -> Self {
         Self {

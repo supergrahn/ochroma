@@ -32,6 +32,7 @@ pub mod ar_placement;
 pub mod hierarchical_lod;
 pub mod benchmark;
 pub mod memory_pool;
+#[allow(unexpected_cfgs)]
 pub mod perf_inspector;
 pub mod comparison;
 pub mod spectra_render;

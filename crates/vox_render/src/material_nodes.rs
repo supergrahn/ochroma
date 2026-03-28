@@ -113,7 +113,7 @@ impl Default for MaterialEvalContext {
 
 /// Simple hash-based pseudo-random in [0, 1].
 fn hash_f32(x: f32, y: f32) -> f32 {
-    let n = (x * 127.1 + y * 311.7).sin() * 43758.5453;
+    let n = (x * 127.1 + y * 311.7).sin() * 43_758.547;
     n.fract().abs()
 }
 

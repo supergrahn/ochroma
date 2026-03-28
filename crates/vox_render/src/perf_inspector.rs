@@ -123,6 +123,7 @@ impl PerfInspector {
     }
 
     /// Render the performance overlay using egui.
+    #[allow(unexpected_cfgs)]
     #[cfg(feature = "egui")]
     pub fn show(&self, ctx: &egui::Context) {
         if !self.visible {

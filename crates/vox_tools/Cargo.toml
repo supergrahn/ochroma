@@ -3,6 +3,10 @@ name = "vox_tools"
 edition.workspace = true
 version.workspace = true
 
+[lib]
+name = "vox_tools"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vox_tools"
 path = "src/main.rs"

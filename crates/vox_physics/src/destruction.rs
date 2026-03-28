@@ -19,7 +19,9 @@ pub struct DestructibleObject {
     pub fragments: Vec<Fragment>,
     pub health: f32,
     pub is_destroyed: bool,
+    #[allow(dead_code)]
     center: Vec3,
+    #[allow(dead_code)]
     max_health: f32,
 }
 

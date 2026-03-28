@@ -114,7 +114,7 @@ impl GpuSorter {
                     let mut pass = encoder.begin_compute_pass(&Default::default());
                     pass.set_pipeline(&self.pipeline);
                     pass.set_bind_group(0, &bind_group, &[]);
-                    pass.dispatch_workgroups((n as u32 + 255) / 256, 1, 1);
+                    pass.dispatch_workgroups((n as u32).div_ceil(256), 1, 1);
                 }
                 queue.submit(std::iter::once(encoder.finish()));
             }

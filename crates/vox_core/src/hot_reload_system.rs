@@ -73,14 +73,12 @@ impl HotReloadManager {
 
         // Check watched files for modifications
         for (path, last_modified) in &mut self.watched_files {
-            if let Ok(metadata) = std::fs::metadata(path) {
-                if let Ok(modified) = metadata.modified() {
-                    if modified > *last_modified {
+            if let Ok(metadata) = std::fs::metadata(path)
+                && let Ok(modified) = metadata.modified()
+                    && modified > *last_modified {
                         *last_modified = modified;
                         events.push(classify_reload_event(path));
                     }
-                }
-            }
         }
 
         // Check watched directories for new files
@@ -89,14 +87,12 @@ impl HotReloadManager {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_file() && !self.watched_files.contains_key(&path) {
-                        if let Ok(metadata) = std::fs::metadata(&path) {
-                            if let Ok(modified) = metadata.modified() {
+                    if path.is_file() && !self.watched_files.contains_key(&path)
+                        && let Ok(metadata) = std::fs::metadata(&path)
+                            && let Ok(modified) = metadata.modified() {
                                 new_files.push((path.clone(), modified));
                                 events.push(classify_reload_event(&path));
                             }
-                        }
-                    }
                 }
             }
         }

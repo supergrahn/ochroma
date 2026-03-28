@@ -317,8 +317,8 @@ fn render_cpu_internal(
 ) -> Vec<f32> {
     let w = camera.width;
     let h = camera.height;
-    let tiles_x = (w + TILE_SIZE - 1) / TILE_SIZE;
-    let tiles_y = (h + TILE_SIZE - 1) / TILE_SIZE;
+    let tiles_x = w.div_ceil(TILE_SIZE);
+    let tiles_y = h.div_ceil(TILE_SIZE);
 
     // Step 1: Project all Gaussians
     let mut projected: Vec<ProjectedGaussian> = Vec::with_capacity(gaussians.len());

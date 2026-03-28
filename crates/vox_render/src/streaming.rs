@@ -36,11 +36,10 @@ impl TileManager {
                     z: camera_tile.z + dz,
                 };
                 self.tiles.entry(tile).or_insert(TileState::Active);
-                if let Some(state) = self.tiles.get_mut(&tile) {
-                    if *state == TileState::Cold {
+                if let Some(state) = self.tiles.get_mut(&tile)
+                    && *state == TileState::Cold {
                         *state = TileState::Active;
                     }
-                }
             }
         }
     }
@@ -71,7 +70,7 @@ impl AsyncAssetLoader {
         let bytes = bytes.to_vec();
         tokio::task::spawn_blocking(move || VxmFile::read(&bytes[..]))
             .await
-            .map_err(|e| VxmError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+            .map_err(|e| VxmError::Io(std::io::Error::other(e)))?
     }
 
     pub async fn load_from_path(&self, path: &std::path::Path) -> Result<VxmFile, VxmError> {

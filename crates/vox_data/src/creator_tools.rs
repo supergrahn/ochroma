@@ -193,8 +193,7 @@ impl CutsceneTimeline {
     pub fn camera_at(&self, time: f32) -> Option<&CameraKeyframe> {
         self.camera_keyframes
             .iter()
-            .filter(|k| k.time <= time)
-            .last()
+            .rfind(|k| k.time <= time)
     }
 }
 

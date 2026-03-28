@@ -133,11 +133,10 @@ impl SpatialUIManager {
             if !panel.visible {
                 continue;
             }
-            if let Some(t) = panel.ray_intersect(ray_origin, ray_dir) {
-                if best.is_none() || t < best.unwrap().1 {
+            if let Some(t) = panel.ray_intersect(ray_origin, ray_dir)
+                && (best.is_none() || t < best.unwrap().1) {
                     best = Some((panel, t));
                 }
-            }
         }
         best
     }

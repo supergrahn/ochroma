@@ -106,6 +106,12 @@ pub struct ScriptRegistry {
 unsafe impl Send for ScriptRegistry {}
 unsafe impl Sync for ScriptRegistry {}
 
+impl Default for ScriptRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScriptRegistry {
     pub fn new() -> Self {
         Self { factories: std::collections::HashMap::new() }

@@ -66,11 +66,10 @@ fn import_ply(path: &Path, settings: &ImportSettings) -> Result<ImportResult, St
     let mut in_header = true;
     for line in data.lines() {
         if in_header {
-            if line.starts_with("element vertex") {
-                if let Some(count_str) = line.split_whitespace().nth(2) {
+            if line.starts_with("element vertex")
+                && let Some(count_str) = line.split_whitespace().nth(2) {
                     vertex_count = count_str.parse().unwrap_or(0);
                 }
-            }
             if line == "end_header" {
                 in_header = false;
             }

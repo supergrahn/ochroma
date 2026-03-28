@@ -128,10 +128,10 @@ impl ShadowMapper {
                 let ndc_z = clip.z / clip.w;
 
                 // Discard if outside NDC cube.
-                if ndc_x < -1.0 || ndc_x > 1.0 || ndc_y < -1.0 || ndc_y > 1.0 {
+                if !(-1.0..=1.0).contains(&ndc_x) || !(-1.0..=1.0).contains(&ndc_y) {
                     continue;
                 }
-                if ndc_z < 0.0 || ndc_z > 1.0 {
+                if !(0.0..=1.0).contains(&ndc_z) {
                     continue;
                 }
 
@@ -186,10 +186,10 @@ impl ShadowMapper {
             let ndc_z = clip.z / clip.w;
 
             // Check if point falls within this cascade's projection.
-            if ndc_x < -1.0 || ndc_x > 1.0 || ndc_y < -1.0 || ndc_y > 1.0 {
+            if !(-1.0..=1.0).contains(&ndc_x) || !(-1.0..=1.0).contains(&ndc_y) {
                 continue;
             }
-            if ndc_z < 0.0 || ndc_z > 1.0 {
+            if !(0.0..=1.0).contains(&ndc_z) {
                 continue;
             }
 

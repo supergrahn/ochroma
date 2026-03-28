@@ -95,20 +95,17 @@ impl I18nManager {
     /// Translate a key. Falls back to English, then returns the key itself.
     pub fn t<'a>(&'a self, key: &'a str) -> &'a str {
         // Try current locale first.
-        if let Some(bundle) = self.bundles.get(&self.current_locale) {
-            if let Some(msg) = bundle.get(key) {
+        if let Some(bundle) = self.bundles.get(&self.current_locale)
+            && let Some(msg) = bundle.get(key) {
                 return msg;
             }
-        }
 
         // Fallback to English.
-        if self.current_locale != Locale::En {
-            if let Some(bundle) = self.bundles.get(&Locale::En) {
-                if let Some(msg) = bundle.get(key) {
+        if self.current_locale != Locale::En
+            && let Some(bundle) = self.bundles.get(&Locale::En)
+                && let Some(msg) = bundle.get(key) {
                     return msg;
                 }
-            }
-        }
 
         // Return the key itself.
         key

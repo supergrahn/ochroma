@@ -47,14 +47,12 @@ impl AssetWatcher {
 
         let mut changed = Vec::new();
         for (path, last_modified) in &mut self.watched_paths {
-            if let Ok(metadata) = std::fs::metadata(path) {
-                if let Ok(modified) = metadata.modified() {
-                    if modified > *last_modified {
+            if let Ok(metadata) = std::fs::metadata(path)
+                && let Ok(modified) = metadata.modified()
+                    && modified > *last_modified {
                         *last_modified = modified;
                         changed.push(path.clone());
                     }
-                }
-            }
         }
         changed
     }

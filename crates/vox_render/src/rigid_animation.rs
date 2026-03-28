@@ -65,7 +65,7 @@ impl RigidClip {
 
         // Handle looping
         if self.looping && self.duration > 0.0 {
-            time = time % self.duration;
+            time %= self.duration;
             if time < 0.0 {
                 time += self.duration;
             }
@@ -337,7 +337,7 @@ impl RigidStateMachine {
         if let Some(state) = self.states.get(&self.current) {
             let clip = &state.clip;
             if clip.looping && clip.duration > 0.0 {
-                self.time = self.time % clip.duration;
+                self.time %= clip.duration;
                 if self.time < 0.0 {
                     self.time += clip.duration;
                 }
@@ -359,7 +359,7 @@ impl RigidStateMachine {
                 if let Some(state) = self.states.get(&self.current) {
                     let clip = &state.clip;
                     if clip.looping && clip.duration > 0.0 {
-                        self.time = self.time % clip.duration;
+                        self.time %= clip.duration;
                     } else if clip.duration > 0.0 {
                         self.time = self.time.clamp(0.0, clip.duration);
                     }

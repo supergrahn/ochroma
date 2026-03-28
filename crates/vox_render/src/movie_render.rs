@@ -72,7 +72,7 @@ impl MovieRenderQueue {
 
         match self.settings.format {
             OutputFormat::PPM => {
-                let mut data = format!(
+                let data = format!(
                     "P6\n{} {}\n255\n",
                     self.settings.width, self.settings.height
                 );

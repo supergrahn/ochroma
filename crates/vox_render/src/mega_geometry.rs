@@ -45,8 +45,8 @@ impl MegaGeometryDispatch {
 
     /// Compute screen tiles.
     pub fn compute_tiles(&self) -> Vec<ScreenTile> {
-        let nx = (self.screen_width + self.tile_size - 1) / self.tile_size;
-        let ny = (self.screen_height + self.tile_size - 1) / self.tile_size;
+        let nx = self.screen_width.div_ceil(self.tile_size);
+        let ny = self.screen_height.div_ceil(self.tile_size);
         let mut tiles = Vec::with_capacity((nx * ny) as usize);
         for ty in 0..ny {
             for tx in 0..nx {
@@ -85,7 +85,7 @@ impl MegaGeometryDispatch {
             let y_min = ((sy - radius).max(0.0) / self.tile_size as f32).floor() as u32;
             let y_max = ((sy + radius).min(self.screen_height as f32 - 1.0) / self.tile_size as f32).ceil() as u32;
 
-            let tiles_x = (self.screen_width + self.tile_size - 1) / self.tile_size;
+            let tiles_x = self.screen_width.div_ceil(self.tile_size);
 
             let mut assigned = false;
             for ty in y_min..=y_max {
@@ -111,8 +111,8 @@ impl MegaGeometryDispatch {
     }
 
     pub fn tile_count(&self) -> u32 {
-        let nx = (self.screen_width + self.tile_size - 1) / self.tile_size;
-        let ny = (self.screen_height + self.tile_size - 1) / self.tile_size;
+        let nx = self.screen_width.div_ceil(self.tile_size);
+        let ny = self.screen_height.div_ceil(self.tile_size);
         nx * ny
     }
 

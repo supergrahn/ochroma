@@ -25,6 +25,12 @@ pub struct NavMesh {
     adjacency: HashMap<u32, Vec<(u32, f32)>>, // node_id -> [(neighbor_id, cost)]
 }
 
+impl Default for NavMesh {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NavMesh {
     pub fn new() -> Self {
         Self { nodes: Vec::new(), edges: Vec::new(), adjacency: HashMap::new() }

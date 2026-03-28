@@ -182,7 +182,7 @@ fn walk_for_parent(
     parent_joint: Option<usize>,
 ) -> Option<usize> {
     if current.index() == target {
-        return Some(parent_joint?);
+        return parent_joint;
     }
     let next_parent = map.get(&current.index()).copied().or(parent_joint);
     for child in current.children() {
@@ -236,7 +236,7 @@ fn extract_one_animation(
                 .read_outputs()
                 .map(|out| match out {
                     gltf::animation::util::ReadOutputs::Rotations(iter) => {
-                        iter.into_f32().map(|r| r).collect::<Vec<_>>()
+                        iter.into_f32().collect::<Vec<_>>()
                     }
                     _ => Vec::new(),
                 })

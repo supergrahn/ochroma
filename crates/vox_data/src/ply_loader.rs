@@ -172,7 +172,7 @@ pub fn load_ply_from_reader(reader: &mut impl Read) -> Result<Vec<GaussianSplat>
     let i_fdc1 = find_prop(&header, "f_dc_1");
     let i_fdc2 = find_prop(&header, "f_dc_2");
 
-    let sh_c0: f32 = 0.28209479177; // 1 / (2 * sqrt(pi))
+    let sh_c0: f32 = 0.282_094_8; // 1 / (2 * sqrt(pi))
 
     let mut splats = Vec::with_capacity(header.vertex_count);
 

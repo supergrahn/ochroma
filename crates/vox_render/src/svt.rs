@@ -35,9 +35,7 @@ impl TileCache {
         self.access_order.retain(|t| t != &id);
         self.access_order.push_back(id);
 
-        if !self.tiles.contains_key(&id) {
-            self.tiles.insert(id, TileLoadState::Loading);
-        }
+        self.tiles.entry(id).or_insert(TileLoadState::Loading);
     }
 
     /// Mark a tile as fully loaded.

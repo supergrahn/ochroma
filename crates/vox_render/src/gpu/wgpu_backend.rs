@@ -145,7 +145,7 @@ impl WgpuBackend {
         let unpadded_bytes_per_row = width * 4;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let padded_bytes_per_row =
-            (unpadded_bytes_per_row + align - 1) / align * align;
+            unpadded_bytes_per_row.div_ceil(align) * align;
 
         if padded_bytes_per_row == unpadded_bytes_per_row {
             // No padding needed — write directly.

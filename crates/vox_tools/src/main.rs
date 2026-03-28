@@ -1,10 +1,7 @@
-mod turnaround;
-pub mod build;
-
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};
-use turnaround::run_turnaround;
-use build::{BuildTarget, BuildConfig, BuildManifest};
+use vox_tools::turnaround::run_turnaround;
+use vox_tools::build::{BuildTarget, BuildConfig, BuildManifest};
 
 #[derive(Parser)]
 #[command(name = "vox_tools", about = "Ochroma engine asset pipeline tools")]

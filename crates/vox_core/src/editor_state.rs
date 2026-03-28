@@ -13,6 +13,12 @@ pub struct EditorStateMachine {
     saved_state: Option<Vec<u8>>,
 }
 
+impl Default for EditorStateMachine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EditorStateMachine {
     pub fn new() -> Self {
         Self {
