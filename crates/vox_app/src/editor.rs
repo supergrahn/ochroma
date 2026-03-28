@@ -109,6 +109,20 @@ pub enum EditorAction {
     },
 }
 
+impl EditorAction {
+    pub fn label(&self) -> String {
+        match self {
+            EditorAction::MoveEntity { id, .. }   => format!("Move #{}", id),
+            EditorAction::RotateEntity { id, .. } => format!("Rotate #{}", id),
+            EditorAction::ScaleEntity { id, .. }  => format!("Scale #{}", id),
+            EditorAction::AddEntity { id }         => format!("Add #{}", id),
+            EditorAction::DeleteEntity { id, .. } => format!("Delete #{}", id),
+            EditorAction::RenameEntity { id, old_name, new_name } =>
+                format!("Rename #{}: {} \u{2192} {}", id, old_name, new_name),
+        }
+    }
+}
+
 impl SceneEditor {
     pub fn new() -> Self {
         Self {
@@ -681,6 +695,26 @@ impl SceneEditor {
                 }
             });
 
+        if self.show_history {
+            egui::Window::new("History")
+                .default_size([220.0, 300.0])
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new("Undo Stack").strong());
+                    egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+                        for action in self.undo_stack.iter().rev() {
+                            ui.label(action.label());
+                        }
+                        if self.undo_stack.is_empty() {
+                            ui.label(egui::RichText::new("(empty)").italics());
+                        }
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Undo  Ctrl+Z").clicked() { self.undo(); }
+                        if ui.button("Redo  Ctrl+Y").clicked() { self.redo(); }
+                    });
+                });
+        }
     }
 
     /// Cast a ray from camera and find the nearest entity hit.
@@ -963,5 +997,28 @@ mod tests {
         assert_eq!(editor.transform_space, TransformSpace::Local);
         editor.transform_space = TransformSpace::World;
         assert_eq!(editor.transform_space, TransformSpace::World);
+    }
+
+    #[test]
+    fn history_panel_label_for_action() {
+        let action = EditorAction::MoveEntity {
+            id: 3,
+            old_pos: Vec3::ZERO,
+            new_pos: Vec3::new(1.0, 0.0, 0.0),
+        };
+        assert_eq!(action.label(), "Move #3");
+    }
+
+    #[test]
+    fn ctrl_z_undo_via_label() {
+        let mut editor = SceneEditor::new();
+        let id = editor.add_entity("Box", "box.ply", Vec3::ZERO);
+        editor.select(id);
+        editor.move_selected(Vec3::new(5.0, 0.0, 0.0));
+        assert_eq!(editor.selected_entity().unwrap().position.x, 5.0);
+        // Check label before undo
+        assert!(editor.undo_stack.last().unwrap().label().contains("Move"));
+        editor.undo();
+        assert_eq!(editor.selected_entity().unwrap().position.x, 0.0);
     }
 }

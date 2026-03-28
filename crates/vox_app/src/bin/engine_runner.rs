@@ -966,6 +966,18 @@ impl EngineApp {
                             Err(e) => eprintln!("[ochroma] Save failed: {}", e),
                         }
                     }
+                    KeyCode::KeyZ if self.ctrl_held => {
+                        if self.editor_visible {
+                            self.editor.undo();
+                            println!("[ochroma] Undo ({} left)", self.editor.undo_stack.len());
+                        }
+                    }
+                    KeyCode::KeyY if self.ctrl_held => {
+                        if self.editor_visible {
+                            self.editor.redo();
+                            println!("[ochroma] Redo ({} left)", self.editor.redo_stack.len());
+                        }
+                    }
                     _ => {}
                 }
             } else {
