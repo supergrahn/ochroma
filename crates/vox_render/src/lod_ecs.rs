@@ -8,6 +8,7 @@ use glam::Vec3;
 
 use crate::lod_crossfade::LodCrossfadeManager;
 use crate::streaming::TileManager;
+use vox_core::lwc::WorldCoord;
 
 // Allow these types to be stored as bevy_ecs Resources.
 impl Resource for LodCrossfadeManager {}
@@ -96,6 +97,53 @@ pub fn lod_crossfade_system(
         } else {
             lod_state.crossfade = 0.0;
         }
+    }
+}
+
+/// Convert camera world position to a TileCoord and call TileManager::update_camera
+/// to activate the surrounding tile grid and evict distant tiles.
+pub fn tile_streaming_system(
+    camera: Res<CameraSettings>,
+    mut tile_manager: ResMut<TileManager>,
+) {
+    let world_coord = WorldCoord::from_absolute(
+        camera.position.x as f64,
+        camera.position.y as f64,
+        camera.position.z as f64,
+    );
+    tile_manager.update_camera(world_coord.tile);
+}
+
+// ── Plugin ─────────────────────────────────────────────────────────────────
+
+/// Bevy plugin that registers LOD streaming resources and systems.
+///
+/// Usage: `app.add_plugins(LodStreamingPlugin::default())`
+///
+/// After adding the plugin, update `CameraSettings` and `TimeStep` each frame
+/// to drive LOD selection and crossfade timing.
+pub struct LodStreamingPlugin {
+    /// Crossfade transition duration in seconds (default 0.5 s).
+    pub transition_duration: f32,
+}
+
+impl Default for LodStreamingPlugin {
+    fn default() -> Self { Self { transition_duration: 0.5 } }
+}
+
+impl bevy_app::Plugin for LodStreamingPlugin {
+    fn build(&self, app: &mut bevy_app::App) {
+        app.insert_resource(CameraSettings::default());
+        app.insert_resource(TimeStep::default());
+        app.insert_resource(LodCrossfadeManager {
+            transitions: vec![],
+            transition_duration: self.transition_duration,
+        });
+        app.insert_resource(TileManager::new());
+        app.add_systems(
+            bevy_app::Update,
+            (lod_select_system, lod_crossfade_system, tile_streaming_system).chain(),
+        );
     }
 }
 
@@ -198,5 +246,35 @@ mod tests {
             "crossfade should be in (0, 1], got {}",
             lod.crossfade
         );
+    }
+
+    #[test]
+    fn tile_streaming_activates_tiles_near_camera() {
+        let mut world = World::new();
+        world.insert_resource(CameraSettings {
+            position: Vec3::ZERO,
+            ..Default::default()
+        });
+        world.insert_resource(TileManager::new());
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(tile_streaming_system);
+        schedule.run(&mut world);
+
+        let tm = world.resource::<TileManager>();
+        let active = tm.active_tiles();
+        // Camera at (0,0,0) → tile (0,0). Default active_radius=1 → 3×3=9 tiles.
+        assert_eq!(active.len(), 9, "Expected 3×3 tile grid, got {}", active.len());
+    }
+
+    #[test]
+    fn plugin_inserts_resources() {
+        use bevy_app::App;
+        let mut app = App::new();
+        app.add_plugins(LodStreamingPlugin::default());
+        assert!(app.world().contains_resource::<CameraSettings>());
+        assert!(app.world().contains_resource::<TimeStep>());
+        assert!(app.world().contains_resource::<LodCrossfadeManager>());
+        assert!(app.world().contains_resource::<TileManager>());
     }
 }
