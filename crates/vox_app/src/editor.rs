@@ -44,6 +44,9 @@ pub struct SceneEditor {
     pub show_perf_stats: bool,
     pub pending_exit: bool,
 
+    // Transform space
+    pub transform_space: TransformSpace,
+
     // Play mode
     pub play_requested: bool,
     pub pause_requested: bool,
@@ -67,6 +70,12 @@ pub enum EditorPlayMode {
     Editing,
     Playing,
     Paused,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformSpace {
+    World,
+    Local,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +135,7 @@ impl SceneEditor {
             pause_requested: false,
             stop_requested: false,
             editor_mode: EditorPlayMode::Editing,
+            transform_space: TransformSpace::World,
             status_splat_count: 0,
             status_message: String::from("Ready"),
         }
@@ -484,6 +494,13 @@ impl SceneEditor {
                     .clicked()
                 {
                     self.gizmo_mode = GizmoMode::Scale;
+                }
+                ui.separator();
+                if ui.selectable_label(self.transform_space == TransformSpace::World, "World").clicked() {
+                    self.transform_space = TransformSpace::World;
+                }
+                if ui.selectable_label(self.transform_space == TransformSpace::Local, "Local").clicked() {
+                    self.transform_space = TransformSpace::Local;
                 }
                 ui.separator();
                 ui.checkbox(&mut self.snap_enabled, "Snap");
@@ -930,5 +947,21 @@ mod tests {
         editor.stop_requested = true;
         editor.editor_mode = EditorPlayMode::Editing;
         assert_eq!(editor.editor_mode, EditorPlayMode::Editing);
+    }
+
+    #[test]
+    fn transform_space_defaults_to_world() {
+        let editor = SceneEditor::new();
+        assert_eq!(editor.transform_space, TransformSpace::World);
+    }
+
+    #[test]
+    fn transform_space_toggle() {
+        let mut editor = SceneEditor::new();
+        assert_eq!(editor.transform_space, TransformSpace::World);
+        editor.transform_space = TransformSpace::Local;
+        assert_eq!(editor.transform_space, TransformSpace::Local);
+        editor.transform_space = TransformSpace::World;
+        assert_eq!(editor.transform_space, TransformSpace::World);
     }
 }
