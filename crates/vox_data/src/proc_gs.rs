@@ -170,9 +170,9 @@ pub fn emit_splats(rule: &SplatRule, seed: u64) -> Vec<GaussianSplat> {
     let lib = MaterialLibrary::default();
 
     let floor_count = rng.random_range(rule.geometry.floor_count_min..=rule.geometry.floor_count_max);
-    let height = rng.random_range(rule.geometry.height_min..rule.geometry.height_max);
-    let width = rng.random_range(rule.geometry.width_min..rule.geometry.width_max);
-    let depth = rng.random_range(rule.geometry.depth_min..rule.geometry.depth_max);
+    let height = rng.random_range(rule.geometry.height_min..=rule.geometry.height_max);
+    let width = rng.random_range(rule.geometry.width_min..=rule.geometry.width_max);
+    let depth = rng.random_range(rule.geometry.depth_min..=rule.geometry.depth_max);
     let floor_height = height / floor_count as f32;
 
     let mut splats = Vec::new();

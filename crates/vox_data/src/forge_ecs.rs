@@ -53,6 +53,22 @@ pub struct ProcGenResultComponent {
     pub splats: Vec<GaussianSplat>,
 }
 
+// ── Systems ────────────────────────────────────────────────────────────────
+
+/// For each entity with `ProcGenComponent` but no `ProcGenResultComponent`,
+/// run `emit_splats` and insert the result.
+///
+/// Idempotent: entities that already have `ProcGenResultComponent` are skipped.
+pub fn forge_pcg_system(
+    mut commands: Commands,
+    query: Query<(Entity, &ProcGenComponent), Without<ProcGenResultComponent>>,
+) {
+    for (entity, proc_gen) in query.iter() {
+        let splats = emit_splats(&proc_gen.rule, proc_gen.seed);
+        commands.entity(entity).insert(ProcGenResultComponent { splats });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +135,48 @@ mod tests {
             splats: vec![],
         };
         assert!(result.splats.is_empty());
+    }
+
+    #[test]
+    fn forge_pcg_system_generates_result() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+
+        let mut world = World::new();
+
+        let entity = world.spawn(ProcGenComponent {
+            rule: minimal_rule(),
+            seed: 1,
+        }).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(forge_pcg_system);
+        schedule.run(&mut world);
+
+        let result = world.entity(entity).get::<ProcGenResultComponent>();
+        assert!(result.is_some(), "ProcGenResultComponent should be inserted after system runs");
+    }
+
+    #[test]
+    fn forge_pcg_system_is_idempotent() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+
+        let mut world = World::new();
+
+        // Entity already has a result — should NOT be re-generated
+        let entity = world.spawn((
+            ProcGenComponent { rule: minimal_rule(), seed: 2 },
+            ProcGenResultComponent { splats: vec![] },
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(forge_pcg_system);
+        schedule.run(&mut world);
+
+        // Result component still present (not replaced)
+        let result = world.entity(entity).get::<ProcGenResultComponent>().unwrap();
+        // splats remains empty because we pre-inserted an empty result
+        assert!(result.splats.is_empty(), "pre-existing result should not be replaced");
     }
 }
