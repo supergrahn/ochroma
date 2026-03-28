@@ -1539,6 +1539,15 @@ impl EngineApp {
             self.editor.stop_requested = false;
             println!("[ochroma] \u{23f9} STOP \u{2014} returning to edit mode");
         }
+        if let Some(id) = self.editor.focus_camera_on.take() {
+            if let Some(entity) = self.editor.entities.iter().find(|e| e.id == id) {
+                let target = entity.position;
+                self.camera.position = target + glam::Vec3::new(0.0, 5.0, 15.0);
+                self.cam_yaw = 0.0;
+                self.cam_pitch = -0.2;
+                println!("[ochroma] Camera focused on entity #{} '{}'", id, entity.name);
+            }
+        }
 
         // 7. FPS counter + title update (throttled to every 0.5s)
         self.frame_count += 1;

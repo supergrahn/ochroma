@@ -56,6 +56,9 @@ pub struct SceneEditor {
     // Status bar
     pub status_splat_count: usize,
     pub status_message: String,
+
+    // Camera focus request from context menu
+    pub focus_camera_on: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +155,7 @@ impl SceneEditor {
             transform_space: TransformSpace::World,
             status_splat_count: 0,
             status_message: String::from("Ready"),
+            focus_camera_on: None,
         }
     }
 
@@ -344,6 +348,20 @@ impl SceneEditor {
             &entity.asset_path,
             new_pos,
         ))
+    }
+
+    /// Rename an entity by ID, recording an undo action.
+    pub fn rename_entity(&mut self, id: u32, new_name: &str) {
+        if let Some(entity) = self.entities.iter_mut().find(|e| e.id == id) {
+            let old_name = entity.name.clone();
+            entity.name = new_name.to_string();
+            self.undo_stack.push(EditorAction::RenameEntity {
+                id,
+                old_name,
+                new_name: new_name.to_string(),
+            });
+            self.redo_stack.clear();
+        }
     }
 
     /// Export scene to a MapFile.
@@ -626,17 +644,43 @@ impl SceneEditor {
 
                 ui.separator();
 
-                let selected = self.selected;
-                for entity in &self.entities {
-                    let is_selected = selected == Some(entity.id);
-                    let label = if entity.visible {
-                        format!("\u{1f441} {}", entity.name)
+                // Collect to avoid borrow conflict with mut methods in context_menu
+                let entity_items: Vec<(u32, String, bool)> = self.entities.iter().map(|e| {
+                    let is_sel = self.selected == Some(e.id);
+                    let lbl = if e.visible {
+                        format!("\u{1f441} {}", e.name)
                     } else {
-                        format!("  {}", entity.name)
+                        format!("  {}", e.name)
                     };
-                    if ui.selectable_label(is_selected, &label).clicked() {
-                        self.selected = Some(entity.id);
+                    (e.id, lbl, is_sel)
+                }).collect();
+
+                for (entity_id, label, is_selected) in entity_items {
+                    let response = ui.selectable_label(is_selected, &label);
+                    if response.clicked() {
+                        self.selected = Some(entity_id);
                     }
+                    response.context_menu(|ui| {
+                        if ui.button("Select").clicked() {
+                            self.selected = Some(entity_id);
+                            ui.close_menu();
+                        }
+                        if ui.button("Duplicate").clicked() {
+                            self.selected = Some(entity_id);
+                            self.duplicate_selected();
+                            ui.close_menu();
+                        }
+                        if ui.button("Delete").clicked() {
+                            self.selected = Some(entity_id);
+                            self.delete_selected();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("Focus Camera").clicked() {
+                            self.focus_camera_on = Some(entity_id);
+                            ui.close_menu();
+                        }
+                    });
                 }
             });
 
@@ -1020,5 +1064,20 @@ mod tests {
         assert!(editor.undo_stack.last().unwrap().label().contains("Move"));
         editor.undo();
         assert_eq!(editor.selected_entity().unwrap().position.x, 0.0);
+    }
+
+    #[test]
+    fn context_menu_rename_tracked() {
+        let mut editor = SceneEditor::new();
+        let id = editor.add_entity("OldName", "asset.ply", Vec3::ZERO);
+        editor.rename_entity(id, "NewName");
+        assert_eq!(editor.entities[0].name, "NewName");
+        assert!(matches!(editor.undo_stack.last(), Some(EditorAction::RenameEntity { .. })));
+    }
+
+    #[test]
+    fn focus_camera_on_starts_none() {
+        let editor = SceneEditor::new();
+        assert!(editor.focus_camera_on.is_none());
     }
 }
