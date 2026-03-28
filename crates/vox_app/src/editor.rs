@@ -31,6 +31,17 @@ pub struct SceneEditor {
     // Undo
     pub undo_stack: Vec<EditorAction>,
     pub redo_stack: Vec<EditorAction>,
+
+    // Menu bar state
+    pub pending_new_scene: bool,
+    pub pending_open: bool,
+    pub pending_save: bool,
+    pub pending_save_as: bool,
+    pub show_history: bool,
+    pub show_material_editor: bool,
+    pub show_anim_editor: bool,
+    pub show_vfx_editor: bool,
+    pub show_perf_stats: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +94,15 @@ impl SceneEditor {
             snap_grid: 1.0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            pending_new_scene: false,
+            pending_open: false,
+            pending_save: false,
+            pending_save_as: false,
+            show_history: false,
+            show_material_editor: false,
+            show_anim_editor: false,
+            show_vfx_editor: false,
+            show_perf_stats: false,
         }
     }
 
@@ -309,6 +329,89 @@ impl SceneEditor {
         if !self.visible {
             return;
         }
+
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("New Scene          Ctrl+N").clicked() {
+                        self.pending_new_scene = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Open...            Ctrl+O").clicked() {
+                        self.pending_open = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Save               Ctrl+S").clicked() {
+                        self.pending_save = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Save As...  Ctrl+Shift+S").clicked() {
+                        self.pending_save_as = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Exit").clicked() {
+                        std::process::exit(0);
+                    }
+                });
+
+                ui.menu_button("Edit", |ui| {
+                    if ui.button("Undo  Ctrl+Z").clicked() {
+                        self.undo();
+                        ui.close_menu();
+                    }
+                    if ui.button("Redo  Ctrl+Y").clicked() {
+                        self.redo();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Duplicate  Ctrl+D").clicked() {
+                        self.duplicate_selected();
+                        ui.close_menu();
+                    }
+                    if ui.button("Delete  Del").clicked() {
+                        self.delete_selected();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("History").clicked() {
+                        self.show_history = !self.show_history;
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("View", |ui| {
+                    if ui.button("Material Editor").clicked() {
+                        self.show_material_editor = !self.show_material_editor;
+                        ui.close_menu();
+                    }
+                    if ui.button("Animation Editor").clicked() {
+                        self.show_anim_editor = !self.show_anim_editor;
+                        ui.close_menu();
+                    }
+                    if ui.button("VFX Editor").clicked() {
+                        self.show_vfx_editor = !self.show_vfx_editor;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Performance Stats").clicked() {
+                        self.show_perf_stats = !self.show_perf_stats;
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("Help", |ui| {
+                    ui.label("Ochroma Engine v0.1.0");
+                    ui.separator();
+                    ui.label("Tab — toggle editor");
+                    ui.label("WASD — move camera");
+                    ui.label("RMB drag — look");
+                    ui.label("Scroll — zoom");
+                    ui.label("F5 — play  F6 — pause  F7 — stop");
+                });
+            });
+        });
 
         // Scene hierarchy panel (left)
         egui::SidePanel::left("scene_hierarchy")
@@ -634,6 +737,14 @@ mod tests {
         // Near entity should be picked (closest)
         let picked = editor.entities.iter().find(|e| e.id == hit.unwrap()).unwrap();
         assert_eq!(picked.name, "Near", "Should pick the nearest entity");
+    }
+
+    #[test]
+    fn menu_actions_default_none() {
+        let editor = SceneEditor::new();
+        assert!(!editor.pending_new_scene);
+        assert!(!editor.pending_open);
+        assert!(!editor.pending_save);
     }
 
     #[test]
