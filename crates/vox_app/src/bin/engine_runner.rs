@@ -1041,8 +1041,11 @@ impl EngineApp {
     }
 
     fn handle_resize(&mut self, width: u32, height: u32) {
-        let w = width.max(1);
-        let h = height.max(1);
+        // Cap surface size to GPU texture limits (wgpu max is typically 2048 or 8192
+        // depending on adapter — use 2048 as safe minimum for software rasteriser)
+        let max_dim = 4096;
+        let w = width.max(1).min(max_dim);
+        let h = height.max(1).min(max_dim);
         self.dlss.resize(w, h);
         let (rw, rh) = self.dlss.render_resolution();
         self.rasteriser = SoftwareRasteriser::new(rw, rh);

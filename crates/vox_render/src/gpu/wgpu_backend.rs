@@ -208,10 +208,14 @@ impl WgpuBackend {
         if width == 0 || height == 0 {
             return;
         }
-        self.width = width;
-        self.height = height;
-        self.config.width = width;
-        self.config.height = height;
+        // Query the device's max texture dimension, fall back to a safe limit
+        let max_dim = self.device.limits().max_texture_dimension_2d;
+        let w = width.min(max_dim);
+        let h = height.min(max_dim);
+        self.width = w;
+        self.height = h;
+        self.config.width = w;
+        self.config.height = h;
         self.surface.configure(&self.device, &self.config);
     }
 
