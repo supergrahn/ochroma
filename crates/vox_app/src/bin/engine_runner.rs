@@ -1,3 +1,6 @@
+// Hide the console window on Windows (GUI application)
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! The Ochroma Engine — the real, complete engine binary.
 //!
 //! This is IT. One binary that opens a window, loads assets, creates the full
@@ -98,7 +101,13 @@ struct EngineApp {
     // Camera FPS controls (yaw/pitch, WASD)
     cam_yaw: f32,
     cam_pitch: f32,
-    cam_speed: f32,
+    camera_velocity: Vec3,
+    camera_acceleration: f32,
+    camera_deceleration: f32,
+    camera_max_speed: f32,
+
+    // Title update throttle
+    title_timer: Instant,
 
     // Stats
     last_frame: Instant,
@@ -273,7 +282,11 @@ impl EngineApp {
             ctrl_held: false,
             cam_yaw: 0.0,
             cam_pitch: -0.3,
-            cam_speed: 15.0,
+            camera_velocity: Vec3::ZERO,
+            camera_acceleration: 40.0,
+            camera_deceleration: 20.0,
+            camera_max_speed: 15.0,
+            title_timer: Instant::now(),
             last_frame: Instant::now(),
             frame_count: 0,
             fps_timer: Instant::now(),
@@ -517,26 +530,36 @@ impl EngineApp {
     fn update_camera(&mut self, dt: f32) {
         let forward = self.camera_forward();
         let right = self.camera_right();
-        let speed = self.cam_speed * dt;
 
-        if self.keys.contains(&KeyCode::KeyW) {
-            self.camera.position += forward * speed;
+        // Speed scales with altitude/distance (like Google Earth)
+        let altitude_factor = (self.camera.position.y / 10.0).max(1.0).min(10.0);
+        self.camera_max_speed = 15.0 * altitude_factor;
+
+        // Build desired velocity from input
+        let mut desired = Vec3::ZERO;
+        if self.keys.contains(&KeyCode::KeyW) { desired += forward; }
+        if self.keys.contains(&KeyCode::KeyS) { desired -= forward; }
+        if self.keys.contains(&KeyCode::KeyA) { desired -= right; }
+        if self.keys.contains(&KeyCode::KeyD) { desired += right; }
+        if self.keys.contains(&KeyCode::Space) { desired += Vec3::Y; }
+        if self.keys.contains(&KeyCode::ShiftLeft) { desired -= Vec3::Y; }
+
+        if desired.length() > 0.01 {
+            desired = desired.normalize() * self.camera_max_speed;
+            // Accelerate toward desired velocity
+            self.camera_velocity = self.camera_velocity.lerp(desired, (self.camera_acceleration * dt).min(1.0));
+        } else {
+            // Decelerate to stop
+            self.camera_velocity = self.camera_velocity.lerp(Vec3::ZERO, (self.camera_deceleration * dt).min(1.0));
         }
-        if self.keys.contains(&KeyCode::KeyS) {
-            self.camera.position -= forward * speed;
+
+        // Kill tiny residual velocity
+        if self.camera_velocity.length() < 0.01 {
+            self.camera_velocity = Vec3::ZERO;
         }
-        if self.keys.contains(&KeyCode::KeyA) {
-            self.camera.position -= right * speed;
-        }
-        if self.keys.contains(&KeyCode::KeyD) {
-            self.camera.position += right * speed;
-        }
-        if self.keys.contains(&KeyCode::Space) {
-            self.camera.position.y += speed;
-        }
-        if self.keys.contains(&KeyCode::ShiftLeft) {
-            self.camera.position.y -= speed;
-        }
+
+        // Apply velocity
+        self.camera.position += self.camera_velocity * dt;
 
         // Update camera target from yaw/pitch
         self.camera.target = self.camera.position + forward;
@@ -1068,6 +1091,19 @@ impl EngineApp {
         // 1. Update camera from input
         self.update_camera(dt);
 
+        // Cursor changes based on editor mode
+        if self.editor_visible {
+            if let Some(w) = &self.window {
+                if self.gizmo.dragging {
+                    w.set_cursor(winit::window::CursorIcon::Grab);
+                } else if self.gizmo.active_axis.is_some() {
+                    w.set_cursor(winit::window::CursorIcon::Pointer);
+                } else {
+                    w.set_cursor(winit::window::CursorIcon::Default);
+                }
+            }
+        }
+
         // 2. Handle left-click: Rapier raycast for editor pick, or object placement
         if self.left_click_pending {
             if self.editor_visible {
@@ -1425,41 +1461,29 @@ impl EngineApp {
             }
         }
 
-        // 7. FPS counter + title update
+        // 7. FPS counter + title update (throttled to every 0.5s)
         self.frame_count += 1;
         let elapsed = now.duration_since(self.fps_timer).as_secs_f32();
-        if elapsed >= 1.0 {
+        if elapsed >= 0.5 {
             self.fps = self.frame_count as f32 / elapsed;
-            if let Some(w) = &self.window {
-                let dlss_label = match self.dlss.quality {
-                    DlssQuality::Off => "DLSS Off".to_string(),
-                    q => {
-                        let (rw, rh) = self.dlss.render_resolution();
-                        format!("DLSS {} ({}x{})", dlss_quality_name(q), rw, rh)
-                    }
-                };
-                let fg_label = if self.dlss.frame_gen == FrameGeneration::On { " | FrameGen" } else { "" };
-                let editor_label = if self.editor_visible {
-                    format!(" | Editor ({})", self.editor.entity_count())
-                } else {
-                    String::new()
-                };
-                let mode_label = if self.spectral_bypass { "FAST" } else { "SPECTRAL" };
-                w.set_title(&format!(
-                    "Ochroma -- {:.0} FPS | {} total | CLAS:{} | {:.0}:00 | {} | {} | {}{}{}",
-                    self.fps,
-                    self.total_splat_count(),
-                    self.clas_cluster_count,
-                    self.engine.time_of_day(),
-                    mode_label,
-                    dlss_label,
-                    tonemap_operator_name(self.tonemap.operator),
-                    fg_label,
-                    editor_label,
-                ));
-            }
             self.frame_count = 0;
             self.fps_timer = now;
+        }
+        // Update title at most every 0.5s
+        if now.duration_since(self.title_timer).as_secs_f32() >= 0.5 {
+            if let Some(w) = &self.window {
+                let title = if self.editor_visible {
+                    format!(
+                        "Ochroma Engine \u{2014} Editor | {} entities | {:.0} FPS",
+                        self.editor.entity_count(),
+                        self.fps,
+                    )
+                } else {
+                    format!("Ochroma Engine | {} splats | {:.0} FPS", self.total_splat_count(), self.fps)
+                };
+                w.set_title(&title);
+            }
+            self.title_timer = now;
         }
 
         // Request next frame
@@ -1537,9 +1561,8 @@ impl ApplicationHandler for EngineApp {
         self.engine.start();
 
         println!();
-        println!("=============================================");
-        println!("     OCHROMA ENGINE -- RUNNING");
-        println!("=============================================");
+        println!("Ochroma Engine v0.1.0");
+        println!("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
         println!("  {} entities | {} splats | {} clusters",
             self.engine.entity_count(),
             self.scene_splats.len(),
@@ -1548,24 +1571,13 @@ impl ApplicationHandler for EngineApp {
             self.light_manager.point_light_count(),
             self.particles.emitters.len());
         println!();
-        println!("  Controls:");
-        println!("    WASD          Move camera");
-        println!("    Space/Shift   Up / Down");
-        println!("    Right-click   Capture mouse for look");
-        println!("    Left-click    Place object");
-        println!("    Escape        Release mouse / Quit");
-        println!("    F12           Screenshot");
-        println!("    T             Advance time (+1 hour)");
-        println!("    +/-           Adjust exposure");
-        println!("    M             Cycle tone mapper");
-        println!("    Q             Cycle DLSS quality");
-        println!("    P             Toggle fast/spectral render");
-        println!("    G             Toggle frame generation");
-        println!("    Tab           Toggle editor");
-        println!("    Arrows        Move selected (editor)");
-        println!("    Delete        Delete selected (editor)");
-        println!("    Ctrl+S        Save scene");
-        println!("=============================================");
+        println!("  Tab     Editor");
+        println!("  WASD    Move");
+        println!("  Scroll  Zoom");
+        println!("  RMB     Look");
+        println!("  F5      Play");
+        println!("  F12     Screenshot");
+        println!("  Esc     Quit");
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1587,6 +1599,21 @@ impl ApplicationHandler for EngineApp {
             }
             WindowEvent::MouseInput { state, button, .. } => self.handle_mouse_button(button, state),
             WindowEvent::CursorMoved { position, .. } => self.handle_mouse_move(position.x, position.y),
+            WindowEvent::MouseWheel { delta, .. } => {
+                let forward = self.camera_forward();
+                match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                        // Zoom: move camera forward/backward, proportional to altitude
+                        let zoom_speed = (self.camera.position.y.abs() / 10.0).max(1.0) * 2.0;
+                        self.camera.position += forward * y * zoom_speed;
+                        self.camera.orbit_distance = (self.camera.orbit_distance - y * zoom_speed).max(1.0);
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                        let zoom_speed = (self.camera.position.y.abs() / 10.0).max(1.0) * 0.2;
+                        self.camera.position += forward * pos.y as f32 * zoom_speed;
+                    }
+                }
+            }
             WindowEvent::Resized(size) => self.handle_resize(size.width, size.height),
             WindowEvent::RedrawRequested => self.handle_redraw(event_loop),
             _ => {}
@@ -1599,10 +1626,7 @@ impl ApplicationHandler for EngineApp {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    println!("=============================================");
-    println!("        OCHROMA ENGINE v0.1.0");
-    println!("  Spectral Gaussian Splatting Engine");
-    println!("=============================================");
+    println!("Ochroma Engine v0.1.0 -- Spectral Gaussian Splatting");
 
     let asset_path = std::env::args().nth(1);
     if let Some(ref path) = asset_path {

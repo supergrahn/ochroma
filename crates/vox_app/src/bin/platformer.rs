@@ -1,3 +1,6 @@
+// Hide the console window on Windows (GUI application)
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! Ochroma Engine — 3D Platformer
 //!
 //! The SECOND game built on the engine. Proves it's general-purpose:

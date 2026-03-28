@@ -1,3 +1,6 @@
+// Hide the console window on Windows (GUI application)
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! Ochroma Engine — Walking Simulator (Dogfood Game)
 //!
 //! The first game built on the engine. Proves everything works.
