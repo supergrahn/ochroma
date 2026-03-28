@@ -52,7 +52,6 @@ pub mod material_nodes;
 pub mod facial_animation;
 pub mod anim_editor;
 pub mod anim_editor_ui;
-pub mod material_editor;
 pub mod material_editor_ui;
 pub mod sequencer;
 pub mod vfx_editor;
