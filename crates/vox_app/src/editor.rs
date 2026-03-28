@@ -586,7 +586,7 @@ impl SceneEditor {
                 }
 
                 // Pause button — only enabled when Playing or Paused
-                let pause_label = if self.editor_mode == EditorPlayMode::Paused { "\u{23e9} Resume" } else { "\u{23f8} Pause" };
+                let pause_label = if self.editor_mode == EditorPlayMode::Paused { "\u{25b6}\u{25b6} Resume" } else { "\u{23f8} Pause" };
                 if ui.add_enabled(
                     self.editor_mode != EditorPlayMode::Editing,
                     egui::Button::new(pause_label),
