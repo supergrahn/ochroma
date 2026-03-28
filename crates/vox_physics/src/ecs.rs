@@ -64,23 +64,41 @@ pub fn spawn_physics_bodies_system(
                         physics.add_static_collider(pos, *half_extents);
                     }
                     ColliderShape::Sphere { radius } => {
-                        physics.add_static_collider(pos, [*radius, *radius, *radius]);
+                        physics.add_static_sphere(pos, *radius);
                     }
-                    ColliderShape::Capsule { radius, height: _ } => {
-                        physics.add_static_collider(pos, [*radius, *radius, *radius]);
+                    ColliderShape::Capsule { radius, height } => {
+                        physics.add_static_capsule(pos, *radius, *height);
                     }
                 }
                 // Mark static entities so they're skipped on subsequent frames.
                 commands.entity(entity).insert(StaticColliderRegistered);
             }
 
-            PhysicsBodyTypeComponent::Dynamic | PhysicsBodyTypeComponent::Kinematic => {
+            PhysicsBodyTypeComponent::Dynamic => {
                 let (body_handle, collider_handle) = match &collider.shape {
                     ColliderShape::Box { half_extents } => {
                         physics.add_dynamic_box(pos, *half_extents, 1.0)
                     }
                     ColliderShape::Sphere { radius } => {
                         physics.add_dynamic_sphere(pos, *radius, 1.0)
+                    }
+                    ColliderShape::Capsule { radius, height } => {
+                        physics.add_character_controller(pos, *radius, *height)
+                    }
+                };
+                commands.entity(entity).insert(PhysicsBodyComponent {
+                    body_handle,
+                    collider_handle,
+                });
+            }
+
+            PhysicsBodyTypeComponent::Kinematic => {
+                let (body_handle, collider_handle) = match &collider.shape {
+                    ColliderShape::Box { half_extents } => {
+                        physics.add_kinematic_box(pos, *half_extents, 1.0)
+                    }
+                    ColliderShape::Sphere { radius } => {
+                        physics.add_kinematic_sphere(pos, *radius, 1.0)
                     }
                     ColliderShape::Capsule { radius, height } => {
                         physics.add_character_controller(pos, *radius, *height)
@@ -110,6 +128,9 @@ pub fn sync_transforms_system(
             transform.position.x = x;
             transform.position.y = y;
             transform.position.z = z;
+        }
+        if let Some(r) = physics.body_rotation(body.body_handle) {
+            transform.rotation = glam::Quat::from_xyzw(r[0], r[1], r[2], r[3]);
         }
     }
 }
