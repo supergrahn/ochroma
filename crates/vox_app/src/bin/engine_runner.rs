@@ -792,6 +792,45 @@ impl EngineApp {
             }
         }
 
+        // Viewport mode post-process (editor only)
+        if self.editor_visible {
+            match self.editor.viewport_mode {
+                vox_app::editor::ViewportMode::Lit => {} // no-op
+                vox_app::editor::ViewportMode::Unlit => {
+                    for pixel in final_pixels.iter_mut() {
+                        let avg = ((pixel[0] as u32 + pixel[1] as u32 + pixel[2] as u32) / 3) as u8;
+                        pixel[0] = avg;
+                        pixel[1] = avg;
+                        pixel[2] = avg;
+                    }
+                }
+                vox_app::editor::ViewportMode::Wireframe => {
+                    for pixel in final_pixels.iter_mut() {
+                        pixel[0] = (pixel[0] as f32 * 0.2) as u8;
+                        pixel[1] = (pixel[1] as f32 * 0.3) as u8;
+                        pixel[2] = pixel[2].saturating_add(80);
+                    }
+                }
+                vox_app::editor::ViewportMode::Normals => {
+                    for pixel in final_pixels.iter_mut() {
+                        pixel[0] = 128_u8.saturating_add(pixel[0] / 2);
+                        pixel[1] = 128_u8.saturating_add(pixel[1] / 2);
+                        pixel[2] = 200;
+                    }
+                }
+                vox_app::editor::ViewportMode::Overdraw => {
+                    for pixel in final_pixels.iter_mut() {
+                        let bright = pixel[0].max(pixel[1]).max(pixel[2]);
+                        let heat = bright as f32 / 255.0;
+                        pixel[0] = (heat * 255.0) as u8;
+                        pixel[1] = ((1.0 - heat) * 100.0) as u8;
+                        pixel[2] = 0;
+                        pixel[3] = 255;
+                    }
+                }
+            }
+        }
+
         final_pixels
     }
 

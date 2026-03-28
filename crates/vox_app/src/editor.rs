@@ -47,6 +47,9 @@ pub struct SceneEditor {
     // Transform space
     pub transform_space: TransformSpace,
 
+    // Viewport mode
+    pub viewport_mode: ViewportMode,
+
     // Play mode
     pub play_requested: bool,
     pub pause_requested: bool,
@@ -79,6 +82,27 @@ pub enum EditorPlayMode {
 pub enum TransformSpace {
     World,
     Local,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewportMode {
+    Lit,
+    Unlit,
+    Wireframe,
+    Normals,
+    Overdraw,
+}
+
+impl ViewportMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewportMode::Lit       => "Lit",
+            ViewportMode::Unlit     => "Unlit",
+            ViewportMode::Wireframe => "Wireframe",
+            ViewportMode::Normals   => "Normals",
+            ViewportMode::Overdraw  => "Overdraw",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +177,7 @@ impl SceneEditor {
             stop_requested: false,
             editor_mode: EditorPlayMode::Editing,
             transform_space: TransformSpace::World,
+            viewport_mode: ViewportMode::Lit,
             status_splat_count: 0,
             status_message: String::from("Ready"),
             focus_camera_on: None,
@@ -582,6 +607,20 @@ impl SceneEditor {
                     self.editor_mode = EditorPlayMode::Editing;
                 }
 
+                ui.separator();
+                egui::ComboBox::from_id_salt("viewport_mode")
+                    .selected_text(self.viewport_mode.label())
+                    .show_ui(ui, |ui| {
+                        for mode in [
+                            ViewportMode::Lit,
+                            ViewportMode::Unlit,
+                            ViewportMode::Wireframe,
+                            ViewportMode::Normals,
+                            ViewportMode::Overdraw,
+                        ] {
+                            ui.selectable_value(&mut self.viewport_mode, mode, mode.label());
+                        }
+                    });
                 ui.separator();
                 ui.label(format!("{} entities", self.entities.len()));
                 if let Some(id) = self.selected {
@@ -1079,5 +1118,18 @@ mod tests {
     fn focus_camera_on_starts_none() {
         let editor = SceneEditor::new();
         assert!(editor.focus_camera_on.is_none());
+    }
+
+    #[test]
+    fn viewport_mode_defaults_lit() {
+        let editor = SceneEditor::new();
+        assert_eq!(editor.viewport_mode, ViewportMode::Lit);
+    }
+
+    #[test]
+    fn viewport_mode_all_variants_have_labels() {
+        assert_eq!(ViewportMode::Lit.label(), "Lit");
+        assert_eq!(ViewportMode::Wireframe.label(), "Wireframe");
+        assert_eq!(ViewportMode::Overdraw.label(), "Overdraw");
     }
 }
