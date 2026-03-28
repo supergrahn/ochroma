@@ -64,6 +64,7 @@ pub struct ContentBrowser {
     pub selected: Option<usize>,
     pub search_query: String,
     pub current_dir: PathBuf,
+    pub dragging_asset: Option<String>,
 }
 
 impl ContentBrowser {
@@ -77,6 +78,7 @@ impl ContentBrowser {
             selected: None,
             search_query: String::new(),
             current_dir,
+            dragging_asset: None,
         }
     }
 
@@ -201,7 +203,7 @@ impl ContentBrowser {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (display_idx, &entry_idx) in filtered_indices.iter().enumerate() {
                         let entry = &self.entries[entry_idx];
-                        let is_selected = self.selected == Some(display_idx);
+                        let _is_selected = self.selected == Some(display_idx);
                         let label = format!(
                             "{} {}  ({})",
                             entry.entry_type.label(),
@@ -209,7 +211,9 @@ impl ContentBrowser {
                             format_size(entry.size_bytes),
                         );
 
-                        let response = ui.selectable_label(is_selected, &label);
+                        let response = ui.add(
+                            egui::Label::new(&label).sense(egui::Sense::click_and_drag()),
+                        );
 
                         if response.clicked() {
                             self.selected = Some(display_idx);
@@ -217,6 +221,11 @@ impl ContentBrowser {
 
                         if response.double_clicked() {
                             action = Some(action_for_entry(entry));
+                        }
+
+                        if response.drag_started() {
+                            self.dragging_asset =
+                                Some(entry.path.to_string_lossy().to_string());
                         }
                     }
                 });
@@ -377,5 +386,11 @@ mod tests {
         browser.scan();
         assert_eq!(browser.entry_count(), 0);
         assert!(browser.filtered_entries().is_empty());
+    }
+
+    #[test]
+    fn drag_state_starts_none() {
+        let browser = ContentBrowser::new(std::path::Path::new("."));
+        assert!(browser.dragging_asset.is_none());
     }
 }

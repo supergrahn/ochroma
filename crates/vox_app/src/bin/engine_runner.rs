@@ -1588,6 +1588,20 @@ impl EngineApp {
             }
         }
 
+        // Handle drag-and-drop from content browser
+        if let Some(asset_path) = self.content_browser.dragging_asset.take() {
+            let forward = self.camera_forward();
+            let pos = self.camera.position + forward * 10.0;
+            let name = std::path::Path::new(&asset_path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Dropped Asset")
+                .to_string();
+            let _id = self.editor.add_entity(&name, &asset_path, pos);
+            self.editor.status_message = format!("Placed: {}", name);
+            println!("[ochroma] Dropped '{}' at {:?}", name, pos);
+        }
+
         // 7. FPS counter + title update (throttled to every 0.5s)
         self.frame_count += 1;
         let elapsed = now.duration_since(self.fps_timer).as_secs_f32();
