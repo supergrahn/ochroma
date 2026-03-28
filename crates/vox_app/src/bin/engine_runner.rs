@@ -1083,7 +1083,7 @@ impl EngineApp {
         }
     }
 
-    fn handle_redraw(&mut self, _event_loop: &ActiveEventLoop) {
+    fn handle_redraw(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
@@ -1459,6 +1459,35 @@ impl EngineApp {
             if let Some(backend) = &self.backend {
                 backend.present_framebuffer(&pixels, self.dlss.display_width, self.dlss.display_height);
             }
+        }
+
+        // Consume editor menu action flags
+        if self.editor.pending_new_scene {
+            self.editor.pending_new_scene = false;
+            self.editor.entities.clear();
+            self.editor.selected = None;
+            println!("[ochroma] New scene");
+        }
+        if self.editor.pending_save || self.editor.pending_save_as {
+            self.editor.pending_save = false;
+            self.editor.pending_save_as = false;
+            let map = self.editor.export_to_map("Ochroma Scene");
+            let path = std::env::temp_dir().join("ochroma_scene.ochroma_map");
+            match map.save(&path) {
+                Ok(()) => println!("[ochroma] Scene saved to {}", path.display()),
+                Err(e) => eprintln!("[ochroma] Save failed: {}", e),
+            }
+        }
+        if self.editor.pending_open {
+            self.editor.pending_open = false;
+            // File picker not available yet — log intent
+            println!("[ochroma] Open: file picker not yet implemented");
+        }
+        if self.editor.pending_exit {
+            self.editor.pending_exit = false;
+            self.engine.stop();
+            event_loop.exit();
+            return;
         }
 
         // 7. FPS counter + title update (throttled to every 0.5s)

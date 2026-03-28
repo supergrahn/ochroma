@@ -42,6 +42,7 @@ pub struct SceneEditor {
     pub show_anim_editor: bool,
     pub show_vfx_editor: bool,
     pub show_perf_stats: bool,
+    pub pending_exit: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +104,7 @@ impl SceneEditor {
             show_anim_editor: false,
             show_vfx_editor: false,
             show_perf_stats: false,
+            pending_exit: false,
         }
     }
 
@@ -217,8 +219,23 @@ impl SceneEditor {
                         e.position = *new_pos;
                     }
                 }
-                EditorAction::AddEntity { .. } => {
-                    // Entity was re-added by undo of delete — nothing to do here
+                EditorAction::AddEntity { id } => {
+                    // Re-add a default entity with that ID if it no longer exists
+                    if !self.entities.iter().any(|e| e.id == *id) {
+                        self.entities.push(EditorEntity {
+                            id: *id,
+                            name: format!("Entity {}", id),
+                            asset_path: String::new(),
+                            position: Vec3::ZERO,
+                            rotation: glam::Quat::IDENTITY,
+                            scale: Vec3::ONE,
+                            visible: true,
+                            locked: false,
+                            scripts: Vec::new(),
+                            parent: None,
+                            children: Vec::new(),
+                        });
+                    }
                 }
                 EditorAction::DeleteEntity { id, .. } => {
                     self.entities.retain(|e| e.id != *id);
@@ -352,7 +369,8 @@ impl SceneEditor {
                     }
                     ui.separator();
                     if ui.button("Exit").clicked() {
-                        std::process::exit(0);
+                        self.pending_exit = true;
+                        ui.close_menu();
                     }
                 });
 
@@ -742,9 +760,29 @@ mod tests {
     #[test]
     fn menu_actions_default_none() {
         let editor = SceneEditor::new();
+        // All menu action flags start false
         assert!(!editor.pending_new_scene);
         assert!(!editor.pending_open);
         assert!(!editor.pending_save);
+        assert!(!editor.pending_save_as);
+        assert!(!editor.show_history);
+        assert!(!editor.show_material_editor);
+        assert!(!editor.show_anim_editor);
+        assert!(!editor.show_vfx_editor);
+        assert!(!editor.show_perf_stats);
+        assert!(!editor.pending_exit);
+    }
+
+    #[test]
+    fn undo_redo_add_entity_round_trips() {
+        let mut editor = SceneEditor::new();
+        let id = editor.add_entity("A", "a.ply", Vec3::ZERO);
+        assert_eq!(editor.entity_count(), 1);
+        editor.undo(); // undo the add
+        assert_eq!(editor.entity_count(), 0);
+        editor.redo(); // redo the add
+        assert_eq!(editor.entity_count(), 1, "entity should be restored after redo");
+        assert!(editor.entities.iter().any(|e| e.id == id));
     }
 
     #[test]
