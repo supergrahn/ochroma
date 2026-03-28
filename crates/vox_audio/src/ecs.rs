@@ -104,6 +104,43 @@ pub fn audio_emitter_system(
     }
 }
 
+/// Update listener position and advance AudioEngine by one timestep.
+/// Evicts lowest-priority sources over the engine's max_sources budget.
+#[cfg(not(feature = "audio-backend"))]
+pub fn audio_tick_system(
+    dt: Res<AudioTimeStep>,
+    listener: Res<AudioListenerSettings>,
+    mut engine: ResMut<AudioEngineResource>,
+) {
+    engine.engine.set_listener(listener.position);
+    engine.engine.tick(dt.0);
+}
+
+// ── Plugin (no-backend only) ───────────────────────────────────────────────
+
+/// Bevy plugin that registers audio ECS resources and systems.
+///
+/// Usage: `app.add_plugins(AudioPlugin::default())`
+///
+/// Update `AudioListenerSettings.position` each frame from the camera transform.
+/// Set `AudioEmitterComponent.playing = true` to start a sound, `false` to stop it.
+#[cfg(not(feature = "audio-backend"))]
+#[derive(Default)]
+pub struct AudioPlugin;
+
+#[cfg(not(feature = "audio-backend"))]
+impl bevy_app::Plugin for AudioPlugin {
+    fn build(&self, app: &mut bevy_app::App) {
+        app.insert_resource(AudioEngineResource::default());
+        app.insert_resource(AudioListenerSettings::default());
+        app.insert_resource(AudioTimeStep::default());
+        app.add_systems(
+            bevy_app::Update,
+            (audio_emitter_system, audio_tick_system).chain(),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +233,37 @@ mod tests {
         );
         let res = world.resource::<AudioEngineResource>();
         assert_eq!(res.engine.active_count(), 0);
+    }
+
+    #[cfg(not(feature = "audio-backend"))]
+    #[test]
+    fn tick_culls_over_budget_sources() {
+        use bevy_ecs::schedule::Schedule;
+        let mut world = World::new();
+        let mut res = AudioEngineResource { engine: crate::AudioEngine::new(1) };
+        res.engine.play(crate::AudioSource { id: 0, position: glam::Vec3::ZERO, volume: 1.0, looping: false, clip: "a.wav".into() });
+        res.engine.play(crate::AudioSource { id: 0, position: glam::Vec3::ZERO, volume: 0.5, looping: false, clip: "b.wav".into() });
+        assert_eq!(res.engine.active_count(), 2);
+        world.insert_resource(res);
+        world.insert_resource(AudioListenerSettings::default());
+        world.insert_resource(AudioTimeStep(0.016));
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(audio_tick_system);
+        schedule.run(&mut world);
+
+        let res = world.resource::<AudioEngineResource>();
+        assert_eq!(res.engine.active_count(), 1, "tick should cull to max_sources=1");
+    }
+
+    #[cfg(not(feature = "audio-backend"))]
+    #[test]
+    fn plugin_inserts_resources() {
+        use bevy_app::App;
+        let mut app = App::new();
+        app.add_plugins(AudioPlugin::default());
+        assert!(app.world().contains_resource::<AudioEngineResource>());
+        assert!(app.world().contains_resource::<AudioListenerSettings>());
+        assert!(app.world().contains_resource::<AudioTimeStep>());
     }
 }
