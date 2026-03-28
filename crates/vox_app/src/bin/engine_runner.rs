@@ -1383,6 +1383,7 @@ impl EngineApp {
                 let fps = self.fps;
                 let dlss_mode = dlss_quality_name(self.dlss.quality);
                 let editor_visible = self.editor_visible;
+                self.editor.status_splat_count = self.scene_splats.len();
                 let full_output = self.egui_ctx.run(raw_input, |ctx| {
                     if editor_visible {
                         self.editor.show(ctx);

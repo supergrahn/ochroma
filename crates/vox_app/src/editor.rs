@@ -49,6 +49,10 @@ pub struct SceneEditor {
     pub pause_requested: bool,
     pub stop_requested: bool,
     pub editor_mode: EditorPlayMode,
+
+    // Status bar
+    pub status_splat_count: usize,
+    pub status_message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +126,18 @@ impl SceneEditor {
             pause_requested: false,
             stop_requested: false,
             editor_mode: EditorPlayMode::Editing,
+            status_splat_count: 0,
+            status_message: String::from("Ready"),
         }
+    }
+
+    pub fn status_text(&self) -> String {
+        format!(
+            "{} entities | {} splats | {}",
+            self.entities.len(),
+            self.status_splat_count,
+            self.status_message
+        )
     }
 
     /// Add a new entity to the scene.
@@ -448,6 +463,117 @@ impl SceneEditor {
             });
         });
 
+        // Toolbar (top)
+        egui::TopBottomPanel::top("editor_toolbar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Gizmo:");
+                if ui
+                    .selectable_label(self.gizmo_mode == GizmoMode::Translate, "Move (W)")
+                    .clicked()
+                {
+                    self.gizmo_mode = GizmoMode::Translate;
+                }
+                if ui
+                    .selectable_label(self.gizmo_mode == GizmoMode::Rotate, "Rotate (E)")
+                    .clicked()
+                {
+                    self.gizmo_mode = GizmoMode::Rotate;
+                }
+                if ui
+                    .selectable_label(self.gizmo_mode == GizmoMode::Scale, "Scale (R)")
+                    .clicked()
+                {
+                    self.gizmo_mode = GizmoMode::Scale;
+                }
+                ui.separator();
+                ui.checkbox(&mut self.snap_enabled, "Snap");
+                if self.snap_enabled {
+                    ui.add(
+                        egui::DragValue::new(&mut self.snap_grid)
+                            .speed(0.1)
+                            .prefix("Grid: "),
+                    );
+                }
+                ui.separator();
+
+                // Play button — only enabled in Editing mode
+                let play_color = if self.editor_mode == EditorPlayMode::Editing {
+                    egui::Color32::from_rgb(80, 200, 80)
+                } else {
+                    egui::Color32::GRAY
+                };
+                if ui.add_enabled(
+                    self.editor_mode == EditorPlayMode::Editing,
+                    egui::Button::new(egui::RichText::new("\u{25b6} Play").color(play_color)),
+                ).clicked() {
+                    self.play_requested = true;
+                    self.editor_mode = EditorPlayMode::Playing;
+                }
+
+                // Pause button — only enabled when Playing or Paused
+                let pause_label = if self.editor_mode == EditorPlayMode::Paused { "\u{25b6}\u{25b6} Resume" } else { "\u{23f8} Pause" };
+                if ui.add_enabled(
+                    self.editor_mode != EditorPlayMode::Editing,
+                    egui::Button::new(pause_label),
+                ).clicked() {
+                    self.pause_requested = true;
+                    self.editor_mode = if self.editor_mode == EditorPlayMode::Playing {
+                        EditorPlayMode::Paused
+                    } else {
+                        EditorPlayMode::Playing
+                    };
+                }
+
+                // Stop button — only enabled when Playing or Paused
+                if ui.add_enabled(
+                    self.editor_mode != EditorPlayMode::Editing,
+                    egui::Button::new(egui::RichText::new("\u{23f9} Stop").color(egui::Color32::from_rgb(200, 80, 80))),
+                ).clicked() {
+                    self.stop_requested = true;
+                    self.editor_mode = EditorPlayMode::Editing;
+                }
+
+                ui.separator();
+                ui.label(format!("{} entities", self.entities.len()));
+                if let Some(id) = self.selected {
+                    ui.label(format!("| Selected: {}", id));
+                }
+            });
+        });
+
+        // Status bar (bottom)
+        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(self.status_text())
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(160, 165, 180)),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(match self.editor_mode {
+                            EditorPlayMode::Editing => "● EDITING",
+                            EditorPlayMode::Playing => "▶ PLAYING",
+                            EditorPlayMode::Paused  => "⏸ PAUSED",
+                        })
+                        .size(11.0)
+                        .color(match self.editor_mode {
+                            EditorPlayMode::Editing => egui::Color32::from_rgb(100, 150, 200),
+                            EditorPlayMode::Playing => egui::Color32::from_rgb(80, 200, 80),
+                            EditorPlayMode::Paused  => egui::Color32::from_rgb(220, 180, 60),
+                        }),
+                    );
+                    if let Some(e) = self.selected_entity() {
+                        ui.label(
+                            egui::RichText::new(format!("Selected: {}", e.name))
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(140, 180, 140)),
+                        );
+                    }
+                });
+            });
+        });
+
         // Scene hierarchy panel (left)
         egui::SidePanel::left("scene_hierarchy")
             .default_width(200.0)
@@ -538,83 +664,6 @@ impl SceneEditor {
                 }
             });
 
-        // Toolbar (top)
-        egui::TopBottomPanel::top("editor_toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Gizmo:");
-                if ui
-                    .selectable_label(self.gizmo_mode == GizmoMode::Translate, "Move (W)")
-                    .clicked()
-                {
-                    self.gizmo_mode = GizmoMode::Translate;
-                }
-                if ui
-                    .selectable_label(self.gizmo_mode == GizmoMode::Rotate, "Rotate (E)")
-                    .clicked()
-                {
-                    self.gizmo_mode = GizmoMode::Rotate;
-                }
-                if ui
-                    .selectable_label(self.gizmo_mode == GizmoMode::Scale, "Scale (R)")
-                    .clicked()
-                {
-                    self.gizmo_mode = GizmoMode::Scale;
-                }
-                ui.separator();
-                ui.checkbox(&mut self.snap_enabled, "Snap");
-                if self.snap_enabled {
-                    ui.add(
-                        egui::DragValue::new(&mut self.snap_grid)
-                            .speed(0.1)
-                            .prefix("Grid: "),
-                    );
-                }
-                ui.separator();
-
-                // Play button — only enabled in Editing mode
-                let play_color = if self.editor_mode == EditorPlayMode::Editing {
-                    egui::Color32::from_rgb(80, 200, 80)
-                } else {
-                    egui::Color32::GRAY
-                };
-                if ui.add_enabled(
-                    self.editor_mode == EditorPlayMode::Editing,
-                    egui::Button::new(egui::RichText::new("\u{25b6} Play").color(play_color)),
-                ).clicked() {
-                    self.play_requested = true;
-                    self.editor_mode = EditorPlayMode::Playing;
-                }
-
-                // Pause button — only enabled when Playing or Paused
-                let pause_label = if self.editor_mode == EditorPlayMode::Paused { "\u{25b6}\u{25b6} Resume" } else { "\u{23f8} Pause" };
-                if ui.add_enabled(
-                    self.editor_mode != EditorPlayMode::Editing,
-                    egui::Button::new(pause_label),
-                ).clicked() {
-                    self.pause_requested = true;
-                    self.editor_mode = if self.editor_mode == EditorPlayMode::Playing {
-                        EditorPlayMode::Paused
-                    } else {
-                        EditorPlayMode::Playing
-                    };
-                }
-
-                // Stop button — only enabled when Playing or Paused
-                if ui.add_enabled(
-                    self.editor_mode != EditorPlayMode::Editing,
-                    egui::Button::new(egui::RichText::new("\u{23f9} Stop").color(egui::Color32::from_rgb(200, 80, 80))),
-                ).clicked() {
-                    self.stop_requested = true;
-                    self.editor_mode = EditorPlayMode::Editing;
-                }
-
-                ui.separator();
-                ui.label(format!("{} entities", self.entities.len()));
-                if let Some(id) = self.selected {
-                    ui.label(format!("| Selected: {}", id));
-                }
-            });
-        });
     }
 
     /// Cast a ray from camera and find the nearest entity hit.
@@ -849,6 +898,15 @@ mod tests {
         editor.selected_entity_mut().unwrap().locked = true;
         editor.move_selected(Vec3::new(10.0, 0.0, 0.0));
         assert_eq!(editor.selected_entity().unwrap().position.x, 0.0);
+    }
+
+    #[test]
+    fn status_text_shows_entity_count() {
+        let mut editor = SceneEditor::new();
+        editor.add_entity("A", "a.ply", Vec3::ZERO);
+        editor.add_entity("B", "b.ply", Vec3::ZERO);
+        editor.status_splat_count = 500;
+        assert_eq!(editor.status_text(), "2 entities | 500 splats | Ready");
     }
 
     #[test]
