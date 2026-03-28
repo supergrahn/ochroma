@@ -292,7 +292,7 @@ mod tests {
 
         let transform = world.entity(entity).get::<vox_core::ecs::TransformComponent>().unwrap();
         assert!(
-            transform.position.y >= 0.0,
+            transform.position.y > 0.0,
             "rigid animation should write a valid position, y={}",
             transform.position.y
         );
