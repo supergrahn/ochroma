@@ -49,6 +49,7 @@ pub struct SceneEditor {
 
     // Viewport mode
     pub viewport_mode: ViewportMode,
+    pub viewport_layout: ViewportLayout,
 
     // Play mode
     pub play_requested: bool,
@@ -101,6 +102,25 @@ impl ViewportMode {
             ViewportMode::Wireframe => "Wireframe",
             ViewportMode::Normals   => "Normals",
             ViewportMode::Overdraw  => "Overdraw",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewportLayout {
+    Single,
+    HSplit,
+    VSplit,
+    Quad,
+}
+
+impl ViewportLayout {
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewportLayout::Single => "1 View",
+            ViewportLayout::HSplit => "2 Views H",
+            ViewportLayout::VSplit => "2 Views V",
+            ViewportLayout::Quad   => "4 Views",
         }
     }
 }
@@ -178,6 +198,7 @@ impl SceneEditor {
             editor_mode: EditorPlayMode::Editing,
             transform_space: TransformSpace::World,
             viewport_mode: ViewportMode::Lit,
+            viewport_layout: ViewportLayout::Single,
             status_splat_count: 0,
             status_message: String::from("Ready"),
             focus_camera_on: None,
@@ -619,6 +640,18 @@ impl SceneEditor {
                             ViewportMode::Overdraw,
                         ] {
                             ui.selectable_value(&mut self.viewport_mode, mode, mode.label());
+                        }
+                    });
+                egui::ComboBox::from_id_salt("viewport_layout")
+                    .selected_text(self.viewport_layout.label())
+                    .show_ui(ui, |ui| {
+                        for layout in [
+                            ViewportLayout::Single,
+                            ViewportLayout::HSplit,
+                            ViewportLayout::VSplit,
+                            ViewportLayout::Quad,
+                        ] {
+                            ui.selectable_value(&mut self.viewport_layout, layout, layout.label());
                         }
                     });
                 ui.separator();
@@ -1131,5 +1164,17 @@ mod tests {
         assert_eq!(ViewportMode::Lit.label(), "Lit");
         assert_eq!(ViewportMode::Wireframe.label(), "Wireframe");
         assert_eq!(ViewportMode::Overdraw.label(), "Overdraw");
+    }
+
+    #[test]
+    fn viewport_layout_defaults_single() {
+        let editor = SceneEditor::new();
+        assert_eq!(editor.viewport_layout, ViewportLayout::Single);
+    }
+
+    #[test]
+    fn viewport_layout_all_labels() {
+        assert_eq!(ViewportLayout::Single.label(), "1 View");
+        assert_eq!(ViewportLayout::Quad.label(), "4 Views");
     }
 }
