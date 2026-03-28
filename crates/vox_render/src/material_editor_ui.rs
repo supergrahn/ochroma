@@ -104,9 +104,7 @@ impl MaterialEditorUi {
     pub fn show(&mut self, ctx: &egui::Context) {
         if !self.open { return; }
 
-        let mut open = self.open;
         egui::Window::new("Material Editor")
-            .open(&mut open)
             .default_size([950.0, 560.0])
             .resizable(true)
             .show(ctx, |ui| {
@@ -181,7 +179,6 @@ impl MaterialEditorUi {
                     }
                 }
             });
-        self.open = open;
     }
 }
 
