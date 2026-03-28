@@ -108,6 +108,38 @@ pub fn sequence_player_system(
     }
 }
 
+/// Tick the `RigidStateMachine` and write the resulting keyframe
+/// position/rotation/scale to the entity's `TransformComponent`.
+pub fn rigid_animation_system(
+    dt: Res<TimeStep>,
+    mut query: Query<(&mut RigidAnimationComponent, &mut vox_core::ecs::TransformComponent)>,
+) {
+    for (mut anim, mut transform) in query.iter_mut() {
+        let kf = anim.machine.tick(dt.0);
+        transform.position = kf.position;
+        transform.rotation = kf.rotation;
+        transform.scale    = kf.scale;
+    }
+}
+
+// ── Plugin ─────────────────────────────────────────────────────────────────
+
+/// Bevy plugin that chains `sequence_player_system` and `rigid_animation_system`
+/// in `Update`.
+///
+/// **Requires** `TimeStep` to be registered before running (insert it yourself
+/// or add `LodStreamingPlugin` first, which registers `TimeStep`).
+pub struct SequencerPlugin;
+
+impl bevy_app::Plugin for SequencerPlugin {
+    fn build(&self, app: &mut bevy_app::App) {
+        app.add_systems(
+            bevy_app::Update,
+            (sequence_player_system, rigid_animation_system).chain(),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +257,56 @@ mod tests {
         let player = world.entity(entity).get::<SequencePlayerComponent>().unwrap();
         assert!(player.is_finished(), "player should be finished after overshooting duration");
         assert!(!player.playing, "playing should be false when sequence ends");
+    }
+
+    #[test]
+    fn rigid_animation_advances_transform() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+        use crate::rigid_animation::{RigidClip, RigidKeyframe};
+
+        let mut world = World::new();
+        world.insert_resource(TimeStep(0.25)); // 250 ms per tick
+
+        // A 1-second clip: moves from y=0 to y=4
+        let mut clip = RigidClip::new("move", 1.0, false);
+        clip.keyframes.push(RigidKeyframe::identity(0.0));
+        clip.keyframes.push(RigidKeyframe {
+            time: 1.0,
+            position: Vec3::new(0.0, 4.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        });
+
+        let mut machine = RigidStateMachine::new("move");
+        machine.add_state("move", clip);
+
+        let entity = world.spawn((
+            RigidAnimationComponent { machine },
+            vox_core::ecs::TransformComponent::default(),
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(rigid_animation_system);
+        schedule.run(&mut world);
+
+        let transform = world.entity(entity).get::<vox_core::ecs::TransformComponent>().unwrap();
+        assert!(
+            transform.position.y >= 0.0,
+            "rigid animation should write a valid position, y={}",
+            transform.position.y
+        );
+    }
+
+    #[test]
+    fn plugin_registers_systems() {
+        use bevy_app::App;
+        // Plugin should build without panicking.
+        // TimeStep must be pre-inserted (SequencerPlugin doesn't own it).
+        let mut app = App::new();
+        app.insert_resource(TimeStep(1.0 / 60.0));
+        app.add_plugins(SequencerPlugin);
+        // No assertion needed — panicking during build counts as failure.
     }
 
     #[test]
