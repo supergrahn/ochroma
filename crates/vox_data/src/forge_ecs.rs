@@ -69,6 +69,45 @@ pub fn forge_pcg_system(
     }
 }
 
+/// For each entity with `AdvancedProcGenComponent` but no `ProcGenResultComponent`,
+/// dispatch to the appropriate organic generator and insert the result.
+///
+/// Idempotent: entities that already have `ProcGenResultComponent` are skipped.
+pub fn advanced_forge_system(
+    mut commands: Commands,
+    query: Query<(Entity, &AdvancedProcGenComponent), Without<ProcGenResultComponent>>,
+) {
+    for (entity, advanced) in query.iter() {
+        let splats = match advanced {
+            AdvancedProcGenComponent::Tree { seed, height, canopy_radius } => {
+                generate_tree(*seed, *height, *canopy_radius)
+            }
+            AdvancedProcGenComponent::Bench { seed } => {
+                generate_bench(*seed)
+            }
+        };
+        commands.entity(entity).insert(ProcGenResultComponent { splats });
+    }
+}
+
+// ── Plugin ─────────────────────────────────────────────────────────────────
+
+/// Bevy plugin that chains `forge_pcg_system` then `advanced_forge_system`
+/// in `Update`.
+///
+/// Both systems are stateless — no Resources are inserted. Generation runs
+/// exactly once per entity (idempotent via `Without<ProcGenResultComponent>`).
+pub struct ForgePlugin;
+
+impl bevy_app::Plugin for ForgePlugin {
+    fn build(&self, app: &mut bevy_app::App) {
+        app.add_systems(
+            bevy_app::Update,
+            (forge_pcg_system, advanced_forge_system).chain(),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +217,60 @@ mod tests {
         let result = world.entity(entity).get::<ProcGenResultComponent>().unwrap();
         // splats remains empty because we pre-inserted an empty result
         assert!(result.splats.is_empty(), "pre-existing result should not be replaced");
+    }
+
+    #[test]
+    fn advanced_forge_system_generates_tree() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+
+        let mut world = World::new();
+
+        let entity = world.spawn(AdvancedProcGenComponent::Tree {
+            seed: 10,
+            height: 5.0,
+            canopy_radius: 2.0,
+        }).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(advanced_forge_system);
+        schedule.run(&mut world);
+
+        let result = world.entity(entity).get::<ProcGenResultComponent>();
+        assert!(result.is_some(), "ProcGenResultComponent should be inserted for tree");
+        assert!(
+            !result.unwrap().splats.is_empty(),
+            "tree generation should produce at least one splat"
+        );
+    }
+
+    #[test]
+    fn advanced_forge_system_generates_bench() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+
+        let mut world = World::new();
+
+        let entity = world.spawn(AdvancedProcGenComponent::Bench { seed: 20 }).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(advanced_forge_system);
+        schedule.run(&mut world);
+
+        let result = world.entity(entity).get::<ProcGenResultComponent>();
+        assert!(result.is_some(), "ProcGenResultComponent should be inserted for bench");
+        assert!(
+            !result.unwrap().splats.is_empty(),
+            "bench generation should produce at least one splat"
+        );
+    }
+
+    #[test]
+    fn plugin_registers_systems() {
+        use bevy_app::App;
+        // Plugin should build without panicking.
+        let mut app = App::new();
+        app.add_plugins(ForgePlugin);
+        // No assertion needed — panicking during build counts as failure.
     }
 }
