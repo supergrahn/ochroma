@@ -2,6 +2,7 @@ pub mod acoustic_raytracer;
 pub mod audio_graph;
 pub mod spatial;
 pub mod synth;
+pub mod ecs;
 
 pub use spatial::{compute_spatial, Listener, SpatialAudioManager};
 pub use synth::{generate_click, generate_collect_sound, generate_place_sound, generate_tone, save_wav};
