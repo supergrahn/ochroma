@@ -19,6 +19,7 @@ pub mod denoiser;
 pub mod lod_crossfade;
 pub mod lod_ecs;
 pub mod seq_ecs;
+pub mod render_ecs;
 pub mod svt;
 pub mod spectra_bridge;
 pub mod lighting;
