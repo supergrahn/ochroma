@@ -93,6 +93,18 @@ pub struct AudioEmitterComponent {
     pub spatial: bool,
 }
 
+/// Per-entity LOD state written by lod_select_system.
+/// Attach this component to any entity that should receive automatic LOD selection.
+/// `current_level` maps to the 4-level hierarchy in `vox_render::hierarchical_lod`:
+///   0 = full detail, 1 = 40% splats, 2 = 10% splats, 3 = billboard.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct LodStateComponent {
+    /// Current LOD level index (0–3).
+    pub current_level: u8,
+    /// Crossfade blending weight towards the next level (0.0 = stable, 1.0 = fully transitioned).
+    pub crossfade: f32,
+}
+
 /// Point light.
 #[derive(Component, Debug, Clone)]
 pub struct PointLightComponent {
