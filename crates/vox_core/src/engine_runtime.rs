@@ -327,7 +327,7 @@ fn process_script_commands_system(world: &mut World) {
                     println!("[engine] play_sound: {} vol={} -> {}", clip, volume, path.display());
                 }
                 ScriptCommand::ApplyForce { force } => {
-                    let _ = force; // TODO: wire to physics
+                    eprintln!("[engine] ApplyForce not yet wired to physics: {:?}", force);
                 }
                 ScriptCommand::SendEvent { name, data } => {
                     println!("[engine] Event: {} = {}", name, data);
@@ -705,8 +705,9 @@ impl<'a> EntityBuilder<'a> {
 
     /// Set position.
     pub fn with_position(self, pos: Vec3) -> Self {
-        self.runtime.world.entity_mut(self.entity).get_mut::<TransformComponent>()
-            .unwrap().position = pos;
+        if let Some(mut transform) = self.runtime.world.entity_mut(self.entity).get_mut::<TransformComponent>() {
+            transform.position = pos;
+        }
         self
     }
 
@@ -752,8 +753,9 @@ impl<'a> EntityBuilder<'a> {
 
     /// Add a tag.
     pub fn with_tag(self, tag: &str) -> Self {
-        self.runtime.world.entity_mut(self.entity).get_mut::<TagsComponent>()
-            .unwrap().0.push(tag.to_string());
+        if let Some(mut tags) = self.runtime.world.entity_mut(self.entity).get_mut::<TagsComponent>() {
+            tags.0.push(tag.to_string());
+        }
         self
     }
 

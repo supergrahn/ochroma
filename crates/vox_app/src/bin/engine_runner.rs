@@ -791,6 +791,674 @@ impl EngineApp {
 }
 
 // ---------------------------------------------------------------------------
+// Input + redraw helpers (extracted from window_event)
+// ---------------------------------------------------------------------------
+
+impl EngineApp {
+    fn handle_keyboard_event(&mut self, event: &winit::event::KeyEvent, event_loop: &ActiveEventLoop) {
+        if let PhysicalKey::Code(key) = event.physical_key {
+            if event.state == ElementState::Pressed {
+                self.keys.insert(key);
+
+                match key {
+                    KeyCode::Escape => {
+                        if self.mouse_captured {
+                            self.mouse_captured = false;
+                            if let Some(w) = &self.window {
+                                w.set_cursor_visible(true);
+                            }
+                        } else {
+                            self.engine.stop();
+                            event_loop.exit();
+                        }
+                    }
+                    KeyCode::F12 => {
+                        let pixels = self.render_frame();
+                        let dir = std::env::temp_dir().join("ochroma_visual");
+                        std::fs::create_dir_all(&dir).ok();
+                        let path = dir.join("screenshot.ppm");
+                        let (w, h) = (self.dlss.display_width, self.dlss.display_height);
+                        let mut data = format!("P6\n{} {}\n255\n", w, h).into_bytes();
+                        for p in &pixels {
+                            data.push(p[0]);
+                            data.push(p[1]);
+                            data.push(p[2]);
+                        }
+                        std::fs::write(&path, &data).ok();
+                        println!("[ochroma] Screenshot: {}", path.display());
+                    }
+                    KeyCode::KeyT => {
+                        let new_hour = (self.engine.time_of_day() + 1.0) % 24.0;
+                        self.engine.set_time_of_day(new_hour);
+                        self.temporal.reset();
+                        println!("[ochroma] Time: {:.0}:00", self.engine.time_of_day());
+                    }
+                    KeyCode::Equal => {
+                        self.exposure = (self.exposure * 1.2).min(16.0);
+                        println!("[ochroma] Exposure: {:.2}", self.exposure);
+                    }
+                    KeyCode::Minus => {
+                        self.exposure = (self.exposure / 1.2).max(0.05);
+                        println!("[ochroma] Exposure: {:.2}", self.exposure);
+                    }
+                    KeyCode::KeyM => {
+                        self.tonemap.operator = next_tonemap_operator(self.tonemap.operator);
+                        println!("[ochroma] Tonemap: {}", tonemap_operator_name(self.tonemap.operator));
+                    }
+                    KeyCode::KeyQ => {
+                        self.dlss.quality = next_dlss_quality(self.dlss.quality);
+                        let (rw, rh) = self.dlss.render_resolution();
+                        println!(
+                            "[ochroma] DLSS: {} (render {}x{} -> display {}x{})",
+                            dlss_quality_name(self.dlss.quality),
+                            rw, rh, self.dlss.display_width, self.dlss.display_height,
+                        );
+                    }
+                    KeyCode::KeyP => {
+                        self.spectral_bypass = !self.spectral_bypass;
+                        self.temporal.reset();
+                        println!(
+                            "[ochroma] Render mode: {}",
+                            if self.spectral_bypass { "FAST (direct RGB)" } else { "QUALITY (spectral pipeline)" }
+                        );
+                    }
+                    KeyCode::KeyG => {
+                        self.dlss.frame_gen = match self.dlss.frame_gen {
+                            FrameGeneration::Off => FrameGeneration::On,
+                            FrameGeneration::On => FrameGeneration::Off,
+                        };
+                        println!("[ochroma] Frame generation: {:?}", self.dlss.frame_gen);
+                    }
+                    KeyCode::Tab => {
+                        self.editor_visible = !self.editor_visible;
+                        self.editor.visible = self.editor_visible;
+                        println!(
+                            "[ochroma] Editor {}",
+                            if self.editor_visible { "OPEN" } else { "CLOSED" }
+                        );
+                        if self.editor_visible {
+                            self.editor.show_console();
+                            if self.editor.selected.is_none() && !self.editor.entities.is_empty() {
+                                let first_id = self.editor.entities[0].id;
+                                self.editor.select(first_id);
+                            }
+                        }
+                    }
+                    KeyCode::Delete => {
+                        if self.editor_visible {
+                            self.editor.delete_selected();
+                        }
+                    }
+                    KeyCode::ArrowUp => {
+                        if self.editor_visible {
+                            self.editor.move_selected(Vec3::new(0.0, 0.0, -1.0));
+                        }
+                    }
+                    KeyCode::ArrowDown => {
+                        if self.editor_visible {
+                            self.editor.move_selected(Vec3::new(0.0, 0.0, 1.0));
+                        }
+                    }
+                    KeyCode::ArrowLeft => {
+                        if self.editor_visible {
+                            self.editor.move_selected(Vec3::new(-1.0, 0.0, 0.0));
+                        }
+                    }
+                    KeyCode::ArrowRight => {
+                        if self.editor_visible {
+                            self.editor.move_selected(Vec3::new(1.0, 0.0, 0.0));
+                        }
+                    }
+                    KeyCode::KeyS if self.ctrl_held => {
+                        let map = self.editor.export_to_map("Ochroma Scene");
+                        let path = std::env::temp_dir().join("ochroma_scene.ochroma_map");
+                        match map.save(&path) {
+                            Ok(()) => println!("[ochroma] Scene saved to {}", path.display()),
+                            Err(e) => eprintln!("[ochroma] Save failed: {}", e),
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                self.keys.remove(&key);
+            }
+        }
+    }
+
+    fn handle_mouse_button(&mut self, button: MouseButton, state: ElementState) {
+        match button {
+            MouseButton::Right => {
+                if state == ElementState::Pressed {
+                    self.mouse_captured = true;
+                    self.last_mouse = None;
+                    if let Some(w) = &self.window {
+                        w.set_cursor_visible(false);
+                    }
+                } else {
+                    self.mouse_captured = false;
+                    if let Some(w) = &self.window {
+                        w.set_cursor_visible(true);
+                    }
+                }
+            }
+            MouseButton::Left if state == ElementState::Released => {
+                // End gizmo drag on release
+                if self.gizmo.dragging {
+                    self.gizmo.end_drag();
+                }
+                self.left_mouse_held = false;
+            }
+            MouseButton::Left if state == ElementState::Pressed => {
+                self.left_mouse_held = true;
+
+                // In editor mode, check gizmo hit first before entity picking
+                if self.editor_visible {
+                    if let Some(sel_entity) = self.editor.selected_entity() {
+                        let forward = self.camera_forward();
+                        let cam_target = self.camera.position + forward;
+                        let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
+                        let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
+                        let proj = Mat4::perspective_rh(
+                            self.camera.fov,
+                            dw as f32 / dh as f32,
+                            self.camera.near,
+                            self.camera.far,
+                        );
+                        let vp = proj * view;
+                        let entity_pos = sel_entity.position;
+                        if let Some(axis) = self.gizmo.hit_test(
+                            self.mouse_x as f32,
+                            self.mouse_y as f32,
+                            entity_pos,
+                            vp,
+                            dw,
+                            dh,
+                        ) {
+                            self.gizmo.begin_drag(axis, self.mouse_x as f32, self.mouse_y as f32);
+                            // Don't also do entity picking when starting a gizmo drag
+                            self.left_click_pending = false;
+                        } else {
+                            self.left_click_pending = true;
+                        }
+                    } else {
+                        self.left_click_pending = true;
+                    }
+                } else {
+                    self.left_click_pending = true;
+                }
+                // Play click sound through speakers (both legacy and spatial audio)
+                self.click_counter += 1;
+                self.audio.play_sine_backend(self.click_counter, 800.0, 0.05, 0.3);
+                self.spatial_audio.play_tone(800.0, 0.05, 0.3);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mouse_move(&mut self, x: f64, y: f64) {
+        self.mouse_x = x;
+        self.mouse_y = y;
+
+        // Gizmo drag: move the selected entity along the constrained axis
+        if self.gizmo.dragging && self.editor_visible {
+            if let Some(sel_id) = self.editor.selected {
+                if let Some(sel_entity) = self.editor.entities.iter().find(|e| e.id == sel_id) {
+                    let entity_pos = sel_entity.position;
+                    let forward = self.camera_forward();
+                    let cam_target = self.camera.position + forward;
+                    let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
+                    let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
+                    let proj = Mat4::perspective_rh(
+                        self.camera.fov,
+                        dw as f32 / dh as f32,
+                        self.camera.near,
+                        self.camera.far,
+                    );
+                    let vp = proj * view;
+                    let delta = self.gizmo.update_drag(
+                        x as f32,
+                        y as f32,
+                        entity_pos,
+                        vp,
+                        dw,
+                        dh,
+                    );
+                    if delta.length_squared() > 1e-8 {
+                        self.editor.move_selected(delta);
+                    }
+                }
+            }
+        } else if self.mouse_captured {
+            if let Some((lx, ly)) = self.last_mouse {
+                let dx = (x - lx) as f32;
+                let dy = (y - ly) as f32;
+                self.cam_yaw += dx * 0.003;
+                self.cam_pitch = (self.cam_pitch - dy * 0.003).clamp(-1.5, 1.5);
+            }
+            self.last_mouse = Some((x, y));
+        }
+    }
+
+    fn handle_resize(&mut self, width: u32, height: u32) {
+        let w = width.max(1);
+        let h = height.max(1);
+        self.dlss.resize(w, h);
+        let (rw, rh) = self.dlss.render_resolution();
+        self.rasteriser = SoftwareRasteriser::new(rw, rh);
+        self.spectral_fb = SpectralFramebuffer::new(rw, rh);
+        self.temporal.resize(rw, rh);
+        self.camera.aspect_ratio = w as f32 / h as f32;
+        if let Some(backend) = &mut self.backend {
+            backend.resize(w, h);
+        }
+        if let Some(gpu_rast) = &mut self.gpu_rasteriser {
+            gpu_rast.resize(w, h);
+        }
+    }
+
+    fn handle_redraw(&mut self, _event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
+        self.last_frame = now;
+
+        // 1. Update camera from input
+        self.update_camera(dt);
+
+        // 2. Handle left-click: Rapier raycast for editor pick, or object placement
+        if self.left_click_pending {
+            if self.editor_visible {
+                // Unproject screen coords to get a world-space ray
+                let forward = self.camera_forward();
+                let cam_target = self.camera.position + forward;
+                let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
+                let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
+                let proj = Mat4::perspective_rh(
+                    self.camera.fov,
+                    dw as f32 / dh as f32,
+                    self.camera.near,
+                    self.camera.far,
+                );
+                let inv_vp = (proj * view).inverse();
+                let ndc_x = (2.0 * self.mouse_x as f32 / dw as f32) - 1.0;
+                let ndc_y = 1.0 - (2.0 * self.mouse_y as f32 / dh as f32);
+                let unproject = |ndc_z: f32| -> Vec3 {
+                    let clip = glam::Vec4::new(ndc_x, ndc_y, ndc_z, 1.0);
+                    let world = inv_vp * clip;
+                    Vec3::new(world.x / world.w, world.y / world.w, world.z / world.w)
+                };
+                let near_pt = unproject(-1.0);
+                let far_pt = unproject(1.0);
+                let ray_dir = (far_pt - near_pt).normalize();
+
+                // Try Rapier raycast first for precise physics-based picking
+                let mut picked = false;
+                if let Some((col_handle, _hit_pos, _dist)) = self.physics.raycast_with_collider(
+                    [near_pt.x, near_pt.y, near_pt.z],
+                    [ray_dir.x, ray_dir.y, ray_dir.z],
+                    1000.0,
+                ) {
+                    if let Some(&entity_id) = self.collider_to_entity.get(&col_handle) {
+                        self.editor.select(entity_id);
+                        if let Some(name) = self.editor.selected_name() {
+                            println!("[ochroma] Rapier pick: '{}' (id={})", name, entity_id);
+                        }
+                        picked = true;
+                    }
+                }
+
+                // Fall back to editor ray-sphere test if Rapier didn't match an entity
+                if !picked {
+                    if let Some(id) = self.editor.pick_entity_at_screen_pos(
+                        self.mouse_x as f32,
+                        self.mouse_y as f32,
+                        dw,
+                        dh,
+                        inv_vp,
+                    ) {
+                        self.editor.select(id);
+                        if let Some(name) = self.editor.selected_name() {
+                            println!("[ochroma] Editor pick: '{}' (id={})", name, id);
+                        }
+                    }
+                }
+            } else {
+                self.place_object_at_cursor();
+            }
+            self.left_click_pending = false;
+        }
+
+        // 3. Tick particles
+        self.particles.tick(dt);
+
+        // 4. Tick engine runtime (scripts, time advance)
+        self.engine.tick(dt);
+
+        // 4b. Step Rapier physics and sync dynamic bodies back to ECS
+        self.physics.step();
+        // Sync: read positions from Rapier dynamic bodies back into ECS transforms
+        {
+            use vox_core::ecs::TransformComponent;
+            let body_map: Vec<(u32, vox_physics::RigidBodyHandle)> =
+                self.entity_rapier_bodies.iter().map(|(&e, &h)| (e, h)).collect();
+            for (eid, handle) in body_map {
+                if let Some(pos) = self.physics.body_position(handle) {
+                    // Update the ECS transform from Rapier
+                    let mut query = self.engine.world.query::<(bevy_ecs::prelude::Entity, &mut TransformComponent)>();
+                    for (entity, mut transform) in query.iter_mut(&mut self.engine.world) {
+                        if entity.index() == eid {
+                            transform.position = Vec3::new(pos[0], pos[1], pos[2]);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4c. Tick audio (legacy AudioEngine + spatial audio manager)
+        self.audio.tick(dt);
+        self.audio.set_listener(self.camera.position);
+
+        // Spatial audio: update listener position/orientation from camera, tick
+        let cam_fwd = self.camera_forward();
+        self.spatial_audio.set_listener(self.camera.position, cam_fwd, Vec3::Y);
+        self.spatial_audio.tick(dt);
+
+        // Process pending script commands for audio playback
+        {
+            use vox_core::script_interface::ScriptCommand;
+            let pending = std::mem::take(
+                &mut self.engine.world.resource_mut::<vox_core::engine_runtime::PendingScriptCommands>().commands,
+            );
+            for (_entity, commands) in &pending {
+                for cmd in commands {
+                    match cmd {
+                        ScriptCommand::PlaySound { clip, volume, .. } => {
+                            // Play via spatial audio manager as a procedural tone
+                            // 440Hz for generic, 800Hz for click, 600Hz ascending for collect
+                            let freq = match clip.as_str() {
+                                "click" => 800.0,
+                                "collect" => 600.0,
+                                "jump" => 400.0,
+                                _ => 440.0,
+                            };
+                            self.spatial_audio.play_tone(freq, 0.2, *volume);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Put unprocessed commands back (other systems may need them)
+            self.engine.world.resource_mut::<vox_core::engine_runtime::PendingScriptCommands>().commands = pending;
+        }
+
+        // 4d. Sync entity positions to splats — when scripts move entities,
+        //     the corresponding splats move with them.
+        {
+            use vox_core::ecs::TransformComponent;
+            let mut query = self.engine.world.query::<(bevy_ecs::prelude::Entity, &TransformComponent)>();
+            let entities: Vec<(u32, [f32; 3])> = query.iter(&self.engine.world)
+                .map(|(e, t)| (e.index(), [t.position.x, t.position.y, t.position.z]))
+                .collect();
+            for (eid, pos) in entities {
+                if let Some(&(start, end)) = self.entity_splat_ranges.get(&eid) {
+                    if let Some(&orig_pos) = self.entity_original_positions.get(&eid) {
+                        let dx = pos[0] - orig_pos[0];
+                        let dy = pos[1] - orig_pos[1];
+                        let dz = pos[2] - orig_pos[2];
+                        if dx.abs() > 1e-6 || dy.abs() > 1e-6 || dz.abs() > 1e-6 {
+                            for i in start..end.min(self.scene_splats.len()) {
+                                self.scene_splats[i].position[0] += dx;
+                                self.scene_splats[i].position[1] += dy;
+                                self.scene_splats[i].position[2] += dz;
+                            }
+                            self.entity_original_positions.insert(eid, pos);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Render + present
+        //    Primary path: GPU rasteriser directly to surface texture.
+        //    Fallback: software rasteriser -> blit via backend.
+        if self.gpu_rasteriser.is_some() && self.backend.is_some() {
+            // --- GPU primary render path ---
+            let backend = self.backend.as_ref().expect("backend checked above");
+            let surface_tex = match backend.surface().get_current_texture() {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("[ochroma] GPU surface error: {}", e);
+                    // Fall through to software path below
+                    let pixels = self.render_frame();
+                    if let Some(b) = &self.backend {
+                        b.present_framebuffer(&pixels, self.dlss.display_width, self.dlss.display_height);
+                    }
+                    // skip to FPS counter
+                    self.frame_count += 1;
+                    let elapsed = now.duration_since(self.fps_timer).as_secs_f32();
+                    if elapsed >= 1.0 {
+                        self.fps = self.frame_count as f32 / elapsed;
+                        self.frame_count = 0;
+                        self.fps_timer = now;
+                    }
+                    if let Some(w) = &self.window { w.request_redraw(); }
+                    return;
+                }
+            };
+            let view = surface_tex.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+            // Build visible splats (frustum cull + LOD) for GPU path
+            let forward = self.camera_forward();
+            let target = self.camera.position + forward;
+            let render_camera = RenderCamera {
+                view: Mat4::look_at_rh(self.camera.position, target, Vec3::Y),
+                proj: Mat4::perspective_rh(
+                    self.camera.fov,
+                    self.dlss.display_width as f32 / self.dlss.display_height as f32,
+                    self.camera.near,
+                    self.camera.far,
+                ),
+            };
+            let vp = render_camera.view_proj();
+            let frustum = Frustum::from_view_proj(vp);
+            let cam_pos = self.camera.position;
+
+            let mut visible_splats: Vec<GaussianSplat> = Vec::with_capacity(self.scene_splats.len());
+            for splat in &self.scene_splats {
+                let pos = Vec3::from(splat.position);
+                let radius = splat.scale[0].max(splat.scale[1]).max(splat.scale[2]) + 1.0;
+                if frustum.contains_sphere(pos, radius) {
+                    visible_splats.push(*splat);
+                }
+            }
+            // LOD
+            let lod_splats: Vec<GaussianSplat> = visible_splats.iter().enumerate()
+                .filter(|&(i, s)| {
+                    let dist = cam_pos.distance(Vec3::from(s.position));
+                    match lod::select_lod(dist) {
+                        lod::LodLevel::Full => true,
+                        lod::LodLevel::Reduced => i % 4 == 0,
+                    }
+                })
+                .map(|(_, s)| *s)
+                .collect();
+
+            // Add placed objects + particles
+            let mut render_splats = lod_splats;
+            for (pos, splats) in &self.placed_objects {
+                for s in splats {
+                    let mut ws = *s;
+                    ws.position[0] += pos.x;
+                    ws.position[1] += pos.y;
+                    ws.position[2] += pos.z;
+                    render_splats.push(ws);
+                }
+            }
+            render_splats.extend(&self.particles.to_splats());
+
+            let illuminant = illuminant_for_time(self.engine.time_of_day());
+
+            let gpu_rast = self.gpu_rasteriser.as_ref().expect("gpu_rasteriser checked above");
+            gpu_rast.render(
+                backend.device(),
+                backend.queue(),
+                &view,
+                &render_splats,
+                &render_camera,
+                &illuminant,
+            );
+
+            // --- egui render on top of scene ---
+            if let (Some(egui_state), Some(egui_renderer)) =
+                (&mut self.egui_state, &mut self.egui_renderer)
+            {
+                let window = self.window.as_ref().expect("window exists during redraw");
+                let raw_input = egui_state.take_egui_input(window);
+                let splat_count = render_splats.len();
+                let fps = self.fps;
+                let dlss_mode = dlss_quality_name(self.dlss.quality);
+                let editor_visible = self.editor_visible;
+                let full_output = self.egui_ctx.run(raw_input, |ctx| {
+                    if editor_visible {
+                        self.editor.show(ctx);
+                        self.content_browser.show(ctx);
+                    }
+                    // Always show HUD
+                    egui::Area::new(egui::Id::new("hud_overlay"))
+                        .fixed_pos(egui::pos2(4.0, 4.0))
+                        .show(ctx, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{:.0} FPS | {} splats | DLSS {}",
+                                    fps, splat_count, dlss_mode,
+                                ))
+                                .color(egui::Color32::from_rgb(220, 220, 220))
+                                .background_color(egui::Color32::from_rgba_premultiplied(0, 0, 0, 160)),
+                            );
+                        });
+                });
+
+                egui_state.handle_platform_output(window, full_output.platform_output);
+                let tris = self.egui_ctx.tessellate(
+                    full_output.shapes,
+                    self.egui_ctx.pixels_per_point(),
+                );
+                for (id, image_delta) in &full_output.textures_delta.set {
+                    egui_renderer.update_texture(
+                        backend.device(),
+                        backend.queue(),
+                        *id,
+                        image_delta,
+                    );
+                }
+
+                let screen_descriptor = egui_wgpu::ScreenDescriptor {
+                    size_in_pixels: [backend.width(), backend.height()],
+                    pixels_per_point: window.scale_factor() as f32,
+                };
+
+                let mut encoder = backend.device().create_command_encoder(
+                    &wgpu::CommandEncoderDescriptor {
+                        label: Some("egui_encoder"),
+                    },
+                );
+
+                egui_renderer.update_buffers(
+                    backend.device(),
+                    backend.queue(),
+                    &mut encoder,
+                    &tris,
+                    &screen_descriptor,
+                );
+
+                {
+                    let rp_desc = wgpu::RenderPassDescriptor {
+                        label: Some("egui_render_pass"),
+                        color_attachments: &[Some(
+                            wgpu::RenderPassColorAttachment {
+                                view: &view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            },
+                        )],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    };
+                    let mut render_pass = encoder
+                        .begin_render_pass(&rp_desc)
+                        .forget_lifetime();
+                    egui_renderer.render(
+                        &mut render_pass,
+                        &tris,
+                        &screen_descriptor,
+                    );
+                }
+
+                backend.queue().submit(std::iter::once(encoder.finish()));
+
+                for id in &full_output.textures_delta.free {
+                    egui_renderer.free_texture(id);
+                }
+            }
+
+            surface_tex.present();
+        } else {
+            // --- Software fallback render path (bitmap font HUD) ---
+            let pixels = self.render_frame();
+            if let Some(backend) = &self.backend {
+                backend.present_framebuffer(&pixels, self.dlss.display_width, self.dlss.display_height);
+            }
+        }
+
+        // 7. FPS counter + title update
+        self.frame_count += 1;
+        let elapsed = now.duration_since(self.fps_timer).as_secs_f32();
+        if elapsed >= 1.0 {
+            self.fps = self.frame_count as f32 / elapsed;
+            if let Some(w) = &self.window {
+                let dlss_label = match self.dlss.quality {
+                    DlssQuality::Off => "DLSS Off".to_string(),
+                    q => {
+                        let (rw, rh) = self.dlss.render_resolution();
+                        format!("DLSS {} ({}x{})", dlss_quality_name(q), rw, rh)
+                    }
+                };
+                let fg_label = if self.dlss.frame_gen == FrameGeneration::On { " | FrameGen" } else { "" };
+                let editor_label = if self.editor_visible {
+                    format!(" | Editor ({})", self.editor.entity_count())
+                } else {
+                    String::new()
+                };
+                let mode_label = if self.spectral_bypass { "FAST" } else { "SPECTRAL" };
+                w.set_title(&format!(
+                    "Ochroma -- {:.0} FPS | {} total | CLAS:{} | {:.0}:00 | {} | {} | {}{}{}",
+                    self.fps,
+                    self.total_splat_count(),
+                    self.clas_cluster_count,
+                    self.engine.time_of_day(),
+                    mode_label,
+                    dlss_label,
+                    tonemap_operator_name(self.tonemap.operator),
+                    fg_label,
+                    editor_label,
+                ));
+            }
+            self.frame_count = 0;
+            self.fps_timer = now;
+        }
+
+        // Request next frame
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ApplicationHandler -- the real game loop
 // ---------------------------------------------------------------------------
 
@@ -901,674 +1569,14 @@ impl ApplicationHandler for EngineApp {
                 self.engine.stop();
                 event_loop.exit();
             }
-
-            WindowEvent::KeyboardInput { event, .. } => {
-                if let PhysicalKey::Code(key) = event.physical_key {
-                    if event.state == ElementState::Pressed {
-                        self.keys.insert(key);
-
-                        match key {
-                            KeyCode::Escape => {
-                                if self.mouse_captured {
-                                    self.mouse_captured = false;
-                                    if let Some(w) = &self.window {
-                                        w.set_cursor_visible(true);
-                                    }
-                                } else {
-                                    self.engine.stop();
-                                    event_loop.exit();
-                                }
-                            }
-                            KeyCode::F12 => {
-                                let pixels = self.render_frame();
-                                let dir = std::env::temp_dir().join("ochroma_visual");
-                                std::fs::create_dir_all(&dir).ok();
-                                let path = dir.join("screenshot.ppm");
-                                let (w, h) = (self.dlss.display_width, self.dlss.display_height);
-                                let mut data = format!("P6\n{} {}\n255\n", w, h).into_bytes();
-                                for p in &pixels {
-                                    data.push(p[0]);
-                                    data.push(p[1]);
-                                    data.push(p[2]);
-                                }
-                                std::fs::write(&path, &data).ok();
-                                println!("[ochroma] Screenshot: {}", path.display());
-                            }
-                            KeyCode::KeyT => {
-                                let new_hour = (self.engine.time_of_day() + 1.0) % 24.0;
-                                self.engine.set_time_of_day(new_hour);
-                                self.temporal.reset();
-                                println!("[ochroma] Time: {:.0}:00", self.engine.time_of_day());
-                            }
-                            KeyCode::Equal => {
-                                self.exposure = (self.exposure * 1.2).min(16.0);
-                                println!("[ochroma] Exposure: {:.2}", self.exposure);
-                            }
-                            KeyCode::Minus => {
-                                self.exposure = (self.exposure / 1.2).max(0.05);
-                                println!("[ochroma] Exposure: {:.2}", self.exposure);
-                            }
-                            KeyCode::KeyM => {
-                                self.tonemap.operator = next_tonemap_operator(self.tonemap.operator);
-                                println!("[ochroma] Tonemap: {}", tonemap_operator_name(self.tonemap.operator));
-                            }
-                            KeyCode::KeyQ => {
-                                self.dlss.quality = next_dlss_quality(self.dlss.quality);
-                                let (rw, rh) = self.dlss.render_resolution();
-                                println!(
-                                    "[ochroma] DLSS: {} (render {}x{} -> display {}x{})",
-                                    dlss_quality_name(self.dlss.quality),
-                                    rw, rh, self.dlss.display_width, self.dlss.display_height,
-                                );
-                            }
-                            KeyCode::KeyP => {
-                                self.spectral_bypass = !self.spectral_bypass;
-                                self.temporal.reset();
-                                println!(
-                                    "[ochroma] Render mode: {}",
-                                    if self.spectral_bypass { "FAST (direct RGB)" } else { "QUALITY (spectral pipeline)" }
-                                );
-                            }
-                            KeyCode::KeyG => {
-                                self.dlss.frame_gen = match self.dlss.frame_gen {
-                                    FrameGeneration::Off => FrameGeneration::On,
-                                    FrameGeneration::On => FrameGeneration::Off,
-                                };
-                                println!("[ochroma] Frame generation: {:?}", self.dlss.frame_gen);
-                            }
-                            KeyCode::Tab => {
-                                self.editor_visible = !self.editor_visible;
-                                self.editor.visible = self.editor_visible;
-                                println!(
-                                    "[ochroma] Editor {}",
-                                    if self.editor_visible { "OPEN" } else { "CLOSED" }
-                                );
-                                if self.editor_visible {
-                                    self.editor.show_console();
-                                    if self.editor.selected.is_none() && !self.editor.entities.is_empty() {
-                                        let first_id = self.editor.entities[0].id;
-                                        self.editor.select(first_id);
-                                    }
-                                }
-                            }
-                            KeyCode::Delete => {
-                                if self.editor_visible {
-                                    self.editor.delete_selected();
-                                }
-                            }
-                            KeyCode::ArrowUp => {
-                                if self.editor_visible {
-                                    self.editor.move_selected(Vec3::new(0.0, 0.0, -1.0));
-                                }
-                            }
-                            KeyCode::ArrowDown => {
-                                if self.editor_visible {
-                                    self.editor.move_selected(Vec3::new(0.0, 0.0, 1.0));
-                                }
-                            }
-                            KeyCode::ArrowLeft => {
-                                if self.editor_visible {
-                                    self.editor.move_selected(Vec3::new(-1.0, 0.0, 0.0));
-                                }
-                            }
-                            KeyCode::ArrowRight => {
-                                if self.editor_visible {
-                                    self.editor.move_selected(Vec3::new(1.0, 0.0, 0.0));
-                                }
-                            }
-                            KeyCode::KeyS if self.ctrl_held => {
-                                let map = self.editor.export_to_map("Ochroma Scene");
-                                let path = std::env::temp_dir().join("ochroma_scene.ochroma_map");
-                                match map.save(&path) {
-                                    Ok(()) => println!("[ochroma] Scene saved to {}", path.display()),
-                                    Err(e) => eprintln!("[ochroma] Save failed: {}", e),
-                                }
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        self.keys.remove(&key);
-                    }
-                }
-            }
-
+            WindowEvent::KeyboardInput { event, .. } => self.handle_keyboard_event(&event, event_loop),
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.ctrl_held = modifiers.state().control_key();
             }
-
-            WindowEvent::MouseInput { state, button, .. } => match button {
-                MouseButton::Right => {
-                    if state == ElementState::Pressed {
-                        self.mouse_captured = true;
-                        self.last_mouse = None;
-                        if let Some(w) = &self.window {
-                            w.set_cursor_visible(false);
-                        }
-                    } else {
-                        self.mouse_captured = false;
-                        if let Some(w) = &self.window {
-                            w.set_cursor_visible(true);
-                        }
-                    }
-                }
-                MouseButton::Left if state == ElementState::Released => {
-                    // End gizmo drag on release
-                    if self.gizmo.dragging {
-                        self.gizmo.end_drag();
-                    }
-                    self.left_mouse_held = false;
-                }
-                MouseButton::Left if state == ElementState::Pressed => {
-                    self.left_mouse_held = true;
-
-                    // In editor mode, check gizmo hit first before entity picking
-                    if self.editor_visible {
-                        if let Some(sel_entity) = self.editor.selected_entity() {
-                            let forward = self.camera_forward();
-                            let cam_target = self.camera.position + forward;
-                            let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
-                            let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
-                            let proj = Mat4::perspective_rh(
-                                self.camera.fov,
-                                dw as f32 / dh as f32,
-                                self.camera.near,
-                                self.camera.far,
-                            );
-                            let vp = proj * view;
-                            let entity_pos = sel_entity.position;
-                            if let Some(axis) = self.gizmo.hit_test(
-                                self.mouse_x as f32,
-                                self.mouse_y as f32,
-                                entity_pos,
-                                vp,
-                                dw,
-                                dh,
-                            ) {
-                                self.gizmo.begin_drag(axis, self.mouse_x as f32, self.mouse_y as f32);
-                                // Don't also do entity picking when starting a gizmo drag
-                                self.left_click_pending = false;
-                            } else {
-                                self.left_click_pending = true;
-                            }
-                        } else {
-                            self.left_click_pending = true;
-                        }
-                    } else {
-                        self.left_click_pending = true;
-                    }
-                    // Play click sound through speakers (both legacy and spatial audio)
-                    self.click_counter += 1;
-                    self.audio.play_sine_backend(self.click_counter, 800.0, 0.05, 0.3);
-                    self.spatial_audio.play_tone(800.0, 0.05, 0.3);
-                }
-                _ => {}
-            },
-
-            WindowEvent::CursorMoved { position, .. } => {
-                self.mouse_x = position.x;
-                self.mouse_y = position.y;
-
-                // Gizmo drag: move the selected entity along the constrained axis
-                if self.gizmo.dragging && self.editor_visible {
-                    if let Some(sel_id) = self.editor.selected {
-                        if let Some(sel_entity) = self.editor.entities.iter().find(|e| e.id == sel_id) {
-                            let entity_pos = sel_entity.position;
-                            let forward = self.camera_forward();
-                            let cam_target = self.camera.position + forward;
-                            let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
-                            let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
-                            let proj = Mat4::perspective_rh(
-                                self.camera.fov,
-                                dw as f32 / dh as f32,
-                                self.camera.near,
-                                self.camera.far,
-                            );
-                            let vp = proj * view;
-                            let delta = self.gizmo.update_drag(
-                                position.x as f32,
-                                position.y as f32,
-                                entity_pos,
-                                vp,
-                                dw,
-                                dh,
-                            );
-                            if delta.length_squared() > 1e-8 {
-                                self.editor.move_selected(delta);
-                            }
-                        }
-                    }
-                } else if self.mouse_captured {
-                    if let Some((lx, ly)) = self.last_mouse {
-                        let dx = (position.x - lx) as f32;
-                        let dy = (position.y - ly) as f32;
-                        self.cam_yaw += dx * 0.003;
-                        self.cam_pitch = (self.cam_pitch - dy * 0.003).clamp(-1.5, 1.5);
-                    }
-                    self.last_mouse = Some((position.x, position.y));
-                }
-            }
-
-            WindowEvent::Resized(size) => {
-                let w = size.width.max(1);
-                let h = size.height.max(1);
-                self.dlss.resize(w, h);
-                let (rw, rh) = self.dlss.render_resolution();
-                self.rasteriser = SoftwareRasteriser::new(rw, rh);
-                self.spectral_fb = SpectralFramebuffer::new(rw, rh);
-                self.temporal.resize(rw, rh);
-                self.camera.aspect_ratio = w as f32 / h as f32;
-                if let Some(backend) = &mut self.backend {
-                    backend.resize(w, h);
-                }
-                if let Some(gpu_rast) = &mut self.gpu_rasteriser {
-                    gpu_rast.resize(w, h);
-                }
-            }
-
-            // ---------------------------------------------------------------
-            // THE FRAME -- this is where every system runs each frame
-            // ---------------------------------------------------------------
-            WindowEvent::RedrawRequested => {
-                let now = Instant::now();
-                let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
-                self.last_frame = now;
-
-                // 1. Update camera from input
-                self.update_camera(dt);
-
-                // 2. Handle left-click: Rapier raycast for editor pick, or object placement
-                if self.left_click_pending {
-                    if self.editor_visible {
-                        // Unproject screen coords to get a world-space ray
-                        let forward = self.camera_forward();
-                        let cam_target = self.camera.position + forward;
-                        let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
-                        let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
-                        let proj = Mat4::perspective_rh(
-                            self.camera.fov,
-                            dw as f32 / dh as f32,
-                            self.camera.near,
-                            self.camera.far,
-                        );
-                        let inv_vp = (proj * view).inverse();
-                        let ndc_x = (2.0 * self.mouse_x as f32 / dw as f32) - 1.0;
-                        let ndc_y = 1.0 - (2.0 * self.mouse_y as f32 / dh as f32);
-                        let unproject = |ndc_z: f32| -> Vec3 {
-                            let clip = glam::Vec4::new(ndc_x, ndc_y, ndc_z, 1.0);
-                            let world = inv_vp * clip;
-                            Vec3::new(world.x / world.w, world.y / world.w, world.z / world.w)
-                        };
-                        let near_pt = unproject(-1.0);
-                        let far_pt = unproject(1.0);
-                        let ray_dir = (far_pt - near_pt).normalize();
-
-                        // Try Rapier raycast first for precise physics-based picking
-                        let mut picked = false;
-                        if let Some((col_handle, _hit_pos, _dist)) = self.physics.raycast_with_collider(
-                            [near_pt.x, near_pt.y, near_pt.z],
-                            [ray_dir.x, ray_dir.y, ray_dir.z],
-                            1000.0,
-                        ) {
-                            if let Some(&entity_id) = self.collider_to_entity.get(&col_handle) {
-                                self.editor.select(entity_id);
-                                if let Some(name) = self.editor.selected_name() {
-                                    println!("[ochroma] Rapier pick: '{}' (id={})", name, entity_id);
-                                }
-                                picked = true;
-                            }
-                        }
-
-                        // Fall back to editor ray-sphere test if Rapier didn't match an entity
-                        if !picked {
-                            if let Some(id) = self.editor.pick_entity_at_screen_pos(
-                                self.mouse_x as f32,
-                                self.mouse_y as f32,
-                                dw,
-                                dh,
-                                inv_vp,
-                            ) {
-                                self.editor.select(id);
-                                if let Some(name) = self.editor.selected_name() {
-                                    println!("[ochroma] Editor pick: '{}' (id={})", name, id);
-                                }
-                            }
-                        }
-                    } else {
-                        self.place_object_at_cursor();
-                    }
-                    self.left_click_pending = false;
-                }
-
-                // 3. Tick particles
-                self.particles.tick(dt);
-
-                // 4. Tick engine runtime (scripts, time advance)
-                self.engine.tick(dt);
-
-                // 4b. Step Rapier physics and sync dynamic bodies back to ECS
-                self.physics.step();
-                // Sync: read positions from Rapier dynamic bodies back into ECS transforms
-                {
-                    use vox_core::ecs::TransformComponent;
-                    let body_map: Vec<(u32, vox_physics::RigidBodyHandle)> =
-                        self.entity_rapier_bodies.iter().map(|(&e, &h)| (e, h)).collect();
-                    for (eid, handle) in body_map {
-                        if let Some(pos) = self.physics.body_position(handle) {
-                            // Update the ECS transform from Rapier
-                            let mut query = self.engine.world.query::<(bevy_ecs::prelude::Entity, &mut TransformComponent)>();
-                            for (entity, mut transform) in query.iter_mut(&mut self.engine.world) {
-                                if entity.index() == eid {
-                                    transform.position = Vec3::new(pos[0], pos[1], pos[2]);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 4c. Tick audio (legacy AudioEngine + spatial audio manager)
-                self.audio.tick(dt);
-                self.audio.set_listener(self.camera.position);
-
-                // Spatial audio: update listener position/orientation from camera, tick
-                let cam_fwd = self.camera_forward();
-                self.spatial_audio.set_listener(self.camera.position, cam_fwd, Vec3::Y);
-                self.spatial_audio.tick(dt);
-
-                // Process pending script commands for audio playback
-                {
-                    use vox_core::script_interface::ScriptCommand;
-                    let pending = std::mem::take(
-                        &mut self.engine.world.resource_mut::<vox_core::engine_runtime::PendingScriptCommands>().commands,
-                    );
-                    for (_entity, commands) in &pending {
-                        for cmd in commands {
-                            match cmd {
-                                ScriptCommand::PlaySound { clip, volume, .. } => {
-                                    // Play via spatial audio manager as a procedural tone
-                                    // 440Hz for generic, 800Hz for click, 600Hz ascending for collect
-                                    let freq = match clip.as_str() {
-                                        "click" => 800.0,
-                                        "collect" => 600.0,
-                                        "jump" => 400.0,
-                                        _ => 440.0,
-                                    };
-                                    self.spatial_audio.play_tone(freq, 0.2, *volume);
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    // Put unprocessed commands back (other systems may need them)
-                    self.engine.world.resource_mut::<vox_core::engine_runtime::PendingScriptCommands>().commands = pending;
-                }
-
-                // 4d. Sync entity positions to splats — when scripts move entities,
-                //     the corresponding splats move with them.
-                {
-                    use vox_core::ecs::TransformComponent;
-                    let mut query = self.engine.world.query::<(bevy_ecs::prelude::Entity, &TransformComponent)>();
-                    let entities: Vec<(u32, [f32; 3])> = query.iter(&self.engine.world)
-                        .map(|(e, t)| (e.index(), [t.position.x, t.position.y, t.position.z]))
-                        .collect();
-                    for (eid, pos) in entities {
-                        if let Some(&(start, end)) = self.entity_splat_ranges.get(&eid) {
-                            if let Some(&orig_pos) = self.entity_original_positions.get(&eid) {
-                                let dx = pos[0] - orig_pos[0];
-                                let dy = pos[1] - orig_pos[1];
-                                let dz = pos[2] - orig_pos[2];
-                                if dx.abs() > 1e-6 || dy.abs() > 1e-6 || dz.abs() > 1e-6 {
-                                    for i in start..end.min(self.scene_splats.len()) {
-                                        self.scene_splats[i].position[0] += dx;
-                                        self.scene_splats[i].position[1] += dy;
-                                        self.scene_splats[i].position[2] += dz;
-                                    }
-                                    self.entity_original_positions.insert(eid, pos);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 5. Render + present
-                //    Primary path: GPU rasteriser directly to surface texture.
-                //    Fallback: software rasteriser -> blit via backend.
-                if self.gpu_rasteriser.is_some() && self.backend.is_some() {
-                    // --- GPU primary render path ---
-                    let backend = self.backend.as_ref().unwrap();
-                    let surface_tex = match backend.surface().get_current_texture() {
-                        Ok(t) => t,
-                        Err(e) => {
-                            eprintln!("[ochroma] GPU surface error: {}", e);
-                            // Fall through to software path below
-                            let pixels = self.render_frame();
-                            if let Some(b) = &self.backend {
-                                b.present_framebuffer(&pixels, self.dlss.display_width, self.dlss.display_height);
-                            }
-                            // skip to FPS counter
-                            self.frame_count += 1;
-                            let elapsed = now.duration_since(self.fps_timer).as_secs_f32();
-                            if elapsed >= 1.0 {
-                                self.fps = self.frame_count as f32 / elapsed;
-                                self.frame_count = 0;
-                                self.fps_timer = now;
-                            }
-                            if let Some(w) = &self.window { w.request_redraw(); }
-                            return;
-                        }
-                    };
-                    let view = surface_tex.texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-                    // Build visible splats (frustum cull + LOD) for GPU path
-                    let forward = self.camera_forward();
-                    let target = self.camera.position + forward;
-                    let render_camera = RenderCamera {
-                        view: Mat4::look_at_rh(self.camera.position, target, Vec3::Y),
-                        proj: Mat4::perspective_rh(
-                            self.camera.fov,
-                            self.dlss.display_width as f32 / self.dlss.display_height as f32,
-                            self.camera.near,
-                            self.camera.far,
-                        ),
-                    };
-                    let vp = render_camera.view_proj();
-                    let frustum = Frustum::from_view_proj(vp);
-                    let cam_pos = self.camera.position;
-
-                    let mut visible_splats: Vec<GaussianSplat> = Vec::with_capacity(self.scene_splats.len());
-                    for splat in &self.scene_splats {
-                        let pos = Vec3::from(splat.position);
-                        let radius = splat.scale[0].max(splat.scale[1]).max(splat.scale[2]) + 1.0;
-                        if frustum.contains_sphere(pos, radius) {
-                            visible_splats.push(*splat);
-                        }
-                    }
-                    // LOD
-                    let lod_splats: Vec<GaussianSplat> = visible_splats.iter().enumerate()
-                        .filter(|&(i, s)| {
-                            let dist = cam_pos.distance(Vec3::from(s.position));
-                            match lod::select_lod(dist) {
-                                lod::LodLevel::Full => true,
-                                lod::LodLevel::Reduced => i % 4 == 0,
-                            }
-                        })
-                        .map(|(_, s)| *s)
-                        .collect();
-
-                    // Add placed objects + particles
-                    let mut render_splats = lod_splats;
-                    for (pos, splats) in &self.placed_objects {
-                        for s in splats {
-                            let mut ws = *s;
-                            ws.position[0] += pos.x;
-                            ws.position[1] += pos.y;
-                            ws.position[2] += pos.z;
-                            render_splats.push(ws);
-                        }
-                    }
-                    render_splats.extend(&self.particles.to_splats());
-
-                    let illuminant = illuminant_for_time(self.engine.time_of_day());
-
-                    let gpu_rast = self.gpu_rasteriser.as_ref().unwrap();
-                    gpu_rast.render(
-                        backend.device(),
-                        backend.queue(),
-                        &view,
-                        &render_splats,
-                        &render_camera,
-                        &illuminant,
-                    );
-
-                    // --- egui render on top of scene ---
-                    if let (Some(egui_state), Some(egui_renderer)) =
-                        (&mut self.egui_state, &mut self.egui_renderer)
-                    {
-                        let window = self.window.as_ref().unwrap();
-                        let raw_input = egui_state.take_egui_input(window);
-                        let splat_count = render_splats.len();
-                        let fps = self.fps;
-                        let dlss_mode = dlss_quality_name(self.dlss.quality);
-                        let editor_visible = self.editor_visible;
-                        let full_output = self.egui_ctx.run(raw_input, |ctx| {
-                            if editor_visible {
-                                self.editor.show(ctx);
-                                self.content_browser.show(ctx);
-                            }
-                            // Always show HUD
-                            egui::Area::new(egui::Id::new("hud_overlay"))
-                                .fixed_pos(egui::pos2(4.0, 4.0))
-                                .show(ctx, |ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "{:.0} FPS | {} splats | DLSS {}",
-                                            fps, splat_count, dlss_mode,
-                                        ))
-                                        .color(egui::Color32::from_rgb(220, 220, 220))
-                                        .background_color(egui::Color32::from_rgba_premultiplied(0, 0, 0, 160)),
-                                    );
-                                });
-                        });
-
-                        egui_state.handle_platform_output(window, full_output.platform_output);
-                        let tris = self.egui_ctx.tessellate(
-                            full_output.shapes,
-                            self.egui_ctx.pixels_per_point(),
-                        );
-                        for (id, image_delta) in &full_output.textures_delta.set {
-                            egui_renderer.update_texture(
-                                backend.device(),
-                                backend.queue(),
-                                *id,
-                                image_delta,
-                            );
-                        }
-
-                        let screen_descriptor = egui_wgpu::ScreenDescriptor {
-                            size_in_pixels: [backend.width(), backend.height()],
-                            pixels_per_point: window.scale_factor() as f32,
-                        };
-
-                        let mut encoder = backend.device().create_command_encoder(
-                            &wgpu::CommandEncoderDescriptor {
-                                label: Some("egui_encoder"),
-                            },
-                        );
-
-                        egui_renderer.update_buffers(
-                            backend.device(),
-                            backend.queue(),
-                            &mut encoder,
-                            &tris,
-                            &screen_descriptor,
-                        );
-
-                        {
-                            let rp_desc = wgpu::RenderPassDescriptor {
-                                label: Some("egui_render_pass"),
-                                color_attachments: &[Some(
-                                    wgpu::RenderPassColorAttachment {
-                                        view: &view,
-                                        resolve_target: None,
-                                        ops: wgpu::Operations {
-                                            load: wgpu::LoadOp::Load,
-                                            store: wgpu::StoreOp::Store,
-                                        },
-                                    },
-                                )],
-                                depth_stencil_attachment: None,
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                            };
-                            let mut render_pass = encoder
-                                .begin_render_pass(&rp_desc)
-                                .forget_lifetime();
-                            egui_renderer.render(
-                                &mut render_pass,
-                                &tris,
-                                &screen_descriptor,
-                            );
-                        }
-
-                        backend.queue().submit(std::iter::once(encoder.finish()));
-
-                        for id in &full_output.textures_delta.free {
-                            egui_renderer.free_texture(id);
-                        }
-                    }
-
-                    surface_tex.present();
-                } else {
-                    // --- Software fallback render path (bitmap font HUD) ---
-                    let pixels = self.render_frame();
-                    if let Some(backend) = &self.backend {
-                        backend.present_framebuffer(&pixels, self.dlss.display_width, self.dlss.display_height);
-                    }
-                }
-
-                // 7. FPS counter + title update
-                self.frame_count += 1;
-                let elapsed = now.duration_since(self.fps_timer).as_secs_f32();
-                if elapsed >= 1.0 {
-                    self.fps = self.frame_count as f32 / elapsed;
-                    if let Some(w) = &self.window {
-                        let dlss_label = match self.dlss.quality {
-                            DlssQuality::Off => "DLSS Off".to_string(),
-                            q => {
-                                let (rw, rh) = self.dlss.render_resolution();
-                                format!("DLSS {} ({}x{})", dlss_quality_name(q), rw, rh)
-                            }
-                        };
-                        let fg_label = if self.dlss.frame_gen == FrameGeneration::On { " | FrameGen" } else { "" };
-                        let editor_label = if self.editor_visible {
-                            format!(" | Editor ({})", self.editor.entity_count())
-                        } else {
-                            String::new()
-                        };
-                        let mode_label = if self.spectral_bypass { "FAST" } else { "SPECTRAL" };
-                        w.set_title(&format!(
-                            "Ochroma -- {:.0} FPS | {} total | CLAS:{} | {:.0}:00 | {} | {} | {}{}{}",
-                            self.fps,
-                            self.total_splat_count(),
-                            self.clas_cluster_count,
-                            self.engine.time_of_day(),
-                            mode_label,
-                            dlss_label,
-                            tonemap_operator_name(self.tonemap.operator),
-                            fg_label,
-                            editor_label,
-                        ));
-                    }
-                    self.frame_count = 0;
-                    self.fps_timer = now;
-                }
-
-                // Request next frame
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
-            }
-
+            WindowEvent::MouseInput { state, button, .. } => self.handle_mouse_button(button, state),
+            WindowEvent::CursorMoved { position, .. } => self.handle_mouse_move(position.x, position.y),
+            WindowEvent::Resized(size) => self.handle_resize(size.width, size.height),
+            WindowEvent::RedrawRequested => self.handle_redraw(event_loop),
             _ => {}
         }
     }

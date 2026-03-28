@@ -209,104 +209,58 @@ impl VisualGraph {
             None => return,
         };
         match &node.node_type {
-            // ── Events ──────────────────────────────────────────────
-            NodeType::EventStart | NodeType::EventUpdate => {
-                self.follow_flow(node_id, ctx, actions);
-            }
-            NodeType::EventCollision => {
-                // Entry point for collision events — just follow flow
-                self.follow_flow(node_id, ctx, actions);
-            }
-            NodeType::EventInput { .. } => {
-                // Entry point for input events — just follow flow
-                self.follow_flow(node_id, ctx, actions);
+            // Flow control nodes
+            NodeType::EventStart | NodeType::EventUpdate | NodeType::EventCollision
+            | NodeType::EventInput { .. } | NodeType::ForLoop { .. }
+            | NodeType::Sequence | NodeType::Delay { .. } => {
+                self.execute_flow_node(node_id, &node.node_type, ctx, actions);
             }
 
-            // ── Output ──────────────────────────────────────────────
-            NodeType::Print { message } => {
-                actions.push(GraphAction::Print(message.clone()));
-                self.follow_flow(node_id, ctx, actions);
+            // Action nodes (side effects + follow flow)
+            NodeType::Print { .. } | NodeType::SetPosition | NodeType::SetRotation
+            | NodeType::Spawn { .. } | NodeType::Destroy | NodeType::FindByTag { .. }
+            | NodeType::PlaySound { .. } | NodeType::StopSound
+            | NodeType::SetVariable { .. } | NodeType::Custom { .. }
+            | NodeType::Raycast | NodeType::ApplyForce => {
+                self.execute_action_node(node_id, &node.node_type, ctx, actions);
             }
 
-            // ── Entity: Transform ───────────────────────────────────
-            NodeType::SetPosition => {
-                if let Some(PinValue::Vec3(pos)) = self.read_input(node_id, "position", ctx) {
-                    actions.push(GraphAction::SetPosition(ctx.entity_id, pos));
-                }
-                self.follow_flow(node_id, ctx, actions);
-            }
-            NodeType::GetPosition => {
-                // Output is read via read_input — store result in node output cache
-                // The value is produced by evaluate_node instead
-                // (pure data node, no flow execution needed)
-            }
-            NodeType::SetRotation => {
-                if let Some(PinValue::Vec3(rot)) = self.read_input(node_id, "rotation", ctx) {
-                    actions.push(GraphAction::SetRotation(ctx.entity_id, [rot[0], rot[1], rot[2], 1.0]));
-                }
-                self.follow_flow(node_id, ctx, actions);
-            }
-            NodeType::GetRotation => {
-                // Pure data node — output read via evaluate_node
-            }
-
-            // ── Entity: Lifecycle ───────────────────────────────────
-            NodeType::Spawn { asset } => {
-                let pos = self
-                    .read_input(node_id, "position", ctx)
-                    .and_then(|v| if let PinValue::Vec3(p) = v { Some(p) } else { None })
-                    .unwrap_or([0.0; 3]);
-                actions.push(GraphAction::Spawn(asset.clone(), pos));
-                self.follow_flow(node_id, ctx, actions);
-            }
-            NodeType::Destroy => {
-                actions.push(GraphAction::Destroy(ctx.entity_id));
-                self.follow_flow(node_id, ctx, actions);
-            }
-            NodeType::FindByTag { tag } => {
-                actions.push(GraphAction::FindByTag(tag.clone()));
-                // Pure data node, but also has flow
-            }
-
-            // ── Audio ───────────────────────────────────────────────
-            NodeType::PlaySound { clip } => {
-                actions.push(GraphAction::PlaySound(clip.clone()));
-                self.follow_flow(node_id, ctx, actions);
-            }
-            NodeType::StopSound => {
-                let clip = self
-                    .read_input(node_id, "clip", ctx)
-                    .and_then(|v| if let PinValue::String(s) = v { Some(s) } else { None })
-                    .unwrap_or_default();
-                actions.push(GraphAction::StopSound(clip));
-                self.follow_flow(node_id, ctx, actions);
-            }
-
-            // ── Flow Control ────────────────────────────────────────
+            // Logic node (conditional branching)
             NodeType::Branch => {
-                let cond = self
-                    .read_input(node_id, "condition", ctx)
-                    .and_then(|v| if let PinValue::Bool(b) = v { Some(b) } else { None })
-                    .unwrap_or(false);
-                let pin = if cond { "true" } else { "false" };
-                for conn in &self.connections {
-                    if conn.from_node == node_id && conn.from_pin == pin {
-                        self.execute_node(conn.to_node, ctx, actions);
-                    }
-                }
+                self.execute_logic_node(node_id, ctx, actions);
+            }
+
+            // Pure data nodes (no flow execution, results via evaluate_node)
+            NodeType::GetPosition | NodeType::GetRotation | NodeType::GetVariable { .. }
+            | NodeType::IsGrounded => {}
+
+            // Math and comparison data nodes (follow flow if connected)
+            NodeType::Add | NodeType::Subtract | NodeType::Multiply | NodeType::Divide
+            | NodeType::Clamp | NodeType::Lerp | NodeType::Random
+            | NodeType::Equal | NodeType::NotEqual | NodeType::Greater | NodeType::Less
+            | NodeType::And | NodeType::Or | NodeType::Not => {
+                self.follow_flow(node_id, ctx, actions);
+            }
+        }
+    }
+
+    /// Execute flow-control nodes: events, loops, sequences, delays.
+    fn execute_flow_node(&self, node_id: u32, node_type: &NodeType, ctx: &mut GraphContext, actions: &mut Vec<GraphAction>) {
+        match node_type {
+            NodeType::EventStart | NodeType::EventUpdate | NodeType::EventCollision
+            | NodeType::EventInput { .. } => {
+                self.follow_flow(node_id, ctx, actions);
             }
             NodeType::ForLoop { count } => {
                 let n = *count;
                 for i in 0..n {
                     ctx.variables.insert("__loop_index".to_string(), PinValue::Float(i as f32));
-                    // Execute the "loop_body" flow output each iteration
                     for conn in &self.connections {
                         if conn.from_node == node_id && conn.from_pin == "loop_body" {
                             self.execute_node(conn.to_node, ctx, actions);
                         }
                     }
                 }
-                // After loop completes, follow "completed" output
                 for conn in &self.connections {
                     if conn.from_node == node_id && conn.from_pin == "completed" {
                         self.execute_node(conn.to_node, ctx, actions);
@@ -314,7 +268,6 @@ impl VisualGraph {
                 }
             }
             NodeType::Sequence => {
-                // Execute each numbered output in order: "then_0", "then_1", etc.
                 let mut idx = 0;
                 loop {
                     let pin_name = format!("then_{}", idx);
@@ -332,38 +285,57 @@ impl VisualGraph {
                 }
             }
             NodeType::Delay { seconds } => {
-                // Simplified: mark as delayed, then follow flow
                 actions.push(GraphAction::Print(format!("[delay {:.2}s]", seconds)));
                 self.follow_flow(node_id, ctx, actions);
             }
+            _ => {}
+        }
+    }
 
-            // ── Variables ───────────────────────────────────────────
+    /// Execute action nodes: print, transform, spawn, destroy, audio, physics, variables, custom.
+    fn execute_action_node(&self, node_id: u32, node_type: &NodeType, ctx: &mut GraphContext, actions: &mut Vec<GraphAction>) {
+        match node_type {
+            NodeType::Print { message } => {
+                actions.push(GraphAction::Print(message.clone()));
+            }
+            NodeType::SetPosition => {
+                if let Some(PinValue::Vec3(pos)) = self.read_input(node_id, "position", ctx) {
+                    actions.push(GraphAction::SetPosition(ctx.entity_id, pos));
+                }
+            }
+            NodeType::SetRotation => {
+                if let Some(PinValue::Vec3(rot)) = self.read_input(node_id, "rotation", ctx) {
+                    actions.push(GraphAction::SetRotation(ctx.entity_id, [rot[0], rot[1], rot[2], 1.0]));
+                }
+            }
+            NodeType::Spawn { asset } => {
+                let pos = self
+                    .read_input(node_id, "position", ctx)
+                    .and_then(|v| if let PinValue::Vec3(p) = v { Some(p) } else { None })
+                    .unwrap_or([0.0; 3]);
+                actions.push(GraphAction::Spawn(asset.clone(), pos));
+            }
+            NodeType::Destroy => {
+                actions.push(GraphAction::Destroy(ctx.entity_id));
+            }
+            NodeType::FindByTag { tag } => {
+                actions.push(GraphAction::FindByTag(tag.clone()));
+            }
+            NodeType::PlaySound { clip } => {
+                actions.push(GraphAction::PlaySound(clip.clone()));
+            }
+            NodeType::StopSound => {
+                let clip = self
+                    .read_input(node_id, "clip", ctx)
+                    .and_then(|v| if let PinValue::String(s) = v { Some(s) } else { None })
+                    .unwrap_or_default();
+                actions.push(GraphAction::StopSound(clip));
+            }
             NodeType::SetVariable { name } => {
                 if let Some(val) = self.read_input(node_id, "value", ctx) {
                     ctx.variables.insert(name.clone(), val);
                 }
-                self.follow_flow(node_id, ctx, actions);
             }
-            NodeType::GetVariable { .. } => {
-                // Pure data node — output read via read_input/evaluate_node
-            }
-
-            // ── Math (pure data nodes) ──────────────────────────────
-            NodeType::Add | NodeType::Subtract | NodeType::Multiply | NodeType::Divide
-            | NodeType::Clamp | NodeType::Lerp | NodeType::Random => {
-                // Pure data nodes — results consumed via evaluate_node
-                // If they have flow connections, follow them
-                self.follow_flow(node_id, ctx, actions);
-            }
-
-            // ── Comparison / Logic (pure data nodes) ────────────────
-            NodeType::Equal | NodeType::NotEqual | NodeType::Greater | NodeType::Less
-            | NodeType::And | NodeType::Or | NodeType::Not => {
-                // Pure data nodes
-                self.follow_flow(node_id, ctx, actions);
-            }
-
-            // ── Physics ─────────────────────────────────────────────
             NodeType::Raycast => {
                 let origin = self
                     .read_input(node_id, "origin", ctx)
@@ -374,7 +346,6 @@ impl VisualGraph {
                     .and_then(|v| if let PinValue::Vec3(d) = v { Some(d) } else { None })
                     .unwrap_or([0.0, -1.0, 0.0]);
                 actions.push(GraphAction::Raycast { origin, direction });
-                self.follow_flow(node_id, ctx, actions);
             }
             NodeType::ApplyForce => {
                 let force = self
@@ -382,17 +353,25 @@ impl VisualGraph {
                     .and_then(|v| if let PinValue::Vec3(f) = v { Some(f) } else { None })
                     .unwrap_or([0.0; 3]);
                 actions.push(GraphAction::ApplyForce(ctx.entity_id, force));
-                self.follow_flow(node_id, ctx, actions);
             }
-            NodeType::IsGrounded => {
-                // Pure data node — result via evaluate_node
-            }
-
-            // ── Custom ──────────────────────────────────────────────
             NodeType::Custom { name, code } => {
-                // Evaluate embedded Rhai code (simplified: just print the code)
                 actions.push(GraphAction::Print(format!("[custom:{}] {}", name, code)));
-                self.follow_flow(node_id, ctx, actions);
+            }
+            _ => {}
+        }
+        self.follow_flow(node_id, ctx, actions);
+    }
+
+    /// Execute logic node (Branch): evaluate condition and follow the appropriate output.
+    fn execute_logic_node(&self, node_id: u32, ctx: &mut GraphContext, actions: &mut Vec<GraphAction>) {
+        let cond = self
+            .read_input(node_id, "condition", ctx)
+            .and_then(|v| if let PinValue::Bool(b) = v { Some(b) } else { None })
+            .unwrap_or(false);
+        let pin = if cond { "true" } else { "false" };
+        for conn in &self.connections {
+            if conn.from_node == node_id && conn.from_pin == pin {
+                self.execute_node(conn.to_node, ctx, actions);
             }
         }
     }

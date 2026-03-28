@@ -772,7 +772,7 @@ impl ApplicationHandler for WalkingSim {
         let attrs = Window::default_attributes()
             .with_title("Ochroma -- Walking Simulator")
             .with_inner_size(winit::dpi::PhysicalSize::new(WIDTH, HEIGHT));
-        let window = Arc::new(event_loop.create_window(attrs).unwrap());
+        let window = Arc::new(event_loop.create_window(attrs).expect("Failed to create window"));
 
         match WgpuBackend::new(Arc::clone(&window), WIDTH, HEIGHT) {
             Ok(backend) => {
@@ -977,8 +977,8 @@ fn main() {
     println!("  Press ENTER on the main menu to start");
     println!("========================================");
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::new().expect("Failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = WalkingSim::new();
-    event_loop.run_app(&mut app).unwrap();
+    event_loop.run_app(&mut app).expect("Event loop failed");
 }

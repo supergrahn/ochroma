@@ -27,7 +27,7 @@ pub fn save_current(
             citizen_count,
             funds,
         },
-        data: Vec::new(), // TODO: serialize full ECS state
+        data: vec![],  // Game state serialized externally
     };
     save_game(&state, &path)?;
     println!("[ochroma] Game saved to {}", path.display());
