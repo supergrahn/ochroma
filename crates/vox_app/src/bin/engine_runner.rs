@@ -43,7 +43,9 @@ use vox_render::spectral_tonemapper::{tonemap_spectral_framebuffer, ToneMapOpera
 use vox_render::temporal::TemporalAccumulator;
 
 use vox_audio::AudioEngine;
+use vox_audio::SpatialAudioManager;
 use vox_physics::rapier::RapierPhysicsWorld;
+use vox_render::gizmos::GizmoRenderer;
 
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
@@ -140,6 +142,14 @@ struct EngineApp {
     entity_splat_ranges: HashMap<u32, (usize, usize)>,
     // Original entity positions at scene build time (for computing deltas)
     entity_original_positions: HashMap<u32, [f32; 3]>,
+
+    // Gizmo renderer for translate/rotate/scale handles
+    gizmo: GizmoRenderer,
+    // Track left mouse button held state for gizmo dragging
+    left_mouse_held: bool,
+
+    // Spatial audio manager (3D positional audio with distance attenuation)
+    spatial_audio: SpatialAudioManager,
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +389,13 @@ impl EngineApp {
             collider_to_entity: HashMap::new(),
             entity_splat_ranges: HashMap::new(),
             entity_original_positions: HashMap::new(),
+            gizmo: GizmoRenderer::new(),
+            left_mouse_held: false,
+            spatial_audio: {
+                let mgr = SpatialAudioManager::new();
+                println!("[ochroma] Spatial audio manager initialised (available: {})", mgr.is_available());
+                mgr
+            },
         }
     }
 
@@ -785,6 +802,29 @@ impl EngineApp {
             ),
             [160, 160, 160]);
 
+        // Gizmo overlay (drawn on top of scene in editor mode)
+        if self.editor_visible {
+            if let Some(entity) = self.editor.selected_entity() {
+                let forward = self.camera_forward();
+                let target = self.camera.position + forward;
+                let view = Mat4::look_at_rh(self.camera.position, target, Vec3::Y);
+                let proj = Mat4::perspective_rh(
+                    self.camera.fov,
+                    display_w as f32 / display_h as f32,
+                    self.camera.near,
+                    self.camera.far,
+                );
+                let vp = proj * view;
+                self.gizmo.draw_overlay(
+                    &mut final_pixels,
+                    display_w,
+                    display_h,
+                    entity.position,
+                    vp,
+                );
+            }
+        }
+
         // Editor overlay
         if self.editor_visible {
             burn_text(&mut final_pixels, display_w, 10, 40,
@@ -1095,11 +1135,55 @@ impl ApplicationHandler for EngineApp {
                         }
                     }
                 }
+                MouseButton::Left if state == ElementState::Released => {
+                    // End gizmo drag on release
+                    if self.gizmo.dragging {
+                        self.gizmo.end_drag();
+                    }
+                    self.left_mouse_held = false;
+                }
                 MouseButton::Left if state == ElementState::Pressed => {
-                    self.left_click_pending = true;
-                    // Play click sound through speakers
+                    self.left_mouse_held = true;
+
+                    // In editor mode, check gizmo hit first before entity picking
+                    if self.editor_visible {
+                        if let Some(sel_entity) = self.editor.selected_entity() {
+                            let forward = self.camera_forward();
+                            let cam_target = self.camera.position + forward;
+                            let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
+                            let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
+                            let proj = Mat4::perspective_rh(
+                                self.camera.fov,
+                                dw as f32 / dh as f32,
+                                self.camera.near,
+                                self.camera.far,
+                            );
+                            let vp = proj * view;
+                            let entity_pos = sel_entity.position;
+                            if let Some(axis) = self.gizmo.hit_test(
+                                self.mouse_x as f32,
+                                self.mouse_y as f32,
+                                entity_pos,
+                                vp,
+                                dw,
+                                dh,
+                            ) {
+                                self.gizmo.begin_drag(axis, self.mouse_x as f32, self.mouse_y as f32);
+                                // Don't also do entity picking when starting a gizmo drag
+                                self.left_click_pending = false;
+                            } else {
+                                self.left_click_pending = true;
+                            }
+                        } else {
+                            self.left_click_pending = true;
+                        }
+                    } else {
+                        self.left_click_pending = true;
+                    }
+                    // Play click sound through speakers (both legacy and spatial audio)
                     self.click_counter += 1;
                     self.audio.play_sine_backend(self.click_counter, 800.0, 0.05, 0.3);
+                    self.spatial_audio.play_tone(800.0, 0.05, 0.3);
                 }
                 _ => {}
             },
@@ -1108,7 +1192,36 @@ impl ApplicationHandler for EngineApp {
                 self.mouse_x = position.x;
                 self.mouse_y = position.y;
 
-                if self.mouse_captured {
+                // Gizmo drag: move the selected entity along the constrained axis
+                if self.gizmo.dragging && self.editor_visible {
+                    if let Some(sel_id) = self.editor.selected {
+                        if let Some(sel_entity) = self.editor.entities.iter().find(|e| e.id == sel_id) {
+                            let entity_pos = sel_entity.position;
+                            let forward = self.camera_forward();
+                            let cam_target = self.camera.position + forward;
+                            let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
+                            let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
+                            let proj = Mat4::perspective_rh(
+                                self.camera.fov,
+                                dw as f32 / dh as f32,
+                                self.camera.near,
+                                self.camera.far,
+                            );
+                            let vp = proj * view;
+                            let delta = self.gizmo.update_drag(
+                                position.x as f32,
+                                position.y as f32,
+                                entity_pos,
+                                vp,
+                                dw,
+                                dh,
+                            );
+                            if delta.length_squared() > 1e-8 {
+                                self.editor.move_selected(delta);
+                            }
+                        }
+                    }
+                } else if self.mouse_captured {
                     if let Some((lx, ly)) = self.last_mouse {
                         let dx = (position.x - lx) as f32;
                         let dy = (position.y - ly) as f32;
@@ -1237,9 +1350,42 @@ impl ApplicationHandler for EngineApp {
                     }
                 }
 
-                // 4c. Tick audio
+                // 4c. Tick audio (legacy AudioEngine + spatial audio manager)
                 self.audio.tick(dt);
                 self.audio.set_listener(self.camera.position);
+
+                // Spatial audio: update listener position/orientation from camera, tick
+                let cam_fwd = self.camera_forward();
+                self.spatial_audio.set_listener(self.camera.position, cam_fwd, Vec3::Y);
+                self.spatial_audio.tick(dt);
+
+                // Process pending script commands for audio playback
+                {
+                    use vox_core::script_interface::ScriptCommand;
+                    let pending = std::mem::take(
+                        &mut self.engine.world.resource_mut::<vox_core::engine_runtime::PendingScriptCommands>().commands,
+                    );
+                    for (_entity, commands) in &pending {
+                        for cmd in commands {
+                            match cmd {
+                                ScriptCommand::PlaySound { clip, volume, .. } => {
+                                    // Play via spatial audio manager as a procedural tone
+                                    // 440Hz for generic, 800Hz for click, 600Hz ascending for collect
+                                    let freq = match clip.as_str() {
+                                        "click" => 800.0,
+                                        "collect" => 600.0,
+                                        "jump" => 400.0,
+                                        _ => 440.0,
+                                    };
+                                    self.spatial_audio.play_tone(freq, 0.2, *volume);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    // Put unprocessed commands back (other systems may need them)
+                    self.engine.world.resource_mut::<vox_core::engine_runtime::PendingScriptCommands>().commands = pending;
+                }
 
                 // 4d. Sync entity positions to splats — when scripts move entities,
                 //     the corresponding splats move with them.
