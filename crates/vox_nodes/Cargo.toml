@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-vox_ui         = { path = "../vox_ui" }
+vox_ui         = { workspace = true }
 crucible-core  = { workspace = true }
 crucible-types = { workspace = true }
 serde          = { workspace = true }

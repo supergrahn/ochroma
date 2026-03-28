@@ -41,3 +41,4 @@ egui = "0.31"
 crucible-core  = { path = "../aetherspectra/crucible/rust/crates/crucible-core" }
 crucible-types = { path = "../aetherspectra/crucible/rust/crates/crucible-types" }
 vox_nodes      = { path = "crates/vox_nodes" }
+vox_ui         = { path = "crates/vox_ui" }
