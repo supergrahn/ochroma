@@ -81,6 +81,24 @@ pub fn lod_select_system(
     }
 }
 
+/// Advance all active LOD crossfade transitions by `TimeStep.0` seconds,
+/// then write the resulting crossfade weight back to each entity's LodStateComponent.
+pub fn lod_crossfade_system(
+    dt: Res<TimeStep>,
+    mut crossfade: ResMut<LodCrossfadeManager>,
+    mut query: Query<(Entity, &mut vox_core::ecs::LodStateComponent)>,
+) {
+    crossfade.tick(dt.0);
+
+    for (entity, mut lod_state) in query.iter_mut() {
+        if let Some(transition) = crossfade.get_transition(entity.index()) {
+            lod_state.crossfade = transition.progress;
+        } else {
+            lod_state.crossfade = 0.0;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +164,39 @@ mod tests {
 
         let lod = world.entity(entity).get::<vox_core::ecs::LodStateComponent>().unwrap();
         assert_eq!(lod.current_level, 3, "500 m away should be LOD 3, got {}", lod.current_level);
+    }
+
+    #[test]
+    fn crossfade_progresses_over_ticks() {
+        let mut world = World::new();
+        world.insert_resource(LodCrossfadeManager { transitions: vec![], transition_duration: 1.0 });
+        world.insert_resource(TimeStep(0.1));
+        world.insert_resource(CameraSettings {
+            position: Vec3::ZERO,
+            screen_height: 2160.0,
+            ..Default::default()
+        });
+
+        // Spawn a far entity so lod_select picks LOD 3
+        let entity = world.spawn((
+            vox_core::ecs::TransformComponent {
+                position: Vec3::new(0.0, 0.0, 500.0),
+                ..Default::default()
+            },
+            vox_core::ecs::LodStateComponent { current_level: 0, crossfade: 0.0 },
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems((lod_select_system, lod_crossfade_system).chain());
+
+        // Run once — lod_select requests 0→3 transition; lod_crossfade advances it by 0.1 s
+        schedule.run(&mut world);
+
+        let lod = world.entity(entity).get::<vox_core::ecs::LodStateComponent>().unwrap();
+        assert!(
+            lod.crossfade > 0.0 && lod.crossfade <= 1.0,
+            "crossfade should be in (0, 1], got {}",
+            lod.crossfade
+        );
     }
 }
