@@ -119,6 +119,8 @@ struct EngineApp {
     editor: SceneEditor,
     editor_visible: bool,
     content_browser: ContentBrowser,
+    anim_editor_ui: vox_render::anim_editor_ui::AnimEditorUi,
+    material_editor_ui: vox_render::material_editor_ui::MaterialEditorUi,
 
     // egui integration
     egui_ctx: egui::Context,
@@ -161,6 +163,9 @@ struct EngineApp {
 
     // Spatial audio manager (3D positional audio with distance attenuation)
     spatial_audio: SpatialAudioManager,
+
+    // VFX editor UI window
+    vfx_editor_ui: vox_render::vfx_editor_ui::VfxEditorUi,
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +299,8 @@ impl EngineApp {
             editor,
             editor_visible: false,
             content_browser: ContentBrowser::new(std::path::Path::new(".")),
+            anim_editor_ui: vox_render::anim_editor_ui::AnimEditorUi::new(),
+            material_editor_ui: vox_render::material_editor_ui::MaterialEditorUi::new(),
             egui_ctx: egui::Context::default(),
             egui_state: None,
             egui_renderer: None,
@@ -326,6 +333,7 @@ impl EngineApp {
                 println!("[ochroma] Spatial audio manager initialised (available: {})", mgr.is_available());
                 mgr
             },
+            vfx_editor_ui: vox_render::vfx_editor_ui::VfxEditorUi::new(),
         }
     }
 
@@ -1439,6 +1447,15 @@ impl EngineApp {
                     if editor_visible {
                         self.editor.show(ctx);
                         self.content_browser.show(ctx);
+                        self.material_editor_ui.open = self.editor.show_material_editor;
+                        self.material_editor_ui.show(ctx);
+                        self.editor.show_material_editor = self.material_editor_ui.open;
+                        self.anim_editor_ui.open = self.editor.show_anim_editor;
+                        self.anim_editor_ui.show(ctx);
+                        self.editor.show_anim_editor = self.anim_editor_ui.open;
+                        self.vfx_editor_ui.open = self.editor.show_vfx_editor;
+                        self.vfx_editor_ui.show(ctx);
+                        self.editor.show_vfx_editor = self.vfx_editor_ui.open;
                     }
                     // Always show HUD
                     egui::Area::new(egui::Id::new("hud_overlay"))
