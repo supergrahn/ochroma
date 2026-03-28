@@ -62,6 +62,48 @@ pub struct AudioPlaybackComponent {
     pub source_id: u32,
 }
 
+// ── Systems (no-backend only) ──────────────────────────────────────────────
+
+/// Start or stop audio sources based on AudioEmitterComponent.playing.
+///
+/// - playing=true  + no AudioPlaybackComponent → registers source, inserts component
+/// - playing=false + AudioPlaybackComponent    → stops source, removes component
+#[cfg(not(feature = "audio-backend"))]
+pub fn audio_emitter_system(
+    mut commands: Commands,
+    mut engine: ResMut<AudioEngineResource>,
+    start_query: Query<
+        (Entity, &vox_core::ecs::AudioEmitterComponent, &vox_core::ecs::TransformComponent),
+        Without<AudioPlaybackComponent>,
+    >,
+    stop_query: Query<
+        (Entity, &vox_core::ecs::AudioEmitterComponent, &AudioPlaybackComponent),
+    >,
+) {
+    for (entity, emitter, transform) in start_query.iter() {
+        if !emitter.playing {
+            continue;
+        }
+        let source = crate::AudioSource {
+            id: 0,
+            position: transform.position,
+            volume: emitter.volume,
+            looping: emitter.looping,
+            clip: emitter.clip_path.clone(),
+        };
+        let source_id = engine.engine.play(source);
+        commands.entity(entity).insert(AudioPlaybackComponent { source_id });
+    }
+
+    for (entity, emitter, playback) in stop_query.iter() {
+        if emitter.playing {
+            continue;
+        }
+        engine.engine.stop(playback.source_id);
+        commands.entity(entity).remove::<AudioPlaybackComponent>();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +125,76 @@ mod tests {
     fn audio_timestep_default_is_60hz() {
         let dt = AudioTimeStep::default();
         assert!((dt.0 - 1.0 / 60.0).abs() < 1e-6);
+    }
+
+    #[cfg(not(feature = "audio-backend"))]
+    #[test]
+    fn playing_true_inserts_playback_component() {
+        use bevy_ecs::schedule::Schedule;
+        let mut world = World::new();
+        world.insert_resource(AudioEngineResource::default());
+
+        let entity = world.spawn((
+            vox_core::ecs::AudioEmitterComponent {
+                clip_path: "test.wav".into(),
+                volume: 1.0,
+                looping: false,
+                playing: true,
+                spatial: false,
+            },
+            vox_core::ecs::TransformComponent::default(),
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(audio_emitter_system);
+        schedule.run(&mut world);
+
+        assert!(
+            world.entity(entity).get::<AudioPlaybackComponent>().is_some(),
+            "entity should have AudioPlaybackComponent after playing=true"
+        );
+        let res = world.resource::<AudioEngineResource>();
+        assert_eq!(res.engine.active_count(), 1);
+    }
+
+    #[cfg(not(feature = "audio-backend"))]
+    #[test]
+    fn playing_false_removes_playback_component() {
+        use bevy_ecs::schedule::Schedule;
+        let mut world = World::new();
+        let mut engine_res = AudioEngineResource::default();
+        let source = crate::AudioSource {
+            id: 0,
+            position: glam::Vec3::ZERO,
+            volume: 1.0,
+            looping: false,
+            clip: "test.wav".into(),
+        };
+        let source_id = engine_res.engine.play(source);
+        world.insert_resource(engine_res);
+
+        let entity = world.spawn((
+            vox_core::ecs::AudioEmitterComponent {
+                clip_path: "test.wav".into(),
+                volume: 1.0,
+                looping: false,
+                playing: false,
+                spatial: false,
+            },
+            vox_core::ecs::TransformComponent::default(),
+            AudioPlaybackComponent { source_id },
+        )).id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(audio_emitter_system);
+        schedule.run(&mut world);
+        world.flush();
+
+        assert!(
+            world.entity(entity).get::<AudioPlaybackComponent>().is_none(),
+            "AudioPlaybackComponent should be removed after playing=false"
+        );
+        let res = world.resource::<AudioEngineResource>();
+        assert_eq!(res.engine.active_count(), 0);
     }
 }
