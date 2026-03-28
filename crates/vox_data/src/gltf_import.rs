@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use glam::Vec3;
-use half::f16;
+use vox_core::spectral::rgb_to_spectral;
 use vox_core::types::GaussianSplat;
 
 /// Result of importing a GLTF/GLB file.
@@ -165,29 +165,10 @@ pub fn import_gltf(path: &Path) -> Result<ImportResult, ImportError> {
     })
 }
 
-/// Convert an sRGB colour to approximate 8-band spectral coefficients.
-///
-/// The 8 bands span 380-720nm at ~40nm intervals. This is a rough approximation
-/// suitable for reference quality assets only.
-pub fn rgb_to_spectral(r: f32, g: f32, b: f32) -> [u16; 8] {
-    // Approximate spectral response curves for RGB primaries
-    // Band 0 (380nm) .. Band 7 (720nm)
-    let bands = [
-        b * 0.3,                // 380nm — violet, mostly blue
-        b * 0.7,                // 420nm — blue
-        b * 1.0,                // 460nm — peak blue
-        g * 0.4 + b * 0.2,     // 500nm — cyan/green transition
-        g * 1.0,                // 540nm — peak green
-        r * 0.4 + g * 0.3,     // 580nm — yellow
-        r * 1.0,                // 620nm — peak red
-        r * 0.6,                // 660nm — deep red falloff
-    ];
-    std::array::from_fn(|i| f16::from_f32(bands[i].clamp(0.0, 1.0)).to_bits())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use half::f16;
 
     #[test]
     fn test_rgb_to_spectral_nonzero_for_colour() {

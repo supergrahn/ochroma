@@ -74,3 +74,86 @@ pub fn xyz_to_srgb(xyz: [f32; 3]) -> [f32; 3] {
 pub fn linear_to_srgb_gamma(c: f32) -> f32 {
     if c <= 0.0031308 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
 }
+
+/// Convert linear RGB to approximate 8-band spectral reflectance.
+///
+/// The 8 bands span 380-720nm at ~40nm intervals. This is a rough approximation
+/// using simple primary decomposition: R peaks at 620nm, G at 540nm, B at 460nm.
+pub fn rgb_to_spectral(r: f32, g: f32, b: f32) -> [u16; 8] {
+    use half::f16;
+    let bands = [
+        b * 0.3,                // 380nm — violet, mostly blue
+        b * 0.7,                // 420nm — blue
+        b * 1.0,                // 460nm — peak blue
+        g * 0.4 + b * 0.2,     // 500nm — cyan/green transition
+        g * 1.0,                // 540nm — peak green
+        r * 0.4 + g * 0.3,     // 580nm — yellow
+        r * 1.0,                // 620nm — peak red
+        r * 0.6,                // 660nm — deep red falloff
+    ];
+    std::array::from_fn(|i| f16::from_f32(bands[i].clamp(0.0, 1.0)).to_bits())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spectral_to_xyz_white_illuminant_produces_nonzero() {
+        let white = SpectralBands([1.0; 8]);
+        let xyz = spectral_to_xyz(&white, &Illuminant::d65());
+        assert!(xyz[0] > 0.0, "X should be positive for white SPD");
+        assert!(xyz[1] > 0.0, "Y should be positive for white SPD");
+        assert!(xyz[2] > 0.0, "Z should be positive for white SPD");
+    }
+
+    #[test]
+    fn spectral_to_xyz_black_is_zero() {
+        let black = SpectralBands([0.0; 8]);
+        let xyz = spectral_to_xyz(&black, &Illuminant::d65());
+        assert_eq!(xyz, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn spectral_to_xyz_zero_illuminant_is_zero() {
+        let white = SpectralBands([1.0; 8]);
+        let dark = Illuminant { bands: [0.0; 8] };
+        let xyz = spectral_to_xyz(&white, &dark);
+        assert_eq!(xyz, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn rgb_to_spectral_red_peaks_at_band_6() {
+        use half::f16;
+        let s = rgb_to_spectral(1.0, 0.0, 0.0);
+        let band6 = f16::from_bits(s[6]).to_f32();
+        assert!(band6 > 0.9, "pure red should peak at band 6 (620nm), got {}", band6);
+        let band2 = f16::from_bits(s[2]).to_f32();
+        assert!(band2 < 0.01, "pure red should have ~zero at band 2 (460nm), got {}", band2);
+    }
+
+    #[test]
+    fn rgb_to_spectral_black_is_all_zero() {
+        let s = rgb_to_spectral(0.0, 0.0, 0.0);
+        for (i, &v) in s.iter().enumerate() {
+            assert_eq!(v, 0, "black should produce zero at band {}", i);
+        }
+    }
+
+    #[test]
+    fn xyz_to_srgb_black_is_zero() {
+        let rgb = xyz_to_srgb([0.0, 0.0, 0.0]);
+        assert_eq!(rgb, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn linear_to_srgb_gamma_zero_is_zero() {
+        assert_eq!(linear_to_srgb_gamma(0.0), 0.0);
+    }
+
+    #[test]
+    fn linear_to_srgb_gamma_one_is_one() {
+        let g = linear_to_srgb_gamma(1.0);
+        assert!((g - 1.0).abs() < 0.001, "gamma(1.0) should be ~1.0, got {}", g);
+    }
+}

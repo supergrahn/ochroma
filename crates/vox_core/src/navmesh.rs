@@ -134,3 +134,54 @@ impl Ord for AStarEntry {
         other.f_score.partial_cmp(&self.f_score).unwrap_or(Ordering::Equal) // min-heap
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn triangle_mesh() -> NavMesh {
+        let mut mesh = NavMesh::new();
+        mesh.add_node(0, Vec2::new(0.0, 0.0), true);
+        mesh.add_node(1, Vec2::new(10.0, 0.0), true);
+        mesh.add_node(2, Vec2::new(5.0, 10.0), true);
+        mesh.add_edge(0, 1);
+        mesh.add_edge(1, 2);
+        mesh.add_edge(0, 2);
+        mesh
+    }
+
+    #[test]
+    fn find_path_direct() {
+        let mesh = triangle_mesh();
+        let path = mesh.find_path(0, 2).expect("should find path");
+        assert_eq!(*path.first().unwrap(), 0);
+        assert_eq!(*path.last().unwrap(), 2);
+    }
+
+    #[test]
+    fn no_path_when_disconnected() {
+        let mut mesh = NavMesh::new();
+        mesh.add_node(0, Vec2::new(0.0, 0.0), true);
+        mesh.add_node(1, Vec2::new(100.0, 100.0), true);
+        // No edges
+        assert!(mesh.find_path(0, 1).is_none());
+    }
+
+    #[test]
+    fn unwalkable_node_blocks_path() {
+        let mut mesh = NavMesh::new();
+        mesh.add_node(0, Vec2::new(0.0, 0.0), true);
+        mesh.add_node(1, Vec2::new(5.0, 0.0), false); // blocked
+        mesh.add_node(2, Vec2::new(10.0, 0.0), true);
+        mesh.add_edge(0, 1);
+        mesh.add_edge(1, 2);
+        assert!(mesh.find_path(0, 2).is_none());
+    }
+
+    #[test]
+    fn nearest_node_finds_closest_walkable() {
+        let mesh = triangle_mesh();
+        let nearest = mesh.nearest_node(Vec2::new(9.0, 0.5));
+        assert_eq!(nearest, Some(1));
+    }
+}

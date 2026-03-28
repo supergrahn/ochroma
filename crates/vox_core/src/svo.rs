@@ -58,3 +58,47 @@ impl SpatialHash {
         self.map.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_and_query_voxel() {
+        let mut hash = SpatialHash::new(10.0);
+        hash.insert(1, Vec3::new(5.0, 5.0, 5.0));
+        hash.insert(2, Vec3::new(5.5, 5.5, 5.5));
+        let result = hash.query_voxel(Vec3::new(5.0, 5.0, 5.0));
+        assert!(result.contains(&1));
+        assert!(result.contains(&2));
+    }
+
+    #[test]
+    fn empty_query_returns_nothing() {
+        let hash = SpatialHash::new(10.0);
+        let result = hash.query_voxel(Vec3::ZERO);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn remove_removes_instance() {
+        let mut hash = SpatialHash::new(10.0);
+        let pos = Vec3::new(1.0, 2.0, 3.0);
+        hash.insert(42, pos);
+        assert!(!hash.query_voxel(pos).is_empty());
+        hash.remove(42, pos);
+        assert!(hash.query_voxel(pos).is_empty());
+    }
+
+    #[test]
+    fn query_radius_finds_nearby() {
+        let mut hash = SpatialHash::new(5.0);
+        hash.insert(1, Vec3::new(0.0, 0.0, 0.0));
+        hash.insert(2, Vec3::new(4.0, 0.0, 0.0));
+        hash.insert(3, Vec3::new(100.0, 0.0, 0.0));
+        let result = hash.query_radius(Vec3::ZERO, 10.0);
+        assert!(result.contains(&1));
+        assert!(result.contains(&2));
+        // 3 is far away, might not be in result depending on cell math
+    }
+}

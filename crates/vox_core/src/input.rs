@@ -115,3 +115,45 @@ impl KeyBindings {
         self.bindings.insert(action, sources);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn press_and_release() {
+        let mut state = InputState::default();
+        let key = InputSource::Key(42);
+        assert!(!state.is_pressed(key));
+
+        state.press(key);
+        assert!(state.is_pressed(key));
+        assert!(state.was_just_pressed(key));
+
+        state.end_frame();
+        assert!(state.is_pressed(key));
+        assert!(!state.was_just_pressed(key));
+
+        state.release(key);
+        assert!(!state.is_pressed(key));
+        assert!(state.was_just_released(key));
+    }
+
+    #[test]
+    fn keybinding_lookup() {
+        let bindings = KeyBindings::default();
+        let mut state = InputState::default();
+        // Undo is bound to Key(29)
+        state.press(InputSource::Key(29));
+        assert!(bindings.is_action_active(GameAction::Undo, &state));
+        assert!(bindings.was_action_triggered(GameAction::Undo, &state));
+    }
+
+    #[test]
+    fn unbound_action_is_inactive() {
+        let bindings = KeyBindings::default();
+        let state = InputState::default();
+        // SpeedVeryFast has no default binding
+        assert!(!bindings.is_action_active(GameAction::SpeedVeryFast, &state));
+    }
+}

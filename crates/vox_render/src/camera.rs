@@ -89,3 +89,42 @@ impl CameraController {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orbit_changes_position() {
+        let mut cam = CameraController::new(16.0 / 9.0);
+        let pos_before = cam.position;
+        cam.orbit(std::f32::consts::FRAC_PI_4);
+        assert_ne!(cam.position.x, pos_before.x, "orbit should change X position");
+    }
+
+    #[test]
+    fn zoom_changes_distance() {
+        let mut cam = CameraController::new(16.0 / 9.0);
+        let dist_before = cam.orbit_distance;
+        cam.zoom(-20.0);
+        assert!(cam.orbit_distance < dist_before);
+    }
+
+    #[test]
+    fn zoom_clamps_to_min() {
+        let mut cam = CameraController::new(1.0);
+        cam.zoom(-100000.0);
+        assert!(cam.orbit_distance >= 10.0, "zoom should clamp to minimum 10");
+    }
+
+    #[test]
+    fn view_proj_is_finite() {
+        let cam = CameraController::new(16.0 / 9.0);
+        let vp = cam.view_proj();
+        for col in 0..4 {
+            for row in 0..4 {
+                assert!(vp.col(col)[row].is_finite());
+            }
+        }
+    }
+}

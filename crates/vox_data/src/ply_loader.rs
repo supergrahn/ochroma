@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::path::Path;
+use vox_core::spectral::rgb_to_spectral;
 use vox_core::types::GaussianSplat;
-use half::f16;
 
 #[derive(Debug)]
 pub enum PlyError {
@@ -211,7 +211,7 @@ pub fn load_ply_from_reader(reader: &mut impl Read) -> Result<Vec<GaussianSplat>
         let b = i_fdc2.map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0)).unwrap_or(0.5);
 
         // Convert RGB to approximate spectral bands
-        let spectral = rgb_to_approximate_spectral(r, g, b);
+        let spectral = rgb_to_spectral(r, g, b);
 
         splats.push(GaussianSplat {
             position: [x, y, z],
@@ -224,24 +224,6 @@ pub fn load_ply_from_reader(reader: &mut impl Read) -> Result<Vec<GaussianSplat>
     }
 
     Ok(splats)
-}
-
-/// Convert linear RGB to approximate 8-band spectral reflectance.
-/// Uses a simple primary decomposition: R peaks at 620nm, G at 540nm, B at 460nm.
-fn rgb_to_approximate_spectral(r: f32, g: f32, b: f32) -> [u16; 8] {
-    // Band centres: 380, 420, 460, 500, 540, 580, 620, 660nm
-    let bands = [
-        b * 0.3,                          // 380nm -- blue tail
-        b * 0.7,                          // 420nm -- blue
-        b * 1.0,                          // 460nm -- blue peak
-        g * 0.4 + b * 0.2,               // 500nm -- cyan
-        g * 1.0,                          // 540nm -- green peak
-        r * 0.4 + g * 0.3,               // 580nm -- yellow
-        r * 1.0,                          // 620nm -- red peak
-        r * 0.6,                          // 660nm -- red tail
-    ];
-
-    std::array::from_fn(|i| f16::from_f32(bands[i].clamp(0.0, 1.0)).to_bits())
 }
 
 /// Create a minimal binary PLY file in memory (for testing).

@@ -122,3 +122,45 @@ impl Default for MaterialLibrary {
         lib
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_library_has_base_materials() {
+        let lib = MaterialLibrary::default();
+        assert!(lib.get("concrete_raw").is_some());
+        assert!(lib.get("brick_red").is_some());
+        assert!(lib.get("glass_clear").is_some());
+        assert!(lib.get("vegetation_leaf").is_some());
+    }
+
+    #[test]
+    fn brick_red_has_red_dominant_spectrum() {
+        let lib = MaterialLibrary::default();
+        let brick = lib.get("brick_red").unwrap();
+        // Band 6 (620nm, red) should be much higher than band 2 (460nm, blue)
+        assert!(brick.spd.0[6] > brick.spd.0[2],
+            "brick red band 6 ({}) should exceed band 2 ({})", brick.spd.0[6], brick.spd.0[2]);
+    }
+
+    #[test]
+    fn register_and_retrieve_custom_material() {
+        let mut lib = MaterialLibrary::new();
+        lib.register(SpectralMaterial {
+            tag: "test_mat".to_string(),
+            description: "test".to_string(),
+            spd: SpectralBands([0.5; 8]),
+            spd_worn: SpectralBands([0.4; 8]),
+        });
+        let mat = lib.get("test_mat").expect("custom material should exist");
+        assert_eq!(mat.spd.0[0], 0.5);
+    }
+
+    #[test]
+    fn nonexistent_material_returns_none() {
+        let lib = MaterialLibrary::default();
+        assert!(lib.get("unobtainium").is_none());
+    }
+}

@@ -51,3 +51,35 @@ impl Frustum {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_frustum() -> Frustum {
+        // Simple perspective looking down -Z
+        let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
+        Frustum::from_view_proj(proj * view)
+    }
+
+    #[test]
+    fn origin_is_visible() {
+        let f = test_frustum();
+        assert!(f.contains_sphere(Vec3::ZERO, 0.5), "origin should be inside frustum");
+    }
+
+    #[test]
+    fn point_behind_camera_is_not_visible() {
+        let f = test_frustum();
+        assert!(!f.contains_sphere(Vec3::new(0.0, 0.0, 10.0), 0.1),
+            "point behind camera should be outside frustum");
+    }
+
+    #[test]
+    fn far_away_point_is_not_visible() {
+        let f = test_frustum();
+        assert!(!f.contains_sphere(Vec3::new(0.0, 0.0, -200.0), 0.1),
+            "point beyond far plane should be culled");
+    }
+}

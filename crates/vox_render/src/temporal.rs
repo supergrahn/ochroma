@@ -134,3 +134,46 @@ impl TemporalAccumulator {
         self.frame_count = vec![0; count];
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spectral_framebuffer::SpectralFramebuffer;
+
+    #[test]
+    fn first_frame_equals_input() {
+        let mut ta = TemporalAccumulator::new(2, 2);
+        let mut fb = SpectralFramebuffer::new(2, 2);
+        fb.spectral[0] = [0.5; 8];
+        fb.sample_count[0] = 1;
+        fb.depth[0] = 10.0;
+
+        ta.accumulate(&fb);
+        let result = ta.get(0, 0);
+        assert_eq!(result, [0.5; 8], "first frame should equal input (no history)");
+    }
+
+    #[test]
+    fn reset_clears_history() {
+        let mut ta = TemporalAccumulator::new(2, 2);
+        let mut fb = SpectralFramebuffer::new(2, 2);
+        fb.spectral[0] = [1.0; 8];
+        fb.sample_count[0] = 1;
+        fb.depth[0] = 5.0;
+        ta.accumulate(&fb);
+
+        ta.reset();
+        let result = ta.get(0, 0);
+        assert_eq!(result, [0.0; 8], "reset should zero all history");
+        assert_eq!(ta.avg_accumulated_frames(), 0.0);
+    }
+
+    #[test]
+    fn resize_changes_dimensions() {
+        let mut ta = TemporalAccumulator::new(4, 4);
+        assert_eq!(ta.width, 4);
+        ta.resize(8, 8);
+        assert_eq!(ta.width, 8);
+        assert_eq!(ta.height, 8);
+    }
+}

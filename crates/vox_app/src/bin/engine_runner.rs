@@ -24,6 +24,7 @@ use winit::window::{Window, WindowId};
 use vox_app::content_browser::ContentBrowser;
 use vox_app::editor::SceneEditor;
 use vox_core::engine_runtime::{EngineConfig, EngineRuntime};
+use vox_core::game_ui::burn_text;
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
 use vox_render::camera::CameraController;
@@ -220,91 +221,6 @@ fn next_tonemap_operator(op: ToneMapOperator) -> ToneMapOperator {
         ToneMapOperator::ACES => ToneMapOperator::Reinhard,
         ToneMapOperator::Reinhard => ToneMapOperator::Filmic,
         ToneMapOperator::Filmic => ToneMapOperator::None,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Bitmap font (5x7 pixel glyphs) for HUD
-// ---------------------------------------------------------------------------
-
-const CHAR_WIDTH: u32 = 6;
-
-fn char_bitmap(ch: char) -> [u8; 7] {
-    match ch {
-        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
-        '3' => [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        '6' => [0b01110, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
-        'A' | 'a' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'B' | 'b' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
-        'C' | 'c' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
-        'D' | 'd' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-        'E' | 'e' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'F' | 'f' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-        'G' | 'g' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
-        'H' | 'h' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'I' | 'i' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        'J' | 'j' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
-        'K' | 'k' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
-        'L' | 'l' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'M' | 'm' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-        'N' | 'n' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-        'O' | 'o' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'P' | 'p' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-        'R' | 'r' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'S' | 's' => [0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110],
-        'T' | 't' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        'U' | 'u' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'V' | 'v' => [0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100],
-        'W' | 'w' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
-        'X' | 'x' => [0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001],
-        'Y' | 'y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
-        'Z' | 'z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
-        '/' => [0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b00000, 0b00000],
-        ':' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000],
-        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
-        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100],
-        ',' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b01000],
-        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
-        '(' => [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
-        ')' => [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
-        '#' => [0b01010, 0b11111, 0b01010, 0b01010, 0b11111, 0b01010, 0b00000],
-        '[' => [0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110],
-        ']' => [0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110],
-        '<' => [0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010],
-        '>' => [0b01000, 0b00100, 0b00010, 0b00001, 0b00010, 0b00100, 0b01000],
-        '+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
-        '=' => [0b00000, 0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000],
-        '|' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        ' ' => [0; 7],
-        _ => [0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111],
-    }
-}
-
-fn burn_text(pixels: &mut [[u8; 4]], width: u32, x: u32, y: u32, text: &str, color: [u8; 3]) {
-    for (ci, ch) in text.chars().enumerate() {
-        let bitmap = char_bitmap(ch);
-        let base_x = x + ci as u32 * CHAR_WIDTH;
-        for (row, &bits) in bitmap.iter().enumerate() {
-            for col in 0..5u32 {
-                if bits & (1 << (4 - col)) != 0 {
-                    let px = base_x + col;
-                    let py = y + row as u32;
-                    if px < width {
-                        let idx = (py * width + px) as usize;
-                        if idx < pixels.len() {
-                            pixels[idx] = [color[0], color[1], color[2], 255];
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -781,7 +697,7 @@ impl EngineApp {
                 lod_culled,
                 mode_label,
             ),
-            [220, 220, 220]);
+            [220, 220, 220], 1);
         burn_text(&mut final_pixels, display_w, 4, y_off + 10,
             &format!("TIME {:.0}:00  EV {:.2}  {}  DLSS {}  CLAS:{}  TILES:{}  LIGHTS:{}  PARTICLES:{}",
                 self.engine.time_of_day(),
@@ -793,14 +709,14 @@ impl EngineApp {
                 self.light_manager.point_light_count(),
                 self.particles.particle_count(),
             ),
-            [180, 180, 180]);
+            [180, 180, 180], 1);
         burn_text(&mut final_pixels, display_w, 4, y_off + 20,
             &format!("ENTITIES: {}  SCRIPTS: {}  FRAME: {}  [P] toggle spectral",
                 self.engine.stats.entity_count,
                 self.engine.registered_script_count(),
                 self.engine.stats.frame_number,
             ),
-            [160, 160, 160]);
+            [160, 160, 160], 1);
 
         // Gizmo overlay (drawn on top of scene in editor mode)
         if self.editor_visible {
@@ -829,26 +745,26 @@ impl EngineApp {
         if self.editor_visible {
             burn_text(&mut final_pixels, display_w, 10, 40,
                 &format!("EDITOR  {} entities", self.editor.entity_count()),
-                [255, 255, 100]);
+                [255, 255, 100], 1);
 
             for (i, entity) in self.editor.entities.iter().enumerate() {
                 let is_sel = self.editor.selected == Some(entity.id);
                 let prefix = if is_sel { ">" } else { " " };
                 let label = format!("{} #{} {}", prefix, entity.id, entity.name);
                 let color = if is_sel { [0, 255, 0] } else { [200, 200, 200] };
-                burn_text(&mut final_pixels, display_w, 10, 54 + i as u32 * 10, &label, color);
+                burn_text(&mut final_pixels, display_w, 10, 54 + i as u32 * 10, &label, color, 1);
             }
 
             if let Some(entity) = self.editor.selected_entity() {
                 let rx = display_w.saturating_sub(240);
                 burn_text(&mut final_pixels, display_w, rx, 40,
-                    &format!("SELECTED: {}", entity.name), [0, 255, 0]);
+                    &format!("SELECTED: {}", entity.name), [0, 255, 0], 1);
                 burn_text(&mut final_pixels, display_w, rx, 54,
                     &format!("POS: {:.1},{:.1},{:.1}", entity.position.x, entity.position.y, entity.position.z),
-                    [180, 180, 180]);
+                    [180, 180, 180], 1);
                 burn_text(&mut final_pixels, display_w, rx, 64,
                     &format!("ASSET: {}", entity.asset_path),
-                    [180, 180, 180]);
+                    [180, 180, 180], 1);
             }
         }
 

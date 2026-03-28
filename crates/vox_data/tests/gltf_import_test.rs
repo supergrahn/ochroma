@@ -3,7 +3,8 @@
 //! NOTE: GLTF import produces REFERENCE QUALITY splat clouds, not production quality.
 
 use std::path::Path;
-use vox_data::gltf_import::{import_gltf, rgb_to_spectral, ImportError};
+use vox_core::spectral::rgb_to_spectral;
+use vox_data::gltf_import::{import_gltf, ImportError};
 
 #[test]
 fn test_rgb_to_spectral_coloured_input_nonzero() {
