@@ -14,6 +14,10 @@ pub struct CharacterController {
     pub grounded: bool,
     pub height: f32,
     pub radius: f32,
+    /// Maximum walkable slope angle in degrees. Slopes steeper than this cause sliding.
+    pub max_slope_angle: f32,
+    /// Maximum obstacle height that can be auto-stepped over.
+    pub step_height: f32,
 }
 
 impl Default for CharacterController {
@@ -27,8 +31,47 @@ impl Default for CharacterController {
             grounded: false,
             height: 1.8,
             radius: 0.3,
+            max_slope_angle: 45.0,
+            step_height: 0.3,
         }
     }
+}
+
+/// Check if a slope is walkable (below max_slope_angle).
+pub fn is_walkable_slope(normal: Vec3, max_angle_degrees: f32) -> bool {
+    let up_dot = normal.dot(Vec3::Y);
+    let angle = up_dot.acos().to_degrees();
+    angle < max_angle_degrees
+}
+
+/// Compute a slide-down velocity for a steep slope.
+/// Returns the gravity-driven slide vector projected onto the slope surface.
+pub fn compute_slope_slide(normal: Vec3, gravity: f32, dt: f32) -> Vec3 {
+    let gravity_vec = Vec3::new(0.0, -gravity * dt, 0.0);
+    // Project gravity onto the slope plane
+    gravity_vec - normal * gravity_vec.dot(normal)
+}
+
+/// Attempt to step up a small obstacle.
+/// Returns true if the step was successful (obstacle is below step_height).
+pub fn try_step_up(
+    cc: &CharacterController,
+    transform: &mut TransformComponent,
+    _move_dir: Vec3,
+    obstacle_height: f32,
+) -> bool {
+    if obstacle_height <= cc.step_height && obstacle_height > 0.01 {
+        transform.position.y += obstacle_height + 0.01;
+        true
+    } else {
+        false
+    }
+}
+
+/// Slide along a wall instead of stopping dead.
+/// Projects velocity onto the wall plane so the player glides along it.
+pub fn slide_along_wall(velocity: Vec3, wall_normal: Vec3) -> Vec3 {
+    velocity - wall_normal * velocity.dot(wall_normal)
 }
 
 /// Advance the character controller by one tick.
@@ -226,5 +269,102 @@ mod tests {
         assert!(cc.height > 0.0);
         assert!(cc.radius > 0.0);
         assert!(!cc.grounded);
+        assert!((cc.max_slope_angle - 45.0).abs() < f32::EPSILON);
+        assert!((cc.step_height - 0.3).abs() < f32::EPSILON);
+    }
+
+    // --- Slope handling tests ---
+
+    #[test]
+    fn flat_ground_is_walkable() {
+        assert!(super::is_walkable_slope(Vec3::Y, 45.0));
+    }
+
+    #[test]
+    fn gentle_slope_is_walkable() {
+        // ~30 degree slope
+        let normal = Vec3::new(0.0, 0.866, 0.5).normalize();
+        assert!(super::is_walkable_slope(normal, 45.0));
+    }
+
+    #[test]
+    fn steep_slope_is_not_walkable() {
+        // ~70 degree slope
+        let normal = Vec3::new(0.0, 0.342, 0.94).normalize();
+        assert!(!super::is_walkable_slope(normal, 45.0));
+    }
+
+    #[test]
+    fn vertical_wall_is_not_walkable() {
+        assert!(!super::is_walkable_slope(Vec3::Z, 45.0));
+    }
+
+    #[test]
+    fn steep_slope_causes_sliding() {
+        // A steep slope normal pointing mostly sideways
+        let normal = Vec3::new(0.0, 0.342, 0.94).normalize();
+        let slide = super::compute_slope_slide(normal, 20.0, 1.0 / 60.0);
+        // Slide should have a downward Y component (player slides down)
+        assert!(slide.y < 0.0, "slope slide should push downward, got y={}", slide.y);
+        // Slide should have a horizontal component along the slope
+        assert!(slide.length() > 0.0, "slope slide should have nonzero magnitude");
+    }
+
+    // --- Stair stepping tests ---
+
+    #[test]
+    fn step_up_small_obstacle() {
+        let cc = make_cc();
+        let mut t = make_transform_on_ground(&cc);
+        let y_before = t.position.y;
+        let result = super::try_step_up(&cc, &mut t, Vec3::X, 0.2);
+        assert!(result, "should step over 0.2m obstacle");
+        assert!(t.position.y > y_before, "position should move up after step");
+    }
+
+    #[test]
+    fn cannot_step_over_tall_obstacle() {
+        let cc = make_cc();
+        let mut t = make_transform_on_ground(&cc);
+        let y_before = t.position.y;
+        let result = super::try_step_up(&cc, &mut t, Vec3::X, 0.5);
+        assert!(!result, "should not step over 0.5m obstacle with 0.3m step_height");
+        assert!((t.position.y - y_before).abs() < 1e-6, "position should not change");
+    }
+
+    #[test]
+    fn step_ignores_tiny_obstacles() {
+        let cc = make_cc();
+        let mut t = make_transform_on_ground(&cc);
+        let result = super::try_step_up(&cc, &mut t, Vec3::X, 0.005);
+        assert!(!result, "should ignore obstacles below 0.01m threshold");
+    }
+
+    // --- Wall sliding tests ---
+
+    #[test]
+    fn slide_along_wall_produces_tangent_velocity() {
+        let velocity = Vec3::new(1.0, 0.0, 1.0);
+        let wall_normal = Vec3::X; // wall facing +X
+        let slid = super::slide_along_wall(velocity, wall_normal);
+        // X component should be removed, Z preserved
+        assert!((slid.x).abs() < 1e-6, "x should be zero after sliding along X wall");
+        assert!((slid.z - 1.0).abs() < 1e-6, "z should be preserved");
+    }
+
+    #[test]
+    fn slide_along_wall_parallel_unchanged() {
+        let velocity = Vec3::new(0.0, 0.0, 5.0);
+        let wall_normal = Vec3::X;
+        let slid = super::slide_along_wall(velocity, wall_normal);
+        assert!((slid - velocity).length() < 1e-6, "parallel velocity should be unchanged");
+    }
+
+    #[test]
+    fn slide_along_wall_head_on_stops() {
+        let velocity = Vec3::new(3.0, 0.0, 0.0);
+        let wall_normal = Vec3::X;
+        let slid = super::slide_along_wall(velocity, wall_normal);
+        assert!(slid.length() < 1e-6, "head-on into wall should produce zero velocity");
     }
 }

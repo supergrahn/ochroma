@@ -55,3 +55,4 @@ pub mod sequencer;
 pub mod vfx_editor;
 pub mod frame_debugger;
 pub mod world_partition;
+pub mod animation_driver;
