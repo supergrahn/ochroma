@@ -172,9 +172,7 @@ impl MaterialEditorUi {
                             let _ = self.graph.graph.cook();
                             self.sync_widget();
                         }
-                        NodeGraphAction::NodeDeleted { id } => {
-                            self.widget.remove_node(id);
-                        }
+                        // NodeDeleted: CrucibleGraph has no remove_node — ignore until supported
                         _ => {}
                     }
                 }
