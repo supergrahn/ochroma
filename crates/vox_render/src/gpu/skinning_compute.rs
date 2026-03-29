@@ -22,8 +22,8 @@ pub struct GpuJointTransform {
 
 pub struct SkinningCompute {
     pipeline: wgpu::ComputePipeline,
-    base_splat_buffer: wgpu::Buffer,
-    joint_binding_buffer: wgpu::Buffer,
+    _base_splat_buffer: wgpu::Buffer,
+    _joint_binding_buffer: wgpu::Buffer,
     joint_transform_buffer: wgpu::Buffer,
     pub skinned_splat_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -59,7 +59,7 @@ impl SkinningCompute {
         });
         let skinned_splat_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("skinning_output_splats"),
-            size: (base_splats.len() * std::mem::size_of::<GpuSkinSplat>()) as u64,
+            size: ((base_splats.len() * std::mem::size_of::<GpuSkinSplat>()) as u64).max(64),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -144,8 +144,8 @@ impl SkinningCompute {
 
         Self {
             pipeline,
-            base_splat_buffer,
-            joint_binding_buffer,
+            _base_splat_buffer: base_splat_buffer,
+            _joint_binding_buffer: joint_binding_buffer,
             joint_transform_buffer,
             skinned_splat_buffer,
             bind_group,
@@ -174,7 +174,12 @@ mod tests {
     #[test]
     fn skinning_wgsl_shader_compiles() {
         let source = include_str!("skinning.wgsl");
-        let result = naga::front::wgsl::parse_str(source);
-        assert!(result.is_ok(), "WGSL parse error: {:?}", result.err());
+        let module = naga::front::wgsl::parse_str(source)
+            .expect("WGSL parse error");
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        );
+        validator.validate(&module).expect("WGSL validation error");
     }
 }
