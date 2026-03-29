@@ -1,4 +1,7 @@
+use bevy_ecs::prelude::*;
+use glam::Vec3;
 use vox_terrain::brushes::{BrushType, TerrainBrush};
+use vox_terrain::volume::TerrainVolume;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveBrush {
@@ -49,5 +52,20 @@ impl TerrainEditorState {
             ActiveBrush::Paint   => BrushType::Paint { material: self.paint_material },
             ActiveBrush::Erode   => BrushType::Erode,
         };
+    }
+}
+
+/// Apply a single brush stroke to the TerrainVolume resource.
+pub fn apply_brush_stroke(
+    world: &mut World,
+    center: Vec3,
+    brush_type: BrushType,
+    radius: f32,
+    strength: f32,
+    dt: f32,
+) {
+    if let Some(mut vol) = world.get_resource_mut::<TerrainVolume>() {
+        let brush = TerrainBrush::new(brush_type, radius, strength);
+        brush.apply(&mut *vol, center, dt);
     }
 }

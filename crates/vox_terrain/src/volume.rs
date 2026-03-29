@@ -4,6 +4,7 @@ use rand::prelude::*;
 use rand::SeedableRng;
 
 /// A 3D signed distance field for volumetric terrain.
+#[derive(bevy_ecs::prelude::Resource)]
 pub struct TerrainVolume {
     /// Dimensions in voxels.
     pub size_x: usize,

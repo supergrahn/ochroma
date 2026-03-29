@@ -1140,6 +1140,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "crucible-core"
+version = "0.1.0"
+dependencies = [
+ "crucible-types",
+ "hashbrown 0.15.5",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1916,6 +1934,7 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
+ "allocator-api2",
  "equivalent",
  "foldhash 0.1.5",
  "serde",
@@ -4562,6 +4581,8 @@ dependencies = [
 name = "vox_audio"
 version = "0.1.0"
 dependencies = [
+ "bevy_app",
+ "bevy_ecs",
  "glam",
  "rodio",
  "serde",
@@ -4587,6 +4608,8 @@ dependencies = [
 name = "vox_data"
 version = "0.1.0"
 dependencies = [
+ "bevy_app",
+ "bevy_ecs",
  "bytemuck",
  "dirs-next",
  "glam",
@@ -4632,9 +4655,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "vox_nodes"
+version = "0.1.0"
+dependencies = [
+ "crucible-core",
+ "crucible-types",
+ "serde",
+ "thiserror 2.0.18",
+ "vox_ui",
+]
+
+[[package]]
 name = "vox_physics"
 version = "0.1.0"
 dependencies = [
+ "bevy_app",
+ "bevy_ecs",
  "glam",
  "rapier3d",
  "vox_core",
@@ -4644,8 +4680,11 @@ dependencies = [
 name = "vox_render"
 version = "0.1.0"
 dependencies = [
+ "bevy_app",
+ "bevy_ecs",
  "bytemuck",
  "dirs-next",
+ "egui",
  "glam",
  "half",
  "pollster",
@@ -4659,8 +4698,10 @@ dependencies = [
  "uuid",
  "vox_core",
  "vox_data",
+ "vox_nodes",
  "vox_sim",
  "vox_terrain",
+ "vox_ui",
  "wgpu",
  "winit",
 ]
@@ -4694,6 +4735,7 @@ dependencies = [
 name = "vox_terrain"
 version = "0.1.0"
 dependencies = [
+ "bevy_ecs",
  "glam",
  "half",
  "rand",

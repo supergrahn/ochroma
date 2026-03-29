@@ -24,3 +24,21 @@ fn active_brush_matches_enum() {
     state.sync_brush();
     assert!(matches!(state.brush.brush_type, BrushType::Lower));
 }
+
+use bevy_ecs::prelude::*;
+use vox_app::terrain_editor::apply_brush_stroke;
+use vox_terrain::volume::TerrainVolume;
+use glam::Vec3;
+
+#[test]
+fn apply_brush_stroke_does_not_panic() {
+    let mut world = World::new();
+    let vol = vox_terrain::volume::generate_demo_volume(42);
+    world.insert_resource(vol);
+
+    let center = Vec3::new(4.0, 2.0, 4.0);
+    apply_brush_stroke(&mut world, center, BrushType::Raise, 3.0, 1.0, 0.016);
+    // If we get here without panic, test passes
+    let vol = world.resource::<TerrainVolume>();
+    assert!(vol.solid_count() > 0);
+}

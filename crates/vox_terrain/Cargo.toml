@@ -9,3 +9,4 @@ glam = { workspace = true }
 serde = { workspace = true }
 half = { workspace = true }
 rand = "0.9"
+bevy_ecs = { workspace = true }
