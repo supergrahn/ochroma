@@ -1,6 +1,6 @@
 //! Animation state machine editor window.
 
-use vox_nodes::OchrGraph;
+use vox_nodes::{OchrGraph, NodeId};
 use vox_ui::node_graph_widget::NodeGraphWidget;
 
 pub struct AnimEditorUi {
@@ -18,6 +18,17 @@ impl AnimEditorUi {
         }
     }
 
+    /// Rebuild the NodeGraphWidget from current OchrGraph state.
+    fn sync_widget(&mut self) {
+        self.widget = NodeGraphWidget::new();
+        for vn in self.graph.to_visual_nodes() {
+            self.widget.add_node(vn);
+        }
+        for vc in self.graph.to_visual_connections() {
+            self.widget.add_connection(vc);
+        }
+    }
+
     pub fn show(&mut self, ctx: &egui::Context) {
         if !self.open { return; }
         egui::Window::new("Animation Editor")
@@ -30,7 +41,13 @@ impl AnimEditorUi {
                     ui.label(format!("{} states", self.graph.graph.node_count()));
                 });
                 ui.separator();
-                let _actions = self.widget.show_egui(ui);
+                let actions = self.widget.show_egui(ui);
+                for action in actions {
+                    if let vox_ui::node_graph_widget::NodeGraphAction::NodeDeleted { id } = action {
+                        let _ = self.graph.remove_node(NodeId(id));
+                        self.sync_widget();
+                    }
+                }
             });
     }
 }

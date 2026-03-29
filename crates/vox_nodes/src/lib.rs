@@ -35,6 +35,12 @@ impl OchrGraph {
         self.positions.insert(id.0, pos);
     }
 
+    /// Remove a node and its position entry. Also removes all connected edges.
+    pub fn remove_node(&mut self, id: NodeId) -> Result<(), CookError> {
+        self.positions.remove(&id.0);
+        self.graph.remove_node(id)
+    }
+
     /// Build VisualNode list for NodeGraphWidget from current graph snapshot.
     /// Callers add domain-specific pin info after receiving this list.
     pub fn to_visual_nodes(&self) -> Vec<VisualNode> {
@@ -109,5 +115,25 @@ mod tests {
         let vis = og.to_visual_nodes();
         let node = vis.iter().find(|n| n.id == id.0).unwrap();
         assert_eq!(node.position, [200.0, 300.0]);
+    }
+
+    #[test]
+    fn ochrgraph_remove_node_reduces_count() {
+        let mut og = OchrGraph::new();
+        let a = og.add_node("a", Box::new(FloatConstNode::new(1.0)), [0.0, 0.0]);
+        let b = og.add_node("b", Box::new(FloatConstNode::new(2.0)), [200.0, 0.0]);
+        assert_eq!(og.to_visual_nodes().len(), 2);
+        og.remove_node(a).unwrap();
+        assert_eq!(og.to_visual_nodes().len(), 1, "node a should be removed");
+        assert_eq!(og.to_visual_nodes()[0].id, b.0, "node b should remain");
+    }
+
+    #[test]
+    fn ochrgraph_remove_node_also_removes_position() {
+        let mut og = OchrGraph::new();
+        let id = og.add_node("x", Box::new(FloatConstNode::new(1.0)), [100.0, 200.0]);
+        og.remove_node(id).unwrap();
+        // After removal, to_visual_nodes() should be empty
+        assert!(og.to_visual_nodes().is_empty());
     }
 }
