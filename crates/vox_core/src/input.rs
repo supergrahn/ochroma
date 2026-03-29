@@ -150,6 +150,16 @@ mod tests {
     }
 
     #[test]
+    fn input_state_just_pressed_clears_after_end_frame() {
+        let mut state = InputState::default();
+        state.press(InputSource::Key(42));
+        assert!(state.was_just_pressed(InputSource::Key(42)));
+        state.end_frame();
+        assert!(!state.was_just_pressed(InputSource::Key(42)));
+        assert!(state.is_pressed(InputSource::Key(42)));
+    }
+
+    #[test]
     fn unbound_action_is_inactive() {
         let bindings = KeyBindings::default();
         let state = InputState::default();

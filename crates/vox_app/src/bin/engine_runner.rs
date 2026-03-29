@@ -101,6 +101,7 @@ struct EngineApp {
     mega_tile_count: u32,
 
     // Input state (raw winit -> engine each frame)
+    input_state: vox_core::input::InputState,
     keys: HashSet<KeyCode>,
     mouse_captured: bool,
     last_mouse: Option<(f64, f64)>,
@@ -298,6 +299,7 @@ impl EngineApp {
             clas_bvh_depth: 0,
             clas_avg_per_cluster: 0.0,
             mega_tile_count: 0,
+            input_state: vox_core::input::InputState::default(),
             keys: HashSet::new(),
             mouse_captured: false,
             last_mouse: None,
@@ -933,6 +935,7 @@ impl EngineApp {
         if let PhysicalKey::Code(key) = event.physical_key {
             if event.state == ElementState::Pressed {
                 self.keys.insert(key);
+                self.input_state.press(vox_core::input::InputSource::Key(key as u32));
 
                 match key {
                     KeyCode::Escape => {
@@ -1100,6 +1103,7 @@ impl EngineApp {
                 }
             } else {
                 self.keys.remove(&key);
+                self.input_state.release(vox_core::input::InputSource::Key(key as u32));
             }
         }
     }
@@ -1758,6 +1762,9 @@ impl EngineApp {
             }
             self.title_timer = now;
         }
+
+        // End of frame: clear transient input state (just_pressed, just_released)
+        self.input_state.end_frame();
 
         // Request next frame
         if let Some(w) = &self.window {
