@@ -1,117 +1,89 @@
-use vox_core::spectral::SpectralBands;
-use glam::Vec3;
-use std::collections::HashMap;
+//! GI cache — stores baked spectral irradiance, applies it at render time.
 
-/// A cell in the irradiance cache storing spectral radiance.
-#[derive(Debug, Clone)]
-pub struct IrradianceCell {
-    pub position: Vec3,
-    pub incoming: SpectralBands,    // total incoming spectral irradiance
-    pub bounce_count: u32,          // how many bounces contributed
-    pub last_updated: u32,          // frame number
+use crate::gi_baker::BakedGi;
+use vox_core::types::GaussianSplat;
+use half::f16;
+
+pub struct GiCache {
+    gi: BakedGi,
+    pub blend: f32,
 }
 
-/// Spatial grid for GI cache.
-pub struct GICache {
-    cells: HashMap<(i32, i32, i32), IrradianceCell>,
-    cell_size: f32,
-    max_bounces: u32,
-}
-
-impl GICache {
-    pub fn new(cell_size: f32, max_bounces: u32) -> Self {
-        Self { cells: HashMap::new(), cell_size, max_bounces }
+impl GiCache {
+    pub fn new(gi: BakedGi) -> Self {
+        Self { gi, blend: 1.0 }
     }
 
-    fn key(&self, pos: Vec3) -> (i32, i32, i32) {
-        ((pos.x / self.cell_size).floor() as i32,
-         (pos.y / self.cell_size).floor() as i32,
-         (pos.z / self.cell_size).floor() as i32)
-    }
-
-    /// Add a spectral bounce contribution to a cell.
-    pub fn add_bounce(&mut self, position: Vec3, spectral: SpectralBands, frame: u32) {
-        let key = self.key(position);
-        let cell = self.cells.entry(key).or_insert_with(|| IrradianceCell {
-            position,
-            incoming: SpectralBands([0.0; 8]),
-            bounce_count: 0,
-            last_updated: frame,
-        });
-        // Accumulate: average incoming radiance
-        for i in 0..8 {
-            cell.incoming.0[i] = (cell.incoming.0[i] * cell.bounce_count as f32 + spectral.0[i])
-                / (cell.bounce_count + 1) as f32;
-        }
-        cell.bounce_count += 1;
-        cell.last_updated = frame;
-    }
-
-    /// Query the cached irradiance at a position.
-    pub fn query(&self, position: Vec3) -> Option<&IrradianceCell> {
-        self.cells.get(&self.key(position))
-    }
-
-    /// Compute first bounce: direct light hits surface, reflects with surface SPD.
-    pub fn compute_first_bounce(
-        &mut self,
-        surface_pos: Vec3,
-        surface_spd: &SpectralBands,
-        light_spd: &SpectralBands,
-        frame: u32,
-    ) {
-        // Reflected spectrum = surface_spd x light_spd (element-wise)
-        let reflected = SpectralBands(std::array::from_fn(|i| surface_spd.0[i] * light_spd.0[i]));
-        self.add_bounce(surface_pos, reflected, frame);
-    }
-
-    /// Compute second bounce: reflected light from nearby cached cells.
-    pub fn compute_second_bounce(
-        &mut self,
-        position: Vec3,
-        surface_spd: &SpectralBands,
-        search_radius: f32,
-        frame: u32,
-    ) {
-        let r_cells = (search_radius / self.cell_size).ceil() as i32;
-        let center_key = self.key(position);
-        let mut accumulated = SpectralBands([0.0; 8]);
-        let mut count = 0u32;
-
-        for dx in -r_cells..=r_cells {
-            for dy in -r_cells..=r_cells {
-                for dz in -r_cells..=r_cells {
-                    let key = (center_key.0 + dx, center_key.1 + dy, center_key.2 + dz);
-                    if let Some(cell) = self.cells.get(&key) {
-                        let dist = cell.position.distance(position);
-                        if dist < search_radius && dist > 0.01 {
-                            let falloff = 1.0 / (1.0 + dist * dist);
-                            for i in 0..8 {
-                                accumulated.0[i] += cell.incoming.0[i] * falloff;
-                            }
-                            count += 1;
-                        }
-                    }
+    /// Apply baked GI to a slice of splats, returning new splats with
+    /// GI irradiance added into their spectral bands.
+    /// Panics if `splats.len() != gi.irradiance.len()`.
+    pub fn apply(&self, splats: &[GaussianSplat]) -> Vec<GaussianSplat> {
+        assert_eq!(splats.len(), self.gi.irradiance.len(),
+            "GiCache was baked for a different number of splats");
+        splats.iter().zip(self.gi.irradiance.iter())
+            .map(|(s, irr)| {
+                let mut out = *s;
+                for band in 0..8 {
+                    let base = f16::from_bits(s.spectral[band]).to_f32();
+                    let gi_contrib = irr[band] * self.blend;
+                    let result = (base + gi_contrib).clamp(0.0, 1.0);
+                    out.spectral[band] = f16::from_f32(result).to_bits();
                 }
-            }
-        }
+                out
+            })
+            .collect()
+    }
+}
 
-        if count > 0 {
-            // Modulate by surface reflectance
-            let bounced = SpectralBands(std::array::from_fn(|i| {
-                (accumulated.0[i] / count as f32) * surface_spd.0[i]
-            }));
-            self.add_bounce(position, bounced, frame);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gi_baker::BakedGi;
+
+    fn make_splat(spectral_val: f32) -> GaussianSplat {
+        let f16_val = half::f16::from_f32(spectral_val).to_bits();
+        GaussianSplat {
+            position: [0.0, 0.0, 0.0],
+            scale: [0.1, 0.1, 0.1],
+            rotation: [0, 0, 0, 32767],
+            opacity: 200,
+            _pad: [0; 3],
+            spectral: [f16_val; 8],
         }
     }
 
-    pub fn cell_count(&self) -> usize { self.cells.len() }
+    #[test]
+    fn apply_adds_irradiance_to_spectral() {
+        let splat = make_splat(0.2);
+        let irradiance = vec![[0.3f32; 8]];
+        let gi = BakedGi { irradiance };
+        let cache = GiCache::new(gi);
+        let result = cache.apply(&[splat]);
+        let band0 = half::f16::from_bits(result[0].spectral[0]).to_f32();
+        assert!(band0 > 0.2 + 0.25, "GI should increase spectral value");
+        assert!(band0 <= 1.0, "GI must not exceed 1.0");
+    }
 
-    /// Maximum configured bounces.
-    pub fn max_bounces(&self) -> u32 { self.max_bounces }
+    #[test]
+    fn apply_blend_zero_is_identity() {
+        let splat = make_splat(0.5);
+        let irradiance = vec![[1.0f32; 8]];
+        let gi = BakedGi { irradiance };
+        let mut cache = GiCache::new(gi);
+        cache.blend = 0.0;
+        let result = cache.apply(&[splat]);
+        let band0 = half::f16::from_bits(result[0].spectral[0]).to_f32();
+        assert!((band0 - 0.5).abs() < 0.02, "blend=0 should leave spectral unchanged");
+    }
 
-    /// Evict stale cells not updated in N frames.
-    pub fn evict_stale(&mut self, current_frame: u32, max_age: u32) {
-        self.cells.retain(|_, cell| current_frame - cell.last_updated < max_age);
+    #[test]
+    fn apply_clamps_to_one() {
+        let splat = make_splat(0.9);
+        let irradiance = vec![[0.9f32; 8]];
+        let gi = BakedGi { irradiance };
+        let cache = GiCache::new(gi);
+        let result = cache.apply(&[splat]);
+        let band0 = half::f16::from_bits(result[0].spectral[0]).to_f32();
+        assert!(band0 <= 1.001, "GI must clamp to 1.0");
     }
 }
