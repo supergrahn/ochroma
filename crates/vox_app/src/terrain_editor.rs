@@ -1,7 +1,8 @@
 use bevy_ecs::prelude::*;
 use glam::Vec3;
+use vox_core::ecs::SplatAssetComponent;
 use vox_terrain::brushes::{BrushType, TerrainBrush};
-use vox_terrain::volume::TerrainVolume;
+use vox_terrain::volume::{default_volume_materials, volume_to_splats, TerrainVolume};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveBrush {
@@ -52,6 +53,20 @@ impl TerrainEditorState {
             ActiveBrush::Paint   => BrushType::Paint { material: self.paint_material },
             ActiveBrush::Erode   => BrushType::Erode,
         };
+    }
+}
+
+/// Regenerate terrain splats from the current TerrainVolume and update the ECS asset.
+pub fn resplat_terrain(world: &mut World, terrain_entity: Entity) {
+    let splats = {
+        let vol = world.resource::<TerrainVolume>();
+        let materials = default_volume_materials();
+        volume_to_splats(vol, &materials, 0)
+    };
+    let splat_count = splats.len() as u32;
+    if let Some(mut asset) = world.entity_mut(terrain_entity).get_mut::<SplatAssetComponent>() {
+        asset.splats = splats;
+        asset.splat_count = splat_count;
     }
 }
 

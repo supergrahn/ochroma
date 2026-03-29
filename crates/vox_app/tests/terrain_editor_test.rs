@@ -42,3 +42,27 @@ fn apply_brush_stroke_does_not_panic() {
     let vol = world.resource::<TerrainVolume>();
     assert!(vol.solid_count() > 0);
 }
+
+use vox_app::terrain_editor::resplat_terrain;
+use vox_core::ecs::SplatAssetComponent;
+use uuid::Uuid;
+use vox_terrain::volume::generate_demo_volume;
+
+#[test]
+fn resplat_updates_splat_asset() {
+    let mut world = World::new();
+    world.insert_resource(generate_demo_volume(42));
+
+    let uuid = Uuid::new_v4();
+    let entity = world.spawn(SplatAssetComponent {
+        uuid,
+        splat_count: 0,
+        splats: vec![],
+    }).id();
+
+    resplat_terrain(&mut world, entity);
+
+    let asset = world.entity(entity).get::<SplatAssetComponent>().unwrap();
+    assert!(asset.splat_count > 0, "resplat should produce splats from the volume");
+    assert_eq!(asset.splats.len(), asset.splat_count as usize);
+}
