@@ -520,6 +520,15 @@ mod tests {
     }
 
     #[test]
+    fn render_with_spectra_u8_returns_correct_pixel_count() {
+        use vox_core::spectral::Illuminant;
+        let splats = vec![];
+        let camera = make_camera(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 64, 64);
+        let result = render_with_spectra_u8(&splats, &camera, 64, 64, &Illuminant::d65());
+        assert_eq!(result.len(), 64 * 64, "should produce one pixel per texel");
+    }
+
+    #[test]
     fn spectra_render_empty_produces_zeros() {
         let cam = make_camera(Vec3::new(0.0, 5.0, 15.0), Vec3::ZERO, 64, 64);
         let pixels = render_with_spectra(&[], &cam, 64, 64, &Illuminant::d65());

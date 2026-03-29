@@ -352,7 +352,7 @@ impl EngineApp {
             egui_state: None,
             egui_renderer: None,
             exposure: 1.0,
-            spectral_bypass: true, // fast mode by default
+            spectral_bypass: false, // spectra EWA renderer by default
             asset_path,
             placed_objects: Vec::new(),
             audio: {
@@ -741,54 +741,29 @@ impl EngineApp {
             .collect();
         self.shadow_mapper.render_shadow_map(&shadow_positions, &shadow_radii);
 
-        // 1. Software rasterise at internal resolution
+        // 1. Render at internal resolution
         let render_start = Instant::now();
-        let fb = self.rasteriser.render(&render_splats, &render_camera, &illuminant, Some(&self.shadow_mapper));
 
         let upscaled = if self.spectral_bypass {
-            // FAST PATH: skip spectral pipeline, just DLSS upscale the rasterised output
+            // FAST PATH: software rasteriser + DLSS upscale
+            let fb = self.rasteriser.render(&render_splats, &render_camera, &illuminant, Some(&self.shadow_mapper));
             let pixel_count = (render_w * render_h) as usize;
             let depth = vec![1.0f32; pixel_count];
             let motion = vec![[0.0f32; 2]; pixel_count];
             self.dlss.upscale(&fb.pixels, render_w, render_h, &depth, &motion)
         } else {
-            // QUALITY PATH: full spectral pipeline
-            // 2. Write to spectral framebuffer
-            self.spectral_fb.clear();
-            for (i, pixel) in fb.pixels.iter().enumerate() {
-                let x = (i % render_w as usize) as u32;
-                let y = (i / render_w as usize) as u32;
-                let r = pixel[0] as f32 / 255.0;
-                let g = pixel[1] as f32 / 255.0;
-                let b = pixel[2] as f32 / 255.0;
-
-                let spectral = [
-                    b * 0.3,
-                    b * 0.7,
-                    b * 0.8 + g * 0.1,
-                    g * 0.4 + b * 0.2,
-                    g * 0.9 + r * 0.05,
-                    r * 0.4 + g * 0.3,
-                    r * 0.8 + g * 0.05,
-                    r * 0.6,
-                ];
-
-                self.spectral_fb.write_sample(x, y, spectral, 1.0, [0.0, 1.0, 0.0], 0, spectral);
-            }
-
-            // 3. Temporal accumulation
-            self.temporal.accumulate(&self.spectral_fb);
-            self.temporal.write_to_framebuffer(&mut self.spectral_fb);
-
-            // 4. Tone map
-            self.tonemap.exposure = self.exposure;
-            let tonemapped = tonemap_spectral_framebuffer(&self.spectral_fb, &illuminant, &self.tonemap);
-
-            // 5. DLSS upscale
+            // SPECTRA PATH: tile-based EWA Gaussian splatting renderer
+            let fb = vox_render::spectra_render::render_with_spectra_u8(
+                &render_splats,
+                &render_camera,
+                render_w,
+                render_h,
+                &illuminant,
+            );
             let pixel_count = (render_w * render_h) as usize;
             let depth = vec![1.0f32; pixel_count];
             let motion = vec![[0.0f32; 2]; pixel_count];
-            self.dlss.upscale(&tonemapped, render_w, render_h, &depth, &motion)
+            self.dlss.upscale(&fb, render_w, render_h, &depth, &motion)
         };
 
         // 6. DLSS frame generation
@@ -1757,8 +1732,8 @@ impl EngineApp {
                                 .show(ui, |ui| {
                                     ui.label(
                                         egui::RichText::new(format!(
-                                            "{:.0} FPS | {} splats | DLSS {}",
-                                            fps, splat_count, dlss_mode,
+                                            "FPS: {:.0} | Spectra: {} | {} splats | DLSS {}",
+                                            fps, !self.spectral_bypass, splat_count, dlss_mode,
                                         ))
                                         .color(egui::Color32::from_rgb(140, 145, 160))
                                         .size(11.0)
