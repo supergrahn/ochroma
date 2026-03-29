@@ -125,6 +125,22 @@ pub fn draw_line(
     }
 }
 
+fn draw_line_thick(
+    pixels: &mut [[u8; 4]],
+    width: u32,
+    height: u32,
+    x0: i32, y0: i32,
+    x1: i32, y1: i32,
+    color: [u8; 4],
+    thickness: i32,
+) {
+    for dx in 0..thickness {
+        for dy in 0..thickness {
+            draw_line(pixels, width, height, x0 + dx, y0 + dy, x1 + dx, y1 + dy, color);
+        }
+    }
+}
+
 /// Draw a small arrowhead (triangle) at `tip` pointing from `base` toward `tip`.
 fn draw_arrowhead(
     pixels: &mut [[u8; 4]],
@@ -285,9 +301,9 @@ impl GizmoRenderer {
         match self.mode {
             GizmoMode::Translate => {
                 // Axis lines
-                draw_line(pixels, width, height, center.0 as i32, center.1 as i32, x_end.0 as i32, x_end.1 as i32, x_col);
-                draw_line(pixels, width, height, center.0 as i32, center.1 as i32, y_end.0 as i32, y_end.1 as i32, y_col);
-                draw_line(pixels, width, height, center.0 as i32, center.1 as i32, z_end.0 as i32, z_end.1 as i32, z_col);
+                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, x_end.0 as i32, x_end.1 as i32, x_col, 2);
+                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, y_end.0 as i32, y_end.1 as i32, y_col, 2);
+                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, z_end.0 as i32, z_end.1 as i32, z_col, 2);
                 // Arrowheads
                 draw_arrowhead(pixels, width, height, center.0, center.1, x_end.0, x_end.1, x_col);
                 draw_arrowhead(pixels, width, height, center.0, center.1, y_end.0, y_end.1, y_col);
@@ -304,14 +320,40 @@ impl GizmoRenderer {
             }
             GizmoMode::Scale => {
                 // Lines with cube endpoints
-                draw_line(pixels, width, height, center.0 as i32, center.1 as i32, x_end.0 as i32, x_end.1 as i32, x_col);
-                draw_line(pixels, width, height, center.0 as i32, center.1 as i32, y_end.0 as i32, y_end.1 as i32, y_col);
-                draw_line(pixels, width, height, center.0 as i32, center.1 as i32, z_end.0 as i32, z_end.1 as i32, z_col);
+                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, x_end.0 as i32, x_end.1 as i32, x_col, 2);
+                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, y_end.0 as i32, y_end.1 as i32, y_col, 2);
+                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, z_end.0 as i32, z_end.1 as i32, z_col, 2);
                 draw_cube_endpoint(pixels, width, height, x_end.0, x_end.1, x_col);
                 draw_cube_endpoint(pixels, width, height, y_end.0, y_end.1, y_col);
                 draw_cube_endpoint(pixels, width, height, z_end.0, z_end.1, z_col);
             }
         }
+    }
+
+    /// Draw gizmo into a flat RGBA pixel buffer (`width * height * 4` bytes).
+    /// Alias for `draw_overlay` with a different buffer type for wgpu-texture callers.
+    pub fn draw(
+        &self,
+        framebuffer: &mut [u8],
+        width: u32,
+        height: u32,
+        view_proj: Mat4,
+        origin: Vec3,
+    ) {
+        assert_eq!(
+            framebuffer.len(),
+            (width * height * 4) as usize,
+            "framebuffer size mismatch: expected {}×{}×4={}, got {}",
+            width, height, width * height * 4, framebuffer.len()
+        );
+        // SAFETY: [u8;4] and four consecutive u8 bytes have identical layout (size=4, align=1).
+        let pixels: &mut [[u8; 4]] = unsafe {
+            std::slice::from_raw_parts_mut(
+                framebuffer.as_mut_ptr() as *mut [u8; 4],
+                (width * height) as usize,
+            )
+        };
+        self.draw_overlay(pixels, width, height, origin, view_proj);
     }
 
     /// Hit test: is the mouse near a gizmo axis?
@@ -465,5 +507,47 @@ mod tests {
         draw_line(&mut pixels, 100, 100, 10, 10, 90, 90, [255, 0, 0, 255]);
         let lit = pixels.iter().filter(|p| p[0] == 255).count();
         assert!(lit > 10, "expected many lit pixels, got {lit}");
+    }
+
+    #[test]
+    fn project_to_screen_identity() {
+        let vp = Mat4::IDENTITY;
+        let result = project_to_screen(Vec3::new(0.0, 0.0, -1.0), vp, 800, 600);
+        assert!(result.is_some(), "identity projection should not be behind camera");
+        let (sx, sy) = result.unwrap();
+        assert!((sx - 400.0).abs() < 1.0, "expected sx≈400, got {sx}");
+        assert!((sy - 300.0).abs() < 1.0, "expected sy≈300, got {sy}");
+    }
+
+    #[test]
+    fn draw_does_not_panic_on_empty_buffer() {
+        let gizmo = GizmoRenderer::new();
+        let mut framebuffer = vec![0u8; 4 * 4 * 4];
+        gizmo.draw(&mut framebuffer, 4, 4, Mat4::IDENTITY, Vec3::ZERO);
+    }
+
+    #[test]
+    fn handle_mouse_press_returns_none_when_no_entity() {
+        let gizmo = GizmoRenderer::new();
+        let view = Mat4::look_at_rh(
+            Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, Vec3::Y,
+        );
+        let proj = Mat4::perspective_rh(
+            std::f32::consts::FRAC_PI_4, 16.0 / 9.0, 0.1, 1000.0,
+        );
+        let vp = proj * view;
+        let result = gizmo.hit_test(0.0, 0.0, Vec3::ZERO, vp, 800, 450);
+        assert!(result.is_none(), "corner click should not hit any axis: {result:?}");
+    }
+
+    #[test]
+    fn draw_line_thick_covers_more_pixels_than_thin() {
+        let mut thin = vec![[0u8; 4]; 100 * 100];
+        let mut thick = vec![[0u8; 4]; 100 * 100];
+        draw_line(&mut thin, 100, 100, 10, 50, 90, 50, [255, 0, 0, 255]);
+        draw_line_thick(&mut thick, 100, 100, 10, 50, 90, 50, [255, 0, 0, 255], 2);
+        let thin_lit = thin.iter().filter(|p| p[0] == 255).count();
+        let thick_lit = thick.iter().filter(|p| p[0] == 255).count();
+        assert!(thick_lit > thin_lit, "thick should cover more pixels: thin={thin_lit}, thick={thick_lit}");
     }
 }

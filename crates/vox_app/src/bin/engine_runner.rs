@@ -795,6 +795,12 @@ impl EngineApp {
                     self.camera.far,
                 );
                 let vp = proj * view;
+                // Sync gizmo mode from editor to renderer
+                self.gizmo.mode = match self.editor.gizmo_mode {
+                    vox_app::editor::GizmoMode::Translate => vox_render::gizmos::GizmoMode::Translate,
+                    vox_app::editor::GizmoMode::Rotate    => vox_render::gizmos::GizmoMode::Rotate,
+                    vox_app::editor::GizmoMode::Scale     => vox_render::gizmos::GizmoMode::Scale,
+                };
                 self.gizmo.draw_overlay(
                     &mut final_pixels,
                     display_w,
@@ -1113,6 +1119,12 @@ impl EngineApp {
                             self.camera.far,
                         );
                         let vp = proj * view;
+                        // Sync gizmo mode from editor to renderer
+                        self.gizmo.mode = match self.editor.gizmo_mode {
+                            vox_app::editor::GizmoMode::Translate => vox_render::gizmos::GizmoMode::Translate,
+                            vox_app::editor::GizmoMode::Rotate    => vox_render::gizmos::GizmoMode::Rotate,
+                            vox_app::editor::GizmoMode::Scale     => vox_render::gizmos::GizmoMode::Scale,
+                        };
                         let entity_pos = sel_entity.position;
                         if let Some(axis) = self.gizmo.hit_test(
                             self.mouse_x as f32,
@@ -1171,6 +1183,24 @@ impl EngineApp {
                         dw,
                         dh,
                     );
+                    // Apply snap-to-grid if enabled
+                    let delta = if self.editor.snap_enabled && self.editor.snap_grid > 0.0 {
+                        let grid = self.editor.snap_grid;
+                        match self.gizmo.active_axis {
+                            Some(vox_render::gizmos::Axis::X) => glam::Vec3::new(
+                                (delta.x / grid).round() * grid, 0.0, 0.0,
+                            ),
+                            Some(vox_render::gizmos::Axis::Y) => glam::Vec3::new(
+                                0.0, (delta.y / grid).round() * grid, 0.0,
+                            ),
+                            Some(vox_render::gizmos::Axis::Z) => glam::Vec3::new(
+                                0.0, 0.0, (delta.z / grid).round() * grid,
+                            ),
+                            None => delta,
+                        }
+                    } else {
+                        delta
+                    };
                     if delta.length_squared() > 1e-8 {
                         self.editor.move_selected(delta);
                     }
