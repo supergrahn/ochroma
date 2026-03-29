@@ -134,16 +134,18 @@ pub fn sun_direction(hour: f32, latitude_deg: f32) -> Vec3 {
     let lat = latitude_deg.to_radians();
     // Hour angle: 0 at noon, negative morning, positive afternoon
     let hour_angle = (hour - 12.0) * 15.0_f32.to_radians();
-    // Declination = 0 (equinox)
-    let sin_alt = lat.sin() * 0.0 + lat.cos() * 1.0 * hour_angle.cos();
+    // Declination = 0 (equinox): sin_alt = cos(lat) * cos(hour_angle)
+    let sin_alt = lat.cos() * hour_angle.cos();
     let altitude = sin_alt.asin();
-    let cos_az = (0.0 - lat.sin() * sin_alt) / (lat.cos() * altitude.cos() + 1e-10);
+    let cos_az = (-lat.sin() * sin_alt) / (lat.cos() * altitude.cos() + 1e-10);
     let azimuth = if hour_angle.sin() > 0.0 {
         std::f32::consts::PI - cos_az.clamp(-1.0, 1.0).acos()
     } else {
         std::f32::consts::PI + cos_az.clamp(-1.0, 1.0).acos()
     };
 
+    // The resulting vector is always unit length by construction, but normalize
+    // guards against any floating-point drift.
     Vec3::new(
         -azimuth.sin() * altitude.cos(),
         altitude.sin(),
@@ -153,6 +155,9 @@ pub fn sun_direction(hour: f32, latitude_deg: f32) -> Vec3 {
 }
 
 // ── Sky Colors ────────────────────────────────────────────────────────────
+
+/// Normalisation divisor that maps Preetham Yz luminance (~0-20 kcd/m²) to [0, 1].
+const PREETHAM_LUMINANCE_SCALE: f32 = 20.0;
 
 /// Zenith, horizon, and sun disk colors from a Preetham-inspired sky model.
 #[derive(Debug, Clone, Copy)]
@@ -166,9 +171,14 @@ pub struct SkyColors {
 }
 
 /// Compute sky colors using a simplified Preetham model with turbidity = 2.5.
+///
+/// `sun_dir` should be a unit vector. If it is not normalised the output will
+/// still be valid (values clamped), but colours may be inaccurate.
 pub fn preetham_sky(sun_dir: Vec3) -> SkyColors {
     let turbidity: f32 = 2.5;
-    let sun_alt = sun_dir.y.max(0.0);
+    // Clamp to [0, 1] so that acos() is always in domain, even if sun_dir is
+    // slightly non-unit due to floating-point drift.
+    let sun_alt = sun_dir.y.clamp(0.0, 1.0);
     let sun_below = sun_dir.y < 0.0;
 
     if sun_below {
@@ -190,7 +200,7 @@ pub fn preetham_sky(sun_dir: Vec3) -> SkyColors {
     let zenith_y = ((4.0453 * turbidity - 4.971) * chi.tan()
         - 0.2155 * turbidity + 2.4192)
         .max(0.0)
-        / 20.0;
+        / PREETHAM_LUMINANCE_SCALE;
 
     let zenith_r = (0.15 + 0.05 * (turbidity - 2.0)).clamp(0.0, 1.0) * zenith_y;
     let zenith_g = (0.2 + 0.1 * sun_alt).clamp(0.0, 1.0) * zenith_y;
@@ -259,5 +269,37 @@ mod tests {
             "sunset horizon should be redder than blue: r={} b={}",
             colors.horizon[0], colors.horizon[2]
         );
+    }
+
+    #[test]
+    fn sky_colors_night_all_values_in_range() {
+        // Sun well below horizon — exercises the twilight/night branch.
+        let dir = Vec3::new(0.0, -0.8, -0.6); // already unit-length
+        let colors = preetham_sky(dir);
+        for (label, arr) in [("zenith", colors.zenith), ("horizon", colors.horizon), ("sun", colors.sun)] {
+            for c in arr {
+                assert!(c >= 0.0 && c <= 1.0, "night {} component {} out of [0,1]", label, c);
+            }
+        }
+        // Sun disk should be black at night.
+        assert_eq!(colors.sun, [0.0, 0.0, 0.0], "sun disk should be black at night");
+    }
+
+    #[test]
+    fn sky_colors_non_unit_input_does_not_produce_nan() {
+        // Slightly non-normalised vector must not produce NaN (regression for acos domain).
+        let dir = Vec3::new(0.0, 1.05, 0.0); // y > 1.0
+        let colors = preetham_sky(dir);
+        for c in colors.zenith.iter().chain(colors.horizon.iter()).chain(colors.sun.iter()) {
+            assert!(c.is_finite(), "preetham_sky produced non-finite value {} for out-of-range input", c);
+        }
+    }
+
+    #[test]
+    fn sun_direction_equator_at_6am_is_east() {
+        // At the equator (lat=0) the sun rises exactly due east at 6 AM.
+        let dir = sun_direction(6.0, 0.0);
+        assert!(dir.x > 0.9, "sun at 6am equator should point east (x≈1); got x={}", dir.x);
+        assert!(dir.y.abs() < 0.2, "sun at 6am equator should be near horizon; got y={}", dir.y);
     }
 }
