@@ -7,6 +7,7 @@ use glam::Mat4;
 use vox_core::types::GaussianSplat;
 use vox_data::gltf_animation::{evaluate_animation, skin_splats, GltfAnimation, GltfSkeleton};
 use crate::gpu::skinning_compute::{GpuJointTransform, SkinningCompute};
+use crate::gpu::blend_skinning_compute::BlendSkinningCompute;
 use wgpu;
 
 /// Drives animation on a set of splats each frame.
@@ -22,6 +23,51 @@ pub struct AnimationDriver {
     pub joint_bindings: Vec<usize>,
     /// Optional GPU compute skinning pass.
     pub gpu_skinning: Option<SkinningCompute>,
+    /// Optional GPU blend-tree skinning pass (up to 4 poses).
+    pub blend_gpu: Option<BlendSkinningCompute>,
+}
+
+/// Describes a crossfade transition between two animation states.
+#[derive(Clone, Debug)]
+pub struct AnimTransition {
+    pub from: usize,
+    pub to: usize,
+    pub duration: f32,
+}
+
+/// Simple two-state crossfade state machine.
+pub struct AnimStateMachine {
+    pub current: usize,
+    pub next: Option<usize>,
+    pub blend: f32,
+    pub transition_duration: f32,
+}
+
+impl AnimStateMachine {
+    pub fn new(start: usize) -> Self {
+        Self { current: start, next: None, blend: 0.0, transition_duration: 0.2 }
+    }
+
+    pub fn transition_to(&mut self, target: usize) {
+        if self.current == target { return; }
+        self.next = Some(target);
+        self.blend = 0.0;
+    }
+
+    /// Advance state machine. Returns `(current_idx, next_idx, blend_weight)`.
+    pub fn tick(&mut self, dt: f32) -> (usize, usize, f32) {
+        if let Some(next) = self.next {
+            self.blend += dt / self.transition_duration;
+            if self.blend >= 1.0 {
+                self.current = next;
+                self.next = None;
+                self.blend = 0.0;
+            }
+            (self.current, next, self.blend.clamp(0.0, 1.0))
+        } else {
+            (self.current, self.current, 0.0)
+        }
+    }
 }
 
 impl AnimationDriver {
@@ -37,6 +83,7 @@ impl AnimationDriver {
             base_splats,
             joint_bindings: bindings,
             gpu_skinning: None,
+            blend_gpu: None,
         }
     }
 
@@ -119,6 +166,63 @@ impl AnimationDriver {
 
         gpu.update_joints(queue, &joint_transforms);
         gpu.dispatch(encoder);
+        true
+    }
+
+    /// GPU-accelerated tick with blend tree support (up to 2 active poses).
+    /// Returns false if `blend_gpu` is None or no animations loaded.
+    pub fn tick_blend_gpu(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        dt: f32,
+        state_machine: &mut AnimStateMachine,
+    ) -> bool {
+        let blend_gpu = match &self.blend_gpu {
+            Some(g) => g,
+            None => return false,
+        };
+        if self.animations.is_empty() { return false; }
+
+        self.time += dt * self.speed;
+
+        let (cur_idx, next_idx, next_weight) = state_machine.tick(dt);
+        let cur_weight = 1.0 - next_weight;
+
+        let anim_count = self.animations.len();
+        let cur_anim = &self.animations[cur_idx.min(anim_count - 1)];
+        let next_anim = &self.animations[next_idx.min(anim_count - 1)];
+
+        let cur_time = if self.looping && cur_anim.duration > 0.0 {
+            self.time % cur_anim.duration
+        } else {
+            self.time
+        };
+
+        let inv_binds: Vec<glam::Mat4> = self.skeleton.joints.iter()
+            .map(|j| j.inverse_bind_matrix)
+            .collect();
+
+        let cur_transforms = evaluate_animation(&self.skeleton, cur_anim, cur_time);
+        let pose0: Vec<GpuJointTransform> = cur_transforms.iter()
+            .zip(inv_binds.iter())
+            .map(|(t, inv)| GpuJointTransform {
+                skin_matrix: (*t * *inv).to_cols_array_2d(),
+            })
+            .collect();
+
+        let next_transforms = evaluate_animation(&self.skeleton, next_anim, cur_time);
+        let pose1: Vec<GpuJointTransform> = next_transforms.iter()
+            .zip(inv_binds.iter())
+            .map(|(t, inv)| GpuJointTransform {
+                skin_matrix: (*t * *inv).to_cols_array_2d(),
+            })
+            .collect();
+
+        blend_gpu.update_pose(queue, 0, &pose0);
+        blend_gpu.update_pose(queue, 1, &pose1);
+        blend_gpu.update_weights(queue, [cur_weight, next_weight, 0.0, 0.0]);
+        blend_gpu.dispatch(encoder);
         true
     }
 }
