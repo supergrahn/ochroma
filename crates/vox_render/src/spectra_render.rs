@@ -9,6 +9,7 @@
 //! front-to-back alpha blend.
 
 use half::f16;
+use rayon::prelude::*;
 use vox_core::spectral::{spectral_to_xyz, xyz_to_srgb, Illuminant, SpectralBands};
 use vox_core::types::GaussianSplat;
 
@@ -375,28 +376,34 @@ fn render_cpu_internal(
         tile_ranges[current_tile as usize] = (start, tile_gaussians.len());
     }
 
-    // Lookup from gaussian index -> projected
-    let mut proj_map: Vec<Option<&ProjectedGaussian>> = vec![None; gaussians.len()];
-    for pg in &projected {
-        proj_map[pg.index] = Some(pg);
+    // Lookup from gaussian index -> projected index (owned, no references, so Send)
+    let mut proj_idx_map: Vec<Option<usize>> = vec![None; gaussians.len()];
+    for (i, pg) in projected.iter().enumerate() {
+        proj_idx_map[pg.index] = Some(i);
     }
 
-    // Step 4: Per-pixel front-to-back alpha blending
-    let mut image = vec![0.0f32; w * h * 4];
-
-    for ty in 0..tiles_y {
-        for tx in 0..tiles_x {
-            let tile_id = ty * tiles_x + tx;
+    // Step 4: Per-pixel front-to-back alpha blending — tiles processed in parallel
+    let tile_pixel_bufs: Vec<(usize, Vec<f32>)> = (0..num_tiles)
+        .into_par_iter()
+        .filter_map(|tile_id| {
             let (start, end) = tile_ranges[tile_id];
+            if start == end {
+                return None;
+            }
 
+            let tx = tile_id % tiles_x;
+            let ty = tile_id / tiles_x;
             let px_start_x = tx * TILE_SIZE;
             let px_start_y = ty * TILE_SIZE;
             let px_end_x = (px_start_x + TILE_SIZE).min(w);
             let px_end_y = (px_start_y + TILE_SIZE).min(h);
+            let tile_w = px_end_x - px_start_x;
+            let tile_h = px_end_y - px_start_y;
+            let mut tile_pixels = vec![0.0f32; tile_w * tile_h * 4];
 
-            for py in px_start_y..px_end_y {
-                for px in px_start_x..px_end_x {
-                    let pixel_idx = (py * w + px) * 4;
+            for (local_py, py) in (px_start_y..px_end_y).enumerate() {
+                for (local_px, px) in (px_start_x..px_end_x).enumerate() {
+                    let local_idx = (local_py * tile_w + local_px) * 4;
                     let mut transmittance = 1.0f32;
                     let pxf = px as f32 + 0.5;
                     let pyf = py as f32 + 0.5;
@@ -407,8 +414,8 @@ fn render_cpu_internal(
                         }
 
                         let tg = &tile_gaussians[tg_idx];
-                        let pg = match proj_map[tg.gaussian_idx] {
-                            Some(pg) => pg,
+                        let pg = match proj_idx_map[tg.gaussian_idx] {
+                            Some(idx) => &projected[idx],
                             None => continue,
                         };
 
@@ -429,14 +436,36 @@ fn render_cpu_internal(
                         }
 
                         let weight = alpha * transmittance;
-                        image[pixel_idx] += weight * pg.color[0];
-                        image[pixel_idx + 1] += weight * pg.color[1];
-                        image[pixel_idx + 2] += weight * pg.color[2];
-                        image[pixel_idx + 3] += weight;
-
+                        tile_pixels[local_idx] += weight * pg.color[0];
+                        tile_pixels[local_idx + 1] += weight * pg.color[1];
+                        tile_pixels[local_idx + 2] += weight * pg.color[2];
+                        tile_pixels[local_idx + 3] += weight;
                         transmittance *= 1.0 - alpha;
                     }
                 }
+            }
+            Some((tile_id, tile_pixels))
+        })
+        .collect();
+
+    // Merge tile pixel buffers into the main image (sequential)
+    let mut image = vec![0.0f32; w * h * 4];
+    for (tile_id, tile_pixels) in tile_pixel_bufs {
+        let tx = tile_id % tiles_x;
+        let ty = tile_id / tiles_x;
+        let px_start_x = tx * TILE_SIZE;
+        let px_start_y = ty * TILE_SIZE;
+        let px_end_x = (px_start_x + TILE_SIZE).min(w);
+        let px_end_y = (px_start_y + TILE_SIZE).min(h);
+        let tile_w = px_end_x - px_start_x;
+        for (local_py, py) in (px_start_y..px_end_y).enumerate() {
+            for (local_px, px) in (px_start_x..px_end_x).enumerate() {
+                let local_idx = (local_py * tile_w + local_px) * 4;
+                let global_idx = (py * w + px) * 4;
+                image[global_idx] = tile_pixels[local_idx];
+                image[global_idx + 1] = tile_pixels[local_idx + 1];
+                image[global_idx + 2] = tile_pixels[local_idx + 2];
+                image[global_idx + 3] = tile_pixels[local_idx + 3];
             }
         }
     }
@@ -551,5 +580,24 @@ mod tests {
         let cam = make_camera(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 128, 64);
         let pixels = render_with_spectra_u8(&[splat], &cam, 128, 64, &Illuminant::d65());
         assert_eq!(pixels.len(), 128 * 64);
+    }
+
+    #[test]
+    fn parallel_render_is_deterministic() {
+        let splat = make_test_splat([0.0, 0.0, 0.0], 0.5);
+        let cam = make_camera(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 64, 64);
+        let r1 = render_with_spectra_u8(&[splat.clone()], &cam, 64, 64, &Illuminant::d65());
+        let r2 = render_with_spectra_u8(&[splat], &cam, 64, 64, &Illuminant::d65());
+        assert_eq!(r1, r2, "parallel render must be deterministic across two runs");
+    }
+
+    #[test]
+    fn parallel_render_matches_expected_pixel_count() {
+        let splats: Vec<GaussianSplat> = (0..10)
+            .map(|i| make_test_splat([i as f32 * 0.2 - 1.0, 0.0, 0.0], 0.5))
+            .collect();
+        let cam = make_camera(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 128, 128);
+        let result = render_with_spectra_u8(&splats, &cam, 128, 128, &Illuminant::d65());
+        assert_eq!(result.len(), 128 * 128, "output must be width×height pixels");
     }
 }
