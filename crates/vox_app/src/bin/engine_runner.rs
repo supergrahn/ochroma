@@ -187,6 +187,9 @@ struct EngineApp {
 
     // Audio handle for high-level audio management
     audio_handle: Option<vox_audio::AudioHandle>,
+
+    // Character controller (WASD + jump + mouse-look; toggle with P key)
+    character: vox_app::character_controller::CharacterController,
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +284,19 @@ impl EngineApp {
         let dlss = DlssPipeline::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DlssQuality::Performance);
         let (render_w, render_h) = dlss.render_resolution();
 
+        let mut physics = {
+            let mut p = RapierPhysicsWorld::new();
+            // Ground plane collider — 1km x 1km
+            p.add_static_collider([0.0, -0.5, 0.0], [500.0, 0.5, 500.0]);
+            println!("[ochroma] Physics: Rapier3D world initialised (ground plane 1000x1000)");
+            p
+        };
+        let character = vox_app::character_controller::CharacterController::new(
+            &mut physics,
+            glam::Vec3::new(0.0, 0.9, 0.0),
+        );
+        println!("[ochroma] Character controller initialised at (0, 0.9, 0)");
+
         Self {
             engine,
             window: None,
@@ -337,13 +353,8 @@ impl EngineApp {
                 audio
             },
             click_counter: 0,
-            physics: {
-                let mut physics = RapierPhysicsWorld::new();
-                // Ground plane collider — 1km x 1km
-                physics.add_static_collider([0.0, -0.5, 0.0], [500.0, 0.5, 500.0]);
-                println!("[ochroma] Physics: Rapier3D world initialised (ground plane 1000x1000)");
-                physics
-            },
+            physics,
+            character,
             entity_rapier_bodies: HashMap::new(),
             collider_to_entity: HashMap::new(),
             entity_splat_ranges: HashMap::new(),
@@ -1006,6 +1017,8 @@ impl EngineApp {
                             "[ochroma] Render mode: {}",
                             if self.spectral_bypass { "FAST (direct RGB)" } else { "QUALITY (spectral pipeline)" }
                         );
+                        self.character.enabled = !self.character.enabled;
+                        println!("[ochroma] Character controller: {}", if self.character.enabled { "ON" } else { "OFF" });
                     }
                     KeyCode::KeyG => {
                         self.dlss.frame_gen = match self.dlss.frame_gen {
@@ -1260,6 +1273,10 @@ impl EngineApp {
                 let dy = (y - ly) as f32;
                 self.cam_yaw += dx * 0.003;
                 self.cam_pitch = (self.cam_pitch - dy * 0.003).clamp(-1.5, 1.5);
+                // Also drive character yaw when character controller is active
+                if self.character.enabled && !self.editor_visible {
+                    self.character.yaw += dx * 0.002;
+                }
             }
             self.last_mouse = Some((x, y));
         }
@@ -1388,6 +1405,13 @@ impl EngineApp {
         }
 
         // 4b. Step Rapier physics and sync dynamic bodies back to ECS
+        // Update character controller before physics step
+        self.character.update(&self.input_state, dt, &mut self.physics);
+        // If character is enabled, drive camera position from character
+        if self.character.enabled {
+            let cam_pos = self.character.camera_position();
+            self.camera.position = cam_pos;
+        }
         self.physics.step();
         // Sync: read positions from Rapier dynamic bodies back into ECS transforms
         {
