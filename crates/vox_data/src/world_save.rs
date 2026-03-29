@@ -96,9 +96,28 @@ impl WorldSave {
 
     /// Quick save to default location
     pub fn quick_save_path() -> std::path::PathBuf {
-        let dir = dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("ochroma/saves");
-        std::fs::create_dir_all(&dir).ok();
-        dir.join("quicksave.ochroma_save")
+        std::path::PathBuf::from("saves/quicksave.json")
+    }
+
+    pub fn from_entities(
+        entities: Vec<SavedEntity>,
+        camera_position: [f32; 3],
+        camera_rotation: [f32; 4],
+        time_of_day: f32,
+    ) -> Self {
+        WorldSave {
+            version: 1,
+            engine_version: env!("CARGO_PKG_VERSION").to_string(),
+            timestamp: chrono_lite_timestamp(),
+            scene_name: "scene".into(),
+            entities,
+            resources: SavedResources {
+                time_of_day,
+                camera_position,
+                camera_rotation,
+                game_state: "playing".into(),
+            },
+        }
     }
 
     /// Auto save path with timestamp
@@ -119,4 +138,55 @@ fn chrono_lite_timestamp() -> String {
         .unwrap_or_default()
         .as_secs();
     format!("{}", secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn world_save_roundtrip() {
+        let ws = WorldSave {
+            version: 1,
+            engine_version: "test".into(),
+            timestamp: "0".into(),
+            scene_name: "test".into(),
+            entities: vec![SavedEntity {
+                name: "cube".into(),
+                position: [1.0, 2.0, 3.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+                asset_path: Some("assets/cube.vxm".into()),
+                scripts: vec![],
+                tags: vec![],
+                custom_data: HashMap::new(),
+                collider: None,
+                audio: None,
+                light: None,
+            }],
+            resources: SavedResources {
+                time_of_day: 12.0,
+                camera_position: [0.0, 5.0, -10.0],
+                camera_rotation: [0.0, 0.0, 0.0, 1.0],
+                game_state: "playing".into(),
+            },
+        };
+        let f = tempfile::NamedTempFile::new().unwrap();
+        ws.save_to_file(f.path()).unwrap();
+        let loaded = WorldSave::load_from_file(f.path()).unwrap();
+        assert_eq!(loaded.entities.len(), 1);
+        assert_eq!(loaded.entities[0].position, [1.0, 2.0, 3.0]);
+        assert_eq!(loaded.entities[0].name, "cube");
+        assert_eq!(loaded.resources.time_of_day, 12.0);
+        assert_eq!(loaded.resources.camera_position, [0.0, 5.0, -10.0]);
+    }
+
+    #[test]
+    fn world_save_from_entities_sets_version() {
+        let ws = WorldSave::from_entities(vec![], [0.0; 3], [0.0, 0.0, 0.0, 1.0], 6.0);
+        assert_eq!(ws.version, 1);
+        assert_eq!(ws.resources.time_of_day, 6.0);
+        assert_eq!(ws.scene_name, "scene");
+    }
 }

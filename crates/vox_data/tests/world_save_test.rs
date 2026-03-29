@@ -184,8 +184,8 @@ fn test_light_serialization() {
 #[test]
 fn test_quick_save_path_valid() {
     let path = WorldSave::quick_save_path();
-    assert!(path.to_str().unwrap().contains("ochroma"));
-    assert!(path.to_str().unwrap().ends_with("quicksave.ochroma_save"));
+    assert!(path.to_str().unwrap().contains("quicksave"));
+    assert!(path.to_str().unwrap().ends_with(".json"));
 }
 
 #[test]

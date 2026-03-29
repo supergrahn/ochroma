@@ -942,6 +942,35 @@ impl EngineApp {
 }
 
 // ---------------------------------------------------------------------------
+// Save / load helpers
+// ---------------------------------------------------------------------------
+
+impl EngineApp {
+    fn build_world_save(&self) -> vox_data::world_save::WorldSave {
+        use vox_data::world_save::{SavedEntity, WorldSave};
+
+        let cam_pos = [self.camera.position.x, self.camera.position.y, self.camera.position.z];
+        let cam_rot = [0.0f32, 0.0, 0.0, 1.0];
+
+        let entities: Vec<SavedEntity> = self.editor.entities.iter().map(|e| SavedEntity {
+            name: e.name.clone(),
+            position: e.position.to_array(),
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            asset_path: Some(e.asset_path.clone()),
+            scripts: Vec::new(),
+            tags: Vec::new(),
+            custom_data: std::collections::HashMap::new(),
+            collider: None,
+            audio: None,
+            light: None,
+        }).collect();
+
+        WorldSave::from_entities(entities, cam_pos, cam_rot, self.engine.time_of_day())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Input + redraw helpers (extracted from window_event)
 // ---------------------------------------------------------------------------
 
@@ -1117,6 +1146,34 @@ impl EngineApp {
                             true,
                         );
                         println!("[ochroma] Playing demo 3D sound at (10, 0, 0)");
+                    }
+                    KeyCode::KeyF => {
+                        let ws = self.build_world_save();
+                        let path = vox_data::world_save::WorldSave::quick_save_path();
+                        if let Some(parent) = path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        match ws.save_to_file(&path) {
+                            Ok(_) => println!("[ochroma] World saved to {}", path.display()),
+                            Err(e) => println!("[ochroma] Save failed: {}", e),
+                        }
+                    }
+                    KeyCode::KeyL => {
+                        let path = vox_data::world_save::WorldSave::quick_save_path();
+                        match vox_data::world_save::WorldSave::load_from_file(&path) {
+                            Ok(ws) => {
+                                self.engine.set_time_of_day(ws.resources.time_of_day);
+                                let cp = ws.resources.camera_position;
+                                self.camera.position = glam::Vec3::new(cp[0], cp[1], cp[2]);
+                                for saved in &ws.entities {
+                                    if let Some(entity) = self.editor.entities.iter_mut().find(|e| e.name == saved.name) {
+                                        entity.position = glam::Vec3::from(saved.position);
+                                    }
+                                }
+                                println!("[ochroma] World loaded from {} ({} entities)", path.display(), ws.entities.len());
+                            }
+                            Err(e) => println!("[ochroma] Load failed: {}", e),
+                        }
                     }
                     _ => {}
                 }
