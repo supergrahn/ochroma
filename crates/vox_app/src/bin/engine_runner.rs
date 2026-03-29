@@ -27,6 +27,7 @@ use winit::window::{Window, WindowId};
 use vox_app::content_browser::ContentBrowser;
 use vox_app::editor::SceneEditor;
 use vox_app::soundscape::Soundscape;
+use vox_app::walk_animation::{animation_system, ProceduralWalkComponent};
 use vox_core::engine_runtime::{EngineConfig, EngineRuntime};
 use vox_core::game_ui::burn_text;
 use vox_core::spectral::Illuminant;
@@ -508,6 +509,12 @@ impl EngineApp {
             .with_position(Vec3::new(-15.0, 4.0, 10.0))
             .with_light([0.7, 0.8, 1.0], 30.0, 20.0);
 
+        // Spawn procedural walk-cycle NPC at (0, 0, -3)
+        self.engine.world.spawn(
+            ProceduralWalkComponent::humanoid_blob(glam::Vec3::new(0.0, 0.0, -3.0))
+        );
+        println!("[ochroma] Spawned procedural walk NPC at (0, 0, -3)");
+
         // CLAS clustering + MegaGeometry
         self.run_clas();
     }
@@ -672,6 +679,14 @@ impl EngineApp {
         // Add particle splats
         let particle_splats = self.particles.to_splats();
         render_splats.extend(&particle_splats);
+
+        // Drain animation splats from RenderBuffer (written by animation_system)
+        {
+            let anim_splats = std::mem::take(
+                &mut self.engine.world.resource_mut::<vox_core::engine_runtime::RenderBuffer>().splats
+            );
+            render_splats.extend(anim_splats);
+        }
 
         // Time-of-day illuminant
         let illuminant = illuminant_for_time(self.engine.time_of_day());
@@ -1285,6 +1300,15 @@ impl EngineApp {
         // 4. Tick engine runtime (scripts, time advance)
         self.engine.tick(dt);
 
+        // 4a. Run procedural animation — appends bobbing splats to RenderBuffer
+        {
+            use bevy_ecs::system::{IntoSystem, System};
+            let mut sys = IntoSystem::into_system(animation_system);
+            sys.initialize(&mut self.engine.world);
+            sys.run((), &mut self.engine.world);
+            sys.apply_deferred(&mut self.engine.world);
+        }
+
         // 4b. Step Rapier physics and sync dynamic bodies back to ECS
         self.physics.step();
         // Sync: read positions from Rapier dynamic bodies back into ECS transforms
@@ -1447,6 +1471,14 @@ impl EngineApp {
                 }
             }
             render_splats.extend(&self.particles.to_splats());
+
+            // Drain animation splats from RenderBuffer (written by animation_system)
+            {
+                let anim_splats = std::mem::take(
+                    &mut self.engine.world.resource_mut::<vox_core::engine_runtime::RenderBuffer>().splats
+                );
+                render_splats.extend(anim_splats);
+            }
 
             let illuminant = illuminant_for_time(self.engine.time_of_day());
 
