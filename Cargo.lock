@@ -4920,6 +4920,7 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "glam",
+ "half",
  "rodio",
  "serde",
  "serde_json",
