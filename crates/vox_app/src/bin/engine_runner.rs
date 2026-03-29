@@ -1109,6 +1109,19 @@ impl EngineApp {
     }
 
     fn handle_mouse_button(&mut self, button: MouseButton, state: ElementState) {
+        let button_index: u8 = match button {
+            MouseButton::Left => 0,
+            MouseButton::Right => 1,
+            MouseButton::Middle => 2,
+            MouseButton::Back => 3,
+            MouseButton::Forward => 4,
+            MouseButton::Other(n) => n.min(255) as u8,
+        };
+        if state == ElementState::Pressed {
+            self.input_state.press(vox_core::input::InputSource::MouseButton(button_index));
+        } else {
+            self.input_state.release(vox_core::input::InputSource::MouseButton(button_index));
+        }
         match button {
             MouseButton::Right => {
                 if state == ElementState::Pressed {
@@ -1185,6 +1198,12 @@ impl EngineApp {
     }
 
     fn handle_mouse_move(&mut self, x: f64, y: f64) {
+        if let Some((lx, ly)) = self.last_mouse {
+            self.input_state.mouse_dx += (x - lx) as f32;
+            self.input_state.mouse_dy += (y - ly) as f32;
+        }
+        self.input_state.mouse_x = x as f32;
+        self.input_state.mouse_y = y as f32;
         self.mouse_x = x;
         self.mouse_y = y;
 
