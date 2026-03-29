@@ -65,6 +65,7 @@ pub mod animation_driver;
 pub mod multi_viewport;
 pub mod gpu_particles;
 pub mod particle_ecs;
+pub mod splat_particles;
 pub mod movie_render;
 pub mod level_streaming;
 pub mod material_hotreload;
