@@ -722,12 +722,6 @@ impl EngineApp {
             render_splats.extend(anim_splats);
         }
 
-        // Tick GLTF animation driver and append deformed splats
-        if let Some(ref mut driver) = self.anim_driver {
-            let animated_splats = driver.tick(self.frame_dt);
-            render_splats.extend(animated_splats);
-        }
-
         // Time-of-day illuminant
         let illuminant = illuminant_for_time(self.engine.time_of_day());
 
