@@ -1367,8 +1367,8 @@ impl EngineApp {
         if let Some(backend) = &mut self.backend {
             backend.resize(w, h);
         }
-        if let Some(gpu_rast) = &mut self.gpu_rasteriser {
-            gpu_rast.resize(w, h);
+        if let (Some(backend), Some(gpu_rast)) = (&self.backend, &mut self.gpu_rasteriser) {
+            gpu_rast.resize(backend.device(), w, h);
         }
     }
 

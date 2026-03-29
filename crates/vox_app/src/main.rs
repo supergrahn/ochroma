@@ -302,7 +302,7 @@ impl ApplicationHandler for App {
                         ..
                     }) => {
                         backend.resize(w, h);
-                        gpu_rasteriser.resize(w, h);
+                        gpu_rasteriser.resize(backend.device(), w, h);
                     }
                     Some(RenderMode::Software { backend, rasteriser }) => {
                         backend.resize(w, h);

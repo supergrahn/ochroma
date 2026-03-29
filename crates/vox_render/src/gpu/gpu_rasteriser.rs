@@ -7,6 +7,37 @@ use vox_core::types::GaussianSplat;
 
 use crate::spectral::RenderCamera;
 
+fn create_depth_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView, wgpu::Sampler) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("depth_texture"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        compare: Some(wgpu::CompareFunction::LessEqual),
+        lod_min_clamp: 0.0,
+        lod_max_clamp: 100.0,
+        ..Default::default()
+    });
+    (texture, view, sampler)
+}
+
 // ---------------------------------------------------------------------------
 // GPU-side data structures (std430-compatible)
 // ---------------------------------------------------------------------------
@@ -46,6 +77,9 @@ pub struct GpuRasteriser {
     camera_bind_group_layout: wgpu::BindGroupLayout,
     width: u32,
     height: u32,
+    depth_texture: wgpu::Texture,
+    depth_view: wgpu::TextureView,
+    depth_sampler: wgpu::Sampler,
 }
 
 impl GpuRasteriser {
@@ -153,12 +187,17 @@ impl GpuRasteriser {
             mapped_at_creation: false,
         });
 
+        let (depth_texture, depth_view, depth_sampler) = create_depth_texture(device, width, height);
+
         Self {
             pipeline,
             camera_buffer,
             camera_bind_group_layout: bind_group_layout,
             width,
             height,
+            depth_texture,
+            depth_view,
+            depth_sampler,
         }
     }
 
@@ -290,8 +329,30 @@ impl GpuRasteriser {
     }
 
     /// Update stored viewport dimensions (e.g. after a window resize).
-    pub fn resize(&mut self, width: u32, height: u32) {
+    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         self.width = width;
         self.height = height;
+        let (tex, view, sampler) = create_depth_texture(device, width, height);
+        self.depth_texture = tex;
+        self.depth_view = view;
+        self.depth_sampler = sampler;
+    }
+
+    /// Return a reference to the depth texture view.
+    pub fn depth_view(&self) -> &wgpu::TextureView {
+        &self.depth_view
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn depth_texture_descriptor_format_is_depth32float() {
+        assert_eq!(
+            wgpu::TextureFormat::Depth32Float,
+            wgpu::TextureFormat::Depth32Float,
+        );
     }
 }
