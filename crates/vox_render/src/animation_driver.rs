@@ -6,6 +6,8 @@
 use glam::Mat4;
 use vox_core::types::GaussianSplat;
 use vox_data::gltf_animation::{evaluate_animation, skin_splats, GltfAnimation, GltfSkeleton};
+use crate::gpu::skinning_compute::{GpuJointTransform, SkinningCompute};
+use wgpu;
 
 /// Drives animation on a set of splats each frame.
 pub struct AnimationDriver {
@@ -18,6 +20,8 @@ pub struct AnimationDriver {
     pub base_splats: Vec<GaussianSplat>,
     /// Maps each splat index to the joint that drives it.
     pub joint_bindings: Vec<usize>,
+    /// Optional GPU compute skinning pass.
+    pub gpu_skinning: Option<SkinningCompute>,
 }
 
 impl AnimationDriver {
@@ -32,6 +36,7 @@ impl AnimationDriver {
             looping: true,
             base_splats,
             joint_bindings: bindings,
+            gpu_skinning: None,
         }
     }
 
@@ -81,6 +86,40 @@ impl AnimationDriver {
 
     pub fn animation_count(&self) -> usize {
         self.animations.len()
+    }
+
+    /// Advance animation time and dispatch GPU skinning compute pass.
+    /// Returns `true` if the dispatch was issued, `false` if no GPU skinning is configured
+    /// or no animations are loaded.
+    pub fn tick_gpu(&mut self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, dt: f32) -> bool {
+        let gpu = match &self.gpu_skinning {
+            Some(g) => g,
+            None => return false,
+        };
+        if self.animations.is_empty() { return false; }
+
+        self.time += dt * self.speed;
+        let anim = &self.animations[self.current_animation];
+        if self.looping && anim.duration > 0.0 {
+            self.time %= anim.duration;
+        }
+
+        let transforms = evaluate_animation(&self.skeleton, anim, self.time);
+        let inverse_binds: Vec<glam::Mat4> = self.skeleton.joints.iter()
+            .map(|j| j.inverse_bind_matrix)
+            .collect();
+
+        let joint_transforms: Vec<GpuJointTransform> = transforms.iter()
+            .zip(inverse_binds.iter())
+            .map(|(world_t, inv_bind)| {
+                let skin = *world_t * *inv_bind;
+                GpuJointTransform { skin_matrix: skin.to_cols_array_2d() }
+            })
+            .collect();
+
+        gpu.update_joints(queue, &joint_transforms);
+        gpu.dispatch(encoder);
+        true
     }
 }
 

@@ -5024,6 +5024,7 @@ dependencies = [
  "egui",
  "glam",
  "half",
+ "naga",
  "pollster",
  "puffin",
  "rand 0.9.2",

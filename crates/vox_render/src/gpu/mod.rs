@@ -1,4 +1,5 @@
 pub mod compute_sort;
+pub mod skinning_compute;
 pub mod entity_buffer;
 pub mod gpu_rasteriser;
 pub mod instancing;
