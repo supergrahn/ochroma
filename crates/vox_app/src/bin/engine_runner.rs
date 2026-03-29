@@ -929,6 +929,10 @@ impl EngineApp {
                         self.soundscape.active = !self.soundscape.active;
                         println!("[ochroma] Soundscape: {}", if self.soundscape.active { "ON" } else { "OFF" });
                     }
+                    KeyCode::KeyI => {
+                        self.editor.mini_map.open = !self.editor.mini_map.open;
+                        println!("[ochroma] Mini map: {}", if self.editor.mini_map.open { "ON" } else { "OFF" });
+                    }
                     KeyCode::KeyQ => {
                         self.dlss.quality = next_dlss_quality(self.dlss.quality);
                         let (rw, rh) = self.dlss.render_resolution();
@@ -1187,6 +1191,9 @@ impl EngineApp {
 
         // 1. Update camera from input
         self.update_camera(dt);
+
+        // Tick notification queue (decrement TTLs, expire old toasts)
+        self.editor.notification_queue.tick(dt);
 
         // Cursor changes based on editor mode
         if self.editor_visible {

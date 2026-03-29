@@ -66,6 +66,16 @@ pub struct SceneEditor {
 
     // Camera focus request from context menu
     pub focus_camera_on: Option<u32>,
+
+    // Notification toasts
+    pub notification_queue: crate::notifications::NotificationQueue,
+
+    // Mini map
+    pub mini_map: crate::minimap::MiniMap,
+
+    // Settings panel
+    pub show_settings: bool,
+    pub app_settings: crate::settings::AppSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +217,10 @@ impl SceneEditor {
             status_splat_count: 0,
             status_message: String::from("Ready"),
             focus_camera_on: None,
+            notification_queue: crate::notifications::NotificationQueue::new(5),
+            mini_map: crate::minimap::MiniMap::default(),
+            show_settings: false,
+            app_settings: crate::settings::load_settings(std::path::Path::new("settings.toml")),
         }
     }
 
@@ -546,6 +560,15 @@ impl SceneEditor {
                         self.show_perf_stats = !self.show_perf_stats;
                         ui.close_menu();
                     }
+                    ui.separator();
+                    if ui.button("Mini Map").clicked() {
+                        self.mini_map.open = !self.mini_map.open;
+                        ui.close_menu();
+                    }
+                    if ui.button("Settings").clicked() {
+                        self.show_settings = !self.show_settings;
+                        ui.close_menu();
+                    }
                 });
 
                 ui.menu_button("Help", |ui| {
@@ -854,6 +877,27 @@ impl SceneEditor {
                         if ui.button("Redo  Ctrl+Y").clicked() { self.redo(); }
                     });
                 });
+        }
+
+        // Notification toasts (top-right corner)
+        self.notification_queue.show(ctx);
+
+        // Mini map
+        let camera_pos = glam::Vec3::ZERO; // placeholder; caller can set via mini_map directly
+        let entities: Vec<crate::minimap::MiniMapEntity> = self.entities.iter().map(|e| {
+            crate::minimap::MiniMapEntity {
+                position: e.position,
+                color: egui::Color32::WHITE,
+            }
+        }).collect();
+        self.mini_map.show(ctx, &entities, camera_pos);
+
+        // Settings panel
+        if self.show_settings {
+            let changed = crate::settings::show_settings_panel(ctx, &mut self.app_settings, &mut self.show_settings);
+            if changed {
+                let _ = crate::settings::save_settings(&self.app_settings, std::path::Path::new("settings.toml"));
+            }
         }
     }
 
