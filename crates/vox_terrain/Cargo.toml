@@ -10,3 +10,5 @@ serde = { workspace = true }
 half = { workspace = true }
 rand = "0.9"
 bevy_ecs = { workspace = true }
+bevy_app = { workspace = true }
+navmesh = "0.9"
