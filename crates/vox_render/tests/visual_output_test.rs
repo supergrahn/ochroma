@@ -35,7 +35,7 @@ fn render_terrain_from_above_produces_visible_image() {
 
     let mut rast = SoftwareRasteriser::new(256, 256);
     let cam = make_camera(Vec3::new(0.0, 80.0, 0.01), Vec3::ZERO, 256, 256);
-    let fb = rast.render(&terrain, &cam, &Illuminant::d65());
+    let fb = rast.render(&terrain, &cam, &Illuminant::d65(), None);
 
     let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();
     let coverage = non_black as f32 / fb.pixels.len() as f32 * 100.0;
@@ -63,7 +63,7 @@ fn render_buildings_at_street_level() {
 
     let mut rast = SoftwareRasteriser::new(512, 256);
     let cam = make_camera(Vec3::new(0.0, 5.0, 30.0), Vec3::new(0.0, 5.0, 0.0), 512, 256);
-    let fb = rast.render(&splats, &cam, &Illuminant::d65());
+    let fb = rast.render(&splats, &cam, &Illuminant::d65(), None);
 
     let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();
     let coverage = non_black as f32 / fb.pixels.len() as f32 * 100.0;
@@ -82,7 +82,7 @@ fn render_trees_have_green_content() {
 
     let mut rast = SoftwareRasteriser::new(128, 128);
     let cam = make_camera(Vec3::new(0.0, 5.0, 15.0), Vec3::new(0.0, 4.0, 0.0), 128, 128);
-    let fb = rast.render(&tree, &cam, &Illuminant::d65());
+    let fb = rast.render(&tree, &cam, &Illuminant::d65(), None);
 
     let coloured: Vec<_> = fb.pixels.iter().filter(|p| p[0] > 5 || p[1] > 5 || p[2] > 5).collect();
     assert!(!coloured.is_empty(), "Tree should produce coloured pixels");
@@ -101,8 +101,8 @@ fn different_illuminants_change_appearance() {
     let mut rast = SoftwareRasteriser::new(64, 64);
     let cam = make_camera(Vec3::new(3.0, 5.0, 15.0), Vec3::new(3.0, 3.0, -5.0), 64, 64);
 
-    let fb_d65 = rast.render(&splats, &cam, &Illuminant::d65());
-    let fb_a = rast.render(&splats, &cam, &Illuminant::a());
+    let fb_d65 = rast.render(&splats, &cam, &Illuminant::d65(), None);
+    let fb_a = rast.render(&splats, &cam, &Illuminant::a(), None);
 
     let differs = fb_d65.pixels.iter().zip(fb_a.pixels.iter())
         .any(|(a, b)| a[0] != b[0] || a[1] != b[1] || a[2] != b[2]);
@@ -155,7 +155,7 @@ fn render_full_city_scene() {
     let cam = make_camera(Vec3::new(0.0, 25.0, 45.0), Vec3::new(0.0, 5.0, 0.0), 640, 480);
 
     let render_start = std::time::Instant::now();
-    let fb = rast.render(&all_splats, &cam, &Illuminant::d65());
+    let fb = rast.render(&all_splats, &cam, &Illuminant::d65(), None);
     let render_time = render_start.elapsed();
 
     let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();
@@ -191,7 +191,7 @@ fn render_detailed_building_windows_differ_from_walls() {
         Vec3::new(4.0, 5.0, 0.0),
         256, 256,
     );
-    let fb = rast.render(&building, &cam, &Illuminant::d65());
+    let fb = rast.render(&building, &cam, &Illuminant::d65(), None);
 
     let non_black = fb.pixels.iter()
         .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
@@ -237,7 +237,7 @@ fn render_detailed_building_modern_style() {
         Vec3::new(5.0, 8.0, 0.0),
         256, 256,
     );
-    let fb = rast.render(&building, &cam, &Illuminant::d65());
+    let fb = rast.render(&building, &cam, &Illuminant::d65(), None);
 
     let non_black = fb.pixels.iter()
         .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
@@ -297,7 +297,7 @@ fn render_with_spectra_renderer() {
 fn empty_scene_is_black() {
     let mut rast = SoftwareRasteriser::new(64, 64);
     let cam = make_camera(Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, 64, 64);
-    let fb = rast.render(&[], &cam, &Illuminant::d65());
+    let fb = rast.render(&[], &cam, &Illuminant::d65(), None);
 
     let all_black = fb.pixels.iter().all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0);
     assert!(all_black, "Empty scene should be black");

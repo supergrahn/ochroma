@@ -383,7 +383,7 @@ impl DemoApp {
         let illuminant = illuminant_for_time(self.time_of_day);
 
         // 1. Render with software rasteriser at internal resolution
-        let fb = self.rasteriser.render(&all_splats, &camera, &illuminant);
+        let fb = self.rasteriser.render(&all_splats, &camera, &illuminant, None);
 
         // 2. Write to spectral framebuffer (approximate: convert RGB back to spectral bands)
         self.spectral_fb.clear();

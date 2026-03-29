@@ -126,7 +126,7 @@ pub fn render_city_scene(
     // === Step 7: Render ===
     let render_start = std::time::Instant::now();
     let mut rasteriser = SoftwareRasteriser::new(width, height);
-    let fb = rasteriser.render(&all_splats, &camera, &Illuminant::d65());
+    let fb = rasteriser.render(&all_splats, &camera, &Illuminant::d65(), None);
     let render_time = render_start.elapsed();
 
     // === Step 8: Save to file ===
@@ -248,7 +248,7 @@ pub fn render_turntable(
         };
 
         let render_start = std::time::Instant::now();
-        let fb = rasteriser.render(&all_splats, &camera, &Illuminant::d65());
+        let fb = rasteriser.render(&all_splats, &camera, &Illuminant::d65(), None);
         let render_time = render_start.elapsed();
 
         let path = output_dir.join(format!("frame_{:04}.ppm", frame));

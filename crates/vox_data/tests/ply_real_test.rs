@@ -103,7 +103,7 @@ fn realistic_ply_renders_visible_sphere() {
         proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 50.0),
     };
 
-    let fb = rast.render(&splats, &cam, &Illuminant::d65());
+    let fb = rast.render(&splats, &cam, &Illuminant::d65(), None);
     let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();
     let coverage = non_black as f32 / fb.pixels.len() as f32 * 100.0;
 

@@ -29,7 +29,7 @@ fn bench_render(splat_count: usize, width: u32, height: u32) -> (f32, f32) {
     };
 
     let start = Instant::now();
-    let fb = rast.render(&splats, &cam, &Illuminant::d65());
+    let fb = rast.render(&splats, &cam, &Illuminant::d65(), None);
     let render_ms = start.elapsed().as_secs_f32() * 1000.0;
 
     let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();

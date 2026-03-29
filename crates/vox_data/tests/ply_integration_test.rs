@@ -152,7 +152,7 @@ fn ply_integration_render_has_visible_content() {
     };
 
     let mut rasteriser = SoftwareRasteriser::new(256, 256);
-    let fb = rasteriser.render(&splats, &cam, &Illuminant::d65());
+    let fb = rasteriser.render(&splats, &cam, &Illuminant::d65(), None);
 
     // Count non-black pixels
     let non_black = fb
@@ -227,7 +227,7 @@ fn ply_integration_render_from_multiple_angles() {
         };
 
         let mut rasteriser = SoftwareRasteriser::new(128, 128);
-        let fb = rasteriser.render(&splats, &cam, &Illuminant::d65());
+        let fb = rasteriser.render(&splats, &cam, &Illuminant::d65(), None);
 
         let non_black = fb
             .pixels
@@ -338,7 +338,7 @@ fn load_ply_from_file_path() {
         view: Mat4::look_at_rh(Vec3::new(0.0, 2.0, 6.0), Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
         proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 50.0),
     };
-    let fb = rast.render(&splats, &cam, &Illuminant::d65());
+    let fb = rast.render(&splats, &cam, &Illuminant::d65(), None);
     let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();
     let coverage = non_black as f32 / fb.pixels.len() as f32 * 100.0;
 
@@ -395,7 +395,7 @@ fn load_real_aetherspectra_ply() {
     };
 
     let render_start = std::time::Instant::now();
-    let fb = rast.render(&splats, &cam, &Illuminant::d65());
+    let fb = rast.render(&splats, &cam, &Illuminant::d65(), None);
     let render_time = render_start.elapsed();
 
     let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();

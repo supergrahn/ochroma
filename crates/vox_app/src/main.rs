@@ -630,6 +630,7 @@ impl ApplicationHandler for App {
                             &splats_to_render,
                             &camera,
                             &illuminant,
+                            None,
                         );
                         backend.present_framebuffer(&fb.pixels, fb.width, fb.height);
                     }
@@ -639,6 +640,7 @@ impl ApplicationHandler for App {
                             &splats_to_render,
                             &camera,
                             &illuminant,
+                            None,
                         );
                         // No surface to present to — frame computed but discarded.
                     }

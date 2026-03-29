@@ -5,6 +5,7 @@ use vox_core::spectral::{
 };
 use vox_core::types::GaussianSplat;
 
+use crate::shadows::ShadowMapper;
 use crate::spectral::RenderCamera;
 
 /// RGBA8 framebuffer, row-major layout.
@@ -84,6 +85,7 @@ impl SoftwareRasteriser {
         splats: &[GaussianSplat],
         camera: &RenderCamera,
         illuminant: &Illuminant,
+        shadow_mapper: Option<&ShadowMapper>,
     ) -> Framebuffer {
         let mut fb = Framebuffer::new(self.width, self.height);
         let vp = camera.view_proj();
@@ -142,7 +144,14 @@ impl SoftwareRasteriser {
                 let g = (linear_to_srgb_gamma(linear_rgb[1]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
                 let b = (linear_to_srgb_gamma(linear_rgb[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
 
-                let opacity = splat.opacity as f32 / 255.0;
+                let opacity = {
+                    let base = splat.opacity as f32 / 255.0;
+                    let shadow_factor = if let Some(sm) = shadow_mapper {
+                        let world_pos = glam::Vec3::new(splat.position[0], splat.position[1], splat.position[2]);
+                        if sm.is_in_shadow(world_pos, 0.005) { 0.3 } else { 1.0 }
+                    } else { 1.0 };
+                    base * shadow_factor
+                };
 
                 Some(ProjectedSplat {
                     screen_x: sx,

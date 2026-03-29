@@ -52,6 +52,7 @@ use vox_audio::AudioEngine;
 use vox_audio::SpatialAudioManager;
 use vox_physics::rapier::RapierPhysicsWorld;
 use vox_render::gizmos::GizmoRenderer;
+use vox_render::shadows::ShadowMapper;
 use vox_ui::theme::apply_ochroma_theme;
 
 // NavMesh + patrol demo (uncomment to enable):
@@ -179,6 +180,9 @@ struct EngineApp {
 
     // Ambient soundscape (toggled with N key)
     soundscape: Soundscape,
+
+    // Cascaded shadow mapper
+    shadow_mapper: ShadowMapper,
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +356,7 @@ impl EngineApp {
                 println!("[ochroma] Soundscape: outdoor default ({} layers, active={})", ss.layers.len(), ss.active);
                 ss
             },
+            shadow_mapper: ShadowMapper::new(512),
         }
     }
 
@@ -691,9 +696,25 @@ impl EngineApp {
         // Time-of-day illuminant
         let illuminant = illuminant_for_time(self.engine.time_of_day());
 
+        // --- Shadow map update ---
+        let shadow_hour = self.engine.time_of_day();
+        let sun_dir = self.light_manager.sun.sun_direction(shadow_hour, 172);
+        let cam_fwd = (self.camera.target - self.camera.position).normalize_or(glam::Vec3::NEG_Z);
+        self.shadow_mapper.update(self.camera.position, cam_fwd, sun_dir);
+
+        let shadow_positions: Vec<glam::Vec3> = render_splats
+            .iter()
+            .map(|s| glam::Vec3::from(s.position))
+            .collect();
+        let shadow_radii: Vec<f32> = render_splats
+            .iter()
+            .map(|s| (s.scale[0].abs() + s.scale[1].abs() + s.scale[2].abs()) / 3.0)
+            .collect();
+        self.shadow_mapper.render_shadow_map(&shadow_positions, &shadow_radii);
+
         // 1. Software rasterise at internal resolution
         let render_start = Instant::now();
-        let fb = self.rasteriser.render(&render_splats, &render_camera, &illuminant);
+        let fb = self.rasteriser.render(&render_splats, &render_camera, &illuminant, Some(&self.shadow_mapper));
 
         let upscaled = if self.spectral_bypass {
             // FAST PATH: skip spectral pipeline, just DLSS upscale the rasterised output

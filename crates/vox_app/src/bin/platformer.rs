@@ -457,7 +457,7 @@ impl PlatformerGame {
         let illuminant = Illuminant::d65();
 
         // 1. Rasterise
-        let fb = self.rasteriser.render(&all, &camera, &illuminant);
+        let fb = self.rasteriser.render(&all, &camera, &illuminant, None);
 
         // 2. Write to spectral framebuffer
         self.spectral_fb.clear();

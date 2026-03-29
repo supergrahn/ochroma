@@ -29,7 +29,7 @@ fn render_1000_splats_under_100ms() {
     };
 
     let start = Instant::now();
-    let _fb = rasteriser.render(&splats, &camera, &Illuminant::d65());
+    let _fb = rasteriser.render(&splats, &camera, &Illuminant::d65(), None);
     let elapsed = start.elapsed();
 
     assert!(elapsed.as_millis() < 100, "1000 splats should render in <100ms, took {}ms", elapsed.as_millis());

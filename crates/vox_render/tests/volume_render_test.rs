@@ -29,7 +29,7 @@ fn render_volumetric_terrain_with_cave_and_cliff() {
         proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 512.0 / 384.0, 0.1, 200.0),
     };
 
-    let fb = rast.render(&splats, &cam, &Illuminant::d65());
+    let fb = rast.render(&splats, &cam, &Illuminant::d65(), None);
 
     let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();
     let coverage = non_black as f32 / fb.pixels.len() as f32 * 100.0;

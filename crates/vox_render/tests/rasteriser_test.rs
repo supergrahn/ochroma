@@ -31,7 +31,7 @@ fn single_splat_renders_nonblack_pixel() {
         view: Mat4::look_at_rh(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y),
         proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 100.0),
     };
-    let fb = rasteriser.render(&splats, &camera, &Illuminant::d65());
+    let fb = rasteriser.render(&splats, &camera, &Illuminant::d65(), None);
     let has_colour = fb.pixels.iter().any(|p| p[0] > 0 || p[1] > 0 || p[2] > 0);
     assert!(has_colour, "Expected at least one non-black pixel");
 }
@@ -47,7 +47,7 @@ fn two_splats_at_different_positions_both_render() {
         view: Mat4::look_at_rh(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y),
         proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 100.0),
     };
-    let fb = rasteriser.render(&splats, &camera, &Illuminant::d65());
+    let fb = rasteriser.render(&splats, &camera, &Illuminant::d65(), None);
     let left_has_colour = fb.pixels.iter().enumerate()
         .any(|(i, p)| (i % 128) < 64 && (p[0] > 0 || p[1] > 0 || p[2] > 0));
     let right_has_colour = fb.pixels.iter().enumerate()
