@@ -30,3 +30,4 @@ bevy_app = { workspace = true }
 [dev-dependencies]
 vox_sim = { path = "../vox_sim" }
 vox_terrain = { path = "../vox_terrain" }
+tempfile = "3"

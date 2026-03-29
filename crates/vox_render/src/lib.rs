@@ -67,3 +67,4 @@ pub mod gpu_particles;
 pub mod particle_ecs;
 pub mod movie_render;
 pub mod level_streaming;
+pub mod material_hotreload;

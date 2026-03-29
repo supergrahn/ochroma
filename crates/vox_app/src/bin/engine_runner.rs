@@ -57,6 +57,10 @@ use vox_ui::theme::apply_ochroma_theme;
 // use vox_app::ai_fsm::NavMeshPlugin;
 // app.add_plugins(NavMeshPlugin);
 
+// Material hot-reload (uncomment to enable):
+// use vox_render::material_hotreload::MaterialHotReloadPlugin;
+// app.add_plugins(MaterialHotReloadPlugin::default()); // enable for material hot-reload
+
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
 

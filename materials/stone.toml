@@ -1,0 +1,4 @@
+name = "stone"
+spectral_weights = [0.35, 0.38, 0.40, 0.42, 0.43, 0.44, 0.45, 0.45]
+roughness = 0.85
+metallic = 0.0
