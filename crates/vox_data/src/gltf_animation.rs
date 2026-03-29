@@ -443,12 +443,63 @@ pub fn skin_splats(
             let pos = Vec3::from(splat.position);
             let new_pos = skin_mat.transform_point3(pos);
 
+            let (skin_scale, skin_quat, _skin_t) = skin_mat.to_scale_rotation_translation();
+            let _ = skin_scale;
+
+            let orig_q = glam::Quat::from_xyzw(
+                splat.rotation[0] as f32 / 32767.0,
+                splat.rotation[1] as f32 / 32767.0,
+                splat.rotation[2] as f32 / 32767.0,
+                splat.rotation[3] as f32 / 32767.0,
+            ).normalize();
+
+            let new_q = (skin_quat * orig_q).normalize();
+
             GaussianSplat {
                 position: [new_pos.x, new_pos.y, new_pos.z],
+                rotation: [
+                    (new_q.x * 32767.0).clamp(-32767.0, 32767.0) as i16,
+                    (new_q.y * 32767.0).clamp(-32767.0, 32767.0) as i16,
+                    (new_q.z * 32767.0).clamp(-32767.0, 32767.0) as i16,
+                    (new_q.w * 32767.0).clamp(-32767.0, 32767.0) as i16,
+                ],
                 ..*splat
             }
         })
         .collect()
+}
+
+/// Assign each splat to the nearest joint (by world-space distance).
+///
+/// Returns a `Vec<usize>` of length `splats.len()`, where each entry is a joint index.
+pub fn assign_joint_bindings(
+    splats: &[GaussianSplat],
+    skeleton: &GltfSkeleton,
+) -> Vec<usize> {
+    let joint_world_positions: Vec<Vec3> = {
+        let mut positions = vec![Vec3::ZERO; skeleton.joints.len()];
+        for ji in 0..skeleton.joints.len() {
+            let local_t = skeleton.joints[ji].local_transform.w_axis.truncate();
+            if let Some(parent_idx) = skeleton.joints[ji].parent {
+                positions[ji] = positions[parent_idx] + local_t;
+            } else {
+                positions[ji] = local_t;
+            }
+        }
+        positions
+    };
+
+    splats.iter().map(|splat| {
+        let pos = Vec3::from(splat.position);
+        skeleton.joints.iter().enumerate()
+            .min_by(|(ai, _), (bi, _)| {
+                let da = joint_world_positions[*ai].distance_squared(pos);
+                let db = joint_world_positions[*bi].distance_squared(pos);
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    }).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -745,6 +796,49 @@ mod tests {
         }];
         let result = interpolate_keyframes(&kf, 5.0, AnimationProperty::Translation);
         assert_eq!(result, [1.0, 2.0, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn assign_joint_bindings_returns_one_per_splat() {
+        let skeleton = build_synthetic_skeleton(&["root", "hip", "chest"]);
+        let splats: Vec<GaussianSplat> = (0..5).map(|i| GaussianSplat {
+            position: [0.0, i as f32 * 0.5, 0.0],
+            scale: [0.1; 3],
+            rotation: [0, 0, 0, 32767],
+            opacity: 200,
+            _pad: [0; 3],
+            spectral: [0; 8],
+        }).collect();
+        let bindings = assign_joint_bindings(&splats, &skeleton);
+        assert_eq!(bindings.len(), 5);
+        for b in &bindings {
+            assert!(*b < skeleton.joints.len());
+        }
+    }
+
+    #[test]
+    fn skin_splats_rotation_changes_under_rotation_transform() {
+        let skel = build_synthetic_skeleton(&["root", "arm"]);
+        let splat = GaussianSplat {
+            position: [0.0, 1.0, 0.0],
+            scale: [0.1; 3],
+            rotation: [0, 0, 0, 32767],
+            opacity: 255,
+            _pad: [0; 3],
+            spectral: [0; 8],
+        };
+        let anim = build_synthetic_animation(
+            "rotate", 1, 1.0,
+            glam::Quat::IDENTITY,
+            glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        );
+        let transforms = evaluate_animation(&skel, &anim, 1.0);
+        let ibms: Vec<glam::Mat4> = skel.joints.iter().map(|j| j.inverse_bind_matrix).collect();
+        let skinned = skin_splats(&[splat], &[1], &transforms, &ibms);
+        assert_eq!(skinned.len(), 1);
+        let r = skinned[0].rotation;
+        let is_identity = r[0].abs() < 100 && r[1].abs() < 100 && r[2].abs() < 100;
+        assert!(!is_identity, "rotation should change after skinning, got {:?}", r);
     }
 
     #[test]

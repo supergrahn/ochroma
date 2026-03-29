@@ -193,6 +193,12 @@ struct EngineApp {
 
     // Rhai scripting runtime (hot-reloadable game logic)
     rhai: vox_script::rhai_runtime::RhaiRuntime,
+
+    // GLTF animation driver (optional — loaded from assets/character.glb if present)
+    anim_driver: Option<vox_render::animation_driver::AnimationDriver>,
+
+    // Delta time for the current frame (set in handle_redraw, consumed in render_frame)
+    frame_dt: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +384,8 @@ impl EngineApp {
             shadow_mapper: ShadowMapper::new(512),
             audio_handle: vox_audio::AudioHandle::spawn(),
             rhai: vox_script::rhai_runtime::RhaiRuntime::new(),
+            anim_driver: None,
+            frame_dt: 0.0,
         }
     }
 
@@ -712,6 +720,12 @@ impl EngineApp {
                 &mut self.engine.world.resource_mut::<vox_core::engine_runtime::RenderBuffer>().splats
             );
             render_splats.extend(anim_splats);
+        }
+
+        // Tick GLTF animation driver and append deformed splats
+        if let Some(ref mut driver) = self.anim_driver {
+            let animated_splats = driver.tick(self.frame_dt);
+            render_splats.extend(animated_splats);
         }
 
         // Time-of-day illuminant
@@ -1376,6 +1390,7 @@ impl EngineApp {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
+        self.frame_dt = dt;
 
         // 1. Update camera from input
         self.update_camera(dt);
@@ -1692,6 +1707,12 @@ impl EngineApp {
                 render_splats.extend(anim_splats);
             }
 
+            // Tick GLTF animation driver and append deformed splats
+            if let Some(ref mut driver) = self.anim_driver {
+                let animated_splats = driver.tick(dt);
+                render_splats.extend(animated_splats);
+            }
+
             let illuminant = illuminant_for_time(self.engine.time_of_day());
 
             let gpu_rast = self.gpu_rasteriser.as_ref().expect("gpu_rasteriser checked above");
@@ -1992,6 +2013,32 @@ impl ApplicationHandler for EngineApp {
 
         // Build scene + CLAS + particles + lights
         self.build_scene();
+
+        // Try loading a GLTF character for skeletal animation
+        {
+            use vox_data::gltf_animation::{assign_joint_bindings, extract_skeleton};
+            use vox_render::animation_driver::AnimationDriver;
+
+            let gltf_path = std::path::Path::new("assets/character.glb");
+            if gltf_path.exists() {
+                match extract_skeleton(gltf_path) {
+                    Ok((skeleton, animations)) => {
+                        let joint_bindings = assign_joint_bindings(&self.scene_splats, &skeleton);
+                        let mut driver = AnimationDriver::new(skeleton, self.scene_splats.clone());
+                        driver.joint_bindings = joint_bindings;
+                        for anim in animations {
+                            driver.add_animation(anim);
+                        }
+                        if driver.animation_count() > 0 {
+                            driver.play(0);
+                        }
+                        self.anim_driver = Some(driver);
+                        println!("[ochroma] GLTF character loaded with {} animations", self.anim_driver.as_ref().unwrap().animation_count());
+                    }
+                    Err(e) => eprintln!("[animation] GLTF load failed: {e}"),
+                }
+            }
+        }
 
         // Start the engine runtime (initialises scripts)
         self.engine.start();
