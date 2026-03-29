@@ -68,4 +68,3 @@ pub mod particle_ecs;
 pub mod movie_render;
 pub mod level_streaming;
 pub mod material_hotreload;
-pub mod walk_animation;
