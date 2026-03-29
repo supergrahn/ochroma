@@ -199,6 +199,9 @@ struct EngineApp {
 
     // Delta time for the current frame (set in handle_redraw, consumed in render_frame)
     frame_dt: f32,
+
+    // LOD tile streaming manager
+    tile_manager: vox_render::streaming::TileManager,
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +389,7 @@ impl EngineApp {
             rhai: vox_script::rhai_runtime::RhaiRuntime::new(),
             anim_driver: None,
             frame_dt: 0.0,
+            tile_manager: vox_render::streaming::TileManager::with_radius(2),
         }
     }
 
@@ -1363,6 +1367,31 @@ impl EngineApp {
 
         // 1. Update camera from input
         self.update_camera(dt);
+
+        // LOD streaming: update tile manager and load newly active tiles
+        {
+            let cam_pos = self.camera.position;
+            let cam_tile = vox_core::lwc::TileCoord {
+                x: (cam_pos.x / vox_core::lwc::TILE_SIZE as f32) as i32,
+                z: (cam_pos.z / vox_core::lwc::TILE_SIZE as f32) as i32,
+            };
+            let newly_active = self.tile_manager.update_camera(cam_tile);
+            for tile in &newly_active {
+                let path = format!("assets/tiles/tile_{}_{}.vxm", tile.x, tile.z);
+                let p = std::path::Path::new(&path);
+                if p.exists() {
+                    match std::fs::read(p).and_then(|bytes| {
+                        vox_data::vxm::VxmFile::read(&bytes[..])
+                            .map_err(|e| std::io::Error::other(e))
+                    }) {
+                        Ok(_vxm) => {
+                            println!("[streaming] Loaded tile {},{}", tile.x, tile.z);
+                        }
+                        Err(e) => eprintln!("[streaming] Failed to load {path}: {e}"),
+                    }
+                }
+            }
+        }
 
         // Tick notification queue (decrement TTLs, expire old toasts)
         self.editor.notification_queue.tick(dt);
