@@ -205,6 +205,24 @@ struct EngineApp {
 
     // Persisted key bindings (loaded from keybindings.toml at startup)
     key_bindings: vox_core::input::KeyBindings,
+
+    // SDF soft shadow pass (None until GPU is available)
+    sdf_shadow: Option<vox_render::gpu::sdf_shadow_pass::SdfShadowPass>,
+
+    // Baked GI cache (applied to splats before render)
+    gi_cache: Option<vox_render::gi_cache::GiCache>,
+
+    // Splat particle emitters (KeyE spawns fire emitter)
+    particle_emitters: Vec<vox_render::splat_particles::SplatEmitter>,
+
+    // SDF navmesh for agent pathfinding
+    navmesh: Option<vox_core::navmesh::NavMesh>,
+
+    // Terrain SDF volume (kept for navmesh re-extraction after deform)
+    terrain_volume: Option<vox_terrain::volume::TerrainVolume>,
+
+    // Spectral viewport mode (Tab cycles bands)
+    spectral_viewport_mode: vox_render::spectral_viewport::SpectralViewportMode,
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +412,12 @@ impl EngineApp {
             frame_dt: 0.0,
             tile_manager: vox_render::streaming::TileManager::with_radius(2),
             key_bindings: vox_core::input::load_bindings(std::path::Path::new("keybindings.toml")),
+            sdf_shadow: None,
+            gi_cache: None,
+            particle_emitters: Vec::new(),
+            navmesh: None,
+            terrain_volume: None,
+            spectral_viewport_mode: vox_render::spectral_viewport::SpectralViewportMode::default(),
         }
     }
 
@@ -431,6 +455,11 @@ impl EngineApp {
         let materials = vox_terrain::volume::default_volume_materials();
         let terrain_splats = vox_terrain::volume::volume_to_splats(&vol, &materials, 42);
         println!("[ochroma]   Terrain: {} splats", terrain_splats.len());
+        // Extract navmesh from terrain SDF
+        let navmesh = vox_terrain::navmesh_bridge::extract_from_volume(&vol, 1.5, 2);
+        println!("[ochroma]   Navmesh: {} nodes", navmesh.node_count());
+        self.navmesh = Some(navmesh);
+        self.terrain_volume = Some(vol);
 
         // Populate editor entities
         self.editor.add_entity("Terrain", "terrain", Vec3::ZERO);
@@ -559,6 +588,8 @@ impl EngineApp {
 
         // CLAS clustering + MegaGeometry
         self.run_clas();
+        // Bake GI (or load from .vxgi cache)
+        self.rebuild_gi();
     }
 
     fn run_clas(&mut self) {
@@ -582,6 +613,41 @@ impl EngineApp {
             "[ochroma] MegaGeometry: {} tiles at {}x{}",
             self.mega_tile_count, self.rasteriser.width, self.rasteriser.height,
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // GI baking
+    // -----------------------------------------------------------------------
+
+    fn rebuild_gi(&mut self) {
+        let vxgi_path = std::path::Path::new("scene.vxgi");
+        let irradiance = if vxgi_path.exists() {
+            match vox_data::gi_export::load_vxgi(vxgi_path) {
+                Ok(irr) if irr.len() == self.scene_splats.len() => irr,
+                _ => self.run_gi_bake(),
+            }
+        } else {
+            self.run_gi_bake()
+        };
+        let gi = vox_render::gi_baker::BakedGi { irradiance };
+        self.gi_cache = Some(vox_render::gi_cache::GiCache::new(gi));
+    }
+
+    fn run_gi_bake(&self) -> Vec<[f32; 8]> {
+        use vox_render::gi_baker::{GiBaker, GiBakeConfig};
+        println!("[ochroma] Baking GI for {} splats...", self.scene_splats.len());
+        let baker = GiBaker::new(GiBakeConfig {
+            search_radius: 3.0,
+            max_neighbours: 24,
+            bounces: 2,
+            falloff: 0.4,
+        });
+        let gi = baker.bake(&self.scene_splats);
+        let _ = vox_data::gi_export::save_vxgi(
+            &gi.irradiance,
+            std::path::Path::new("scene.vxgi"),
+        );
+        gi.irradiance
     }
 
     // -----------------------------------------------------------------------
@@ -718,9 +784,24 @@ impl EngineApp {
             }
         }
 
-        // Add particle splats
+        // Add particle splats (legacy ParticleSystem)
         let particle_splats = self.particles.to_splats();
         render_splats.extend(&particle_splats);
+
+        // Tick splat emitters and inject particles
+        {
+            let dt = self.frame_dt;
+            for emitter in &mut self.particle_emitters {
+                emitter.tick(dt);
+                render_splats.extend(emitter.splats());
+                for dead_spectral in &emitter.died_this_frame {
+                    let wav_path = vox_audio::create_impact_wav(dead_spectral, 0.08);
+                    if let Some(audio) = &self.audio_handle {
+                        audio.play(wav_path.to_str().unwrap_or(""), 0.4, false);
+                    }
+                }
+            }
+        }
 
         // Drain animation splats from RenderBuffer (written by animation_system)
         {
@@ -729,6 +810,12 @@ impl EngineApp {
             );
             render_splats.extend(anim_splats);
         }
+
+        // Apply GI cache (modulates spectral bands per-splat)
+        let render_splats = match &self.gi_cache {
+            Some(cache) => cache.apply(&render_splats),
+            None => render_splats,
+        };
 
         // Time-of-day illuminant
         let illuminant = illuminant_for_time(self.engine.time_of_day());
@@ -761,13 +848,27 @@ impl EngineApp {
             self.dlss.upscale(&fb.pixels, render_w, render_h, &depth, &motion)
         } else {
             // SPECTRA PATH: tile-based EWA Gaussian splatting renderer
-            let fb = vox_render::spectra_render::render_with_spectra_u8(
-                &render_splats,
-                &render_camera,
-                render_w,
-                render_h,
-                &illuminant,
-            );
+            let fb = match self.spectral_viewport_mode {
+                vox_render::spectral_viewport::SpectralViewportMode::Full => {
+                    vox_render::spectra_render::render_with_spectra_u8_shadowed(
+                        &render_splats,
+                        &render_camera,
+                        render_w,
+                        render_h,
+                        &illuminant,
+                        None, // shadow mask from SdfShadowPass (GPU path, None for CPU fallback)
+                    )
+                }
+                vox_render::spectral_viewport::SpectralViewportMode::Band(band) => {
+                    vox_render::spectra_render::render_spectral_band_u8(
+                        &render_splats,
+                        &render_camera,
+                        render_w,
+                        render_h,
+                        band,
+                    )
+                }
+            };
             let pixel_count = (render_w * render_h) as usize;
             let depth = vec![1.0f32; pixel_count];
             let motion = vec![[0.0f32; 2]; pixel_count];
@@ -814,6 +915,13 @@ impl EngineApp {
                 self.engine.stats.frame_number,
             ),
             [160, 160, 160], 1);
+
+        // Spectral viewport mode label (shown when not in full-color mode)
+        if self.spectral_viewport_mode != vox_render::spectral_viewport::SpectralViewportMode::Full {
+            burn_text(&mut final_pixels, display_w, 4, y_off + 30,
+                self.spectral_viewport_mode.label(),
+                [100, 220, 255], 1);
+        }
 
         // Gizmo overlay (drawn on top of scene in editor mode)
         if self.editor_visible {
@@ -1045,12 +1153,22 @@ impl EngineApp {
                         println!("[ochroma] Frame generation: {:?}", self.dlss.frame_gen);
                     }
                     KeyCode::Tab => {
+                        if self.editor_visible {
+                            // Close editor on second Tab press
+                            self.editor_visible = false;
+                            self.editor.visible = false;
+                            println!("[ochroma] Editor CLOSED");
+                        } else {
+                            // Cycle spectral viewport mode
+                            self.spectral_viewport_mode = self.spectral_viewport_mode.cycle_next();
+                            println!("[ochroma] Spectral viewport: {}", self.spectral_viewport_mode.label());
+                        }
+                    }
+                    KeyCode::Backquote => {
+                        // Open editor (Backquote / tilde key)
                         self.editor_visible = !self.editor_visible;
                         self.editor.visible = self.editor_visible;
-                        println!(
-                            "[ochroma] Editor {}",
-                            if self.editor_visible { "OPEN" } else { "CLOSED" }
-                        );
+                        println!("[ochroma] Editor {}", if self.editor_visible { "OPEN" } else { "CLOSED" });
                         if self.editor_visible {
                             self.editor.show_console();
                             if self.editor.selected.is_none() && !self.editor.entities.is_empty() {
@@ -1058,6 +1176,12 @@ impl EngineApp {
                                 self.editor.select(first_id);
                             }
                         }
+                    }
+                    KeyCode::KeyE => {
+                        use vox_render::splat_particles::{SplatEmitter, EmitterConfig};
+                        let pos = self.camera.position.to_array();
+                        self.particle_emitters.push(SplatEmitter::new(EmitterConfig::fire(pos)));
+                        println!("[ochroma] Spawned fire emitter at {:?}", pos);
                     }
                     KeyCode::Delete => {
                         if self.editor_visible {
