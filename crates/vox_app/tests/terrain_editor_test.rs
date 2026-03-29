@@ -89,3 +89,16 @@ fn sync_brush_flatten_uses_flatten_height() {
         panic!("expected Flatten brush");
     }
 }
+
+use vox_app::terrain_editor::scatter_foliage_on_terrain;
+use vox_terrain::foliage::default_foliage_rules;
+
+#[test]
+fn scatter_foliage_does_not_panic() {
+    let mut world = World::new();
+    world.insert_resource(generate_demo_volume(42));
+
+    let rules = default_foliage_rules();
+    // Should not panic even if zero instances are placed
+    scatter_foliage_on_terrain(&mut world, &rules, 0.1);
+}

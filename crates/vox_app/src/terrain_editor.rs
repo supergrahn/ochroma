@@ -1,8 +1,11 @@
 use bevy_ecs::prelude::*;
 use egui;
-use glam::Vec3;
-use vox_core::ecs::SplatAssetComponent;
+use glam::{Quat, Vec3};
+use uuid::Uuid;
+use vox_core::ecs::{LodLevel, SplatAssetComponent, SplatInstanceComponent};
 use vox_terrain::brushes::{BrushType, TerrainBrush};
+use vox_terrain::foliage::{scatter_foliage, FoliageRule};
+use vox_terrain::heightmap::Heightmap;
 use vox_terrain::volume::{default_volume_materials, volume_to_splats, TerrainVolume};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,5 +120,70 @@ pub fn apply_brush_stroke(
     if let Some(mut vol) = world.get_resource_mut::<TerrainVolume>() {
         let brush = TerrainBrush::new(brush_type, radius, strength);
         brush.apply(&mut *vol, center, dt);
+    }
+}
+
+static FOLIAGE_INSTANCE_ID: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(5000);
+
+/// Build a `Heightmap` from a `TerrainVolume` by scanning each XZ column for
+/// the topmost solid voxel (SDF <= 0).
+fn heightmap_from_volume(vol: &TerrainVolume) -> Heightmap {
+    let w = vol.size_x;
+    let d = vol.size_z;
+    let mut data = vec![vol.origin[1]; w * d];
+
+    for z in 0..d {
+        for x in 0..w {
+            // Scan downward from top
+            let mut surface_y = vol.origin[1];
+            for y in (0..vol.size_y).rev() {
+                if vol.get(x, y, z) <= 0.0 {
+                    surface_y = vol.origin[1] + y as f32 * vol.voxel_size;
+                    break;
+                }
+            }
+            data[z * w + x] = surface_y;
+        }
+    }
+
+    let mut hm = Heightmap::from_data(w, d, data, vol.voxel_size);
+    hm.origin = [vol.origin[0], vol.origin[2]];
+    hm
+}
+
+/// Scatter foliage on the terrain volume and spawn instances as ECS entities.
+pub fn scatter_foliage_on_terrain(
+    world: &mut World,
+    rules: &[FoliageRule],
+    density_scale: f32,
+) {
+    let instances = {
+        let vol = world.resource::<TerrainVolume>();
+        let hm = heightmap_from_volume(vol);
+
+        // Scale density by density_scale: build scaled rules
+        let scaled_rules: Vec<FoliageRule> = rules
+            .iter()
+            .map(|r| {
+                let mut scaled = r.clone();
+                scaled.density *= density_scale;
+                scaled
+            })
+            .collect();
+
+        scatter_foliage(&hm, &scaled_rules, 0)
+    };
+
+    for inst in instances {
+        let id = FOLIAGE_INSTANCE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        world.spawn(SplatInstanceComponent {
+            asset_uuid: Uuid::nil(),
+            position: Vec3::new(inst.position[0], inst.position[1], inst.position[2]),
+            rotation: Quat::from_rotation_y(inst.rotation_y),
+            scale: inst.scale,
+            instance_id: id,
+            lod: LodLevel::Full,
+        });
     }
 }
