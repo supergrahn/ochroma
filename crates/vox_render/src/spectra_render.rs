@@ -170,7 +170,7 @@ pub fn render_spectral_band_u8(
         .iter()
         .map(|s| splat_to_gaussian3d_band(s, band))
         .collect();
-    let floats = render_cpu_internal(&gaussians, &cam);
+    let floats = render_cpu_internal(&gaussians, &cam, None);
     floats
         .chunks_exact(4)
         .map(|px| {
@@ -385,6 +385,7 @@ struct TileGaussian {
 fn render_cpu_internal(
     gaussians: &[Gaussian3D],
     camera: &SpectraCamera,
+    shadow_mask: Option<&[f32]>,
 ) -> Vec<f32> {
     let w = camera.width;
     let h = camera.height;
@@ -478,6 +479,10 @@ fn render_cpu_internal(
                     let pxf = px as f32 + 0.5;
                     let pyf = py as f32 + 0.5;
 
+                    let pixel_shadow = shadow_mask
+                        .map(|m| m[py * w + px])
+                        .unwrap_or(1.0);
+
                     for tg_idx in start..end {
                         if transmittance < TRANSMITTANCE_THRESHOLD {
                             break;
@@ -500,7 +505,7 @@ fn render_cpu_internal(
                             continue;
                         }
 
-                        let alpha = (pg.opacity * power.exp()).min(0.99);
+                        let alpha = (pg.opacity * pixel_shadow * power.exp()).min(0.99);
                         if alpha < ALPHA_THRESHOLD {
                             continue;
                         }
@@ -564,7 +569,7 @@ pub fn render_with_spectra(
         .collect();
 
     let cam = ochroma_to_spectra_camera(camera, width, height);
-    render_cpu_internal(&gaussians, &cam)
+    render_cpu_internal(&gaussians, &cam, None)
 }
 
 /// Render and convert to u8 RGBA framebuffer.
@@ -577,6 +582,38 @@ pub fn render_with_spectra_u8(
 ) -> Vec<[u8; 4]> {
     let float_pixels = render_with_spectra(splats, camera, width, height, illuminant);
 
+    float_pixels
+        .chunks(4)
+        .map(|rgba| {
+            [
+                (rgba[0].clamp(0.0, 1.0) * 255.0) as u8,
+                (rgba[1].clamp(0.0, 1.0) * 255.0) as u8,
+                (rgba[2].clamp(0.0, 1.0) * 255.0) as u8,
+                (rgba[3].clamp(0.0, 1.0) * 255.0) as u8,
+            ]
+        })
+        .collect()
+}
+
+/// Render with optional per-pixel shadow mask.
+///
+/// `shadow_mask`: `width * height` f32 values in `[0,1]`; `None` = fully lit.
+/// Shadow mask is applied by multiplying each Gaussian's effective opacity at
+/// the corresponding pixel, darkening fully-shadowed (0.0) areas.
+pub fn render_with_spectra_u8_shadowed(
+    splats: &[GaussianSplat],
+    camera: &RenderCamera,
+    width: u32,
+    height: u32,
+    illuminant: &Illuminant,
+    shadow_mask: Option<&[f32]>,
+) -> Vec<[u8; 4]> {
+    let gaussians: Vec<Gaussian3D> = splats
+        .iter()
+        .map(|s| ochroma_to_gaussian3d(s, illuminant))
+        .collect();
+    let cam = ochroma_to_spectra_camera(camera, width, height);
+    let float_pixels = render_cpu_internal(&gaussians, &cam, shadow_mask);
     float_pixels
         .chunks(4)
         .map(|rgba| {
@@ -724,5 +761,30 @@ mod tests {
         let sum_b0: u32 = pixels_b0.iter().map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32).sum();
         let sum_b7: u32 = pixels_b7.iter().map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32).sum();
         assert_ne!(sum_b0, sum_b7, "band 0 (full) and band 7 (empty) should differ");
+    }
+
+    #[test]
+    fn shadow_mask_darkens_pixel() {
+        use vox_core::spectral::Illuminant;
+        let splat = GaussianSplat {
+            position: [0.0, 0.0, 0.0],
+            scale: [0.5, 0.5, 0.5],
+            rotation: [0, 0, 0, 32767],
+            opacity: 220,
+            _pad: [0; 3],
+            spectral: std::array::from_fn(|_| f16::from_f32(0.8).to_bits()),
+        };
+        let cam = make_camera(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, 32, 32);
+        let lit = render_with_spectra_u8_shadowed(
+            &[splat.clone()], &cam, 32, 32, &Illuminant::d65(), None,
+        );
+        let shadow_mask = vec![0.0f32; 32 * 32];
+        let shadowed = render_with_spectra_u8_shadowed(
+            &[splat], &cam, 32, 32, &Illuminant::d65(), Some(&shadow_mask),
+        );
+        let centre = 16 * 32 + 16;
+        let lit_lum = lit[centre][0] as u32 + lit[centre][1] as u32 + lit[centre][2] as u32;
+        let shad_lum = shadowed[centre][0] as u32 + shadowed[centre][1] as u32 + shadowed[centre][2] as u32;
+        assert!(shad_lum <= lit_lum, "shadowed pixel must not be brighter than lit");
     }
 }

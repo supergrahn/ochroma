@@ -70,3 +70,4 @@ pub mod movie_render;
 pub mod level_streaming;
 pub mod material_hotreload;
 pub mod gi_baker;
+pub mod spectral_viewport;
