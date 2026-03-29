@@ -1,74 +1,53 @@
-use vox_core::navmesh::NavMesh;
-use glam::Vec2;
+use vox_core::navmesh::{NavMesh, NavNode};
 
 #[test]
 fn find_direct_path() {
     let mut mesh = NavMesh::new();
-    mesh.add_node(0, Vec2::new(0.0, 0.0), true);
-    mesh.add_node(1, Vec2::new(10.0, 0.0), true);
-    mesh.add_edge(0, 1);
+    mesh.nodes.push(NavNode { id: 0, world_pos: [0.0, 0.0, 0.0], neighbours: vec![1] });
+    mesh.nodes.push(NavNode { id: 1, world_pos: [10.0, 0.0, 0.0], neighbours: vec![0] });
     let path = mesh.find_path(0, 1).unwrap();
-    assert_eq!(path, vec![0, 1]);
+    assert_eq!(path.len(), 2);
+    assert!((path[0][0] - 0.0).abs() < 0.01);
+    assert!((path[1][0] - 10.0).abs() < 0.01);
 }
 
 #[test]
 fn find_multi_hop_path() {
     let mut mesh = NavMesh::new();
-    mesh.add_node(0, Vec2::new(0.0, 0.0), true);
-    mesh.add_node(1, Vec2::new(5.0, 0.0), true);
-    mesh.add_node(2, Vec2::new(10.0, 0.0), true);
-    mesh.add_edge(0, 1);
-    mesh.add_edge(1, 2);
+    mesh.nodes.push(NavNode { id: 0, world_pos: [0.0, 0.0, 0.0], neighbours: vec![1] });
+    mesh.nodes.push(NavNode { id: 1, world_pos: [5.0, 0.0, 0.0], neighbours: vec![0, 2] });
+    mesh.nodes.push(NavNode { id: 2, world_pos: [10.0, 0.0, 0.0], neighbours: vec![1] });
     let path = mesh.find_path(0, 2).unwrap();
-    assert_eq!(path, vec![0, 1, 2]);
+    assert_eq!(path.len(), 3);
 }
 
 #[test]
 fn no_path_when_disconnected() {
     let mut mesh = NavMesh::new();
-    mesh.add_node(0, Vec2::new(0.0, 0.0), true);
-    mesh.add_node(1, Vec2::new(10.0, 0.0), true);
-    // No edge
+    mesh.nodes.push(NavNode { id: 0, world_pos: [0.0, 0.0, 0.0], neighbours: vec![] });
+    mesh.nodes.push(NavNode { id: 1, world_pos: [10.0, 0.0, 0.0], neighbours: vec![] });
     assert!(mesh.find_path(0, 1).is_none());
 }
 
 #[test]
-fn avoids_unwalkable_nodes() {
+fn a_star_finds_shortest_path() {
+    // Diamond: 0 -> 1 (short, x=1) -> 3, or 0 -> 2 (long, x=-5) -> 3
     let mut mesh = NavMesh::new();
-    mesh.add_node(0, Vec2::new(0.0, 0.0), true);
-    mesh.add_node(1, Vec2::new(5.0, 0.0), false); // blocked!
-    mesh.add_node(2, Vec2::new(10.0, 0.0), true);
-    mesh.add_node(3, Vec2::new(5.0, 5.0), true);  // detour
-    mesh.add_edge(0, 1);
-    mesh.add_edge(1, 2);
-    mesh.add_edge(0, 3);
-    mesh.add_edge(3, 2);
-    let path = mesh.find_path(0, 2).unwrap();
-    assert!(!path.contains(&1), "Should avoid unwalkable node 1");
-    assert!(path.contains(&3), "Should go through detour node 3");
+    mesh.nodes.push(NavNode { id: 0, world_pos: [0.0, 0.0, 0.0], neighbours: vec![1, 2] });
+    mesh.nodes.push(NavNode { id: 1, world_pos: [1.0, 1.0, 0.0], neighbours: vec![0, 3] });
+    mesh.nodes.push(NavNode { id: 2, world_pos: [-5.0, 5.0, 0.0], neighbours: vec![0, 3] });
+    mesh.nodes.push(NavNode { id: 3, world_pos: [2.0, 0.0, 0.0], neighbours: vec![1, 2] });
+    let path = mesh.find_path(0, 3).unwrap();
+    // Short path 0->1->3 visits positions [0,0,0], [1,1,0], [2,0,0]
+    let visits_node1 = path.iter().any(|p| (p[0] - 1.0).abs() < 0.01 && (p[1] - 1.0).abs() < 0.01);
+    assert!(visits_node1, "A* should take the short path through node 1 at (1,1,0)");
 }
 
 #[test]
 fn nearest_node_finds_closest() {
     let mut mesh = NavMesh::new();
-    mesh.add_node(0, Vec2::new(0.0, 0.0), true);
-    mesh.add_node(1, Vec2::new(100.0, 0.0), true);
-    assert_eq!(mesh.nearest_node(Vec2::new(10.0, 0.0)), Some(0));
-    assert_eq!(mesh.nearest_node(Vec2::new(90.0, 0.0)), Some(1));
-}
-
-#[test]
-fn a_star_finds_shortest_path() {
-    let mut mesh = NavMesh::new();
-    // Diamond shape: 0 -> 1 (short) -> 3, or 0 -> 2 (long) -> 3
-    mesh.add_node(0, Vec2::new(0.0, 0.0), true);
-    mesh.add_node(1, Vec2::new(1.0, 1.0), true);   // short path
-    mesh.add_node(2, Vec2::new(-5.0, 5.0), true);   // long detour
-    mesh.add_node(3, Vec2::new(2.0, 0.0), true);
-    mesh.add_edge(0, 1);
-    mesh.add_edge(1, 3);
-    mesh.add_edge(0, 2);
-    mesh.add_edge(2, 3);
-    let path = mesh.find_path(0, 3).unwrap();
-    assert!(path.contains(&1), "Should take the short path through node 1");
+    mesh.nodes.push(NavNode { id: 0, world_pos: [0.0, 0.0, 0.0], neighbours: vec![] });
+    mesh.nodes.push(NavNode { id: 1, world_pos: [100.0, 0.0, 0.0], neighbours: vec![] });
+    assert_eq!(mesh.nearest_node([10.0, 0.0, 0.0]), Some(0));
+    assert_eq!(mesh.nearest_node([90.0, 0.0, 0.0]), Some(1));
 }
