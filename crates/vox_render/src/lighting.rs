@@ -222,6 +222,74 @@ pub fn preetham_sky(sun_dir: Vec3) -> SkyColors {
     }
 }
 
+// ── Sky Model (time-driven) ───────────────────────────────────────────────
+
+pub struct SkyModel {
+    pub hour: f32,
+    pub latitude_deg: f32,
+    pub time_scale: f32,
+}
+
+impl SkyModel {
+    pub fn new(hour: f32, latitude_deg: f32) -> Self {
+        Self { hour, latitude_deg, time_scale: 1.0 }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.hour += (dt * self.time_scale) / 3600.0;
+        self.hour %= 24.0;
+        if self.hour < 0.0 { self.hour += 24.0; }
+    }
+
+    pub fn sun_dir(&self) -> Vec3 {
+        sun_direction(self.hour, self.latitude_deg)
+    }
+
+    pub fn sky_colors(&self) -> SkyColors {
+        preetham_sky(self.sun_dir())
+    }
+}
+
+// ── ECS Integration ───────────────────────────────────────────────────────
+
+use bevy_ecs::prelude::*;
+
+#[derive(Resource)]
+pub struct SkyModelResource(pub SkyModel);
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct SkyDeltaTime(pub f32);
+
+impl Default for SkyDeltaTime {
+    fn default() -> Self { Self(1.0 / 60.0) }
+}
+
+pub fn sky_update_system(
+    dt: Res<SkyDeltaTime>,
+    mut sky: ResMut<SkyModelResource>,
+) {
+    sky.0.update(dt.0);
+}
+
+pub struct SkyPlugin {
+    pub initial_hour: f32,
+    pub latitude_deg: f32,
+}
+
+impl SkyPlugin {
+    pub fn new(initial_hour: f32, latitude_deg: f32) -> Self {
+        Self { initial_hour, latitude_deg }
+    }
+}
+
+impl bevy_app::Plugin for SkyPlugin {
+    fn build(&self, app: &mut bevy_app::App) {
+        app.insert_resource(SkyModelResource(SkyModel::new(self.initial_hour, self.latitude_deg)));
+        app.insert_resource(SkyDeltaTime::default());
+        app.add_systems(bevy_app::Update, sky_update_system);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +369,56 @@ mod tests {
         let dir = sun_direction(6.0, 0.0);
         assert!(dir.x > 0.9, "sun at 6am equator should point east (x≈1); got x={}", dir.x);
         assert!(dir.y.abs() < 0.2, "sun at 6am equator should be near horizon; got y={}", dir.y);
+    }
+
+    #[test]
+    fn sky_model_advances_time() {
+        let mut model = SkyModel::new(12.0, 45.0);
+        model.update(3600.0); // 1 hour in seconds
+        assert!((model.hour - 13.0).abs() < 0.01, "hour should advance by 1; got {}", model.hour);
+    }
+
+    #[test]
+    fn sky_model_wraps_at_24() {
+        let mut model = SkyModel::new(23.5, 45.0);
+        model.update(3600.0); // 1 hour
+        assert!(model.hour < 24.0, "hour should wrap; got {}", model.hour);
+        assert!((model.hour - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn sky_model_sky_colors_returns_valid() {
+        let model = SkyModel::new(12.0, 45.0);
+        let colors = model.sky_colors();
+        assert!(colors.zenith[2] > 0.0, "noon zenith should have some blue");
+    }
+
+    #[test]
+    fn sky_plugin_builds_without_panic() {
+        use bevy_app::App;
+        let mut app = App::new();
+        app.add_plugins(SkyPlugin::new(12.0, 45.0));
+    }
+
+    #[test]
+    fn sky_update_system_advances_time() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+
+        let mut world = World::new();
+        world.insert_resource(SkyModelResource(SkyModel::new(12.0, 45.0)));
+        world.insert_resource(SkyDeltaTime(1.0));
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(sky_update_system);
+        schedule.run(&mut world);
+
+        let res = world.resource::<SkyModelResource>();
+        let expected = 12.0 + 1.0 / 3600.0;
+        assert!(
+            (res.0.hour - expected).abs() < 1e-5,
+            "hour should advance by 1s; got {}",
+            res.0.hour
+        );
     }
 }
