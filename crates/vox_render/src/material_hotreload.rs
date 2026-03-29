@@ -114,13 +114,15 @@ impl HotMaterialLibrary {
         for (name, (path, last_mtime, config)) in &mut self.entries {
             let (new_config, new_mtime) = Self::load_file(path);
             if new_mtime != *last_mtime {
-                *last_mtime = new_mtime;
                 if let Some(cfg) = new_config {
                     if cfg.is_valid() {
+                        *last_mtime = new_mtime;
                         *config = Some(cfg);
                         changed.push(name.clone());
                     }
+                    // parse failed or invalid: leave last_mtime as-is so next poll retries
                 }
+                // file unreadable: also leave last_mtime as-is
             }
         }
         changed
@@ -138,8 +140,21 @@ impl HotMaterialLibrary {
 
     /// Force-reload all files immediately (ignores rate limit).
     pub fn force_reload(&mut self) -> Vec<String> {
-        self.time_since_last_poll = self.poll_interval;
-        self.poll(0.0)
+        // Bypass the rate-limit by directly performing the mtime scan.
+        let mut changed = Vec::new();
+        for (name, (path, last_mtime, config)) in &mut self.entries {
+            let (new_config, new_mtime) = Self::load_file(path);
+            if new_mtime != *last_mtime {
+                if let Some(cfg) = new_config {
+                    if cfg.is_valid() {
+                        *last_mtime = new_mtime;
+                        *config = Some(cfg);
+                        changed.push(name.clone());
+                    }
+                }
+            }
+        }
+        changed
     }
 }
 
@@ -167,8 +182,10 @@ pub fn material_reload_system(
     if changed.is_empty() {
         return;
     }
+    let changed_set: std::collections::HashSet<&str> =
+        changed.iter().map(String::as_str).collect();
     for (entity, mat_ref) in query.iter() {
-        if changed.contains(&mat_ref.material_name) {
+        if changed_set.contains(mat_ref.material_name.as_str()) {
             commands.entity(entity).insert(MaterialDirty);
         }
     }
