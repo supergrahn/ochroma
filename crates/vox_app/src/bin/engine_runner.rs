@@ -1565,6 +1565,10 @@ impl EngineApp {
 
         // 4c-rhai. Per-frame Rhai script update + command dispatch
         {
+            let reloaded = self.rhai.poll_reload();
+            for name in &reloaded {
+                println!("[ochroma] hot-reload: {}", name);
+            }
             let dt_dyn = rhai::Dynamic::from(dt as f64);
             for i in 0..self.rhai.script_count() {
                 let _ = self.rhai.call_fn(i, "on_update", &[dt_dyn.clone()]);

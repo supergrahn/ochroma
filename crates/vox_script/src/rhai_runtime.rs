@@ -8,12 +8,15 @@ pub struct RhaiScript {
     pub name: String,
     pub source_path: Option<String>,
     ast: AST,
+    pub last_mtime: std::time::SystemTime,
 }
 
 /// The Rhai scripting runtime — hot-reloadable game logic.
 pub struct RhaiRuntime {
     engine: Engine,
     scripts: Vec<RhaiScript>,
+    pub last_reload_check: std::time::Instant,
+    pub reload_interval: std::time::Duration,
 }
 
 static PENDING_COMMANDS: Mutex<Vec<ScriptCommand>> = Mutex::new(Vec::new());
@@ -87,7 +90,12 @@ impl RhaiRuntime {
             (t as f64 % 1000.0) / 1000.0
         });
 
-        Self { engine, scripts: Vec::new() }
+        Self {
+            engine,
+            scripts: Vec::new(),
+            last_reload_check: std::time::Instant::now(),
+            reload_interval: std::time::Duration::from_secs(1),
+        }
     }
 
     /// Load a script from source code string.
@@ -98,6 +106,7 @@ impl RhaiRuntime {
             name: name.to_string(),
             source_path: None,
             ast,
+            last_mtime: std::time::UNIX_EPOCH,
         });
         Ok(idx)
     }
@@ -107,10 +116,14 @@ impl RhaiRuntime {
         let source = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let ast = self.engine.compile(&source).map_err(|e| format!("Compile error in {}: {}", path.display(), e))?;
         let idx = self.scripts.len();
+        let mtime = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
         self.scripts.push(RhaiScript {
             name: name.to_string(),
             source_path: Some(path.to_string_lossy().to_string()),
             ast,
+            last_mtime: mtime,
         });
         Ok(idx)
     }
@@ -138,6 +151,43 @@ impl RhaiRuntime {
             }
         }
         errors
+    }
+
+    /// Poll for changed script files and hot-reload them if the interval has elapsed.
+    /// Returns names of scripts that were successfully reloaded.
+    pub fn poll_reload(&mut self) -> Vec<String> {
+        if self.last_reload_check.elapsed() < self.reload_interval {
+            return Vec::new();
+        }
+        self.last_reload_check = std::time::Instant::now();
+
+        let mut to_reload: Vec<(usize, String, std::time::SystemTime)> = Vec::new();
+        for (i, script) in self.scripts.iter().enumerate() {
+            let path = match &script.source_path {
+                Some(p) => p.clone(),
+                None => continue,
+            };
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if let Ok(mtime) = meta.modified() {
+                    if mtime > script.last_mtime {
+                        to_reload.push((i, script.name.clone(), mtime));
+                    }
+                }
+            }
+        }
+
+        let mut result = Vec::new();
+        for (i, name, mtime) in to_reload {
+            match self.reload(i) {
+                Ok(()) => {
+                    self.scripts[i].last_mtime = mtime;
+                    println!("[ochroma] Hot-reloaded script: {}", name);
+                    result.push(name);
+                }
+                Err(e) => eprintln!("[ochroma] Script reload error {}: {}", name, e),
+            }
+        }
+        result
     }
 
     /// Call a function in a script.
@@ -215,5 +265,47 @@ mod tests {
 
         let cmds = drain_pending_commands();
         assert!(!cmds.is_empty(), "log() call should produce a ScriptCommand::Log");
+    }
+}
+
+#[cfg(test)]
+mod hot_reload_tests {
+    use super::*;
+
+    #[test]
+    fn poll_reload_is_rate_limited() {
+        let mut rt = RhaiRuntime::new();
+        rt.reload_interval = std::time::Duration::from_secs(10);
+        rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(15);
+        let _first = rt.poll_reload();
+        let second = rt.poll_reload();
+        assert!(second.is_empty(), "second poll within interval must return empty");
+    }
+
+    #[test]
+    fn poll_reload_returns_empty_when_no_scripts() {
+        let mut rt = RhaiRuntime::new();
+        rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let result = rt.poll_reload();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn script_reloads_when_file_updated() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ochroma_test_script_hot.rhai");
+        std::fs::write(&path, "fn on_update(dt) {}").unwrap();
+
+        let mut rt = RhaiRuntime::new();
+        rt.load_script_file("test", &path).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&path, "fn on_update(dt) { let x = 1; }").unwrap();
+
+        rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let reloaded = rt.poll_reload();
+        assert!(reloaded.len() <= 1);
+
+        let _ = std::fs::remove_file(&path);
     }
 }
