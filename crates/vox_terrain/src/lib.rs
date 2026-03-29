@@ -3,6 +3,7 @@ pub mod deform;
 pub mod foliage;
 pub mod heightmap;
 pub mod navmesh;
+pub mod navmesh_bridge;
 pub mod texture_paint;
 pub mod volume;
 
