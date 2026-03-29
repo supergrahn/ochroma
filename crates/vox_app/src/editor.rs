@@ -830,6 +830,11 @@ impl SceneEditor {
                 });
         }
 
+        if self.terrain_editor_state.foliage_scatter_pending {
+            self.terrain_editor_state.foliage_scatter_pending = false;
+            println!("[ochroma-terrain] Foliage scatter requested (density={})", self.terrain_editor_state.foliage_density);
+        }
+
         if self.show_history {
             egui::Window::new("History")
                 .default_size([220.0, 300.0])
