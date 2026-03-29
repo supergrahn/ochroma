@@ -54,3 +54,97 @@ impl Minimap {
         self.camera_z = z;
     }
 }
+
+// ── MiniMap (egui painter-based) ──────────────────────────────────────────
+
+use glam::Vec3;
+
+#[derive(Debug, Clone)]
+pub struct MiniMapEntity {
+    pub position: Vec3,
+    pub color: egui::Color32,
+}
+
+pub struct MiniMap {
+    pub radius: f32,
+    pub open: bool,
+    pub widget_size: f32,
+}
+
+impl MiniMap {
+    pub fn new(radius: f32) -> Self {
+        Self { radius, open: true, widget_size: 200.0 }
+    }
+
+    pub(crate) fn world_to_map(&self, world_pos: Vec3, camera_pos: Vec3, rect: egui::Rect) -> egui::Pos2 {
+        let center = rect.center();
+        let scale = self.widget_size / (2.0 * self.radius);
+        let dx = (world_pos.x - camera_pos.x) * scale;
+        let dz = (world_pos.z - camera_pos.z) * scale;
+        egui::pos2(center.x + dx, center.y + dz)
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context, entities: &[MiniMapEntity], camera_pos: Vec3) {
+        if !self.open { return; }
+        egui::Window::new("Mini Map")
+            .resizable(false)
+            .default_size([self.widget_size, self.widget_size])
+            .show(ctx, |ui| {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(self.widget_size, self.widget_size),
+                    egui::Sense::hover(),
+                );
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 30, 20));
+                for entity in entities {
+                    let pos = self.world_to_map(entity.position, camera_pos, rect);
+                    if rect.contains(pos) {
+                        painter.circle_filled(pos, 2.0, entity.color);
+                    }
+                }
+                let cam_pos = self.world_to_map(camera_pos, camera_pos, rect);
+                painter.circle_filled(cam_pos, 4.0, egui::Color32::from_rgb(255, 255, 0));
+            });
+    }
+}
+
+impl Default for MiniMap {
+    fn default() -> Self { Self::new(500.0) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimap_egui_default_radius() {
+        let mm = MiniMap::default();
+        assert_eq!(mm.radius, 500.0);
+        assert!(mm.open);
+    }
+
+    #[test]
+    fn minimap_world_to_map_center() {
+        let mm = MiniMap::new(100.0);
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 200.0));
+        let pos = mm.world_to_map(Vec3::new(10.0, 0.0, 10.0), Vec3::new(10.0, 0.0, 10.0), rect);
+        assert!((pos.x - 100.0).abs() < 1.0);
+        assert!((pos.y - 100.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn minimap_world_to_map_offset() {
+        let mm = MiniMap::new(100.0);
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 200.0));
+        let pos = mm.world_to_map(Vec3::new(50.0, 0.0, 0.0), Vec3::ZERO, rect);
+        assert!((pos.x - 150.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn minimap_toggle_open() {
+        let mut mm = MiniMap::default();
+        assert!(mm.open);
+        mm.open = false;
+        assert!(!mm.open);
+    }
+}
