@@ -183,6 +183,9 @@ struct EngineApp {
 
     // Cascaded shadow mapper
     shadow_mapper: ShadowMapper,
+
+    // Audio handle for high-level audio management
+    audio_handle: Option<vox_audio::AudioHandle>,
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +360,7 @@ impl EngineApp {
                 ss
             },
             shadow_mapper: ShadowMapper::new(512),
+            audio_handle: vox_audio::AudioHandle::spawn(),
         }
     }
 
