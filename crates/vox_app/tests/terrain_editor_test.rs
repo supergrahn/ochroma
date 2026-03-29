@@ -66,3 +66,26 @@ fn resplat_updates_splat_asset() {
     assert!(asset.splat_count > 0, "resplat should produce splats from the volume");
     assert_eq!(asset.splats.len(), asset.splat_count as usize);
 }
+
+#[test]
+fn foliage_scatter_flag_round_trip() {
+    let mut state = TerrainEditorState::default();
+    assert!(!state.foliage_scatter_pending);
+    state.foliage_scatter_pending = true;
+    assert!(state.foliage_scatter_pending);
+    state.foliage_scatter_pending = false;
+    assert!(!state.foliage_scatter_pending);
+}
+
+#[test]
+fn sync_brush_flatten_uses_flatten_height() {
+    let mut state = TerrainEditorState::default();
+    state.active_brush = ActiveBrush::Flatten;
+    state.flatten_height = 3.5;
+    state.sync_brush();
+    if let BrushType::Flatten { target_height } = state.brush.brush_type {
+        assert!((target_height - 3.5).abs() < f32::EPSILON);
+    } else {
+        panic!("expected Flatten brush");
+    }
+}

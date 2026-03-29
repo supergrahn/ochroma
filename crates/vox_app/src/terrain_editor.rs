@@ -1,4 +1,5 @@
 use bevy_ecs::prelude::*;
+use egui;
 use glam::Vec3;
 use vox_core::ecs::SplatAssetComponent;
 use vox_terrain::brushes::{BrushType, TerrainBrush};
@@ -67,6 +68,40 @@ pub fn resplat_terrain(world: &mut World, terrain_entity: Entity) {
     if let Some(mut asset) = world.entity_mut(terrain_entity).get_mut::<SplatAssetComponent>() {
         asset.splats = splats;
         asset.splat_count = splat_count;
+    }
+}
+
+/// Show the terrain editor egui panel.
+pub fn show_terrain_editor_panel(ui: &mut egui::Ui, state: &mut TerrainEditorState) {
+    ui.heading("Brush");
+    let brush_options: &[(&str, ActiveBrush)] = &[
+        ("Raise",   ActiveBrush::Raise),
+        ("Lower",   ActiveBrush::Lower),
+        ("Smooth",  ActiveBrush::Smooth),
+        ("Flatten", ActiveBrush::Flatten),
+        ("Paint",   ActiveBrush::Paint),
+        ("Erode",   ActiveBrush::Erode),
+    ];
+    ui.horizontal(|ui| {
+        for (label, variant) in brush_options {
+            if ui.selectable_label(state.active_brush == *variant, *label).clicked() {
+                state.active_brush = *variant;
+                state.sync_brush();
+            }
+        }
+    });
+    ui.add(egui::Slider::new(&mut state.brush.radius, 0.5..=50.0).text("Radius"));
+    ui.add(egui::Slider::new(&mut state.brush.strength, 0.0..=2.0).text("Strength"));
+    if state.active_brush == ActiveBrush::Flatten {
+        if ui.add(egui::Slider::new(&mut state.flatten_height, -10.0..=50.0).text("Height")).changed() {
+            state.sync_brush();
+        }
+    }
+    ui.separator();
+    ui.heading("Foliage");
+    ui.add(egui::Slider::new(&mut state.foliage_density, 0.0..=1.0).text("Density"));
+    if ui.button("Scatter Foliage").clicked() {
+        state.foliage_scatter_pending = true;
     }
 }
 
