@@ -949,14 +949,14 @@ impl EngineApp {
     fn build_world_save(&self) -> vox_data::world_save::WorldSave {
         use vox_data::world_save::{SavedEntity, WorldSave};
 
-        let cam_pos = [self.camera.position.x, self.camera.position.y, self.camera.position.z];
-        let cam_rot = [0.0f32, 0.0, 0.0, 1.0];
+        let cam_pos = [self.camera.target.x, self.camera.target.y, self.camera.target.z];
+        let cam_rot = [self.camera.orbit_angle, self.camera.orbit_distance, self.camera.altitude, 1.0];
 
         let entities: Vec<SavedEntity> = self.editor.entities.iter().map(|e| SavedEntity {
             name: e.name.clone(),
             position: e.position.to_array(),
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: [1.0, 1.0, 1.0],
+            rotation: e.rotation.to_array(),
+            scale: e.scale.to_array(),
             asset_path: Some(e.asset_path.clone()),
             scripts: Vec::new(),
             tags: Vec::new(),
@@ -1164,10 +1164,16 @@ impl EngineApp {
                             Ok(ws) => {
                                 self.engine.set_time_of_day(ws.resources.time_of_day);
                                 let cp = ws.resources.camera_position;
-                                self.camera.position = glam::Vec3::new(cp[0], cp[1], cp[2]);
+                                let cr = ws.resources.camera_rotation;
+                                self.camera.target = glam::Vec3::new(cp[0], cp[1], cp[2]);
+                                self.camera.orbit_angle = cr[0];
+                                self.camera.orbit_distance = cr[1];
+                                self.camera.altitude = cr[2];
                                 for saved in &ws.entities {
                                     if let Some(entity) = self.editor.entities.iter_mut().find(|e| e.name == saved.name) {
                                         entity.position = glam::Vec3::from(saved.position);
+                                    } else {
+                                        println!("[ochroma] Load: entity '{}' not found in scene (skipped)", saved.name);
                                     }
                                 }
                                 println!("[ochroma] World loaded from {} ({} entities)", path.display(), ws.entities.len());
