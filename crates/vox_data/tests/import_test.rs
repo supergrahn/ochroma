@@ -96,3 +96,38 @@ fn import_gltf_produces_real_splats() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+use vox_data::vxm::{VxmFile, VxmHeader, MaterialType};
+use vox_core::types::GaussianSplat;
+use uuid::Uuid;
+
+#[test]
+fn import_vxm_produces_exact_splats() {
+    let dir = std::env::temp_dir().join("ochroma_vxm_import_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("test.vxm");
+
+    // Write a real VXM with 5 known splats
+    let file = VxmFile {
+        header: VxmHeader::new(Uuid::new_v4(), 5, MaterialType::Generic),
+        splats: (0..5).map(|i| GaussianSplat {
+        position: [i as f32, 0.0, 0.0],
+        scale: [0.1, 0.1, 0.1],
+        rotation: [0, 0, 0, 16384],
+        opacity: 200,
+        _pad: [0; 3],
+        spectral: [100, 200, 150, 100, 80, 60, 40, 20],
+    }).collect(),
+    };
+    let mut buf = Vec::new();
+    file.write(&mut buf).unwrap();
+    std::fs::write(&path, &buf).unwrap();
+
+    let settings = ImportSettings::default();
+    let result = import_asset(&path, &settings).unwrap();
+    assert_eq!(result.splats.len(), 5, "VXM import should produce exactly 5 splats");
+    assert!((result.splats[0].position[0]).abs() < 0.01, "first splat at x=0");
+    assert!((result.splats[4].position[0] - 4.0).abs() < 0.01, "fifth splat at x=4");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -214,33 +214,36 @@ fn import_gltf_full(path: &Path, settings: &ImportSettings) -> Result<ImportResu
 }
 
 fn import_vxm(path: &Path, settings: &ImportSettings) -> Result<ImportResult, String> {
+    use crate::vxm::VxmFile;
+
     let data = std::fs::read(path).map_err(|e| format!("Failed to read VXM: {}", e))?;
-    if data.len() < 4 {
-        return Err("VXM file too small".to_string());
+    let file = VxmFile::read(std::io::Cursor::new(&data))
+        .map_err(|e| format!("VXM parse error: {}", e))?;
+
+    let mut splats = file.splats;
+
+    // Apply scale factor
+    if (settings.scale_factor - 1.0).abs() > f32::EPSILON {
+        for s in splats.iter_mut() {
+            s.position[0] *= settings.scale_factor;
+            s.position[1] *= settings.scale_factor;
+            s.position[2] *= settings.scale_factor;
+        }
     }
-
-    // VXM is our native format — simplified import
-    let splat_count = (data.len() / 48).max(1); // rough estimate
-    let adjusted_count = (splat_count as f32 * settings.splat_density / 200.0) as usize;
-
-    let splats: Vec<GaussianSplat> = (0..adjusted_count)
-        .map(|i| {
-            let t = i as f32 / adjusted_count.max(1) as f32;
-            GaussianSplat {
-                position: [t * settings.scale_factor, 0.0, 0.0],
-                scale: [0.01; 3],
-                rotation: [0, 0, 0, 16384],
-                opacity: 255,
-                _pad: [0; 3],
-                spectral: [0; 8],
-            }
-        })
-        .collect();
 
     let collision_box = if settings.generate_collision
         && settings.collision_type != CollisionGenType::None
+        && !splats.is_empty()
     {
-        Some(([0.0, 0.0, 0.0], [settings.scale_factor, 1.0, 1.0]))
+        let mut mn = splats[0].position;
+        let mut mx = splats[0].position;
+        for s in &splats {
+            for i in 0..3 {
+                if s.position[i] < mn[i] { mn[i] = s.position[i]; }
+                if s.position[i] > mx[i] { mx[i] = s.position[i]; }
+            }
+        }
+        Some((mn, mx))
     } else {
         None
     };
