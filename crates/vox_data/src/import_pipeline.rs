@@ -287,32 +287,43 @@ mod tests {
     }
 
     #[test]
-    fn test_import_settings_affect_density() {
-        let dir = std::env::temp_dir().join("ochroma_test_density");
+    fn test_import_settings_affect_scale_factor() {
+        let dir = std::env::temp_dir().join("ochroma_test_scale");
         std::fs::create_dir_all(&dir).unwrap();
-        let ply_path = dir.join("test.ply");
-        let mut f = std::fs::File::create(&ply_path).unwrap();
-        write!(
-            f,
-            "ply\nformat ascii 1.0\nelement vertex 100\nproperty float x\nend_header\n"
-        )
-        .unwrap();
-        for i in 0..100 {
-            writeln!(f, "{}", i as f32 * 0.1).unwrap();
+        // Write binary PLY with a single splat at x=1.0
+        let ply_path = dir.join("scale_test.ply");
+        {
+            use std::io::{BufWriter, Write};
+            let mut f = BufWriter::new(std::fs::File::create(&ply_path).unwrap());
+            write!(f, "ply\nformat binary_little_endian 1.0\nelement vertex 1\n").unwrap();
+            write!(f, "property float x\nproperty float y\nproperty float z\n").unwrap();
+            write!(f, "property float scale_0\nproperty float scale_1\nproperty float scale_2\n").unwrap();
+            write!(f, "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n").unwrap();
+            write!(f, "property float opacity\n").unwrap();
+            write!(f, "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n").unwrap();
+            write!(f, "end_header\n").unwrap();
+            // splat at x=1.0, y=0, z=0; scale=exp(-2.3)
+            f.write_all(&1.0f32.to_le_bytes()).unwrap(); // x
+            for _ in 0..2 { f.write_all(&0.0f32.to_le_bytes()).unwrap(); } // y, z
+            for _ in 0..3 { f.write_all(&(-2.3f32).to_le_bytes()).unwrap(); } // scale
+            f.write_all(&1.0f32.to_le_bytes()).unwrap(); // rot_0 (w)
+            for _ in 0..3 { f.write_all(&0.0f32.to_le_bytes()).unwrap(); } // rot x,y,z
+            f.write_all(&0.0f32.to_le_bytes()).unwrap(); // opacity (logit)
+            for _ in 0..3 { f.write_all(&0.5f32.to_le_bytes()).unwrap(); } // f_dc
         }
 
-        let low = ImportSettings {
-            splat_density: 100.0,
-            ..Default::default()
-        };
-        let high = ImportSettings {
-            splat_density: 400.0,
-            ..Default::default()
-        };
+        let settings_2x = ImportSettings { scale_factor: 2.0, ..Default::default() };
+        let settings_1x = ImportSettings { scale_factor: 1.0, ..Default::default() };
 
-        let result_low = import_asset(&ply_path, &low).unwrap();
-        let result_high = import_asset(&ply_path, &high).unwrap();
-        assert!(result_high.splats.len() > result_low.splats.len());
+        let result_2x = import_asset(&ply_path, &settings_2x).unwrap();
+        let result_1x = import_asset(&ply_path, &settings_1x).unwrap();
+
+        assert_eq!(result_1x.splats.len(), 1);
+        assert_eq!(result_2x.splats.len(), 1);
+        assert!((result_1x.splats[0].position[0] - 1.0).abs() < 0.01,
+            "1x: expected x≈1.0, got {}", result_1x.splats[0].position[0]);
+        assert!((result_2x.splats[0].position[0] - 2.0).abs() < 0.01,
+            "2x: expected x≈2.0, got {}", result_2x.splats[0].position[0]);
 
         std::fs::remove_dir_all(&dir).ok();
     }
