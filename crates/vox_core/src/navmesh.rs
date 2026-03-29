@@ -20,8 +20,6 @@ pub struct NavNode {
 #[derive(Debug, Default)]
 pub struct NavMesh {
     pub nodes: Vec<NavNode>,
-    /// Spatial index: voxel (x,y,z) → node id for fast lookup during extraction.
-    voxel_to_node: HashMap<(i32, i32, i32), u32>,
 }
 
 impl NavMesh {
@@ -43,6 +41,9 @@ impl NavMesh {
 
     /// A* pathfinding from `start_node` to `goal_node`.
     /// Returns Some(path) as a list of world positions, or None if no path exists.
+    /// # Panics
+    /// Panics if `start_id` or `goal_id` are out of bounds for `self.nodes`.
+    /// Use `nearest_node()` to obtain valid IDs.
     pub fn find_path(&self, start_id: u32, goal_id: u32) -> Option<Vec<[f32; 3]>> {
         if start_id == goal_id {
             return Some(vec![self.nodes[start_id as usize].world_pos]);
@@ -88,7 +89,6 @@ impl NavMesh {
         for node in &mut self.nodes {
             node.neighbours.retain(|id| !removed.contains(id));
         }
-        self.voxel_to_node.retain(|_, id| !removed.contains(id));
     }
 
     /// Merge additional nodes (from re-extraction of deformed region) into this navmesh.
