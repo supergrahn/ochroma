@@ -1002,21 +1002,14 @@ impl EngineApp {
                         println!("[ochroma] Mini map: {}", if self.editor.mini_map.open { "ON" } else { "OFF" });
                     }
                     KeyCode::KeyQ => {
-                        self.dlss.quality = next_dlss_quality(self.dlss.quality);
-                        let (rw, rh) = self.dlss.render_resolution();
-                        println!(
-                            "[ochroma] DLSS: {} (render {}x{} -> display {}x{})",
-                            dlss_quality_name(self.dlss.quality),
-                            rw, rh, self.dlss.display_width, self.dlss.display_height,
-                        );
-                    }
-                    KeyCode::KeyP => {
                         self.spectral_bypass = !self.spectral_bypass;
                         self.temporal.reset();
                         println!(
                             "[ochroma] Render mode: {}",
                             if self.spectral_bypass { "FAST (direct RGB)" } else { "QUALITY (spectral pipeline)" }
                         );
+                    }
+                    KeyCode::KeyP => {
                         self.character.enabled = !self.character.enabled;
                         println!("[ochroma] Character controller: {}", if self.character.enabled { "ON" } else { "OFF" });
                     }
