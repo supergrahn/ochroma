@@ -30,7 +30,8 @@ use vox_render::vr::VrSession;
 use vox_render::upscaling::{UpscaleManager, UpscaleQuality};
 use vox_render::svt::{TileCache, TileId};
 use vox_render::cinematic::CinematicCamera;
-use vox_render::gi_cache::GICache;
+use vox_render::gi_cache::GiCache;
+use vox_render::gi_baker::BakedGi;
 use vox_render::spatial_ui::{PanelContent, SpatialUIManager};
 use vox_render::hand_tracking::{GestureRecognizer, HandState, InteractionManager};
 use vox_render::ar_placement::ARSession;
@@ -330,11 +331,10 @@ fn main() {
     println!("[{:02}] cinematic -- duration={:.1}s, DOF focal={}", count, cine.duration(), cine.dof.focal_distance);
 
     // 23. gi_cache
-    let mut gi = GICache::new(2.0, 2);
-    gi.add_bounce(Vec3::new(5.0, 0.0, 5.0), SpectralBands([0.5; 8]), 0);
-    let irr = gi.query(Vec3::new(5.0, 0.0, 5.0));
+    let baked = BakedGi { irradiance: vec![[0.5f32; 8]] };
+    let cache = GiCache::new(baked);
     count += 1;
-    println!("[{:02}] gi_cache -- {} cells, query={}", count, gi.cell_count(), irr.is_some());
+    println!("[{:02}] gi_cache -- blend={:.1}", count, cache.blend);
 
     // 24. spatial_ui
     let mut spatial_ui = SpatialUIManager::new();
