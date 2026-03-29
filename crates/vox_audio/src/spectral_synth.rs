@@ -12,7 +12,7 @@
 //!   Band 6 (652nm, red-orange)  → 125 Hz
 //!   Band 7 (700nm, red)         →  80 Hz  (deep, rocky)
 
-const FREQ_MAP: [f32; 8] = [8000.0, 4000.0, 2000.0, 1000.0, 500.0, 250.0, 125.0, 80.0];
+pub const FREQ_MAP: [f32; 8] = [8000.0, 4000.0, 2000.0, 1000.0, 500.0, 250.0, 125.0, 80.0];
 
 pub fn synthesize_impact(spectral_weights: &[f32; 8], duration_secs: f32, sample_rate: u32) -> Vec<f32> {
     let n_samples = (sample_rate as f32 * duration_secs) as usize;

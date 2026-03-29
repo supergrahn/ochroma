@@ -1,0 +1,10 @@
+[build]
+# Disable incremental compilation — prevents multi-GB stale artifact accumulation
+# in target/debug/incremental/ across repeated builds
+incremental = false
+
+[profile.dev]
+incremental = false
+
+[profile.release]
+incremental = false
