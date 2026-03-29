@@ -99,6 +99,11 @@ impl HotMaterialLibrary {
         self.entries.keys().cloned().collect()
     }
 
+    /// Returns the watched file path for a material name, if registered.
+    pub fn path_for(&self, name: &str) -> Option<&PathBuf> {
+        self.entries.get(name).map(|(p, _, _)| p)
+    }
+
     /// Poll registered files for mtime changes.
     ///
     /// Returns the names of materials whose files changed since last poll.
@@ -155,6 +160,42 @@ impl HotMaterialLibrary {
             }
         }
         changed
+    }
+}
+
+// ── AssetWatcher impl ────────────────────────────────────────────────────
+
+impl vox_core::asset_watcher::AssetWatcher for HotMaterialLibrary {
+    fn poll(&mut self, dt: f32) -> Vec<vox_core::asset_watcher::AssetChanged> {
+        let changed_names = HotMaterialLibrary::poll(self, dt);
+        changed_names
+            .into_iter()
+            .map(|name| {
+                let path = self
+                    .path_for(&name)
+                    .cloned()
+                    .unwrap_or_default();
+                vox_core::asset_watcher::AssetChanged { name, path }
+            })
+            .collect()
+    }
+
+    fn force_poll(&mut self) -> Vec<vox_core::asset_watcher::AssetChanged> {
+        let changed_names = self.force_reload();
+        changed_names
+            .into_iter()
+            .map(|name| {
+                let path = self
+                    .path_for(&name)
+                    .cloned()
+                    .unwrap_or_default();
+                vox_core::asset_watcher::AssetChanged { name, path }
+            })
+            .collect()
+    }
+
+    fn watch(&mut self, name: &str, path: std::path::PathBuf) {
+        self.register(name, path);
     }
 }
 
@@ -421,5 +462,34 @@ metallic = 0.3
         assert_eq!(mat_ref.material_name, "wood");
         let cloned = mat_ref.clone();
         assert_eq!(cloned.material_name, "wood");
+    }
+}
+
+#[cfg(test)]
+mod asset_watcher_tests {
+    use super::*;
+    use vox_core::asset_watcher::AssetWatcher;
+
+    #[test]
+    fn hot_material_library_is_asset_watcher() {
+        let lib = HotMaterialLibrary::new(1.0);
+        let _watcher: Box<dyn vox_core::asset_watcher::AssetWatcher> = Box::new(lib);
+    }
+
+    #[test]
+    fn asset_changed_fields() {
+        let ac = vox_core::asset_watcher::AssetChanged {
+            name: "stone".into(),
+            path: std::path::PathBuf::from("materials/stone.toml"),
+        };
+        assert_eq!(ac.name, "stone");
+        assert_eq!(ac.path.to_str().unwrap(), "materials/stone.toml");
+    }
+
+    #[test]
+    fn poll_returns_empty_when_no_entries() {
+        let mut lib = HotMaterialLibrary::new(1.0);
+        let changed = AssetWatcher::poll(&mut lib, 2.0);
+        assert!(changed.is_empty());
     }
 }

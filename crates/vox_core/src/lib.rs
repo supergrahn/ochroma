@@ -1,3 +1,4 @@
+pub mod asset_watcher;
 pub mod types;
 pub mod undo;
 pub mod spectral;
