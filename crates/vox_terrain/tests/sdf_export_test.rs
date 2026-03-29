@@ -19,7 +19,7 @@ fn to_sdf_buffer_solid_voxel_is_negative() {
     let mut vol = TerrainVolume::new(4, 4, 4, 1.0);
     vol.set(2, 2, 2, -1.0);
     let buf = vol.to_sdf_buffer();
-    // index = z * size_x * size_y + y * size_x + x = 2*16 + 2*4 + 2 = 42
+    // index = z * size_y * size_x + y * size_x + x = 2*4*4 + 2*4 + 2 = 42
     assert!(buf[42] < 0.0, "solid voxel must be negative in flat buffer");
 }
 
