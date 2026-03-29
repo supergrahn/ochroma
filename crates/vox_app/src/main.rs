@@ -15,6 +15,7 @@ pub mod road_builder;
 pub mod simulation;
 pub mod steam;
 pub mod systems;
+pub mod terrain_editor;
 pub mod terrain_setup;
 pub mod ui;
 pub mod undo_integration;
