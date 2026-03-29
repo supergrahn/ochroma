@@ -8,6 +8,10 @@ echo "Packaging Ochroma Engine v${VERSION}..."
 # Build release
 ./scripts/build_release.sh
 
+echo ""
+echo "Release binary sizes:"
+ls -lh target/release/ochroma target/release/walking_sim 2>/dev/null || true
+
 # Create package directory
 rm -rf "dist/${PACKAGE}"
 mkdir -p "dist/${PACKAGE}/bin"
