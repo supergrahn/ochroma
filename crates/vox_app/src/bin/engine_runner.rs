@@ -1109,6 +1109,15 @@ impl EngineApp {
                             println!("[ochroma] Redo ({} left)", self.editor.redo_stack.len());
                         }
                     }
+                    KeyCode::KeyO => {
+                        let _ = self.spatial_audio.play_3d(
+                            std::path::Path::new("assets/audio/ambient/wind_loop.ogg"),
+                            glam::Vec3::new(10.0, 0.0, 0.0),
+                            0.5,
+                            true,
+                        );
+                        println!("[ochroma] Playing demo 3D sound at (10, 0, 0)");
+                    }
                     _ => {}
                 }
             } else {
@@ -1435,9 +1444,19 @@ impl EngineApp {
         self.audio.tick(dt);
         self.audio.set_listener(self.camera.position);
 
-        // Spatial audio: update listener position/orientation from camera, tick
-        let cam_fwd = self.camera_forward();
-        self.spatial_audio.set_listener(self.camera.position, cam_fwd, Vec3::Y);
+        // Spatial audio: update listener position/orientation from active camera source.
+        // When the character controller is enabled, use its position/forward directly
+        // so the listener tracks the character even before camera sync.
+        if self.character.enabled {
+            self.spatial_audio.set_listener(
+                self.character.camera_position(),
+                self.character.camera_forward(),
+                Vec3::Y,
+            );
+        } else {
+            let cam_fwd = self.camera_forward();
+            self.spatial_audio.set_listener(self.camera.position, cam_fwd, Vec3::Y);
+        }
         self.spatial_audio.tick(dt);
 
         // Process pending script commands for audio playback

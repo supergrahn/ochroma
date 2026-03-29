@@ -382,6 +382,33 @@ impl Default for SpatialAudioManager {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Vec3;
+
+    #[test]
+    fn spatial_manager_volume_decreases_with_distance() {
+        let mgr = SpatialAudioManager::new_silent();
+        let (vol_near, _) = mgr.compute_spatial_for(Vec3::new(1.0, 0.0, 0.0), 1.0);
+        let (vol_far, _) = mgr.compute_spatial_for(Vec3::new(100.0, 0.0, 0.0), 1.0);
+        assert!(vol_near > vol_far, "volume should decrease with distance");
+    }
+
+    #[test]
+    fn spatial_manager_set_listener_does_not_panic() {
+        let mut mgr = SpatialAudioManager::new_silent();
+        mgr.set_listener(Vec3::new(1.0, 0.0, 0.0), Vec3::NEG_Z, Vec3::Y);
+    }
+
+    #[test]
+    fn spatial_volume_at_max_distance_is_near_zero() {
+        let mgr = SpatialAudioManager::new_silent();
+        let (vol, _) = mgr.compute_spatial_for(Vec3::new(600.0, 0.0, 0.0), 1.0);
+        assert!(vol < 0.01, "volume beyond max_dist should be near zero, got {}", vol);
+    }
+}
+
 // ── Free functions ────────────────────────────────────────────────────────
 
 /// Pure-math spatial computation: distance attenuation + stereo pan.
