@@ -2065,6 +2065,18 @@ impl ApplicationHandler for EngineApp {
             }
         }
 
+        // --demo flag: load the bundled demo scene script
+        if std::env::args().any(|a| a == "--demo") {
+            let demo_path = std::path::Path::new("examples/demo_scene/main.rhai");
+            match self.rhai.load_script_file("demo", demo_path) {
+                Ok(idx) => {
+                    println!("[ochroma] Demo mode: loaded {}", demo_path.display());
+                    let _ = self.rhai.call_fn(idx, "on_start", &[]);
+                }
+                Err(e) => eprintln!("[ochroma] Demo mode: failed to load script: {}", e),
+            }
+        }
+
         println!();
         println!("Ochroma Engine v0.1.0");
         println!("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
