@@ -53,6 +53,10 @@ use vox_physics::rapier::RapierPhysicsWorld;
 use vox_render::gizmos::GizmoRenderer;
 use vox_ui::theme::apply_ochroma_theme;
 
+// NavMesh + patrol demo (uncomment to enable):
+// use vox_app::ai_fsm::NavMeshPlugin;
+// app.add_plugins(NavMeshPlugin);
+
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
 
