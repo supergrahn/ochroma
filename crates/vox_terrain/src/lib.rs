@@ -1,9 +1,12 @@
 pub mod brushes;
+pub mod deform;
 pub mod foliage;
 pub mod heightmap;
 pub mod navmesh;
 pub mod texture_paint;
 pub mod volume;
+
+pub use deform::{apply_explosion, carve_sphere, carve_tunnel, fill_sphere};
 
 use serde::{Deserialize, Serialize};
 
