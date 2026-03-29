@@ -26,6 +26,7 @@ use winit::window::{Window, WindowId};
 
 use vox_app::content_browser::ContentBrowser;
 use vox_app::editor::SceneEditor;
+use vox_app::soundscape::Soundscape;
 use vox_core::engine_runtime::{EngineConfig, EngineRuntime};
 use vox_core::game_ui::burn_text;
 use vox_core::spectral::Illuminant;
@@ -166,6 +167,9 @@ struct EngineApp {
 
     // VFX editor UI window
     vfx_editor_ui: vox_render::vfx_editor_ui::VfxEditorUi,
+
+    // Ambient soundscape (toggled with N key)
+    soundscape: Soundscape,
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +338,11 @@ impl EngineApp {
                 mgr
             },
             vfx_editor_ui: vox_render::vfx_editor_ui::VfxEditorUi::new(),
+            soundscape: {
+                let ss = Soundscape::outdoor_default();
+                println!("[ochroma] Soundscape: outdoor default ({} layers, active={})", ss.layers.len(), ss.active);
+                ss
+            },
         }
     }
 
@@ -915,6 +924,10 @@ impl EngineApp {
                     KeyCode::KeyM => {
                         self.tonemap.operator = next_tonemap_operator(self.tonemap.operator);
                         println!("[ochroma] Tonemap: {}", tonemap_operator_name(self.tonemap.operator));
+                    }
+                    KeyCode::KeyN => {
+                        self.soundscape.active = !self.soundscape.active;
+                        println!("[ochroma] Soundscape: {}", if self.soundscape.active { "ON" } else { "OFF" });
                     }
                     KeyCode::KeyQ => {
                         self.dlss.quality = next_dlss_quality(self.dlss.quality);

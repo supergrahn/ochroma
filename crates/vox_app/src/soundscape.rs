@@ -1,110 +1,243 @@
-use glam::Vec3;
+//! Generic ambient soundscape system.
 
-/// An ambient audio layer that plays based on conditions.
+use bevy_ecs::prelude::*;
+
+// ── Data types ────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
-pub struct AmbientLayer {
+pub struct SoundLayer {
     pub name: String,
-    pub base_volume: f32,
-    pub current_volume: f32,
-    pub category: SoundCategory,
+    pub clip_path: String,
+    pub volume: f32,
+    pub looping: bool,
+    pub spatial: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SoundCategory {
-    UrbanHum,      // Traffic, city noise
-    Nature,        // Birds, wind, water
-    Weather,       // Rain, thunder, wind
-    Construction,  // Building sites
-    Emergency,     // Sirens
-    Music,         // Background music
-}
-
-/// Manages the city's audio atmosphere.
+#[derive(Debug, Clone)]
 pub struct Soundscape {
-    pub layers: Vec<AmbientLayer>,
-    pub listener_position: Vec3,
-    pub time_of_day: f32,
-    pub weather_intensity: f32, // 0 = clear, 1 = heavy weather
-    pub construction_active: bool,
-    pub emergency_active: bool,
+    pub layers: Vec<SoundLayer>,
+    pub active: bool,
 }
 
 impl Soundscape {
     pub fn new() -> Self {
+        Self { layers: Vec::new(), active: true }
+    }
+
+    pub fn add_layer(&mut self, layer: SoundLayer) {
+        self.layers.push(layer);
+    }
+
+    pub fn remove_layer(&mut self, name: &str) -> bool {
+        let before = self.layers.len();
+        self.layers.retain(|l| l.name != name);
+        self.layers.len() < before
+    }
+
+    pub fn outdoor_default() -> Self {
         Self {
             layers: vec![
-                AmbientLayer { name: "urban_hum".into(), base_volume: 0.3, current_volume: 0.0, category: SoundCategory::UrbanHum },
-                AmbientLayer { name: "birds".into(), base_volume: 0.2, current_volume: 0.0, category: SoundCategory::Nature },
-                AmbientLayer { name: "wind".into(), base_volume: 0.15, current_volume: 0.0, category: SoundCategory::Nature },
-                AmbientLayer { name: "rain".into(), base_volume: 0.0, current_volume: 0.0, category: SoundCategory::Weather },
-                AmbientLayer { name: "construction".into(), base_volume: 0.0, current_volume: 0.0, category: SoundCategory::Construction },
-                AmbientLayer { name: "sirens".into(), base_volume: 0.0, current_volume: 0.0, category: SoundCategory::Emergency },
-                AmbientLayer { name: "music".into(), base_volume: 0.2, current_volume: 0.2, category: SoundCategory::Music },
+                SoundLayer {
+                    name: "wind".into(),
+                    clip_path: "audio/ambient/wind_loop.ogg".into(),
+                    volume: 0.3,
+                    looping: true,
+                    spatial: false,
+                },
+                SoundLayer {
+                    name: "distant_traffic".into(),
+                    clip_path: "audio/ambient/traffic_distant.ogg".into(),
+                    volume: 0.15,
+                    looping: true,
+                    spatial: false,
+                },
+                SoundLayer {
+                    name: "birds".into(),
+                    clip_path: "audio/ambient/birds_morning.ogg".into(),
+                    volume: 0.2,
+                    looping: true,
+                    spatial: true,
+                },
             ],
-            listener_position: Vec3::ZERO,
-            time_of_day: 12.0,
-            weather_intensity: 0.0,
-            construction_active: false,
-            emergency_active: false,
+            active: true,
         }
-    }
-
-    /// Update soundscape based on current game state.
-    pub fn update(&mut self, camera_pos: Vec3, hour: f32, population: u32, weather: f32, constructing: bool, emergency: bool) {
-        self.listener_position = camera_pos;
-        self.time_of_day = hour;
-        self.weather_intensity = weather;
-        self.construction_active = constructing;
-        self.emergency_active = emergency;
-
-        for layer in &mut self.layers {
-            layer.current_volume = match layer.category {
-                SoundCategory::UrbanHum => {
-                    // Louder with more population, quieter at night
-                    let pop_factor = (population as f32 / 10000.0).min(1.0);
-                    let time_factor = if (7.0..22.0).contains(&hour) { 1.0 } else { 0.3 };
-                    layer.base_volume * pop_factor * time_factor
-                }
-                SoundCategory::Nature => {
-                    // Louder in parks/outskirts, louder at dawn/dusk
-                    let dawn_dusk = if (5.0..8.0).contains(&hour) || (17.0..20.0).contains(&hour) { 1.5 } else { 0.8 };
-                    // Altitude factor: higher camera = more wind, less birds
-                    let alt_factor = if layer.name == "wind" {
-                        (camera_pos.y / 100.0).min(1.0)
-                    } else {
-                        (1.0 - camera_pos.y / 200.0).max(0.2)
-                    };
-                    layer.base_volume * dawn_dusk * alt_factor
-                }
-                SoundCategory::Weather => {
-                    weather * 0.8 // rain volume proportional to weather intensity
-                }
-                SoundCategory::Construction => {
-                    if constructing && (8.0..18.0).contains(&hour) { 0.4 } else { 0.0 }
-                }
-                SoundCategory::Emergency => {
-                    if emergency { 0.6 } else { 0.0 }
-                }
-                SoundCategory::Music => {
-                    layer.base_volume // constant background music
-                }
-            };
-        }
-    }
-
-    /// Get the volume of a specific layer.
-    pub fn layer_volume(&self, name: &str) -> f32 {
-        self.layers.iter().find(|l| l.name == name).map(|l| l.current_volume).unwrap_or(0.0)
-    }
-
-    /// Get all currently audible layers.
-    pub fn audible_layers(&self) -> Vec<&AmbientLayer> {
-        self.layers.iter().filter(|l| l.current_volume > 0.01).collect()
     }
 }
 
 impl Default for Soundscape {
-    fn default() -> Self {
-        Self::new()
+    fn default() -> Self { Self::new() }
+}
+
+// ── ECS Integration ───────────────────────────────────────────────────────
+
+#[derive(Resource)]
+pub struct SoundscapeResource(pub Soundscape);
+
+#[derive(Component, Debug)]
+pub struct SoundscapeLayerMarker {
+    pub layer_name: String,
+}
+
+pub fn soundscape_sync_system(
+    mut commands: Commands,
+    soundscape: Res<SoundscapeResource>,
+    existing: Query<(Entity, &SoundscapeLayerMarker)>,
+) {
+    let active = soundscape.0.active;
+
+    let existing_names: Vec<(Entity, String)> = existing
+        .iter()
+        .map(|(e, m)| (e, m.layer_name.clone()))
+        .collect();
+
+    for (entity, name) in &existing_names {
+        if !soundscape.0.layers.iter().any(|l| l.name == *name) {
+            commands.entity(*entity).despawn();
+        }
+    }
+
+    for layer in &soundscape.0.layers {
+        let already_spawned = existing_names.iter().any(|(_, n)| *n == layer.name);
+        if !already_spawned {
+            commands.spawn((
+                SoundscapeLayerMarker { layer_name: layer.name.clone() },
+                vox_core::ecs::AudioEmitterComponent {
+                    clip_path: layer.clip_path.clone(),
+                    volume: layer.volume,
+                    looping: layer.looping,
+                    playing: active,
+                    spatial: layer.spatial,
+                },
+                vox_core::ecs::TransformComponent::default(),
+            ));
+        }
+    }
+}
+
+pub fn soundscape_toggle_system(
+    soundscape: Res<SoundscapeResource>,
+    mut query: Query<&mut vox_core::ecs::AudioEmitterComponent, With<SoundscapeLayerMarker>>,
+) {
+    let active = soundscape.0.active;
+    for mut emitter in query.iter_mut() {
+        emitter.playing = active;
+    }
+}
+
+pub struct SoundscapePlugin {
+    pub initial: Soundscape,
+}
+
+impl SoundscapePlugin {
+    pub fn new(initial: Soundscape) -> Self { Self { initial } }
+    pub fn with_outdoor_default() -> Self { Self::new(Soundscape::outdoor_default()) }
+}
+
+impl bevy_app::Plugin for SoundscapePlugin {
+    fn build(&self, app: &mut bevy_app::App) {
+        app.insert_resource(SoundscapeResource(self.initial.clone()));
+        app.add_systems(
+            bevy_app::Update,
+            (soundscape_sync_system, soundscape_toggle_system).chain(),
+        );
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outdoor_default_has_3_layers() {
+        let s = Soundscape::outdoor_default();
+        assert_eq!(s.layers.len(), 3);
+        assert!(s.active);
+    }
+
+    #[test]
+    fn add_layer_increases_count() {
+        let mut s = Soundscape::new();
+        s.add_layer(SoundLayer {
+            name: "test".into(),
+            clip_path: "test.ogg".into(),
+            volume: 0.5,
+            looping: false,
+            spatial: false,
+        });
+        assert_eq!(s.layers.len(), 1);
+    }
+
+    #[test]
+    fn remove_layer_decreases_count() {
+        let mut s = Soundscape::outdoor_default();
+        assert!(s.remove_layer("wind"));
+        assert_eq!(s.layers.len(), 2);
+    }
+
+    #[test]
+    fn remove_nonexistent_layer_returns_false() {
+        let mut s = Soundscape::outdoor_default();
+        assert!(!s.remove_layer("nonexistent"));
+        assert_eq!(s.layers.len(), 3);
+    }
+
+    #[test]
+    fn soundscape_plugin_builds_without_panic() {
+        use bevy_app::App;
+        let mut app = App::new();
+        app.add_plugins(SoundscapePlugin::with_outdoor_default());
+        assert!(app.world().contains_resource::<SoundscapeResource>());
+    }
+
+    #[test]
+    fn soundscape_sync_spawns_entities() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+
+        let mut world = World::new();
+        world.insert_resource(SoundscapeResource(Soundscape::outdoor_default()));
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(soundscape_sync_system);
+        schedule.run(&mut world);
+        world.flush();
+
+        let count = world.query::<&SoundscapeLayerMarker>().iter(&world).count();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn soundscape_toggle_sets_playing() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+
+        let mut world = World::new();
+        let mut ss = Soundscape::outdoor_default();
+        ss.active = false;
+        world.insert_resource(SoundscapeResource(ss));
+
+        world.spawn((
+            SoundscapeLayerMarker { layer_name: "wind".into() },
+            vox_core::ecs::AudioEmitterComponent {
+                clip_path: "wind.ogg".into(),
+                volume: 0.3,
+                looping: true,
+                playing: true,
+                spatial: false,
+            },
+        ));
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(soundscape_toggle_system);
+        schedule.run(&mut world);
+
+        let emitter = world
+            .query::<&vox_core::ecs::AudioEmitterComponent>()
+            .iter(&world)
+            .next()
+            .unwrap();
+        assert!(!emitter.playing);
     }
 }
