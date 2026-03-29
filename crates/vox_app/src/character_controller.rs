@@ -48,7 +48,7 @@ impl CharacterController {
         // WASD using Linux/X11 scancodes: W=17, A=30, S=31, D=32
         let mut move_dir = Vec3::ZERO;
         let forward = Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos());
-        let right = Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin());
+        let right = Vec3::new(-self.yaw.cos(), 0.0, self.yaw.sin());
 
         if input.is_pressed(InputSource::Key(17)) { move_dir += forward; }  // W
         if input.is_pressed(InputSource::Key(31)) { move_dir -= forward; }  // S

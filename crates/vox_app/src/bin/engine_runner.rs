@@ -1269,6 +1269,7 @@ impl EngineApp {
                 // Also drive character yaw when character controller is active
                 if self.character.enabled && !self.editor_visible {
                     self.character.yaw += dx * 0.002;
+                    self.cam_yaw = self.character.yaw; // keep free-camera yaw in sync
                 }
             }
             self.last_mouse = Some((x, y));
@@ -1404,6 +1405,7 @@ impl EngineApp {
         if self.character.enabled {
             let cam_pos = self.character.camera_position();
             self.camera.position = cam_pos;
+            self.camera.target = cam_pos + self.character.camera_forward();
         }
         self.physics.step();
         // Sync: read positions from Rapier dynamic bodies back into ECS transforms
