@@ -137,72 +137,71 @@ fn import_ply(path: &Path, settings: &ImportSettings) -> Result<ImportResult, St
 }
 
 fn import_gltf_full(path: &Path, settings: &ImportSettings) -> Result<ImportResult, String> {
-    // Use the gltf crate to parse the file
-    let gltf = gltf::Gltf::open(path).map_err(|e| format!("Failed to open GLTF: {}", e))?;
+    use crate::gltf_import;
+    use gltf::Gltf;
+
+    // Use gltf_import for real triangle-sampled splats
+    let gr = gltf_import::import_gltf(path)
+        .map_err(|e| format!("GLTF import error: {}", e))?;
+
+    let mut splats = gr.splats;
+
+    // Apply scale factor
+    if (settings.scale_factor - 1.0).abs() > f32::EPSILON {
+        for s in splats.iter_mut() {
+            s.position[0] *= settings.scale_factor;
+            s.position[1] *= settings.scale_factor;
+            s.position[2] *= settings.scale_factor;
+        }
+    }
+
+    // Extract metadata
+    let gltf_doc = Gltf::open(path).map_err(|e| format!("GLTF metadata error: {}", e))?;
 
     let mut material_names = Vec::new();
     if settings.extract_materials {
-        for mat in gltf.materials() {
-            material_names.push(
-                mat.name()
-                    .unwrap_or("unnamed_material")
-                    .to_string(),
-            );
+        for mat in gltf_doc.materials() {
+            material_names.push(mat.name().unwrap_or("unnamed_material").to_string());
         }
     }
 
     let mut skeleton_joint_count = 0;
     if settings.extract_skeleton {
-        for skin in gltf.skins() {
+        for skin in gltf_doc.skins() {
             skeleton_joint_count += skin.joints().count();
         }
     }
 
-    let mut animation_count = 0;
-    if settings.extract_animations {
-        animation_count = gltf.animations().count();
-    }
-
-    // Generate splats from mesh data (simplified — count meshes/primitives)
-    let mut primitive_count = 0usize;
-    for mesh in gltf.meshes() {
-        primitive_count += mesh.primitives().count();
-    }
-
-    let splat_count = (primitive_count as f32 * settings.splat_density) as usize;
-    let splats: Vec<GaussianSplat> = (0..splat_count)
-        .map(|i| {
-            let t = i as f32 / splat_count.max(1) as f32;
-            GaussianSplat {
-                position: [
-                    t * settings.scale_factor,
-                    (t * 2.0).sin() * settings.scale_factor,
-                    0.0,
-                ],
-                scale: [0.01; 3],
-                rotation: [0, 0, 0, 16384],
-                opacity: 255,
-                _pad: [0; 3],
-                spectral: [0; 8],
-            }
-        })
-        .collect();
-
-    let collision_box = if settings.generate_collision
-        && settings.collision_type != CollisionGenType::None
-    {
-        Some((
-            [-settings.scale_factor; 3],
-            [settings.scale_factor; 3],
-        ))
+    let animation_count = if settings.extract_animations {
+        gltf_doc.animations().count()
     } else {
-        None
+        0
     };
 
     let mut warnings = Vec::new();
     if material_names.is_empty() {
         warnings.push("No materials found in GLTF file".to_string());
     }
+    if splats.is_empty() {
+        warnings.push("No geometry found — splat cloud is empty".to_string());
+    }
+
+    let collision_box = if settings.generate_collision
+        && settings.collision_type != CollisionGenType::None
+        && !splats.is_empty()
+    {
+        let mut mn = splats[0].position;
+        let mut mx = splats[0].position;
+        for s in &splats {
+            for i in 0..3 {
+                if s.position[i] < mn[i] { mn[i] = s.position[i]; }
+                if s.position[i] > mx[i] { mx[i] = s.position[i]; }
+            }
+        }
+        Some((mn, mx))
+    } else {
+        None
+    };
 
     Ok(ImportResult {
         splats,

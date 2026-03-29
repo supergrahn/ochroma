@@ -45,3 +45,54 @@ fn import_ply_produces_real_splats() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+fn write_minimal_glb(path: &std::path::Path) {
+    // Minimal GLB: JSON chunk + BIN chunk with 1 triangle (3 vertices)
+    // POSITION accessor requires min/max for gltf crate validation
+    let json = r#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteLength":36,"byteOffset":0},{"buffer":0,"byteLength":6,"byteOffset":36}],"buffers":[{"byteLength":42}]}"#;
+    let json_bytes = json.as_bytes();
+    let padded_json = ((json_bytes.len() + 3) / 4) * 4;
+    // BIN: 3 vec3 positions + 3 u16 indices
+    let mut bin = vec![0u8; 42];
+    // v1: (1,0,0)
+    bin[12..16].copy_from_slice(&1.0f32.to_le_bytes());
+    // v2: (0,1,0)
+    bin[28..32].copy_from_slice(&1.0f32.to_le_bytes());
+    // indices: 0,1,2
+    bin[36] = 0; bin[38] = 1; bin[40] = 2;
+    let padded_bin = ((bin.len() + 3) / 4) * 4;
+    let total = 12 + 8 + padded_json + 8 + padded_bin;
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(padded_json as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(json_bytes);
+    out.resize(12 + 8 + padded_json, 0x20);
+    out.extend_from_slice(&(padded_bin as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(&bin);
+    out.resize(total, 0);
+    std::fs::write(path, &out).unwrap();
+}
+
+#[test]
+fn import_gltf_produces_real_splats() {
+    let dir = std::env::temp_dir().join("ochroma_gltf_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("test.glb");
+    write_minimal_glb(&path);
+
+    let settings = ImportSettings::default();
+    let result = import_asset(&path, &settings).unwrap();
+    assert!(!result.splats.is_empty(), "GLTF import should produce splats");
+    // Splats should be within the triangle's bounds [0,1] on x and y
+    for s in &result.splats {
+        assert!(s.position[0] >= -0.01 && s.position[0] <= 1.01,
+            "splat x={} out of triangle range", s.position[0]);
+        assert!(s.position[1] >= -0.01 && s.position[1] <= 1.01,
+            "splat y={} out of triangle range", s.position[1]);
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
