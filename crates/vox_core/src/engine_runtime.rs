@@ -16,7 +16,7 @@
 //! ```
 
 use bevy_ecs::prelude::*;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 
 use crate::ecs::*;
 use crate::input::InputState;
@@ -398,6 +398,30 @@ fn frustum_cull_system(world: &mut World) {
     }
 }
 
+/// Convert a `GaussianSplat` from entity-local space to world space.
+///
+/// Applies `TransformComponent` as: scale → rotate → translate.
+/// The splat's own `rotation` field (encoded orientation of the Gaussian
+/// ellipsoid) is preserved — only `position` and `scale` are modified.
+pub fn transform_splat(splat: GaussianSplat, transform: &TransformComponent) -> GaussianSplat {
+    let local_pos = Vec3::from(splat.position);
+    let scaled_pos = local_pos * transform.scale;
+    let world_pos = transform.rotation * scaled_pos + transform.position;
+
+    let s = transform.scale;
+    let new_scale = [
+        splat.scale[0] * s.x,
+        splat.scale[1] * s.y,
+        splat.scale[2] * s.z,
+    ];
+
+    GaussianSplat {
+        position: world_pos.into(),
+        scale: new_scale,
+        ..splat
+    }
+}
+
 /// Gather splats from visible entities into the render buffer.
 fn gather_splats_system(world: &mut World) {
     let mut render_buffer = world.resource_mut::<RenderBuffer>();
@@ -417,12 +441,30 @@ fn gather_splats_system(world: &mut World) {
             .collect()
     };
 
+    // Gather splats from visible entities that carry SplatAssetComponent.
+    let gathered: Vec<GaussianSplat> = {
+        let mut query = world.query_filtered::<
+            (&SplatAssetComponent, &TransformComponent),
+            With<Visible>,
+        >();
+        query.iter(world)
+            .flat_map(|(asset, transform)| {
+                asset.splats.iter().map(|&splat| transform_splat(splat, transform))
+            })
+            .collect()
+    };
+
+    let visible_count = gathered.len() as u32;
+
     let mut render_buffer = world.resource_mut::<RenderBuffer>();
     render_buffer.lights = lights;
+    render_buffer.splats = gathered;
 
-    // NOTE: Actual splat gathering requires loading real assets.
-    // The AssetManagerResource is a stub; real loading happens in the binary.
-    // For now, visible entities with AssetRefComponent are tracked but no splats are emitted.
+    // Update frame stats if the resource is present.
+    if let Some(mut stats) = world.get_resource_mut::<FrameStats>() {
+        stats.splat_count = visible_count;
+        stats.visible_splats = visible_count;
+    }
 }
 
 /// AABB overlap test between two colliders at given positions.
@@ -448,7 +490,7 @@ fn collider_half_extents(shape: &ColliderShape) -> [f32; 3] {
 // ---------------------------------------------------------------------------
 
 /// Frame statistics from the engine.
-#[derive(Debug, Clone, Default)]
+#[derive(Resource, Debug, Clone, Default)]
 pub struct FrameStats {
     pub frame_number: u64,
     pub dt: f32,
@@ -1027,5 +1069,116 @@ mod tests {
         engine.tick(0.01);
         let steps = engine.world.resource::<FixedStepCounter>().steps_this_frame;
         assert_eq!(steps, 1);
+    }
+
+    // --- transform_splat ---
+
+    fn zero_splat(pos: [f32; 3]) -> GaussianSplat {
+        GaussianSplat {
+            position: pos,
+            scale: [0.1, 0.1, 0.1],
+            rotation: [0, 0, 0, 32767],
+            opacity: 255,
+            _pad: [0; 3],
+            spectral: [0; 8],
+        }
+    }
+
+    fn identity_transform() -> TransformComponent {
+        TransformComponent {
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        }
+    }
+
+    #[test]
+    fn transform_splat_translates_position() {
+        let splat = zero_splat([1.0, 0.0, 0.0]);
+        let transform = TransformComponent {
+            position: Vec3::new(0.0, 5.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        };
+        let out = transform_splat(splat, &transform);
+        assert!((out.position[0] - 1.0).abs() < 1e-5, "x unchanged");
+        assert!((out.position[1] - 5.0).abs() < 1e-5, "y shifted by entity position");
+        assert!((out.position[2] - 0.0).abs() < 1e-5, "z unchanged");
+    }
+
+    #[test]
+    fn transform_splat_scales_position_and_splat_scale() {
+        let splat = zero_splat([1.0, 0.0, 0.0]);
+        let transform = TransformComponent {
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::splat(2.0),
+        };
+        let out = transform_splat(splat, &transform);
+        // Local position [1,0,0] * scale 2 = [2,0,0]
+        assert!((out.position[0] - 2.0).abs() < 1e-5, "position scaled");
+        // Splat scale [0.1,0.1,0.1] * 2 = [0.2,0.2,0.2]
+        assert!((out.scale[0] - 0.2).abs() < 1e-4, "splat scale doubled");
+    }
+
+    #[test]
+    fn gather_splats_fills_render_buffer() {
+        use bevy_ecs::world::World;
+        use crate::ecs::{SplatAssetComponent, TransformComponent, Visible};
+        use uuid::Uuid;
+
+        let mut world = World::new();
+        world.insert_resource(RenderBuffer::default());
+
+        // Spawn a visible entity with 2 splats.
+        let splats = vec![
+            zero_splat([0.0, 0.0, 0.0]),
+            zero_splat([1.0, 0.0, 0.0]),
+        ];
+        world.spawn((
+            SplatAssetComponent { uuid: Uuid::nil(), splat_count: 2, splats },
+            TransformComponent {
+                position: Vec3::new(0.0, 10.0, 0.0),
+                rotation: Quat::IDENTITY,
+                scale: Vec3::ONE,
+            },
+            Visible,
+        ));
+
+        gather_splats_system(&mut world);
+
+        let buffer = world.resource::<RenderBuffer>();
+        assert_eq!(buffer.splats.len(), 2, "both splats should be gathered");
+        assert!((buffer.splats[0].position[1] - 10.0).abs() < 1e-5,
+            "splat should be translated to entity world y=10");
+    }
+
+    #[test]
+    fn gather_splats_skips_non_visible() {
+        use bevy_ecs::world::World;
+        use crate::ecs::{SplatAssetComponent, TransformComponent};
+        use uuid::Uuid;
+
+        let mut world = World::new();
+        world.insert_resource(RenderBuffer::default());
+
+        // Spawn entity WITHOUT Visible marker.
+        world.spawn((
+            SplatAssetComponent {
+                uuid: Uuid::nil(),
+                splat_count: 1,
+                splats: vec![zero_splat([0.0, 0.0, 0.0])],
+            },
+            TransformComponent {
+                position: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                scale: Vec3::ONE,
+            },
+        ));
+
+        gather_splats_system(&mut world);
+
+        let buffer = world.resource::<RenderBuffer>();
+        assert_eq!(buffer.splats.len(), 0, "non-visible entity splats should be skipped");
     }
 }

@@ -55,6 +55,7 @@ pub enum ContentAction {
     LoadAsset(PathBuf),
     OpenMap(PathBuf),
     PlayAudio(PathBuf),
+    ImportAsset(PathBuf),
 }
 
 /// Editor panel that shows files in a directory, with type labels and search.
@@ -65,6 +66,7 @@ pub struct ContentBrowser {
     pub search_query: String,
     pub current_dir: PathBuf,
     pub dragging_asset: Option<String>,
+    pub pending_action: Option<ContentAction>,
 }
 
 impl ContentBrowser {
@@ -79,6 +81,7 @@ impl ContentBrowser {
             search_query: String::new(),
             current_dir,
             dragging_asset: None,
+            pending_action: None,
         }
     }
 
@@ -203,7 +206,8 @@ impl ContentBrowser {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (display_idx, &entry_idx) in filtered_indices.iter().enumerate() {
                         let entry = &self.entries[entry_idx];
-                        let _is_selected = self.selected == Some(display_idx);
+                        let selected = self.selected == Some(entry_idx);
+                        let _ = display_idx;
                         let label = format!(
                             "{} {}  ({})",
                             entry.entry_type.label(),
@@ -216,7 +220,7 @@ impl ContentBrowser {
                         );
 
                         if response.clicked() {
-                            self.selected = Some(display_idx);
+                            self.selected = Some(entry_idx);
                         }
 
                         if response.double_clicked() {
@@ -226,6 +230,25 @@ impl ContentBrowser {
                         if response.drag_started() {
                             self.dragging_asset =
                                 Some(entry.path.to_string_lossy().to_string());
+                        }
+
+                        let _ = selected;
+                    }
+
+                    // Import button for the selected entry
+                    if let Some(entry_idx) = self.selected {
+                        if entry_idx < self.entries.len() {
+                            let entry = &self.entries[entry_idx];
+                            let importable = matches!(
+                                entry.entry_type,
+                                ContentType::GaussianSplat
+                                    | ContentType::Mesh
+                                    | ContentType::OchromaAsset
+                            );
+                            if importable && ui.small_button("Import into Scene").clicked() {
+                                self.pending_action =
+                                    Some(ContentAction::ImportAsset(entry.path.clone()));
+                            }
                         }
                     }
                 });

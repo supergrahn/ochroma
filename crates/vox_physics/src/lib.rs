@@ -190,8 +190,10 @@ pub mod fluid;
 pub mod vehicle;
 
 pub mod rapier;
+pub mod ecs;
 
 pub use rapier::RapierPhysicsWorld;
+pub use ecs::{PhysicsBodyComponent, PhysicsBodyTypeComponent};
 
 // Re-export Rapier handle types so consumers don't need a direct rapier3d dependency
 pub use rapier3d::prelude::{ColliderHandle, RigidBodyHandle};

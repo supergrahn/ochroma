@@ -84,15 +84,26 @@ mod tests {
     use std::io::Write;
 
     fn create_test_ply(dir: &Path) -> std::path::PathBuf {
+        use std::io::BufWriter;
         let ply_path = dir.join("test_import.ply");
-        let mut f = std::fs::File::create(&ply_path).unwrap();
-        write!(
-            f,
-            "ply\nformat ascii 1.0\nelement vertex 50\nproperty float x\nproperty float y\nproperty float z\nend_header\n"
-        )
-        .unwrap();
-        for i in 0..50 {
-            writeln!(f, "{} {} {}", i as f32 * 0.1, 0.0, 0.0).unwrap();
+        let mut f = BufWriter::new(std::fs::File::create(&ply_path).unwrap());
+        write!(f, "ply\nformat binary_little_endian 1.0\nelement vertex 50\n").unwrap();
+        write!(f, "property float x\nproperty float y\nproperty float z\n").unwrap();
+        write!(f, "property float scale_0\nproperty float scale_1\nproperty float scale_2\n").unwrap();
+        write!(f, "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n").unwrap();
+        write!(f, "property float opacity\n").unwrap();
+        write!(f, "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n").unwrap();
+        write!(f, "end_header\n").unwrap();
+        for i in 0..50u32 {
+            let x = i as f32 * 0.1;
+            f.write_all(&x.to_le_bytes()).unwrap();
+            f.write_all(&0.0f32.to_le_bytes()).unwrap();
+            f.write_all(&0.0f32.to_le_bytes()).unwrap();
+            for _ in 0..3 { f.write_all(&(-2.3f32).to_le_bytes()).unwrap(); } // scale
+            f.write_all(&1.0f32.to_le_bytes()).unwrap();                       // rot_0 (w)
+            for _ in 0..3 { f.write_all(&0.0f32.to_le_bytes()).unwrap(); }    // rot x,y,z
+            f.write_all(&0.0f32.to_le_bytes()).unwrap();                       // opacity
+            for _ in 0..3 { f.write_all(&0.5f32.to_le_bytes()).unwrap(); }    // f_dc
         }
         ply_path
     }

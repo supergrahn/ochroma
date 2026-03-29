@@ -209,6 +209,202 @@ impl NodeGraphWidget {
     pub fn connection_count(&self) -> usize {
         self.connections.len()
     }
+
+    /// Render the node graph interactively using egui.
+    /// Returns actions produced by user interaction this frame.
+    /// Call this inside an egui window or panel.
+    pub fn show_egui(&mut self, ui: &mut egui::Ui) -> Vec<NodeGraphAction> {
+        let mut actions = Vec::new();
+        let avail = ui.available_rect_before_wrap();
+        let painter = ui.painter_at(avail);
+
+        // Allocate the full available area for input
+        let response = ui.allocate_rect(avail, egui::Sense::click_and_drag());
+
+        // Background
+        painter.rect_filled(avail, 0.0, egui::Color32::from_rgb(28, 28, 35));
+
+        // Grid lines
+        let grid_px = self.grid_size * self.zoom;
+        let ox = self.scroll_offset[0] % grid_px;
+        let oy = self.scroll_offset[1] % grid_px;
+        let grid_stroke = egui::Stroke::new(0.5, egui::Color32::from_rgb(40, 42, 52));
+        let mut gx = avail.min.x + ox;
+        while gx < avail.max.x {
+            painter.line_segment([egui::pos2(gx, avail.min.y), egui::pos2(gx, avail.max.y)], grid_stroke);
+            gx += grid_px;
+        }
+        let mut gy = avail.min.y + oy;
+        while gy < avail.max.y {
+            painter.line_segment([egui::pos2(avail.min.x, gy), egui::pos2(avail.max.x, gy)], grid_stroke);
+            gy += grid_px;
+        }
+
+        // Pan (middle mouse drag)
+        if response.dragged_by(egui::PointerButton::Middle) {
+            let delta = response.drag_delta();
+            self.scroll_offset[0] += delta.x;
+            self.scroll_offset[1] += delta.y;
+            actions.push(NodeGraphAction::PanChanged { offset: self.scroll_offset });
+        }
+
+        // Zoom (scroll wheel)
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll_delta.abs() > 0.1 {
+            let old_zoom = self.zoom;
+            self.zoom = (self.zoom * (1.0 + scroll_delta * 0.001)).clamp(0.2, 4.0);
+            if (self.zoom - old_zoom).abs() > 1e-4 {
+                actions.push(NodeGraphAction::ZoomChanged { zoom: self.zoom });
+            }
+        }
+
+        // Draw connections as cubic bezier curves
+        for conn in &self.connections {
+            let from_pos = self.pin_screen_pos(conn.from_node, &conn.from_pin, true, avail.min);
+            let to_pos   = self.pin_screen_pos(conn.to_node,   &conn.to_pin,   false, avail.min);
+            if let (Some(fp), Some(tp)) = (from_pos, to_pos) {
+                let ctrl_dx = ((tp.x - fp.x).abs() * 0.5).max(50.0);
+                painter.add(egui::Shape::CubicBezier(egui::epaint::CubicBezierShape {
+                    points: [
+                        fp,
+                        egui::pos2(fp.x + ctrl_dx, fp.y),
+                        egui::pos2(tp.x - ctrl_dx, tp.y),
+                        tp,
+                    ],
+                    closed: false,
+                    fill: egui::Color32::TRANSPARENT,
+                    stroke: egui::Stroke::new(2.0, egui::Color32::from_rgb(
+                        conn.color[0], conn.color[1], conn.color[2],
+                    )).into(),
+                }));
+            }
+        }
+
+        // Draw nodes — collect move/select actions separately to avoid borrow conflict
+        let mut move_actions:   Vec<(u32, [f32; 2])> = Vec::new();
+        let mut select_actions: Vec<u32>              = Vec::new();
+
+        for node in &mut self.nodes {
+            let sx = avail.min.x + node.position[0] * self.zoom + self.scroll_offset[0];
+            let sy = avail.min.y + node.position[1] * self.zoom + self.scroll_offset[1];
+            let sw = node.size[0] * self.zoom;
+            let pin_rows = node.inputs.len().max(node.outputs.len()) as f32;
+            let sh = (30.0 + pin_rows * 24.0 + 8.0) * self.zoom;
+
+            let node_rect = egui::Rect::from_min_size(egui::pos2(sx, sy), egui::vec2(sw, sh));
+            let node_resp = ui.allocate_rect(node_rect, egui::Sense::click_and_drag());
+
+            // Body
+            let bg = if node.selected {
+                egui::Color32::from_rgb(55, 65, 90)
+            } else {
+                egui::Color32::from_rgb(36, 36, 48)
+            };
+            painter.rect_filled(node_rect, 4.0 * self.zoom, bg);
+
+            // Title bar
+            let title_h = 24.0 * self.zoom;
+            let title_rect = egui::Rect::from_min_size(node_rect.min, egui::vec2(sw, title_h));
+            painter.rect_filled(title_rect, 4.0 * self.zoom, egui::Color32::from_rgb(node.color[0], node.color[1], node.color[2]));
+            painter.text(
+                title_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                &node.title,
+                egui::FontId::proportional((11.0 * self.zoom).max(8.0)),
+                egui::Color32::WHITE,
+            );
+
+            // Border
+            let border = if node.selected {
+                egui::Color32::from_rgb(100, 160, 255)
+            } else {
+                egui::Color32::from_rgb(58, 68, 100)
+            };
+            painter.rect_stroke(node_rect, 4.0 * self.zoom, egui::Stroke::new(1.5, border), egui::StrokeKind::Outside);
+
+            // Input pins (left side)
+            for (i, pin) in node.inputs.iter().enumerate() {
+                let py = sy + (30.0 + i as f32 * 24.0 + 8.0) * self.zoom;
+                let c = pin.pin_type.color();
+                let pin_col = egui::Color32::from_rgb(c[0], c[1], c[2]);
+                painter.circle_filled(egui::pos2(sx, py), 5.0 * self.zoom, pin_col);
+                painter.text(
+                    egui::pos2(sx + 10.0 * self.zoom, py),
+                    egui::Align2::LEFT_CENTER,
+                    &pin.name,
+                    egui::FontId::proportional((10.0 * self.zoom).max(7.0)),
+                    egui::Color32::from_rgb(190, 190, 200),
+                );
+            }
+
+            // Output pins (right side)
+            for (i, pin) in node.outputs.iter().enumerate() {
+                let py = sy + (30.0 + i as f32 * 24.0 + 8.0) * self.zoom;
+                let c = pin.pin_type.color();
+                let pin_col = egui::Color32::from_rgb(c[0], c[1], c[2]);
+                painter.circle_filled(egui::pos2(sx + sw, py), 5.0 * self.zoom, pin_col);
+                painter.text(
+                    egui::pos2(sx + sw - 10.0 * self.zoom, py),
+                    egui::Align2::RIGHT_CENTER,
+                    &pin.name,
+                    egui::FontId::proportional((10.0 * self.zoom).max(7.0)),
+                    egui::Color32::from_rgb(190, 190, 200),
+                );
+            }
+
+            // Drag to move
+            if node_resp.dragged_by(egui::PointerButton::Primary) {
+                let delta = node_resp.drag_delta();
+                let new_pos = [
+                    node.position[0] + delta.x / self.zoom,
+                    node.position[1] + delta.y / self.zoom,
+                ];
+                move_actions.push((node.id, new_pos));
+            }
+
+            // Click to select
+            if node_resp.clicked() {
+                select_actions.push(node.id);
+            }
+        }
+
+        // Apply mutations after the borrow-loop ends
+        for (id, pos) in move_actions {
+            if let Some(n) = self.nodes.iter_mut().find(|n| n.id == id) {
+                n.position = pos;
+            }
+            actions.push(NodeGraphAction::NodeMoved { id, new_pos: pos });
+        }
+        for id in select_actions {
+            self.selected_nodes.clear();
+            self.selected_nodes.push(id);
+            for n in &mut self.nodes {
+                n.selected = n.id == id;
+            }
+            actions.push(NodeGraphAction::NodeSelected { id });
+        }
+
+        actions
+    }
+
+    /// Screen-space position of a pin for connection curve drawing.
+    fn pin_screen_pos(
+        &self,
+        node_id:   u32,
+        pin_name:  &str,
+        is_output: bool,
+        origin:    egui::Pos2,
+    ) -> Option<egui::Pos2> {
+        let node = self.nodes.iter().find(|n| n.id == node_id)?;
+        let pins = if is_output { &node.outputs } else { &node.inputs };
+        let idx = pins.iter().position(|p| p.name == pin_name)?;
+        let sx = origin.x + node.position[0] * self.zoom + self.scroll_offset[0];
+        let sy = origin.y + node.position[1] * self.zoom + self.scroll_offset[1];
+        let sw = node.size[0] * self.zoom;
+        let x  = if is_output { sx + sw } else { sx };
+        let y  = sy + (30.0 + idx as f32 * 24.0 + 8.0) * self.zoom;
+        Some(egui::pos2(x, y))
+    }
 }
 
 impl Default for NodeGraphWidget {
@@ -384,5 +580,19 @@ mod tests {
         widget.remove_node(2);
         assert_eq!(widget.node_count(), 2);
         assert_eq!(widget.connection_count(), 0); // both connections involved node 2
+    }
+
+    #[test]
+    fn show_egui_method_exists() {
+        // Compilation test — confirms show_egui signature is correct.
+        let _: fn(&mut NodeGraphWidget, &mut egui::Ui) -> Vec<NodeGraphAction> =
+            |w, ui| w.show_egui(ui);
+    }
+
+    #[test]
+    fn new_widget_is_empty() {
+        let w = NodeGraphWidget::new();
+        assert_eq!(w.node_count(), 0);
+        assert_eq!(w.connection_count(), 0);
     }
 }

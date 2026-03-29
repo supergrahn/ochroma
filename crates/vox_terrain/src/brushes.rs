@@ -117,10 +117,15 @@ impl TerrainBrush {
     fn neighbor_average(&self, vol: &TerrainVolume, x: usize, y: usize, z: usize) -> f32 {
         let mut sum = 0.0;
         let mut count = 0;
-        for d in &[-1i32, 0, 1] {
-            let nx = (x as i32 + d).max(0) as usize;
-            let ny = (y as i32 + d).max(0) as usize;
-            let nz = (z as i32 + d).max(0) as usize;
+        let neighbors = [
+            (x.saturating_sub(1), y, z),
+            (x + 1, y, z),
+            (x, y.saturating_sub(1), z),
+            (x, y + 1, z),
+            (x, y, z.saturating_sub(1)),
+            (x, y, z + 1),
+        ];
+        for (nx, ny, nz) in neighbors {
             if nx < vol.size_x && ny < vol.size_y && nz < vol.size_z {
                 sum += vol.get(nx, ny, nz);
                 count += 1;
@@ -129,7 +134,7 @@ impl TerrainBrush {
         if count > 0 {
             sum / count as f32
         } else {
-            0.0
+            vol.get(x, y, z)
         }
     }
 

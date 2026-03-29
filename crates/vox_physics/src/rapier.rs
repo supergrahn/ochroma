@@ -100,6 +100,70 @@ impl RapierPhysicsWorld {
         (body_handle, collider_handle)
     }
 
+    /// Add a kinematic position-based body with a box collider.
+    pub fn add_kinematic_box(
+        &mut self,
+        position: [f32; 3],
+        half_extents: [f32; 3],
+        mass: f32,
+    ) -> (RigidBodyHandle, ColliderHandle) {
+        let body = RigidBodyBuilder::kinematic_position_based()
+            .translation(vector![position[0], position[1], position[2]])
+            .additional_mass(mass)
+            .build();
+        let body_handle = self.rigid_body_set.insert(body);
+        let collider =
+            ColliderBuilder::cuboid(half_extents[0], half_extents[1], half_extents[2]).build();
+        let collider_handle =
+            self.collider_set
+                .insert_with_parent(collider, body_handle, &mut self.rigid_body_set);
+        (body_handle, collider_handle)
+    }
+
+    /// Add a kinematic position-based body with a sphere collider.
+    pub fn add_kinematic_sphere(
+        &mut self,
+        position: [f32; 3],
+        radius: f32,
+        mass: f32,
+    ) -> (RigidBodyHandle, ColliderHandle) {
+        let body = RigidBodyBuilder::kinematic_position_based()
+            .translation(vector![position[0], position[1], position[2]])
+            .additional_mass(mass)
+            .build();
+        let body_handle = self.rigid_body_set.insert(body);
+        let collider = ColliderBuilder::ball(radius).build();
+        let collider_handle =
+            self.collider_set
+                .insert_with_parent(collider, body_handle, &mut self.rigid_body_set);
+        (body_handle, collider_handle)
+    }
+
+    /// Add a static sphere collider.
+    pub fn add_static_sphere(
+        &mut self,
+        position: [f32; 3],
+        radius: f32,
+    ) -> ColliderHandle {
+        let collider = ColliderBuilder::ball(radius)
+            .translation(vector![position[0], position[1], position[2]])
+            .build();
+        self.collider_set.insert(collider)
+    }
+
+    /// Add a static capsule collider.
+    pub fn add_static_capsule(
+        &mut self,
+        position: [f32; 3],
+        radius: f32,
+        height: f32,
+    ) -> ColliderHandle {
+        let collider = ColliderBuilder::capsule_y(height * 0.5, radius)
+            .translation(vector![position[0], position[1], position[2]])
+            .build();
+        self.collider_set.insert(collider)
+    }
+
     /// Add a kinematic character controller body with a capsule collider.
     pub fn add_character_controller(
         &mut self,
@@ -154,6 +218,14 @@ impl RapierPhysicsWorld {
         self.rigid_body_set.get(handle).map(|b| {
             let v = b.linvel();
             [v.x, v.y, v.z]
+        })
+    }
+
+    /// Get body rotation as quaternion `[x, y, z, w]`.
+    pub fn body_rotation(&self, handle: RigidBodyHandle) -> Option<[f32; 4]> {
+        self.rigid_body_set.get(handle).map(|b| {
+            let r = b.rotation();
+            [r.i, r.j, r.k, r.w]
         })
     }
 

@@ -1,12 +1,16 @@
 use bevy_ecs::prelude::*;
 use vox_core::ecs::{SplatAssetComponent, SplatInstanceComponent, LodLevel};
 use vox_core::mapgen::generate_map;
+use vox_terrain::volume::generate_demo_volume;
 use glam::{Quat, Vec3};
 use uuid::Uuid;
 
 /// Spawn terrain as an ECS entity in the world.
 /// Uses procedural map generation with hills, a river, and terrain materials.
 pub fn spawn_terrain(world: &mut World, width: f32, _depth: f32, _material: &str) -> Uuid {
+    // Insert TerrainVolume as an ECS resource
+    world.insert_resource(generate_demo_volume(42));
+
     // Use seed 42 and a density of 1 splat per m²
     let splats = generate_map(42, width, 1.0);
     let uuid = Uuid::new_v4();

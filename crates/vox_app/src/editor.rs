@@ -1,3 +1,4 @@
+use crate::terrain_editor::TerrainEditorState;
 use glam::{Quat, Vec3};
 
 /// An entity in the editor's scene tree.
@@ -41,6 +42,8 @@ pub struct SceneEditor {
     pub show_material_editor: bool,
     pub show_anim_editor: bool,
     pub show_vfx_editor: bool,
+    pub show_terrain_editor: bool,
+    pub terrain_editor_state: TerrainEditorState,
     pub show_perf_stats: bool,
     pub pending_exit: bool,
 
@@ -190,6 +193,8 @@ impl SceneEditor {
             show_material_editor: false,
             show_anim_editor: false,
             show_vfx_editor: false,
+            show_terrain_editor: false,
+            terrain_editor_state: TerrainEditorState::default(),
             show_perf_stats: false,
             pending_exit: false,
             play_requested: false,
@@ -532,6 +537,10 @@ impl SceneEditor {
                         self.show_vfx_editor = !self.show_vfx_editor;
                         ui.close_menu();
                     }
+                    if ui.button("Terrain Editor").clicked() {
+                        self.show_terrain_editor = !self.show_terrain_editor;
+                        ui.close_menu();
+                    }
                     ui.separator();
                     if ui.button("Performance Stats").clicked() {
                         self.show_perf_stats = !self.show_perf_stats;
@@ -810,6 +819,21 @@ impl SceneEditor {
                     ui.label("No entity selected");
                 }
             });
+
+        if self.show_terrain_editor {
+            egui::Window::new("Terrain Editor")
+                .resizable(true)
+                .default_width(240.0)
+                .open(&mut self.show_terrain_editor)
+                .show(ctx, |ui| {
+                    crate::terrain_editor::show_terrain_editor_panel(ui, &mut self.terrain_editor_state);
+                });
+        }
+
+        if self.terrain_editor_state.foliage_scatter_pending {
+            self.terrain_editor_state.foliage_scatter_pending = false;
+            println!("[ochroma-terrain] Foliage scatter requested (density={})", self.terrain_editor_state.foliage_density);
+        }
 
         if self.show_history {
             egui::Window::new("History")

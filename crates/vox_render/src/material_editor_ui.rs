@@ -1,23 +1,103 @@
 //! egui window for the material node graph editor.
+//! Uses OchrGraph (crucible-core backend) + NodeGraphWidget (egui rendering).
 
-use crate::material_editor::{MaterialGraph, MaterialEditorNode, MaterialNodeType, MaterialConnection};
+use vox_nodes::{OchrGraph, NodeId};
+use vox_nodes::mat_nodes::{
+    FloatConstNode, MaterialOutputNode, MultiplyNode, AddNode,
+};
+use vox_ui::node_graph_widget::{NodeGraphWidget, VisualPin, VisualPinType};
 
 pub struct MaterialEditorUi {
     pub open: bool,
-    pub graph: Option<MaterialGraph>,
-    selected_node: Option<u32>,
-    zoom: f32,
-    scroll: egui::Vec2,
+    pub name: String,
+    pub graph: OchrGraph,
+    widget: NodeGraphWidget,
+    selected_node: Option<NodeId>,
 }
 
 impl MaterialEditorUi {
     pub fn new() -> Self {
         Self {
             open: false,
-            graph: None,
+            name: String::new(),
+            graph: OchrGraph::new(),
+            widget: NodeGraphWidget::new(),
             selected_node: None,
-            zoom: 1.0,
-            scroll: egui::Vec2::ZERO,
+        }
+    }
+
+    /// Build a default Roughness + Metallic → MaterialOutput graph.
+    pub fn create_default_graph(&mut self) {
+        self.graph = OchrGraph::new();
+        self.name = "New Material".to_string();
+
+        let roughness_id = self.graph.add_node(
+            "Roughness", Box::new(FloatConstNode::new(0.5)), [80.0, 60.0],
+        );
+        let metallic_id = self.graph.add_node(
+            "Metallic", Box::new(FloatConstNode::new(0.0)), [80.0, 170.0],
+        );
+        let output_id = self.graph.add_node(
+            "Output", Box::new(MaterialOutputNode), [320.0, 110.0],
+        );
+
+        let _ = self.graph.connect(roughness_id, "out", output_id, "roughness");
+        let _ = self.graph.connect(metallic_id,  "out", output_id, "metallic");
+        let _ = self.graph.graph.cook();
+        self.sync_widget();
+    }
+
+    /// Rebuild the NodeGraphWidget from current OchrGraph state.
+    fn sync_widget(&mut self) {
+        self.widget = NodeGraphWidget::new();
+        let snap = self.graph.graph.snapshot();
+
+        for mut vn in self.graph.to_visual_nodes() {
+            if let Some(ns) = snap.nodes.iter().find(|ns| ns.id == vn.id) {
+                match ns.type_name.as_str() {
+                    "FloatConst" => {
+                        vn.outputs = vec![VisualPin {
+                            name: "out".into(),
+                            pin_type: VisualPinType::Float,
+                            connected: false,
+                        }];
+                        vn.color = [45, 110, 65];
+                        vn.size = [130.0, 55.0];
+                    }
+                    "Multiply" | "Add" => {
+                        vn.inputs = vec![
+                            VisualPin { name: "a".into(), pin_type: VisualPinType::Float, connected: false },
+                            VisualPin { name: "b".into(), pin_type: VisualPinType::Float, connected: false },
+                        ];
+                        vn.outputs = vec![VisualPin { name: "out".into(), pin_type: VisualPinType::Float, connected: false }];
+                        vn.color = [80, 55, 110];
+                        vn.size = [130.0, 80.0];
+                    }
+                    "OneMinus" => {
+                        vn.inputs  = vec![VisualPin { name: "input".into(), pin_type: VisualPinType::Float, connected: false }];
+                        vn.outputs = vec![VisualPin { name: "out".into(),   pin_type: VisualPinType::Float, connected: false }];
+                        vn.color = [80, 55, 110];
+                        vn.size = [130.0, 60.0];
+                    }
+                    "MaterialOutput" => {
+                        vn.inputs = vec![
+                            VisualPin { name: "base_r".into(),    pin_type: VisualPinType::Float, connected: false },
+                            VisualPin { name: "base_g".into(),    pin_type: VisualPinType::Float, connected: false },
+                            VisualPin { name: "base_b".into(),    pin_type: VisualPinType::Float, connected: false },
+                            VisualPin { name: "roughness".into(), pin_type: VisualPinType::Float, connected: false },
+                            VisualPin { name: "metallic".into(),  pin_type: VisualPinType::Float, connected: false },
+                        ];
+                        vn.color = [140, 55, 55];
+                        vn.size = [160.0, 175.0];
+                    }
+                    _ => {}
+                }
+            }
+            self.widget.add_node(vn);
+        }
+
+        for vc in self.graph.to_visual_connections() {
+            self.widget.add_connection(vc);
         }
     }
 
@@ -25,155 +105,87 @@ impl MaterialEditorUi {
         if !self.open { return; }
 
         egui::Window::new("Material Editor")
-            .open(&mut self.open)
-            .default_size([800.0, 500.0])
+            .default_size([950.0, 560.0])
             .resizable(true)
             .show(ctx, |ui| {
-                if self.graph.is_none() {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("No material loaded.");
-                    });
-                    if ui.button("New Material").clicked() {
-                        self.graph = Some(MaterialGraph::new("New Material"));
-                    }
-                    return;
-                }
-
-                let graph = self.graph.as_ref().unwrap();
-                let node_count = graph.nodes.len();
-                let conn_count = graph.connections.len();
-                let graph_name = graph.name.clone();
-
                 ui.horizontal(|ui| {
-                    ui.heading(&graph_name);
+                    if self.name.is_empty() {
+                        if ui.button("New Material").clicked() {
+                            self.create_default_graph();
+                        }
+                        return;
+                    }
+                    ui.heading(self.name.clone());
                     ui.separator();
-                    ui.label(format!("{} nodes  {} connections", node_count, conn_count));
+                    ui.label(format!("{} nodes", self.graph.graph.node_count()));
+                    ui.separator();
+                    if ui.button("+ Float").clicked() {
+                        let n = self.graph.graph.node_count() as f32;
+                        let _ = self.graph.add_node(
+                            "Float", Box::new(FloatConstNode::new(1.0)),
+                            [50.0 + n * 20.0, 50.0 + n * 20.0],
+                        );
+                        let _ = self.graph.graph.cook();
+                        self.sync_widget();
+                    }
+                    if ui.button("+ Multiply").clicked() {
+                        let n = self.graph.graph.node_count() as f32;
+                        let _ = self.graph.add_node(
+                            "Multiply", Box::new(MultiplyNode),
+                            [200.0 + n * 10.0, 50.0],
+                        );
+                        let _ = self.graph.graph.cook();
+                        self.sync_widget();
+                    }
+                    if ui.button("+ Add").clicked() {
+                        let n = self.graph.graph.node_count() as f32;
+                        let _ = self.graph.add_node(
+                            "Add", Box::new(AddNode), [200.0 + n * 10.0, 100.0],
+                        );
+                        let _ = self.graph.graph.cook();
+                        self.sync_widget();
+                    }
+                    if ui.button("Cook").clicked() {
+                        let _ = self.graph.graph.cook();
+                    }
                 });
+
+                if self.name.is_empty() { return; }
                 ui.separator();
 
-                // Collect node data to avoid borrow issues
-                let nodes: Vec<(u32, String, [f32; 2])> = self.graph.as_ref().unwrap().nodes.iter()
-                    .map(|n| (n.id, node_type_label(&n.node_type).to_string(), n.position))
-                    .collect();
-                let connections: Vec<(u32, u32)> = self.graph.as_ref().unwrap().connections.iter()
-                    .map(|c| (c.from_node, c.to_node))
-                    .collect();
+                let actions = self.widget.show_egui(ui);
 
-                egui::SidePanel::left("mat_node_list").default_width(160.0).show_inside(ui, |ui| {
-                    ui.label(egui::RichText::new("Nodes").strong());
-                    for (id, label, _) in &nodes {
-                        let selected = self.selected_node == Some(*id);
-                        if ui.selectable_label(selected, format!("#{} {}", id, label)).clicked() {
-                            self.selected_node = Some(*id);
+                for action in actions {
+                    use vox_ui::node_graph_widget::NodeGraphAction;
+                    match action {
+                        NodeGraphAction::NodeMoved { id, new_pos } => {
+                            self.graph.set_position(NodeId(id), new_pos);
                         }
-                    }
-                });
-
-                egui::SidePanel::right("mat_props").default_width(200.0).show_inside(ui, |ui| {
-                    ui.label(egui::RichText::new("Properties").strong());
-                    if let Some(sel_id) = self.selected_node {
-                        if let Some(node) = self.graph.as_mut().unwrap().nodes.iter_mut().find(|n| n.id == sel_id) {
-                            ui.label(format!("#{} {}", node.id, node_type_label(&node.node_type)));
-                            ui.separator();
-                            node_properties_ui(ui, &mut node.node_type);
+                        NodeGraphAction::NodeSelected { id } => {
+                            self.selected_node = Some(NodeId(id));
                         }
-                    } else {
-                        ui.label("Select a node.");
-                    }
-                });
-
-                egui::CentralPanel::default().show_inside(ui, |ui| {
-                    let painter = ui.painter();
-                    let origin = ui.min_rect().min;
-
-                    // Draw connections
-                    for (from_id, to_id) in &connections {
-                        if let (Some((_, _, from_pos)), Some((_, _, to_pos))) = (
-                            nodes.iter().find(|(id, _, _)| id == from_id),
-                            nodes.iter().find(|(id, _, _)| id == to_id),
-                        ) {
-                            let from = egui::pos2(origin.x + from_pos[0] + 100.0, origin.y + from_pos[1] + 20.0);
-                            let to = egui::pos2(origin.x + to_pos[0], origin.y + to_pos[1] + 20.0);
-                            painter.line_segment([from, to], egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 140, 200)));
+                        NodeGraphAction::ConnectionCreated { from_node, from_pin, to_node, to_pin } => {
+                            let _ = self.graph.connect(
+                                NodeId(from_node), &from_pin,
+                                NodeId(to_node),   &to_pin,
+                            );
+                            let _ = self.graph.graph.cook();
+                            self.sync_widget();
                         }
+                        NodeGraphAction::NodeDeleted { id } => {
+                            let _ = self.graph.remove_node(NodeId(id));
+                            let _ = self.graph.graph.cook();
+                            self.sync_widget();
+                        }
+                        _ => {}
                     }
-
-                    // Draw node boxes
-                    for (id, label, pos) in &nodes {
-                        let x = origin.x + pos[0];
-                        let y = origin.y + pos[1];
-                        let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(100.0, 40.0));
-                        let fill = if self.selected_node == Some(*id) {
-                            egui::Color32::from_rgb(40, 70, 120)
-                        } else {
-                            egui::Color32::from_rgb(30, 35, 50)
-                        };
-                        painter.rect_filled(rect, 4.0, fill);
-                        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 90, 130)), egui::StrokeKind::Outside);
-                        painter.text(rect.center(), egui::Align2::CENTER_CENTER, label,
-                            egui::FontId::proportional(11.0), egui::Color32::WHITE);
-                    }
-                });
+                }
             });
     }
 }
 
-fn node_type_label(t: &MaterialNodeType) -> &'static str {
-    match t {
-        MaterialNodeType::MaterialOutput        => "Output",
-        MaterialNodeType::SpectralConstant {..} => "Spectral",
-        MaterialNodeType::FloatConstant {..}    => "Float",
-        MaterialNodeType::ColorConstant {..}    => "Color",
-        MaterialNodeType::TextureCoordinate     => "TexCoord",
-        MaterialNodeType::TextureSample {..}    => "Texture",
-        MaterialNodeType::Add                   => "Add",
-        MaterialNodeType::Subtract              => "Subtract",
-        MaterialNodeType::Multiply              => "Multiply",
-        MaterialNodeType::Divide                => "Divide",
-        MaterialNodeType::Lerp                  => "Lerp",
-        MaterialNodeType::Power                 => "Power",
-        MaterialNodeType::Sqrt                  => "Sqrt",
-        MaterialNodeType::Abs                   => "Abs",
-        MaterialNodeType::OneMinus              => "1-x",
-        MaterialNodeType::SpectralBlend {..}    => "SpectralBlend",
-        MaterialNodeType::SpectralShift {..}    => "SpectralShift",
-        MaterialNodeType::WearBlend {..}        => "Wear",
-        MaterialNodeType::FresnelEffect {..}    => "Fresnel",
-        MaterialNodeType::Roughness {..}        => "Roughness",
-        MaterialNodeType::Metallic {..}         => "Metallic",
-        MaterialNodeType::Emission {..}         => "Emission",
-        MaterialNodeType::Opacity {..}          => "Opacity",
-        MaterialNodeType::PerlinNoise {..}      => "Perlin",
-        MaterialNodeType::VoronoiNoise {..}     => "Voronoi",
-        MaterialNodeType::Checker {..}          => "Checker",
-        MaterialNodeType::Gradient {..}         => "Gradient",
-        MaterialNodeType::Remap {..}            => "Remap",
-        MaterialNodeType::SmoothStep {..}       => "SmoothStep",
-        MaterialNodeType::Time                  => "Time",
-    }
-}
-
-fn node_properties_ui(ui: &mut egui::Ui, node_type: &mut MaterialNodeType) {
-    match node_type {
-        MaterialNodeType::FloatConstant { value } => {
-            ui.horizontal(|ui| { ui.label("Value:"); ui.add(egui::DragValue::new(value).speed(0.01)); });
-        }
-        MaterialNodeType::ColorConstant { r, g, b } => {
-            ui.horizontal(|ui| { ui.label("R:"); ui.add(egui::DragValue::new(r).speed(0.01).range(0.0..=1.0)); });
-            ui.horizontal(|ui| { ui.label("G:"); ui.add(egui::DragValue::new(g).speed(0.01).range(0.0..=1.0)); });
-            ui.horizontal(|ui| { ui.label("B:"); ui.add(egui::DragValue::new(b).speed(0.01).range(0.0..=1.0)); });
-        }
-        MaterialNodeType::Roughness { value } => {
-            ui.horizontal(|ui| { ui.label("Roughness:"); ui.add(egui::DragValue::new(value).speed(0.01).range(0.0..=1.0)); });
-        }
-        MaterialNodeType::Emission { intensity } => {
-            ui.horizontal(|ui| { ui.label("Intensity:"); ui.add(egui::DragValue::new(intensity).speed(0.1)); });
-        }
-        MaterialNodeType::SpectralBlend { factor } => {
-            ui.horizontal(|ui| { ui.label("Factor:"); ui.add(egui::DragValue::new(factor).speed(0.01).range(0.0..=1.0)); });
-        }
-        _ => { ui.label("No editable properties."); }
-    }
+impl Default for MaterialEditorUi {
+    fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]
@@ -181,9 +193,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn material_ui_default_open_false() {
-        let ui = MaterialEditorUi::new();
-        assert!(!ui.open);
-        assert!(ui.graph.is_none());
+    fn material_editor_starts_empty() {
+        let ed = MaterialEditorUi::new();
+        assert!(!ed.open);
+        assert_eq!(ed.graph.graph.node_count(), 0);
+    }
+
+    #[test]
+    fn create_default_graph_has_nodes() {
+        let mut ed = MaterialEditorUi::new();
+        ed.create_default_graph();
+        assert_eq!(ed.graph.graph.node_count(), 3);
+    }
+
+    #[test]
+    fn create_default_graph_cooks_cleanly() {
+        let mut ed = MaterialEditorUi::new();
+        ed.create_default_graph();
+        ed.graph.graph.cook().unwrap();
     }
 }
