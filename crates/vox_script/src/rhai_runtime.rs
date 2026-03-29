@@ -19,7 +19,13 @@ pub struct RhaiRuntime {
 static PENDING_COMMANDS: Mutex<Vec<ScriptCommand>> = Mutex::new(Vec::new());
 
 pub fn drain_pending_commands() -> Vec<ScriptCommand> {
-    PENDING_COMMANDS.lock().unwrap().drain(..).collect()
+    match PENDING_COMMANDS.lock() {
+        Ok(mut guard) => guard.drain(..).collect(),
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            guard.drain(..).collect()
+        }
+    }
 }
 
 impl RhaiRuntime {
@@ -29,30 +35,45 @@ impl RhaiRuntime {
         // Register engine API functions that scripts can call
 
         engine.register_fn("log", |message: String| {
-            PENDING_COMMANDS.lock().unwrap().push(ScriptCommand::Log { message });
+            if let Ok(mut cmds) = PENDING_COMMANDS.lock() {
+                cmds.push(ScriptCommand::Log { message });
+            }
         });
 
-        engine.register_fn("spawn", |asset: &str, x: f64, y: f64, z: f64| -> i64 {
-            println!("[rhai] spawn {} at ({}, {}, {})", asset, x, y, z);
+        engine.register_fn("spawn", |asset: String, x: f64, y: f64, z: f64| -> i64 {
+            if let Ok(mut cmds) = PENDING_COMMANDS.lock() {
+                cmds.push(ScriptCommand::Spawn {
+                    asset_path: asset,
+                    position: [x as f32, y as f32, z as f32],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                });
+            }
             0 // return entity ID (stub)
         });
 
         engine.register_fn("play_sound", |clip: String, volume: f64| {
-            PENDING_COMMANDS.lock().unwrap().push(ScriptCommand::PlaySound {
-                clip,
-                volume: volume as f32,
-                spatial: true,
-            });
+            if let Ok(mut cmds) = PENDING_COMMANDS.lock() {
+                cmds.push(ScriptCommand::PlaySound {
+                    clip,
+                    volume: volume as f32,
+                    spatial: true,
+                });
+            }
         });
 
         engine.register_fn("set_position", |x: f64, y: f64, z: f64| {
-            PENDING_COMMANDS.lock().unwrap().push(ScriptCommand::SetPosition {
-                position: [x as f32, y as f32, z as f32],
-            });
+            if let Ok(mut cmds) = PENDING_COMMANDS.lock() {
+                cmds.push(ScriptCommand::SetPosition {
+                    position: [x as f32, y as f32, z as f32],
+                });
+            }
         });
 
         engine.register_fn("send_event", |name: String, data: String| {
-            PENDING_COMMANDS.lock().unwrap().push(ScriptCommand::SendEvent { name, data });
+            if let Ok(mut cmds) = PENDING_COMMANDS.lock() {
+                cmds.push(ScriptCommand::SendEvent { name, data });
+            }
         });
 
         engine.register_fn("distance", |x1: f64, y1: f64, z1: f64, x2: f64, y2: f64, z2: f64| -> f64 {
@@ -181,5 +202,18 @@ mod tests {
         rt.load_script("empty", r#""#).unwrap();
         let result = rt.call_fn(0, "nonexistent_fn", &[]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn drain_pending_commands_captures_log_call() {
+        // Drain any leftover commands from other tests first
+        let _ = drain_pending_commands();
+
+        let mut rt = RhaiRuntime::new();
+        rt.load_script("test", r#"fn trigger() { log("hello from script"); }"#).unwrap();
+        let _ = rt.call_fn(0, "trigger", &[]);
+
+        let cmds = drain_pending_commands();
+        assert!(!cmds.is_empty(), "log() call should produce a ScriptCommand::Log");
     }
 }
