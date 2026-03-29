@@ -116,6 +116,21 @@ impl KeyBindings {
     }
 }
 
+/// Save key bindings to a TOML file.
+pub fn save_bindings(bindings: &KeyBindings, path: &std::path::Path) -> Result<(), String> {
+    let s = toml::to_string_pretty(bindings).map_err(|e| e.to_string())?;
+    std::fs::write(path, s).map_err(|e| e.to_string())
+}
+
+/// Load key bindings from a TOML file.
+/// Returns `KeyBindings::default()` if the file is missing or malformed.
+pub fn load_bindings(path: &std::path::Path) -> KeyBindings {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +180,47 @@ mod tests {
         let state = InputState::default();
         // SpeedVeryFast has no default binding
         assert!(!bindings.is_action_active(GameAction::SpeedVeryFast, &state));
+    }
+}
+
+#[cfg(test)]
+mod keybinding_persist_tests {
+    use super::*;
+
+    #[test]
+    fn key_bindings_roundtrip_toml() {
+        let mut bindings = KeyBindings::default();
+        bindings.rebind(GameAction::CameraZoomIn, vec![InputSource::Key(200)]);
+
+        let path = std::env::temp_dir().join("ochroma_test_keybindings.toml");
+        save_bindings(&bindings, &path).expect("save should succeed");
+
+        let loaded = load_bindings(&path);
+        let sources = loaded.bindings
+            .get(&GameAction::CameraZoomIn)
+            .expect("CameraZoomIn should be present");
+        assert_eq!(sources[0], InputSource::Key(200));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_bindings_returns_default_on_missing_file() {
+        let loaded = load_bindings(std::path::Path::new(
+            "/tmp/does_not_exist_ochroma_keys_xyzzy.toml",
+        ));
+        assert!(
+            !loaded.bindings.is_empty(),
+            "default bindings should be non-empty"
+        );
+    }
+
+    #[test]
+    fn load_bindings_ignores_malformed_toml() {
+        let path = std::env::temp_dir().join("ochroma_test_bad_keys.toml");
+        std::fs::write(&path, "this is not valid toml ][[[").unwrap();
+        let loaded = load_bindings(&path);
+        drop(loaded);
+        let _ = std::fs::remove_file(&path);
     }
 }

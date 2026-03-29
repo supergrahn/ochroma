@@ -4937,6 +4937,7 @@ dependencies = [
  "half",
  "serde",
  "serde_json",
+ "toml",
  "uuid",
 ]
 

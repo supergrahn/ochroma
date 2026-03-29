@@ -202,6 +202,9 @@ struct EngineApp {
 
     // LOD tile streaming manager
     tile_manager: vox_render::streaming::TileManager,
+
+    // Persisted key bindings (loaded from keybindings.toml at startup)
+    key_bindings: vox_core::input::KeyBindings,
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +393,7 @@ impl EngineApp {
             anim_driver: None,
             frame_dt: 0.0,
             tile_manager: vox_render::streaming::TileManager::with_radius(2),
+            key_bindings: vox_core::input::load_bindings(std::path::Path::new("keybindings.toml")),
         }
     }
 
