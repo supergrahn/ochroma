@@ -1,3 +1,4 @@
+pub mod blend_skinning_compute;
 pub mod compute_sort;
 pub mod skinning_compute;
 pub mod entity_buffer;
