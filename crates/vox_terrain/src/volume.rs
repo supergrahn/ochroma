@@ -164,6 +164,18 @@ impl TerrainVolume {
         }
         count
     }
+
+    /// Export SDF as a flat `Vec<f32>` for GPU upload.
+    /// Layout: `data[z * size_x * size_y + y * size_x + x]`.
+    /// Matches `TerrainVolume::data` layout exactly.
+    pub fn to_sdf_buffer(&self) -> Vec<f32> {
+        self.data.clone()
+    }
+
+    /// Returns `(size_x, size_y, size_z, voxel_size)` — metadata for GPU uniforms.
+    pub fn sdf_metadata(&self) -> (usize, usize, usize, f32) {
+        (self.size_x, self.size_y, self.size_z, self.voxel_size)
+    }
 }
 
 /// Terrain sculpting operations on the SDF.
