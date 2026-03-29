@@ -215,7 +215,6 @@ pub fn preetham_sky(sun_dir: Vec3) -> SkyColors {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec3;
 
     #[test]
     fn sun_direction_noon_is_high() {
