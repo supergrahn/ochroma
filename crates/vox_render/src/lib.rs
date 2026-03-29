@@ -64,5 +64,6 @@ pub mod world_partition;
 pub mod animation_driver;
 pub mod multi_viewport;
 pub mod gpu_particles;
+pub mod particle_ecs;
 pub mod movie_render;
 pub mod level_streaming;
