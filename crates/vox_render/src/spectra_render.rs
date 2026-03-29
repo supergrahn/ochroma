@@ -114,6 +114,76 @@ fn ochroma_to_gaussian3d(splat: &GaussianSplat, illuminant: &Illuminant) -> Gaus
     }
 }
 
+/// Maps a scalar intensity [0, 1] to a 5-stop false-color gradient:
+/// black → blue → cyan → green → yellow → red.
+pub fn band_to_heatmap(t: f32) -> [f32; 3] {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.2 {
+        let s = t / 0.2;
+        [0.0, 0.0, s]
+    } else if t < 0.4 {
+        let s = (t - 0.2) / 0.2;
+        [0.0, s, 1.0]
+    } else if t < 0.6 {
+        let s = (t - 0.4) / 0.2;
+        [0.0, 1.0, 1.0 - s]
+    } else if t < 0.8 {
+        let s = (t - 0.6) / 0.2;
+        [s, 1.0, 0.0]
+    } else {
+        let s = (t - 0.8) / 0.2;
+        [1.0, 1.0 - s, 0.0]
+    }
+}
+
+/// Converts a GaussianSplat to Gaussian3D using one spectral band as false-color.
+fn splat_to_gaussian3d_band(splat: &GaussianSplat, band: usize) -> Gaussian3D {
+    let log_scale = [
+        splat.scale[0].max(1e-6).ln(),
+        splat.scale[1].max(1e-6).ln(),
+        splat.scale[2].max(1e-6).ln(),
+    ];
+    let qx = splat.rotation[0] as f32 / 32767.0;
+    let qy = splat.rotation[1] as f32 / 32767.0;
+    let qz = splat.rotation[2] as f32 / 32767.0;
+    let qw = splat.rotation[3] as f32 / 32767.0;
+    let len = (qx * qx + qy * qy + qz * qz + qw * qw).sqrt().max(1e-8);
+    let rotation = [qw / len, qx / len, qy / len, qz / len];
+    let opacity = splat.opacity as f32 / 255.0;
+    let intensity = splat.spectral_f32(band.min(7));
+    let color = band_to_heatmap(intensity);
+    Gaussian3D { position: splat.position, log_scale, rotation, color, opacity }
+}
+
+/// Render the scene as a false-color heatmap of a single spectral band.
+/// `band` must be 0..8; values out of range clamp to band 7.
+/// Returns `width * height` RGBA pixels in the same format as `render_with_spectra_u8`.
+pub fn render_spectral_band_u8(
+    splats: &[GaussianSplat],
+    camera: &RenderCamera,
+    width: u32,
+    height: u32,
+    band: usize,
+) -> Vec<[u8; 4]> {
+    let cam = ochroma_to_spectra_camera(camera, width, height);
+    let gaussians: Vec<Gaussian3D> = splats
+        .iter()
+        .map(|s| splat_to_gaussian3d_band(s, band))
+        .collect();
+    let floats = render_cpu_internal(&gaussians, &cam);
+    floats
+        .chunks_exact(4)
+        .map(|px| {
+            [
+                (px[0].clamp(0.0, 1.0) * 255.0) as u8,
+                (px[1].clamp(0.0, 1.0) * 255.0) as u8,
+                (px[2].clamp(0.0, 1.0) * 255.0) as u8,
+                (px[3].clamp(0.0, 1.0) * 255.0) as u8,
+            ]
+        })
+        .collect()
+}
+
 /// Convert Ochroma's RenderCamera to the Spectra-compatible SpectraCamera.
 fn ochroma_to_spectra_camera(cam: &RenderCamera, width: u32, height: u32) -> SpectraCamera {
     // glam Mat4 is column-major; Spectra renderer uses row-major view_matrix.
@@ -599,5 +669,60 @@ mod tests {
         let cam = make_camera(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 128, 128);
         let result = render_with_spectra_u8(&splats, &cam, 128, 128, &Illuminant::d65());
         assert_eq!(result.len(), 128 * 128, "output must be width×height pixels");
+    }
+
+    #[test]
+    fn band_to_heatmap_zero_is_black() {
+        let c = band_to_heatmap(0.0);
+        assert_eq!(c, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn band_to_heatmap_one_is_red() {
+        let c = band_to_heatmap(1.0);
+        assert_eq!(c[0], 1.0);
+        assert!(c[1] < 0.01, "green channel should be near 0 at t=1");
+        assert_eq!(c[2], 0.0);
+    }
+
+    #[test]
+    fn band_to_heatmap_clamps_out_of_range() {
+        assert_eq!(band_to_heatmap(-1.0), band_to_heatmap(0.0));
+        assert_eq!(band_to_heatmap(2.0), band_to_heatmap(1.0));
+    }
+
+    #[test]
+    fn render_spectral_band_returns_correct_pixel_count() {
+        let splats: Vec<GaussianSplat> = Vec::new();
+        let camera = RenderCamera {
+            view: glam::Mat4::IDENTITY,
+            proj: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 100.0),
+        };
+        let pixels = render_spectral_band_u8(&splats, &camera, 16, 16, 0);
+        assert_eq!(pixels.len(), 16 * 16);
+    }
+
+    #[test]
+    fn render_spectral_band_differs_per_band_when_nonzero_spectral() {
+        let mut spectral = [0u16; 8];
+        spectral[0] = half::f16::from_f32(1.0).to_bits();
+        spectral[7] = half::f16::from_f32(0.0).to_bits();
+        let splat = GaussianSplat {
+            position: [0.0, 0.0, -2.0],
+            scale: [0.5, 0.5, 0.5],
+            rotation: [0, 0, 0, 32767],
+            opacity: 255,
+            _pad: [0; 3],
+            spectral,
+        };
+        let camera = RenderCamera {
+            view: glam::Mat4::IDENTITY,
+            proj: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 100.0),
+        };
+        let pixels_b0 = render_spectral_band_u8(&[splat], &camera, 32, 32, 0);
+        let pixels_b7 = render_spectral_band_u8(&[splat], &camera, 32, 32, 7);
+        let sum_b0: u32 = pixels_b0.iter().map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32).sum();
+        let sum_b7: u32 = pixels_b7.iter().map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32).sum();
+        assert_ne!(sum_b0, sum_b7, "band 0 (full) and band 7 (empty) should differ");
     }
 }
