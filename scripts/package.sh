@@ -1,5 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$REPO_ROOT"
+
 VERSION="0.1.0"
 PACKAGE="ochroma-${VERSION}-linux-x64"
 
@@ -21,7 +26,9 @@ mkdir -p "dist/${PACKAGE}/docs"
 
 # Copy binaries
 cp target/release/ochroma "dist/${PACKAGE}/bin/"
-cp target/release/walking_sim "dist/${PACKAGE}/bin/"
+if [ -f "target/release/walking_sim" ]; then
+    cp target/release/walking_sim "dist/${PACKAGE}/bin/"
+fi
 
 # Copy assets and docs
 cp -r assets/* "dist/${PACKAGE}/assets/" 2>/dev/null || true
