@@ -67,6 +67,32 @@ pub struct CameraUniform {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: convert GaussianSplat slice to GPU format (no sorting)
+// ---------------------------------------------------------------------------
+
+/// Convert a slice of [`GaussianSplat`] to [`GpuSplatData`] without depth sorting.
+pub fn splats_to_gpu(splats: &[GaussianSplat]) -> Vec<GpuSplatData> {
+    splats
+        .iter()
+        .map(|s| {
+            let mut spectral = [0.0f32; 8];
+            for b in 0..8 {
+                spectral[b] = half::f16::from_bits(s.spectral[b]).to_f32();
+            }
+            GpuSplatData {
+                position: s.position,
+                scale_x: s.scale[0],
+                scale_y: s.scale[1],
+                scale_z: s.scale[2],
+                opacity: s.opacity as f32 / 255.0,
+                _pad: 0.0,
+                spectral,
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // GpuRasteriser
 // ---------------------------------------------------------------------------
 
@@ -80,6 +106,13 @@ pub struct GpuRasteriser {
     depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
     depth_sampler: wgpu::Sampler,
+
+    // Shadow pass fields
+    shadow_pipeline: Option<wgpu::RenderPipeline>,
+    light_buffer: Option<wgpu::Buffer>,
+    shadow_depth_texture: Option<wgpu::Texture>,
+    shadow_depth_view: Option<wgpu::TextureView>,
+    shadow_bind_group_layout: Option<wgpu::BindGroupLayout>,
 }
 
 impl GpuRasteriser {
@@ -198,7 +231,210 @@ impl GpuRasteriser {
             depth_texture,
             depth_view,
             depth_sampler,
+            shadow_pipeline: None,
+            light_buffer: None,
+            shadow_depth_texture: None,
+            shadow_depth_view: None,
+            shadow_bind_group_layout: None,
         }
+    }
+
+    /// Initialise the shadow depth prepass pipeline and resources.
+    ///
+    /// Must be called once after `new()` before using `render_with_shadow`.
+    pub fn init_shadow_pass(&mut self, device: &wgpu::Device) {
+        // Create 512×512 shadow depth texture
+        let shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("shadow_depth_texture"),
+            size: wgpu::Extent3d { width: 512, height: 512, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let shadow_view = shadow_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Light uniform buffer (4×4 f32 matrix = 64 bytes)
+        let light_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("light_uniform_buffer"),
+            size: 64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Bind group layout: binding 0 = light uniform, binding 1 = splat storage
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("shadow_bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("shadow_pipeline_layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        let shader_src = include_str!("shadow_shader.wgsl");
+        let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shadow_shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+        });
+
+        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("shadow_render_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader_module,
+                entry_point: Some("vs_shadow"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        self.shadow_pipeline = Some(shadow_pipeline);
+        self.light_buffer = Some(light_buf);
+        self.shadow_depth_texture = Some(shadow_texture);
+        self.shadow_depth_view = Some(shadow_view);
+        self.shadow_bind_group_layout = Some(bgl);
+    }
+
+    /// Run the shadow depth prepass for the given splats and light matrix.
+    pub fn render_shadow_pass(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        splats_gpu: &[GpuSplatData],
+        light_view_proj: &glam::Mat4,
+    ) {
+        let (Some(pipeline), Some(light_buf), Some(shadow_depth_view), Some(bgl)) = (
+            self.shadow_pipeline.as_ref(),
+            self.light_buffer.as_ref(),
+            self.shadow_depth_view.as_ref(),
+            self.shadow_bind_group_layout.as_ref(),
+        ) else {
+            return;
+        };
+
+        if splats_gpu.is_empty() {
+            return;
+        }
+
+        // Write light matrix to uniform buffer
+        let mat_data: [[f32; 4]; 4] = light_view_proj.to_cols_array_2d();
+        queue.write_buffer(light_buf, 0, bytemuck::cast_slice(&mat_data));
+
+        // Per-frame splat storage buffer
+        let splat_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("shadow_splat_storage_buffer"),
+            contents: bytemuck::cast_slice(splats_gpu),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shadow_bind_group"),
+            layout: bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: light_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: splat_buffer.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("shadow_encoder"),
+        });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("shadow_render_pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: shadow_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(pipeline);
+            render_pass.set_bind_group(0, &bind_group, &[]);
+            render_pass.draw(0..(splats_gpu.len() as u32 * 6), 0..1);
+        }
+
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Render with an optional shadow pass before the main render.
+    ///
+    /// If `light_view_proj` is `Some`, the shadow depth prepass runs first.
+    pub fn render_with_shadow(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_view: &wgpu::TextureView,
+        splats: &[GaussianSplat],
+        camera: &RenderCamera,
+        illuminant: &Illuminant,
+        light_view_proj: Option<&glam::Mat4>,
+    ) {
+        if splats.is_empty() {
+            return;
+        }
+
+        // Convert splats once for both passes
+        let gpu_splats = splats_to_gpu(splats);
+
+        if let Some(lvp) = light_view_proj {
+            self.render_shadow_pass(device, queue, &gpu_splats, lvp);
+        }
+
+        self.render(device, queue, target_view, splats, camera, illuminant);
     }
 
     /// Render the given splats to `target_view`.

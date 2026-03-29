@@ -1695,13 +1695,15 @@ impl EngineApp {
             let illuminant = illuminant_for_time(self.engine.time_of_day());
 
             let gpu_rast = self.gpu_rasteriser.as_ref().expect("gpu_rasteriser checked above");
-            gpu_rast.render(
+            let shadow_vp = self.shadow_mapper.cascades.first().map(|c| c.light_view_proj);
+            gpu_rast.render_with_shadow(
                 backend.device(),
                 backend.queue(),
                 &view,
                 &render_splats,
                 &render_camera,
                 &illuminant,
+                shadow_vp.as_ref(),
             );
 
             // --- egui render on top of scene ---
@@ -1946,12 +1948,13 @@ impl ApplicationHandler for EngineApp {
         match WgpuBackend::new(Arc::clone(&window), DEFAULT_WIDTH, DEFAULT_HEIGHT) {
             Ok(backend) => {
                 println!("[ochroma] GPU backend initialised");
-                let gpu_rast = GpuRasteriser::new(
+                let mut gpu_rast = GpuRasteriser::new(
                     backend.device(),
                     backend.surface_format(),
                     DEFAULT_WIDTH,
                     DEFAULT_HEIGHT,
                 );
+                gpu_rast.init_shadow_pass(backend.device());
                 println!("[ochroma] GPU rasteriser created (primary render path)");
                 self.gpu_rasteriser = Some(gpu_rast);
                 self.backend = Some(backend);
