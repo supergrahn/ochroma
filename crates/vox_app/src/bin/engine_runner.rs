@@ -2073,7 +2073,7 @@ impl ApplicationHandler for EngineApp {
                     println!("[ochroma] Demo mode: loaded {}", demo_path.display());
                     let _ = self.rhai.call_fn(idx, "on_start", &[]);
                 }
-                Err(e) => eprintln!("[ochroma] Demo mode: failed to load script: {}", e),
+                Err(e) => eprintln!("[ochroma] Demo mode: failed to load script (run from repo root): {}", e),
             }
         }
 
