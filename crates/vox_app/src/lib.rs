@@ -24,3 +24,4 @@ pub mod minimap;
 pub mod settings;
 pub mod soundscape;
 pub mod tutorial;
+pub mod terrain_editor;
