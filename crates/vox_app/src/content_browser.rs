@@ -55,6 +55,7 @@ pub enum ContentAction {
     LoadAsset(PathBuf),
     OpenMap(PathBuf),
     PlayAudio(PathBuf),
+    ImportAsset(PathBuf),
 }
 
 /// Editor panel that shows files in a directory, with type labels and search.
@@ -65,6 +66,7 @@ pub struct ContentBrowser {
     pub search_query: String,
     pub current_dir: PathBuf,
     pub dragging_asset: Option<String>,
+    pub pending_action: Option<ContentAction>,
 }
 
 impl ContentBrowser {
@@ -79,6 +81,7 @@ impl ContentBrowser {
             search_query: String::new(),
             current_dir,
             dragging_asset: None,
+            pending_action: None,
         }
     }
 
@@ -226,6 +229,21 @@ impl ContentBrowser {
                         if response.drag_started() {
                             self.dragging_asset =
                                 Some(entry.path.to_string_lossy().to_string());
+                        }
+                    }
+
+                    // Import button for the selected entry
+                    if let Some(idx) = self.selected {
+                        let entry = &self.entries[idx];
+                        let importable = matches!(
+                            entry.entry_type,
+                            ContentType::GaussianSplat
+                                | ContentType::Mesh
+                                | ContentType::OchromaAsset
+                        );
+                        if importable && ui.small_button("Import into Scene").clicked() {
+                            self.pending_action =
+                                Some(ContentAction::ImportAsset(entry.path.clone()));
                         }
                     }
                 });
