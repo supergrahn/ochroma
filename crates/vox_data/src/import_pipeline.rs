@@ -60,41 +60,68 @@ pub fn import_asset(path: &Path, settings: &ImportSettings) -> Result<ImportResu
 }
 
 fn import_ply(path: &Path, settings: &ImportSettings) -> Result<ImportResult, String> {
-    // Read PLY file header to count vertices
-    let data = std::fs::read_to_string(path).map_err(|e| format!("Failed to read PLY: {}", e))?;
-    let mut vertex_count = 0u32;
-    let mut in_header = true;
-    for line in data.lines() {
-        if in_header {
-            if line.starts_with("element vertex")
-                && let Some(count_str) = line.split_whitespace().nth(2) {
-                    vertex_count = count_str.parse().unwrap_or(0);
+    use crate::ply_loader;
+
+    let mut warnings = Vec::new();
+
+    let splats = match ply_loader::load_ply(path) {
+        Ok(s) => s,
+        Err(_) => {
+            warnings.push("Binary PLY failed; falling back to vertex-count estimation.".to_string());
+            // Read vertex count from ASCII header
+            let data = std::fs::read_to_string(path).unwrap_or_default();
+            let mut vertex_count = 0u32;
+            for line in data.lines() {
+                if line.starts_with("element vertex") {
+                    if let Some(n) = line.split_whitespace().nth(2) {
+                        vertex_count = n.parse().unwrap_or(0);
+                    }
+                    break;
                 }
-            if line == "end_header" {
-                in_header = false;
             }
+            let count = (vertex_count as f32 * settings.splat_density / 200.0) as usize;
+            (0..count).map(|i| {
+                let t = i as f32 / count.max(1) as f32;
+                GaussianSplat {
+                    position: [t * settings.scale_factor, 0.0, 0.0],
+                    scale: [0.01; 3],
+                    rotation: [0, 0, 0, 16384],
+                    opacity: 255,
+                    _pad: [0; 3],
+                    spectral: [0; 8],
+                }
+            }).collect()
+        }
+    };
+
+    if splats.is_empty() {
+        warnings.push("PLY could not be decoded; splat cloud is empty. Only binary PLY is supported.".to_string());
+    }
+
+    // Apply scale factor to positions
+    let mut splats = splats;
+    if (settings.scale_factor - 1.0).abs() > f32::EPSILON {
+        for s in splats.iter_mut() {
+            s.position[0] *= settings.scale_factor;
+            s.position[1] *= settings.scale_factor;
+            s.position[2] *= settings.scale_factor;
         }
     }
 
-    let splat_count = (vertex_count as f32 * settings.splat_density / 200.0) as usize;
-    let splats: Vec<GaussianSplat> = (0..splat_count)
-        .map(|i| {
-            let t = i as f32 / splat_count.max(1) as f32;
-            GaussianSplat {
-                position: [t * settings.scale_factor, 0.0, 0.0],
-                scale: [0.01; 3],
-                rotation: [0, 0, 0, 16384], // identity-ish quaternion
-                opacity: 255,
-                _pad: [0; 3],
-                spectral: [0; 8],
-            }
-        })
-        .collect();
-
+    // Compute tight bounding box for collision
     let collision_box = if settings.generate_collision
         && settings.collision_type != CollisionGenType::None
+        && !splats.is_empty()
     {
-        Some(([0.0, 0.0, 0.0], [settings.scale_factor, 1.0, 1.0]))
+        let mut mn = splats[0].position;
+        let mut mx = splats[0].position;
+        for s in &splats {
+            for i in 0..3 {
+                if s.position[i] < mn[i] { mn[i] = s.position[i]; }
+                if s.position[i] > mx[i] { mx[i] = s.position[i]; }
+            }
+        }
+        Some((mn, mx))
     } else {
         None
     };
@@ -105,7 +132,7 @@ fn import_ply(path: &Path, settings: &ImportSettings) -> Result<ImportResult, St
         material_names: vec!["default".to_string()],
         skeleton_joint_count: 0,
         animation_count: 0,
-        warnings: vec![],
+        warnings,
     })
 }
 
