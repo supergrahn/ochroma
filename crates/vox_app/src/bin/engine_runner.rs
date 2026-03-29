@@ -190,6 +190,9 @@ struct EngineApp {
 
     // Character controller (WASD + jump + mouse-look; toggle with P key)
     character: vox_app::character_controller::CharacterController,
+
+    // Rhai scripting runtime (hot-reloadable game logic)
+    rhai: vox_script::rhai_runtime::RhaiRuntime,
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +377,7 @@ impl EngineApp {
             },
             shadow_mapper: ShadowMapper::new(512),
             audio_handle: vox_audio::AudioHandle::spawn(),
+            rhai: vox_script::rhai_runtime::RhaiRuntime::new(),
         }
     }
 
@@ -1464,6 +1468,35 @@ impl EngineApp {
             self.engine.world.resource_mut::<vox_core::engine_runtime::PendingScriptCommands>().commands = pending;
         }
 
+        // 4c-rhai. Per-frame Rhai script update + command dispatch
+        {
+            let dt_dyn = rhai::Dynamic::from(dt as f64);
+            for i in 0..self.rhai.script_count() {
+                let _ = self.rhai.call_fn(i, "on_update", &[dt_dyn.clone()]);
+            }
+        }
+        {
+            use vox_core::script_interface::ScriptCommand;
+            for cmd in vox_script::rhai_runtime::drain_pending_commands() {
+                match cmd {
+                    ScriptCommand::SetPosition { position } => {
+                        println!("[script] set_position ({}, {}, {})", position[0], position[1], position[2]);
+                    }
+                    ScriptCommand::PlaySound { clip, volume, .. } => {
+                        if let Some(ref h) = self.audio_handle {
+                            let _ = h.play(&clip, volume, false);
+                        }
+                    }
+                    ScriptCommand::Log { message } => {
+                        println!("[script] {}", message);
+                    }
+                    other => {
+                        println!("[script] unhandled command: {:?}", other);
+                    }
+                }
+            }
+        }
+
         // 4d. Sync entity positions to splats — when scripts move entities,
         //     the corresponding splats move with them.
         {
@@ -1877,6 +1910,22 @@ impl ApplicationHandler for EngineApp {
 
         // Start the engine runtime (initialises scripts)
         self.engine.start();
+
+        // Auto-load Rhai scripts from the scripts/ directory
+        if let Ok(entries) = std::fs::read_dir("scripts") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("rhai") {
+                    match self.rhai.load_script_file(
+                        path.file_stem().unwrap_or_default().to_str().unwrap_or(""),
+                        &path,
+                    ) {
+                        Ok(idx) => println!("[ochroma] Loaded script #{}: {}", idx, path.display()),
+                        Err(e) => println!("[ochroma] Script load error {}: {}", path.display(), e),
+                    }
+                }
+            }
+        }
 
         println!();
         println!("Ochroma Engine v0.1.0");
