@@ -12,6 +12,7 @@ pub mod sdf_reverb;
 pub mod cpal_backend;
 pub mod spectral_acoustic;
 pub mod spectral_reverb;
+pub mod fundsp_graph;
 pub use spectral_synth::{synthesize_impact, create_impact_wav, synthesize_impact_from_splat_spectral};
 pub use spectral_synth2::SpectralSynth;
 pub use spectral_acoustic::SpectralAcousticProfile;
@@ -19,6 +20,7 @@ pub use spectral_reverb::SpectralReverb;
 
 pub use spatial::{compute_spatial, Listener, SpatialAudioManager};
 pub use synth::{generate_click, generate_collect_sound, generate_place_sound, generate_tone, save_wav};
+pub use fundsp_graph::{apply_gain, apply_reverb_send};
 
 use glam::Vec3;
 
@@ -31,6 +33,7 @@ pub enum AudioCommand {
     Play { id: u32, path: String, volume: f32, looping: bool },
     Stop { id: u32 },
     StopAll,
+    PlaySynth { samples: Vec<f32>, volume: f32 },
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +86,7 @@ impl AudioThread {
                         sink.stop();
                     }
                 }
+                _ => {}
             }
         }
     }
