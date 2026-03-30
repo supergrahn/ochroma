@@ -4,6 +4,10 @@ use vox_core::ecs::{SplatInstanceComponent, SplatAssetComponent, LodLevel};
 use vox_core::types::GaussianSplat;
 use vox_render::frustum::Frustum;
 use vox_render::lod;
+#[cfg(feature = "spectra-native")]
+use vox_render::spectra_render::native::SpectraBackendSystem;
+#[cfg(feature = "spectra-native")]
+use vox_render::SpectraCameraParams;
 
 /// Resource: current camera state.
 #[derive(Resource, Debug)]
@@ -74,4 +78,41 @@ pub fn gather_splats_system(
             }
         }
     }
+}
+
+/// Drive the Spectra native GPU renderer one tick.
+///
+/// Uses Bevy's `Changed<SplatInstanceComponent>` to detect mutations —
+/// fires whenever position, scale, spectral values, or any other field on
+/// a `SplatInstanceComponent` changes in the ECS. `vox_render` has no Bevy
+/// dep; change detection lives here.
+///
+/// Camera orientation is derived from `CameraState.view_proj` (inverse).
+/// `fov_y`, `near`, and `far` use defaults until `CameraState` exposes them.
+#[cfg(feature = "spectra-native")]
+pub fn spectra_render_system(
+    mut backend: ResMut<SpectraBackendSystem>,
+    changed:     Query<(), Changed<SplatInstanceComponent>>,
+    visible:     Res<VisibleSplats>,
+    camera:      Res<CameraState>,
+) {
+    let scene_changed = !changed.is_empty();
+
+    // Derive camera vectors from the inverse view-projection matrix.
+    let inv = camera.view_proj.inverse();
+    let fwd = (inv * glam::Vec4::new(0.0, 0.0, -1.0, 0.0)).truncate().normalize();
+    let up  = (inv * glam::Vec4::new(0.0, 1.0,  0.0, 0.0)).truncate().normalize();
+    let pos = inv.col(3).truncate();
+
+    let cam = SpectraCameraParams {
+        position: pos.into(),
+        forward:  fwd.into(),
+        up:       up.into(),
+        // Defaults until CameraState exposes fov/near/far:
+        fov_y: std::f32::consts::FRAC_PI_4,
+        near:  0.1,
+        far:   1000.0,
+    };
+
+    backend.tick(&visible.splats, cam, scene_changed);
 }

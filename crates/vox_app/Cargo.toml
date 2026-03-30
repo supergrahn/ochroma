@@ -7,6 +7,7 @@ repository.workspace = true
 [features]
 default = []
 web = ["dep:wasm-bindgen", "dep:console_error_panic_hook", "dep:web-sys"]
+spectra-native = ["vox_render/spectra-native"]
 
 [dependencies]
 vox_core = { path = "../vox_core" }

@@ -87,3 +87,5 @@ pub mod spectral_uplift;
 pub mod splat_convert;
 #[cfg(feature = "spectra-native")]
 pub mod splat_backend;
+#[cfg(feature = "spectra-native")]
+pub use spectra_renderer::CameraParams as SpectraCameraParams;

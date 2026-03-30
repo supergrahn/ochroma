@@ -801,6 +801,17 @@ mod tests {
         let _: fn(u32, u32) -> Result<SpectraBackendSystem, String> = SpectraBackendSystem::realtime;
         let _: fn(u32, u32) -> Result<SpectraBackendSystem, String> = SpectraBackendSystem::cinematic;
     }
+
+    #[cfg(all(test, feature = "spectra-native"))]
+    #[test]
+    fn spectra_backend_system_tick_signature_takes_scene_changed() {
+        use crate::spectra_render::native::SpectraBackendSystem;
+        use spectra_renderer::CameraParams;
+        use vox_core::types::GaussianSplat;
+        // Compile-time check: tick() must accept scene_changed: bool
+        let _: fn(&mut SpectraBackendSystem, &[GaussianSplat], CameraParams, bool)
+                -> Option<std::sync::Arc<Vec<u8>>> = SpectraBackendSystem::tick;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -809,12 +820,14 @@ mod tests {
 
 #[cfg(feature = "spectra-native")]
 pub mod native {
+    use bevy_ecs::prelude::*;
     use crate::splat_backend::SpectraRenderBackend;
     use crate::splat_convert::convert_splats;
     use spectra_renderer::{SplatScene, CameraParams};
     use vox_core::types::GaussianSplat;
 
     /// Per-viewport Spectra backend. One instance per active Spectra viewport.
+    #[derive(Resource)]
     pub struct SpectraBackendSystem {
         backend: SpectraRenderBackend,
         scene_dirty: bool,
@@ -838,25 +851,24 @@ pub mod native {
             })
         }
 
-        /// Call once per Bevy render tick.
+        /// Call once per render tick.
         ///
-        /// `splats`  — all GaussianSplat components from the ECS world.
-        /// `camera`  — extracted Bevy camera this frame.
+        /// - `splats`        — all GaussianSplat components visible this frame.
+        /// - `camera`        — camera parameters for this frame.
+        /// - `scene_changed` — `true` if any splat was mutated or the set changed.
+        ///   Use Bevy's `Changed<SplatInstanceComponent>` query in `vox_app`.
+        ///   For non-Bevy callers, pass `true` each frame or call `mark_dirty()`.
         ///
-        /// Returns `Some(rgba8)` when a completed frame is available (one tick of latency),
-        /// or `None` if no frame has been completed yet.
-        ///
-        /// # Notes
-        ///
-        /// Only the splat **count** is used as a dirty signal. If splat data changes without
-        /// a count change (positions, scales, spectral values), call `mark_dirty()` before
-        /// the next tick to force a scene rebuild.
+        /// Returns `Some(arc)` when a completed frame is available, `None` until
+        /// the first frame completes.
         pub fn tick(
             &mut self,
-            splats:  &[GaussianSplat],
-            camera:  CameraParams,
+            splats:        &[GaussianSplat],
+            camera:        CameraParams,
+            scene_changed: bool,
         ) -> Option<std::sync::Arc<Vec<u8>>> {
-            let needs_rebuild = self.scene_dirty || splats.len() != self.last_splat_count;
+            let needs_rebuild = self.scene_dirty || scene_changed
+                || splats.len() != self.last_splat_count;
             let new_scene = if needs_rebuild {
                 let (surfaces, volumes) = convert_splats(splats);
                 Some(SplatScene::new(surfaces, volumes))
@@ -869,7 +881,6 @@ pub mod native {
                 return None;
             }
 
-            // Only commit the dirty-flag reset after a successful submit.
             if needs_rebuild {
                 self.scene_dirty = false;
                 self.last_splat_count = splats.len();
