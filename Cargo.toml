@@ -16,6 +16,7 @@ members = [
     "crates/vox_tools",
     "crates/vox_nodes",
     "crates/ochroma_engine",
+    "crates/vox_web",
 ]
 
 [workspace.package]

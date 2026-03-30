@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ochroma — Spectral Gaussian Splatting</title>
+  <style>
+    body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #status { color: #fff; font-family: monospace; font-size: 14px; position: absolute; top: 16px; left: 16px; }
+  </style>
+</head>
+<body>
+  <canvas id="ochroma-canvas"></canvas>
+  <div id="status">Loading…</div>
+  <script type="module">
+    import init from './hello_splat.js';
+    document.getElementById('status').textContent = 'Initialising WebGPU…';
+    await init();
+    document.getElementById('status').textContent = 'Ready';
+  </script>
+</body>
+</html>
