@@ -2,3 +2,4 @@
 *.ptx
 *.cubin
 .env
+.worktrees/
