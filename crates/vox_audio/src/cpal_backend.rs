@@ -1,10 +1,6 @@
 //! CPAL device backend — cross-platform (WASAPI / CoreAudio / ALSA).
 
 #[cfg(feature = "audio-backend")]
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-#[cfg(feature = "audio-backend")]
-use cpal::{SampleFormat, StreamConfig};
-#[cfg(feature = "audio-backend")]
 use std::sync::{Arc, Mutex};
 
 pub use crate::AudioCommand;
@@ -24,13 +20,15 @@ impl CpalBackendBuilder {
         self
     }
 
-    /// Spawn the CPAL stream on a new thread.
+    /// Build the CPAL stream on the calling thread, spawn a dispatch thread for commands.
     /// Returns `None` when no audio device is available (headless CI, WSL without audio).
     #[cfg(feature = "audio-backend")]
     pub fn build(
         self,
         receiver: std::sync::mpsc::Receiver<crate::AudioCommand>,
     ) -> Option<CpalHandle> {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
         let host   = cpal::default_host();
         let device = host.default_output_device()?;
         let config = device.default_output_config().ok()?;
@@ -41,7 +39,7 @@ impl CpalBackendBuilder {
         let queue_write = Arc::clone(&queue);
 
         let channels = config.channels() as usize;
-        let stream_config = StreamConfig {
+        let stream_config = cpal::StreamConfig {
             channels: config.channels(),
             sample_rate: cpal::SampleRate(sr),
             buffer_size: cpal::BufferSize::Default,
@@ -50,7 +48,7 @@ impl CpalBackendBuilder {
         let err_fn = |e| eprintln!("[ochroma-audio/cpal] stream error: {e}");
 
         let stream = match config.sample_format() {
-            SampleFormat::F32 => device.build_output_stream(
+            cpal::SampleFormat::F32 => device.build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _| {
                     let mut q = queue.lock().unwrap();
@@ -72,6 +70,8 @@ impl CpalBackendBuilder {
 
         stream.play().ok()?;
 
+        // Dispatch thread: receives AudioCommand, fills queue.
+        // Stream is kept alive in CpalHandle (not moved into thread).
         std::thread::Builder::new()
             .name("ochroma-cpal-dispatch".into())
             .spawn(move || {
@@ -91,7 +91,7 @@ impl CpalBackendBuilder {
             })
             .ok()?;
 
-        Some(CpalHandle { stream: Box::new(stream) })
+        Some(CpalHandle { _stream: SendStream(stream) })
     }
 
     #[cfg(not(feature = "audio-backend"))]
@@ -107,17 +107,20 @@ impl Default for CpalBackendBuilder {
     fn default() -> Self { Self::new() }
 }
 
-/// Opaque handle returned by `CpalBackendBuilder::build()`.
-#[cfg(feature = "audio-backend")]
+/// Opaque handle — keeps the CPAL stream alive.
 pub struct CpalHandle {
-    #[allow(dead_code)]
-    stream: Box<dyn std::any::Any>,
-}
-
-#[cfg(not(feature = "audio-backend"))]
-pub struct CpalHandle {
+    #[cfg(feature = "audio-backend")]
+    _stream: SendStream,
+    #[cfg(not(feature = "audio-backend"))]
     _marker: std::marker::PhantomData<()>,
 }
+
+#[cfg(feature = "audio-backend")]
+struct SendStream(cpal::Stream);
+// SAFETY: cpal::Stream is not Send because of raw pointers on some platforms,
+// but we only hold it in CpalHandle to keep it alive — we never send it to another thread.
+#[cfg(feature = "audio-backend")]
+unsafe impl Send for SendStream {}
 
 #[cfg(test)]
 mod tests {
