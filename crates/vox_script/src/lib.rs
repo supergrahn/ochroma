@@ -10,6 +10,9 @@ pub use spectral_bindings::{SpectralState, register_spectral_bindings, tick_thre
 pub mod entity_bindings;
 pub use entity_bindings::{EntityStore, register_entity_bindings};
 
+pub mod hot_reload;
+pub use hot_reload::{ScriptWatcher, WatchError};
+
 pub mod mod_manager;
 pub mod visual_script;
 pub mod visual_graph;
