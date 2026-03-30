@@ -116,6 +116,7 @@ pub struct CpalHandle {
 }
 
 #[cfg(feature = "audio-backend")]
+#[allow(dead_code)]
 struct SendStream(cpal::Stream);
 // SAFETY: cpal::Stream is not Send because of raw pointers on some platforms,
 // but we only hold it in CpalHandle to keep it alive — we never send it to another thread.
