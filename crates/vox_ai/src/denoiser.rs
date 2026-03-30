@@ -147,12 +147,17 @@ mod tests {
     }
 
     #[test]
-    fn load_invalid_safetensors_returns_err() {
+    fn load_invalid_safetensors_returns_err_with_header_message() {
         let path = "/tmp/bad_safetensors_test.safetensors";
         std::fs::write(path, u64::MAX.to_le_bytes()).unwrap();
         let result = SpectralDenoiser::load(path);
         std::fs::remove_file(path).ok();
         assert!(result.is_err(), "invalid header must return Err");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("header length") || msg.contains("header"),
+            "error must mention header length, got: {}", msg
+        );
     }
 
     #[test]
