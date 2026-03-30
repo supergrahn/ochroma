@@ -171,4 +171,24 @@ mod tests {
         println!("frame_dt = {}", dt);
         assert!((dt - 0.033).abs() < 1e-5, "frame_dt should be 0.033, got {}", dt);
     }
+
+    #[test]
+    fn game_lua_parses_cleanly() {
+        let mut rt = LuaRuntime::new().unwrap();
+        // Register spectral stub so game.lua can call spectral.on_threshold/get_band
+        rt.lua().load(r#"
+            spectral = {
+                on_threshold = function(...) end,
+                get_band = function(...) return 0.0 end,
+            }
+        "#).exec().unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/scripts/game.lua");
+        if path.exists() {
+            rt.exec_file(&path).expect("game.lua should parse without error");
+            println!("game.lua parsed successfully from {:?}", path);
+        } else {
+            println!("game.lua not found at {:?} — skipping", path);
+        }
+    }
 }
