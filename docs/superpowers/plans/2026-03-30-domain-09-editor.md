@@ -2852,48 +2852,84 @@ git commit -m "feat(editor): SplatWeightNode — BiomeMap → splat_weights, com
 
 ---
 
-### Task 8c: WetnessOverrideNode — DripResult upgrades dry biomes to Wetland
+### Task 8c: MoistureNode — DripResult → per-cell moisture, blended at SplatWeightNode
+
+**Design:** `WetnessOverrideNode` (previous design) replaced `BiomeKind` with `Wetland` for wet
+cells. That was wrong. A wet Alpine cell is still Alpine — it has Alpine rock and snow spectral
+character, but darkened and shifted toward water. A wet Desert cell is still Desert, just darker.
+
+The correct model: wetness is a **per-cell scalar modifier** that blends any biome's spectral
+output toward the Water USGS curve downstream in `SplatWeightNode`. The biome identity is never
+replaced.
+
+```
+BiomeNode → [BiomeMap]
+MoistureNode → [moisture: Vec<f32>]   ← separate output, not a BiomeMap replacement
+     ↘         ↙
+    SplatWeightNode
+        blends: spectral = biome_spectral * (1 - moisture) + water_spectral * moisture
+```
+
+`MoistureNode` takes `drip_intensity` (from `DripSimNode`) and an optional
+`urban_moisture` (from `UrbanSimNode`) and combines them into a single `moisture: Vec<f32>`
+in [0, 1]. No altitude, no season, no biome exemptions — just the physics data.
+`SplatWeightNode` reads `moisture` as an optional input and applies the blend.
 
 - [ ] **Step 1: Write failing test**
 
-Add to `crates/vox_editor/src/nodes/biome_node.rs`:
+Create `crates/vox_editor/src/nodes/moisture_node.rs`:
 
 ```rust
 #[cfg(test)]
-mod wetness_override_tests {
+mod tests {
     use super::*;
 
     #[test]
-    fn test_wetness_overrides_dry_cells_to_wetland() {
-        let node = WetnessOverrideNode { drip_threshold: 0.6, world_height: 400.0 };
+    fn test_moisture_node_combines_drip_and_urban() {
+        let node = MoistureNode::default();
+        let drip          = vec![0.8f32, 0.1, 0.0, 0.5];
+        let urban_moisture = vec![0.2f32, 0.0, 0.9, 0.1];
 
-        let biome_map = BiomeMap {
-            cells: vec![BiomeKind::Grassland, BiomeKind::Forest,
-                        BiomeKind::Desert,    BiomeKind::Tundra],
-            resolution: 2,
-        };
-        // Cells 0 and 2 have high drip intensity → should become Wetland
-        let drip = vec![0.8f32, 0.2, 0.9, 0.1];
-        let heights = vec![5.0f32; 4]; // low altitude — not Alpine, upgrade allowed
-
-        let result = node.apply(&biome_map, &drip, &heights);
-        assert_eq!(result.cells[0], BiomeKind::Wetland, "high drip + low altitude → Wetland");
-        assert_eq!(result.cells[1], BiomeKind::Forest,  "low drip → unchanged");
-        assert_eq!(result.cells[2], BiomeKind::Wetland, "high drip + low altitude → Wetland");
-        assert_eq!(result.cells[3], BiomeKind::Tundra,  "low drip → unchanged");
+        let result = node.combine(&drip, Some(&urban_moisture));
+        // Cell 0: max(0.8, 0.2) = 0.8
+        assert!((result[0] - 0.8).abs() < 0.01);
+        // Cell 1: max(0.1, 0.0) = 0.1
+        assert!((result[1] - 0.1).abs() < 0.01);
+        // Cell 2: max(0.0, 0.9) = 0.9
+        assert!((result[2] - 0.9).abs() < 0.01);
+        // Cell 3: max(0.5, 0.1) = 0.5
+        assert!((result[3] - 0.5).abs() < 0.01);
     }
 
     #[test]
-    fn test_wetness_does_not_override_alpine() {
-        let node = WetnessOverrideNode { drip_threshold: 0.5, world_height: 400.0 };
-        let biome_map = BiomeMap {
-            cells: vec![BiomeKind::Alpine],
-            resolution: 1,
-        };
-        let drip = vec![0.9f32];    // high drip
-        let heights = vec![360.0f32]; // but high altitude — stays Alpine (snow, not water)
-        let result = node.apply(&biome_map, &drip, &heights);
-        assert_eq!(result.cells[0], BiomeKind::Alpine, "Alpine should not become Wetland");
+    fn test_moisture_node_drip_only() {
+        let node = MoistureNode::default();
+        let drip = vec![0.3f32, 0.7, 0.0];
+        let result = node.combine(&drip, None);
+        assert!((result[0] - 0.3).abs() < 0.01);
+        assert!((result[1] - 0.7).abs() < 0.01);
+        assert!((result[2] - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_splat_weight_node_moisture_darkens_alpine() {
+        // An Alpine cell with high moisture: spectral should blend toward Water
+        let weights = biome_to_splat_weights(BiomeKind::Alpine, 360.0, 400.0);
+        // weights = [0.0, 0.5, 0.05, 0.45] — heavy rock/snow
+        let water_slot: [f32; 16] = [
+            0.03,0.04,0.05,0.05,0.05,0.04,0.03,0.03,
+            0.02,0.02,0.01,0.01,0.01,0.01,0.01,0.01,
+        ];
+        // Compute dry Alpine spectral (rock=slot4, snow=slot5 dominant)
+        let mats = super::splat_weight_node::SpectralTerrainMaterials::default();
+        let dry = blend_splat_weights(&mats, &weights);
+        // Wet blend at moisture=0.4
+        let wet = blend_moisture(&dry, &water_slot, 0.4);
+        // All bands should be darker when wet
+        for band in 0..16 {
+            assert!(wet[band] <= dry[band] + 0.001,
+                "wet Alpine band {band} ({}) should be <= dry ({})", wet[band], dry[band]);
+        }
     }
 }
 ```
@@ -2901,92 +2937,126 @@ mod wetness_override_tests {
 - [ ] **Step 2: Run test — expect FAIL**
 
 ```bash
-cargo test -p vox_editor wetness_override_tests 2>&1 | head -20
+cargo test -p vox_editor moisture_node 2>&1 | head -20
 ```
 
 Expected: compile error.
 
-- [ ] **Step 3: Implement WetnessOverrideNode**
+- [ ] **Step 3: Implement MoistureNode + blend_moisture helper**
+
+Create `crates/vox_editor/src/nodes/moisture_node.rs`:
 
 ```rust
-/// Optional node between BiomeNode and SplatWeightNode.
-/// Upgrades Grassland/Forest/Desert cells with high drip_intensity to Wetland/Coastal,
-/// integrating forge-flow-maps DripResult into the biome pipeline.
-pub struct WetnessOverrideNode {
-    pub drip_threshold: f32,   // drip_intensity threshold for upgrade (default 0.6)
-    pub world_height:   f32,   // cells above 60% world_height are exempt (snow, not water)
+//! MoistureNode — combines drip_intensity and urban moisture into a per-cell
+//! moisture scalar in [0, 1].
+//!
+//! Input:
+//!   "drip_intensity"  : ScalarVec  (from DripSimNode — forge-flow-maps)
+//!   "urban_moisture"  : ScalarVec  (optional, from UrbanSimNode)
+//! Output:
+//!   "moisture"        : ScalarVec  — per-cell moisture [0, 1]
+//!
+//! No altitude exemptions. No biome exemptions. No season assumptions.
+//! Wet Alpine = Alpine spectral darkened toward Water. That is correct.
+
+use crate::node_graph::{OchromaNode, NodeDescriptor, PortSpec, PortType,
+                        NodeInputs, NodeOutputs, NodeError, NodeParam, PortData};
+
+pub struct MoistureNode {
+    /// Scale applied to drip_intensity before combining (default 1.0).
+    pub drip_scale:  f32,
+    /// Scale applied to urban_moisture before combining (default 1.0).
+    pub urban_scale: f32,
 }
 
-impl Default for WetnessOverrideNode {
-    fn default() -> Self { Self { drip_threshold: 0.6, world_height: 400.0 } }
+impl Default for MoistureNode {
+    fn default() -> Self { Self { drip_scale: 1.0, urban_scale: 1.0 } }
 }
 
-impl WetnessOverrideNode {
-    /// Apply wetness override to a BiomeMap given drip_intensity and heights.
-    /// Pure function — does not modify the input, returns a new BiomeMap.
-    pub fn apply(&self, biome_map: &BiomeMap, drip: &[f32], heights: &[f32]) -> BiomeMap {
-        let cells = biome_map.cells.iter()
-            .zip(drip.iter())
-            .zip(heights.iter())
-            .map(|((&biome, &d), &h)| {
-                let altitude_frac = h / self.world_height;
-                let is_high_altitude = altitude_frac > 0.60;
-                if d >= self.drip_threshold && !is_high_altitude {
-                    // Coastal if near sea level (< 10% world height), else Wetland
-                    if altitude_frac < 0.10 { BiomeKind::Coastal } else { BiomeKind::Wetland }
-                } else {
-                    biome
-                }
-            })
-            .collect();
-        BiomeMap { cells, resolution: biome_map.resolution }
+impl MoistureNode {
+    /// Combine drip and optional urban moisture by taking the per-cell maximum.
+    /// Both inputs are independently scaled first.
+    pub fn combine(&self, drip: &[f32], urban: Option<&[f32]>) -> Vec<f32> {
+        drip.iter().enumerate().map(|(i, &d)| {
+            let d_scaled = (d * self.drip_scale).clamp(0.0, 1.0);
+            let u_scaled = urban
+                .and_then(|u| u.get(i))
+                .map(|&u| (u * self.urban_scale).clamp(0.0, 1.0))
+                .unwrap_or(0.0);
+            d_scaled.max(u_scaled)
+        }).collect()
     }
 }
-```
 
-Add `WetnessOverrideNode` as a `CrucibleNode`-style node with inputs `biome_map`, `drip_intensity` (ScalarVec), `terrain`:
-
-```rust
-impl OchromaNode for WetnessOverrideNode {
+impl OchromaNode for MoistureNode {
     fn descriptor(&self) -> NodeDescriptor {
         NodeDescriptor {
-            type_name: "wetness_override",
+            type_name: "moisture",
             inputs: vec![
-                PortSpec { name: "biome_map",     port_type: PortType::BiomeMap,   optional: false },
                 PortSpec { name: "drip_intensity", port_type: PortType::ScalarVec, optional: false },
-                PortSpec { name: "terrain",        port_type: PortType::Terrain,   optional: false },
+                PortSpec { name: "urban_moisture",  port_type: PortType::ScalarVec, optional: true  },
             ],
             outputs: vec![
-                PortSpec { name: "biome_map", port_type: PortType::BiomeMap, optional: false },
+                PortSpec { name: "moisture", port_type: PortType::ScalarVec, optional: false },
             ],
         }
     }
 
     fn set_param(&mut self, key: &str, value: NodeParam) -> Result<(), NodeError> {
         match key {
-            "drip_threshold" => self.drip_threshold = value.as_float()? as f32,
-            "world_height"   => self.world_height   = value.as_float()? as f32,
-            other            => return Err(NodeError::UnknownParam(other.to_string())),
+            "drip_scale"  => self.drip_scale  = value.as_float()? as f32,
+            "urban_scale" => self.urban_scale = value.as_float()? as f32,
+            other         => return Err(NodeError::UnknownParam(other.to_string())),
         }
         Ok(())
     }
 
     fn cook(&self, inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
-        let biome_map   = inputs.get("biome_map").unwrap().as_biome_map().unwrap();
-        let drip        = inputs.get("drip_intensity").unwrap().as_scalar_vec().unwrap();
-        let terrain     = inputs.get("terrain").unwrap().as_terrain().unwrap();
-        let result      = self.apply(&biome_map, &drip, &terrain.heights);
-        let mut out     = NodeOutputs::new();
-        out.insert("biome_map", PortData::BiomeMap(result));
+        let drip  = inputs.get("drip_intensity")
+            .ok_or_else(|| NodeError::MissingInput("drip_intensity".into()))?
+            .as_scalar_vec()
+            .ok_or_else(|| NodeError::TypeMismatch("drip_intensity".into()))?;
+        let urban = inputs.get("urban_moisture")
+            .and_then(|p| p.as_scalar_vec());
+
+        let moisture = self.combine(&drip, urban.as_deref());
+        let mut out  = NodeOutputs::new();
+        out.insert("moisture", PortData::ScalarVec(moisture));
         Ok(out)
     }
 }
+
+/// Blend a spectral array toward water using per-cell moisture ∈ [0, 1].
+/// Used inside SplatWeightNode to modulate the final spectral output.
+/// No exemptions — wet rock is dark rock, wet snow is dark snow, wet Alpine is wet Alpine.
+pub fn blend_moisture(base: &[f32; 16], water: &[f32; 16], moisture: f32) -> [f32; 16] {
+    let f = moisture.clamp(0.0, 1.0);
+    std::array::from_fn(|i| base[i] * (1.0 - f) + water[i] * f)
+}
+```
+
+Update `SplatWeightNode::cook()` to accept an optional `moisture` input:
+
+```rust
+// In SplatWeightNode::cook(), after computing per-cell weights:
+let moisture_opt = inputs.get("moisture").and_then(|p| p.as_scalar_vec());
+let water_slot = mats.slots[0]; // Water USGS curve
+
+let spectral_per_cell: Vec<[f32; 16]> = weights.iter().enumerate().map(|(i, w)| {
+    let base = blend_splat_weights(&mats, w);
+    match moisture_opt.as_ref().and_then(|m| m.get(i)) {
+        Some(&m) if m > 0.001 => blend_moisture(&base, &water_slot, m),
+        _                     => base,
+    }
+}).collect();
+
+out.insert("spectral", PortData::SpectralGrid(spectral_per_cell));
 ```
 
 - [ ] **Step 4: Run test — expect PASS**
 
 ```bash
-cargo test -p vox_editor wetness_override_tests
+cargo test -p vox_editor moisture_node
 ```
 
 Expected: PASS
@@ -2994,8 +3064,10 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/vox_editor/src/nodes/biome_node.rs
-git commit -m "feat(editor): WetnessOverrideNode — DripResult upgrades dry biomes to Wetland/Coastal"
+git add crates/vox_editor/src/nodes/moisture_node.rs \
+        crates/vox_editor/src/nodes/splat_weight_node.rs \
+        crates/vox_editor/src/nodes/mod.rs
+git commit -m "feat(editor): MoistureNode — drip+urban moisture blend, no biome/altitude exemptions"
 ```
 
 ---
