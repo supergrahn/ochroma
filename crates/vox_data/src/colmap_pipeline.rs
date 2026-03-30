@@ -12,6 +12,12 @@ use half::f16;
 use thiserror::Error;
 use vox_core::types::GaussianSplat;
 
+fn path_str(p: &Path) -> Result<&str, ColmapError> {
+    p.to_str().ok_or_else(|| ColmapError::Io(
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "non-UTF8 path")
+    ))
+}
+
 use crate::spectral_upsampler::{SpectralMaterialDb, SpectralUpsampler};
 
 #[derive(Debug, Error)]
@@ -59,24 +65,24 @@ impl ColmapPipeline {
 
         Self::run_colmap(&[
             "feature_extractor",
-            "--database_path", db_path.to_str().unwrap(),
-            "--image_path", image_dir.to_str().unwrap(),
+            "--database_path", path_str(&db_path)?,
+            "--image_path", path_str(image_dir)?,
         ])?;
         Self::run_colmap(&[
             "exhaustive_matcher",
-            "--database_path", db_path.to_str().unwrap(),
+            "--database_path", path_str(&db_path)?,
         ])?;
         Self::run_colmap(&[
             "mapper",
-            "--database_path", db_path.to_str().unwrap(),
-            "--image_path", image_dir.to_str().unwrap(),
-            "--output_path", sparse_dir.to_str().unwrap(),
+            "--database_path", path_str(&db_path)?,
+            "--image_path", path_str(image_dir)?,
+            "--output_path", path_str(&sparse_dir)?,
         ])?;
         let model_dir = sparse_dir.join("0");
         Self::run_colmap(&[
             "model_converter",
-            "--input_path", model_dir.to_str().unwrap(),
-            "--output_path", txt_dir.to_str().unwrap(),
+            "--input_path", path_str(&model_dir)?,
+            "--output_path", path_str(&txt_dir)?,
             "--output_type", "TXT",
         ])?;
 

@@ -41,9 +41,10 @@ impl Default for SpectralTerrainMaterials {
 
 /// Map biome + elevation fraction to 4-channel splat blend weights.
 /// Weights sum to 1.0. Channel mapping: [water, snow, vegetation, ground].
+/// At high elevation (> 60% of world height) snow coverage increases linearly.
 pub fn biome_to_splat_weights(biome: BiomeKind, height: f32, world_height: f32) -> [f32; 4] {
-    let _t = (height / world_height.max(1.0)).clamp(0.0, 1.0);
-    match biome {
+    let t = (height / world_height.max(1.0)).clamp(0.0, 1.0);
+    let base: [f32; 4] = match biome {
         BiomeKind::Alpine             => [0.00, 0.50, 0.05, 0.45],
         BiomeKind::Tundra             => [0.00, 0.40, 0.20, 0.40],
         BiomeKind::Forest             => [0.00, 0.05, 0.70, 0.25],
@@ -55,6 +56,21 @@ pub fn biome_to_splat_weights(biome: BiomeKind, height: f32, world_height: f32) 
         BiomeKind::Savanna            => [0.00, 0.10, 0.55, 0.35],
         BiomeKind::Taiga              => [0.00, 0.10, 0.65, 0.25],
         BiomeKind::TropicalRainforest => [0.10, 0.00, 0.80, 0.10],
+    };
+    // Above 60% elevation blend extra snow, redistributed from vegetation and ground.
+    if t > 0.6 {
+        let extra_snow = (t - 0.6) * 0.5;
+        let veg_gnd = (base[2] + base[3]).max(f32::EPSILON);
+        let veg_reduce = extra_snow * base[2] / veg_gnd;
+        let gnd_reduce = extra_snow * base[3] / veg_gnd;
+        [
+            base[0],
+            (base[1] + extra_snow).min(1.0),
+            (base[2] - veg_reduce).max(0.0),
+            (base[3] - gnd_reduce).max(0.0),
+        ]
+    } else {
+        base
     }
 }
 
