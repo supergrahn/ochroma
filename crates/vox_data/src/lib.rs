@@ -27,3 +27,5 @@ pub mod import_pipeline;
 pub mod import_helpers;
 pub mod spectral_upsampler;
 pub use spectral_upsampler::{SpectralUpsampler, SpectralMaterialDb, SpectralMaterial};
+pub mod spectral_capture;
+pub use spectral_capture::{LightSpd, SpectralMaterialProfile};
