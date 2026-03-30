@@ -25,3 +25,5 @@ pub mod material_system;
 pub mod prefab;
 pub mod import_pipeline;
 pub mod import_helpers;
+pub mod spectral_upsampler;
+pub use spectral_upsampler::{SpectralUpsampler, SpectralMaterialDb, SpectralMaterial};
