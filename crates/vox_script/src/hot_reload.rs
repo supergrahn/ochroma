@@ -56,14 +56,16 @@ mod tests {
 
     #[test]
     fn drain_returns_empty_initially() {
-        let watcher = ScriptWatcher::new(Path::new("/tmp")).unwrap();
+        // Watch a non-existent dir so no filesystem events interfere
+        let watcher = ScriptWatcher::new(Path::new("/tmp/ochroma_hr_empty_test_dir")).unwrap();
         let paths = watcher.drain();
         let _ = paths;
     }
 
     #[test]
     fn drain_manually_queued_path() {
-        let watcher = ScriptWatcher::new(Path::new("/tmp")).unwrap();
+        // Watch a non-existent dir so concurrent test writes to /tmp don't race
+        let watcher = ScriptWatcher::new(Path::new("/tmp/ochroma_hr_drain_test_dir")).unwrap();
         watcher.changed_paths.lock().unwrap().push(PathBuf::from("test.lua"));
         let drained = watcher.drain();
         println!("drained {} path: {}", drained.len(), drained[0].display());

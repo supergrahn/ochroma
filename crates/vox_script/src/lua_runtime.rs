@@ -48,8 +48,10 @@ impl LuaRuntime {
     }
 
     pub fn exec_file(&mut self, path: &Path) -> Result<(), LuaError> {
-        let src = std::fs::read_to_string(path)
-            .map_err(|_| LuaError::NotFound(path.display().to_string()))?;
+        if !path.exists() {
+            return Err(LuaError::NotFound(path.display().to_string()));
+        }
+        let src = std::fs::read_to_string(path)?;
         self.lua.load(&src).set_name(path.to_string_lossy().as_ref()).exec()?;
         self.loaded.push((path.to_path_buf(), src));
         Ok(())
