@@ -929,6 +929,35 @@ impl EngineApp {
             None => render_splats,
         };
 
+        // Spectral caustics: refract through transmissive splats
+        {
+            use vox_render::spectral_caustics::{SpectralCaustics, CauchyGlass};
+            use glam::Vec3;
+
+            let glass = CauchyGlass::n_bk7();
+
+            // Collect transmissive splat indices (opacity < 64 approximates glass)
+            let transmissive: Vec<usize> = render_splats.iter().enumerate()
+                .filter(|(_, s)| s.opacity() < 64)
+                .map(|(i, _)| i)
+                .collect();
+
+            if !transmissive.is_empty() {
+                let incident_dir = Vec3::new(0.0, -1.0, 0.0); // downward light
+                let normal = Vec3::new(0.0, 1.0, 0.0);
+                for &ti in &transmissive {
+                    let spectral_f32: [f32; 16] = std::array::from_fn(|b| {
+                        half::f16::from_bits(render_splats[ti].spectral()[b]).to_f32()
+                    });
+                    let _refraction = SpectralCaustics::refract(
+                        incident_dir, normal, spectral_f32, &glass
+                    );
+                    // TODO(domain-6): accumulate refraction.transmitted into caustic_buffer
+                    // and apply to render_splats at surrounding positions
+                }
+            }
+        }
+
         // Time-of-day illuminant
         let illuminant = illuminant_for_time(self.engine.time_of_day());
 
