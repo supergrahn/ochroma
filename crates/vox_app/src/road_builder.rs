@@ -8,7 +8,7 @@ use vox_sim::roads::RoadSegment;
 
 /// Generate surface splats for a road segment.
 pub fn generate_road_splats(segment: &RoadSegment) -> Vec<GaussianSplat> {
-    let asphalt_spd: [u16; 8] = std::array::from_fn(|_| f16::from_f32(0.05).to_bits());
+    let asphalt_spd: [u16; 16] = std::array::from_fn(|_| f16::from_f32(0.05).to_bits());
     let mut splats = Vec::new();
     let steps = (segment.length() / 0.5).ceil() as usize; // One splat every 0.5m
     let half_width = segment.road_type.width() * 0.5;
@@ -26,14 +26,13 @@ pub fn generate_road_splats(segment: &RoadSegment) -> Vec<GaussianSplat> {
         for w in 0..width_steps {
             let offset = (w as f32 / width_steps as f32 - 0.5) * half_width * 2.0;
             let pos = center + perp * offset;
-            splats.push(GaussianSplat {
-                position: [pos.x, 0.01, pos.z], // slightly above terrain
-                scale: [0.25, 0.01, 0.25],
-                rotation: [0, 0, 0, 32767],
-                opacity: 240,
-                _pad: [0; 3],
-                spectral: asphalt_spd,
-            });
+            splats.push(GaussianSplat::surface(
+                [pos.x, 0.01, pos.z], // slightly above terrain
+                [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
+                0.25, 0.25,
+                240,
+                asphalt_spd,
+            ));
         }
     }
     splats

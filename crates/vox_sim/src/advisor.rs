@@ -22,12 +22,17 @@ pub enum AdvisorCategory {
     Growth,
 }
 
+impl Default for AdvisorSystem {
+    fn default() -> Self { Self::new() }
+}
+
 impl AdvisorSystem {
     pub fn new() -> Self {
         Self { messages: Vec::new(), cooldown_ticks: 0 }
     }
 
     /// Evaluate city state and generate advisor messages.
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate(
         &mut self,
         population: u32,

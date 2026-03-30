@@ -35,6 +35,10 @@ pub struct TrafficNetwork {
     pub segments: Vec<RoadSegmentTraffic>,
 }
 
+impl Default for TrafficNetwork {
+    fn default() -> Self { Self::new() }
+}
+
 impl TrafficNetwork {
     pub fn new() -> Self { Self { segments: Vec::new() } }
 

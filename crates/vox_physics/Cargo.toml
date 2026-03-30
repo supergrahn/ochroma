@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 vox_core = { path = "../vox_core" }
 glam = { workspace = true }
+half = { workspace = true }
 rapier3d = "0.22"
 bevy_ecs = { workspace = true }
 bevy_app = { workspace = true }

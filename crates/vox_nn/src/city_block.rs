@@ -98,7 +98,7 @@ pub fn generate_city_block(seed: u64, size: f32) -> CityBlock {
 
 /// Generate road surface splats from a road graph.
 fn generate_road_surface(graph: &RoadGraph) -> Vec<GaussianSplat> {
-    let asphalt_spd: [u16; 8] = std::array::from_fn(|_| f16::from_f32(0.05).to_bits());
+    let asphalt_spd: [u16; 16] = std::array::from_fn(|_| f16::from_f32(0.05).to_bits());
     let mut splats = Vec::new();
 
     for edge in &graph.edges {
@@ -121,14 +121,13 @@ fn generate_road_surface(graph: &RoadGraph) -> Vec<GaussianSplat> {
             for w in 0..width_steps {
                 let offset = (w as f32 / width_steps as f32 - 0.5) * half_width * 2.0;
                 let pos = center + perp * offset;
-                splats.push(GaussianSplat {
-                    position: [pos.x, 0.02, pos.z],
-                    scale: [0.25, 0.01, 0.25],
-                    rotation: [0, 0, 0, 32767],
-                    opacity: 240,
-                    _pad: [0; 3],
-                    spectral: asphalt_spd,
-                });
+                splats.push(GaussianSplat::surface(
+                    [pos.x, 0.02, pos.z],
+                    [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
+                    0.25, 0.25,
+                    240,
+                    asphalt_spd,
+                ));
             }
         }
     }

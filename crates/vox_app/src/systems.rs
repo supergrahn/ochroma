@@ -66,9 +66,8 @@ pub fn gather_splats_system(
                 let offset = instance.position;
                 for splat in &asset.splats {
                     let mut ws = *splat;
-                    ws.position[0] += offset.x;
-                    ws.position[1] += offset.y;
-                    ws.position[2] += offset.z;
+                    let p = ws.position();
+                    ws.set_position([p[0] + offset.x, p[1] + offset.y, p[2] + offset.z]);
                     visible.splats.push(ws);
                 }
                 break;

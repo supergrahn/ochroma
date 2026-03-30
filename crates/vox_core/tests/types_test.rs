@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 #[test]
 fn gaussian_splat_size_is_52_bytes() {
-    assert_eq!(std::mem::size_of::<GaussianSplat>(), 52);
+    assert_eq!(std::mem::size_of::<GaussianSplat>(), 96);
 }
 
 #[test]

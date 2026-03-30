@@ -1,10 +1,12 @@
-# Domain 7 — Networking Implementation Plan
+# Domain 7: Networking Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the TCP networking stack with Quinn (QUIC/TLS 1.3); implement `SpectralRelevanceFilter` to cull replication by spectral energy threshold instead of geometry volumes; implement `ReplicationPacket` with per-band delta compression using an 8-bit band mask; wire everything into the engine runner replacing the old TCP transport.
+**Goal:** Replace the TCP networking stack with Quinn (QUIC/TLS 1.3); implement `SpectralRelevanceFilter` to cull replication by spectral energy threshold instead of geometry volumes; implement `ReplicationPacket` with per-band delta compression using a u32 band mask; wire everything into the engine runner replacing the old TCP transport.
 
-**Architecture:** `QuicTransport` wraps a `quinn::Endpoint` and exposes `connect()` / `listen()` with a self-signed TLS certificate. `SpectralRelevanceFilter::is_relevant()` checks whether any of a splat's 8 spectral bands exceeds an observer-weighted threshold — a fire-perceiving observer has high weights on bands 5–7; an underwater observer has high weights on bands 2–3. `ReplicationPacket` encodes only changed spectral bands using a `u8` bitmask; unchanged bands are omitted from the `values: Vec<u16>` payload, halving typical bandwidth.
+**Done When:** Running two engine instances (`cargo run -- --server` and `cargo run -- --client localhost`) causes splats placed on the server to appear on the client within 100ms, verified by the client printing `received 1 splat replication packet` to stdout and the splat being visible in the client viewport.
+
+**Architecture:** `QuicTransport` wraps a `quinn::Endpoint` and exposes `connect()` / `listen()` with a self-signed TLS certificate. `SpectralRelevanceFilter::is_relevant()` checks whether any of a splat's 16 spectral bands exceeds an observer-weighted threshold — a fire-perceiving observer has high weights on bands 10–15; an underwater observer has high weights on bands 4–7. `ReplicationPacket` encodes only changed spectral bands using a `u32` bitmask; unchanged bands are omitted from the `values: Vec<u16>` payload, halving typical bandwidth.
 
 **Tech Stack:** `quinn = "0.11"` (QUIC/TLS 1.3), `rustls = "0.23"` (TLS backend for Quinn), `rcgen = "0.13"` (self-signed cert generation), `tokio` (already in workspace). `vox_net` crate receives all new code.
 
@@ -19,8 +21,23 @@
 | Create | `crates/vox_net/src/spectral_relevance.rs` | `SpectralRelevanceFilter::is_relevant()` |
 | Create | `crates/vox_net/src/replication_packet.rs` | `ReplicationPacket` — band-mask delta compression |
 | Create | `crates/vox_net/src/replication_loop.rs` | Server broadcast loop with filter + compression |
+| Create | `crates/vox_net/src/world_replication.rs` | `WorldChunk` encode/decode for spatial grid replication |
+| Create | `crates/vox_net/tests/replication_bandwidth.rs` | Integration test: <50% bandwidth vs naive RGB |
 | Modify | `crates/vox_net/src/lib.rs` | Expose new modules; deprecate TCP exports |
 | Modify | `crates/vox_app/src/bin/engine_runner.rs` | Replace TCP transport with `QuicTransport` |
+
+---
+
+## Capabilities
+
+| Capability | Real behavior test | Stub test (forbidden) |
+|---|---|---|
+| QUIC server binds to port | `transport.local_addr().unwrap().port() > 0` after `listen("127.0.0.1:0")` | `assert!(true)` |
+| Spectral relevance filter culls dark splats | `assert!(!filter.is_relevant(&splat_from_f32([0.0; 16]), &ObserverProfile::human()))` | `assert!(filter.is_relevant(...))` with no band values |
+| ReplicationPacket encode/decode roundtrip | `ReplicationPacket::decode(&packet.encode()).unwrap() == packet` with non-trivial values | empty decode check |
+| Delta compression skips unchanged bands | `packet.changed_bands == (1 << 2) \| (1 << 5)` when only bands 2 and 5 changed | assert on any non-zero changed_bands |
+| Bandwidth ratio below 50% for sparse scene | `stats.bandwidth_ratio() < 0.5` with 10% bright splats in 1000 | assert `< 1.0` |
+| WorldChunk encode/decode roundtrip | decoded chunk has same channel values as original | assert non-nil result |
 
 ---
 
@@ -29,10 +46,21 @@
 **Files:**
 - Modify: `crates/vox_net/Cargo.toml`
 
-- [ ] **Step 1: Add Quinn and TLS dependencies**
+**Acceptance:** `cargo build -p vox_net 2>&1 | grep "^error" | head -5` → no output (clean build)
 
-Replace `crates/vox_net/Cargo.toml` `[dependencies]` section:
+**Wiring requirement:** Must be called from `[dependencies]` in `crates/vox_net/Cargo.toml`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
+- [ ] **Step 1: Write the failing test**
+```rust
+// No test for deps — verified by build in Step 2
+```
+- [ ] **Step 2: Run to verify failure**
+```bash
+cargo build -p vox_net 2>&1 | grep "^error" | head -5
+```
+Expected: FAIL — quinn/rustls/rcgen not found if not yet added.
+
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 ```toml
 [dependencies]
 vox_core = { path = "../vox_core" }
@@ -49,17 +77,17 @@ rcgen = "0.13"
 half = { workspace = true }
 bytemuck = { workspace = true }
 ```
-
-- [ ] **Step 2: Verify build**
-
-```bash
-cargo build -p vox_net 2>&1 | grep "^error" | head -20
+- [ ] **Step 4: Wire at exact callsite**
+```toml
+# Replace [dependencies] section in crates/vox_net/Cargo.toml with the above
 ```
+- [ ] **Step 5: Run — verify non-trivial output**
+```bash
+cargo build -p vox_net 2>&1 | grep "^error" | head -5
+```
+Expected: PASS, output: (no errors)
 
-Expected: clean build (Quinn pulls in rustls, ring, etc. — may take a moment to compile).
-
-- [ ] **Step 3: Commit**
-
+- [ ] **Step 6: Commit**
 ```bash
 git add crates/vox_net/Cargo.toml
 git commit -m "build(net): add quinn 0.11, rustls 0.23, rcgen 0.13 for QUIC transport"
@@ -73,10 +101,11 @@ git commit -m "build(net): add quinn 0.11, rustls 0.23, rcgen 0.13 for QUIC tran
 - Create: `crates/vox_net/src/quic_transport.rs`
 - Modify: `crates/vox_net/src/lib.rs`
 
-- [ ] **Step 1: Write failing tests**
+**Acceptance:** `cargo test -p vox_net quic_transport -- --nocapture` → 4 tests pass, including `server_listen_binds_successfully` printing a non-zero port
 
-Create `crates/vox_net/src/quic_transport.rs`:
+**Wiring requirement:** Must be called from `pub mod quic_transport;` in `crates/vox_net/src/lib.rs`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
+- [ ] **Step 1: Write the failing test**
 ```rust
 //! QUIC transport using Quinn with self-signed TLS 1.3 certificates.
 //!
@@ -113,30 +142,15 @@ impl SelfSignedCert {
     /// Generate a self-signed certificate for the given hostname.
     /// Uses rcgen with ECDSA P-256 keys.
     pub fn generate(hostname: &str) -> Result<Self, TransportError> {
-        let cert = rcgen::generate_simple_self_signed(vec![hostname.to_string()])
+        let certified = rcgen::generate_simple_self_signed(vec![hostname.to_string()])
             .map_err(|e| TransportError::CertGen(e.to_string()))?;
         Ok(Self {
-            cert_der: cert.cert.der().to_vec(),
-            key_der: cert.key_pair.serialize_der(),
+            cert_der: certified.cert.der().to_vec(),
+            key_der: certified.signing_key.serialize_der(),
         })
     }
 }
 
-/// Quinn-based QUIC transport.
-///
-/// # Usage — server
-/// ```no_run
-/// # tokio_test::block_on(async {
-/// let transport = QuicTransport::listen("127.0.0.1:7777").await.unwrap();
-/// # });
-/// ```
-///
-/// # Usage — client
-/// ```no_run
-/// # tokio_test::block_on(async {
-/// let transport = QuicTransport::connect("127.0.0.1:7777", "localhost").await.unwrap();
-/// # });
-/// ```
 pub struct QuicTransport {
     pub endpoint: quinn::Endpoint,
     pub role: TransportRole,
@@ -177,16 +191,10 @@ impl QuicTransport {
     }
 
     /// Connect to a QUIC server at `addr` as a client.
-    /// `server_name` must match the server's TLS certificate hostname.
-    ///
-    /// For development with self-signed certs, `danger_skip_verify` allows
-    /// connecting without certificate validation.
     pub async fn connect(addr: &str, server_name: &str) -> Result<Self, TransportError> {
         let addr: SocketAddr = addr.parse()
             .map_err(|e: std::net::AddrParseError| TransportError::Connection(e.to_string()))?;
 
-        // Client config: accept self-signed certs (development mode).
-        // Production: replace with certificate pinning.
         let tls_config = {
             let mut config = rustls::ClientConfig::builder()
                 .dangerous()
@@ -205,7 +213,6 @@ impl QuicTransport {
             .map_err(|e| TransportError::Endpoint(e.to_string()))?;
         endpoint.set_default_client_config(client_config);
 
-        // Initiate the connection (doesn't block on handshake here)
         endpoint.connect(addr, server_name)
             .map_err(|e| TransportError::Connection(e.to_string()))?;
 
@@ -219,7 +226,6 @@ impl QuicTransport {
 }
 
 /// Development-only: skip TLS certificate verification for self-signed certs.
-/// Never use in production.
 #[derive(Debug)]
 struct SkipServerVerification;
 
@@ -273,7 +279,6 @@ mod tests {
     fn self_signed_cert_generates_different_certs_each_call() {
         let a = SelfSignedCert::generate("localhost").unwrap();
         let b = SelfSignedCert::generate("localhost").unwrap();
-        // Different key pairs each time (rcgen uses fresh ephemeral keys)
         assert_ne!(a.key_der, b.key_der, "each cert generation should produce a unique key");
     }
 
@@ -287,7 +292,6 @@ mod tests {
 
     #[tokio::test]
     async fn client_connect_creates_endpoint() {
-        // Start a server first so the client has something to connect to
         let server = QuicTransport::listen("127.0.0.1:0").await.unwrap();
         let server_addr = server.local_addr().unwrap();
 
@@ -302,33 +306,28 @@ mod tests {
     }
 }
 ```
-
-- [ ] **Step 2: Expose module in lib.rs**
-
-Add to `crates/vox_net/src/lib.rs`:
-
-```rust
-pub mod quic_transport;
-```
-
-- [ ] **Step 3: Run failing tests**
-
+- [ ] **Step 2: Run to verify failure**
 ```bash
 cargo test -p vox_net quic_transport 2>&1 | head -30
 ```
+Expected: FAIL — compile error if quinn/rustls/rcgen not yet in Cargo.toml (caught in Task 1).
 
-Expected: compile error if quinn/rustls/rcgen not yet in Cargo.toml (caught in Task 1).
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 
-- [ ] **Step 4: Run tests to verify they pass**
+Paste the full implementation above into `crates/vox_net/src/quic_transport.rs`.
 
+- [ ] **Step 4: Wire at exact callsite**
+```rust
+// Add to crates/vox_net/src/lib.rs:
+pub mod quic_transport;
+```
+- [ ] **Step 5: Run — verify non-trivial output**
 ```bash
 cargo test -p vox_net quic_transport -- --nocapture
 ```
+Expected: PASS, output: 4 tests pass; `server_listen_binds_successfully` prints a non-zero port number.
 
-Expected: 4 tests pass (cert gen tests run synchronously; tokio tests use `#[tokio::test]`).
-
-- [ ] **Step 5: Commit**
-
+- [ ] **Step 6: Commit**
 ```bash
 git add crates/vox_net/src/quic_transport.rs crates/vox_net/src/lib.rs
 git commit -m "feat(net): QuicTransport — Quinn QUIC/TLS 1.3 endpoint with self-signed cert"
@@ -342,111 +341,82 @@ git commit -m "feat(net): QuicTransport — Quinn QUIC/TLS 1.3 endpoint with sel
 - Create: `crates/vox_net/src/spectral_relevance.rs`
 - Modify: `crates/vox_net/src/lib.rs`
 
-**Design:** Instead of geometry-based visibility volumes, `is_relevant()` checks whether a splat's spectral energy overlaps with an observer's sensitivity profile. A fire observer (high weights on bands 5–7) culls splats with negligible red/IR energy. An underwater observer (high weights on bands 2–3) culls splats with negligible blue/green energy. Splats that are spectrally dark from the observer's perspective are not replicated.
+**Acceptance:** `cargo test -p vox_net spectral_relevance -- --nocapture` → 8 tests pass, including `red_splat_is_relevant_to_fire_observer_but_not_underwater` asserting `!filter.is_relevant(&red_splat, &underwater_profile)`
 
-The splat's `spectral: [u16; 8]` is stored as `half::f16` bits. The filter decodes on the fly.
+**Wiring requirement:** Must be called from `pub mod spectral_relevance;` in `crates/vox_net/src/lib.rs`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
-- [ ] **Step 1: Write failing tests**
-
-Create `crates/vox_net/src/spectral_relevance.rs`:
-
+- [ ] **Step 1: Write the failing test**
 ```rust
 //! Spectral relevance filtering for network replication.
 //!
 //! Replaces geometry-based "interest volume" culling with a physics-based check:
 //! a splat is relevant to a client if its spectral energy in any band exceeds the
 //! client's perceptual threshold for that band.
-//!
-//! This is strictly better than visibility volumes because:
-//! - Smoke obscures in specific bands (mid-band absorption), not all bands equally.
-//! - Fire is invisible in short-wavelength bands to some observers.
-//! - A bat perceiving via IR would have a different relevance profile than a human.
-//! - No artist-placed volumes needed. The physics drives it.
 
 use half::f16;
 
 /// Observer spectral sensitivity profile.
-///
-/// `weights[b]` is the observer's sensitivity to band `b` (0.0 = blind, 1.0 = full sensitivity).
-/// A human observer has weights near 1.0 for bands 1–6 and lower for bands 0 (UV) and 7 (deep red).
-/// A fire observer (camera tuned for heat) has high weights on bands 5–7.
 #[derive(Debug, Clone)]
 pub struct ObserverProfile {
-    pub weights: [f32; 8],
+    pub weights: [f32; 16],
 }
 
 impl ObserverProfile {
-    /// Standard human photopic sensitivity (CIE V(λ) approximated at 8 band centres).
-    /// Band 3 (500nm) and band 4 (540nm) have highest sensitivity (green peak of V(λ)).
+    /// Standard human photopic sensitivity (CIE V(λ) approximated at 16 band centres).
     pub fn human() -> Self {
         Self {
-            weights: [0.004, 0.030, 0.230, 0.710, 0.954, 0.757, 0.265, 0.061],
+            weights: [0.004, 0.010, 0.030, 0.100, 0.230, 0.450, 0.710, 0.954, 0.995, 0.870, 0.757, 0.550, 0.265, 0.120, 0.061, 0.020],
         }
     }
 
-    /// Observer tuned for fire detection (high bands 5–7: red/near-IR).
+    /// Observer tuned for fire detection (high bands 10–15: red/near-IR).
     pub fn fire_observer() -> Self {
-        Self { weights: [0.0, 0.0, 0.0, 0.05, 0.15, 0.8, 1.0, 0.9] }
+        Self { weights: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.10, 0.15, 0.40, 0.8, 0.9, 1.0, 0.95, 0.9, 0.85] }
     }
 
-    /// Observer tuned for underwater visibility (high bands 2–4: blue/cyan/green).
+    /// Observer tuned for underwater visibility (high bands 4–8: blue/cyan/green).
     pub fn underwater() -> Self {
-        Self { weights: [0.1, 0.5, 1.0, 0.9, 0.6, 0.2, 0.05, 0.01] }
+        Self { weights: [0.05, 0.1, 0.3, 0.5, 1.0, 0.9, 0.85, 0.7, 0.6, 0.4, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005] }
     }
 
     /// Custom profile from raw weights. Values are clamped to [0, 1].
-    pub fn custom(weights: [f32; 8]) -> Self {
+    pub fn custom(weights: [f32; 16]) -> Self {
         Self { weights: std::array::from_fn(|i| weights[i].clamp(0.0, 1.0)) }
     }
 }
 
 /// A single Gaussian splat's spectral data for relevance testing.
-/// Uses the same `[u16; 8]` encoding as `GaussianSplat.spectral` (half::f16 bits).
 #[derive(Debug, Clone, Copy)]
 pub struct SplatSpectral {
-    pub bands: [u16; 8],
+    pub bands: [u16; 16],
 }
 
 impl SplatSpectral {
-    /// Decode band `b` to f32.
     pub fn decode(&self, b: usize) -> f32 {
         f16::from_bits(self.bands[b]).to_f32()
     }
 
-    /// Decode all bands to f32.
-    pub fn decode_all(&self) -> [f32; 8] {
+    pub fn decode_all(&self) -> [f32; 16] {
         std::array::from_fn(|i| self.decode(i))
     }
 }
 
 /// Spectral relevance filter — determines if a splat should be replicated.
 pub struct SpectralRelevanceFilter {
-    /// Minimum threshold: a splat is relevant if any weighted band exceeds this.
     pub threshold: f32,
 }
 
 impl SpectralRelevanceFilter {
-    /// Create a filter with the given threshold.
-    /// `threshold = 0.05` culls splats contributing less than 5% energy in any relevant band.
     pub fn new(threshold: f32) -> Self {
         Self { threshold: threshold.clamp(0.0, 1.0) }
     }
 
-    /// Default filter with 5% threshold — good for typical gameplay replication.
     pub fn default_filter() -> Self {
         Self::new(0.05)
     }
 
-    /// Test whether a splat is relevant to an observer.
-    ///
-    /// Returns `true` if the splat's spectral energy in any band, weighted by the
-    /// observer's sensitivity to that band, exceeds `self.threshold`.
-    ///
-    /// # Arguments
-    /// * `splat` — the splat's spectral data
-    /// * `observer_profile` — the receiving client's spectral sensitivity
     pub fn is_relevant(&self, splat: &SplatSpectral, observer_profile: &ObserverProfile) -> bool {
-        for b in 0..8 {
+        for b in 0..16 {
             let energy = splat.decode(b);
             let weighted = energy * observer_profile.weights[b];
             if weighted > self.threshold {
@@ -456,7 +426,6 @@ impl SpectralRelevanceFilter {
         false
     }
 
-    /// Batch filter: returns indices of relevant splats from a slice.
     pub fn filter_indices(
         &self,
         splats: &[SplatSpectral],
@@ -468,8 +437,6 @@ impl SpectralRelevanceFilter {
             .collect()
     }
 
-    /// Estimate bandwidth reduction: fraction of splats culled.
-    /// Returns value in [0, 1] — higher means more was culled (less bandwidth used).
     pub fn cull_fraction(
         &self,
         splats: &[SplatSpectral],
@@ -482,7 +449,7 @@ impl SpectralRelevanceFilter {
 }
 
 /// Construct a SplatSpectral from f32 band values.
-pub fn splat_from_f32(bands: [f32; 8]) -> SplatSpectral {
+pub fn splat_from_f32(bands: [f32; 16]) -> SplatSpectral {
     SplatSpectral {
         bands: std::array::from_fn(|i| f16::from_f32(bands[i].clamp(0.0, 1.0)).to_bits()),
     }
@@ -496,8 +463,7 @@ mod tests {
     fn bright_splat_is_relevant_to_human() {
         let filter = SpectralRelevanceFilter::default_filter();
         let profile = ObserverProfile::human();
-        // Bright green splat (band 4 = 540nm, peak of human V(λ))
-        let splat = splat_from_f32([0.0, 0.0, 0.0, 0.0, 0.9, 0.0, 0.0, 0.0]);
+        let splat = splat_from_f32([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         assert!(filter.is_relevant(&splat, &profile),
             "bright green splat should be relevant to human observer");
     }
@@ -506,8 +472,7 @@ mod tests {
     fn dark_splat_is_not_relevant() {
         let filter = SpectralRelevanceFilter::new(0.1);
         let profile = ObserverProfile::human();
-        // Very dim splat — all bands near zero
-        let splat = splat_from_f32([0.01; 8]);
+        let splat = splat_from_f32([0.01; 16]);
         assert!(!filter.is_relevant(&splat, &profile),
             "near-black splat should not be relevant (below threshold)");
     }
@@ -517,18 +482,9 @@ mod tests {
         let filter = SpectralRelevanceFilter::default_filter();
         let fire_profile = ObserverProfile::fire_observer();
         let water_profile = ObserverProfile::underwater();
-
-        // Pure red splat (bands 5–7 bright)
-        let splat = splat_from_f32([0.0, 0.0, 0.0, 0.0, 0.0, 0.9, 0.9, 0.9]);
-
-        assert!(
-            filter.is_relevant(&splat, &fire_profile),
-            "red splat should be relevant to fire observer"
-        );
-        assert!(
-            !filter.is_relevant(&splat, &water_profile),
-            "red splat should NOT be relevant to underwater observer (below threshold)"
-        );
+        let splat = splat_from_f32([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9]);
+        assert!(filter.is_relevant(&splat, &fire_profile), "red splat should be relevant to fire observer");
+        assert!(!filter.is_relevant(&splat, &water_profile), "red splat should NOT be relevant to underwater observer");
     }
 
     #[test]
@@ -536,32 +492,21 @@ mod tests {
         let filter = SpectralRelevanceFilter::default_filter();
         let fire_profile = ObserverProfile::fire_observer();
         let water_profile = ObserverProfile::underwater();
-
-        // Pure blue/cyan splat (bands 2–3 bright)
-        let splat = splat_from_f32([0.0, 0.0, 0.9, 0.9, 0.0, 0.0, 0.0, 0.0]);
-
-        assert!(
-            filter.is_relevant(&splat, &water_profile),
-            "blue splat should be relevant to underwater observer"
-        );
-        assert!(
-            !filter.is_relevant(&splat, &fire_profile),
-            "blue splat should NOT be relevant to fire observer"
-        );
+        let splat = splat_from_f32([0.0, 0.0, 0.0, 0.0, 0.9, 0.9, 0.9, 0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert!(filter.is_relevant(&splat, &water_profile), "blue splat should be relevant to underwater observer");
+        assert!(!filter.is_relevant(&splat, &fire_profile), "blue splat should NOT be relevant to fire observer");
     }
 
     #[test]
     fn filter_indices_returns_only_relevant_subset() {
         let filter = SpectralRelevanceFilter::default_filter();
         let profile = ObserverProfile::human();
-
         let splats = vec![
-            splat_from_f32([0.9; 8]),  // bright — relevant
-            splat_from_f32([0.01; 8]), // dark — not relevant
-            splat_from_f32([0.0, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0]), // green — relevant
-            splat_from_f32([0.0; 8]),  // zero — not relevant
+            splat_from_f32([0.9; 16]),
+            splat_from_f32([0.01; 16]),
+            splat_from_f32([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            splat_from_f32([0.0; 16]),
         ];
-
         let indices = filter.filter_indices(&splats, &profile);
         assert_eq!(indices, vec![0, 2], "expected indices 0 and 2 to be relevant: {:?}", indices);
     }
@@ -570,7 +515,7 @@ mod tests {
     fn cull_fraction_all_dark_is_one() {
         let filter = SpectralRelevanceFilter::new(0.05);
         let profile = ObserverProfile::human();
-        let splats: Vec<_> = (0..10).map(|_| splat_from_f32([0.0; 8])).collect();
+        let splats: Vec<_> = (0..10).map(|_| splat_from_f32([0.0; 16])).collect();
         let fraction = filter.cull_fraction(&splats, &profile);
         assert!((fraction - 1.0).abs() < 1e-5, "all-dark splats should give cull_fraction=1.0, got {}", fraction);
     }
@@ -579,42 +524,42 @@ mod tests {
     fn cull_fraction_all_bright_is_zero() {
         let filter = SpectralRelevanceFilter::new(0.05);
         let profile = ObserverProfile::human();
-        let splats: Vec<_> = (0..10).map(|_| splat_from_f32([0.9; 8])).collect();
+        let splats: Vec<_> = (0..10).map(|_| splat_from_f32([0.9; 16])).collect();
         let fraction = filter.cull_fraction(&splats, &profile);
         assert!((fraction - 0.0).abs() < 1e-5, "all-bright splats should give cull_fraction=0.0, got {}", fraction);
     }
 
     #[test]
     fn observer_profile_custom_clamped_to_unit() {
-        let profile = ObserverProfile::custom([2.0, -0.5, 1.1, 0.5, 0.5, 0.5, 0.5, 0.5]);
+        let profile = ObserverProfile::custom([2.0, -0.5, 1.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
         for (i, &w) in profile.weights.iter().enumerate() {
-            assert!(
-                (0.0..=1.0).contains(&w),
-                "weight[{}] = {} should be clamped to [0,1]", i, w
-            );
+            assert!((0.0..=1.0).contains(&w), "weight[{}] = {} should be clamped to [0,1]", i, w);
         }
     }
 }
 ```
+- [ ] **Step 2: Run to verify failure**
+```bash
+cargo test -p vox_net spectral_relevance 2>&1 | head -20
+```
+Expected: FAIL — compile error (module not exposed).
 
-- [ ] **Step 2: Expose module**
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 
-Add to `crates/vox_net/src/lib.rs`:
+Paste the full implementation above into `crates/vox_net/src/spectral_relevance.rs`.
 
+- [ ] **Step 4: Wire at exact callsite**
 ```rust
+// Add to crates/vox_net/src/lib.rs:
 pub mod spectral_relevance;
 ```
-
-- [ ] **Step 3: Run tests**
-
+- [ ] **Step 5: Run — verify non-trivial output**
 ```bash
 cargo test -p vox_net spectral_relevance -- --nocapture
 ```
+Expected: PASS, output: 8 tests pass; `red_splat_is_relevant_to_fire_observer_but_not_underwater` shows fire=true, underwater=false.
 
-Expected: 8 tests pass.
-
-- [ ] **Step 4: Commit**
-
+- [ ] **Step 6: Commit**
 ```bash
 git add crates/vox_net/src/spectral_relevance.rs crates/vox_net/src/lib.rs
 git commit -m "feat(net): SpectralRelevanceFilter — observer-weighted spectral culling for replication"
@@ -628,26 +573,17 @@ git commit -m "feat(net): SpectralRelevanceFilter — observer-weighted spectral
 - Create: `crates/vox_net/src/replication_packet.rs`
 - Modify: `crates/vox_net/src/lib.rs`
 
-**Format:** `ReplicationPacket { entity_id: u32, changed_bands: u8, values: Vec<u16> }`. The `changed_bands` bitmask has bit `b` set if band `b` changed since the last sent value. Only bands with their bit set appear in `values` (in band order, lowest index first). This means if only 2 of 8 bands changed, `values` has 2 entries (4 bytes) instead of 16 bytes — a 75% reduction for sparse updates.
+**Acceptance:** `cargo test -p vox_net replication_packet -- --nocapture` → 9 tests pass, including `encode_decode_roundtrip` asserting `decoded.values == packet.values` with 16 real half-float values
 
-Wire size: 4 (entity_id) + 1 (changed_bands) + N×2 bytes where N = popcount(changed_bands). Worst case (all 8 bands): 21 bytes. Best case (1 band): 7 bytes. Average (2 bands changing per update): 9 bytes vs 20 bytes for full spectral — 55% reduction.
+**Wiring requirement:** Must be called from `pub mod replication_packet;` in `crates/vox_net/src/lib.rs`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
-- [ ] **Step 1: Write failing tests**
-
-Create `crates/vox_net/src/replication_packet.rs`:
-
+- [ ] **Step 1: Write the failing test**
 ```rust
 //! Delta-compressed spectral replication packet.
 //!
-//! Transmits only the spectral bands that changed since the last sent state,
-//! using a u8 bitmask to identify which of the 8 bands are present.
-//!
 //! Wire format (little-endian):
-//!   [entity_id: u32][changed_bands: u8][value_0: u16][value_1: u16]...
+//!   [entity_id: u32][changed_bands: u32][value_0: u16][value_1: u16]...
 //! where value_N is present only if bit N of changed_bands is set.
-//!
-//! This halves bandwidth compared to always sending all 8 bands (u16) for
-//! typical game scenarios where <4 bands change per frame per splat.
 
 use thiserror::Error;
 
@@ -659,33 +595,18 @@ pub enum PacketError {
     BandCountMismatch { values: usize, expected: usize },
 }
 
-/// Compact spectral replication packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicationPacket {
-    /// ECS entity identifier.
     pub entity_id: u32,
-    /// Bitmask: bit b set → band b is present in `values`.
-    pub changed_bands: u8,
-    /// Changed band values in band order (band 0 first if set, then band 1, etc.).
-    /// Length == popcount(changed_bands).
+    pub changed_bands: u32,
     pub values: Vec<u16>,
 }
 
 impl ReplicationPacket {
-    /// Construct a packet from a full before/after spectral state.
-    /// Only bands where `before[b] != after[b]` are included.
-    ///
-    /// `min_delta`: minimum absolute change (in u16 units) to consider a band changed.
-    /// Set to 0 to include any change; set to ~32 to suppress sub-perceptual jitter.
-    pub fn from_delta(
-        entity_id: u32,
-        before: &[u16; 8],
-        after: &[u16; 8],
-        min_delta: u16,
-    ) -> Self {
-        let mut changed_bands: u8 = 0;
-        let mut values = Vec::with_capacity(8);
-        for b in 0..8 {
+    pub fn from_delta(entity_id: u32, before: &[u16; 16], after: &[u16; 16], min_delta: u16) -> Self {
+        let mut changed_bands: u32 = 0;
+        let mut values = Vec::with_capacity(16);
+        for b in 0..16 {
             let delta = before[b].abs_diff(after[b]);
             if delta > min_delta {
                 changed_bands |= 1 << b;
@@ -695,27 +616,17 @@ impl ReplicationPacket {
         Self { entity_id, changed_bands, values }
     }
 
-    /// Construct a packet that sends all 8 bands unconditionally.
-    pub fn full(entity_id: u32, spectral: &[u16; 8]) -> Self {
-        Self {
-            entity_id,
-            changed_bands: 0xFF,
-            values: spectral.to_vec(),
-        }
+    pub fn full(entity_id: u32, spectral: &[u16; 16]) -> Self {
+        Self { entity_id, changed_bands: 0xFFFF, values: spectral.to_vec() }
     }
 
-    /// Apply this packet's changes onto a full spectral state array.
-    /// Only the bands indicated by `changed_bands` are written.
-    pub fn apply_to(&self, spectral: &mut [u16; 8]) -> Result<(), PacketError> {
+    pub fn apply_to(&self, spectral: &mut [u16; 16]) -> Result<(), PacketError> {
         let expected = self.changed_bands.count_ones() as usize;
         if self.values.len() != expected {
-            return Err(PacketError::BandCountMismatch {
-                values: self.values.len(),
-                expected,
-            });
+            return Err(PacketError::BandCountMismatch { values: self.values.len(), expected });
         }
         let mut value_idx = 0;
-        for b in 0..8 {
+        for b in 0..16 {
             if self.changed_bands & (1 << b) != 0 {
                 spectral[b] = self.values[value_idx];
                 value_idx += 1;
@@ -724,47 +635,41 @@ impl ReplicationPacket {
         Ok(())
     }
 
-    /// Serialise to bytes (little-endian).
-    /// Layout: [entity_id: 4 bytes][changed_bands: 1 byte][values: 2×N bytes]
     pub fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(5 + self.values.len() * 2);
+        let mut buf = Vec::with_capacity(8 + self.values.len() * 2);
         buf.extend_from_slice(&self.entity_id.to_le_bytes());
-        buf.push(self.changed_bands);
+        buf.extend_from_slice(&self.changed_bands.to_le_bytes());
         for &v in &self.values {
             buf.extend_from_slice(&v.to_le_bytes());
         }
         buf
     }
 
-    /// Deserialise from bytes.
     pub fn decode(buf: &[u8]) -> Result<Self, PacketError> {
-        if buf.len() < 5 {
-            return Err(PacketError::BufferTooShort { needed: 5, have: buf.len() });
+        if buf.len() < 8 {
+            return Err(PacketError::BufferTooShort { needed: 8, have: buf.len() });
         }
         let entity_id = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        let changed_bands = buf[4];
+        let changed_bands = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
         let band_count = changed_bands.count_ones() as usize;
-        let needed = 5 + band_count * 2;
+        let needed = 8 + band_count * 2;
         if buf.len() < needed {
             return Err(PacketError::BufferTooShort { needed, have: buf.len() });
         }
         let mut values = Vec::with_capacity(band_count);
         for i in 0..band_count {
-            let offset = 5 + i * 2;
+            let offset = 8 + i * 2;
             values.push(u16::from_le_bytes([buf[offset], buf[offset + 1]]));
         }
         Ok(Self { entity_id, changed_bands, values })
     }
 
-    /// Wire size in bytes.
     pub fn wire_size(&self) -> usize {
-        5 + self.values.len() * 2
+        8 + self.values.len() * 2
     }
 
-    /// Bandwidth ratio compared to always sending all 8 bands (16 bytes + 5 header = 21 bytes).
-    /// Returns value in (0, 1] — lower means less bandwidth.
     pub fn bandwidth_ratio(&self) -> f32 {
-        self.wire_size() as f32 / 21.0
+        self.wire_size() as f32 / 40.0
     }
 }
 
@@ -778,144 +683,121 @@ mod tests {
 
     #[test]
     fn from_delta_only_includes_changed_bands() {
-        let before: [u16; 8] = [1000; 8];
+        let before: [u16; 16] = [1000; 16];
         let mut after = before;
-        after[2] = 2000;  // band 2 changed
-        after[5] = 3000;  // band 5 changed
-
+        after[2] = 2000;
+        after[5] = 3000;
         let packet = ReplicationPacket::from_delta(42, &before, &after, 0);
-        assert_eq!(packet.changed_bands, (1 << 2) | (1 << 5),
-            "only bands 2 and 5 should be marked changed");
-        assert_eq!(packet.values.len(), 2, "should have 2 values");
+        assert_eq!(packet.changed_bands, (1 << 2) | (1 << 5), "only bands 2 and 5 should be marked changed");
+        assert_eq!(packet.values.len(), 2);
         assert_eq!(packet.values[0], 2000, "first value should be band 2");
         assert_eq!(packet.values[1], 3000, "second value should be band 5");
     }
 
     #[test]
     fn from_delta_with_min_delta_suppresses_noise() {
-        let before: [u16; 8] = [1000; 8];
+        let before: [u16; 16] = [1000; 16];
         let mut after = before;
-        after[0] = 1010;  // tiny change — 10 units
-        after[3] = 2000;  // large change — 1000 units
-
+        after[0] = 1010;
+        after[3] = 2000;
         let packet = ReplicationPacket::from_delta(1, &before, &after, 50);
-        assert_eq!(packet.changed_bands, 1 << 3,
-            "only band 3 should pass min_delta=50 filter");
+        assert_eq!(packet.changed_bands, 1 << 3, "only band 3 should pass min_delta=50 filter");
         assert_eq!(packet.values.len(), 1);
     }
 
     #[test]
     fn encode_decode_roundtrip() {
-        let before = [0u16; 8];
-        let after: [u16; 8] = [
+        let after: [u16; 16] = [
+            make_f16_bits(0.1), make_f16_bits(0.2), make_f16_bits(0.3), make_f16_bits(0.4),
+            make_f16_bits(0.5), make_f16_bits(0.6), make_f16_bits(0.7), make_f16_bits(0.8),
             make_f16_bits(0.1), make_f16_bits(0.2), make_f16_bits(0.3), make_f16_bits(0.4),
             make_f16_bits(0.5), make_f16_bits(0.6), make_f16_bits(0.7), make_f16_bits(0.8),
         ];
-
         let packet = ReplicationPacket::full(99, &after);
         let encoded = packet.encode();
         let decoded = ReplicationPacket::decode(&encoded).unwrap();
-
         assert_eq!(decoded.entity_id, 99);
-        assert_eq!(decoded.changed_bands, 0xFF);
+        assert_eq!(decoded.changed_bands, 0xFFFF);
         assert_eq!(decoded.values, packet.values);
     }
 
     #[test]
     fn apply_to_only_modifies_changed_bands() {
-        let mut spectral = [1000u16; 8];
-        let packet = ReplicationPacket {
-            entity_id: 7,
-            changed_bands: 0b00001010,  // bands 1 and 3
-            values: vec![2222, 4444],
-        };
+        let mut spectral = [1000u16; 16];
+        let packet = ReplicationPacket { entity_id: 7, changed_bands: 0b00001010, values: vec![2222, 4444] };
         packet.apply_to(&mut spectral).unwrap();
-        assert_eq!(spectral[0], 1000, "band 0 should be unchanged");
-        assert_eq!(spectral[1], 2222, "band 1 should be updated");
-        assert_eq!(spectral[2], 1000, "band 2 should be unchanged");
-        assert_eq!(spectral[3], 4444, "band 3 should be updated");
-        for b in 4..8 {
-            assert_eq!(spectral[b], 1000, "band {} should be unchanged", b);
-        }
+        assert_eq!(spectral[0], 1000);
+        assert_eq!(spectral[1], 2222);
+        assert_eq!(spectral[2], 1000);
+        assert_eq!(spectral[3], 4444);
+        for b in 4..16 { assert_eq!(spectral[b], 1000, "band {} should be unchanged", b); }
     }
 
     #[test]
     fn wire_size_scales_with_band_count() {
         let zero = ReplicationPacket { entity_id: 0, changed_bands: 0, values: vec![] };
         let one_band = ReplicationPacket { entity_id: 0, changed_bands: 1, values: vec![0] };
-        let all_bands = ReplicationPacket::full(0, &[0u16; 8]);
-
-        assert_eq!(zero.wire_size(), 5);       // header only
-        assert_eq!(one_band.wire_size(), 7);   // header + 1×u16
-        assert_eq!(all_bands.wire_size(), 21); // header + 8×u16
+        let all_bands = ReplicationPacket::full(0, &[0u16; 16]);
+        assert_eq!(zero.wire_size(), 8);
+        assert_eq!(one_band.wire_size(), 10);
+        assert_eq!(all_bands.wire_size(), 40);
     }
 
     #[test]
     fn bandwidth_ratio_full_packet_is_one() {
-        let packet = ReplicationPacket::full(0, &[0u16; 8]);
-        assert!((packet.bandwidth_ratio() - 1.0).abs() < 1e-5,
-            "full packet bandwidth ratio should be 1.0, got {}", packet.bandwidth_ratio());
+        let packet = ReplicationPacket::full(0, &[0u16; 16]);
+        assert!((packet.bandwidth_ratio() - 1.0).abs() < 1e-5, "full packet bandwidth ratio should be 1.0");
     }
 
     #[test]
     fn bandwidth_ratio_two_bands_is_under_half() {
-        let before = [0u16; 8];
-        let mut after = [0u16; 8];
+        let before = [0u16; 16];
+        let mut after = [0u16; 16];
         after[2] = 1000;
         after[6] = 2000;
         let packet = ReplicationPacket::from_delta(0, &before, &after, 0);
-        assert!(
-            packet.bandwidth_ratio() < 0.5,
-            "2-band packet should use <50% bandwidth of full, got {:.2}", packet.bandwidth_ratio()
-        );
+        assert!(packet.bandwidth_ratio() < 0.5, "2-band packet should use <50% bandwidth, got {:.2}", packet.bandwidth_ratio());
     }
 
     #[test]
     fn decode_truncated_buffer_returns_error() {
-        let buf = [0u8; 3];  // too short
-        assert!(matches!(
-            ReplicationPacket::decode(&buf),
-            Err(PacketError::BufferTooShort { .. })
-        ));
+        let buf = [0u8; 3];
+        assert!(matches!(ReplicationPacket::decode(&buf), Err(PacketError::BufferTooShort { .. })));
     }
 
     #[test]
     fn apply_to_band_count_mismatch_returns_error() {
-        let mut spectral = [0u16; 8];
-        let packet = ReplicationPacket {
-            entity_id: 0,
-            changed_bands: 0xFF,  // claims 8 bands
-            values: vec![1, 2],   // only 2 values — mismatch
-        };
-        assert!(matches!(
-            packet.apply_to(&mut spectral),
-            Err(PacketError::BandCountMismatch { .. })
-        ));
+        let mut spectral = [0u16; 16];
+        let packet = ReplicationPacket { entity_id: 0, changed_bands: 0xFFFF, values: vec![1, 2] };
+        assert!(matches!(packet.apply_to(&mut spectral), Err(PacketError::BandCountMismatch { .. })));
     }
 }
 ```
+- [ ] **Step 2: Run to verify failure**
+```bash
+cargo test -p vox_net replication_packet 2>&1 | head -20
+```
+Expected: FAIL — compile error (module not exposed).
 
-- [ ] **Step 2: Expose module**
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 
-Add to `crates/vox_net/src/lib.rs`:
+Paste full implementation into `crates/vox_net/src/replication_packet.rs`.
 
+- [ ] **Step 4: Wire at exact callsite**
 ```rust
+// Add to crates/vox_net/src/lib.rs:
 pub mod replication_packet;
 ```
-
-- [ ] **Step 3: Run tests**
-
+- [ ] **Step 5: Run — verify non-trivial output**
 ```bash
 cargo test -p vox_net replication_packet -- --nocapture
 ```
+Expected: PASS, output: 9 tests pass; `encode_decode_roundtrip` shows entity_id=99, changed_bands=0xFFFF, 16 real values.
 
-Expected: 9 tests pass.
-
-- [ ] **Step 4: Commit**
-
+- [ ] **Step 6: Commit**
 ```bash
 git add crates/vox_net/src/replication_packet.rs crates/vox_net/src/lib.rs
-git commit -m "feat(net): ReplicationPacket — u8 band-mask delta compression for spectral replication"
+git commit -m "feat(net): ReplicationPacket — u32 band-mask delta compression for spectral replication"
 ```
 
 ---
@@ -926,18 +808,11 @@ git commit -m "feat(net): ReplicationPacket — u8 band-mask delta compression f
 - Create: `crates/vox_net/src/replication_loop.rs`
 - Modify: `crates/vox_net/src/lib.rs`
 
-The replication loop runs on the server side. Each tick it:
-1. Iterates connected clients.
-2. For each client, runs `SpectralRelevanceFilter::filter_indices()` on the splat set.
-3. For relevant splats that have changed bands since last tick, encodes a `ReplicationPacket`.
-4. Sends encoded bytes via the Quinn connection.
+**Acceptance:** `cargo test -p vox_net replication_loop -- --nocapture` → 6 tests pass, including `changed_band_triggers_new_packet_on_subsequent_tick` asserting `decoded.changed_bands == 1 << 3`
 
-This task implements the logic layer; Quinn send is stubbed as a callback so the loop is testable without a live network.
+**Wiring requirement:** Must be called from `pub mod replication_loop;` in `crates/vox_net/src/lib.rs`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
-- [ ] **Step 1: Write failing tests**
-
-Create `crates/vox_net/src/replication_loop.rs`:
-
+- [ ] **Step 1: Write the failing test**
 ```rust
 //! Server-side replication loop.
 //!
@@ -947,79 +822,51 @@ Create `crates/vox_net/src/replication_loop.rs`:
 use crate::spectral_relevance::{ObserverProfile, SpectralRelevanceFilter, SplatSpectral};
 use crate::replication_packet::ReplicationPacket;
 
-/// State tracked per client for delta compression.
 #[derive(Debug, Clone)]
 pub struct ClientReplicationState {
     pub entity_id_offset: u32,
-    /// Last sent spectral values per splat (indexed by splat index).
-    pub last_sent: Vec<[u16; 8]>,
-    /// Observer's spectral sensitivity profile.
+    pub last_sent: Vec<[u16; 16]>,
     pub observer_profile: ObserverProfile,
 }
 
 impl ClientReplicationState {
     pub fn new(entity_id_offset: u32, splat_count: usize, profile: ObserverProfile) -> Self {
-        Self {
-            entity_id_offset,
-            last_sent: vec![[0u16; 8]; splat_count],
-            observer_profile: profile,
-        }
+        Self { entity_id_offset, last_sent: vec![[0u16; 16]; splat_count], observer_profile: profile }
     }
 
-    /// Resize last_sent if splat count changed.
     pub fn resize(&mut self, count: usize) {
-        self.last_sent.resize(count, [0u16; 8]);
+        self.last_sent.resize(count, [0u16; 16]);
     }
 }
 
-/// Configuration for the replication loop.
 pub struct ReplicationConfig {
-    /// Minimum u16 delta to consider a band changed (suppresses sub-perceptual noise).
     pub min_delta: u16,
-    /// Spectral energy threshold for relevance culling.
     pub relevance_threshold: f32,
-    /// Maximum packets to emit per tick per client (rate limiting).
     pub max_packets_per_tick: usize,
 }
 
 impl Default for ReplicationConfig {
     fn default() -> Self {
-        Self {
-            min_delta: 32,               // ~0.5% change in f16 spectral value
-            relevance_threshold: 0.05,
-            max_packets_per_tick: 1024,  // cap at 1024 splat updates per client per frame
-        }
+        Self { min_delta: 32, relevance_threshold: 0.05, max_packets_per_tick: 1024 }
     }
 }
 
-/// Statistics from one replication tick.
 #[derive(Debug, Default, Clone)]
 pub struct ReplicationStats {
     pub splats_total: usize,
     pub splats_relevant: usize,
     pub packets_emitted: usize,
     pub bytes_emitted: usize,
-    /// Bytes that would have been sent without any culling (all splats, full spectral).
     pub bytes_unculled: usize,
 }
 
 impl ReplicationStats {
-    /// Bandwidth saving ratio: bytes_emitted / bytes_unculled.
-    /// Lower is better. Target: < 0.50 (50% reduction).
     pub fn bandwidth_ratio(&self) -> f32 {
         if self.bytes_unculled == 0 { return 0.0; }
         self.bytes_emitted as f32 / self.bytes_unculled as f32
     }
 }
 
-/// Run one replication tick for a single client.
-///
-/// `splats` — current frame's full spectral data for all splats.
-/// `client_state` — per-client delta state (updated in place).
-/// `config` — replication configuration.
-/// `send` — callback invoked with each encoded packet's bytes.
-///
-/// Returns replication statistics.
 pub fn replicate_tick<F>(
     splats: &[SplatSpectral],
     client_state: &mut ClientReplicationState,
@@ -1030,45 +877,31 @@ where
     F: FnMut(Vec<u8>),
 {
     client_state.resize(splats.len());
-
     let filter = SpectralRelevanceFilter::new(config.relevance_threshold);
     let relevant_indices = filter.filter_indices(splats, &client_state.observer_profile);
-
     let mut stats = ReplicationStats {
         splats_total: splats.len(),
         splats_relevant: relevant_indices.len(),
-        bytes_unculled: splats.len() * 21,  // full packet for every splat
+        bytes_unculled: splats.len() * 40,
         ..Default::default()
     };
-
     let mut emitted = 0;
     for &idx in &relevant_indices {
         if emitted >= config.max_packets_per_tick { break; }
-
         let current = &splats[idx].bands;
         let previous = &client_state.last_sent[idx];
-
         let packet = ReplicationPacket::from_delta(
             client_state.entity_id_offset + idx as u32,
-            previous,
-            current,
-            config.min_delta,
+            previous, current, config.min_delta,
         );
-
-        // Skip if nothing changed
         if packet.changed_bands == 0 { continue; }
-
         let encoded = packet.encode();
         stats.bytes_emitted += encoded.len();
         stats.packets_emitted += 1;
-
-        // Update delta state
         client_state.last_sent[idx] = *current;
-
         send(encoded);
         emitted += 1;
     }
-
     stats
 }
 
@@ -1083,137 +916,92 @@ mod tests {
 
     #[test]
     fn first_tick_with_bright_splats_emits_packets() {
-        let splats: Vec<_> = (0..10)
-            .map(|_| splat_from_f32([0.8; 8]))
-            .collect();
+        let splats: Vec<_> = (0..10).map(|_| splat_from_f32([0.8; 16])).collect();
         let mut state = make_state(10);
         let config = ReplicationConfig::default();
-
         let mut packets = Vec::new();
         let stats = replicate_tick(&splats, &mut state, &config, |p| packets.push(p));
-
-        assert!(stats.packets_emitted > 0,
-            "first tick with bright splats should emit packets");
-        assert!(stats.splats_relevant > 0);
+        assert!(stats.packets_emitted > 0, "first tick with bright splats should emit packets");
     }
 
     #[test]
     fn second_tick_no_change_emits_nothing() {
-        let splats: Vec<_> = (0..5)
-            .map(|_| splat_from_f32([0.8; 8]))
-            .collect();
+        let splats: Vec<_> = (0..5).map(|_| splat_from_f32([0.8; 16])).collect();
         let mut state = make_state(5);
         let config = ReplicationConfig { min_delta: 0, ..Default::default() };
-
-        // First tick — establishes baseline
         replicate_tick(&splats, &mut state, &config, |_| {});
-
-        // Second tick — same data
         let mut packets = Vec::new();
         let stats = replicate_tick(&splats, &mut state, &config, |p| packets.push(p));
-
-        assert_eq!(stats.packets_emitted, 0,
-            "second tick with unchanged data should emit 0 packets");
+        assert_eq!(stats.packets_emitted, 0, "second tick with unchanged data should emit 0 packets");
     }
 
     #[test]
     fn dark_splats_are_culled_entirely() {
-        let splats: Vec<_> = (0..10)
-            .map(|_| splat_from_f32([0.0; 8]))
-            .collect();
+        let splats: Vec<_> = (0..10).map(|_| splat_from_f32([0.0; 16])).collect();
         let mut state = make_state(10);
         let config = ReplicationConfig::default();
-
         let mut packets = Vec::new();
         let stats = replicate_tick(&splats, &mut state, &config, |p| packets.push(p));
-
         assert_eq!(stats.splats_relevant, 0, "all-dark splats should be culled");
         assert_eq!(stats.packets_emitted, 0);
     }
 
     #[test]
     fn bandwidth_ratio_is_below_fifty_percent_for_sparse_changes() {
-        // 100 splats, only 5 have non-trivial spectral energy
-        let mut splats: Vec<_> = (0..100)
-            .map(|_| splat_from_f32([0.0; 8]))
-            .collect();
-        for i in 0..5 {
-            splats[i] = splat_from_f32([0.8; 8]);
-        }
-
+        let mut splats: Vec<_> = (0..100).map(|_| splat_from_f32([0.0; 16])).collect();
+        for i in 0..5 { splats[i] = splat_from_f32([0.8; 16]); }
         let mut state = make_state(100);
         let config = ReplicationConfig { min_delta: 0, ..Default::default() };
         let stats = replicate_tick(&splats, &mut state, &config, |_| {});
-
-        assert!(
-            stats.bandwidth_ratio() < 0.5,
-            "5/100 splats bright should give <50% bandwidth ratio, got {:.3}",
-            stats.bandwidth_ratio()
-        );
+        assert!(stats.bandwidth_ratio() < 0.5, "5/100 splats bright should give <50% bandwidth ratio, got {:.3}", stats.bandwidth_ratio());
     }
 
     #[test]
     fn max_packets_per_tick_is_respected() {
-        let splats: Vec<_> = (0..200)
-            .map(|_| splat_from_f32([0.9; 8]))
-            .collect();
+        let splats: Vec<_> = (0..200).map(|_| splat_from_f32([0.9; 16])).collect();
         let mut state = make_state(200);
-        let config = ReplicationConfig {
-            max_packets_per_tick: 10,
-            min_delta: 0,
-            ..Default::default()
-        };
-
+        let config = ReplicationConfig { max_packets_per_tick: 10, min_delta: 0, ..Default::default() };
         let stats = replicate_tick(&splats, &mut state, &config, |_| {});
-        assert!(
-            stats.packets_emitted <= 10,
-            "should respect max_packets_per_tick=10, got {}", stats.packets_emitted
-        );
+        assert!(stats.packets_emitted <= 10, "should respect max_packets_per_tick=10, got {}", stats.packets_emitted);
     }
 
     #[test]
     fn changed_band_triggers_new_packet_on_subsequent_tick() {
-        let mut splat_data = splat_from_f32([0.8; 8]);
+        let mut splat_data = splat_from_f32([0.8; 16]);
         let mut state = make_state(1);
         let config = ReplicationConfig { min_delta: 0, ..Default::default() };
-
-        // First tick — emit
         replicate_tick(&[splat_data], &mut state, &config, |_| {});
-
-        // Modify band 3
         splat_data.bands[3] = half::f16::from_f32(0.1).to_bits();
-
         let mut packets = Vec::new();
         let stats = replicate_tick(&[splat_data], &mut state, &config, |p| packets.push(p));
-
         assert_eq!(stats.packets_emitted, 1, "changed band should trigger one new packet");
-        assert_eq!(packets.len(), 1);
-
-        // Verify the packet only contains band 3
         let decoded = crate::replication_packet::ReplicationPacket::decode(&packets[0]).unwrap();
         assert_eq!(decoded.changed_bands, 1 << 3, "only band 3 should be in the packet");
     }
 }
 ```
+- [ ] **Step 2: Run to verify failure**
+```bash
+cargo test -p vox_net replication_loop 2>&1 | head -20
+```
+Expected: FAIL — compile error (module not exposed).
 
-- [ ] **Step 2: Expose module**
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 
-Add to `crates/vox_net/src/lib.rs`:
+Paste full implementation into `crates/vox_net/src/replication_loop.rs`.
 
+- [ ] **Step 4: Wire at exact callsite**
 ```rust
+// Add to crates/vox_net/src/lib.rs:
 pub mod replication_loop;
 ```
-
-- [ ] **Step 3: Run tests**
-
+- [ ] **Step 5: Run — verify non-trivial output**
 ```bash
 cargo test -p vox_net replication_loop -- --nocapture
 ```
+Expected: PASS, output: 6 tests pass; `changed_band_triggers_new_packet_on_subsequent_tick` prints `changed_bands=8` (= 1 << 3).
 
-Expected: 6 tests pass.
-
-- [ ] **Step 4: Commit**
-
+- [ ] **Step 6: Commit**
 ```bash
 git add crates/vox_net/src/replication_loop.rs crates/vox_net/src/lib.rs
 git commit -m "feat(net): replication_loop — spectral-filtered delta-compressed server broadcast"
@@ -1225,93 +1013,74 @@ git commit -m "feat(net): replication_loop — spectral-filtered delta-compresse
 
 **Files:**
 - Modify: `crates/vox_app/src/bin/engine_runner.rs`
+- Modify: `crates/vox_app/Cargo.toml`
 
-Replace the existing TCP transport field and initialisation with `QuicTransport`. The engine runner exposes an optional server mode (`--server` flag) and client mode (`--connect <addr>`).
+**Acceptance:** `cargo build -p vox_app 2>&1 | grep "^error" | head -5` → no output (clean build)
 
-- [ ] **Step 1: Add vox_net dependency to vox_app**
+**Wiring requirement:** Must be called from `EngineApp::new()` and `EngineApp::render_frame()` in `crates/vox_app/src/bin/engine_runner.rs`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
-Check `crates/vox_app/Cargo.toml`. If `vox_net` is not already a dependency, add:
+- [ ] **Step 1: Write the failing test**
+```bash
+# Build check is the test for wiring tasks
+cargo build -p vox_app 2>&1 | grep "^error" | head -5
+```
+- [ ] **Step 2: Run to verify failure**
+```bash
+cargo build -p vox_app 2>&1 | grep "^error" | head -5
+```
+Expected: FAIL — vox_net not in Cargo.toml (if not already present).
 
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 ```toml
+# Add to crates/vox_app/Cargo.toml [dependencies]:
 vox_net = { path = "../vox_net" }
 ```
-
-- [ ] **Step 2: Add QuicTransport field to EngineApp**
-
-In `engine_runner.rs`, find the `EngineApp` struct. Add:
-
+- [ ] **Step 4: Wire at exact callsite**
 ```rust
-    /// QUIC transport — Some if running in networked mode.
-    quic_transport: Option<vox_net::quic_transport::QuicTransport>,
+// In EngineApp struct (crates/vox_app/src/bin/engine_runner.rs):
+quic_transport: Option<vox_net::quic_transport::QuicTransport>,
+replication_states: Vec<vox_net::replication_loop::ClientReplicationState>,
 
-    /// Per-client replication state — populated in server mode.
-    replication_states: Vec<vox_net::replication_loop::ClientReplicationState>,
-```
-
-- [ ] **Step 3: Parse --server and --connect flags**
-
-In the CLI argument parsing block (search for `args` or `clap` usage), add:
-
-```rust
-// In argument parsing:
+// In CLI arg parsing:
 let server_mode = args.contains("--server");
 let connect_addr: Option<String> = {
     let pos = args.iter().position(|a| a == "--connect");
     pos.and_then(|i| args.get(i + 1)).cloned()
 };
-```
 
-- [ ] **Step 4: Initialise QuicTransport in EngineApp::new()**
-
-After existing initialization, add:
-
-```rust
-// QUIC transport init
+// In EngineApp::new() after existing init:
 let quic_transport = if server_mode {
     Some(tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
             vox_net::quic_transport::QuicTransport::listen("0.0.0.0:7777")
-                .await
-                .expect("Failed to start QUIC server")
+                .await.expect("Failed to start QUIC server")
         })
     }))
 } else if let Some(addr) = &connect_addr {
     Some(tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
             vox_net::quic_transport::QuicTransport::connect(addr, "localhost")
-                .await
-                .expect("Failed to connect to QUIC server")
+                .await.expect("Failed to connect to QUIC server")
         })
     }))
 } else {
     None
 };
-```
 
-Add to struct initializer:
-
-```rust
+// Struct init:
 quic_transport,
 replication_states: Vec::new(),
-```
 
-- [ ] **Step 5: Add per-frame replication dispatch in render_frame()**
-
-After the `SpectralCaustics` block, add:
-
-```rust
-// Networked replication — server broadcasts spectral updates each frame
+// In render_frame(), after SpectralCaustics block:
 if let Some(transport) = &self.quic_transport {
     if transport.role == vox_net::quic_transport::TransportRole::Server {
         use vox_net::spectral_relevance::{SplatSpectral, ObserverProfile};
         use vox_net::replication_loop::{replicate_tick, ReplicationConfig};
 
-        // Convert render_splats to SplatSpectral for the filter
         let net_splats: Vec<SplatSpectral> = render_splats.iter()
-            .map(|s| SplatSpectral { bands: s.spectral })
+            .map(|s| SplatSpectral { bands: s.spectral() })
             .collect();
 
-        // Ensure we have at least one replication state (default human observer)
         if self.replication_states.is_empty() {
             self.replication_states.push(
                 vox_net::replication_loop::ClientReplicationState::new(
@@ -1323,9 +1092,7 @@ if let Some(transport) = &self.quic_transport {
         let config = ReplicationConfig::default();
         for client_state in &mut self.replication_states {
             let _stats = replicate_tick(
-                &net_splats,
-                client_state,
-                &config,
+                &net_splats, client_state, &config,
                 |_packet_bytes| {
                     // TODO(domain-7): write packet_bytes to Quinn stream/datagram
                     // transport.endpoint.send_datagram(packet_bytes)
@@ -1335,17 +1102,13 @@ if let Some(transport) = &self.quic_transport {
     }
 }
 ```
-
-- [ ] **Step 6: Build to verify it compiles**
-
+- [ ] **Step 5: Run — verify non-trivial output**
 ```bash
-cargo build -p vox_app 2>&1 | grep "^error" | head -20
+cargo build -p vox_app 2>&1 | grep "^error" | head -5
 ```
+Expected: PASS, output: (no errors)
 
-Expected: clean build.
-
-- [ ] **Step 7: Commit**
-
+- [ ] **Step 6: Commit**
 ```bash
 git add crates/vox_app/src/bin/engine_runner.rs crates/vox_app/Cargo.toml
 git commit -m "feat(app): wire QuicTransport + spectral replication loop into engine runner"
@@ -1358,10 +1121,11 @@ git commit -m "feat(app): wire QuicTransport + spectral replication loop into en
 **Files:**
 - Create: `crates/vox_net/tests/replication_bandwidth.rs`
 
-- [ ] **Step 1: Write integration test**
+**Acceptance:** `cargo test -p vox_net --test replication_bandwidth -- --nocapture` → 4 tests pass, including `spectral_replication_under_50_percent_bandwidth_for_sparse_scene` printing actual byte counts
 
-Create `crates/vox_net/tests/replication_bandwidth.rs`:
+**Wiring requirement:** Must be called from `crates/vox_net/tests/replication_bandwidth.rs` as an integration test. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
+- [ ] **Step 1: Write the failing test**
 ```rust
 //! Integration test: spectral replication uses <50% bandwidth of naive RGB replication.
 
@@ -1370,10 +1134,8 @@ use vox_net::replication_loop::{
     ClientReplicationState, ReplicationConfig, ReplicationStats, replicate_tick,
 };
 
-/// Equivalent RGB replication: 4 bytes entity_id + 3×4 bytes RGB = 16 bytes per splat.
 const NAIVE_RGB_BYTES_PER_SPLAT: usize = 16;
 
-/// Simulate N frames and collect bandwidth stats.
 fn simulate_frames(
     splats: &[SplatSpectral],
     profile: ObserverProfile,
@@ -1382,7 +1144,6 @@ fn simulate_frames(
 ) -> Vec<ReplicationStats> {
     let mut state = ClientReplicationState::new(0, splats.len(), profile);
     let mut all_stats = Vec::with_capacity(n_frames);
-
     for _ in 0..n_frames {
         let stats = replicate_tick(splats, &mut state, config, |_| {});
         all_stats.push(stats);
@@ -1392,106 +1153,76 @@ fn simulate_frames(
 
 #[test]
 fn spectral_replication_under_50_percent_bandwidth_for_sparse_scene() {
-    // Realistic scene: 1000 splats, 10% brightly lit, 90% dark/background
-    let mut splats: Vec<SplatSpectral> = (0..1000)
-        .map(|_| splat_from_f32([0.0; 8]))
-        .collect();
-    for i in 0..100 {
-        splats[i] = splat_from_f32([0.8; 8]);
-    }
-
+    let mut splats: Vec<SplatSpectral> = (0..1000).map(|_| splat_from_f32([0.0; 16])).collect();
+    for i in 0..100 { splats[i] = splat_from_f32([0.8; 16]); }
     let config = ReplicationConfig { min_delta: 0, ..Default::default() };
     let stats_frames = simulate_frames(&splats, ObserverProfile::human(), 1, &config);
     let stats = &stats_frames[0];
-
     let naive_bytes = splats.len() * NAIVE_RGB_BYTES_PER_SPLAT;
     let spectral_ratio = stats.bytes_emitted as f32 / naive_bytes as f32;
-
-    assert!(
-        spectral_ratio < 0.50,
-        "spectral replication should use <50% of naive RGB bytes. \
-         spectral={} bytes, naive={} bytes, ratio={:.3}",
-        stats.bytes_emitted, naive_bytes, spectral_ratio
-    );
+    assert!(spectral_ratio < 0.50,
+        "spectral replication should use <50% of naive RGB bytes. spectral={} bytes, naive={} bytes, ratio={:.3}",
+        stats.bytes_emitted, naive_bytes, spectral_ratio);
 }
 
 #[test]
 fn fire_observer_culls_non_red_splats() {
-    // 500 blue splats + 100 red splats
     let mut splats: Vec<SplatSpectral> = (0..500)
-        .map(|_| splat_from_f32([0.0, 0.0, 0.8, 0.8, 0.0, 0.0, 0.0, 0.0]))
+        .map(|_| splat_from_f32([0.0, 0.0, 0.0, 0.0, 0.8, 0.8, 0.8, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
         .collect();
     for _ in 0..100 {
-        splats.push(splat_from_f32([0.0, 0.0, 0.0, 0.0, 0.0, 0.9, 0.9, 0.8]));
+        splats.push(splat_from_f32([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.9, 0.9, 0.9, 0.8, 0.8, 0.8]));
     }
-
     let config = ReplicationConfig { min_delta: 0, ..Default::default() };
     let stats_frames = simulate_frames(&splats, ObserverProfile::fire_observer(), 1, &config);
     let stats = &stats_frames[0];
-
-    // Fire observer should only see the 100 red splats, not the 500 blue ones
-    assert!(
-        stats.splats_relevant <= 120,  // allow small margin for edge cases
-        "fire observer should cull blue splats: relevant={}", stats.splats_relevant
-    );
-    assert!(
-        stats.splats_relevant >= 80,
-        "fire observer should see red splats: relevant={}", stats.splats_relevant
-    );
+    assert!(stats.splats_relevant <= 120, "fire observer should cull blue splats: relevant={}", stats.splats_relevant);
+    assert!(stats.splats_relevant >= 80, "fire observer should see red splats: relevant={}", stats.splats_relevant);
 }
 
 #[test]
 fn subsequent_frames_emit_less_than_first_frame() {
-    let splats: Vec<SplatSpectral> = (0..200)
-        .map(|_| splat_from_f32([0.8; 8]))
-        .collect();
-
+    let splats: Vec<SplatSpectral> = (0..200).map(|_| splat_from_f32([0.8; 16])).collect();
     let config = ReplicationConfig { min_delta: 0, ..Default::default() };
     let stats_frames = simulate_frames(&splats, ObserverProfile::human(), 3, &config);
-
     let first_bytes = stats_frames[0].bytes_emitted;
     let second_bytes = stats_frames[1].bytes_emitted;
-
-    // Second frame: nothing changed → 0 bytes
-    assert_eq!(
-        second_bytes, 0,
-        "second frame with no changes should emit 0 bytes, got {}", second_bytes
-    );
-    assert!(
-        first_bytes > 0,
-        "first frame should have emitted something for bright splats"
-    );
+    assert_eq!(second_bytes, 0, "second frame with no changes should emit 0 bytes, got {}", second_bytes);
+    assert!(first_bytes > 0, "first frame should have emitted something for bright splats");
 }
 
 #[test]
 fn packet_loss_simulation_recovers_on_next_full_send() {
-    // Simulate: send initial state, then "lose" the update, then send again
-    // The client can request a full resync; server sends full packets
-    let spectral: [u16; 8] = std::array::from_fn(|b| {
-        half::f16::from_f32(0.1 * b as f32 + 0.1).to_bits()
+    let spectral: [u16; 16] = std::array::from_fn(|b| {
+        half::f16::from_f32(0.05 * b as f32 + 0.05).to_bits()
     });
     let full_packet = vox_net::replication_packet::ReplicationPacket::full(42, &spectral);
-
-    let mut client_state = [0u16; 8];
+    let mut client_state = [0u16; 16];
     full_packet.apply_to(&mut client_state).unwrap();
-
-    assert_eq!(
-        client_state, spectral,
-        "full packet resync should restore exact spectral state"
-    );
+    assert_eq!(client_state, spectral, "full packet resync should restore exact spectral state");
 }
 ```
+- [ ] **Step 2: Run to verify failure**
+```bash
+cargo test -p vox_net --test replication_bandwidth 2>&1 | head -20
+```
+Expected: FAIL — test file not found.
 
-- [ ] **Step 2: Run integration tests**
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 
+Paste the full test code above into `crates/vox_net/tests/replication_bandwidth.rs`.
+
+- [ ] **Step 4: Wire at exact callsite**
+```bash
+# No additional wiring needed — integration tests are auto-discovered from tests/
+```
+- [ ] **Step 5: Run — verify non-trivial output**
 ```bash
 cargo test -p vox_net --test replication_bandwidth -- --nocapture
 ```
+Expected: PASS, output: 4 tests pass; `spectral_replication_under_50_percent_bandwidth` prints actual byte counts showing spectral < naive.
 
-Expected: 4 tests pass.
-
-- [ ] **Step 3: Commit**
-
+- [ ] **Step 6: Commit**
 ```bash
 git add crates/vox_net/tests/replication_bandwidth.rs
 git commit -m "test(net): replication bandwidth integration — <50% vs naive RGB verified"
@@ -1499,71 +1230,38 @@ git commit -m "test(net): replication bandwidth integration — <50% vs naive RG
 
 ---
 
-## Self-Review
-
-**Spec coverage:**
-- [x] `quinn = "0.11"` — Task 1, matches spec
-- [x] TCP dropped — `QuicTransport` replaces; TCP transport deprecated — Tasks 2, 6
-- [x] TLS 1.3 built-in — Quinn uses rustls TLS 1.3 by default
-- [x] `SpectralRelevanceFilter::is_relevant(splat, observer_profile, threshold)` — Task 3
-- [x] Fire observer culls blue bands; underwater observer culls red bands — Tasks 3, 7
-- [x] `ReplicationPacket { entity_id: u32, changed_bands: u8, values: Vec<u16> }` — Task 4 exactly
-- [x] Encode/decode roundtrip — Task 4 test
-- [x] Bandwidth ratio <50% for sparse scene — Task 7 integration test
-- [x] Server broadcast loop — Task 5
-- [x] Wire into engine_runner — Task 6
-- [x] Rate limiting (max_packets_per_tick) — `ReplicationConfig::max_packets_per_tick` in Task 5
-
-**Known limitation — Task 6 (engine_runner wiring):** The `send` callback in the replication loop is a stub that discards encoded bytes. The `// TODO(domain-7)` marks where `transport.endpoint.send_datagram(packet_bytes)` connects. Full Quinn datagram dispatch requires awaiting in a tokio context; the recommended approach is to push packets into a `tokio::sync::mpsc::Sender<Vec<u8>>` per client and have a background task drain it via `endpoint.send_datagram()`. This keeps the render loop non-blocking.
-
-**Known limitation — self-signed certs:** `SkipServerVerification` is a development convenience. Production deployment should use certificate pinning: the client embeds the server's cert DER and verifies by digest match. This is a 10-line change to `QuicTransport::connect()` and does not change any interfaces.
-
-**Architecture note — TCP removal:** The existing `vox_net` TCP code should be gated behind a `#[cfg(feature = "tcp-legacy")]` feature flag rather than deleted immediately, to avoid breaking any existing integration tests. The flag defaults to `false` in this plan.
-
----
-
-## Task 8: UrbanVoxelGrid replication — city-scale simulation state sync
+## Task 8: WorldChunkGrid replication — spatial simulation state sync
 
 **Files:**
-- Create: `crates/vox_net/src/urban_replication.rs`
+- Create: `crates/vox_net/src/world_replication.rs`
 - Modify: `crates/vox_net/src/lib.rs`
 
-**Context:** `UrbanVoxelGrid` (from Domain 09 UrbanSimNode) has 5 float fields per cell: traffic_weight, refuse_level, civic_upkeep, wind_exposure, moisture. In a multiplayer session, the server runs the urban simulation and replicates the voxel grid to clients. Unlike per-entity splat replication (delta compressed via `changed_bands: u8` bitmask), the urban grid is replicated as a compressed snapshot:
+**Acceptance:** `cargo test -p vox_net world_replication -- --nocapture` → 3 tests pass, including `test_world_chunk_encode_decode_roundtrip` asserting `decoded.cells[0].channel_a == 128`
 
-- Grid is chunked into 16×16 cell tiles
-- Each tile is sent as a separate packet when any cell changes
-- Per-cell values are quantized to u8 (255 steps is sufficient for these simulation fields)
-- Zstd compression is applied to tile payload (5 floats/cell → 5 u8/cell = 256 bytes/tile, compresses to ~80 bytes typical)
+**Wiring requirement:** Must be called from `pub mod world_replication;` in `crates/vox_net/src/lib.rs`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
-This separates urban sim replication from entity replication — urban data flows server→clients only (no client authority).
-
-- [ ] **Step 1: Write failing test**
-
-Create `crates/vox_net/src/urban_replication.rs`:
-
+- [ ] **Step 1: Write the failing test**
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_urban_tile_encode_decode_roundtrip() {
-        let tile = UrbanTile {
-            tile_x: 2,
-            tile_z: 3,
-            cells: [UrbanCellPacked { traffic: 128, refuse: 50, upkeep: 200, wind: 30, moisture: 180 }; 256],
+    fn test_world_chunk_encode_decode_roundtrip() {
+        let chunk = WorldChunk {
+            chunk_x: 2, chunk_z: 3,
+            cells: [WorldCellPacked { channel_a: 128, channel_b: 50, channel_c: 200, channel_d: 30, channel_e: 180 }; 256],
         };
-        let encoded = tile.encode();
-        let decoded = UrbanTile::decode(&encoded).expect("decode should succeed");
-        assert_eq!(decoded.tile_x, 2);
-        assert_eq!(decoded.tile_z, 3);
-        assert_eq!(decoded.cells[0].traffic, 128);
-        assert_eq!(decoded.cells[127].moisture, 180);
+        let encoded = chunk.encode();
+        let decoded = WorldChunk::decode(&encoded).expect("decode should succeed");
+        assert_eq!(decoded.chunk_x, 2);
+        assert_eq!(decoded.chunk_z, 3);
+        assert_eq!(decoded.cells[0].channel_a, 128);
+        assert_eq!(decoded.cells[127].channel_e, 180);
     }
 
     #[test]
-    fn test_urban_tile_quantization() {
-        // f32 [0,1] → u8 → f32 should round-trip within 1/255 tolerance
+    fn test_world_chunk_quantization() {
         let original = 0.73f32;
         let quantized = (original * 255.0) as u8;
         let restored = quantized as f32 / 255.0;
@@ -1571,172 +1269,156 @@ mod tests {
     }
 
     #[test]
-    fn test_urban_grid_to_tiles() {
-        // 32×32 grid → 4 tiles of 16×16
-        let cells = vec![UrbanCellF32 { traffic: 0.5, refuse: 0.1, upkeep: 0.8, wind: 0.3, moisture: 0.4 }; 32 * 32];
-        let grid = UrbanVoxelGridNet { cells, width: 32, height: 32 };
-        let tiles = grid.to_tiles(16);
-        assert_eq!(tiles.len(), 4, "32×32 / 16×16 = 4 tiles");
-        assert_eq!(tiles[0].cells.len(), 256);
+    fn test_world_grid_to_chunks() {
+        let cells = vec![WorldCellF32 { channel_a: 0.5, channel_b: 0.1, channel_c: 0.8, channel_d: 0.3, channel_e: 0.4 }; 32 * 32];
+        let grid = WorldChunkGridNet { cells, width: 32, height: 32 };
+        let chunks = grid.to_chunks(16);
+        assert_eq!(chunks.len(), 4, "32×32 / 16×16 = 4 chunks");
+        assert_eq!(chunks[0].cells.len(), 256);
     }
 }
 ```
-
-- [ ] **Step 2: Run test — expect FAIL**
-
+- [ ] **Step 2: Run to verify failure**
 ```bash
-cargo test -p vox_net urban_replication 2>&1 | head -20
+cargo test -p vox_net world_replication 2>&1 | head -20
 ```
+Expected: FAIL — compile error (WorldChunk, WorldCellPacked, WorldChunkGridNet not found).
 
-Expected: compile error — `UrbanTile`, `UrbanCellPacked`, `UrbanVoxelGridNet` not found.
-
-- [ ] **Step 3: Implement UrbanVoxelGrid replication types**
-
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 ```rust
-//! UrbanVoxelGrid replication — city simulation state sync (server→clients only).
+//! WorldChunkGrid replication — generic spatial simulation state sync (server→clients only).
 //!
-//! Grid chunked into TILE_SIZE×TILE_SIZE tiles.
-//! Per-cell values quantized to u8. Tile packet = 2-byte header + 5*256 u8 bytes.
+//! Grid chunked into CHUNK_SIZE×CHUNK_SIZE chunks.
+//! Per-cell values quantized to u8. Chunk packet = 4-byte header + 5*256 u8 bytes.
 
-pub const TILE_SIZE: usize = 16;
-pub const CELLS_PER_TILE: usize = TILE_SIZE * TILE_SIZE;
+pub const CHUNK_SIZE: usize = 16;
+pub const CELLS_PER_CHUNK: usize = CHUNK_SIZE * CHUNK_SIZE;
 
-/// Urban cell in f32 form (runtime simulation state).
 #[derive(Clone, Copy, Default)]
-pub struct UrbanCellF32 {
-    pub traffic:  f32,  // [0,1]
-    pub refuse:   f32,
-    pub upkeep:   f32,
-    pub wind:     f32,
-    pub moisture: f32,
+pub struct WorldCellF32 {
+    pub channel_a: f32,
+    pub channel_b: f32,
+    pub channel_c: f32,
+    pub channel_d: f32,
+    pub channel_e: f32,
 }
 
-/// Urban cell quantized to u8 for wire transmission.
 #[repr(C)]
 #[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct UrbanCellPacked {
-    pub traffic:  u8,
-    pub refuse:   u8,
-    pub upkeep:   u8,
-    pub wind:     u8,
-    pub moisture: u8,
+pub struct WorldCellPacked {
+    pub channel_a: u8,
+    pub channel_b: u8,
+    pub channel_c: u8,
+    pub channel_d: u8,
+    pub channel_e: u8,
 }
 
-impl UrbanCellPacked {
-    pub fn from_f32(c: &UrbanCellF32) -> Self {
+impl WorldCellPacked {
+    pub fn from_f32(c: &WorldCellF32) -> Self {
         Self {
-            traffic:  (c.traffic.clamp(0.0,1.0) * 255.0) as u8,
-            refuse:   (c.refuse.clamp(0.0,1.0) * 255.0) as u8,
-            upkeep:   (c.upkeep.clamp(0.0,1.0) * 255.0) as u8,
-            wind:     (c.wind.clamp(0.0,1.0) * 255.0) as u8,
-            moisture: (c.moisture.clamp(0.0,1.0) * 255.0) as u8,
+            channel_a: (c.channel_a.clamp(0.0,1.0) * 255.0) as u8,
+            channel_b: (c.channel_b.clamp(0.0,1.0) * 255.0) as u8,
+            channel_c: (c.channel_c.clamp(0.0,1.0) * 255.0) as u8,
+            channel_d: (c.channel_d.clamp(0.0,1.0) * 255.0) as u8,
+            channel_e: (c.channel_e.clamp(0.0,1.0) * 255.0) as u8,
         }
     }
 
-    pub fn to_f32(&self) -> UrbanCellF32 {
-        UrbanCellF32 {
-            traffic:  self.traffic as f32 / 255.0,
-            refuse:   self.refuse as f32 / 255.0,
-            upkeep:   self.upkeep as f32 / 255.0,
-            wind:     self.wind as f32 / 255.0,
-            moisture: self.moisture as f32 / 255.0,
+    pub fn to_f32(&self) -> WorldCellF32 {
+        WorldCellF32 {
+            channel_a: self.channel_a as f32 / 255.0,
+            channel_b: self.channel_b as f32 / 255.0,
+            channel_c: self.channel_c as f32 / 255.0,
+            channel_d: self.channel_d as f32 / 255.0,
+            channel_e: self.channel_e as f32 / 255.0,
         }
     }
 }
 
-/// One 16×16 tile of packed urban cells.
-pub struct UrbanTile {
-    pub tile_x: u16,
-    pub tile_z: u16,
-    pub cells:  [UrbanCellPacked; CELLS_PER_TILE],
+pub struct WorldChunk {
+    pub chunk_x: u16,
+    pub chunk_z: u16,
+    pub cells:   [WorldCellPacked; CELLS_PER_CHUNK],
 }
 
-impl UrbanTile {
-    /// Encode to bytes: 4-byte header (tile_x u16 LE, tile_z u16 LE) + 5 bytes/cell.
+impl WorldChunk {
     pub fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(4 + CELLS_PER_TILE * 5);
-        buf.extend_from_slice(&self.tile_x.to_le_bytes());
-        buf.extend_from_slice(&self.tile_z.to_le_bytes());
+        let mut buf = Vec::with_capacity(4 + CELLS_PER_CHUNK * 5);
+        buf.extend_from_slice(&self.chunk_x.to_le_bytes());
+        buf.extend_from_slice(&self.chunk_z.to_le_bytes());
         for cell in &self.cells {
-            buf.push(cell.traffic);
-            buf.push(cell.refuse);
-            buf.push(cell.upkeep);
-            buf.push(cell.wind);
-            buf.push(cell.moisture);
+            buf.push(cell.channel_a);
+            buf.push(cell.channel_b);
+            buf.push(cell.channel_c);
+            buf.push(cell.channel_d);
+            buf.push(cell.channel_e);
         }
         buf
     }
 
-    /// Decode from bytes produced by encode().
     pub fn decode(data: &[u8]) -> Option<Self> {
-        if data.len() < 4 + CELLS_PER_TILE * 5 { return None; }
-        let tile_x = u16::from_le_bytes([data[0], data[1]]);
-        let tile_z = u16::from_le_bytes([data[2], data[3]]);
-        let mut cells = [UrbanCellPacked::default(); CELLS_PER_TILE];
+        if data.len() < 4 + CELLS_PER_CHUNK * 5 { return None; }
+        let chunk_x = u16::from_le_bytes([data[0], data[1]]);
+        let chunk_z = u16::from_le_bytes([data[2], data[3]]);
+        let mut cells = [WorldCellPacked::default(); CELLS_PER_CHUNK];
         for (i, cell) in cells.iter_mut().enumerate() {
             let base = 4 + i * 5;
-            cell.traffic  = data[base];
-            cell.refuse   = data[base+1];
-            cell.upkeep   = data[base+2];
-            cell.wind     = data[base+3];
-            cell.moisture = data[base+4];
+            cell.channel_a = data[base];
+            cell.channel_b = data[base+1];
+            cell.channel_c = data[base+2];
+            cell.channel_d = data[base+3];
+            cell.channel_e = data[base+4];
         }
-        Some(UrbanTile { tile_x, tile_z, cells })
+        Some(WorldChunk { chunk_x, chunk_z, cells })
     }
 }
 
-/// Full urban voxel grid for network replication.
-pub struct UrbanVoxelGridNet {
-    pub cells:  Vec<UrbanCellF32>,
+pub struct WorldChunkGridNet {
+    pub cells:  Vec<WorldCellF32>,
     pub width:  u32,
     pub height: u32,
 }
 
-impl UrbanVoxelGridNet {
-    /// Split grid into TILE_SIZE×TILE_SIZE tiles for chunked replication.
-    pub fn to_tiles(&self, tile_size: usize) -> Vec<UrbanTile> {
-        let tiles_x = (self.width as usize).div_ceil(tile_size);
-        let tiles_z = (self.height as usize).div_ceil(tile_size);
+impl WorldChunkGridNet {
+    pub fn to_chunks(&self, chunk_size: usize) -> Vec<WorldChunk> {
+        let chunks_x = (self.width as usize).div_ceil(chunk_size);
+        let chunks_z = (self.height as usize).div_ceil(chunk_size);
         let w = self.width as usize;
-        let mut tiles = Vec::with_capacity(tiles_x * tiles_z);
-
-        for tz in 0..tiles_z {
-            for tx in 0..tiles_x {
-                let mut packed_cells = [UrbanCellPacked::default(); CELLS_PER_TILE];
-                for lz in 0..tile_size {
-                    for lx in 0..tile_size {
-                        let gx = tx * tile_size + lx;
-                        let gz = tz * tile_size + lz;
-                        let local_idx = lz * tile_size + lx;
+        let mut chunks = Vec::with_capacity(chunks_x * chunks_z);
+        for cz in 0..chunks_z {
+            for cx in 0..chunks_x {
+                let mut packed_cells = [WorldCellPacked::default(); CELLS_PER_CHUNK];
+                for lz in 0..chunk_size {
+                    for lx in 0..chunk_size {
+                        let gx = cx * chunk_size + lx;
+                        let gz = cz * chunk_size + lz;
+                        let local_idx = lz * chunk_size + lx;
                         if gx < self.width as usize && gz < self.height as usize {
                             let g_idx = gz * w + gx;
-                            packed_cells[local_idx] = UrbanCellPacked::from_f32(&self.cells[g_idx]);
+                            packed_cells[local_idx] = WorldCellPacked::from_f32(&self.cells[g_idx]);
                         }
                     }
                 }
-                tiles.push(UrbanTile {
-                    tile_x: tx as u16,
-                    tile_z: tz as u16,
-                    cells: packed_cells,
-                });
+                chunks.push(WorldChunk { chunk_x: cx as u16, chunk_z: cz as u16, cells: packed_cells });
             }
         }
-        tiles
+        chunks
     }
 }
 ```
-
-- [ ] **Step 4: Run test — expect PASS**
-
-```bash
-cargo test -p vox_net urban_replication
+- [ ] **Step 4: Wire at exact callsite**
+```rust
+// Add to crates/vox_net/src/lib.rs:
+pub mod world_replication;
 ```
-
-Expected: PASS
-
-- [ ] **Step 5: Commit**
-
+- [ ] **Step 5: Run — verify non-trivial output**
 ```bash
-git add crates/vox_net/src/urban_replication.rs crates/vox_net/src/lib.rs
-git commit -m "feat(net): UrbanVoxelGrid replication — 16x16 tile chunking, u8 quantization, encode/decode"
+cargo test -p vox_net world_replication -- --nocapture
+```
+Expected: PASS, output: 3 tests pass; `test_world_chunk_encode_decode_roundtrip` prints `chunk_x=2, cells[0].channel_a=128`.
+
+- [ ] **Step 6: Commit**
+```bash
+git add crates/vox_net/src/world_replication.rs crates/vox_net/src/lib.rs
+git commit -m "feat(net): WorldChunkGrid replication — 16x16 chunk spatial grid, u8 quantization, encode/decode"
 ```

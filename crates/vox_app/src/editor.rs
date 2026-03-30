@@ -183,6 +183,10 @@ impl EditorAction {
     }
 }
 
+impl Default for SceneEditor {
+    fn default() -> Self { Self::new() }
+}
+
 impl SceneEditor {
     pub fn new() -> Self {
         Self {
@@ -257,41 +261,41 @@ impl SceneEditor {
 
     /// Delete the selected entity.
     pub fn delete_selected(&mut self) {
-        if let Some(id) = self.selected {
-            if let Some(idx) = self.entities.iter().position(|e| e.id == id) {
-                let entity = self.entities.remove(idx);
-                self.undo_stack
-                    .push(EditorAction::DeleteEntity { id, entity });
-                self.redo_stack.clear();
-                self.selected = None;
-            }
+        if let Some(id) = self.selected
+            && let Some(idx) = self.entities.iter().position(|e| e.id == id)
+        {
+            let entity = self.entities.remove(idx);
+            self.undo_stack
+                .push(EditorAction::DeleteEntity { id, entity });
+            self.redo_stack.clear();
+            self.selected = None;
         }
     }
 
     /// Move the selected entity by a delta.
     pub fn move_selected(&mut self, delta: Vec3) {
-        if let Some(id) = self.selected {
-            if let Some(entity) = self.entities.iter_mut().find(|e| e.id == id) {
-                if entity.locked {
-                    return;
-                }
-                let old_pos = entity.position;
-                entity.position += delta;
-                if self.snap_enabled {
-                    entity.position.x =
-                        (entity.position.x / self.snap_grid).round() * self.snap_grid;
-                    entity.position.y =
-                        (entity.position.y / self.snap_grid).round() * self.snap_grid;
-                    entity.position.z =
-                        (entity.position.z / self.snap_grid).round() * self.snap_grid;
-                }
-                self.undo_stack.push(EditorAction::MoveEntity {
-                    id,
-                    old_pos,
-                    new_pos: entity.position,
-                });
-                self.redo_stack.clear();
+        if let Some(id) = self.selected
+            && let Some(entity) = self.entities.iter_mut().find(|e| e.id == id)
+        {
+            if entity.locked {
+                return;
             }
+            let old_pos = entity.position;
+            entity.position += delta;
+            if self.snap_enabled {
+                entity.position.x =
+                    (entity.position.x / self.snap_grid).round() * self.snap_grid;
+                entity.position.y =
+                    (entity.position.y / self.snap_grid).round() * self.snap_grid;
+                entity.position.z =
+                    (entity.position.z / self.snap_grid).round() * self.snap_grid;
+            }
+            self.undo_stack.push(EditorAction::MoveEntity {
+                id,
+                old_pos,
+                new_pos: entity.position,
+            });
+            self.redo_stack.clear();
         }
     }
 
@@ -950,10 +954,10 @@ impl SceneEditor {
                 let t2 = (-b + sqrt_disc) / (2.0 * a);
                 // Use the nearest positive intersection
                 let t = if t1 > 0.0 { t1 } else { t2 };
-                if t > 0.0 {
-                    if best_hit.as_ref().map_or(true, |&(_, best_t)| t < best_t) {
-                        best_hit = Some((entity.id, t));
-                    }
+                if t > 0.0
+                    && best_hit.as_ref().is_none_or(|&(_, best_t)| t < best_t)
+                {
+                    best_hit = Some((entity.id, t));
                 }
             }
         }

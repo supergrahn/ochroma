@@ -185,9 +185,13 @@ impl Default for PhysicsWorld {
 // ---------------------------------------------------------------------------
 
 pub mod cloth;
+pub mod collision_layers;
 pub mod destruction;
 pub mod fluid;
+pub mod rope;
+pub mod spectral_damage;
 pub mod vehicle;
+pub mod xpbd;
 
 pub mod rapier;
 pub mod ecs;

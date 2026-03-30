@@ -5,7 +5,7 @@ use serde::{Serialize, Deserialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MaterialNode {
     /// Constant spectral reflectance.
-    Constant { spd: [f32; 8] },
+    Constant { spd: [f32; 16] },
     /// Reference a named material from the library.
     MaterialRef { tag: String },
     /// Multiply two spectral inputs element-wise.
@@ -25,14 +25,14 @@ pub enum MaterialNode {
 }
 
 impl MaterialNode {
-    /// Evaluate the node tree to produce an 8-band SPD.
+    /// Evaluate the node tree to produce a 16-band SPD.
     pub fn evaluate(&self) -> SpectralBands {
         match self {
             Self::Constant { spd } => SpectralBands(*spd),
             Self::MaterialRef { tag } => {
                 // Look up from default library
                 let lib = vox_data::materials::MaterialLibrary::default();
-                lib.get(tag).map(|m| m.spd).unwrap_or(SpectralBands([0.5; 8]))
+                lib.get(tag).map(|m| m.spd).unwrap_or(SpectralBands([0.5; 16]))
             }
             Self::Multiply { a, b } => {
                 let va = a.evaluate();
@@ -58,7 +58,7 @@ impl MaterialNode {
                 let v = base.evaluate();
                 // Simplified: boost higher wavelengths (simulates grazing angle)
                 SpectralBands(std::array::from_fn(|i| {
-                    let t = i as f32 / 7.0;
+                    let t = i as f32 / 15.0;
                     (v.0[i] + (1.0 - v.0[i]) * t.powf(*power)).clamp(0.0, 1.0)
                 }))
             }
@@ -92,7 +92,7 @@ impl SpectralMaterialGraph {
 
     /// Evaluate emission SPD (returns zeros if no emission).
     pub fn evaluate_emission(&self) -> SpectralBands {
-        self.emission.as_ref().map(|n| n.evaluate()).unwrap_or(SpectralBands([0.0; 8]))
+        self.emission.as_ref().map(|n| n.evaluate()).unwrap_or(SpectralBands([0.0; 16]))
     }
 }
 

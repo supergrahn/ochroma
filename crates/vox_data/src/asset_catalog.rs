@@ -1,4 +1,5 @@
 use crate::proc_gs_advanced::*;
+use glam;
 use half::f16;
 use vox_core::types::GaussianSplat;
 
@@ -105,35 +106,25 @@ fn generate_building_with_style(
     floors: u32,
     style: BuildingStyle,
 ) -> Vec<GaussianSplat> {
-    let (wall_spd, roof_spd) = match style {
+    let (wall_spd, roof_spd): ([f32; 8], [f32; 8]) = match style {
         BuildingStyle::Victorian => (
-            // Red brick
             [0.08, 0.08, 0.10, 0.15, 0.25, 0.55, 0.65, 0.60],
-            // Slate grey
             [0.12, 0.13, 0.15, 0.17, 0.18, 0.18, 0.17, 0.16],
         ),
         BuildingStyle::Modern => (
-            // Glass/steel (bright, high reflectance)
             [0.40, 0.45, 0.50, 0.55, 0.55, 0.55, 0.50, 0.45],
-            // Dark flat roof
             [0.05, 0.05, 0.06, 0.06, 0.06, 0.06, 0.05, 0.05],
         ),
         BuildingStyle::Suburban => (
-            // Painted wood (warm beige)
             [0.15, 0.18, 0.22, 0.28, 0.32, 0.35, 0.33, 0.30],
-            // Terracotta
             [0.10, 0.10, 0.12, 0.18, 0.30, 0.50, 0.55, 0.50],
         ),
         BuildingStyle::Industrial => (
-            // Corrugated metal
             [0.20, 0.22, 0.25, 0.28, 0.30, 0.30, 0.28, 0.25],
-            // Same metal roof
             [0.20, 0.22, 0.25, 0.28, 0.30, 0.30, 0.28, 0.25],
         ),
         BuildingStyle::Commercial => (
-            // Concrete with glass
             [0.25, 0.27, 0.30, 0.32, 0.33, 0.33, 0.31, 0.28],
-            // Flat grey
             [0.10, 0.10, 0.12, 0.12, 0.12, 0.12, 0.10, 0.10],
         ),
     };
@@ -154,8 +145,9 @@ fn generate_styled_building(
 
     let mut rng = StdRng::seed_from_u64(seed);
     let total_height = floors as f32 * 3.5;
-    let wall_spectral: [u16; 8] = std::array::from_fn(|i| f16::from_f32(wall_spd[i]).to_bits());
-    let roof_spectral: [u16; 8] = std::array::from_fn(|i| f16::from_f32(roof_spd[i]).to_bits());
+    // Extend 8-band SPDs to 16 bands by repeating
+    let wall_spectral: [u16; 16] = std::array::from_fn(|i| f16::from_f32(wall_spd[i % 8]).to_bits());
+    let roof_spectral: [u16; 16] = std::array::from_fn(|i| f16::from_f32(roof_spd[i % 8]).to_bits());
 
     let mut splats = Vec::new();
     let density = 400.0; // splats per m² reduced for performance
@@ -168,14 +160,9 @@ fn generate_styled_building(
             let x = rng.random_range(0.0..width);
             let y = rng.random_range(0.0..total_height);
             let s = 0.04 + rng.random::<f32>() * 0.04;
-            splats.push(GaussianSplat {
-                position: [x, y, z],
-                scale: [s, s, s * 0.3],
-                rotation: [0, 0, 0, 32767],
-                opacity: 240,
-                _pad: [0; 3],
-                spectral: wall_spectral,
-            });
+            splats.push(GaussianSplat::surface(
+                [x, y, z], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], s, s * 0.3, 240, wall_spectral,
+            ));
         }
     }
 
@@ -187,32 +174,23 @@ fn generate_styled_building(
             let z = -rng.random_range(0.0..depth);
             let y = rng.random_range(0.0..total_height);
             let s = 0.04 + rng.random::<f32>() * 0.04;
-            splats.push(GaussianSplat {
-                position: [x, y, z],
-                scale: [s * 0.3, s, s],
-                rotation: [0, 0, 0, 32767],
-                opacity: 240,
-                _pad: [0; 3],
-                spectral: wall_spectral,
-            });
+            splats.push(GaussianSplat::surface(
+                [x, y, z], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0], s * 0.3, s, 240, wall_spectral,
+            ));
         }
     }
 
     // Roof
     let roof_count = (width * depth * density / 100.0) as usize;
     for _ in 0..roof_count {
-        splats.push(GaussianSplat {
-            position: [
+        splats.push(GaussianSplat::surface(
+            [
                 rng.random_range(0.0..width),
                 total_height,
                 -rng.random_range(0.0..depth),
             ],
-            scale: [0.06, 0.02, 0.06],
-            rotation: [0, 0, 0, 32767],
-            opacity: 245,
-            _pad: [0; 3],
-            spectral: roof_spectral,
-        });
+            [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.06, 0.06, 245, roof_spectral,
+        ));
     }
 
     splats
@@ -220,19 +198,18 @@ fn generate_styled_building(
 
 fn generate_placeholder_cube(seed: u64) -> Vec<GaussianSplat> {
     let _ = seed;
-    let grey_spd: [u16; 8] = std::array::from_fn(|_| f16::from_f32(0.4).to_bits());
+    let grey_spd: [u16; 16] = std::array::from_fn(|_| f16::from_f32(0.4).to_bits());
     let mut splats = Vec::new();
     for x in 0..5 {
         for y in 0..5 {
             for z in 0..5 {
-                splats.push(GaussianSplat {
-                    position: [x as f32 * 0.5, y as f32 * 0.5, z as f32 * 0.5],
-                    scale: [0.2, 0.2, 0.2],
-                    rotation: [0, 0, 0, 32767],
-                    opacity: 200,
-                    _pad: [0; 3],
-                    spectral: grey_spd,
-                });
+                splats.push(GaussianSplat::volume(
+                    [x as f32 * 0.5, y as f32 * 0.5, z as f32 * 0.5],
+                    [0.2, 0.2, 0.2],
+                    glam::Quat::IDENTITY,
+                    200,
+                    grey_spd,
+                ));
             }
         }
     }

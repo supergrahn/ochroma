@@ -109,9 +109,9 @@ fn main() {
     println!("[{:02}] camera::CameraController -- view_proj computed", count);
 
     // 2. spectral_shift
-    let base = SpectralBands([0.5; 8]);
+    let base = SpectralBands([0.5; 16]);
     let shifted = apply_weather_shift(&base, RenderWeather::Overcast);
-    let worn = SpectralBands([0.3; 8]);
+    let worn = SpectralBands([0.3; 16]);
     let _wear = apply_wear_shift(&base, &worn, 0.5);
     let (r, g, b) = time_of_day_illuminant_blend(12.0);
     let _ = (shifted, r, g, b);
@@ -190,7 +190,7 @@ fn main() {
     // 9. material_graph
     let mat = SpectralMaterialGraph {
         name: "showcase_mat".into(),
-        albedo: MaterialNode::Constant { spd: [0.8, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002] },
+        albedo: MaterialNode::Constant { spd: [0.80, 0.60, 0.20, 0.10, 0.05, 0.03, 0.02, 0.01, 0.01, 0.01, 0.005, 0.003, 0.002, 0.002, 0.002, 0.002] },
         roughness: 0.5,
         metallic: 0.0,
         emission: None,
@@ -331,7 +331,7 @@ fn main() {
     println!("[{:02}] cinematic -- duration={:.1}s, DOF focal={}", count, cine.duration(), cine.dof.focal_distance);
 
     // 23. gi_cache
-    let baked = BakedGi { irradiance: vec![[0.5f32; 8]] };
+    let baked = BakedGi { irradiance: vec![[0.5f32; 16]] };
     let cache = GiCache::new(baked);
     count += 1;
     println!("[{:02}] gi_cache -- blend={:.1}", count, cache.blend);

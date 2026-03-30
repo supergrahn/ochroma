@@ -1,9 +1,14 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use vox_script::plugin_system::{PluginManager, PluginManifest, PluginState};
 
-fn create_test_plugin_dir() -> (PathBuf, PathBuf) {
-    let base = std::env::temp_dir().join(format!("ochroma_plugin_test_{}", std::process::id()));
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn create_test_plugin_dir_named(label: &str) -> (PathBuf, PathBuf) {
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let base = std::env::temp_dir().join(format!("ochroma_plugin_{}_{}_{}",
+        label, std::process::id(), id));
     let plugin_dir = base.join("my_plugin");
     fs::create_dir_all(&plugin_dir).unwrap();
 
@@ -27,7 +32,7 @@ fn cleanup(base: &PathBuf) {
 
 #[test]
 fn discover_plugins() {
-    let (base, _) = create_test_plugin_dir();
+    let (base, _) = create_test_plugin_dir_named("discover");
     let mut mgr = PluginManager::new("0.1.0");
     let found = mgr.discover(&base);
     assert_eq!(found.len(), 1);
@@ -38,7 +43,7 @@ fn discover_plugins() {
 
 #[test]
 fn load_and_unload_plugin() {
-    let (base, _) = create_test_plugin_dir();
+    let (base, _) = create_test_plugin_dir_named("load");
     let mut mgr = PluginManager::new("0.1.0");
     mgr.discover(&base);
 
@@ -72,7 +77,9 @@ fn compatibility_check() {
 
 #[test]
 fn error_on_missing_entry_point() {
-    let base = std::env::temp_dir().join(format!("ochroma_plugin_noentry_{}", std::process::id()));
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let base = std::env::temp_dir().join(format!("ochroma_plugin_noentry_{}_{}",
+        std::process::id(), id));
     let plugin_dir = base.join("broken_plugin");
     fs::create_dir_all(&plugin_dir).unwrap();
 

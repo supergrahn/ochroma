@@ -3,6 +3,10 @@ pub struct ShortcutHelp {
     pub visible: bool,
 }
 
+impl Default for ShortcutHelp {
+    fn default() -> Self { Self::new() }
+}
+
 impl ShortcutHelp {
     pub fn new() -> Self { Self { visible: false } }
     pub fn toggle(&mut self) { self.visible = !self.visible; }

@@ -6,6 +6,7 @@
 //! Spectral emission drives audio: on particle death, the caller can call
 //! `vox_audio::synthesize_impact` with `particle.spectral` to get impact audio.
 
+use glam;
 use vox_core::types::GaussianSplat;
 use half::f16;
 
@@ -25,9 +26,9 @@ pub struct EmitterConfig {
     pub base_opacity: u8,
     /// Scale of each particle splat.
     pub scale: [f32; 3],
-    /// 8-band spectral profile for this emitter. Values in [0, 1].
-    /// High blue (band 0) = glassy/electric, high red (band 7) = fire/rock.
-    pub spectral: [f32; 8],
+    /// 16-band spectral profile for this emitter. Values in [0, 1].
+    /// High blue (band 0) = glassy/electric, high red (band 15) = fire/rock.
+    pub spectral: [f32; 16],
     /// Particles emitted per second.
     pub emit_rate: f32,
     /// Maximum live particles at once (pool size).
@@ -46,7 +47,7 @@ impl Default for EmitterConfig {
             max_lifetime: 2.0,
             base_opacity: 200,
             scale: [0.05, 0.05, 0.05],
-            spectral: [0.0, 0.0, 0.0, 0.0, 0.5, 0.8, 0.9, 0.3], // fire-ish
+            spectral: [0.0, 0.0, 0.0, 0.0, 0.5, 0.8, 0.9, 0.3, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05, 0.02], // fire-ish
             emit_rate: 30.0,
             max_particles: 256,
             gravity: -9.8,
@@ -61,7 +62,7 @@ pub struct SplatParticle {
     pub velocity: [f32; 3],
     pub remaining: f32,
     pub lifetime: f32,
-    pub spectral: [f32; 8],
+    pub spectral: [f32; 16],
     pub base_opacity: u8,
     pub scale: [f32; 3],
 }
@@ -71,17 +72,16 @@ impl SplatParticle {
     pub fn to_splat(&self) -> GaussianSplat {
         let t = (self.remaining / self.lifetime).clamp(0.0, 1.0);
         let opacity = (self.base_opacity as f32 * t) as u8;
-        let spectral: [u16; 8] = std::array::from_fn(|i| {
+        let spectral: [u16; 16] = std::array::from_fn(|i| {
             f16::from_f32(self.spectral[i].clamp(0.0, 1.0)).to_bits()
         });
-        GaussianSplat {
-            position: self.position,
-            scale: self.scale,
-            rotation: [0, 0, 0, 32767], // identity quaternion
+        GaussianSplat::volume(
+            self.position,
+            self.scale,
+            glam::Quat::IDENTITY,
             opacity,
-            _pad: [0; 3],
             spectral,
-        }
+        )
     }
 }
 
@@ -94,7 +94,7 @@ pub struct SplatEmitter {
     /// Simple deterministic "random" state (xorshift).
     rng: u64,
     /// Spectral bands of particles that died this frame (for audio).
-    pub died_this_frame: Vec<[f32; 8]>,
+    pub died_this_frame: Vec<[f32; 16]>,
 }
 
 impl SplatEmitter {
@@ -114,7 +114,7 @@ impl SplatEmitter {
         self.died_this_frame.clear();
 
         // Integrate existing particles
-        let mut newly_dead: Vec<[f32; 8]> = Vec::new();
+        let mut newly_dead: Vec<[f32; 16]> = Vec::new();
         self.particles.retain_mut(|p| {
             p.remaining -= dt;
             if p.remaining <= 0.0 {
@@ -185,7 +185,7 @@ impl EmitterConfig {
             max_lifetime: 2.5,
             base_opacity: 180,
             scale: [0.08, 0.08, 0.08],
-            spectral: [0.0, 0.0, 0.0, 0.0, 0.3, 0.8, 1.0, 0.6],
+            spectral: [0.0, 0.0, 0.0, 0.0, 0.3, 0.8, 1.0, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.08, 0.05, 0.02],
             emit_rate: 40.0,
             max_particles: 300,
             gravity: -2.0,
@@ -202,7 +202,7 @@ impl EmitterConfig {
             max_lifetime: 0.4,
             base_opacity: 230,
             scale: [0.02, 0.02, 0.02],
-            spectral: [1.0, 0.8, 0.5, 0.2, 0.0, 0.0, 0.0, 0.0],
+            spectral: [1.0, 0.8, 0.5, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             emit_rate: 80.0,
             max_particles: 150,
             gravity: -9.8,
@@ -219,7 +219,7 @@ impl EmitterConfig {
             max_lifetime: 1.5,
             base_opacity: 200,
             scale: [0.1, 0.1, 0.1],
-            spectral: [0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.4, 0.9],
+            spectral: [0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.4, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1],
             emit_rate: 15.0,
             max_particles: 80,
             gravity: -9.8,
@@ -267,13 +267,13 @@ mod tests {
             velocity: [0.0; 3],
             remaining: 0.5,
             lifetime: 1.0,
-            spectral: [0.5; 8],
+            spectral: [0.5; 16],
             base_opacity: 200,
             scale: [0.1; 3],
         };
         let splat = p.to_splat();
-        assert!(splat.opacity < 200, "opacity should decrease with age");
-        assert!(splat.opacity >= 95, "at half lifetime, opacity should be ~100");
+        assert!(splat.opacity() < 200, "opacity should decrease with age");
+        assert!(splat.opacity() >= 95, "at half lifetime, opacity should be ~100");
     }
 
     #[test]
@@ -283,11 +283,11 @@ mod tests {
             velocity: [0.0; 3],
             remaining: 0.0,
             lifetime: 1.0,
-            spectral: [0.5; 8],
+            spectral: [0.5; 16],
             base_opacity: 200,
             scale: [0.1; 3],
         };
-        assert_eq!(p.to_splat().opacity, 0);
+        assert_eq!(p.to_splat().opacity(), 0);
     }
 
     #[test]
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn died_this_frame_has_correct_spectral() {
-        let spectral = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+        let spectral = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0f32];
         let mut emitter = SplatEmitter::new(EmitterConfig {
             emit_rate: 100.0,
             max_particles: 10,

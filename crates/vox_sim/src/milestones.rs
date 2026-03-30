@@ -43,6 +43,10 @@ pub struct MilestoneTracker {
     pub notifications: Vec<String>, // pending UI notifications
 }
 
+impl Default for MilestoneTracker {
+    fn default() -> Self { Self::new() }
+}
+
 impl MilestoneTracker {
     pub fn new() -> Self {
         Self {

@@ -1,6 +1,8 @@
 use thiserror::Error;
 
 pub mod crdt;
+pub mod rollback;
+pub mod splat_replication;
 pub mod lobby;
 pub mod replication;
 pub mod replication_system;

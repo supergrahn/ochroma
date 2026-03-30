@@ -25,6 +25,10 @@ pub struct DisasterManager {
     pub disaster_probability: f32,
 }
 
+impl Default for DisasterManager {
+    fn default() -> Self { Self::new() }
+}
+
 impl DisasterManager {
     pub fn new() -> Self {
         Self {

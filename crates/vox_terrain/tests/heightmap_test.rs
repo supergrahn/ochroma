@@ -37,7 +37,7 @@ fn material_zones_assign_by_height() {
     let zones = default_zones();
     let splats = hm.to_splats(&zones, 1);
     // Different heights should produce different spectral values
-    assert_ne!(splats[0].spectral, splats[3].spectral);
+    assert_ne!(splats[0].spectral(), splats[3].spectral());
 }
 
 #[test]

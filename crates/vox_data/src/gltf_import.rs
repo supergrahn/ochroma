@@ -116,7 +116,7 @@ pub fn import_gltf(path: &Path) -> Result<ImportResult, ImportError> {
 
                 // Number of splats proportional to triangle area
                 // ~200 splats per square metre, minimum 1, maximum 50
-                let splat_count = ((area * 200.0).ceil() as usize).max(1).min(50);
+                let splat_count = ((area * 200.0).ceil() as usize).clamp(1, 50);
 
                 for si in 0..splat_count {
                     // Deterministic barycentric coordinates from index
@@ -130,16 +130,15 @@ pub fn import_gltf(path: &Path) -> Result<ImportResult, ImportError> {
                     };
 
                     let pos = v0 * (1.0 - u - v) + v1 * u + v2 * v;
-                    let scale = (area / splat_count as f32).sqrt().max(0.001).min(0.1);
+                    let scale = (area / splat_count as f32).sqrt().clamp(0.001, 0.1);
 
-                    all_splats.push(GaussianSplat {
-                        position: [pos.x, pos.y, pos.z],
-                        scale: [scale, scale * 0.3, scale], // flatten along normal
-                        rotation: [0, 0, 0, 32767],         // identity quaternion (simplified)
-                        opacity: 240,
-                        _pad: [0; 3],
+                    all_splats.push(GaussianSplat::surface(
+                        [pos.x, pos.y, pos.z],
+                        [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
+                        scale, scale * 0.3,
+                        240,
                         spectral,
-                    });
+                    ));
                 }
             }
         }
@@ -178,27 +177,29 @@ mod tests {
     }
 
     #[test]
-    fn test_rgb_to_spectral_red_has_high_bands_6_7() {
+    fn test_rgb_to_spectral_red_has_high_bands_10_11() {
         let spectral = rgb_to_spectral(1.0, 0.0, 0.0);
-        let band6 = f16::from_bits(spectral[6]).to_f32();
-        let band7 = f16::from_bits(spectral[7]).to_f32();
-        assert!(band6 > 0.9, "red input should have high band 6, got {}", band6);
-        assert!(band7 > 0.5, "red input should have high band 7, got {}", band7);
+        // 16-band: band 10=630nm (0.9*r), band 11=655nm (1.0*r=peak red)
+        let band10 = f16::from_bits(spectral[10]).to_f32();
+        let band11 = f16::from_bits(spectral[11]).to_f32();
+        assert!(band10 > 0.8, "red input should have high band 10 (630nm), got {}", band10);
+        assert!(band11 > 0.9, "red input should have high band 11 (655nm), got {}", band11);
         // Blue bands should be zero for pure red
         let band0 = f16::from_bits(spectral[0]).to_f32();
-        let band2 = f16::from_bits(spectral[2]).to_f32();
+        let band3 = f16::from_bits(spectral[3]).to_f32();
         assert!(band0 < 0.01, "red input should have ~zero band 0, got {}", band0);
-        assert!(band2 < 0.01, "red input should have ~zero band 2, got {}", band2);
+        assert!(band3 < 0.01, "red input should have ~zero band 3 (455nm peak blue), got {}", band3);
     }
 
     #[test]
     fn test_rgb_to_spectral_green_has_high_band_4() {
         let spectral = rgb_to_spectral(0.0, 1.0, 0.0);
-        let band4 = f16::from_bits(spectral[4]).to_f32();
-        assert!(band4 > 0.9, "green input should have high band 4, got {}", band4);
+        // 16-band: band 7=555nm is peak green (g * 1.0)
+        let band7 = f16::from_bits(spectral[7]).to_f32();
+        assert!(band7 > 0.9, "green input should have high band 7 (555nm peak green), got {}", band7);
         // Red bands should be low
-        let band6 = f16::from_bits(spectral[6]).to_f32();
-        assert!(band6 < 0.01, "green input should have ~zero band 6, got {}", band6);
+        let band11 = f16::from_bits(spectral[11]).to_f32();
+        assert!(band11 < 0.01, "green input should have ~zero band 11 (655nm peak red), got {}", band11);
     }
 
     #[test]

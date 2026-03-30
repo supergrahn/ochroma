@@ -6,14 +6,7 @@ use glam::{Vec3, Mat4};
 use std::time::Instant;
 
 fn make_splat(x: f32, y: f32, z: f32) -> GaussianSplat {
-    GaussianSplat {
-        position: [x, y, z],
-        scale: [0.1, 0.1, 0.1],
-        rotation: [0, 0, 0, 32767],
-        opacity: 200,
-        _pad: [0; 3],
-        spectral: [15360; 8],
-    }
+    GaussianSplat::volume([x, y, z], [0.1, 0.1, 0.1], glam::Quat::IDENTITY, 200, [15360; 16])
 }
 
 #[test]

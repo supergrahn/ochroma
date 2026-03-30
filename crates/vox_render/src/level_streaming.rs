@@ -32,8 +32,7 @@ impl StreamingLevel {
     /// Distance from a point to the closest point on this level's AABB.
     pub fn distance_to(&self, pos: [f32; 3]) -> f32 {
         let mut dist_sq = 0.0f32;
-        for i in 0..3 {
-            let v = pos[i];
+        for (i, &v) in pos.iter().enumerate() {
             if v < self.bounds.0[i] {
                 let d = self.bounds.0[i] - v;
                 dist_sq += d * d;

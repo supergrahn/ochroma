@@ -76,15 +76,15 @@ pub fn splats_to_gpu(splats: &[GaussianSplat]) -> Vec<GpuSplatData> {
         .iter()
         .map(|s| {
             let mut spectral = [0.0f32; 8];
-            for b in 0..8 {
-                spectral[b] = half::f16::from_bits(s.spectral[b]).to_f32();
+            for (b, val) in spectral.iter_mut().enumerate() {
+                *val = half::f16::from_bits(s.spectral()[b]).to_f32();
             }
             GpuSplatData {
-                position: s.position,
-                scale_x: s.scale[0],
-                scale_y: s.scale[1],
-                scale_z: s.scale[2],
-                opacity: s.opacity as f32 / 255.0,
+                position: s.position(),
+                scale_x: s.scale_u(),
+                scale_y: s.scale_v(),
+                scale_z: s.scale_w(),
+                opacity: s.opacity() as f32 / 255.0,
                 _pad: 0.0,
                 spectral,
             }
@@ -413,6 +413,7 @@ impl GpuRasteriser {
     /// Render with an optional shadow pass before the main render.
     ///
     /// If `light_view_proj` is `Some`, the shadow depth prepass runs first.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_with_shadow(
         &self,
         device: &wgpu::Device,
@@ -474,7 +475,7 @@ impl GpuRasteriser {
             .iter()
             .enumerate()
             .map(|(i, s)| {
-                let pos = glam::Vec4::new(s.position[0], s.position[1], s.position[2], 1.0);
+                let pos = glam::Vec4::new(s.position()[0], s.position()[1], s.position()[2], 1.0);
                 let view_pos = view * pos;
                 (i, view_pos.z)
             })
@@ -489,15 +490,15 @@ impl GpuRasteriser {
             .map(|&(i, _)| {
                 let s = &splats[i];
                 let mut spectral = [0.0f32; 8];
-                for b in 0..8 {
-                    spectral[b] = f16::from_bits(s.spectral[b]).to_f32();
+                for (b, val) in spectral.iter_mut().enumerate() {
+                    *val = f16::from_bits(s.spectral()[b]).to_f32();
                 }
                 GpuSplatData {
-                    position: s.position,
-                    scale_x: s.scale[0],
-                    scale_y: s.scale[1],
-                    scale_z: s.scale[2],
-                    opacity: s.opacity as f32 / 255.0,
+                    position: s.position(),
+                    scale_x: s.scale_u(),
+                    scale_y: s.scale_v(),
+                    scale_z: s.scale_w(),
+                    opacity: s.opacity() as f32 / 255.0,
                     _pad: 0.0,
                     spectral,
                 }

@@ -359,8 +359,8 @@ pub fn volume_to_splats(vol: &TerrainVolume, materials: &[VolumeMaterial], seed:
                 let mat_id = vol.get_material(x, y, z);
 
                 let mat = materials.iter().find(|m| m.id == mat_id);
-                let spectral: [u16; 8] = match mat {
-                    Some(m) => std::array::from_fn(|i| f16::from_f32(m.spectral[i]).to_bits()),
+                let spectral: [u16; 16] = match mat {
+                    Some(m) => std::array::from_fn(|i| f16::from_f32(m.spectral[i % 8]).to_bits()),
                     None => std::array::from_fn(|_| f16::from_f32(0.3).to_bits()),
                 };
 
@@ -373,14 +373,13 @@ pub fn volume_to_splats(vol: &TerrainVolume, materials: &[VolumeMaterial], seed:
                 // Orient splat along surface normal
                 let scale = vol.voxel_size * 0.5;
 
-                splats.push(GaussianSplat {
-                    position: [wp[0] + jx, wp[1] + jy, wp[2] + jz],
-                    scale: [scale, scale * 0.3, scale], // flatten along normal direction
-                    rotation: [0, 0, 0, 32767], // simplified -- proper orientation would use normal
-                    opacity: 245,
-                    _pad: [0; 3],
+                splats.push(GaussianSplat::surface(
+                    [wp[0] + jx, wp[1] + jy, wp[2] + jz],
+                    [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
+                    scale, scale,
+                    245,
                     spectral,
-                });
+                ));
             }
         }
     }

@@ -1,4 +1,4 @@
-use glam::Vec3;
+use glam::{self, Vec3};
 use half::f16;
 use vox_core::types::GaussianSplat;
 
@@ -10,7 +10,7 @@ pub struct Particle {
     pub max_lifetime: f32,
     pub opacity: f32,
     pub scale: f32,
-    pub spectral: [u16; 8],
+    pub spectral: [u16; 16],
 }
 
 #[derive(Debug, Clone)]
@@ -21,14 +21,14 @@ pub struct ParticleEmitter {
     pub initial_velocity: Vec3,
     pub velocity_randomness: f32,
     pub particle_scale: f32,
-    pub spectral: [u16; 8], // spectral appearance
+    pub spectral: [u16; 16], // spectral appearance
     pub gravity: Vec3,
     pub accumulator: f32,
 }
 
 impl ParticleEmitter {
     pub fn smoke(position: Vec3) -> Self {
-        let grey_spd = std::array::from_fn(|_| f16::from_f32(0.3).to_bits());
+        let grey_spd: [u16; 16] = std::array::from_fn(|_| f16::from_f32(0.3).to_bits());
         Self {
             position,
             emission_rate: 5.0,
@@ -43,12 +43,11 @@ impl ParticleEmitter {
     }
 
     pub fn dust(position: Vec3) -> Self {
-        let brown_spd: [u16; 8] = [
-            f16::from_f32(0.10).to_bits(), f16::from_f32(0.12).to_bits(),
-            f16::from_f32(0.15).to_bits(), f16::from_f32(0.20).to_bits(),
-            f16::from_f32(0.22).to_bits(), f16::from_f32(0.20).to_bits(),
-            f16::from_f32(0.18).to_bits(), f16::from_f32(0.15).to_bits(),
-        ];
+        let brown_spd: [u16; 16] = std::array::from_fn(|i| {
+            let v = [0.10f32, 0.12, 0.15, 0.20, 0.22, 0.20, 0.18, 0.15,
+                     0.10, 0.12, 0.15, 0.20, 0.22, 0.20, 0.18, 0.15];
+            f16::from_f32(v[i]).to_bits()
+        });
         Self {
             position,
             emission_rate: 20.0,
@@ -127,14 +126,13 @@ impl ParticleSystem {
     /// Convert active particles to GaussianSplats for rendering.
     pub fn to_splats(&self) -> Vec<GaussianSplat> {
         self.particles.iter().map(|p| {
-            GaussianSplat {
-                position: [p.position.x, p.position.y, p.position.z],
-                scale: [p.scale, p.scale, p.scale],
-                rotation: [0, 0, 0, 32767],
-                opacity: (p.opacity * 200.0) as u8,
-                _pad: [0; 3],
-                spectral: p.spectral,
-            }
+            GaussianSplat::volume(
+                [p.position.x, p.position.y, p.position.z],
+                [p.scale, p.scale, p.scale],
+                glam::Quat::IDENTITY,
+                (p.opacity * 200.0) as u8,
+                p.spectral,
+            )
         }).collect()
     }
 

@@ -5,7 +5,7 @@ pub struct TemporalAccumulator {
     pub width: u32,
     pub height: u32,
     /// Accumulated spectral history.
-    history: Vec<[f32; 8]>,
+    history: Vec<[f32; 16]>,
     /// History depth (for nearest-depth rejection).
     history_depth: Vec<f32>,
     /// Number of frames accumulated per pixel.
@@ -22,7 +22,7 @@ impl TemporalAccumulator {
         Self {
             width,
             height,
-            history: vec![[0.0; 8]; count],
+            history: vec![[0.0; 16]; count],
             history_depth: vec![f32::MAX; count],
             frame_count: vec![0; count],
             blend_alpha: 0.1, // 10% current, 90% history
@@ -77,7 +77,7 @@ impl TemporalAccumulator {
                     // Blend current with reprojected history
                     let alpha = self.blend_alpha;
                     let prev = self.history[prev_i];
-                    for b in 0..8 {
+                    for b in 0..16 {
                         self.history[i][b] =
                             prev[b] * (1.0 - alpha) + current_spectral[b] * alpha;
                     }
@@ -90,12 +90,12 @@ impl TemporalAccumulator {
     }
 
     /// Get the accumulated spectral value at a pixel.
-    pub fn get(&self, x: u32, y: u32) -> [f32; 8] {
+    pub fn get(&self, x: u32, y: u32) -> [f32; 16] {
         let i = (y * self.width + x) as usize;
         if i < self.history.len() {
             self.history[i]
         } else {
-            [0.0; 8]
+            [0.0; 16]
         }
     }
 
@@ -115,7 +115,7 @@ impl TemporalAccumulator {
     /// Reset all history (e.g., on camera cut).
     pub fn reset(&mut self) {
         for h in &mut self.history {
-            *h = [0.0; 8];
+            *h = [0.0; 16];
         }
         for d in &mut self.history_depth {
             *d = f32::MAX;
@@ -129,7 +129,7 @@ impl TemporalAccumulator {
         self.width = width;
         self.height = height;
         let count = (width * height) as usize;
-        self.history = vec![[0.0; 8]; count];
+        self.history = vec![[0.0; 16]; count];
         self.history_depth = vec![f32::MAX; count];
         self.frame_count = vec![0; count];
     }
@@ -144,27 +144,27 @@ mod tests {
     fn first_frame_equals_input() {
         let mut ta = TemporalAccumulator::new(2, 2);
         let mut fb = SpectralFramebuffer::new(2, 2);
-        fb.spectral[0] = [0.5; 8];
+        fb.spectral[0] = [0.5; 16];
         fb.sample_count[0] = 1;
         fb.depth[0] = 10.0;
 
         ta.accumulate(&fb);
         let result = ta.get(0, 0);
-        assert_eq!(result, [0.5; 8], "first frame should equal input (no history)");
+        assert_eq!(result, [0.5; 16], "first frame should equal input (no history)");
     }
 
     #[test]
     fn reset_clears_history() {
         let mut ta = TemporalAccumulator::new(2, 2);
         let mut fb = SpectralFramebuffer::new(2, 2);
-        fb.spectral[0] = [1.0; 8];
+        fb.spectral[0] = [1.0; 16];
         fb.sample_count[0] = 1;
         fb.depth[0] = 5.0;
         ta.accumulate(&fb);
 
         ta.reset();
         let result = ta.get(0, 0);
-        assert_eq!(result, [0.0; 8], "reset should zero all history");
+        assert_eq!(result, [0.0; 16], "reset should zero all history");
         assert_eq!(ta.avg_accumulated_frames(), 0.0);
     }
 

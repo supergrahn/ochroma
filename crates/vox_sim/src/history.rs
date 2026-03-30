@@ -87,6 +87,7 @@ impl GameHistory {
     }
 
     /// Record current game state as a data point.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_tick(
         &mut self,
         time: f64,

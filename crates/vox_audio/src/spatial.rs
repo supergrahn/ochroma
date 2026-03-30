@@ -280,18 +280,18 @@ impl SpatialAudioManager {
             source.elapsed += dt;
 
             // Auto-finish if duration exceeded.
-            if let Some(dur) = source.duration {
-                if source.elapsed >= dur {
-                    source.finished = true;
-                }
+            if let Some(dur) = source.duration
+                && source.elapsed >= dur
+            {
+                source.finished = true;
             }
 
             // Check rodio sink emptiness.
             #[cfg(feature = "audio-backend")]
-            if let Some(ref sink) = source.sink {
-                if sink.empty() {
-                    source.finished = true;
-                }
+            if let Some(ref sink) = source.sink
+                && sink.empty()
+            {
+                source.finished = true;
             }
 
             // Update volume & panning for spatial sources.

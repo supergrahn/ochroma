@@ -1,6 +1,59 @@
 //! Simplified SPH (Smoothed Particle Hydrodynamics) fluid simulation.
+//! Includes spectral emission profiles, surface foam particles, and SDF ground-plane collision.
 
 use glam::Vec3;
+
+// ---------------------------------------------------------------------------
+// Spectral profiles
+// ---------------------------------------------------------------------------
+
+/// Spectral emission profile for fluid materials.
+#[derive(Debug, Clone)]
+pub struct FluidSpectralProfile {
+    pub name: &'static str,
+    /// Base spectral radiance per band at unit density (8 bands).
+    pub emission: [f32; 8],
+}
+
+/// Predefined spectral profiles.
+pub const WATER_PROFILE: FluidSpectralProfile = FluidSpectralProfile {
+    name: "water",
+    // Deep blue-cyan: high band 1-2, low elsewhere
+    emission: [0.1, 0.8, 0.9, 0.3, 0.1, 0.05, 0.02, 0.01],
+};
+
+pub const LAVA_PROFILE: FluidSpectralProfile = FluidSpectralProfile {
+    name: "lava",
+    // Red-orange thermal: high bands 5-7, low high-freq
+    emission: [0.0, 0.0, 0.02, 0.1, 0.4, 0.8, 1.0, 1.0],
+};
+
+pub const MUD_PROFILE: FluidSpectralProfile = FluidSpectralProfile {
+    name: "mud",
+    emission: [0.05, 0.05, 0.08, 0.1, 0.12, 0.1, 0.08, 0.05],
+};
+
+pub const BLOOD_PROFILE: FluidSpectralProfile = FluidSpectralProfile {
+    name: "blood",
+    emission: [0.0, 0.0, 0.01, 0.05, 0.2, 0.6, 0.4, 0.1],
+};
+
+// ---------------------------------------------------------------------------
+// Foam particles
+// ---------------------------------------------------------------------------
+
+/// Surface foam particle spawned when fluid pressure exceeds threshold.
+#[derive(Debug, Clone)]
+pub struct FoamParticle {
+    pub position: [f32; 3],
+    pub velocity: [f32; 3],
+    pub lifetime: f32,
+    pub age: f32,
+}
+
+// ---------------------------------------------------------------------------
+// SPH core types
+// ---------------------------------------------------------------------------
 
 /// A single SPH particle.
 #[derive(Debug, Clone)]
@@ -19,6 +72,10 @@ pub struct FluidSimulation {
     pub stiffness: f32,
     pub viscosity: f32,
     pub particle_radius: f32,
+    /// Spectral emission profile for this fluid.
+    pub profile: FluidSpectralProfile,
+    /// Surface foam particles.
+    pub foam_particles: Vec<FoamParticle>,
 }
 
 impl FluidSimulation {
@@ -30,6 +87,8 @@ impl FluidSimulation {
             stiffness,
             viscosity: 0.1,
             particle_radius: 0.5,
+            profile: WATER_PROFILE.clone(),
+            foam_particles: Vec::new(),
         }
     }
 
@@ -68,6 +127,81 @@ impl FluidSimulation {
         self.particles.iter().map(|p| p.position).collect()
     }
 
+    /// Returns the spectral emission at a particle, scaled by its density.
+    pub fn get_spectral_at(&self, particle: &FluidParticle) -> [f32; 8] {
+        let scale = particle.density;
+        let e = &self.profile.emission;
+        [
+            e[0] * scale,
+            e[1] * scale,
+            e[2] * scale,
+            e[3] * scale,
+            e[4] * scale,
+            e[5] * scale,
+            e[6] * scale,
+            e[7] * scale,
+        ]
+    }
+
+    /// Step foam particles: spawn new foam at high-pressure fluid particles,
+    /// integrate existing foam, and remove expired foam.
+    pub fn step_foam(&mut self, dt: f32) {
+        const MAX_FOAM: usize = 500;
+        const FOAM_LIFETIME: f32 = 2.0;
+        const FOAM_PRESSURE_THRESHOLD_MULTIPLIER: f32 = 5.0;
+        const FOAM_GRAVITY_Y: f32 = -9.81;
+        const FOAM_DAMPING: f32 = 0.95;
+
+        let rest_pressure = self.rest_density * self.stiffness.max(0.001);
+        let threshold = rest_pressure * FOAM_PRESSURE_THRESHOLD_MULTIPLIER;
+
+        // Spawn foam at high-pressure particles
+        for particle in &self.particles {
+            if self.foam_particles.len() >= MAX_FOAM {
+                break;
+            }
+            if particle.pressure > threshold {
+                // Spawn a foam particle at this location with a small upward kick
+                self.foam_particles.push(FoamParticle {
+                    position: particle.position.to_array(),
+                    velocity: [
+                        particle.velocity.x * 0.1,
+                        particle.velocity.y.abs() * 0.2 + 0.5,
+                        particle.velocity.z * 0.1,
+                    ],
+                    lifetime: FOAM_LIFETIME,
+                    age: 0.0,
+                });
+            }
+        }
+
+        // Integrate and age foam particles
+        for foam in &mut self.foam_particles {
+            foam.velocity[1] += FOAM_GRAVITY_Y * dt;
+            foam.velocity[0] *= FOAM_DAMPING;
+            foam.velocity[1] *= FOAM_DAMPING;
+            foam.velocity[2] *= FOAM_DAMPING;
+            foam.position[0] += foam.velocity[0] * dt;
+            foam.position[1] += foam.velocity[1] * dt;
+            foam.position[2] += foam.velocity[2] * dt;
+
+            // Ground plane SDF collision
+            if foam.position[1] < 0.0 {
+                foam.position[1] = 0.0;
+                foam.velocity[1] = foam.velocity[1].abs() * 0.2;
+            }
+
+            foam.age += dt;
+        }
+
+        // Remove expired foam
+        self.foam_particles.retain(|f| f.age < f.lifetime);
+    }
+
+    // ---------------------------------------------------------------------------
+    // SPH kernels
+    // ---------------------------------------------------------------------------
+
     /// SPH kernel (poly6-like, simplified).
     fn kernel(&self, r: f32, h: f32) -> f32 {
         if r >= h {
@@ -96,6 +230,23 @@ impl FluidSimulation {
         45.0 / (std::f32::consts::PI * h.powi(6)) * (h - r)
     }
 
+    // ---------------------------------------------------------------------------
+    // Tait equation of state for pressure
+    // ---------------------------------------------------------------------------
+
+    /// Tait equation of state: p = B * ((rho/rho0)^gamma - 1).
+    /// Uses gamma=7 (water-like). B is derived from stiffness.
+    fn tait_pressure(&self, density: f32) -> f32 {
+        const GAMMA: f32 = 7.0;
+        let b = self.stiffness;
+        let ratio = density / self.rest_density;
+        b * (ratio.powf(GAMMA) - 1.0)
+    }
+
+    // ---------------------------------------------------------------------------
+    // Simulation step
+    // ---------------------------------------------------------------------------
+
     /// Advance the simulation by `dt` seconds.
     pub fn step(&mut self, dt: f32) {
         let h = self.particle_radius * 2.0; // smoothing radius
@@ -119,10 +270,10 @@ impl FluidSimulation {
             densities[i] = density.max(self.rest_density * 0.1);
         }
 
-        // Step 2: Compute pressure from density
+        // Step 2: Compute pressure from density — Tait equation of state
         let mut pressures = vec![0.0f32; n];
         for i in 0..n {
-            pressures[i] = self.stiffness * (densities[i] - self.rest_density);
+            pressures[i] = self.tait_pressure(densities[i]);
         }
 
         // Store density/pressure
@@ -163,12 +314,12 @@ impl FluidSimulation {
         }
 
         // Step 4: Integrate
-        for i in 0..n {
-            self.particles[i].velocity += forces[i] * dt;
+        for (i, force) in forces.iter().enumerate().take(n) {
+            self.particles[i].velocity += *force * dt;
             let vel = self.particles[i].velocity;
             self.particles[i].position += vel * dt;
 
-            // Simple ground plane at y=0
+            // SDF ground plane at y=0
             if self.particles[i].position.y < 0.0 {
                 self.particles[i].position.y = 0.0;
                 self.particles[i].velocity.y *= -0.3; // damped bounce
@@ -177,9 +328,15 @@ impl FluidSimulation {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Existing tests (must keep passing) ---
 
     #[test]
     fn particles_fall_under_gravity() {
@@ -240,5 +397,66 @@ mod tests {
 
         assert_eq!(sim.particle_count(), count);
         assert_eq!(sim.to_positions().len(), count);
+    }
+
+    // --- New spectral / foam tests ---
+
+    #[test]
+    fn water_profile_has_high_blue() {
+        // emission[1] (cyan-blue) + emission[2] (blue-green) > 1.0
+        let sum = WATER_PROFILE.emission[1] + WATER_PROFILE.emission[2];
+        assert!(
+            sum > 1.0,
+            "water should have high blue-cyan bands: emission[1]+emission[2] = {sum}"
+        );
+    }
+
+    #[test]
+    fn lava_profile_has_high_red() {
+        // emission[6] (red) + emission[7] (far red) > 1.5
+        let sum = LAVA_PROFILE.emission[6] + LAVA_PROFILE.emission[7];
+        assert!(
+            sum > 1.5,
+            "lava should have high red bands: emission[6]+emission[7] = {sum}"
+        );
+    }
+
+    #[test]
+    fn foam_spawns_at_high_pressure() {
+        let mut sim = FluidSimulation::new(1000.0, 50.0);
+        sim.add_particle(Vec3::new(0.0, 1.0, 0.0));
+
+        // Force a high pressure value directly
+        sim.particles[0].pressure = 1_000_000.0;
+        sim.particles[0].density = 5000.0;
+
+        assert_eq!(sim.foam_particles.len(), 0);
+        sim.step_foam(0.016);
+        assert!(
+            sim.foam_particles.len() > 0,
+            "foam should spawn when pressure is very high"
+        );
+    }
+
+    #[test]
+    fn spectral_at_returns_scaled_emission() {
+        let sim = FluidSimulation::new(1000.0, 50.0);
+        let particle = FluidParticle {
+            position: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            density: 2.0,
+            pressure: 0.0,
+        };
+
+        let spectral = sim.get_spectral_at(&particle);
+
+        // All bands should be scaled by density=2.0
+        for (band_idx, (s, e)) in spectral.iter().zip(sim.profile.emission.iter()).enumerate() {
+            let expected = e * 2.0;
+            assert!(
+                (s - expected).abs() < 1e-6,
+                "band {band_idx}: expected {expected}, got {s}"
+            );
+        }
     }
 }

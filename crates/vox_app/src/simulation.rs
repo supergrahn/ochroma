@@ -41,6 +41,10 @@ pub struct SimulationState {
     pub tick_accumulator: f32, // fractional tick accumulator
 }
 
+impl Default for SimulationState {
+    fn default() -> Self { Self::new() }
+}
+
 impl SimulationState {
     pub fn new() -> Self {
         let mut citizens = CitizenManager::new();

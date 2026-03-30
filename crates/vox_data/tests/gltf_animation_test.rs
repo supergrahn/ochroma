@@ -68,14 +68,7 @@ fn test_skin_splats_transforms_positions() {
     let skel = build_synthetic_skeleton(&["root", "arm", "hand"]);
     let anim = build_synthetic_animation("wave", 1, 1.0, Quat::IDENTITY, Quat::from_rotation_z(FRAC_PI_2));
 
-    let splat = GaussianSplat {
-        position: [0.0, 2.0, 0.0],
-        scale: [0.05, 0.05, 0.05],
-        rotation: [0, 0, 0, 32767],
-        opacity: 200,
-        _pad: [0; 3],
-        spectral: [0; 8],
-    };
+    let splat = GaussianSplat::volume([0.0, 2.0, 0.0], [0.05, 0.05, 0.05], Quat::IDENTITY, 200, [0u16; 16]);
 
     let joint_transforms = evaluate_animation(&skel, &anim, 1.0);
     let ibms: Vec<Mat4> = skel.joints.iter().map(|j| j.inverse_bind_matrix).collect();
@@ -83,15 +76,15 @@ fn test_skin_splats_transforms_positions() {
     let skinned = skin_splats(&[splat], &[2], &joint_transforms, &ibms);
     assert_eq!(skinned.len(), 1);
 
-    let p = skinned[0].position;
+    let p = skinned[0].position();
     assert!(
         approx_eq(p[0], -1.0, 0.05) && approx_eq(p[1], 1.0, 0.05) && approx_eq(p[2], 0.0, 0.01),
         "skinned position: expected (-1, 1, 0), got ({}, {}, {})", p[0], p[1], p[2],
     );
 
     // Non-position fields should be preserved
-    assert_eq!(skinned[0].opacity, 200);
-    assert_eq!(skinned[0].scale, [0.05, 0.05, 0.05]);
+    assert_eq!(skinned[0].opacity(), 200);
+    assert_eq!(skinned[0].scales(), [0.05, 0.05, 0.05]);
 }
 
 #[test]
@@ -116,14 +109,7 @@ fn test_multi_splat_different_joints() {
     let skel = build_synthetic_skeleton(&["root", "arm", "hand"]);
     let anim = build_synthetic_animation("wave", 1, 1.0, Quat::IDENTITY, Quat::from_rotation_z(FRAC_PI_2));
 
-    let make_splat = |y: f32| GaussianSplat {
-        position: [0.0, y, 0.0],
-        scale: [0.1, 0.1, 0.1],
-        rotation: [0, 0, 0, 32767],
-        opacity: 255,
-        _pad: [0; 3],
-        spectral: [0; 8],
-    };
+    let make_splat = |y: f32| GaussianSplat::volume([0.0, y, 0.0], [0.1, 0.1, 0.1], Quat::IDENTITY, 255, [0u16; 16]);
 
     let splats = vec![make_splat(0.0), make_splat(1.0), make_splat(2.0)];
     let bindings = vec![0, 1, 2]; // each splat bound to corresponding joint
@@ -135,14 +121,14 @@ fn test_multi_splat_different_joints() {
 
     // Root splat: root has no animation channel in this anim (only arm does),
     // so root stays at identity. IBM[0] takes (0,0,0)->(0,0,0), world is identity.
-    let p0 = skinned[0].position;
+    let p0 = skinned[0].position();
     assert!(approx_eq(p0[0], 0.0, 0.01) && approx_eq(p0[1], 0.0, 0.01));
 
     // Arm splat at bind (0,1,0): IBM[1] -> (0,0,0), world[1] = (0,1,0) with 90deg rot
-    let p1 = skinned[1].position;
+    let p1 = skinned[1].position();
     assert!(approx_eq(p1[0], 0.0, 0.05) && approx_eq(p1[1], 1.0, 0.05));
 
     // Hand splat at bind (0,2,0): moves to (-1,1,0)
-    let p2 = skinned[2].position;
+    let p2 = skinned[2].position();
     assert!(approx_eq(p2[0], -1.0, 0.05) && approx_eq(p2[1], 1.0, 0.05));
 }

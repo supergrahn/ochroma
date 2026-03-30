@@ -44,12 +44,11 @@ impl WaterSurface {
 
     /// Generate water surface splats with wave animation offset.
     pub fn generate_splats(&self, time: f32) -> Vec<GaussianSplat> {
-        let water_spd: [u16; 8] = [
-            f16::from_f32(0.01).to_bits(), f16::from_f32(0.03).to_bits(),
-            f16::from_f32(0.08).to_bits(), f16::from_f32(0.12).to_bits(),
-            f16::from_f32(0.10).to_bits(), f16::from_f32(0.06).to_bits(),
-            f16::from_f32(0.03).to_bits(), f16::from_f32(0.01).to_bits(),
-        ];
+        let water_spd: [u16; 16] = {
+            let v = [0.01f32, 0.03, 0.08, 0.12, 0.10, 0.06, 0.03, 0.01,
+                     0.01, 0.03, 0.08, 0.12, 0.10, 0.06, 0.03, 0.01];
+            std::array::from_fn(|i| f16::from_f32(v[i]).to_bits())
+        };
 
         let spacing = 0.5;
         let nx = (self.width / spacing).ceil() as i32;
@@ -69,14 +68,13 @@ impl WaterSurface {
                 // Fresnel-like opacity: more opaque at steep angles (simplified)
                 let opacity = 180;
 
-                splats.push(GaussianSplat {
-                    position: [x, y, z],
-                    scale: [spacing * 0.5, 0.01, spacing * 0.5],
-                    rotation: [0, 0, 0, 32767],
+                splats.push(GaussianSplat::surface(
+                    [x, y, z],
+                    [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
+                    spacing * 0.5, spacing * 0.5,
                     opacity,
-                    _pad: [0; 3],
-                    spectral: water_spd,
-                });
+                    water_spd,
+                ));
             }
         }
 

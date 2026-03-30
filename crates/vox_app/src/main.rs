@@ -58,6 +58,7 @@ const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
 
 /// The render backend — either GPU-accelerated or CPU software fallback.
+#[allow(clippy::large_enum_variant)]
 enum RenderMode {
     Gpu {
         backend: WgpuBackend,
@@ -280,10 +281,10 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         // Pass events to egui if in GPU mode
-        if let Some(RenderMode::Gpu { egui_state, .. }) = &mut self.render_mode {
-            if let Some(window) = self.window.as_ref() {
-                let _ = egui_state.on_window_event(window, &event);
-            }
+        if let Some(RenderMode::Gpu { egui_state, .. }) = &mut self.render_mode
+            && let Some(window) = self.window.as_ref()
+        {
+            let _ = egui_state.on_window_event(window, &event);
         }
 
         match event {

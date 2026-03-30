@@ -114,16 +114,16 @@ impl CurveF32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColorConfig {
-    pub start_spectral: [f32; 8],
-    pub end_spectral: [f32; 8],
+    pub start_spectral: [f32; 16],
+    pub end_spectral: [f32; 16],
 }
 
 impl ColorConfig {
     /// Linearly interpolate between start and end spectral values.
-    pub fn evaluate(&self, t: f32) -> [f32; 8] {
-        let mut out = [0.0f32; 8];
-        for i in 0..8 {
-            out[i] = self.start_spectral[i] + (self.end_spectral[i] - self.start_spectral[i]) * t;
+    pub fn evaluate(&self, t: f32) -> [f32; 16] {
+        let mut out = [0.0f32; 16];
+        for (i, val) in out.iter_mut().enumerate() {
+            *val = self.start_spectral[i] + (self.end_spectral[i] - self.start_spectral[i]) * t;
         }
         out
     }
@@ -241,17 +241,16 @@ impl VfxInstance {
                 let size = emitter.size.evaluate(t);
                 let opacity = emitter.opacity.evaluate(t);
                 let spectral_f32 = emitter.color.evaluate(t);
-                let spectral: [u16; 8] =
+                let spectral: [u16; 16] =
                     std::array::from_fn(|i| f16::from_f32(spectral_f32[i]).to_bits());
 
-                splats.push(GaussianSplat {
-                    position: [p.position.x, p.position.y, p.position.z],
-                    scale: [size, size, size],
-                    rotation: [0, 0, 0, 32767],
-                    opacity: (opacity * 255.0).clamp(0.0, 255.0) as u8,
-                    _pad: [0; 3],
+                splats.push(GaussianSplat::volume(
+                    [p.position.x, p.position.y, p.position.z],
+                    [size, size, size],
+                    Quat::IDENTITY,
+                    (opacity * 255.0).clamp(0.0, 255.0) as u8,
                     spectral,
-                });
+                ));
             }
         }
         splats
@@ -385,8 +384,8 @@ pub fn effect_fire() -> VfxEffect {
             },
             opacity: CurveF32::fade_out(1.0),
             color: ColorConfig {
-                start_spectral: [0.05, 0.10, 0.20, 0.50, 0.80, 0.95, 0.90, 0.60],
-                end_spectral: [0.02, 0.05, 0.10, 0.25, 0.40, 0.30, 0.20, 0.10],
+                start_spectral: [0.05, 0.10, 0.20, 0.50, 0.80, 0.95, 0.90, 0.60, 0.50, 0.40, 0.30, 0.20, 0.15, 0.10, 0.08, 0.05],
+                end_spectral: [0.02, 0.05, 0.10, 0.25, 0.40, 0.30, 0.20, 0.10, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.02, 0.01],
             },
             gravity_scale: -0.3,
             max_particles: 500,
@@ -415,8 +414,8 @@ pub fn effect_smoke() -> VfxEffect {
                 keys: vec![(0.0, 0.6), (0.3, 0.5), (1.0, 0.0)],
             },
             color: ColorConfig {
-                start_spectral: [0.30; 8],
-                end_spectral: [0.15; 8],
+                start_spectral: [0.30; 16],
+                end_spectral: [0.15; 16],
             },
             gravity_scale: -0.2,
             max_particles: 300,
@@ -445,8 +444,8 @@ pub fn effect_explosion() -> VfxEffect {
                 },
                 opacity: CurveF32::fade_out(1.0),
                 color: ColorConfig {
-                    start_spectral: [0.10, 0.20, 0.40, 0.70, 0.95, 1.00, 0.95, 0.70],
-                    end_spectral: [0.05, 0.08, 0.15, 0.30, 0.45, 0.35, 0.25, 0.12],
+                    start_spectral: [0.10, 0.20, 0.40, 0.70, 0.95, 1.00, 0.95, 0.70, 0.60, 0.50, 0.40, 0.30, 0.20, 0.15, 0.10, 0.08],
+                    end_spectral: [0.05, 0.08, 0.15, 0.30, 0.45, 0.35, 0.25, 0.12, 0.10, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01],
                 },
                 gravity_scale: 0.3,
                 max_particles: 200,
@@ -465,8 +464,8 @@ pub fn effect_explosion() -> VfxEffect {
                 size: CurveF32::constant(0.1),
                 opacity: CurveF32::fade_out(0.8),
                 color: ColorConfig {
-                    start_spectral: [0.15, 0.12, 0.10, 0.20, 0.25, 0.22, 0.18, 0.12],
-                    end_spectral: [0.08, 0.06, 0.05, 0.10, 0.12, 0.10, 0.08, 0.06],
+                    start_spectral: [0.15, 0.12, 0.10, 0.20, 0.25, 0.22, 0.18, 0.12, 0.10, 0.09, 0.08, 0.09, 0.10, 0.10, 0.10, 0.10],
+                    end_spectral: [0.08, 0.06, 0.05, 0.10, 0.12, 0.10, 0.08, 0.06, 0.05, 0.04, 0.04, 0.05, 0.05, 0.05, 0.05, 0.05],
                 },
                 gravity_scale: 1.0,
                 max_particles: 200,
@@ -492,8 +491,8 @@ pub fn effect_sparkle() -> VfxEffect {
             size: CurveF32::fade_out(0.08),
             opacity: CurveF32::fade_in_out(1.0),
             color: ColorConfig {
-                start_spectral: [0.80, 0.85, 0.90, 0.95, 1.00, 1.00, 0.95, 0.90],
-                end_spectral: [0.60, 0.65, 0.70, 0.75, 0.80, 0.80, 0.75, 0.70],
+                start_spectral: [0.80, 0.85, 0.90, 0.95, 1.00, 1.00, 0.95, 0.90, 0.88, 0.85, 0.82, 0.80, 0.78, 0.75, 0.72, 0.70],
+                end_spectral: [0.60, 0.65, 0.70, 0.75, 0.80, 0.80, 0.75, 0.70, 0.68, 0.65, 0.63, 0.60, 0.58, 0.55, 0.53, 0.50],
             },
             gravity_scale: -0.1,
             max_particles: 200,
@@ -520,8 +519,8 @@ pub fn effect_rain() -> VfxEffect {
             size: CurveF32::constant(0.02),
             opacity: CurveF32::constant(0.5),
             color: ColorConfig {
-                start_spectral: [0.30, 0.35, 0.40, 0.45, 0.50, 0.48, 0.42, 0.35],
-                end_spectral: [0.30, 0.35, 0.40, 0.45, 0.50, 0.48, 0.42, 0.35],
+                start_spectral: [0.30, 0.35, 0.40, 0.45, 0.50, 0.48, 0.42, 0.35, 0.32, 0.30, 0.30, 0.32, 0.35, 0.38, 0.40, 0.42],
+                end_spectral: [0.30, 0.35, 0.40, 0.45, 0.50, 0.48, 0.42, 0.35, 0.32, 0.30, 0.30, 0.32, 0.35, 0.38, 0.40, 0.42],
             },
             gravity_scale: 0.5,
             max_particles: 2000,
@@ -550,8 +549,8 @@ pub fn effect_dust() -> VfxEffect {
             },
             opacity: CurveF32::fade_in_out(0.4),
             color: ColorConfig {
-                start_spectral: [0.10, 0.12, 0.15, 0.20, 0.22, 0.20, 0.18, 0.15],
-                end_spectral: [0.08, 0.10, 0.12, 0.16, 0.18, 0.16, 0.14, 0.12],
+                start_spectral: [0.10, 0.12, 0.15, 0.20, 0.22, 0.20, 0.18, 0.15, 0.14, 0.13, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18],
+                end_spectral: [0.08, 0.10, 0.12, 0.16, 0.18, 0.16, 0.14, 0.12, 0.11, 0.10, 0.10, 0.11, 0.12, 0.13, 0.14, 0.15],
             },
             gravity_scale: -0.05,
             max_particles: 300,

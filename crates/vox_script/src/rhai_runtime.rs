@@ -144,10 +144,10 @@ impl RhaiRuntime {
     pub fn reload_all(&mut self) -> Vec<String> {
         let mut errors = Vec::new();
         for i in 0..self.scripts.len() {
-            if self.scripts[i].source_path.is_some() {
-                if let Err(e) = self.reload(i) {
-                    errors.push(format!("{}: {}", self.scripts[i].name, e));
-                }
+            if self.scripts[i].source_path.is_some()
+                && let Err(e) = self.reload(i)
+            {
+                errors.push(format!("{}: {}", self.scripts[i].name, e));
             }
         }
         errors
@@ -167,12 +167,11 @@ impl RhaiRuntime {
                 Some(p) => p.clone(),
                 None => continue,
             };
-            if let Ok(meta) = std::fs::metadata(&path) {
-                if let Ok(mtime) = meta.modified() {
-                    if mtime > script.last_mtime {
-                        to_reload.push((i, script.name.clone(), mtime));
-                    }
-                }
+            if let Ok(meta) = std::fs::metadata(&path)
+                && let Ok(mtime) = meta.modified()
+                && mtime > script.last_mtime
+            {
+                to_reload.push((i, script.name.clone(), mtime));
             }
         }
 

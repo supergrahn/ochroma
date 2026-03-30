@@ -8,7 +8,7 @@
 //! No skeleton or GLTF data required — suitable for demos and placeholder NPCs.
 
 use bevy_ecs::prelude::*;
-use glam::Vec3;
+use glam::{self, Vec3};
 use vox_core::engine_runtime::{FrameTime, RenderBuffer};
 use vox_core::types::GaussianSplat;
 
@@ -57,14 +57,13 @@ pub fn animation_system(
         let bob = (npc.time * npc.bob_frequency * std::f32::consts::TAU).sin()
             * npc.bob_amplitude;
         for base in &npc.base_positions {
-            render_buffer.splats.push(GaussianSplat {
-                position: [base[0], base[1] + bob, base[2]],
-                scale: [0.12, 0.12, 0.12],
-                rotation: [0i16, 0, 0, 32767],
-                opacity: 200,
-                _pad: [0; 3],
-                spectral: [15000u16; 8],
-            });
+            render_buffer.splats.push(GaussianSplat::volume(
+                [base[0], base[1] + bob, base[2]],
+                [0.12, 0.12, 0.12],
+                glam::Quat::IDENTITY,
+                200,
+                [15000u16; 16],
+            ));
         }
     }
 }
@@ -128,8 +127,8 @@ mod tests {
 
         let buffer = world.resource::<RenderBuffer>();
         for splat in &buffer.splats {
-            assert_eq!(splat.opacity, 200);
-            assert_eq!(splat.spectral, [15000u16; 8]);
+            assert_eq!(splat.opacity(), 200);
+            assert_eq!(*splat.spectral(), [15000u16; 16]);
         }
     }
 
@@ -142,7 +141,7 @@ mod tests {
         run_animation_system(&mut world);
         let y_first = {
             let buffer = world.resource::<RenderBuffer>();
-            buffer.splats[0].position[1]
+            buffer.splats[0].position()[1]
         };
 
         // Clear buffer and tick again with different dt
@@ -158,7 +157,7 @@ mod tests {
         run_animation_system(&mut world);
         let y_second = {
             let buffer = world.resource::<RenderBuffer>();
-            buffer.splats[0].position[1]
+            buffer.splats[0].position()[1]
         };
 
         // The y positions should differ (different bob phase)

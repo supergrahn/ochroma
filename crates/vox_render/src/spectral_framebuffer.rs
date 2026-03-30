@@ -1,10 +1,10 @@
-/// An 8-channel spectral framebuffer with auxiliary buffers.
+/// A 16-channel spectral framebuffer with auxiliary buffers.
 /// This is the core data structure of the rendering pipeline.
 pub struct SpectralFramebuffer {
     pub width: u32,
     pub height: u32,
-    /// 8 spectral bands per pixel (380-660nm, f32).
-    pub spectral: Vec<[f32; 8]>,
+    /// 16 spectral bands per pixel (380–755 nm at 25 nm steps, f32).
+    pub spectral: Vec<[f32; 16]>,
     /// Depth buffer (camera-space Z, f32).
     pub depth: Vec<f32>,
     /// World-space normals (3 × f32).
@@ -14,7 +14,7 @@ pub struct SpectralFramebuffer {
     /// Object/entity ID per pixel.
     pub object_id: Vec<u32>,
     /// Spectral albedo (for denoiser — separates material from lighting).
-    pub albedo: Vec<[f32; 8]>,
+    pub albedo: Vec<[f32; 16]>,
     /// Sample count per pixel (for adaptive sampling).
     pub sample_count: Vec<u16>,
 }
@@ -25,12 +25,12 @@ impl SpectralFramebuffer {
         Self {
             width,
             height,
-            spectral: vec![[0.0; 8]; count],
+            spectral: vec![[0.0; 16]; count],
             depth: vec![f32::MAX; count],
             normals: vec![[0.0, 1.0, 0.0]; count],
             motion: vec![[0.0; 2]; count],
             object_id: vec![0; count],
-            albedo: vec![[0.0; 8]; count],
+            albedo: vec![[0.0; 16]; count],
             sample_count: vec![0; count],
         }
     }
@@ -44,15 +44,16 @@ impl SpectralFramebuffer {
     }
 
     /// Write a spectral sample to a pixel (accumulative — averages with existing samples).
+    #[allow(clippy::too_many_arguments)]
     pub fn write_sample(
         &mut self,
         x: u32,
         y: u32,
-        spectral: [f32; 8],
+        spectral: [f32; 16],
         depth: f32,
         normal: [f32; 3],
         object_id: u32,
-        albedo: [f32; 8],
+        albedo: [f32; 16],
     ) {
         if x >= self.width || y >= self.height {
             return;
@@ -67,7 +68,7 @@ impl SpectralFramebuffer {
             self.normals[i] = normal;
             self.albedo[i] = albedo;
         } else {
-            for b in 0..8 {
+            for b in 0..16 {
                 self.spectral[i][b] = (self.spectral[i][b] * n + spectral[b]) / (n + 1.0);
                 self.albedo[i][b] = (self.albedo[i][b] * n + albedo[b]) / (n + 1.0);
             }
@@ -76,8 +77,8 @@ impl SpectralFramebuffer {
                 self.depth[i] = depth;
             }
             // Average normals
-            for c in 0..3 {
-                self.normals[i][c] = (self.normals[i][c] * n + normal[c]) / (n + 1.0);
+            for (c, val) in self.normals[i].iter_mut().enumerate() {
+                *val = (*val * n + normal[c]) / (n + 1.0);
             }
         }
         self.object_id[i] = object_id;
@@ -96,7 +97,7 @@ impl SpectralFramebuffer {
     /// Clear all buffers for a new frame.
     pub fn clear(&mut self) {
         for s in &mut self.spectral {
-            *s = [0.0; 8];
+            *s = [0.0; 16];
         }
         for d in &mut self.depth {
             *d = f32::MAX;
@@ -111,7 +112,7 @@ impl SpectralFramebuffer {
             *id = 0;
         }
         for a in &mut self.albedo {
-            *a = [0.0; 8];
+            *a = [0.0; 16];
         }
         for s in &mut self.sample_count {
             *s = 0;
@@ -127,12 +128,12 @@ impl SpectralFramebuffer {
     /// Memory usage in bytes.
     pub fn memory_bytes(&self) -> usize {
         let count = self.pixel_count();
-        count * (8 * 4 // spectral: 8 f32
-            + 4        // depth: f32
-            + 3 * 4    // normals: 3 f32
-            + 2 * 4    // motion: 2 f32
-            + 4        // object_id: u32
-            + 8 * 4    // albedo: 8 f32
-            + 2)       // sample_count: u16
+        count * (16 * 4 // spectral: 16 f32
+            + 4         // depth: f32
+            + 3 * 4     // normals: 3 f32
+            + 2 * 4     // motion: 2 f32
+            + 4         // object_id: u32
+            + 16 * 4    // albedo: 16 f32
+            + 2)        // sample_count: u16
     }
 }

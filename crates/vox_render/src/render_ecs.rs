@@ -56,14 +56,7 @@ mod tests {
     use vox_core::types::GaussianSplat;
 
     fn zero_splat() -> GaussianSplat {
-        GaussianSplat {
-            position: [0.0, 0.0, 0.0],
-            scale: [0.1, 0.1, 0.1],
-            rotation: [0, 0, 0, 32767],
-            opacity: 255,
-            _pad: [0; 3],
-            spectral: [0; 8],
-        }
+        GaussianSplat::volume([0.0, 0.0, 0.0], [0.1, 0.1, 0.1], Quat::IDENTITY, 255, [0; 16])
     }
 
     #[test]
@@ -98,7 +91,7 @@ mod tests {
         let buffer = world.resource::<RenderBuffer>();
         assert_eq!(buffer.splats.len(), 3, "all 3 splats should be gathered");
         assert!(
-            (buffer.splats[0].position[0] - 5.0).abs() < 1e-5,
+            (buffer.splats[0].position()[0] - 5.0).abs() < 1e-5,
             "splat x should match entity world x"
         );
     }

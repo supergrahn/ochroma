@@ -76,9 +76,10 @@ fn import_ply(path: &Path, settings: &ImportSettings) -> Result<ImportResult, St
     let mut splats = splats;
     if (settings.scale_factor - 1.0).abs() > f32::EPSILON {
         for s in splats.iter_mut() {
-            s.position[0] *= settings.scale_factor;
-            s.position[1] *= settings.scale_factor;
-            s.position[2] *= settings.scale_factor;
+            let p = s.position_mut();
+            p[0] *= settings.scale_factor;
+            p[1] *= settings.scale_factor;
+            p[2] *= settings.scale_factor;
         }
     }
 
@@ -91,12 +92,13 @@ fn import_ply(path: &Path, settings: &ImportSettings) -> Result<ImportResult, St
         && settings.collision_type != CollisionGenType::None
         && !splats.is_empty()
     {
-        let mut mn = splats[0].position;
-        let mut mx = splats[0].position;
+        let mut mn = splats[0].position();
+        let mut mx = splats[0].position();
         for s in &splats {
+            let p = s.position();
             for i in 0..3 {
-                if s.position[i] < mn[i] { mn[i] = s.position[i]; }
-                if s.position[i] > mx[i] { mx[i] = s.position[i]; }
+                if p[i] < mn[i] { mn[i] = p[i]; }
+                if p[i] > mx[i] { mx[i] = p[i]; }
             }
         }
         Some((mn, mx))
@@ -126,9 +128,10 @@ fn import_gltf_full(path: &Path, settings: &ImportSettings) -> Result<ImportResu
     // Apply scale factor
     if (settings.scale_factor - 1.0).abs() > f32::EPSILON {
         for s in splats.iter_mut() {
-            s.position[0] *= settings.scale_factor;
-            s.position[1] *= settings.scale_factor;
-            s.position[2] *= settings.scale_factor;
+            let p = s.position_mut();
+            p[0] *= settings.scale_factor;
+            p[1] *= settings.scale_factor;
+            p[2] *= settings.scale_factor;
         }
     }
 
@@ -167,12 +170,13 @@ fn import_gltf_full(path: &Path, settings: &ImportSettings) -> Result<ImportResu
         && settings.collision_type != CollisionGenType::None
         && !splats.is_empty()
     {
-        let mut mn = splats[0].position;
-        let mut mx = splats[0].position;
+        let mut mn = splats[0].position();
+        let mut mx = splats[0].position();
         for s in &splats {
+            let p = s.position();
             for i in 0..3 {
-                if s.position[i] < mn[i] { mn[i] = s.position[i]; }
-                if s.position[i] > mx[i] { mx[i] = s.position[i]; }
+                if p[i] < mn[i] { mn[i] = p[i]; }
+                if p[i] > mx[i] { mx[i] = p[i]; }
             }
         }
         Some((mn, mx))
@@ -202,9 +206,10 @@ fn import_vxm(path: &Path, settings: &ImportSettings) -> Result<ImportResult, St
     // Apply scale factor
     if (settings.scale_factor - 1.0).abs() > f32::EPSILON {
         for s in splats.iter_mut() {
-            s.position[0] *= settings.scale_factor;
-            s.position[1] *= settings.scale_factor;
-            s.position[2] *= settings.scale_factor;
+            let p = s.position_mut();
+            p[0] *= settings.scale_factor;
+            p[1] *= settings.scale_factor;
+            p[2] *= settings.scale_factor;
         }
     }
 
@@ -212,12 +217,13 @@ fn import_vxm(path: &Path, settings: &ImportSettings) -> Result<ImportResult, St
         && settings.collision_type != CollisionGenType::None
         && !splats.is_empty()
     {
-        let mut mn = splats[0].position;
-        let mut mx = splats[0].position;
+        let mut mn = splats[0].position();
+        let mut mx = splats[0].position();
         for s in &splats {
+            let p = s.position();
             for i in 0..3 {
-                if s.position[i] < mn[i] { mn[i] = s.position[i]; }
-                if s.position[i] > mx[i] { mx[i] = s.position[i]; }
+                if p[i] < mn[i] { mn[i] = p[i]; }
+                if p[i] > mx[i] { mx[i] = p[i]; }
             }
         }
         Some((mn, mx))
@@ -310,10 +316,10 @@ mod tests {
 
         assert_eq!(result_1x.splats.len(), 1);
         assert_eq!(result_2x.splats.len(), 1);
-        assert!((result_1x.splats[0].position[0] - 1.0).abs() < 0.01,
-            "1x: expected x≈1.0, got {}", result_1x.splats[0].position[0]);
-        assert!((result_2x.splats[0].position[0] - 2.0).abs() < 0.01,
-            "2x: expected x≈2.0, got {}", result_2x.splats[0].position[0]);
+        assert!((result_1x.splats[0].position()[0] - 1.0).abs() < 0.01,
+            "1x: expected x≈1.0, got {}", result_1x.splats[0].position()[0]);
+        assert!((result_2x.splats[0].position()[0] - 2.0).abs() < 0.01,
+            "2x: expected x≈2.0, got {}", result_2x.splats[0].position()[0]);
 
         std::fs::remove_dir_all(&dir).ok();
     }

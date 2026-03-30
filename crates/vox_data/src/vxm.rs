@@ -150,6 +150,7 @@ impl VxmFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Quat;
 
     #[test]
     fn header_size_is_64_bytes() {
@@ -159,14 +160,13 @@ mod tests {
     #[test]
     fn round_trip_write_read() {
         let uuid = Uuid::new_v4();
-        let splat = GaussianSplat {
-            position: [1.0, 2.0, 3.0],
-            scale: [0.1, 0.1, 0.1],
-            rotation: [0, 0, 0, 32767],
-            opacity: 200,
-            _pad: [0; 3],
-            spectral: [0; 8],
-        };
+        let splat = GaussianSplat::volume(
+            [1.0, 2.0, 3.0],
+            [0.1, 0.1, 0.1],
+            glam::Quat::IDENTITY,
+            200,
+            [0u16; 16],
+        );
         let file = VxmFile {
             header: VxmHeader::new(uuid, 1, MaterialType::Concrete),
             splats: vec![splat],
@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(read_back.header.splat_count, 1);
         assert_eq!(read_back.header.uuid(), uuid);
         assert_eq!(read_back.splats.len(), 1);
-        assert_eq!(read_back.splats[0].position, [1.0, 2.0, 3.0]);
+        assert_eq!(read_back.splats[0].position(), [1.0, 2.0, 3.0]);
     }
 
     #[test]

@@ -57,7 +57,7 @@ pub fn generate_shadow_catcher(splats: &[GaussianSplat]) -> ShadowCatcherMesh {
     // Project to ground plane: use x and z
     let points_2d: Vec<[f32; 2]> = splats
         .iter()
-        .map(|s| [s.position[0], s.position[2]])
+        .map(|s| [s.position()[0], s.position()[2]])
         .collect();
 
     let hull = generate_convex_hull_2d(&points_2d);

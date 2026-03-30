@@ -71,7 +71,7 @@ pub fn generate_overlay_splats(
 fn make_overlay_splat(x: f32, z: f32, r: f32, g: f32, b: f32, alpha: f32) -> GaussianSplat {
     // Encode RGB as approximate spectral values
     // R → 620nm, G → 540nm, B → 460nm
-    let spectral: [u16; 8] = [
+    let spectral: [u16; 16] = [
         f16::from_f32(b * 0.5).to_bits(), // 380nm
         f16::from_f32(b).to_bits(),        // 420nm
         f16::from_f32(b).to_bits(),        // 460nm
@@ -80,14 +80,21 @@ fn make_overlay_splat(x: f32, z: f32, r: f32, g: f32, b: f32, alpha: f32) -> Gau
         f16::from_f32(r * 0.5).to_bits(),  // 580nm
         f16::from_f32(r).to_bits(),        // 620nm
         f16::from_f32(r * 0.5).to_bits(),  // 660nm
+        f16::from_f32(b * 0.5).to_bits(),
+        f16::from_f32(b).to_bits(),
+        f16::from_f32(b).to_bits(),
+        f16::from_f32(g * 0.5).to_bits(),
+        f16::from_f32(g).to_bits(),
+        f16::from_f32(r * 0.5).to_bits(),
+        f16::from_f32(r).to_bits(),
+        f16::from_f32(r * 0.5).to_bits(),
     ];
 
-    GaussianSplat {
-        position: [x, 0.15, z], // above terrain
-        scale: [2.5, 0.01, 2.5], // flat disc
-        rotation: [0, 0, 0, 32767],
-        opacity: (alpha * 255.0).min(255.0) as u8,
-        _pad: [0; 3],
+    GaussianSplat::surface(
+        [x, 0.15, z], // above terrain
+        [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
+        2.5, 2.5,
+        (alpha * 255.0).min(255.0) as u8,
         spectral,
-    }
+    )
 }

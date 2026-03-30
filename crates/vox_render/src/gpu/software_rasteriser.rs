@@ -96,7 +96,7 @@ impl SoftwareRasteriser {
         let mut projected: Vec<ProjectedSplat> = splats
             .iter()
             .filter_map(|splat| {
-                let pos = Vec4::new(splat.position[0], splat.position[1], splat.position[2], 1.0);
+                let pos = Vec4::new(splat.position()[0], splat.position()[1], splat.position()[2], 1.0);
                 let clip = vp * pos;
 
                 // Cull behind camera
@@ -119,7 +119,7 @@ impl SoftwareRasteriser {
 
                 // Average scale as world-space radius
                 let avg_scale =
-                    (splat.scale[0].abs() + splat.scale[1].abs() + splat.scale[2].abs()) / 3.0;
+                    (splat.scale_u().abs() + splat.scale_v().abs() + splat.scale_w().abs()) / 3.0;
 
                 // Approximate screen-space radius: project a world-space extent
                 // Using perspective division: radius_screen = (scale * focal) / depth
@@ -128,16 +128,9 @@ impl SoftwareRasteriser {
                 let radius_px = (avg_scale * focal_x / clip.w).abs().max(1.0);
 
                 // Convert spectral to sRGB
-                let bands = SpectralBands([
-                    f16::from_bits(splat.spectral[0]).to_f32(),
-                    f16::from_bits(splat.spectral[1]).to_f32(),
-                    f16::from_bits(splat.spectral[2]).to_f32(),
-                    f16::from_bits(splat.spectral[3]).to_f32(),
-                    f16::from_bits(splat.spectral[4]).to_f32(),
-                    f16::from_bits(splat.spectral[5]).to_f32(),
-                    f16::from_bits(splat.spectral[6]).to_f32(),
-                    f16::from_bits(splat.spectral[7]).to_f32(),
-                ]);
+                let bands = SpectralBands(std::array::from_fn(|i| {
+                    f16::from_bits(splat.spectral()[i]).to_f32()
+                }));
                 let xyz = spectral_to_xyz(&bands, illuminant);
                 let linear_rgb = xyz_to_srgb(xyz);
                 let r = (linear_to_srgb_gamma(linear_rgb[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
@@ -145,9 +138,9 @@ impl SoftwareRasteriser {
                 let b = (linear_to_srgb_gamma(linear_rgb[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
 
                 let opacity = {
-                    let base = splat.opacity as f32 / 255.0;
+                    let base = splat.opacity() as f32 / 255.0;
                     let shadow_factor = if let Some(sm) = shadow_mapper {
-                        let world_pos = glam::Vec3::new(splat.position[0], splat.position[1], splat.position[2]);
+                        let world_pos = glam::Vec3::new(splat.position()[0], splat.position()[1], splat.position()[2]);
                         if sm.is_in_shadow(world_pos, 0.005) { 0.3 } else { 1.0 }
                     } else { 1.0 };
                     base * shadow_factor

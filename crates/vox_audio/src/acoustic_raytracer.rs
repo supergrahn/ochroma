@@ -176,8 +176,8 @@ pub fn trace_sound(
             let atten = inverse_square_attenuation(total_dist);
 
             let mut freq_response = [atten, atten, atten];
-            for i in 0..3 {
-                freq_response[i] *= 1.0 - surface.material.absorption[i];
+            for (i, val) in freq_response.iter_mut().enumerate() {
+                *val *= 1.0 - surface.material.absorption[i];
             }
 
             early_reflections.push(ReflectionPath {
@@ -205,10 +205,10 @@ pub fn trace_sound(
                 // Find closest surface hit.
                 let mut closest: Option<(f32, usize)> = None;
                 for (idx, surface) in scene.surfaces.iter().enumerate() {
-                    if let Some(t) = intersect_surface(current_origin, current_dir, surface) {
-                        if closest.is_none() || t < closest.unwrap().0 {
-                            closest = Some((t, idx));
-                        }
+                    if let Some(t) = intersect_surface(current_origin, current_dir, surface)
+                        && (closest.is_none() || t < closest.unwrap().0)
+                    {
+                        closest = Some((t, idx));
                     }
                 }
 
@@ -229,8 +229,8 @@ pub fn trace_sound(
 
                     if bounces_done >= 2 {
                         let mut freq_response = ray.energy;
-                        for i in 0..3 {
-                            freq_response[i] *= atten;
+                        for val in &mut freq_response {
+                            *val *= atten;
                         }
 
                         early_reflections.push(ReflectionPath {
@@ -329,14 +329,14 @@ pub fn compute_obstruction(
     let mut attenuation = [0.0f32; 3];
 
     for surface in obstacles {
-        if let Some(t) = intersect_surface(source, dir, surface) {
-            if t < total_dist {
-                // Each blocking surface adds its absorption as attenuation.
-                // Low frequencies diffract around obstacles better.
-                attenuation[0] += surface.material.absorption[0] * 0.5; // low freqs diffract
-                attenuation[1] += surface.material.absorption[1] * 0.8;
-                attenuation[2] += 0.9; // high freqs blocked heavily
-            }
+        if let Some(t) = intersect_surface(source, dir, surface)
+            && t < total_dist
+        {
+            // Each blocking surface adds its absorption as attenuation.
+            // Low frequencies diffract around obstacles better.
+            attenuation[0] += surface.material.absorption[0] * 0.5; // low freqs diffract
+            attenuation[1] += surface.material.absorption[1] * 0.8;
+            attenuation[2] += 0.9; // high freqs blocked heavily
         }
     }
 

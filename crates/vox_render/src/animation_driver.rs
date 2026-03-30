@@ -234,14 +234,7 @@ mod tests {
     use vox_data::gltf_animation::{build_synthetic_animation, build_synthetic_skeleton};
 
     fn make_test_splat(x: f32, y: f32, z: f32) -> GaussianSplat {
-        GaussianSplat {
-            position: [x, y, z],
-            scale: [0.1, 0.1, 0.1],
-            rotation: [0, 0, 0, 32767],
-            opacity: 255,
-            _pad: [0; 3],
-            spectral: [0; 8],
-        }
+        GaussianSplat::volume([x, y, z], [0.1, 0.1, 0.1], Quat::IDENTITY, 255, [0; 16])
     }
 
     #[test]
@@ -251,7 +244,7 @@ mod tests {
         let mut driver = AnimationDriver::new(skel, splats.clone());
         let result = driver.tick(1.0 / 60.0);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].position, splats[0].position);
+        assert_eq!(result[0].position(), splats[0].position());
     }
 
     #[test]
@@ -278,7 +271,7 @@ mod tests {
         let result = driver.tick(0.99);
         assert_eq!(result.len(), 1);
         // Hand was at (0,2,0). After arm rotates 90 deg Z, hand moves to (-1,1,0).
-        let p = result[0].position;
+        let p = result[0].position();
         let original = [0.0f32, 2.0, 0.0];
         let changed = (p[0] - original[0]).abs() > 0.01
             || (p[1] - original[1]).abs() > 0.01

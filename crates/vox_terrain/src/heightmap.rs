@@ -124,22 +124,21 @@ impl Heightmap {
                             .find(|z| wy <= z.max_height)
                             .or_else(|| zones.last());
 
-                        let spectral: [u16; 8] = match zone {
+                        let spectral: [u16; 16] = match zone {
                             Some(z) => {
-                                std::array::from_fn(|i| f16::from_f32(z.spectral[i]).to_bits())
+                                std::array::from_fn(|i| f16::from_f32(z.spectral[i % 8]).to_bits())
                             }
                             None => std::array::from_fn(|_| f16::from_f32(0.3).to_bits()),
                         };
 
                         let scale = self.cell_size / sub as f32 * 0.5;
-                        splats.push(GaussianSplat {
-                            position: [wx, wy, wz],
-                            scale: [scale, 0.02, scale],
-                            rotation: [0, 0, 0, 32767],
-                            opacity: 250,
-                            _pad: [0; 3],
+                        splats.push(GaussianSplat::surface(
+                            [wx, wy, wz],
+                            [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
+                            scale, scale,
+                            250,
                             spectral,
-                        });
+                        ));
                     }
                 }
             }

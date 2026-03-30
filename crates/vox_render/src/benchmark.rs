@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use glam;
 use vox_core::types::GaussianSplat;
 
 /// Predefined benchmark scenes.
@@ -127,18 +128,17 @@ pub fn generate_benchmark_splats(count: usize) -> Vec<GaussianSplat> {
         let iz = i / (side * side);
 
         let spacing = 1.0f32;
-        let splat = GaussianSplat {
-            position: [
+        let splat = GaussianSplat::volume(
+            [
                 ix as f32 * spacing,
                 iy as f32 * spacing,
                 iz as f32 * spacing,
             ],
-            scale: [0.1, 0.1, 0.1],
-            rotation: [0, 0, 0, 32767], // identity quaternion w=1
-            opacity: 255,
-            _pad: [0; 3],
-            spectral: [0; 8],
-        };
+            [0.1, 0.1, 0.1],
+            glam::Quat::IDENTITY,
+            255,
+            [0; 16],
+        );
         splats.push(splat);
     }
 

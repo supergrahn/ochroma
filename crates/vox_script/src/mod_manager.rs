@@ -39,18 +39,17 @@ impl ModManager {
             let mut order = 0u32;
             for entry in entries.flatten() {
                 let manifest_path = entry.path().join("manifest.toml");
-                if manifest_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                        if let Ok(manifest) = toml::from_str::<ModManifest>(&content) {
-                            self.mods.push(LoadedMod {
-                                manifest,
-                                path: entry.path(),
-                                enabled: true,
-                                load_order: order,
-                            });
-                            order += 1;
-                        }
-                    }
+                if manifest_path.exists()
+                    && let Ok(content) = std::fs::read_to_string(&manifest_path)
+                    && let Ok(manifest) = toml::from_str::<ModManifest>(&content)
+                {
+                    self.mods.push(LoadedMod {
+                        manifest,
+                        path: entry.path(),
+                        enabled: true,
+                        load_order: order,
+                    });
+                    order += 1;
                 }
             }
         }

@@ -1,3 +1,4 @@
+use glam;
 use half::f16;
 use rand::prelude::*;
 use rand::SeedableRng;
@@ -9,7 +10,15 @@ pub fn generate_tree(seed: u64, height: f32, canopy_radius: f32) -> Vec<Gaussian
     let mut splats = Vec::new();
 
     // Trunk SPD (brown bark)
-    let trunk_spd: [u16; 8] = [
+    let trunk_spd: [u16; 16] = [
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.07).to_bits(),
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.10).to_bits(),
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.15).to_bits(),
+        f16::from_f32(0.13).to_bits(),
+        f16::from_f32(0.10).to_bits(),
         f16::from_f32(0.06).to_bits(),
         f16::from_f32(0.07).to_bits(),
         f16::from_f32(0.08).to_bits(),
@@ -21,7 +30,15 @@ pub fn generate_tree(seed: u64, height: f32, canopy_radius: f32) -> Vec<Gaussian
     ];
 
     // Leaf SPD (green)
-    let leaf_spd: [u16; 8] = [
+    let leaf_spd: [u16; 16] = [
+        f16::from_f32(0.03).to_bits(),
+        f16::from_f32(0.04).to_bits(),
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.10).to_bits(),
+        f16::from_f32(0.45).to_bits(),
+        f16::from_f32(0.30).to_bits(),
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.04).to_bits(),
         f16::from_f32(0.03).to_bits(),
         f16::from_f32(0.04).to_bits(),
         f16::from_f32(0.06).to_bits(),
@@ -43,14 +60,9 @@ pub fn generate_tree(seed: u64, height: f32, canopy_radius: f32) -> Vec<Gaussian
             let angle = (j as f32 / circumference_splats as f32) * std::f32::consts::TAU;
             let x = angle.cos() * radius + (rng.random::<f32>() - 0.5) * 0.02;
             let z = angle.sin() * radius + (rng.random::<f32>() - 0.5) * 0.02;
-            splats.push(GaussianSplat {
-                position: [x, y, z],
-                scale: [0.04, 0.06, 0.04],
-                rotation: [0, 0, 0, 32767],
-                opacity: 240,
-                _pad: [0; 3],
-                spectral: trunk_spd,
-            });
+            splats.push(GaussianSplat::volume(
+                [x, y, z], [0.04, 0.06, 0.04], glam::Quat::IDENTITY, 240, trunk_spd,
+            ));
         }
     }
 
@@ -68,14 +80,11 @@ pub fn generate_tree(seed: u64, height: f32, canopy_radius: f32) -> Vec<Gaussian
             let x = branch_angle.cos() * t * branch_length;
             let z = branch_angle.sin() * t * branch_length;
             let y = branch_height + t * branch_length * 0.3; // slight upward curve
-            splats.push(GaussianSplat {
-                position: [x, y, z],
-                scale: [0.03 * (1.0 - t * 0.7), 0.03, 0.03 * (1.0 - t * 0.7)],
-                rotation: [0, 0, 0, 32767],
-                opacity: 230,
-                _pad: [0; 3],
-                spectral: trunk_spd,
-            });
+            splats.push(GaussianSplat::volume(
+                [x, y, z],
+                [0.03 * (1.0 - t * 0.7), 0.03, 0.03 * (1.0 - t * 0.7)],
+                glam::Quat::IDENTITY, 230, trunk_spd,
+            ));
         }
     }
 
@@ -91,18 +100,14 @@ pub fn generate_tree(seed: u64, height: f32, canopy_radius: f32) -> Vec<Gaussian
         let z = r * phi.sin() * theta.sin();
         let y = canopy_center_y + r * phi.cos();
 
-        splats.push(GaussianSplat {
-            position: [x, y, z],
-            scale: [
-                0.08 + rng.random::<f32>() * 0.06,
-                0.04,
-                0.08 + rng.random::<f32>() * 0.06,
-            ],
-            rotation: [0, 0, 0, 32767],
-            opacity: (180.0 + rng.random::<f32>() * 60.0) as u8,
-            _pad: [0; 3],
-            spectral: leaf_spd,
-        });
+        let lsx = 0.08 + rng.random::<f32>() * 0.06;
+        let lsz = 0.08 + rng.random::<f32>() * 0.06;
+        splats.push(GaussianSplat::surface(
+            [x, y, z], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
+            lsx, lsz,
+            (180.0 + rng.random::<f32>() * 60.0) as u8,
+            leaf_spd,
+        ));
     }
 
     splats
@@ -113,8 +118,16 @@ pub fn generate_bench(seed: u64) -> Vec<GaussianSplat> {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut splats = Vec::new();
 
-    let iron_spd: [u16; 8] = std::array::from_fn(|_| f16::from_f32(0.15).to_bits());
-    let wood_spd: [u16; 8] = [
+    let iron_spd: [u16; 16] = std::array::from_fn(|_| f16::from_f32(0.15).to_bits());
+    let wood_spd: [u16; 16] = [
+        f16::from_f32(0.10).to_bits(),
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.15).to_bits(),
+        f16::from_f32(0.20).to_bits(),
+        f16::from_f32(0.22).to_bits(),
+        f16::from_f32(0.20).to_bits(),
+        f16::from_f32(0.18).to_bits(),
+        f16::from_f32(0.15).to_bits(),
         f16::from_f32(0.10).to_bits(),
         f16::from_f32(0.12).to_bits(),
         f16::from_f32(0.15).to_bits(),
@@ -133,14 +146,9 @@ pub fn generate_bench(seed: u64) -> Vec<GaussianSplat> {
         let x = side * length * 0.45;
         for iy in 0..10 {
             let y = iy as f32 / 10.0 * height;
-            splats.push(GaussianSplat {
-                position: [x, y, 0.0],
-                scale: [0.02, 0.03, 0.015],
-                rotation: [0, 0, 0, 32767],
-                opacity: 250,
-                _pad: [0; 3],
-                spectral: iron_spd,
-            });
+            splats.push(GaussianSplat::surface(
+                [x, y, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.02, 0.015, 250, iron_spd,
+            ));
         }
     }
 
@@ -149,14 +157,9 @@ pub fn generate_bench(seed: u64) -> Vec<GaussianSplat> {
         let z = (slat as f32 - 2.0) * 0.08;
         for ix in 0..20 {
             let x = (ix as f32 / 20.0 - 0.5) * length;
-            splats.push(GaussianSplat {
-                position: [x, height, z],
-                scale: [0.05, 0.01, 0.035],
-                rotation: [0, 0, 0, 32767],
-                opacity: 240,
-                _pad: [0; 3],
-                spectral: wood_spd,
-            });
+            splats.push(GaussianSplat::surface(
+                [x, height, z], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.05, 0.035, 240, wood_spd,
+            ));
         }
     }
 
@@ -165,14 +168,9 @@ pub fn generate_bench(seed: u64) -> Vec<GaussianSplat> {
         let y = height + 0.1 + slat as f32 * 0.08;
         for ix in 0..20 {
             let x = (ix as f32 / 20.0 - 0.5) * length;
-            splats.push(GaussianSplat {
-                position: [x, y, -0.15],
-                scale: [0.05, 0.035, 0.01],
-                rotation: [0, 0, 0, 32767],
-                opacity: 240,
-                _pad: [0; 3],
-                spectral: wood_spd,
-            });
+            splats.push(GaussianSplat::surface(
+                [x, y, -0.15], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.05, 0.01, 240, wood_spd,
+            ));
         }
     }
 
@@ -184,7 +182,15 @@ pub fn generate_grass_patch(seed: u64, size: f32, density: f32) -> Vec<GaussianS
     let mut rng = StdRng::seed_from_u64(seed);
     let count = (size * size * density) as usize;
 
-    let grass_spd: [u16; 8] = [
+    let grass_spd: [u16; 16] = [
+        f16::from_f32(0.03).to_bits(),
+        f16::from_f32(0.04).to_bits(),
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.10).to_bits(),
+        f16::from_f32(0.40).to_bits(),
+        f16::from_f32(0.25).to_bits(),
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.04).to_bits(),
         f16::from_f32(0.03).to_bits(),
         f16::from_f32(0.04).to_bits(),
         f16::from_f32(0.06).to_bits(),
@@ -200,14 +206,13 @@ pub fn generate_grass_patch(seed: u64, size: f32, density: f32) -> Vec<GaussianS
             let x = (rng.random::<f32>() - 0.5) * size;
             let z = (rng.random::<f32>() - 0.5) * size;
             let blade_height = 0.05 + rng.random::<f32>() * 0.15;
-            GaussianSplat {
-                position: [x, blade_height * 0.5, z],
-                scale: [0.01, blade_height, 0.01],
-                rotation: [0, 0, 0, 32767],
-                opacity: (200.0 + rng.random::<f32>() * 40.0) as u8,
-                _pad: [0; 3],
-                spectral: grass_spd,
-            }
+            GaussianSplat::volume(
+                [x, blade_height * 0.5, z],
+                [0.01, blade_height, 0.01],
+                glam::Quat::IDENTITY,
+                (200.0 + rng.random::<f32>() * 40.0) as u8,
+                grass_spd,
+            )
         })
         .collect()
 }
@@ -217,150 +222,247 @@ pub fn generate_grass_patch(seed: u64, size: f32, density: f32) -> Vec<GaussianS
 // ---------------------------------------------------------------------------
 
 /// Return (wall_spd, window_spd, door_spd, roof_spd) for a named building style.
-fn style_spds(style: &str) -> ([u16; 8], [u16; 8], [u16; 8], [u16; 8]) {
+fn style_spds(style: &str) -> ([u16; 16], [u16; 16], [u16; 16], [u16; 16]) {
     match style {
         "victorian" => (
             // Red brick wall
             [
-                f16::from_f32(0.08).to_bits(),
-                f16::from_f32(0.08).to_bits(),
-                f16::from_f32(0.10).to_bits(),
-                f16::from_f32(0.14).to_bits(),
-                f16::from_f32(0.22).to_bits(),
-                f16::from_f32(0.52).to_bits(),
-                f16::from_f32(0.62).to_bits(),
-                f16::from_f32(0.55).to_bits(),
-            ],
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.10).to_bits(),
+        f16::from_f32(0.14).to_bits(),
+        f16::from_f32(0.22).to_bits(),
+        f16::from_f32(0.52).to_bits(),
+        f16::from_f32(0.62).to_bits(),
+        f16::from_f32(0.55).to_bits(),
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.10).to_bits(),
+        f16::from_f32(0.14).to_bits(),
+        f16::from_f32(0.22).to_bits(),
+        f16::from_f32(0.52).to_bits(),
+        f16::from_f32(0.62).to_bits(),
+        f16::from_f32(0.55).to_bits(),
+    ],
             // Clear glass window (high transmittance across visible spectrum)
             [
-                f16::from_f32(0.55).to_bits(),
-                f16::from_f32(0.60).to_bits(),
-                f16::from_f32(0.65).to_bits(),
-                f16::from_f32(0.70).to_bits(),
-                f16::from_f32(0.72).to_bits(),
-                f16::from_f32(0.70).to_bits(),
-                f16::from_f32(0.65).to_bits(),
-                f16::from_f32(0.58).to_bits(),
-            ],
+        f16::from_f32(0.55).to_bits(),
+        f16::from_f32(0.60).to_bits(),
+        f16::from_f32(0.65).to_bits(),
+        f16::from_f32(0.70).to_bits(),
+        f16::from_f32(0.72).to_bits(),
+        f16::from_f32(0.70).to_bits(),
+        f16::from_f32(0.65).to_bits(),
+        f16::from_f32(0.58).to_bits(),
+        f16::from_f32(0.55).to_bits(),
+        f16::from_f32(0.60).to_bits(),
+        f16::from_f32(0.65).to_bits(),
+        f16::from_f32(0.70).to_bits(),
+        f16::from_f32(0.72).to_bits(),
+        f16::from_f32(0.70).to_bits(),
+        f16::from_f32(0.65).to_bits(),
+        f16::from_f32(0.58).to_bits(),
+    ],
             // Oak door (warm brown)
             [
-                f16::from_f32(0.06).to_bits(),
-                f16::from_f32(0.07).to_bits(),
-                f16::from_f32(0.10).to_bits(),
-                f16::from_f32(0.16).to_bits(),
-                f16::from_f32(0.24).to_bits(),
-                f16::from_f32(0.30).to_bits(),
-                f16::from_f32(0.28).to_bits(),
-                f16::from_f32(0.22).to_bits(),
-            ],
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.07).to_bits(),
+        f16::from_f32(0.10).to_bits(),
+        f16::from_f32(0.16).to_bits(),
+        f16::from_f32(0.24).to_bits(),
+        f16::from_f32(0.30).to_bits(),
+        f16::from_f32(0.28).to_bits(),
+        f16::from_f32(0.22).to_bits(),
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.07).to_bits(),
+        f16::from_f32(0.10).to_bits(),
+        f16::from_f32(0.16).to_bits(),
+        f16::from_f32(0.24).to_bits(),
+        f16::from_f32(0.30).to_bits(),
+        f16::from_f32(0.28).to_bits(),
+        f16::from_f32(0.22).to_bits(),
+    ],
             // Slate roof (dark grey)
             [
-                f16::from_f32(0.08).to_bits(),
-                f16::from_f32(0.09).to_bits(),
-                f16::from_f32(0.10).to_bits(),
-                f16::from_f32(0.11).to_bits(),
-                f16::from_f32(0.12).to_bits(),
-                f16::from_f32(0.12).to_bits(),
-                f16::from_f32(0.11).to_bits(),
-                f16::from_f32(0.10).to_bits(),
-            ],
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.09).to_bits(),
+        f16::from_f32(0.10).to_bits(),
+        f16::from_f32(0.11).to_bits(),
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.11).to_bits(),
+        f16::from_f32(0.10).to_bits(),
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.09).to_bits(),
+        f16::from_f32(0.10).to_bits(),
+        f16::from_f32(0.11).to_bits(),
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.11).to_bits(),
+        f16::from_f32(0.10).to_bits(),
+    ],
         ),
         "modern" => (
             // Concrete wall (neutral grey)
             [
-                f16::from_f32(0.25).to_bits(),
-                f16::from_f32(0.26).to_bits(),
-                f16::from_f32(0.27).to_bits(),
-                f16::from_f32(0.28).to_bits(),
-                f16::from_f32(0.28).to_bits(),
-                f16::from_f32(0.27).to_bits(),
-                f16::from_f32(0.26).to_bits(),
-                f16::from_f32(0.25).to_bits(),
-            ],
+        f16::from_f32(0.25).to_bits(),
+        f16::from_f32(0.26).to_bits(),
+        f16::from_f32(0.27).to_bits(),
+        f16::from_f32(0.28).to_bits(),
+        f16::from_f32(0.28).to_bits(),
+        f16::from_f32(0.27).to_bits(),
+        f16::from_f32(0.26).to_bits(),
+        f16::from_f32(0.25).to_bits(),
+        f16::from_f32(0.25).to_bits(),
+        f16::from_f32(0.26).to_bits(),
+        f16::from_f32(0.27).to_bits(),
+        f16::from_f32(0.28).to_bits(),
+        f16::from_f32(0.28).to_bits(),
+        f16::from_f32(0.27).to_bits(),
+        f16::from_f32(0.26).to_bits(),
+        f16::from_f32(0.25).to_bits(),
+    ],
             // Tinted glass (blue-green tint)
             [
-                f16::from_f32(0.15).to_bits(),
-                f16::from_f32(0.20).to_bits(),
-                f16::from_f32(0.35).to_bits(),
-                f16::from_f32(0.45).to_bits(),
-                f16::from_f32(0.50).to_bits(),
-                f16::from_f32(0.40).to_bits(),
-                f16::from_f32(0.25).to_bits(),
-                f16::from_f32(0.15).to_bits(),
-            ],
+        f16::from_f32(0.15).to_bits(),
+        f16::from_f32(0.20).to_bits(),
+        f16::from_f32(0.35).to_bits(),
+        f16::from_f32(0.45).to_bits(),
+        f16::from_f32(0.50).to_bits(),
+        f16::from_f32(0.40).to_bits(),
+        f16::from_f32(0.25).to_bits(),
+        f16::from_f32(0.15).to_bits(),
+        f16::from_f32(0.15).to_bits(),
+        f16::from_f32(0.20).to_bits(),
+        f16::from_f32(0.35).to_bits(),
+        f16::from_f32(0.45).to_bits(),
+        f16::from_f32(0.50).to_bits(),
+        f16::from_f32(0.40).to_bits(),
+        f16::from_f32(0.25).to_bits(),
+        f16::from_f32(0.15).to_bits(),
+    ],
             // Metal door (dark metallic)
             [
-                f16::from_f32(0.12).to_bits(),
-                f16::from_f32(0.13).to_bits(),
-                f16::from_f32(0.14).to_bits(),
-                f16::from_f32(0.15).to_bits(),
-                f16::from_f32(0.16).to_bits(),
-                f16::from_f32(0.16).to_bits(),
-                f16::from_f32(0.15).to_bits(),
-                f16::from_f32(0.14).to_bits(),
-            ],
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.13).to_bits(),
+        f16::from_f32(0.14).to_bits(),
+        f16::from_f32(0.15).to_bits(),
+        f16::from_f32(0.16).to_bits(),
+        f16::from_f32(0.16).to_bits(),
+        f16::from_f32(0.15).to_bits(),
+        f16::from_f32(0.14).to_bits(),
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.13).to_bits(),
+        f16::from_f32(0.14).to_bits(),
+        f16::from_f32(0.15).to_bits(),
+        f16::from_f32(0.16).to_bits(),
+        f16::from_f32(0.16).to_bits(),
+        f16::from_f32(0.15).to_bits(),
+        f16::from_f32(0.14).to_bits(),
+    ],
             // Flat dark roof
             [
-                f16::from_f32(0.05).to_bits(),
-                f16::from_f32(0.06).to_bits(),
-                f16::from_f32(0.06).to_bits(),
-                f16::from_f32(0.07).to_bits(),
-                f16::from_f32(0.07).to_bits(),
-                f16::from_f32(0.07).to_bits(),
-                f16::from_f32(0.06).to_bits(),
-                f16::from_f32(0.06).to_bits(),
-            ],
+        f16::from_f32(0.05).to_bits(),
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.07).to_bits(),
+        f16::from_f32(0.07).to_bits(),
+        f16::from_f32(0.07).to_bits(),
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.05).to_bits(),
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.07).to_bits(),
+        f16::from_f32(0.07).to_bits(),
+        f16::from_f32(0.07).to_bits(),
+        f16::from_f32(0.06).to_bits(),
+        f16::from_f32(0.06).to_bits(),
+    ],
         ),
         _ => (
             // Painted wood wall (off-white/cream)
             [
-                f16::from_f32(0.40).to_bits(),
-                f16::from_f32(0.42).to_bits(),
-                f16::from_f32(0.45).to_bits(),
-                f16::from_f32(0.50).to_bits(),
-                f16::from_f32(0.55).to_bits(),
-                f16::from_f32(0.58).to_bits(),
-                f16::from_f32(0.56).to_bits(),
-                f16::from_f32(0.50).to_bits(),
-            ],
+        f16::from_f32(0.40).to_bits(),
+        f16::from_f32(0.42).to_bits(),
+        f16::from_f32(0.45).to_bits(),
+        f16::from_f32(0.50).to_bits(),
+        f16::from_f32(0.55).to_bits(),
+        f16::from_f32(0.58).to_bits(),
+        f16::from_f32(0.56).to_bits(),
+        f16::from_f32(0.50).to_bits(),
+        f16::from_f32(0.40).to_bits(),
+        f16::from_f32(0.42).to_bits(),
+        f16::from_f32(0.45).to_bits(),
+        f16::from_f32(0.50).to_bits(),
+        f16::from_f32(0.55).to_bits(),
+        f16::from_f32(0.58).to_bits(),
+        f16::from_f32(0.56).to_bits(),
+        f16::from_f32(0.50).to_bits(),
+    ],
             // Clear glass window
             [
-                f16::from_f32(0.50).to_bits(),
-                f16::from_f32(0.55).to_bits(),
-                f16::from_f32(0.60).to_bits(),
-                f16::from_f32(0.65).to_bits(),
-                f16::from_f32(0.68).to_bits(),
-                f16::from_f32(0.65).to_bits(),
-                f16::from_f32(0.60).to_bits(),
-                f16::from_f32(0.55).to_bits(),
-            ],
+        f16::from_f32(0.50).to_bits(),
+        f16::from_f32(0.55).to_bits(),
+        f16::from_f32(0.60).to_bits(),
+        f16::from_f32(0.65).to_bits(),
+        f16::from_f32(0.68).to_bits(),
+        f16::from_f32(0.65).to_bits(),
+        f16::from_f32(0.60).to_bits(),
+        f16::from_f32(0.55).to_bits(),
+        f16::from_f32(0.50).to_bits(),
+        f16::from_f32(0.55).to_bits(),
+        f16::from_f32(0.60).to_bits(),
+        f16::from_f32(0.65).to_bits(),
+        f16::from_f32(0.68).to_bits(),
+        f16::from_f32(0.65).to_bits(),
+        f16::from_f32(0.60).to_bits(),
+        f16::from_f32(0.55).to_bits(),
+    ],
             // Wood door (warm brown)
             [
-                f16::from_f32(0.08).to_bits(),
-                f16::from_f32(0.09).to_bits(),
-                f16::from_f32(0.12).to_bits(),
-                f16::from_f32(0.18).to_bits(),
-                f16::from_f32(0.26).to_bits(),
-                f16::from_f32(0.32).to_bits(),
-                f16::from_f32(0.30).to_bits(),
-                f16::from_f32(0.24).to_bits(),
-            ],
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.09).to_bits(),
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.18).to_bits(),
+        f16::from_f32(0.26).to_bits(),
+        f16::from_f32(0.32).to_bits(),
+        f16::from_f32(0.30).to_bits(),
+        f16::from_f32(0.24).to_bits(),
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.09).to_bits(),
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.18).to_bits(),
+        f16::from_f32(0.26).to_bits(),
+        f16::from_f32(0.32).to_bits(),
+        f16::from_f32(0.30).to_bits(),
+        f16::from_f32(0.24).to_bits(),
+    ],
             // Terracotta roof (warm orange-brown)
             [
-                f16::from_f32(0.08).to_bits(),
-                f16::from_f32(0.09).to_bits(),
-                f16::from_f32(0.12).to_bits(),
-                f16::from_f32(0.18).to_bits(),
-                f16::from_f32(0.28).to_bits(),
-                f16::from_f32(0.42).to_bits(),
-                f16::from_f32(0.48).to_bits(),
-                f16::from_f32(0.40).to_bits(),
-            ],
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.09).to_bits(),
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.18).to_bits(),
+        f16::from_f32(0.28).to_bits(),
+        f16::from_f32(0.42).to_bits(),
+        f16::from_f32(0.48).to_bits(),
+        f16::from_f32(0.40).to_bits(),
+        f16::from_f32(0.08).to_bits(),
+        f16::from_f32(0.09).to_bits(),
+        f16::from_f32(0.12).to_bits(),
+        f16::from_f32(0.18).to_bits(),
+        f16::from_f32(0.28).to_bits(),
+        f16::from_f32(0.42).to_bits(),
+        f16::from_f32(0.48).to_bits(),
+        f16::from_f32(0.40).to_bits(),
+    ],
         ),
     }
 }
 
 /// Encode a rotation from a normal vector as i16 quaternion [x, y, z, w].
+#[allow(dead_code)]
 fn normal_to_rotation_i16(normal: [f32; 3]) -> [i16; 4] {
     // Align the splat's local Z with the surface normal.
     // Default orientation is Z = [0, 0, 1], so find quaternion from [0,0,1] to normal.
@@ -398,30 +500,23 @@ fn scatter_wall_surface(
     rng: &mut StdRng,
     min: [f32; 3],
     max: [f32; 3],
-    spd: [u16; 8],
+    spd: [u16; 16],
     density_per_sqm: f32,
-    normal: [f32; 3],
+    _normal: [f32; 3],
 ) {
     let w = (max[0] - min[0]).abs();
     let h = (max[1] - min[1]).abs();
     let area = w * h;
     let count = (area * density_per_sqm).max(1.0) as usize;
-    let rot = normal_to_rotation_i16(normal);
 
     for _ in 0..count {
         let x = min[0] + rng.random::<f32>() * (max[0] - min[0]);
         let y = min[1] + rng.random::<f32>() * (max[1] - min[1]);
-        // Z is same for both min and max (planar)
         let z = min[2];
 
-        splats.push(GaussianSplat {
-            position: [x, y, z],
-            scale: [0.05, 0.05, 0.015], // flat against wall
-            rotation: rot,
-            opacity: 240,
-            _pad: [0; 3],
-            spectral: spd,
-        });
+        splats.push(GaussianSplat::surface(
+            [x, y, z], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.05, 0.05, 240, spd,
+        ));
     }
 }
 
@@ -431,29 +526,23 @@ fn scatter_wall_surface_xz(
     rng: &mut StdRng,
     min: [f32; 3],
     max: [f32; 3],
-    spd: [u16; 8],
+    spd: [u16; 16],
     density_per_sqm: f32,
-    normal: [f32; 3],
+    _normal: [f32; 3],
 ) {
     let d = (max[2] - min[2]).abs();
     let h = (max[1] - min[1]).abs();
     let area = d * h;
     let count = (area * density_per_sqm).max(1.0) as usize;
-    let rot = normal_to_rotation_i16(normal);
     let x = min[0]; // fixed X for side walls
 
     for _ in 0..count {
         let z = min[2] + rng.random::<f32>() * (max[2] - min[2]);
         let y = min[1] + rng.random::<f32>() * (max[1] - min[1]);
 
-        splats.push(GaussianSplat {
-            position: [x, y, z],
-            scale: [0.015, 0.05, 0.05], // flat against side wall
-            rotation: rot,
-            opacity: 240,
-            _pad: [0; 3],
-            spectral: spd,
-        });
+        splats.push(GaussianSplat::surface(
+            [x, y, z], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0], 0.05, 0.05, 240, spd,
+        ));
     }
 }
 
@@ -464,7 +553,7 @@ fn place_window(
     center: [f32; 3],
     w: f32,
     h: f32,
-    spd: [u16; 8],
+    spd: [u16; 16],
 ) {
     let cols = (w / 0.12).ceil() as usize;
     let rows = (h / 0.12).ceil() as usize;
@@ -477,14 +566,9 @@ fn place_window(
                 + (rng.random::<f32>() - 0.5) * 0.02;
             let z = center[2];
 
-            splats.push(GaussianSplat {
-                position: [x, y, z],
-                scale: [0.06, 0.06, 0.01], // very flat glass pane
-                rotation: [0, 0, 0, 32767],
-                opacity: 200, // slightly transparent
-                _pad: [0; 3],
-                spectral: spd,
-            });
+            splats.push(GaussianSplat::surface(
+                [x, y, z], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.06, 0.06, 200, spd,
+            ));
         }
     }
 }
@@ -496,7 +580,7 @@ fn place_door(
     center: [f32; 3],
     w: f32,
     h: f32,
-    spd: [u16; 8],
+    spd: [u16; 16],
 ) {
     let cols = (w / 0.10).ceil() as usize;
     let rows = (h / 0.10).ceil() as usize;
@@ -508,14 +592,9 @@ fn place_door(
             let y = center[1] + (iy as f32 + 0.5) * h / rows as f32;
             let z = center[2];
 
-            splats.push(GaussianSplat {
-                position: [x, y, z],
-                scale: [0.05, 0.05, 0.02],
-                rotation: [0, 0, 0, 32767],
-                opacity: 250,
-                _pad: [0; 3],
-                spectral: spd,
-            });
+            splats.push(GaussianSplat::surface(
+                [x, y, z], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.05, 0.05, 250, spd,
+            ));
         }
     }
 }
@@ -526,7 +605,7 @@ fn scatter_roof(
     rng: &mut StdRng,
     min: [f32; 3],
     max: [f32; 3],
-    spd: [u16; 8],
+    spd: [u16; 16],
     density_per_sqm: f32,
 ) {
     let w = (max[0] - min[0]).abs();
@@ -537,18 +616,12 @@ fn scatter_roof(
     for _ in 0..count {
         let x = min[0] + rng.random::<f32>() * (max[0] - min[0]);
         let z = min[2] + rng.random::<f32>() * (max[2] - min[2]);
-        // Slight pitch: y varies slightly with z
         let pitch_offset = (z - min[2]) / d.max(0.001) * (max[1] - min[1]);
         let y = min[1] + pitch_offset + (rng.random::<f32>() - 0.5) * 0.02;
 
-        splats.push(GaussianSplat {
-            position: [x, y, z],
-            scale: [0.06, 0.015, 0.06], // flat horizontal
-            rotation: [0, 0, 0, 32767],
-            opacity: 245,
-            _pad: [0; 3],
-            spectral: spd,
-        });
+        splats.push(GaussianSplat::surface(
+            [x, y, z], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.06, 0.06, 245, spd,
+        ));
     }
 }
 
@@ -662,34 +735,25 @@ pub fn generate_detailed_building(
 pub fn generate_lamp_post(_seed: u64, height: f32) -> Vec<GaussianSplat> {
     let mut splats = Vec::new();
 
-    let iron_spd: [u16; 8] = std::array::from_fn(|_| f16::from_f32(0.12).to_bits());
-    let glass_spd: [u16; 8] = std::array::from_fn(|_| f16::from_f32(0.8).to_bits());
+    let iron_spd: [u16; 16] = std::array::from_fn(|_| f16::from_f32(0.12).to_bits());
+    let glass_spd: [u16; 16] = std::array::from_fn(|_| f16::from_f32(0.8).to_bits());
 
     // Pole
     let pole_segments = (height * 8.0) as usize;
     for i in 0..pole_segments {
         let y = i as f32 / pole_segments as f32 * height;
-        splats.push(GaussianSplat {
-            position: [0.0, y, 0.0],
-            scale: [0.03, 0.08, 0.03],
-            rotation: [0, 0, 0, 32767],
-            opacity: 250,
-            _pad: [0; 3],
-            spectral: iron_spd,
-        });
+        splats.push(GaussianSplat::volume(
+            [0.0, y, 0.0], [0.03, 0.08, 0.03], glam::Quat::IDENTITY, 250, iron_spd,
+        ));
     }
 
     // Lamp housing (top)
     for dx in -2..=2 {
         for dz in -2..=2 {
-            splats.push(GaussianSplat {
-                position: [dx as f32 * 0.04, height, dz as f32 * 0.04],
-                scale: [0.05, 0.04, 0.05],
-                rotation: [0, 0, 0, 32767],
-                opacity: 240,
-                _pad: [0; 3],
-                spectral: glass_spd,
-            });
+            splats.push(GaussianSplat::surface(
+                [dx as f32 * 0.04, height, dz as f32 * 0.04],
+                [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.05, 0.05, 240, glass_spd,
+            ));
         }
     }
 

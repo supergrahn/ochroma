@@ -221,6 +221,7 @@ fn script_update_system(world: &mut World) {
                 continue;
             }
             // We need to remove it temporarily to avoid borrow conflict
+            #[allow(clippy::drop_non_drop)]
             drop(contexts);
             let mut contexts = world.resource_mut::<ScriptContexts>();
             contexts.contexts.remove(entity)
@@ -359,6 +360,7 @@ fn physics_collision_system(world: &mut World) {
     // Reuse the persistent collision buffer — clear without deallocating.
     let mut pairs = world.resource_mut::<CollisionPairs>();
     pairs.0.clear();
+    #[allow(clippy::drop_non_drop)]
     drop(pairs);
 
     for i in 0..entities.len() {
@@ -401,25 +403,10 @@ fn frustum_cull_system(world: &mut World) {
 /// Convert a `GaussianSplat` from entity-local space to world space.
 ///
 /// Applies `TransformComponent` as: scale → rotate → translate.
-/// The splat's own `rotation` field (encoded orientation of the Gaussian
-/// ellipsoid) is preserved — only `position` and `scale` are modified.
 pub fn transform_splat(splat: GaussianSplat, transform: &TransformComponent) -> GaussianSplat {
-    let local_pos = Vec3::from(splat.position);
-    let scaled_pos = local_pos * transform.scale;
-    let world_pos = transform.rotation * scaled_pos + transform.position;
-
-    let s = transform.scale;
-    let new_scale = [
-        splat.scale[0] * s.x,
-        splat.scale[1] * s.y,
-        splat.scale[2] * s.z,
-    ];
-
-    GaussianSplat {
-        position: world_pos.into(),
-        scale: new_scale,
-        ..splat
-    }
+    let mut out = splat;
+    out.apply_transform(transform.position, transform.rotation, transform.scale);
+    out
 }
 
 /// Gather splats from visible entities into the render buffer.
@@ -1074,14 +1061,7 @@ mod tests {
     // --- transform_splat ---
 
     fn zero_splat(pos: [f32; 3]) -> GaussianSplat {
-        GaussianSplat {
-            position: pos,
-            scale: [0.1, 0.1, 0.1],
-            rotation: [0, 0, 0, 32767],
-            opacity: 255,
-            _pad: [0; 3],
-            spectral: [0; 8],
-        }
+        GaussianSplat::surface(pos, [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.1, 0.1, 255, [0; 16])
     }
 
     fn identity_transform() -> TransformComponent {
@@ -1101,9 +1081,9 @@ mod tests {
             scale: Vec3::ONE,
         };
         let out = transform_splat(splat, &transform);
-        assert!((out.position[0] - 1.0).abs() < 1e-5, "x unchanged");
-        assert!((out.position[1] - 5.0).abs() < 1e-5, "y shifted by entity position");
-        assert!((out.position[2] - 0.0).abs() < 1e-5, "z unchanged");
+        assert!((out.position()[0] - 1.0).abs() < 1e-5, "x unchanged");
+        assert!((out.position()[1] - 5.0).abs() < 1e-5, "y shifted by entity position");
+        assert!((out.position()[2] - 0.0).abs() < 1e-5, "z unchanged");
     }
 
     #[test]
@@ -1116,9 +1096,9 @@ mod tests {
         };
         let out = transform_splat(splat, &transform);
         // Local position [1,0,0] * scale 2 = [2,0,0]
-        assert!((out.position[0] - 2.0).abs() < 1e-5, "position scaled");
+        assert!((out.position()[0] - 2.0).abs() < 1e-5, "position scaled");
         // Splat scale [0.1,0.1,0.1] * 2 = [0.2,0.2,0.2]
-        assert!((out.scale[0] - 0.2).abs() < 1e-4, "splat scale doubled");
+        assert!((out.scale_u() - 0.2).abs() < 1e-4, "splat scale doubled");
     }
 
     #[test]
@@ -1149,7 +1129,7 @@ mod tests {
 
         let buffer = world.resource::<RenderBuffer>();
         assert_eq!(buffer.splats.len(), 2, "both splats should be gathered");
-        assert!((buffer.splats[0].position[1] - 10.0).abs() < 1e-5,
+        assert!((buffer.splats[0].position()[1] - 10.0).abs() < 1e-5,
             "splat should be translated to entity world y=10");
     }
 

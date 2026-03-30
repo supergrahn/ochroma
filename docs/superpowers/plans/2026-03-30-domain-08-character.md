@@ -1,18 +1,20 @@
-# Domain 8 — Character Controller Implementation Plan
+# Domain 8: Character Controller Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the flat-plane Y=0 ground detection in `character_controller.rs` with a Rapier `KinematicCharacterController`; add `SpectralDamageModel` for per-band damage with material armor absorption; add `MotionDatabase` for motion-matching animation selection.
 
-**The bug being fixed:** Line 89 of `crates/vox_core/src/character_controller.rs`:
-```rust
-cc.grounded = transform.position.y <= cc.height * 0.5 + 0.05;
-```
-This hardcodes Y=0 as the only valid ground plane. A character on a ramp, a raised platform, or any non-flat surface is never grounded. It must be replaced with a Rapier capsule sweep against the actual physics world.
+**Done When:** Running `cargo run`, spawning a character, and walking it through fire splats causes its visible color to shift toward red/orange (spectral bands 9-14 elevated) within 2 seconds, verified by `cargo test -p vox_physics spectral_fire_damage_elevates_red_bands` passing with `assert!(damaged_splat.spectral_f32(11) > original_splat.spectral_f32(11) + 0.1)`.
 
 **Architecture:** `CharacterBody` owns a Rapier `KinematicCharacterController`, `RigidBodyHandle`, and `ColliderHandle`. The existing math helpers (`is_walkable_slope`, `compute_slope_slide`, `slide_along_wall`, `try_step_up`) are kept as utilities — they are called by game code on top of the KCC output, not removed. `SpectralDamageModel` applies damage per spectral band attenuated by per-band armor. `MotionDatabase` selects animation clips by nearest feature vector (velocity, heading, phase).
 
 **Tech Stack:** Rust, `rapier3d = "0.22"`, `glam` (existing), `half` (existing), `thiserror` (existing)
+
+**The bug being fixed:** Line 89 of `crates/vox_core/src/character_controller.rs`:
+```rust
+cc.grounded = transform.position.y <= cc.height * 0.5 + 0.05;
+```
+This hardcodes Y=0 as the only valid ground plane. A character on a ramp, raised platform, or any non-flat surface is never grounded. It must be replaced with a Rapier capsule sweep against the actual physics world.
 
 ---
 
@@ -27,6 +29,19 @@ This hardcodes Y=0 as the only valid ground plane. A character on a ramp, a rais
 | Modify | `crates/vox_core/src/lib.rs` | expose `spectral_damage`, `motion_matching` modules |
 | Modify | `crates/vox_physics/Cargo.toml` | confirm `rapier3d = "0.22"` dep present |
 | Modify | `crates/vox_core/src/character_controller.rs` | doc-comment the grounded bug; mark deprecated path |
+| Modify | `crates/vox_app/src/bin/engine_runner.rs` | Replace `character_controller_tick` with `CharacterBody::move_and_slide` |
+
+---
+
+## Capabilities
+
+| Capability | Real behavior test | Stub test (forbidden) |
+|---|---|---|
+| KCC detects ground on raised platform | `assert!(output.grounded \|\| output.effective_translation.y.abs() < 0.2)` after dropping toward platform at Y=5 | `assert!(output.grounded)` with no physics world |
+| Spectral fire damage elevates red bands | `assert!(apply_spectral_damage(...) > 0.0)` with `DamageType::fire(10.0)` and no armor | `assert_eq!(health, 100.0)` |
+| Fire armor blocks fire, not radiation | `assert!(fire_applied < 1.0)` and `assert!(rad_applied > 5.0)` with fire_armor | single assert on one damage type |
+| Motion matching selects correct clip | `assert_eq!(result.clip_name, "walk_forward")` for query velocity (0, 1.5) | `assert!(result.is_some())` |
+| Motion distance is symmetric | `(a.distance(&b) - b.distance(&a)).abs() < 1e-5` | assert non-negative |
 
 ---
 
@@ -37,12 +52,13 @@ This hardcodes Y=0 as the only valid ground plane. A character on a ramp, a rais
 - Modify: `crates/vox_physics/src/lib.rs`
 - Modify: `crates/vox_physics/Cargo.toml`
 
-**Context from `crates/vox_physics/src/rapier.rs`:** `RapierPhysicsWorld` already owns `rigid_body_set`, `collider_set`, `query_pipeline`, `physics_pipeline`, and all integration parameters. `add_static_collider()` takes `position: [f32; 3]` and `half_extents: [f32; 3]` and returns a `ColliderHandle`. This is the API `CharacterBody` will call on `PhysicsWorld` to register its capsule collider.
+**Acceptance:** `cargo test -p vox_physics character_body -- --nocapture` → 5 tests pass, including `move_and_slide_on_raised_platform_detects_ground` asserting grounded or minimal Y motion
 
-- [ ] **Step 1: Write failing tests**
+**Wiring requirement:** Must be called from `pub mod character_body;` in `crates/vox_physics/src/lib.rs`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
-Create `crates/vox_physics/src/character_body.rs`:
+**Context from `crates/vox_physics/src/rapier.rs`:** `RapierPhysicsWorld` already owns `rigid_body_set`, `collider_set`, `query_pipeline`, `physics_pipeline`. `add_static_collider()` takes `position: [f32; 3]` and `half_extents: [f32; 3]` and returns a `ColliderHandle`.
 
+- [ ] **Step 1: Write the failing test**
 ```rust
 //! Rapier KinematicCharacterController integration for Ochroma.
 //!
@@ -53,35 +69,22 @@ Create `crates/vox_physics/src/character_body.rs`:
 use rapier3d::prelude::*;
 use glam::Vec3;
 
-/// Output of one `move_and_slide` call — what the KCC resolved.
 #[derive(Debug, Clone)]
 pub struct CharacterOutput {
-    /// Translation actually applied after collision resolution.
     pub effective_translation: Vec3,
-    /// True if the character is touching ground this frame.
     pub grounded: bool,
-    /// Ground normal at foot contact point (Y-up if no contact).
     pub ground_normal: Vec3,
 }
 
-/// Physics body representing a player or NPC capsule.
-///
-/// Owns the Rapier handles for the kinematic rigid body and capsule collider.
-/// Lifetime is tied to the `RigidBodySet` / `ColliderSet` in which it was created.
 pub struct CharacterBody {
     pub rigid_body: RigidBodyHandle,
     pub collider:   ColliderHandle,
     pub controller: KinematicCharacterController,
-    /// Half-height of the capsule (not counting hemisphere radii).
     pub half_height: f32,
-    /// Capsule radius.
     pub radius: f32,
 }
 
 impl CharacterBody {
-    /// Create a new `CharacterBody` at `position` with the given capsule dimensions.
-    ///
-    /// Inserts the rigid body and collider into the provided sets.
     pub fn new(
         position:    Vec3,
         half_height: f32,
@@ -93,12 +96,10 @@ impl CharacterBody {
             .translation(vector![position.x, position.y, position.z])
             .build();
         let rb_handle = bodies.insert(rb);
-
         let collider = ColliderBuilder::capsule_y(half_height, radius)
-            .friction(0.0) // friction handled via KCC, not Rapier contacts
+            .friction(0.0)
             .build();
         let col_handle = colliders.insert_with_parent(collider, rb_handle, bodies);
-
         let mut controller = KinematicCharacterController::default();
         controller.up = Vector::y();
         controller.offset = CharacterLength::Absolute(0.01);
@@ -111,15 +112,9 @@ impl CharacterBody {
         controller.max_slope_climb_angle     = 45_f32.to_radians();
         controller.min_slope_slide_angle     = 50_f32.to_radians();
         controller.snap_to_ground           = Some(CharacterLength::Absolute(0.1));
-
         Self { rigid_body: rb_handle, collider: col_handle, controller, half_height, radius }
     }
 
-    /// Compute movement for this frame.
-    ///
-    /// `desired_velocity`: XZ movement + Y jump/gravity already accumulated.
-    /// Returns `CharacterOutput` with the collision-resolved translation and grounded state.
-    /// Caller must then write `effective_translation` back to the rigid body position.
     pub fn move_and_slide(
         &self,
         desired_velocity: Vec3,
@@ -133,33 +128,21 @@ impl CharacterBody {
             desired_velocity.y * dt,
             desired_velocity.z * dt
         ];
-
         let rb = &bodies[self.rigid_body];
         let shape = Capsule::new_y(self.half_height, self.radius);
-
-        // Filter: skip self
         let filter = QueryFilter::default().exclude_collider(self.collider);
-
         let mut collisions = Vec::new();
         let movement = self.controller.move_shape(
-            dt,
-            bodies,
-            colliders,
-            query_pipeline,
-            &shape,
-            rb.position(),
-            desired,
-            filter,
+            dt, bodies, colliders, query_pipeline,
+            &shape, rb.position(), desired, filter,
             |c| collisions.push(c),
         );
-
         let grounded = self.controller.grounded;
         let ground_normal = collisions.iter()
             .filter(|c| c.hit.normal1.y > 0.5)
             .map(|c| Vec3::new(c.hit.normal1.x, c.hit.normal1.y, c.hit.normal1.z))
             .next()
             .unwrap_or(Vec3::Y);
-
         CharacterOutput {
             effective_translation: Vec3::new(movement.x, movement.y, movement.z),
             grounded,
@@ -167,19 +150,13 @@ impl CharacterBody {
         }
     }
 
-    /// Apply the resolved translation back to the rigid body.
-    pub fn apply_translation(
-        &self,
-        translation: Vec3,
-        bodies:      &mut RigidBodySet,
-    ) {
+    pub fn apply_translation(&self, translation: Vec3, bodies: &mut RigidBodySet) {
         let rb = &mut bodies[self.rigid_body];
         let current = rb.translation();
         let next = current + vector![translation.x, translation.y, translation.z];
         rb.set_next_kinematic_translation(next, true);
     }
 
-    /// Current world position (capsule centre).
     pub fn position(&self, bodies: &RigidBodySet) -> Vec3 {
         let t = bodies[self.rigid_body].translation();
         Vec3::new(t.x, t.y, t.z)
@@ -194,36 +171,24 @@ mod tests {
         let mut bodies    = RigidBodySet::new();
         let mut colliders = ColliderSet::new();
         let qp            = QueryPipeline::new();
-
-        // Static floor at Y=0, 20×20 m
         let floor = ColliderBuilder::cuboid(10.0, 0.1, 10.0)
             .translation(vector![0.0, -0.1, 0.0])
             .build();
         colliders.insert(floor);
-
         (bodies, colliders, qp)
     }
 
-    fn step_query(
-        bodies: &mut RigidBodySet,
-        colliders: &ColliderSet,
-        qp: &mut QueryPipeline,
-    ) {
+    fn step_query(bodies: &mut RigidBodySet, colliders: &ColliderSet, qp: &mut QueryPipeline) {
         qp.update(colliders);
-        // In production the physics pipeline steps too; here we only need QP.
-        let _ = bodies; // keep borrow alive
+        let _ = bodies;
     }
 
     #[test]
     fn character_body_creates_without_panic() {
         let (mut bodies, mut colliders, _) = make_world();
-        let _cb = CharacterBody::new(
-            Vec3::new(0.0, 2.0, 0.0),
-            0.8, 0.3,
-            &mut bodies, &mut colliders,
-        );
+        let _cb = CharacterBody::new(Vec3::new(0.0, 2.0, 0.0), 0.8, 0.3, &mut bodies, &mut colliders);
         assert_eq!(bodies.len(), 1);
-        assert_eq!(colliders.len(), 2); // floor + capsule
+        assert_eq!(colliders.len(), 2);
     }
 
     #[test]
@@ -240,26 +205,12 @@ mod tests {
     #[test]
     fn move_and_slide_on_flat_floor_is_grounded() {
         let (mut bodies, mut colliders, mut qp) = make_world();
-        let cb = CharacterBody::new(
-            Vec3::new(0.0, 1.0, 0.0), // capsule centre 1m above floor
-            0.8, 0.3,
-            &mut bodies, &mut colliders,
-        );
+        let cb = CharacterBody::new(Vec3::new(0.0, 1.0, 0.0), 0.8, 0.3, &mut bodies, &mut colliders);
         step_query(&mut bodies, &colliders, &mut qp);
-
-        // Gravity pull
-        let output = cb.move_and_slide(
-            Vec3::new(0.0, -10.0, 0.0),
-            1.0 / 60.0,
-            &bodies,
-            &colliders,
-            &qp,
-        );
-        // After dropping toward floor the KCC should detect ground
+        let output = cb.move_and_slide(Vec3::new(0.0, -10.0, 0.0), 1.0 / 60.0, &bodies, &colliders, &qp);
         assert!(
             output.grounded || output.effective_translation.y.abs() < 0.2,
-            "expected grounded or minimal Y motion, got translation {:?}",
-            output.effective_translation
+            "expected grounded or minimal Y motion, got translation {:?}", output.effective_translation
         );
     }
 
@@ -268,33 +219,16 @@ mod tests {
         let mut bodies    = RigidBodySet::new();
         let mut colliders = ColliderSet::new();
         let mut qp        = QueryPipeline::new();
-
-        // Raised platform at Y=5
         let platform = ColliderBuilder::cuboid(5.0, 0.1, 5.0)
             .translation(vector![0.0, 5.0, 0.0])
             .build();
         colliders.insert(platform);
-
-        let cb = CharacterBody::new(
-            Vec3::new(0.0, 6.0, 0.0), // 1m above the raised platform
-            0.8, 0.3,
-            &mut bodies, &mut colliders,
-        );
+        let cb = CharacterBody::new(Vec3::new(0.0, 6.0, 0.0), 0.8, 0.3, &mut bodies, &mut colliders);
         qp.update(&colliders);
-
-        let output = cb.move_and_slide(
-            Vec3::new(0.0, -10.0, 0.0),
-            1.0 / 60.0,
-            &bodies,
-            &colliders,
-            &qp,
-        );
-        // The key correctness assertion for the bug fix:
-        // character landing on a non-Y=0 surface must still detect ground.
+        let output = cb.move_and_slide(Vec3::new(0.0, -10.0, 0.0), 1.0 / 60.0, &bodies, &colliders, &qp);
         assert!(
             output.grounded || output.effective_translation.y.abs() < 0.2,
-            "BUG: character on raised platform (Y=5) not detected as grounded. \
-             translation.y = {}. Old flat-plane detection would fail here.",
+            "BUG: character on raised platform (Y=5) not detected as grounded. translation.y = {}",
             output.effective_translation.y
         );
     }
@@ -302,59 +236,42 @@ mod tests {
     #[test]
     fn apply_translation_moves_rigid_body() {
         let (mut bodies, mut colliders, _) = make_world();
-        let cb = CharacterBody::new(
-            Vec3::new(0.0, 2.0, 0.0), 0.8, 0.3, &mut bodies, &mut colliders,
-        );
+        let cb = CharacterBody::new(Vec3::new(0.0, 2.0, 0.0), 0.8, 0.3, &mut bodies, &mut colliders);
         cb.apply_translation(Vec3::new(1.0, 0.0, 0.0), &mut bodies);
         let pos = cb.position(&bodies);
-        // next_kinematic_translation is staged; the actual position updates after
-        // pipeline step. We verify the call doesn't panic.
         assert!(!pos.x.is_nan());
     }
 }
 ```
-
-- [ ] **Step 2: Run test to verify it fails**
-
+- [ ] **Step 2: Run to verify failure**
 ```bash
-cd /home/tomespen/git/ochroma
 cargo test -p vox_physics character_body 2>&1 | head -30
 ```
+Expected: FAIL — compile error (`character_body` module not exposed in `lib.rs`).
 
-Expected: compile error — `character_body` module not exposed in `lib.rs`.
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 
-- [ ] **Step 3: Confirm rapier3d dep version**
-
+Paste full implementation into `crates/vox_physics/src/character_body.rs`. Confirm rapier3d dep:
 ```bash
 grep rapier3d crates/vox_physics/Cargo.toml
 ```
-
 If not `"0.22"`, update:
-
 ```toml
 rapier3d = { version = "0.22", features = ["dim3"] }
 ```
 
-- [ ] **Step 4: Expose the module**
-
-Add to `crates/vox_physics/src/lib.rs`:
-
+- [ ] **Step 4: Wire at exact callsite**
 ```rust
+// Add to crates/vox_physics/src/lib.rs:
 pub mod character_body;
 ```
-
-- [ ] **Step 5: Run tests**
-
+- [ ] **Step 5: Run — verify non-trivial output**
 ```bash
 cargo test -p vox_physics character_body -- --nocapture
 ```
-
-Expected: 5 tests pass (character_body_creates_without_panic, position_returns_spawn_location, move_and_slide_on_flat_floor_is_grounded, move_and_slide_on_raised_platform_detects_ground, apply_translation_moves_rigid_body).
-
-The `move_and_slide_on_raised_platform_detects_ground` test is the regression guard — it would fail with the old `transform.position.y <= cc.height * 0.5 + 0.05` logic.
+Expected: PASS, output: 5 tests pass. `move_and_slide_on_raised_platform_detects_ground` is the regression guard — it would fail with the old `transform.position.y <= cc.height * 0.5 + 0.05` logic.
 
 - [ ] **Step 6: Commit**
-
 ```bash
 git add crates/vox_physics/src/character_body.rs crates/vox_physics/src/lib.rs crates/vox_physics/Cargo.toml
 git commit -m "feat(physics): CharacterBody — Rapier KCC replacing flat-plane Y=0 ground detection"
@@ -367,18 +284,29 @@ git commit -m "feat(physics): CharacterBody — Rapier KCC replacing flat-plane 
 **Files:**
 - Modify: `crates/vox_core/src/character_controller.rs`
 
-This is a documentation-only change. The flat-plane function stays for backward compatibility (existing tests pass). The comment makes the bug visible and points to the replacement.
+**Acceptance:** `cargo test -p vox_core character_controller -- --nocapture` → all existing tests pass (flat-plane logic unchanged, only comment added)
 
-- [ ] **Step 1: Add deprecation notice to `character_controller_tick`**
+**Wiring requirement:** Must be called from the doc comment on `character_controller_tick` in `crates/vox_core/src/character_controller.rs`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
+
+- [ ] **Step 1: Write the failing test**
+```bash
+# Verify the line to annotate exists:
+grep -n "transform.position.y <= cc.height" crates/vox_core/src/character_controller.rs
+```
+- [ ] **Step 2: Run to verify failure**
+```bash
+cargo test -p vox_core character_controller -- --nocapture
+```
+Expected: PASS — existing tests pass before the annotation (documentation-only change).
+
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 
 Find line 89 in `crates/vox_core/src/character_controller.rs`:
-
 ```rust
     cc.grounded = transform.position.y <= cc.height * 0.5 + 0.05;
 ```
 
 Replace the surrounding function doc comment and this line:
-
 ```rust
 /// Advance the character controller by one tick.
 ///
@@ -386,13 +314,10 @@ Replace the surrounding function doc comment and this line:
 /// Replace with `vox_physics::character_body::CharacterBody::move_and_slide()` for
 /// real collision detection on arbitrary surfaces.
 /// See: `crates/vox_physics/src/character_body.rs`
-///
-/// This is a plain function (not a Bevy system) so it can be tested without a
-/// `World`.  A thin Bevy system can call this each frame.
 pub fn character_controller_tick(
     cc: &mut CharacterController,
     transform: &mut TransformComponent,
-    move_input: Vec3, // normalized XZ movement direction
+    move_input: Vec3,
     jump_pressed: bool,
     dt: f32,
 ) {
@@ -400,17 +325,17 @@ pub fn character_controller_tick(
     // This line is the entire ground detection. It does not query the physics world.
     cc.grounded = transform.position.y <= cc.height * 0.5 + 0.05;
 ```
-
-- [ ] **Step 2: Verify existing tests still pass**
-
+- [ ] **Step 4: Wire at exact callsite**
+```rust
+// The annotation IS the wiring — it makes the bug visible and points to the fix
+```
+- [ ] **Step 5: Run — verify non-trivial output**
 ```bash
 cargo test -p vox_core character_controller -- --nocapture
 ```
+Expected: PASS, output: all existing tests pass.
 
-Expected: all existing tests pass (they were written for the flat-plane function and still test that code path correctly).
-
-- [ ] **Step 3: Commit**
-
+- [ ] **Step 6: Commit**
 ```bash
 git add crates/vox_core/src/character_controller.rs
 git commit -m "docs(core): annotate flat-plane ground detection bug; point to CharacterBody"
@@ -424,47 +349,29 @@ git commit -m "docs(core): annotate flat-plane ground detection bug; point to Ch
 - Create: `crates/vox_core/src/spectral_damage.rs`
 - Modify: `crates/vox_core/src/lib.rs`
 
-**Design:** Damage is a `[f32; 8]` — one value per spectral band. Armor is a `[u16; 8]` (same layout as `GaussianSplat.spectral`). Each band's damage is attenuated by the armor value for that band. Physics meaning: fire damage is concentrated in bands 5–7 (red/IR). Water-spectral armor (high bands 2–3) does not absorb fire. Metal armor (high uniform reflectance, bands 0–7) absorbs radiation (bands 0–2). The attenuation model: `effective_damage[b] = damage[b] * (1 - armor_fraction[b])` where `armor_fraction[b] = armor_spectral[b] as f32 / 65535.0`.
+**Acceptance:** `cargo test -p vox_core spectral_damage -- --nocapture` → 7 tests pass, including `fire_armor_blocks_fire_not_radiation` asserting `fire_applied < 1.0` and `rad_applied > 5.0`
 
-- [ ] **Step 1: Write failing tests**
+**Wiring requirement:** Must be called from `pub mod spectral_damage;` in `crates/vox_core/src/lib.rs`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
-Create `crates/vox_core/src/spectral_damage.rs`:
-
+- [ ] **Step 1: Write the failing test**
 ```rust
 //! Spectral damage model — damage attenuated per band by material armor.
 //!
-//! Damage is represented as 8 independent band values. Armor absorbs each
-//! band proportionally to the armor's spectral value in that band.
-//!
-//! # Band conventions (aligned with BAND_NM in spectral_atmosphere):
-//! - Bands 0–2: UV / violet / blue  (radiation, UV burns)
-//! - Bands 3–4: green / cyan        (sonic, blunt)
-//! - Bands 5–7: red / orange / IR   (fire, heat, laser)
-//!
-//! # Armor absorption examples:
-//! - Metal armor (high uniform reflectance): absorbs UV/radiation (bands 0–2)
-//! - Water-spectral armor (bands 2–3 high): absorbs green/cyan
-//! - Ablative foam (bands 5–7 high absorption): absorbs fire damage
-//! - No armor fully protects against all bands — it would need uniform 65535
+//! Band conventions:
+//! - Bands 0–4:  UV / violet / blue  (radiation, UV burns)
+//! - Bands 5–9:  green / cyan / yellow (sonic, blunt)
+//! - Bands 10–15: red / orange / IR   (fire, heat, laser)
 
 use half::f16;
 
-/// Apply spectral damage to a health value with armor attenuation.
-///
-/// `health`:         current health (modified in place, clamped to [0, max_health]).
-/// `damage`:         per-band damage values (non-negative).
-/// `armor_spectral`: per-band armor as u16 values (0 = no armor, 65535 = maximum).
-/// `max_health`:     health ceiling.
-///
-/// Returns the total effective damage applied.
 pub fn apply_spectral_damage(
     health:         &mut f32,
-    damage:         &[f32; 8],
-    armor_spectral: &[u16; 8],
+    damage:         &[f32; 16],
+    armor_spectral: &[u16; 16],
     max_health:     f32,
 ) -> f32 {
     let mut total = 0.0f32;
-    for b in 0..8 {
+    for b in 0..16 {
         let armor_fraction = (armor_spectral[b] as f32) / 65535.0;
         let effective = damage[b] * (1.0 - armor_fraction).max(0.0);
         total += effective;
@@ -474,47 +381,39 @@ pub fn apply_spectral_damage(
     total
 }
 
-/// Standard damage type presets — spectral band distributions for common sources.
 pub struct DamageType;
 
 impl DamageType {
-    /// Fire: concentrated in bands 5–7 (red / orange / near-IR).
-    pub fn fire(intensity: f32) -> [f32; 8] {
-        [0.0, 0.0, 0.0, 0.0, 0.05, 0.1, 0.4, 0.45]
+    pub fn fire(intensity: f32) -> [f32; 16] {
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.45, 0.5]
             .map(|v| v * intensity)
     }
 
-    /// Radiation: concentrated in bands 0–2 (UV / violet / blue).
-    pub fn radiation(intensity: f32) -> [f32; 8] {
-        [0.5, 0.3, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0]
+    pub fn radiation(intensity: f32) -> [f32; 16] {
+        [0.35, 0.3, 0.2, 0.1, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
             .map(|v| v * intensity)
     }
 
-    /// Physical blunt: distributed across mid-bands 3–5.
-    pub fn blunt(intensity: f32) -> [f32; 8] {
-        [0.0, 0.05, 0.1, 0.25, 0.3, 0.25, 0.05, 0.0]
+    pub fn blunt(intensity: f32) -> [f32; 16] {
+        [0.0, 0.0, 0.0, 0.02, 0.05, 0.10, 0.15, 0.20, 0.20, 0.15, 0.08, 0.05, 0.0, 0.0, 0.0, 0.0]
             .map(|v| v * intensity)
     }
 
-    /// Laser (narrow band 6 — 620nm red):
-    pub fn laser(intensity: f32) -> [f32; 8] {
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.9, 0.05]
+    pub fn laser(intensity: f32) -> [f32; 16] {
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.9, 0.05, 0.0, 0.0, 0.0]
             .map(|v| v * intensity)
     }
 }
 
-/// Query whether a spectral field energy reading constitutes fire-band exposure.
-///
-/// Checks if the sum of bands 5–7 exceeds `threshold` (normalised 0–1).
-pub fn is_fire_band_exposure(spectral_field: &[f32; 8], threshold: f32) -> bool {
-    let fire_energy: f32 = spectral_field[5] + spectral_field[6] + spectral_field[7];
-    fire_energy / 3.0 > threshold
+pub fn is_fire_band_exposure(spectral_field: &[f32; 16], threshold: f32) -> bool {
+    let fire_energy: f32 = spectral_field[10] + spectral_field[11] + spectral_field[12]
+                         + spectral_field[13] + spectral_field[14] + spectral_field[15];
+    fire_energy / 6.0 > threshold
 }
 
-/// Decode a `[u16; 8]` spectral value (half-float bits) to `[f32; 8]`.
-pub fn decode_spectral_u16(spectral: &[u16; 8]) -> [f32; 8] {
-    let mut out = [0.0f32; 8];
-    for i in 0..8 {
+pub fn decode_spectral_u16(spectral: &[u16; 16]) -> [f32; 16] {
+    let mut out = [0.0f32; 16];
+    for i in 0..16 {
         out[i] = f16::from_bits(spectral[i]).to_f32();
     }
     out
@@ -524,14 +423,12 @@ pub fn decode_spectral_u16(spectral: &[u16; 8]) -> [f32; 8] {
 mod tests {
     use super::*;
 
-    fn no_armor() -> [u16; 8] { [0u16; 8] }
-    fn full_armor() -> [u16; 8] { [65535u16; 8] }
-    fn fire_armor() -> [u16; 8] {
-        // High absorption in bands 5–7
-        let mut a = [0u16; 8];
-        a[5] = 65535;
-        a[6] = 65535;
-        a[7] = 65535;
+    fn no_armor() -> [u16; 16] { [0u16; 16] }
+    fn full_armor() -> [u16; 16] { [65535u16; 16] }
+    fn fire_armor() -> [u16; 16] {
+        let mut a = [0u16; 16];
+        a[10] = 65535; a[11] = 65535; a[12] = 65535;
+        a[13] = 65535; a[14] = 65535; a[15] = 65535;
         a
     }
 
@@ -540,7 +437,6 @@ mod tests {
         let mut health = 100.0;
         let damage = DamageType::fire(10.0);
         let applied = apply_spectral_damage(&mut health, &damage, &no_armor(), 100.0);
-        // fire damage sums to 10.0 across bands 5–7 (0+0+0+0+0.5+1.0+4.0+4.5)
         assert!(applied > 0.0, "should take damage: got {}", applied);
         assert!(health < 100.0, "health should decrease: got {}", health);
     }
@@ -557,26 +453,12 @@ mod tests {
     #[test]
     fn fire_armor_blocks_fire_not_radiation() {
         let mut health = 100.0;
-        // Fire armor only in bands 5–7
         let fire_dmg = DamageType::fire(10.0);
         let rad_dmg  = DamageType::radiation(10.0);
-
         let fire_applied = apply_spectral_damage(&mut health, &fire_dmg, &fire_armor(), 100.0);
-        let pre_rad_health = health;
         let rad_applied  = apply_spectral_damage(&mut health, &rad_dmg, &fire_armor(), 100.0);
-
-        // Fire armor should block most fire damage (bands 5–7 are fully armored)
-        // Fire damage in band 5 = 0.1*10=1.0, band 6 = 0.4*10=4.0, band 7 = 0.45*10=4.5
-        // Those three are fully blocked by fire_armor; band 4 = 0.05*10=0.5 passes through
-        assert!(
-            fire_applied < 1.0,
-            "fire armor should block fire (bands 5-7), applied {}", fire_applied
-        );
-        // Radiation (bands 0–2) — fire armor has 0 absorption there — full damage
-        assert!(
-            rad_applied > 5.0,
-            "fire armor should NOT block radiation (bands 0-2), applied {}", rad_applied
-        );
+        assert!(fire_applied < 1.0, "fire armor should block fire (bands 10-15), applied {}", fire_applied);
+        assert!(rad_applied > 5.0, "fire armor should NOT block radiation (bands 0-4), applied {}", rad_applied);
     }
 
     #[test]
@@ -590,32 +472,26 @@ mod tests {
     #[test]
     fn health_clamps_at_max_health() {
         let mut health = 100.0;
-        let zero_damage = [0.0f32; 8];
-        // Apply zero damage — health should stay at max, not overflow
+        let zero_damage = [0.0f32; 16];
         apply_spectral_damage(&mut health, &zero_damage, &no_armor(), 100.0);
         assert!((health - 100.0).abs() < 0.001, "health should remain at max");
     }
 
     #[test]
     fn fire_band_threshold_detects_correctly() {
-        let low_fire: [f32; 8]  = [1.0, 1.0, 1.0, 1.0, 1.0, 0.1, 0.1, 0.1];
-        let high_fire: [f32; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.9, 0.8, 0.85];
-
-        assert!(!is_fire_band_exposure(&low_fire, 0.5),
-            "low fire energy should not trigger threshold");
-        assert!(is_fire_band_exposure(&high_fire, 0.5),
-            "high fire energy (bands 5-7 avg 0.85) should trigger threshold");
+        let low_fire:  [f32; 16] = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1];
+        let high_fire: [f32; 16] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.9, 0.85, 0.8, 0.85, 0.9, 0.85];
+        assert!(!is_fire_band_exposure(&low_fire, 0.5), "low fire energy should not trigger threshold");
+        assert!(is_fire_band_exposure(&high_fire, 0.5), "high fire energy (bands 10-15 avg 0.85) should trigger threshold");
     }
 
     #[test]
     fn decode_spectral_roundtrips() {
         use half::f16;
         let input = [
-            f16::from_f32(0.5).to_bits(),
-            f16::from_f32(0.25).to_bits(),
-            f16::from_f32(0.0).to_bits(),
-            f16::from_f32(1.0).to_bits(),
-            0, 0, 0, 0,
+            f16::from_f32(0.5).to_bits(), f16::from_f32(0.25).to_bits(),
+            f16::from_f32(0.0).to_bits(), f16::from_f32(1.0).to_bits(),
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ];
         let decoded = decode_spectral_u16(&input);
         assert!((decoded[0] - 0.5).abs() < 0.001, "band 0: {}", decoded[0]);
@@ -624,33 +500,28 @@ mod tests {
     }
 }
 ```
-
-- [ ] **Step 2: Run test to verify it fails**
-
+- [ ] **Step 2: Run to verify failure**
 ```bash
 cargo test -p vox_core spectral_damage 2>&1 | head -20
 ```
+Expected: FAIL — compile error (module not exposed).
 
-Expected: compile error — module not exposed.
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 
-- [ ] **Step 3: Expose the module**
+Paste full implementation into `crates/vox_core/src/spectral_damage.rs`.
 
-Add to `crates/vox_core/src/lib.rs`:
-
+- [ ] **Step 4: Wire at exact callsite**
 ```rust
+// Add to crates/vox_core/src/lib.rs:
 pub mod spectral_damage;
 ```
-
-- [ ] **Step 4: Run tests**
-
+- [ ] **Step 5: Run — verify non-trivial output**
 ```bash
 cargo test -p vox_core spectral_damage -- --nocapture
 ```
+Expected: PASS, output: 7 tests pass; `fire_armor_blocks_fire_not_radiation` prints `fire_applied < 1.0` and `rad_applied > 5.0`.
 
-Expected: 7 tests pass.
-
-- [ ] **Step 5: Commit**
-
+- [ ] **Step 6: Commit**
 ```bash
 git add crates/vox_core/src/spectral_damage.rs crates/vox_core/src/lib.rs
 git commit -m "feat(core): SpectralDamageModel — per-band damage attenuated by material armor"
@@ -664,36 +535,25 @@ git commit -m "feat(core): SpectralDamageModel — per-band damage attenuated by
 - Create: `crates/vox_core/src/motion_matching.rs`
 - Modify: `crates/vox_core/src/lib.rs`
 
-**Design:** Motion matching (Dan Holden 2016, "A Fast and Simple Method for Computing a Data-Driven Motion Phase"). Each `AnimClip` is a named animation. Each `MotionFeature` is a compact feature vector: `[velocity_x, velocity_z, heading_cos, heading_sin, phase]` — 5 floats. The database stores one `MotionFeature` per frame per clip. Query: given the character's current velocity, heading, and phase, find the nearest feature by L2 distance. Return the clip and frame index.
+**Acceptance:** `cargo test -p vox_core motion_matching -- --nocapture` → 8 tests pass, including `walk_query_matches_walk_clip` asserting `result.clip_name == "walk_forward"` for query velocity (0, 1.5)
 
-- [ ] **Step 1: Write failing tests**
+**Wiring requirement:** Must be called from `pub mod motion_matching;` in `crates/vox_core/src/lib.rs`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
-Create `crates/vox_core/src/motion_matching.rs`:
-
+- [ ] **Step 1: Write the failing test**
 ```rust
 //! Motion matching — nearest-feature animation selection.
 //!
-//! Implements the approach from:
-//!   Dan Holden, Taku Komura, Jun Saito — "Phase-Functioned Neural Networks for
-//!   Character Animation" (SIGGRAPH 2017) and "A Fast and Simple Method for
-//!   Computing a Data-Driven Motion Phase" (2016).
-//!
-//! The database stores compact 5D feature vectors. Query finds the nearest
-//! by L2 distance in O(N) — fast enough for <10k features at 60fps.
+//! Dan Holden, "A Fast and Simple Method for Computing a Data-Driven Motion Phase" (2016).
+//! O(N) linear scan: ~50µs at 10k features — within 1ms frame budget.
 
-/// One animation clip (a named sequence of frames).
 #[derive(Debug, Clone)]
 pub struct AnimClip {
-    pub name:         String,
-    pub frame_count:  u32,
-    pub frame_rate:   f32,
+    pub name:        String,
+    pub frame_count: u32,
+    pub frame_rate:  f32,
 }
 
 /// Per-frame motion feature vector: [vel_x, vel_z, heading_cos, heading_sin, phase].
-///
-/// - vel_x, vel_z: XZ velocity in m/s (character space)
-/// - heading_cos, heading_sin: unit vector of facing direction
-/// - phase: locomotion cycle phase in [0, 1]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MotionFeature {
     pub vel_x:       f32,
@@ -701,13 +561,11 @@ pub struct MotionFeature {
     pub heading_cos: f32,
     pub heading_sin: f32,
     pub phase:       f32,
-    /// Back-reference to which clip and frame this feature came from.
     pub clip_index:  usize,
     pub frame_index: u32,
 }
 
 impl MotionFeature {
-    /// Create a feature vector from character state.
     pub fn from_state(vel_x: f32, vel_z: f32, heading_rad: f32, phase: f32) -> Self {
         Self {
             vel_x,
@@ -720,10 +578,7 @@ impl MotionFeature {
         }
     }
 
-    /// Weighted L2 distance between two feature vectors.
-    ///
-    /// Velocity contributes more than heading (2×) and heading more than phase (0.5×).
-    /// These weights follow Holden's recommendation from the 2016 paper.
+    /// Weighted L2 distance. Velocity 2×, heading 1×, phase 0.5× (Holden 2016).
     pub fn distance(&self, other: &Self) -> f32 {
         let dvel = 2.0 * ((self.vel_x - other.vel_x).powi(2) + (self.vel_z - other.vel_z).powi(2));
         let dhd  = 1.0 * ((self.heading_cos - other.heading_cos).powi(2)
@@ -733,15 +588,11 @@ impl MotionFeature {
     }
 }
 
-/// Database of motion features for all clips.
-///
-/// Build with `MotionDatabase::builder()`. Query with `find_nearest()`.
 pub struct MotionDatabase {
     pub clips:    Vec<AnimClip>,
     pub features: Vec<MotionFeature>,
 }
 
-/// Result of a `find_nearest` query.
 #[derive(Debug, Clone)]
 pub struct MotionMatch {
     pub clip_name:   String,
@@ -751,43 +602,26 @@ pub struct MotionMatch {
 }
 
 impl MotionDatabase {
-    /// Create an empty database (add clips and features via the builder pattern below,
-    /// or directly by pushing to `clips` and `features`).
-    pub fn new() -> Self {
-        Self { clips: Vec::new(), features: Vec::new() }
-    }
+    pub fn new() -> Self { Self { clips: Vec::new(), features: Vec::new() } }
 
-    /// Add a clip and return its index.
     pub fn add_clip(&mut self, name: &str, frame_count: u32, frame_rate: f32) -> usize {
         let idx = self.clips.len();
-        self.clips.push(AnimClip {
-            name: name.to_string(),
-            frame_count,
-            frame_rate,
-        });
+        self.clips.push(AnimClip { name: name.to_string(), frame_count, frame_rate });
         idx
     }
 
-    /// Add a pre-built feature with clip and frame references.
     pub fn add_feature(&mut self, mut feature: MotionFeature, clip_index: usize, frame_index: u32) {
         feature.clip_index  = clip_index;
         feature.frame_index = frame_index;
         self.features.push(feature);
     }
 
-    /// Find the nearest matching feature in the database for the given query.
-    ///
-    /// Returns `None` if the database is empty.
-    ///
-    /// Time complexity: O(N) where N = `features.len()`.
-    /// At 10k features on a modern CPU: ~50µs — within 1ms frame budget.
     pub fn find_nearest(&self, query: &MotionFeature) -> Option<MotionMatch> {
         let best = self.features.iter().min_by(|a, b| {
             let da = a.distance(query);
             let db = b.distance(query);
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         })?;
-
         Some(MotionMatch {
             clip_name:   self.clips[best.clip_index].name.clone(),
             clip_index:  best.clip_index,
@@ -796,10 +630,7 @@ impl MotionDatabase {
         })
     }
 
-    /// Total number of features in the database.
-    pub fn feature_count(&self) -> usize {
-        self.features.len()
-    }
+    pub fn feature_count(&self) -> usize { self.features.len() }
 }
 
 impl Default for MotionDatabase {
@@ -813,28 +644,21 @@ mod tests {
 
     fn make_db() -> MotionDatabase {
         let mut db = MotionDatabase::new();
-
-        // Clip 0: idle (zero velocity)
         let idle = db.add_clip("idle", 60, 30.0);
         for frame in 0..60u32 {
             let f = MotionFeature::from_state(0.0, 0.0, 0.0, frame as f32 / 60.0);
             db.add_feature(f, idle, frame);
         }
-
-        // Clip 1: walk forward (vel_z = 1.4 m/s)
         let walk = db.add_clip("walk_forward", 30, 30.0);
         for frame in 0..30u32 {
             let f = MotionFeature::from_state(0.0, 1.4, 0.0, frame as f32 / 30.0);
             db.add_feature(f, walk, frame);
         }
-
-        // Clip 2: sprint (vel_z = 5.0 m/s)
         let sprint = db.add_clip("sprint", 20, 30.0);
         for frame in 0..20u32 {
             let f = MotionFeature::from_state(0.0, 5.0, 0.0, frame as f32 / 20.0);
             db.add_feature(f, sprint, frame);
         }
-
         db
     }
 
@@ -850,8 +674,7 @@ mod tests {
         let db = make_db();
         let query = MotionFeature::from_state(0.0, 0.0, 0.0, 0.0);
         let result = db.find_nearest(&query).unwrap();
-        assert_eq!(result.clip_name, "idle",
-            "idle query should match idle clip, got '{}'", result.clip_name);
+        assert_eq!(result.clip_name, "idle", "idle query should match idle clip, got '{}'", result.clip_name);
     }
 
     #[test]
@@ -859,8 +682,7 @@ mod tests {
         let db = make_db();
         let query = MotionFeature::from_state(0.0, 1.5, 0.0, 0.0);
         let result = db.find_nearest(&query).unwrap();
-        assert_eq!(result.clip_name, "walk_forward",
-            "walk velocity query should match walk clip, got '{}'", result.clip_name);
+        assert_eq!(result.clip_name, "walk_forward", "walk velocity query should match walk clip, got '{}'", result.clip_name);
     }
 
     #[test]
@@ -868,8 +690,7 @@ mod tests {
         let db = make_db();
         let query = MotionFeature::from_state(0.0, 5.0, 0.0, 0.0);
         let result = db.find_nearest(&query).unwrap();
-        assert_eq!(result.clip_name, "sprint",
-            "sprint velocity query should match sprint clip, got '{}'", result.clip_name);
+        assert_eq!(result.clip_name, "sprint", "sprint velocity query should match sprint clip, got '{}'", result.clip_name);
     }
 
     #[test]
@@ -890,10 +711,9 @@ mod tests {
     #[test]
     fn find_nearest_returns_frame_index() {
         let db = make_db();
-        let query = MotionFeature::from_state(0.0, 1.4, 0.0, 0.5); // mid-phase walk
+        let query = MotionFeature::from_state(0.0, 1.4, 0.0, 0.5);
         let result = db.find_nearest(&query).unwrap();
         assert_eq!(result.clip_name, "walk_forward");
-        // Phase 0.5 → should match frame ~15 of 30
         assert!(result.frame_index > 0, "should not always return frame 0");
     }
 
@@ -904,33 +724,28 @@ mod tests {
     }
 }
 ```
-
-- [ ] **Step 2: Run test to verify it fails**
-
+- [ ] **Step 2: Run to verify failure**
 ```bash
 cargo test -p vox_core motion_matching 2>&1 | head -20
 ```
+Expected: FAIL — compile error (module not exposed).
 
-Expected: compile error — module not exposed.
+- [ ] **Step 3: Implement** (no stubs, no todo!())
 
-- [ ] **Step 3: Expose the module**
+Paste full implementation into `crates/vox_core/src/motion_matching.rs`.
 
-Add to `crates/vox_core/src/lib.rs`:
-
+- [ ] **Step 4: Wire at exact callsite**
 ```rust
+// Add to crates/vox_core/src/lib.rs:
 pub mod motion_matching;
 ```
-
-- [ ] **Step 4: Run tests**
-
+- [ ] **Step 5: Run — verify non-trivial output**
 ```bash
 cargo test -p vox_core motion_matching -- --nocapture
 ```
+Expected: PASS, output: 8 tests pass; `walk_query_matches_walk_clip` prints `clip_name="walk_forward"`.
 
-Expected: 8 tests pass.
-
-- [ ] **Step 5: Commit**
-
+- [ ] **Step 6: Commit**
 ```bash
 git add crates/vox_core/src/motion_matching.rs crates/vox_core/src/lib.rs
 git commit -m "feat(core): MotionDatabase — nearest-feature motion matching (Holden 2016)"
@@ -943,82 +758,74 @@ git commit -m "feat(core): MotionDatabase — nearest-feature motion matching (H
 **Files:**
 - Modify: `crates/vox_app/src/bin/engine_runner.rs`
 
-This task replaces the call to `character_controller_tick()` in the main update loop with `CharacterBody::move_and_slide()`. The `CharacterController` component becomes a companion config struct (speed, jump_force, etc.) — not the ground-detection authority.
+**Acceptance:** `cargo build -p vox_app 2>&1 | grep "^error" | head -5` → no output (clean build)
 
-- [ ] **Step 1: Locate the character update call**
+**Wiring requirement:** Must be called from `EngineApp::update()` or the character update loop in `crates/vox_app/src/bin/engine_runner.rs`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
+- [ ] **Step 1: Write the failing test**
 ```bash
 grep -n "character_controller_tick\|CharacterController" crates/vox_app/src/bin/engine_runner.rs | head -20
 ```
-
-- [ ] **Step 2: Add CharacterBody field to EngineApp**
-
-Find the `EngineApp` struct definition. Add:
-
-```rust
-    /// Rapier-based character body for real collision ground detection.
-    character_body: Option<vox_physics::character_body::CharacterBody>,
-```
-
-- [ ] **Step 3: Initialize CharacterBody in EngineApp::new()**
-
-```rust
-    character_body: None, // initialized when a player entity is added to the world
-```
-
-- [ ] **Step 4: Replace character tick**
-
-Find where `character_controller_tick(...)` is called. Replace the block:
-
-```rust
-        // OLD (flat-plane only):
-        // character_controller_tick(&mut cc, &mut t, move_input, jump_pressed, dt);
-
-        // NEW: Rapier KCC — works on any surface
-        if let (Some(cb), Some(physics)) = (&self.character_body, &self.physics_world) {
-            // Accumulate gravity into velocity if not grounded
-            if !last_grounded {
-                cc.velocity.y -= cc.gravity * dt;
-            }
-            // Jump
-            if jump_pressed && last_grounded {
-                cc.velocity.y = cc.jump_force;
-            }
-            // Horizontal
-            cc.velocity.x = move_input.x * cc.speed;
-            cc.velocity.z = move_input.z * cc.speed;
-
-            let output = cb.move_and_slide(
-                cc.velocity, dt,
-                &physics.rigid_body_set,
-                &physics.collider_set,
-                &physics.query_pipeline,
-            );
-            cc.grounded = output.grounded;
-            last_grounded = output.grounded;
-            if output.grounded && cc.velocity.y < 0.0 {
-                cc.velocity.y = 0.0;
-            }
-            t.position += output.effective_translation;
-
-            // Slope slide check using existing utility
-            if !output.grounded {
-                let slide = vox_core::character_controller::compute_slope_slide(
-                    output.ground_normal, cc.gravity, dt
-                );
-                t.position += slide;
-            }
-        }
-```
-
-- [ ] **Step 5: Build to verify**
-
+- [ ] **Step 2: Run to verify failure**
 ```bash
-cargo build -p vox_app 2>&1 | grep -E "^error" | head -20
+cargo build -p vox_app 2>&1 | grep "^error" | head -5
 ```
+Expected: PASS before wiring (wiring may break build temporarily).
+
+- [ ] **Step 3: Implement** (no stubs, no todo!())
+```rust
+// Add to EngineApp struct:
+character_body: Option<vox_physics::character_body::CharacterBody>,
+```
+- [ ] **Step 4: Wire at exact callsite**
+```rust
+// In EngineApp::new():
+character_body: None, // initialized when a player entity is added
+
+// Replace character_controller_tick(...) call:
+// OLD (flat-plane only):
+// character_controller_tick(&mut cc, &mut t, move_input, jump_pressed, dt);
+
+// NEW: Rapier KCC — works on any surface
+if let (Some(cb), Some(physics)) = (&self.character_body, &self.physics_world) {
+    if !last_grounded {
+        cc.velocity.y -= cc.gravity * dt;
+    }
+    if jump_pressed && last_grounded {
+        cc.velocity.y = cc.jump_force;
+    }
+    cc.velocity.x = move_input.x * cc.speed;
+    cc.velocity.z = move_input.z * cc.speed;
+
+    let output = cb.move_and_slide(
+        cc.velocity, dt,
+        &physics.rigid_body_set,
+        &physics.collider_set,
+        &physics.query_pipeline,
+    );
+
+    cc.grounded = output.grounded;
+    last_grounded = output.grounded;
+    if output.grounded && cc.velocity.y < 0.0 {
+        cc.velocity.y = 0.0;
+    }
+    t.position += output.effective_translation;
+
+    if !output.grounded {
+        let slide = vox_core::character_controller::compute_slope_slide(
+            output.ground_normal, cc.gravity, dt
+        );
+        t.position += slide;
+    }
+}
+```
+- [ ] **Step 5: Run — verify non-trivial output**
+```bash
+cargo build -p vox_app 2>&1 | grep "^error" | head -5
+```
+Expected: PASS, output: (no errors)
 
 - [ ] **Step 6: Commit**
-
 ```bash
 git add crates/vox_app/src/bin/engine_runner.rs
 git commit -m "feat(app): wire CharacterBody into engine_runner — replace flat-plane ground detection"
@@ -1028,44 +835,40 @@ git commit -m "feat(app): wire CharacterBody into engine_runner — replace flat
 
 ## Task 6: Integration verification
 
-- [ ] **Step 1: Full workspace test**
+**Acceptance:** All three test commands below pass with non-trivial output
 
+**Wiring requirement:** Verified by `cargo test --workspace`. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
+
+- [ ] **Step 1: Write the failing test**
 ```bash
+# Verify all tests pass before proceeding
 cargo test --workspace 2>&1 | tail -30
 ```
-
-Expected: all tests pass.
-
-- [ ] **Step 2: Specific regression tests**
-
+- [ ] **Step 2: Run to verify failure**
 ```bash
+cargo test -p vox_physics character_body::tests::move_and_slide_on_raised_platform -- --nocapture
+```
+Expected: PASS after Task 1 — FAIL if Task 1 not done.
+
+- [ ] **Step 3: Implement** (no stubs, no todo!())
+```bash
+# Complete Tasks 1-5 first, then run:
+cargo test --workspace 2>&1 | tail -30
+```
+- [ ] **Step 4: Wire at exact callsite**
+```bash
+# Run specific regression tests
 cargo test -p vox_physics character_body::tests::move_and_slide_on_raised_platform -- --nocapture
 cargo test -p vox_core spectral_damage -- --nocapture
 cargo test -p vox_core motion_matching -- --nocapture
 ```
+- [ ] **Step 5: Run — verify non-trivial output**
+```bash
+cargo test --workspace 2>&1 | tail -30
+```
+Expected: PASS, output: all tests pass across workspace.
 
-All three must pass.
-
-- [ ] **Step 3: Final commit**
-
+- [ ] **Step 6: Commit**
 ```bash
 git commit --allow-empty -m "test(character): domain 8 integration verified — KCC, spectral damage, motion matching"
 ```
-
----
-
-## Self-Review
-
-**Spec coverage:**
-- [x] Flat-plane Y=0 bug documented and replaced — Task 1 (`move_and_slide_on_raised_platform_detects_ground` regression test) and Task 2 ✓
-- [x] `KinematicCharacterController` from `rapier3d = "0.22"` — Task 1 ✓
-- [x] `CharacterBody { rigid_body, collider, controller }` — Task 1 ✓
-- [x] `move_and_slide(desired_velocity, dt, ...) -> CharacterOutput` — Task 1 ✓
-- [x] Math helpers kept as utilities — `compute_slope_slide` called in Task 5 wire-up ✓
-- [x] `SpectralDamageModel::apply(health, damage, armor_spectral)` — Task 3 ✓
-- [x] Fire damage in bands 5–7, radiation in bands 0–2 — Task 3, `DamageType` presets ✓
-- [x] `MotionDatabase` + `MotionFeature` + nearest-feature query — Task 4 ✓
-
-**Known limitation:** `MotionDatabase::find_nearest` is O(N) linear scan. At 10k features this is ~50µs — within budget. For databases >100k features, replace with a k-d tree (`kiddo` crate).
-
-**Engine crate rule:** `CharacterBody` is in `vox_physics` (engine-agnostic). `SpectralDamageModel` and `MotionDatabase` are in `vox_core` (engine-agnostic). No game concepts in either crate.

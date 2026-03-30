@@ -23,13 +23,13 @@ pub fn match_employment(citizens: &mut [Citizen], buildings: &mut BuildingManage
             .residence
             .map(|r| [r as f32 * 10.0, 0.0])
             .unwrap_or([0.0, 0.0]);
-        if let Some(building_id) = buildings.find_nearest_with_vacancy(pos, bt) {
-            if buildings.assign_occupant(building_id) {
-                citizen.employment = Some(building_id);
-                citizen.workplace = Some(building_id);
-                citizen.needs.employment = 0.8;
-                matched += 1;
-            }
+        if let Some(building_id) = buildings.find_nearest_with_vacancy(pos, bt)
+            && buildings.assign_occupant(building_id)
+        {
+            citizen.employment = Some(building_id);
+            citizen.workplace = Some(building_id);
+            citizen.needs.employment = 0.8;
+            matched += 1;
         }
     }
 
@@ -47,12 +47,11 @@ pub fn match_housing(citizens: &mut [Citizen], buildings: &mut BuildingManager) 
 
         let pos = [0.0, 0.0];
         if let Some(building_id) = buildings.find_nearest_with_vacancy(pos, BuildingType::Residential)
+            && buildings.assign_occupant(building_id)
         {
-            if buildings.assign_occupant(building_id) {
-                citizen.residence = Some(building_id);
-                citizen.needs.housing = 0.8;
-                matched += 1;
-            }
+            citizen.residence = Some(building_id);
+            citizen.needs.housing = 0.8;
+            matched += 1;
         }
     }
 
@@ -82,19 +81,19 @@ pub fn process_education(
     for citizen in citizens.iter_mut() {
         match citizen.lifecycle {
             LifecycleStage::Student => {
-                if citizen.age >= 6.0 && citizen.age < 12.0 && has_primary {
-                    if citizen.education < EducationLevel::Primary {
-                        citizen.education = EducationLevel::Primary;
-                        citizen.needs.education = 0.7;
-                        graduated += 1;
-                    }
+                if citizen.age >= 6.0 && citizen.age < 12.0 && has_primary
+                    && citizen.education < EducationLevel::Primary
+                {
+                    citizen.education = EducationLevel::Primary;
+                    citizen.needs.education = 0.7;
+                    graduated += 1;
                 }
-                if citizen.age >= 12.0 && citizen.age < 18.0 && has_secondary {
-                    if citizen.education < EducationLevel::Secondary {
-                        citizen.education = EducationLevel::Secondary;
-                        citizen.needs.education = 0.8;
-                        graduated += 1;
-                    }
+                if citizen.age >= 12.0 && citizen.age < 18.0 && has_secondary
+                    && citizen.education < EducationLevel::Secondary
+                {
+                    citizen.education = EducationLevel::Secondary;
+                    citizen.needs.education = 0.8;
+                    graduated += 1;
                 }
             }
             LifecycleStage::Worker => {

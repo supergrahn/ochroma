@@ -264,8 +264,8 @@ fn compute_cov3d(rotation: &[[f32; 3]; 3], scales: &[f32; 3]) -> [[f32; 3]; 3] {
     let mut cov = [[0.0f32; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
-            for k in 0..3 {
-                cov[i][j] += m[i][k] * m[j][k];
+            for (k, &mik) in m[i].iter().enumerate() {
+                cov[i][j] += mik * m[j][k];
             }
         }
     }
@@ -492,12 +492,11 @@ fn render_cpu_internal(
                         .map(|m| m[py * w + px])
                         .unwrap_or(1.0);
 
-                    for tg_idx in start..end {
+                    for tg in &tile_gaussians[start..end] {
                         if transmittance < TRANSMITTANCE_THRESHOLD {
                             break;
                         }
 
-                        let tg = &tile_gaussians[tg_idx];
                         let pg = match proj_idx_map[tg.gaussian_idx] {
                             Some(idx) => &projected[idx],
                             None => continue,

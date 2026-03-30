@@ -1,3 +1,4 @@
+use glam;
 use std::io::Read;
 use std::path::Path;
 use vox_core::spectral::rgb_to_spectral;
@@ -213,14 +214,20 @@ pub fn load_ply_from_reader(reader: &mut impl Read) -> Result<Vec<GaussianSplat>
         // Convert RGB to approximate spectral bands
         let spectral = rgb_to_spectral(r, g, b);
 
-        splats.push(GaussianSplat {
-            position: [x, y, z],
-            scale: [sx, sy, sz],
-            rotation,
+        // rotation is stored as i16 XYZW; convert to Quat for volume constructor
+        let qx = rotation[0] as f32 / 32767.0;
+        let qy = rotation[1] as f32 / 32767.0;
+        let qz = rotation[2] as f32 / 32767.0;
+        let qw = rotation[3] as f32 / 32767.0;
+        let rotation_quat = glam::Quat::from_xyzw(qx, qy, qz, qw).normalize();
+
+        splats.push(GaussianSplat::volume(
+            [x, y, z],
+            [sx, sy, sz],
+            rotation_quat,
             opacity,
-            _pad: [0; 3],
             spectral,
-        });
+        ));
     }
 
     Ok(splats)

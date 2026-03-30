@@ -4,7 +4,7 @@ use vox_render::spectral_shift::{
 };
 
 fn flat_spd(value: f32) -> SpectralBands {
-    SpectralBands([value; 8])
+    SpectralBands([value; 16])
 }
 
 fn spds_equal(a: &SpectralBands, b: &SpectralBands) -> bool {
@@ -15,7 +15,7 @@ fn spds_equal(a: &SpectralBands, b: &SpectralBands) -> bool {
 
 #[test]
 fn clear_weather_is_identity() {
-    let base = SpectralBands([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]);
+    let base = SpectralBands([0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.72, 0.75, 0.8]);
     let result = apply_weather_shift(&base, WeatherState::Clear);
     assert!(spds_equal(&base, &result), "Clear should not modify SPD");
 }
@@ -49,7 +49,7 @@ fn rain_modifies_spd() {
 fn overcast_attenuates_all_bands() {
     let base = flat_spd(1.0);
     let overcast = apply_weather_shift(&base, WeatherState::Overcast);
-    for i in 0..8 {
+    for i in 0..16 {
         assert!(
             overcast.0[i] < base.0[i],
             "Overcast should attenuate band {i}: {} >= {}",
@@ -63,12 +63,12 @@ fn overcast_attenuates_all_bands() {
 fn fog_attenuates_short_wavelengths_more() {
     let base = flat_spd(1.0);
     let foggy = apply_weather_shift(&base, WeatherState::Fog);
-    // Fog scatters short wavelengths more, so band 0 (380nm) should be attenuated more than band 7 (660nm)
+    // Fog scatters short wavelengths more, so band 0 (380nm) should be attenuated more than band 15 (755nm)
     assert!(
-        foggy.0[0] < foggy.0[7],
-        "Fog should attenuate short wavelengths more: band0={}, band7={}",
+        foggy.0[0] < foggy.0[15],
+        "Fog should attenuate short wavelengths more: band0={}, band15={}",
         foggy.0[0],
-        foggy.0[7]
+        foggy.0[15]
     );
 }
 
@@ -76,7 +76,7 @@ fn fog_attenuates_short_wavelengths_more() {
 fn snow_boosts_reflectance() {
     let base = flat_spd(1.0);
     let snowy = apply_weather_shift(&base, WeatherState::Snow);
-    for i in 0..8 {
+    for i in 0..16 {
         assert!(
             snowy.0[i] > base.0[i],
             "Snow should boost band {i}: {} <= {}",
@@ -90,8 +90,8 @@ fn snow_boosts_reflectance() {
 
 #[test]
 fn wear_zero_returns_fresh_spd() {
-    let fresh = SpectralBands([0.9, 0.8, 0.85, 0.7, 0.75, 0.8, 0.85, 0.9]);
-    let worn = SpectralBands([0.4, 0.3, 0.35, 0.3, 0.35, 0.4, 0.45, 0.5]);
+    let fresh = SpectralBands([0.9, 0.85, 0.8, 0.82, 0.78, 0.75, 0.77, 0.80, 0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.89, 0.9]);
+    let worn = SpectralBands([0.4, 0.38, 0.3, 0.32, 0.33, 0.35, 0.36, 0.38, 0.40, 0.42, 0.43, 0.45, 0.46, 0.47, 0.48, 0.5]);
 
     let result = apply_wear_shift(&fresh, &worn, 0.0);
     assert!(spds_equal(&fresh, &result), "wear=0.0 should return fresh SPD");
@@ -99,8 +99,8 @@ fn wear_zero_returns_fresh_spd() {
 
 #[test]
 fn wear_one_returns_worn_spd() {
-    let fresh = SpectralBands([0.9, 0.8, 0.85, 0.7, 0.75, 0.8, 0.85, 0.9]);
-    let worn = SpectralBands([0.4, 0.3, 0.35, 0.3, 0.35, 0.4, 0.45, 0.5]);
+    let fresh = SpectralBands([0.9, 0.85, 0.8, 0.82, 0.78, 0.75, 0.77, 0.80, 0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.89, 0.9]);
+    let worn = SpectralBands([0.4, 0.38, 0.3, 0.32, 0.33, 0.35, 0.36, 0.38, 0.40, 0.42, 0.43, 0.45, 0.46, 0.47, 0.48, 0.5]);
 
     let result = apply_wear_shift(&fresh, &worn, 1.0);
     assert!(spds_equal(&worn, &result), "wear=1.0 should return worn SPD");
@@ -108,11 +108,11 @@ fn wear_one_returns_worn_spd() {
 
 #[test]
 fn wear_interpolation_midpoint() {
-    let fresh = SpectralBands([1.0; 8]);
-    let worn = SpectralBands([0.0; 8]);
+    let fresh = SpectralBands([1.0; 16]);
+    let worn = SpectralBands([0.0; 16]);
 
     let result = apply_wear_shift(&fresh, &worn, 0.5);
-    for i in 0..8 {
+    for i in 0..16 {
         assert!(
             (result.0[i] - 0.5).abs() < f32::EPSILON,
             "wear=0.5 midpoint should be 0.5, got {} at band {i}",
@@ -123,13 +123,13 @@ fn wear_interpolation_midpoint() {
 
 #[test]
 fn wear_interpolation_quarter() {
-    let fresh = SpectralBands([1.0; 8]);
-    let worn = SpectralBands([0.0; 8]);
+    let fresh = SpectralBands([1.0; 16]);
+    let worn = SpectralBands([0.0; 16]);
 
     let result_25 = apply_wear_shift(&fresh, &worn, 0.25);
     let result_75 = apply_wear_shift(&fresh, &worn, 0.75);
 
-    for i in 0..8 {
+    for i in 0..16 {
         assert!(
             (result_25.0[i] - 0.75).abs() < f32::EPSILON,
             "wear=0.25 should give 0.75, got {} at band {i}",
@@ -145,8 +145,8 @@ fn wear_interpolation_quarter() {
 
 #[test]
 fn wear_clamped_outside_range() {
-    let fresh = SpectralBands([1.0; 8]);
-    let worn = SpectralBands([0.5; 8]);
+    let fresh = SpectralBands([1.0; 16]);
+    let worn = SpectralBands([0.5; 16]);
 
     // Values outside [0, 1] should be clamped
     let result_neg = apply_wear_shift(&fresh, &worn, -0.5);

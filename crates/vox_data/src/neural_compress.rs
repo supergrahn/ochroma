@@ -44,15 +44,15 @@ impl NeuralCompressor {
             CompressionQuality::Fast => {
                 // Store only position (3 x f16) + opacity (u8) + dominant spectral band (u8)
                 for splat in splats {
-                    for &p in &splat.position {
+                    for &p in &splat.position() {
                         data.extend_from_slice(
                             &half::f16::from_f32(p).to_bits().to_le_bytes(),
                         );
                     }
-                    data.push(splat.opacity);
+                    data.push(splat.opacity());
                     // Find dominant spectral band
                     let max_band = splat
-                        .spectral
+                        .spectral()
                         .iter()
                         .enumerate()
                         .max_by_key(|&(_, &v)| {
@@ -66,37 +66,37 @@ impl NeuralCompressor {
             CompressionQuality::Balanced => {
                 // Store position (3 x f16) + scale average (f16) + opacity (u8) + 4 spectral bands
                 for splat in splats {
-                    for &p in &splat.position {
+                    for &p in &splat.position() {
                         data.extend_from_slice(
                             &half::f16::from_f32(p).to_bits().to_le_bytes(),
                         );
                     }
-                    let avg_scale = (splat.scale[0] + splat.scale[1] + splat.scale[2]) / 3.0;
+                    let avg_scale = (splat.scale_u() + splat.scale_v() + splat.scale_w()) / 3.0;
                     data.extend_from_slice(
                         &half::f16::from_f32(avg_scale).to_bits().to_le_bytes(),
                     );
-                    data.push(splat.opacity);
+                    data.push(splat.opacity());
                     // Every other spectral band
                     for i in (0..8).step_by(2) {
-                        data.extend_from_slice(&splat.spectral[i].to_le_bytes());
+                        data.extend_from_slice(&splat.spectral()[i].to_le_bytes());
                     }
                 }
             }
             CompressionQuality::Quality => {
                 // Full data with f16 precision for positions
                 for splat in splats {
-                    for &p in &splat.position {
+                    for &p in &splat.position() {
                         data.extend_from_slice(
                             &half::f16::from_f32(p).to_bits().to_le_bytes(),
                         );
                     }
-                    for &s in &splat.scale {
+                    for s in [splat.scale_u(), splat.scale_v(), splat.scale_w()] {
                         data.extend_from_slice(
                             &half::f16::from_f32(s).to_bits().to_le_bytes(),
                         );
                     }
-                    data.push(splat.opacity);
-                    for &sp in &splat.spectral {
+                    data.push(splat.opacity());
+                    for &sp in splat.spectral() {
                         data.extend_from_slice(&sp.to_le_bytes());
                     }
                 }

@@ -19,6 +19,6 @@ fn all_terrain_splats_at_y_zero() {
     let t = TerrainPlane::new(10.0, 10.0, 1.0);
     let splats = generate_terrain_splats(&t, "asphalt_dry");
     for s in &splats {
-        assert!((s.position[1]).abs() < 0.1);
+        assert!((s.position()[1]).abs() < 0.1);
     }
 }

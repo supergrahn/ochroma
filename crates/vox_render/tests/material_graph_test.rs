@@ -2,15 +2,15 @@ use vox_render::material_graph::*;
 
 #[test]
 fn constant_node_returns_value() {
-    let node = MaterialNode::Constant { spd: [0.5; 8] };
+    let node = MaterialNode::Constant { spd: [0.5; 16] };
     let result = node.evaluate();
-    assert_eq!(result.0, [0.5; 8]);
+    assert_eq!(result.0, [0.5; 16]);
 }
 
 #[test]
 fn mix_blends_two_materials() {
-    let a = MaterialNode::Constant { spd: [0.0; 8] };
-    let b = MaterialNode::Constant { spd: [1.0; 8] };
+    let a = MaterialNode::Constant { spd: [0.0; 16] };
+    let b = MaterialNode::Constant { spd: [1.0; 16] };
     let mix = MaterialNode::Mix { a: Box::new(a), b: Box::new(b), factor: 0.5 };
     let result = mix.evaluate();
     for v in &result.0 { assert!((v - 0.5).abs() < 0.01); }
@@ -18,8 +18,8 @@ fn mix_blends_two_materials() {
 
 #[test]
 fn multiply_modulates_spectra() {
-    let a = MaterialNode::Constant { spd: [0.8; 8] };
-    let b = MaterialNode::Constant { spd: [0.5; 8] };
+    let a = MaterialNode::Constant { spd: [0.8; 16] };
+    let b = MaterialNode::Constant { spd: [0.5; 16] };
     let mul = MaterialNode::Multiply { a: Box::new(a), b: Box::new(b) };
     let result = mul.evaluate();
     for v in &result.0 { assert!((v - 0.4).abs() < 0.01); }
@@ -28,7 +28,7 @@ fn multiply_modulates_spectra() {
 #[test]
 fn invert_flips_spectrum() {
     let node = MaterialNode::Invert {
-        input: Box::new(MaterialNode::Constant { spd: [0.3; 8] }),
+        input: Box::new(MaterialNode::Constant { spd: [0.3; 16] }),
     };
     let result = node.evaluate();
     for v in &result.0 { assert!((v - 0.7).abs() < 0.01); }
@@ -40,7 +40,7 @@ fn material_graph_serializes_to_toml() {
         name: "weathered_brick".to_string(),
         albedo: MaterialNode::Mix {
             a: Box::new(MaterialNode::MaterialRef { tag: "brick_red".to_string() }),
-            b: Box::new(MaterialNode::Constant { spd: [0.1; 8] }),
+            b: Box::new(MaterialNode::Constant { spd: [0.1; 16] }),
             factor: 0.3,
         },
         roughness: 0.8,
@@ -69,7 +69,7 @@ fn complex_graph_evaluates() {
         roughness: 0.2,
         metallic: 1.0,
         emission: Some(MaterialNode::Scale {
-            input: Box::new(MaterialNode::Constant { spd: [1.0; 8] }),
+            input: Box::new(MaterialNode::Constant { spd: [1.0; 16] }),
             factor: 0.01,
         }),
     };

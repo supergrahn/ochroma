@@ -96,12 +96,12 @@ impl SteamIntegration {
     }
 
     pub fn unlock_achievement(&mut self, id: &str) {
-        if let Some(ach) = self.achievements.iter_mut().find(|a| a.id == id) {
-            if !ach.unlocked {
-                ach.unlocked = true;
-                println!("[ochroma-steam] Achievement unlocked: {}", ach.name);
-                // In production: call SteamUserStats::SetAchievement + StoreStats
-            }
+        if let Some(ach) = self.achievements.iter_mut().find(|a| a.id == id)
+            && !ach.unlocked
+        {
+            ach.unlocked = true;
+            println!("[ochroma-steam] Achievement unlocked: {}", ach.name);
+            // In production: call SteamUserStats::SetAchievement + StoreStats
         }
     }
 
@@ -115,6 +115,7 @@ impl SteamIntegration {
     }
 
     /// Check game state and unlock applicable achievements.
+    #[allow(clippy::too_many_arguments)]
     pub fn check_achievements(
         &mut self,
         population: u32,

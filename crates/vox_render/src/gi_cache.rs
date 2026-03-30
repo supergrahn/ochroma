@@ -23,11 +23,11 @@ impl GiCache {
         splats.iter().zip(self.gi.irradiance.iter())
             .map(|(s, irr)| {
                 let mut out = *s;
-                for band in 0..8 {
-                    let base = f16::from_bits(s.spectral[band]).to_f32();
-                    let gi_contrib = irr[band] * self.blend;
+                for (band, &irr_val) in irr.iter().enumerate() {
+                    let base = f16::from_bits(s.spectral()[band]).to_f32();
+                    let gi_contrib = irr_val * self.blend;
                     let result = (base + gi_contrib).clamp(0.0, 1.0);
-                    out.spectral[band] = f16::from_f32(result).to_bits();
+                    out.spectral_mut()[band] = f16::from_f32(result).to_bits();
                 }
                 out
             })
@@ -42,24 +42,17 @@ mod tests {
 
     fn make_splat(spectral_val: f32) -> GaussianSplat {
         let f16_val = half::f16::from_f32(spectral_val).to_bits();
-        GaussianSplat {
-            position: [0.0, 0.0, 0.0],
-            scale: [0.1, 0.1, 0.1],
-            rotation: [0, 0, 0, 32767],
-            opacity: 200,
-            _pad: [0; 3],
-            spectral: [f16_val; 8],
-        }
+        GaussianSplat::volume([0.0, 0.0, 0.0], [0.1, 0.1, 0.1], glam::Quat::IDENTITY, 200, [f16_val; 16])
     }
 
     #[test]
     fn apply_adds_irradiance_to_spectral() {
         let splat = make_splat(0.2);
-        let irradiance = vec![[0.3f32; 8]];
+        let irradiance = vec![[0.3f32; 16]];
         let gi = BakedGi { irradiance };
         let cache = GiCache::new(gi);
         let result = cache.apply(&[splat]);
-        let band0 = half::f16::from_bits(result[0].spectral[0]).to_f32();
+        let band0 = half::f16::from_bits(result[0].spectral()[0]).to_f32();
         assert!(band0 > 0.2 + 0.25, "GI should increase spectral value");
         assert!(band0 <= 1.0, "GI must not exceed 1.0");
     }
@@ -67,23 +60,23 @@ mod tests {
     #[test]
     fn apply_blend_zero_is_identity() {
         let splat = make_splat(0.5);
-        let irradiance = vec![[1.0f32; 8]];
+        let irradiance = vec![[1.0f32; 16]];
         let gi = BakedGi { irradiance };
         let mut cache = GiCache::new(gi);
         cache.blend = 0.0;
         let result = cache.apply(&[splat]);
-        let band0 = half::f16::from_bits(result[0].spectral[0]).to_f32();
+        let band0 = half::f16::from_bits(result[0].spectral()[0]).to_f32();
         assert!((band0 - 0.5).abs() < 0.02, "blend=0 should leave spectral unchanged");
     }
 
     #[test]
     fn apply_clamps_to_one() {
         let splat = make_splat(0.9);
-        let irradiance = vec![[0.9f32; 8]];
+        let irradiance = vec![[0.9f32; 16]];
         let gi = BakedGi { irradiance };
         let cache = GiCache::new(gi);
         let result = cache.apply(&[splat]);
-        let band0 = half::f16::from_bits(result[0].spectral[0]).to_f32();
+        let band0 = half::f16::from_bits(result[0].spectral()[0]).to_f32();
         assert!(band0 <= 1.001, "GI must clamp to 1.0");
     }
 }

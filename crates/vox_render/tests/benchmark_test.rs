@@ -6,7 +6,7 @@ fn generate_1000_splats() {
     assert_eq!(splats.len(), 1000);
 
     // Verify deterministic grid layout — first splat at origin.
-    assert_eq!(splats[0].position, [0.0, 0.0, 0.0]);
+    assert_eq!(splats[0].position(), [0.0, 0.0, 0.0]);
 }
 
 #[test]

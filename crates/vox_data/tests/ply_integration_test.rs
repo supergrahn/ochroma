@@ -104,7 +104,8 @@ fn ply_integration_splats_have_realistic_values() {
 
     for (i, s) in splats.iter().enumerate() {
         // Positions should be on/near the torus (distance from origin between 2.5 and 5.5)
-        let dist_xz = (s.position[0] * s.position[0] + s.position[2] * s.position[2]).sqrt();
+        let pos = s.position();
+        let dist_xz = (pos[0] * pos[0] + pos[2] * pos[2]).sqrt();
         assert!(
             dist_xz < 7.0,
             "Splat {} has unreasonable XZ distance: {}",
@@ -113,7 +114,7 @@ fn ply_integration_splats_have_realistic_values() {
         );
 
         // Scales should be in reasonable range (exp(-5.5) ~ 0.004, exp(-3.5) ~ 0.03)
-        for (axis, &scale) in s.scale.iter().enumerate() {
+        for (axis, &scale) in s.scales().iter().enumerate() {
             assert!(
                 scale > 0.001 && scale < 0.2,
                 "Splat {} axis {} scale out of range: {}",
@@ -125,10 +126,10 @@ fn ply_integration_splats_have_realistic_values() {
 
         // Opacity should be > 0 (sigmoid of logit > 1.0 gives > 0.73 * 255 ~ 186)
         assert!(
-            s.opacity > 100,
+            s.opacity() > 100,
             "Splat {} opacity too low: {} (expected >100 from logit-space >1.0)",
             i,
-            s.opacity
+            s.opacity()
         );
     }
 }
@@ -196,10 +197,10 @@ fn ply_integration_splats_have_varied_colours() {
     let splats = load_ply_from_reader(&mut Cursor::new(&ply_data)).unwrap();
 
     // The SH DC coefficients vary with theta, so spectral bands should differ across splats
-    let first_spectral = splats[0].spectral;
+    let first_spectral = *splats[0].spectral();
     let unique_count = splats
         .iter()
-        .filter(|s| s.spectral != first_spectral)
+        .filter(|s| s.spectral() != &first_spectral)
         .count();
 
     assert!(
@@ -319,17 +320,17 @@ fn load_ply_from_file_path() {
     assert_eq!(splats.len(), 5000, "Should load all 5000 splats");
 
     // Verify realistic properties
-    let avg_opacity: f32 = splats.iter().map(|s| s.opacity as f32).sum::<f32>() / splats.len() as f32;
+    let avg_opacity: f32 = splats.iter().map(|s| s.opacity() as f32).sum::<f32>() / splats.len() as f32;
     assert!(avg_opacity > 50.0 && avg_opacity < 240.0,
         "Average opacity should be realistic: {}", avg_opacity);
 
-    let avg_scale: f32 = splats.iter().map(|s| s.scale[0]).sum::<f32>() / splats.len() as f32;
+    let avg_scale: f32 = splats.iter().map(|s| s.scale_u()).sum::<f32>() / splats.len() as f32;
     assert!(avg_scale > 0.001 && avg_scale < 0.1,
         "Average scale should be small: {}", avg_scale);
 
     // Verify colour variation
-    let first_spectral = splats[0].spectral;
-    let has_variation = splats.iter().any(|s| s.spectral != first_spectral);
+    let first_spectral = *splats[0].spectral();
+    let has_variation = splats.iter().any(|s| s.spectral() != &first_spectral);
     assert!(has_variation, "Splats should have varied colours");
 
     // Render and check visibility
@@ -375,9 +376,10 @@ fn load_real_aetherspectra_ply() {
     println!("File: {}", path.display());
     println!("Splats: {}", splats.len());
     println!("Load time: {:?}", load_time);
+    let p0 = splats[0].position();
     println!("First splat: pos=({:.3},{:.3},{:.3}) opacity={} scale=({:.4},{:.4},{:.4})",
-        splats[0].position[0], splats[0].position[1], splats[0].position[2],
-        splats[0].opacity, splats[0].scale[0], splats[0].scale[1], splats[0].scale[2]);
+        p0[0], p0[1], p0[2],
+        splats[0].opacity(), splats[0].scale_u(), splats[0].scale_v(), splats[0].scale_w());
 
     assert_eq!(splats.len(), 308078, "Should load all 308k splats");
     assert!(load_time.as_secs() < 30, "Should load in under 30 seconds");

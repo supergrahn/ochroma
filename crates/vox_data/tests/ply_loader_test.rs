@@ -9,9 +9,9 @@ fn load_test_ply() {
     let splats = load_ply_from_reader(&mut reader).unwrap();
 
     assert_eq!(splats.len(), 3);
-    assert!((splats[0].position[0] - 1.0).abs() < 0.001);
-    assert!((splats[1].position[1] - 5.0).abs() < 0.001);
-    assert!((splats[2].position[2] - 9.0).abs() < 0.001);
+    assert!((splats[0].position()[0] - 1.0).abs() < 0.001);
+    assert!((splats[1].position()[1] - 5.0).abs() < 0.001);
+    assert!((splats[2].position()[2] - 9.0).abs() < 0.001);
 }
 
 #[test]
@@ -22,8 +22,8 @@ fn opacity_is_sigmoid_decoded() {
     let splats = load_ply_from_reader(&mut reader).unwrap();
 
     // logit 2.0 -> sigmoid ~ 0.88 -> 0.88 * 255 ~ 224
-    assert!(splats[0].opacity > 200 && splats[0].opacity < 240,
-        "Expected opacity ~224, got {}", splats[0].opacity);
+    assert!(splats[0].opacity() > 200 && splats[0].opacity() < 240,
+        "Expected opacity ~224, got {}", splats[0].opacity());
 }
 
 #[test]
@@ -34,8 +34,8 @@ fn scales_are_exp_decoded() {
     let splats = load_ply_from_reader(&mut reader).unwrap();
 
     // log-scale -4.6 -> exp ~ 0.01
-    assert!((splats[0].scale[0] - 0.01).abs() < 0.005,
-        "Expected scale ~0.01, got {}", splats[0].scale[0]);
+    assert!((splats[0].scale_u() - 0.01).abs() < 0.005,
+        "Expected scale ~0.01, got {}", splats[0].scale_u());
 }
 
 #[test]
@@ -46,8 +46,8 @@ fn rotation_is_identity() {
     let splats = load_ply_from_reader(&mut reader).unwrap();
 
     // w=1,x=0,y=0,z=0 -> stored as [x,y,z,w] in i16 -> [0,0,0,32767]
-    assert_eq!(splats[0].rotation[3], 32767, "W should be 32767 for identity quat");
-    assert!(splats[0].rotation[0].abs() < 100, "X should be ~0");
+    assert_eq!(splats[0].rotation_raw()[3], 32767, "W should be 32767 for identity quat");
+    assert!(splats[0].rotation_raw()[0].abs() < 100, "X should be ~0");
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn spectral_from_rgb_produces_nonzero() {
     let splats = load_ply_from_reader(&mut reader).unwrap();
 
     // With f_dc = 0.0, colour = 0.5 + 0 = 0.5 (neutral grey)
-    let has_nonzero = splats[0].spectral.iter().any(|&s| s != 0);
+    let has_nonzero = splats[0].spectral().iter().any(|&s| s != 0);
     assert!(has_nonzero, "Spectral bands should be non-zero for grey");
 }
 

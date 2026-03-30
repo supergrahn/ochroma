@@ -1,9 +1,13 @@
 pub mod acoustic_raytracer;
+pub mod av_sync;
 pub mod audio_graph;
+pub mod adaptive_music;
+pub mod hrtf;
 pub mod spatial;
 pub mod synth;
 pub mod ecs;
 pub mod spectral_synth;
+pub mod sdf_reverb;
 pub use spectral_synth::{synthesize_impact, create_impact_wav, synthesize_impact_from_splat_spectral};
 
 pub use spatial::{compute_spatial, Listener, SpatialAudioManager};
