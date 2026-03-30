@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use thiserror::Error;
 
+pub mod lua_runtime;
+pub use lua_runtime::{LuaRuntime, LuaError};
+
 pub mod mod_manager;
 pub mod visual_script;
 pub mod visual_graph;
