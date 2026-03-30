@@ -33,3 +33,7 @@ pub use vxm::VxmFileV3;
 pub mod colmap_pipeline;
 pub use colmap_pipeline::{ColmapPipeline, ColmapPoint, ColmapError};
 pub use import_pipeline::{ImportSettings, ImportResult, import_asset};
+pub mod vegetation_splatizer;
+pub use vegetation_splatizer::{backproject_pca, splatize_vegetation_mesh};
+pub mod terrain_splatizer;
+pub use terrain_splatizer::{BiomeKind, SpectralTerrainMaterials, biome_to_splat_weights, blend_spectral_terrain};
