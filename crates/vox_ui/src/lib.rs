@@ -1,7 +1,10 @@
 pub mod canvas;
 pub mod node_graph_widget;
+pub mod spectral_hud;
 pub mod theme;
 pub mod vello_ctx;
+
+pub use spectral_hud::{SpectralHUD, SpectralRadianceCache};
 
 use serde::{Deserialize, Serialize};
 
