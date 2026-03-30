@@ -52,6 +52,10 @@ use simulation::SimulationState;
 use systems::{
     CameraState, VisibleSplats, frustum_cull_system, gather_splats_system, lod_select_system,
 };
+#[cfg(feature = "spectra-native")]
+use systems::{SpectraFrameOutput, spectra_render_system};
+#[cfg(feature = "spectra-native")]
+use vox_render::spectra_render::native::SpectraBackendSystem;
 use undo_integration::GameUndoSystem;
 
 const WIDTH: u32 = 1280;
@@ -149,11 +153,32 @@ impl App {
         // Spawn terrain ground plane under the buildings.
         terrain_setup::spawn_terrain(&mut world, 200.0, 200.0, "grass");
 
+        // Spectra output frame resource — always registered so the render loop can read it.
+        // Holds None until the first Spectra frame completes.
+        #[cfg(feature = "spectra-native")]
+        world.insert_resource(SpectraFrameOutput::default());
+
+        // Try to start the Spectra native backend. Non-fatal: falls back to built-in rasteriser.
+        #[cfg(feature = "spectra-native")]
+        match SpectraBackendSystem::realtime(WIDTH, HEIGHT) {
+            Ok(backend) => {
+                world.insert_resource(backend);
+                eprintln!("[ochroma] Spectra native backend initialised ({WIDTH}×{HEIGHT})");
+            }
+            Err(e) => {
+                eprintln!("[ochroma] Spectra native backend unavailable: {e}");
+                eprintln!("[ochroma] Falling back to built-in GPU rasteriser");
+            }
+        }
+
         // Set up ECS schedule with chained systems.
         let mut schedule = Schedule::default();
         schedule.add_systems(
             (frustum_cull_system, lod_select_system, gather_splats_system).chain(),
         );
+        // Spectra render runs after gather so it reads the completed VisibleSplats.
+        #[cfg(feature = "spectra-native")]
+        schedule.add_systems(spectra_render_system.after(gather_splats_system));
 
         // Set up interactive camera pointing at the buildings.
         let mut camera = CameraController::new(WIDTH as f32 / HEIGHT as f32);
@@ -467,6 +492,13 @@ impl ApplicationHandler for App {
                 // Asset names list for the browser: expose the demo building.
                 let asset_names = vec![(self.demo_asset_uuid, "Demo Building".to_string())];
 
+                // Extract latest Spectra frame (O(1) Arc clone) before mutably borrowing render_mode.
+                #[cfg(feature = "spectra-native")]
+                let spectra_frame: Option<std::sync::Arc<Vec<u8>>> =
+                    self.world.resource::<SpectraFrameOutput>().frame.clone();
+                #[cfg(not(feature = "spectra-native"))]
+                let spectra_frame: Option<std::sync::Arc<Vec<u8>>> = None;
+
                 // Pre-compute values that need &self before we mutably borrow render_mode.
                 let window_clone = self.window.clone();
                 let plop_ui = &mut self.plop_ui;
@@ -523,14 +555,26 @@ impl ApplicationHandler for App {
                         };
                         let view_tex = output.texture.create_view(&Default::default());
 
-                        gpu_rasteriser.render(
-                            backend.device(),
-                            backend.queue(),
-                            &view_tex,
-                            &splats_to_render,
-                            &camera,
-                            &illuminant,
-                        );
+                        // Prefer the Spectra-rendered frame when available; fall back to
+                        // the built-in tile rasteriser when Spectra is uninitialised or
+                        // the first frame hasn't completed yet.
+                        if let Some(ref frame) = spectra_frame {
+                            backend.write_pixels_to_texture(
+                                &output.texture,
+                                frame,
+                                backend.width(),
+                                backend.height(),
+                            );
+                        } else {
+                            gpu_rasteriser.render(
+                                backend.device(),
+                                backend.queue(),
+                                &view_tex,
+                                &splats_to_render,
+                                &camera,
+                                &illuminant,
+                            );
+                        }
 
                         // --- egui render on top ---
                         let window = window_clone.as_ref().unwrap();

@@ -24,6 +24,17 @@ pub struct VisibleSplats {
     pub splats: Vec<GaussianSplat>,
 }
 
+/// Resource: latest completed Spectra-rendered frame (RGBA8, gamma-corrected).
+///
+/// Populated each tick by `spectra_render_system`. Holds `None` until the first
+/// frame completes (the Spectra render thread has one frame of latency).
+/// The main render loop reads this and blits it to the wgpu surface texture.
+#[cfg(feature = "spectra-native")]
+#[derive(Resource, Default)]
+pub struct SpectraFrameOutput {
+    pub frame: Option<std::sync::Arc<Vec<u8>>>,
+}
+
 /// Component: marks an instance as visible this frame.
 #[derive(Component)]
 pub struct Visible;
@@ -85,7 +96,7 @@ pub fn gather_splats_system(
     }
 }
 
-/// Drive the Spectra native GPU renderer one tick.
+/// Drive the Spectra native GPU renderer one tick and capture the output frame.
 ///
 /// Uses Bevy's `Changed<SplatInstanceComponent>` to detect mutations —
 /// fires whenever position, scale, spectral values, or any other field on
@@ -94,13 +105,22 @@ pub fn gather_splats_system(
 ///
 /// Camera orientation is derived from `CameraState.view` (view-matrix inverse).
 /// `fov_y`, `near`, and `far` use defaults until `CameraState` exposes them.
+///
+/// The completed frame is stored in `SpectraFrameOutput`. The main render loop
+/// reads it and blits it to the wgpu surface texture via `write_pixels_to_texture`.
 #[cfg(feature = "spectra-native")]
 pub fn spectra_render_system(
-    mut backend: ResMut<SpectraBackendSystem>,
-    changed:     Query<(), Changed<SplatInstanceComponent>>,
-    visible:     Res<VisibleSplats>,
-    camera:      Res<CameraState>,
+    backend:    Option<ResMut<SpectraBackendSystem>>,
+    mut frame_out: ResMut<SpectraFrameOutput>,
+    changed:    Query<(), Changed<SplatInstanceComponent>>,
+    visible:    Res<VisibleSplats>,
+    camera:     Res<CameraState>,
 ) {
+    let mut backend = match backend {
+        Some(b) => b,
+        None => return,
+    };
+
     let scene_changed = !changed.is_empty();
 
     // Use view matrix inverse (not view_proj inverse) for direction vectors.
@@ -114,14 +134,12 @@ pub fn spectra_render_system(
         position: pos.into(),
         forward:  fwd.into(),
         up:       up.into(),
-        // Defaults until CameraState exposes fov/near/far:
         fov_y: std::f32::consts::FRAC_PI_4,
         near:  0.1,
         far:   1000.0,
     };
 
-    // TODO: wire the returned Arc<Vec<u8>> into a Bevy Image resource so the
-    // rendered frame reaches the display pipeline. For now the frame is produced
-    // by the render thread but not consumed here.
-    let _ = backend.tick(&visible.splats, cam, scene_changed);
+    if let Some(frame) = backend.tick(&visible.splats, cam, scene_changed) {
+        frame_out.frame = Some(frame);
+    }
 }
