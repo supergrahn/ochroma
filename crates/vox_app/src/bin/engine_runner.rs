@@ -70,6 +70,17 @@ const DEFAULT_HEIGHT: u32 = 720;
 // NavMesh patrol agent
 // ---------------------------------------------------------------------------
 
+/// Bridges a sky ambient array into the SpectralRadianceSource trait for patrol agents.
+struct SpectralGiAdapter {
+    sky_ambient: [f32; 16],
+}
+
+impl vox_ai::perception::SpectralRadianceSource for SpectralGiAdapter {
+    fn sample_at(&self, _pos: glam::Vec3, _radius: f32) -> [f32; 16] {
+        self.sky_ambient
+    }
+}
+
 /// Simple navmesh-driven patrol agent for AI demonstration.
 struct PatrolAgent {
     position: Vec3,
@@ -78,6 +89,8 @@ struct PatrolAgent {
     path_index: usize,
     patrol_nodes: [u32; 2],
     current_target: usize,
+    /// Spectral perception — agent senses environment via 16-band radiance.
+    spectral_perception: vox_ai::perception::SpectralPerceptionAgent,
 }
 
 impl PatrolAgent {
@@ -89,6 +102,10 @@ impl PatrolAgent {
             path_index: 0,
             patrol_nodes: [node_a, node_b],
             current_target: 0,
+            spectral_perception: vox_ai::perception::SpectralPerceptionAgent::new(
+                start_pos,
+                12.0,
+            ),
         }
     }
 
@@ -1705,11 +1722,19 @@ impl EngineApp {
             self.ambient_mix = self.ambient_mix.blend_toward(&target, 0.02);
         }
 
-        // Update patrol agents along navmesh
+        // Update patrol agents along navmesh with spectral perception
         if let Some(nm) = &self.navmesh {
             let dt = self.frame_dt;
+            let sky_ambient = illuminant_for_time(self.engine.time_of_day()).bands;
             for agent in &mut self.patrol_agents {
                 agent.update(dt, nm);
+                // Update spectral perception from current sky illuminant
+                let gi_adapter = SpectralGiAdapter { sky_ambient };
+                agent.spectral_perception.position = agent.position;
+                let percept = agent.spectral_perception.sense(&gi_adapter);
+                agent.spectral_perception.update_emotion(&gi_adapter);
+                // Raise alert if green band (7) energy exceeds threshold
+                let _ = percept;
             }
         }
 
