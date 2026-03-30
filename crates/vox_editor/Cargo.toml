@@ -1,6 +1,6 @@
 [package]
 name = "vox_editor"
-edition.workspace = true
+edition = "2021"
 version.workspace = true
 
 [dependencies]

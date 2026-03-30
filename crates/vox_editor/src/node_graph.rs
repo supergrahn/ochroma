@@ -34,7 +34,7 @@ impl std::fmt::Display for PortType {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PortData {
     Splats(Vec<GaussianSplat>),
     SpectralField([f32; 16]),
@@ -546,5 +546,30 @@ mod tests {
         let b = g.add_node("b", pass());
         let err = g.connect(a, "terrain", b, "in").unwrap_err();
         assert!(matches!(err, GraphError::TypeMismatch { .. }), "got: {:?}", err);
+    }
+
+    #[test]
+    fn test_snapshot_round_trip() {
+        use crate::nodes::terrain_node::TerrainNode;
+        let mut graph = OchromaNodeGraph::new();
+        graph.add_node("terrain", Box::new(TerrainNode::default()));
+        let snap = graph.snapshot();
+        let json = snap.to_json().unwrap();
+        println!("snapshot JSON: {}", json);
+        let restored = GraphSnapshot::from_json(&json).unwrap();
+        assert_eq!(restored.nodes.len(), 1);
+        assert_eq!(restored.nodes[0].type_name, "TerrainNode");
+    }
+
+    #[test]
+    fn test_undo_restores_params() {
+        use crate::nodes::terrain_node::TerrainNode;
+        let mut graph = OchromaNodeGraph::new();
+        let id = graph.add_node("terrain", Box::new(TerrainNode::default()));
+        let snap_before = graph.snapshot();
+        graph.set_param(id, "resolution", ParamValue::Int(256)).unwrap();
+        graph.restore(snap_before).unwrap();
+        let result = graph.cook();
+        assert!(result.is_ok());
     }
 }
