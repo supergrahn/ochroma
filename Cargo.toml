@@ -38,8 +38,6 @@ toml = "0.8"
 puffin = "0.19"
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "macros", "net", "sync"] }
 egui = "0.31"
-crucible-core  = { path = "../aetherspectra/crucible/rust/crates/crucible-core" }
-crucible-types = { path = "../aetherspectra/crucible/rust/crates/crucible-types" }
 vox_nodes      = { path = "crates/vox_nodes" }
 vox_ui         = { path = "crates/vox_ui" }
 

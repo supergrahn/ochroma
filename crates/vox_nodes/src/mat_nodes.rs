@@ -1,19 +1,25 @@
+#[cfg(feature = "crucible")]
 use crucible_core::node::{CrucibleNode, NodeDescriptor, PortSpec};
+#[cfg(feature = "crucible")]
 use crucible_core::port::{PortData, PortDataType, PortMap, ParamValue};
+#[cfg(feature = "crucible")]
 use crucible_core::error::CookError;
 
 // ---------------------------------------------------------------------------
 // FloatConstNode
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "crucible")]
 pub struct FloatConstNode {
     pub value: f64,
 }
 
+#[cfg(feature = "crucible")]
 impl FloatConstNode {
     pub fn new(value: f64) -> Self { Self { value } }
 }
 
+#[cfg(feature = "crucible")]
 impl CrucibleNode for FloatConstNode {
     fn descriptor(&self) -> NodeDescriptor {
         NodeDescriptor {
@@ -45,8 +51,10 @@ impl CrucibleNode for FloatConstNode {
 // MultiplyNode
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "crucible")]
 pub struct MultiplyNode;
 
+#[cfg(feature = "crucible")]
 impl CrucibleNode for MultiplyNode {
     fn descriptor(&self) -> NodeDescriptor {
         NodeDescriptor {
@@ -76,8 +84,10 @@ impl CrucibleNode for MultiplyNode {
 // AddNode
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "crucible")]
 pub struct AddNode;
 
+#[cfg(feature = "crucible")]
 impl CrucibleNode for AddNode {
     fn descriptor(&self) -> NodeDescriptor {
         NodeDescriptor {
@@ -107,8 +117,10 @@ impl CrucibleNode for AddNode {
 // LerpNode
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "crucible")]
 pub struct LerpNode;
 
+#[cfg(feature = "crucible")]
 impl CrucibleNode for LerpNode {
     fn descriptor(&self) -> NodeDescriptor {
         NodeDescriptor {
@@ -141,8 +153,10 @@ impl CrucibleNode for LerpNode {
 // OneMinusNode
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "crucible")]
 pub struct OneMinusNode;
 
+#[cfg(feature = "crucible")]
 impl CrucibleNode for OneMinusNode {
     fn descriptor(&self) -> NodeDescriptor {
         NodeDescriptor {
@@ -167,8 +181,10 @@ impl CrucibleNode for OneMinusNode {
 // MaterialOutputNode
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "crucible")]
 pub struct MaterialOutputNode;
 
+#[cfg(feature = "crucible")]
 impl CrucibleNode for MaterialOutputNode {
     fn descriptor(&self) -> NodeDescriptor {
         NodeDescriptor {
@@ -194,7 +210,7 @@ impl CrucibleNode for MaterialOutputNode {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "crucible"))]
 mod tests {
     use super::*;
 

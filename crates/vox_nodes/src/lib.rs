@@ -1,17 +1,26 @@
+#[cfg(feature = "crucible")]
 pub mod mat_nodes;
 
+#[cfg(feature = "crucible")]
 use std::collections::HashMap;
+#[cfg(feature = "crucible")]
 pub use crucible_core::graph::{CrucibleGraph, NodeId};
+#[cfg(feature = "crucible")]
 pub use crucible_core::port::{PortData, PortMap, ParamValue, PortDataType};
+#[cfg(feature = "crucible")]
 pub use crucible_core::node::{CrucibleNode, NodeDescriptor, PortSpec};
+#[cfg(feature = "crucible")]
 pub use crucible_core::error::CookError;
+#[cfg(feature = "crucible")]
 use vox_ui::node_graph_widget::{VisualNode, VisualConnection};
 
+#[cfg(feature = "crucible")]
 pub struct OchrGraph {
     pub graph: CrucibleGraph,
     positions: HashMap<u32, [f32; 2]>,
 }
 
+#[cfg(feature = "crucible")]
 impl OchrGraph {
     pub fn new() -> Self {
         Self { graph: CrucibleGraph::new(), positions: HashMap::new() }
@@ -74,11 +83,12 @@ impl OchrGraph {
     }
 }
 
+#[cfg(feature = "crucible")]
 impl Default for OchrGraph {
     fn default() -> Self { Self::new() }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "crucible"))]
 mod tests {
     use super::*;
     use crate::mat_nodes::FloatConstNode;

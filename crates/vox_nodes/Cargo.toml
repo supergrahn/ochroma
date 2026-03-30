@@ -3,9 +3,18 @@ name = "vox_nodes"
 edition.workspace = true
 version.workspace = true
 
+[features]
+crucible = ["dep:crucible-core", "dep:crucible-types"]
+
 [dependencies]
 vox_ui         = { workspace = true }
-crucible-core  = { workspace = true }
-crucible-types = { workspace = true }
 serde          = { workspace = true }
 thiserror      = { workspace = true }
+
+[dependencies.crucible-core]
+path = "../../../aetherspectra/crucible/rust/crates/crucible-core"
+optional = true
+
+[dependencies.crucible-types]
+path = "../../../aetherspectra/crucible/rust/crates/crucible-types"
+optional = true

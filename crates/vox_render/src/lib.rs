@@ -55,10 +55,13 @@ pub mod motion_matching;
 pub mod material_nodes;
 pub mod facial_animation;
 pub mod anim_editor;
+#[cfg(feature = "crucible")]
 pub mod anim_editor_ui;
+#[cfg(feature = "crucible")]
 pub mod material_editor_ui;
 pub mod sequencer;
 pub mod vfx_editor;
+#[cfg(feature = "crucible")]
 pub mod vfx_editor_ui;
 pub mod frame_debugger;
 pub mod world_partition;
