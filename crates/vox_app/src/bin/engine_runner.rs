@@ -327,6 +327,9 @@ struct EngineApp {
     // Game UI widgets (Manor Lords style resource panels, tooltips, buttons)
     game_widgets: vox_ui::GameWidgets,
     widget_cmds: Vec<vox_ui::WidgetCmd>,
+
+    // Last terrain pick position from ScreenRay (updated on left-click)
+    last_pick: Option<glam::Vec3>,
 }
 
 // ---------------------------------------------------------------------------
@@ -555,6 +558,7 @@ impl EngineApp {
             quic_transport: None,
             replication_states: Vec::new(),
             character_body: None,
+            last_pick: None,
             game_widgets: vox_ui::GameWidgets::new(),
             widget_cmds: vec![
                 vox_ui::WidgetCmd::Panel {
@@ -1649,6 +1653,33 @@ impl EngineApp {
                 self.click_counter += 1;
                 self.audio.play_sine_backend(self.click_counter, 800.0, 0.05, 0.3);
                 self.spatial_audio.play_tone(800.0, 0.05, 0.3);
+
+                // ScreenRay terrain pick — update last_pick for building placement
+                {
+                    use vox_core::picking::ScreenRay;
+                    let forward = self.camera_forward();
+                    let cam_target = self.camera.position + forward;
+                    let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
+                    let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
+                    let proj = Mat4::perspective_rh(
+                        self.camera.fov,
+                        dw as f32 / dh as f32,
+                        self.camera.near,
+                        self.camera.far,
+                    );
+                    let vp_inv = (proj * view).inverse();
+                    let ray = ScreenRay::from_screen(
+                        self.mouse_x as f32,
+                        self.mouse_y as f32,
+                        dw as f32,
+                        dh as f32,
+                        vp_inv,
+                    );
+                    self.last_pick = ray.terrain_hit(&|_x, _z| 0.0, 500.0);
+                    if let Some(pos) = self.last_pick {
+                        println!("[pick] terrain hit at [{:.2}, {:.2}, {:.2}]", pos.x, pos.y, pos.z);
+                    }
+                }
             }
             _ => {}
         }

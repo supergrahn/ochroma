@@ -1,3 +1,6 @@
+pub mod picking;
+pub use picking::{ScreenRay, SplatPickEntry};
+
 pub mod asset_watcher;
 pub mod types;
 pub mod undo;
