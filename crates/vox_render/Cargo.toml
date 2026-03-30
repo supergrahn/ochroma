@@ -39,4 +39,7 @@ crucible = ["vox_nodes/crucible"]
 vox_sim = { path = "../vox_sim" }
 vox_terrain = { path = "../vox_terrain" }
 tempfile = "3"
-naga = { version = "24", features = ["wgsl-in"] }
+
+[dependencies.naga]
+version = "24"
+features = ["wgsl-in", "wgsl-out"]

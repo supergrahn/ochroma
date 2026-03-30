@@ -13,6 +13,7 @@ pub mod vfx;
 pub mod animation;
 pub mod postprocess;
 pub mod material_graph;
+pub mod naga_builder;
 pub mod vr;
 pub mod upscaling;
 pub mod denoiser;
