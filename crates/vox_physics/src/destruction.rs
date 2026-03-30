@@ -176,6 +176,50 @@ impl FractureSystem {
     }
 }
 
+use crate::spectral_fracture::{FracturePlane, SpectralResonanceFracture};
+
+impl SplatAssembly {
+    /// Compute spectral resonance fracture planes for this assembly at the
+    /// given impact point and impulse (Ns). Returns planes; also reduces
+    /// health and deactivates assembly when health reaches zero.
+    pub fn fracture_at(&mut self, impact_pos: glam::Vec3, impulse_ns: f32) -> Vec<FracturePlane> {
+        if !self.is_active {
+            return Vec::new();
+        }
+        if impulse_ns < self.fracture_threshold {
+            return Vec::new();
+        }
+        let spectral = self.mean_spectral_profile();
+        let planes =
+            SpectralResonanceFracture::compute_planes(impact_pos, impulse_ns, &spectral);
+        if !planes.is_empty() {
+            self.health -= impulse_ns;
+            if self.health <= 0.0 {
+                self.is_active = false;
+            }
+        }
+        planes
+    }
+
+    /// Compute mean spectral profile across all splats in the assembly.
+    pub fn mean_spectral_profile(&self) -> [u16; 16] {
+        if self.splats.is_empty() {
+            return [32767u16; 16];
+        }
+        let mut acc = [0u32; 16];
+        for splat in &self.splats {
+            for b in 0..16 {
+                acc[b] += splat.spectral()[b] as u32;
+            }
+        }
+        let mut out = [0u16; 16];
+        for b in 0..16 {
+            out[b] = (acc[b] / self.splats.len() as u32) as u16;
+        }
+        out
+    }
+}
+
 /// Spectral shift applied to splats on fracture (burn/crumble effect).
 /// Reduces high-frequency bands (0-1), slightly increases mid bands (3-4).
 pub fn spectral_shift_on_break(splat: &mut GaussianSplat) {
