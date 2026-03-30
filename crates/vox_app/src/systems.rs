@@ -50,10 +50,13 @@ pub fn lod_select_system(
 ) {
     for mut instance in query.iter_mut() {
         let distance = instance.position.distance(camera.position);
-        instance.lod = match lod::select_lod(distance) {
+        let new_lod = match lod::select_lod(distance) {
             lod::LodLevel::Full => LodLevel::Full,
             lod::LodLevel::Reduced => LodLevel::Reduced,
         };
+        if instance.lod != new_lod {
+            instance.lod = new_lod;
+        }
     }
 }
 
@@ -102,7 +105,7 @@ pub fn spectra_render_system(
     let inv = camera.view_proj.inverse();
     let fwd = (inv * glam::Vec4::new(0.0, 0.0, -1.0, 0.0)).truncate().normalize();
     let up  = (inv * glam::Vec4::new(0.0, 1.0,  0.0, 0.0)).truncate().normalize();
-    let pos = inv.col(3).truncate();
+    let pos = camera.position;  // direct field — correct for any matrix type
 
     let cam = SpectraCameraParams {
         position: pos.into(),

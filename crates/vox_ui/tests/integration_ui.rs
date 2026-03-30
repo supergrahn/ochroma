@@ -2,7 +2,7 @@
 use vox_ui::{
     SpectralHUD,
     SpectralRadianceCache,
-    vello_ctx::VelloCtxCpu,
+    vello_ctx::{DrawCmd, VelloCtxCpu},
 };
 
 #[test]
@@ -15,11 +15,19 @@ fn hud_renders_16_bands_into_cpu_context() {
 
     SpectralHUD::render_cpu(&mut ctx, &cache, [16.0, 900.0]);
 
+    // 16 background tracks + 16 energy bars = 32 draw commands
     assert!(
-        ctx.commands().len() >= 16,
-        "expected ≥16 draw commands, got {}",
+        ctx.commands().len() >= 32,
+        "expected ≥32 draw commands (16 bg + 16 bars), got {}",
         ctx.commands().len(),
     );
+    // Verify the first command is a FillRect (background track)
+    match &ctx.commands()[0] {
+        DrawCmd::FillRect { rect, color } => {
+            println!("first_cmd rect[0]={} color[3]={}", rect[0], color[3]);
+            assert!(color[3] > 0.0, "background track should have non-zero alpha");
+        }
+    }
 }
 
 #[test]
