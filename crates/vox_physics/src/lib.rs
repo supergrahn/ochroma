@@ -193,6 +193,7 @@ pub mod pbf;
 pub mod rope;
 pub mod spectral_damage;
 pub mod spectral_fracture;
+pub mod spectral_resonance;
 pub mod thermal;
 pub mod vehicle;
 pub mod wetness;
