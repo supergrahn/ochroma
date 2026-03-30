@@ -2443,70 +2443,141 @@ git commit --allow-empty -m "test(editor): domain 9 integration verified — nod
 
 ---
 
-## Task 8: TerrainNode — biome_to_splat_weights + SpectralTerrainMaterials
+## Task 8: BiomeNode, SplatWeightNode, WetnessOverrideNode — biome pipeline as composable nodes
+
+**Design decision:** Biome classification is NOT baked inside `TerrainNode`. It lives in its own node chain, each step overridable by the user. `TerrainNode` outputs raw heightfield data. The biome pipeline is:
+
+```
+TerrainNode → [HeightfieldData]
+     ↓
+BiomeNode (classify_biomes) → [BiomeMap]
+     ↓  ←── user can wire a custom BiomeMap here instead
+WetnessOverrideNode (optional) → [BiomeMap]  ← upgrades cells to Wetland/Coastal using DripResult
+     ↓
+SplatWeightNode → [splat_weights: Vec<[f32; 4]>]
+     ↓
+SplatizeNode (existing) reads splat_weights + SpectralTerrainMaterials → spectral per splat
+```
+
+This means biomes are **paintable**: disconnect `BiomeNode`, wire in a `BiomeMapInputNode` with hand-authored values. A `WetnessOverrideNode` between `BiomeNode` and `SplatWeightNode` can upgrade algorithmically-dry cells to `Wetland` where drip_intensity is high — without touching biome classification logic.
 
 **Files:**
-- Modify: `crates/vox_editor/src/nodes/terrain_node.rs`
-- Modify: `crates/vox_editor/src/nodes/splatize_node.rs`
+- Create: `crates/vox_editor/src/nodes/biome_node.rs`
+- Create: `crates/vox_editor/src/nodes/splat_weight_node.rs`
+- Modify: `crates/vox_editor/src/nodes/terrain_node.rs` — remove biome logic, output raw HeightfieldData only
+- Modify: `crates/vox_editor/src/nodes/splatize_node.rs` — consume `SplatWeights` port
+- Modify: `crates/vox_editor/src/nodes/mod.rs`
 
-**Context:** `forge-terrain` exports `biome_to_splat_weights(biome, height, world_height) -> [f32; 4]` and `SpectralTerrainMaterials { slots: [SpectralRefl; 16] }` (7 material slots: Water, Sand, Grass, Dirt, Rock, Snow, Forest — each a full 16-band USGS curve). The TerrainNode must populate `splat_weights` using these, and SplatizeNode must read them when assigning spectral values to terrain splats.
+---
+
+### Task 8a: BiomeKind + SpectralTerrainMaterials shared types
 
 - [ ] **Step 1: Write failing test**
 
-Add to `crates/vox_editor/src/nodes/terrain_node.rs`:
+Create `crates/vox_editor/src/nodes/biome_node.rs`:
 
 ```rust
 #[cfg(test)]
-mod biome_tests {
+mod tests {
     use super::*;
 
     #[test]
-    fn test_splat_weights_sum_to_one() {
-        // Forest biome at mid-height should give non-zero vegetation weight
-        let weights = biome_to_splat_weights_local(BiomeKind::Forest, 40.0, 80.0);
-        let sum: f32 = weights.iter().sum();
-        assert!((sum - 1.0).abs() < 0.01, "weights should sum to 1, got {sum}");
-        assert!(weights[2] > 0.5, "Forest should have high vegetation weight (slot 2)");
+    fn test_biome_node_classifies_by_height() {
+        let mut node = BiomeNode::default();
+        node.set_param("world_height", NodeParam::Float(400.0)).unwrap();
+        // Inject a minimal flat terrain at height 360 (90% of world_height → Alpine)
+        let terrain = HeightfieldData {
+            resolution: 2,
+            world_size: 100.0,
+            heights: vec![360.0; 4],
+            normals: vec![[0.0, 1.0, 0.0]; 4],
+            ..Default::default()
+        };
+        let mut inputs = NodeInputs::new();
+        inputs.insert("terrain", PortData::Terrain(terrain));
+        let out = node.cook(inputs).unwrap();
+        let map = out.get("biome_map").expect("biome_map output");
+        // All cells at high altitude → Alpine
+        let bmap = map.as_biome_map().unwrap();
+        assert!(bmap.cells.iter().all(|&b| b == BiomeKind::Alpine),
+            "cells at 90% world height should be Alpine");
     }
 
     #[test]
-    fn test_spectral_terrain_materials_default() {
+    fn test_splat_weights_sum_to_one() {
+        let weights = biome_to_splat_weights(BiomeKind::Forest, 40.0, 80.0);
+        let sum: f32 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 0.01, "weights must sum to 1, got {sum}");
+        assert!(weights[2] > 0.5, "Forest: vegetation channel (2) should dominate");
+    }
+
+    #[test]
+    fn test_spectral_terrain_materials_water_dark() {
         let mats = SpectralTerrainMaterials::default();
-        // Water slot (0): low reflectance at 380nm
-        assert!(mats.slots[0][0] < 0.1, "water slot should be dark at UV");
-        // Snow slot (5): high reflectance throughout
-        assert!(mats.slots[5][0] > 0.85, "snow slot should be bright");
+        assert!(mats.slots[0][0] < 0.1,  "Water slot UV reflectance should be dark");
+        assert!(mats.slots[5][0] > 0.85, "Snow slot should be near-white");
     }
 }
 ```
 
-- [ ] **Step 2: Run test — expect FAIL (types not defined)**
+- [ ] **Step 2: Run test — expect FAIL**
 
 ```bash
-cargo test -p vox_editor biome_tests 2>&1 | head -20
+cargo test -p vox_editor biome_node 2>&1 | head -20
 ```
 
-Expected: compile error — `biome_to_splat_weights_local`, `BiomeKind`, `SpectralTerrainMaterials` not found.
+Expected: compile error — `BiomeNode`, `BiomeKind`, `SpectralTerrainMaterials` not found.
 
-- [ ] **Step 3: Implement biome_to_splat_weights_local + SpectralTerrainMaterials**
-
-Add to `crates/vox_editor/src/nodes/terrain_node.rs`:
+- [ ] **Step 3: Implement BiomeKind, SpectralTerrainMaterials, biome_to_splat_weights, BiomeNode**
 
 ```rust
+//! BiomeNode — classifies terrain cells into biome kinds.
+//!
+//! Input:  "terrain": HeightfieldData
+//! Output: "biome_map": BiomeMap
+//!
+//! The output BiomeMap is a separate port type so users can disconnect this node
+//! and wire in a custom painted BiomeMap without changing any downstream nodes.
+
+use crate::node_graph::{OchromaNode, NodeDescriptor, PortSpec, PortType,
+                        NodeInputs, NodeOutputs, NodeError, NodeParam, PortData};
+
 // ---------------------------------------------------------------------------
-// Biome classification and spectral terrain materials
+// BiomeKind — full 11-variant enum matching forge-terrain biomes.rs exactly
 // ---------------------------------------------------------------------------
 
-/// Biome classification — mirrors forge-terrain Biome enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BiomeKind {
-    Alpine, Tundra, Forest, Grassland, Desert, Wetland, Coastal,
-    SubalpineShrub, Savanna, Taiga, TropicalRainforest,
+    Alpine, Tundra, #[default] Forest, Grassland, Desert,
+    Wetland, Coastal, SubalpineShrub, Savanna, Taiga, TropicalRainforest,
 }
 
-/// 7-slot spectral material palette for terrain splat blending.
-/// Slot order: Water(0), Sand(1), Grass(2), Dirt(3), Rock(4), Snow(5), Forest(6).
-/// Each slot is a 16-band spectral reflectance curve (380–755 nm, 25 nm steps).
+impl BiomeKind {
+    pub fn from_id(id: u8) -> Self {
+        match id {
+            0  => Self::Alpine,          1  => Self::Tundra,
+            2  => Self::Forest,          3  => Self::Grassland,
+            4  => Self::Desert,          5  => Self::Wetland,
+            6  => Self::Coastal,         7  => Self::SubalpineShrub,
+            8  => Self::Savanna,         9  => Self::Taiga,
+            10 => Self::TropicalRainforest,
+            _  => Self::Grassland,
+        }
+    }
+}
+
+/// Grid of biome classifications — one per terrain cell.
+#[derive(Clone)]
+pub struct BiomeMap {
+    pub cells:      Vec<BiomeKind>,
+    pub resolution: u32,
+}
+
+// ---------------------------------------------------------------------------
+// SpectralTerrainMaterials — 7-slot USGS palette (16-band each)
+// ---------------------------------------------------------------------------
+
+/// Slot order: Water(0), Sand(1), Grass(2), Dirt(3), Rock(4), Snow(5), Bark/Forest(6).
 pub struct SpectralTerrainMaterials {
     pub slots: [[f32; 16]; 7],
 }
@@ -2514,40 +2585,87 @@ pub struct SpectralTerrainMaterials {
 impl Default for SpectralTerrainMaterials {
     fn default() -> Self {
         Self { slots: [
-            // Water: very low reflectance, drops sharply in near-IR
-            [0.03,0.04,0.05,0.05,0.05,0.04,0.03,0.03, 0.02,0.02,0.01,0.01,0.01,0.01,0.01,0.01],
-            // Sand: moderate, rises toward red/IR
-            [0.25,0.28,0.31,0.34,0.36,0.38,0.39,0.40, 0.41,0.42,0.43,0.44,0.45,0.46,0.47,0.48],
-            // Grass/Foliage: green peak, red-edge rise
-            [0.04,0.04,0.05,0.07,0.08,0.10,0.12,0.12, 0.08,0.05,0.04,0.04,0.05,0.20,0.45,0.55],
-            // Dirt/Soil: steady rise
-            [0.07,0.09,0.11,0.13,0.14,0.16,0.18,0.20, 0.22,0.23,0.24,0.25,0.26,0.27,0.28,0.30],
-            // Rock: flat moderate
-            [0.15,0.17,0.19,0.21,0.22,0.23,0.24,0.25, 0.26,0.27,0.28,0.29,0.30,0.31,0.32,0.33],
-            // Snow: near-white flat
-            [0.93,0.94,0.95,0.95,0.95,0.94,0.93,0.92, 0.91,0.90,0.89,0.88,0.87,0.86,0.85,0.85],
-            // Forest (bark): dark, gradual rise
-            [0.05,0.06,0.07,0.08,0.09,0.10,0.11,0.12, 0.13,0.14,0.15,0.16,0.17,0.18,0.19,0.20],
+            [0.03,0.04,0.05,0.05,0.05,0.04,0.03,0.03,0.02,0.02,0.01,0.01,0.01,0.01,0.01,0.01], // Water
+            [0.25,0.28,0.31,0.34,0.36,0.38,0.39,0.40,0.41,0.42,0.43,0.44,0.45,0.46,0.47,0.48], // Sand
+            [0.04,0.04,0.05,0.07,0.08,0.10,0.12,0.12,0.08,0.05,0.04,0.04,0.05,0.20,0.45,0.55], // Grass
+            [0.07,0.09,0.11,0.13,0.14,0.16,0.18,0.20,0.22,0.23,0.24,0.25,0.26,0.27,0.28,0.30], // Dirt
+            [0.15,0.17,0.19,0.21,0.22,0.23,0.24,0.25,0.26,0.27,0.28,0.29,0.30,0.31,0.32,0.33], // Rock
+            [0.93,0.94,0.95,0.95,0.95,0.94,0.93,0.92,0.91,0.90,0.89,0.88,0.87,0.86,0.85,0.85], // Snow
+            [0.05,0.06,0.07,0.08,0.09,0.10,0.11,0.12,0.13,0.14,0.15,0.16,0.17,0.18,0.19,0.20], // Bark
         ]}
     }
 }
 
-/// Map a biome + elevation to 4-channel blend weights [water, rock, veg, special].
-/// Mirrors forge-terrain biomes.rs biome_to_splat_weights().
-pub fn biome_to_splat_weights_local(biome: BiomeKind, height: f32, world_height: f32) -> [f32; 4] {
-    let t = (height / world_height).clamp(0.0, 1.0);
+// ---------------------------------------------------------------------------
+// biome_to_splat_weights — maps biome to 4-channel blend [water, rock, veg, ground]
+// ---------------------------------------------------------------------------
+
+pub fn biome_to_splat_weights(biome: BiomeKind, height: f32, world_height: f32) -> [f32; 4] {
+    let _t = (height / world_height.max(1.0)).clamp(0.0, 1.0);
     match biome {
-        BiomeKind::Alpine       => [0.0, 0.4, 0.1, 0.5],  // rock + snow
-        BiomeKind::Tundra       => [0.0, 0.3, 0.3, 0.4],  // rock + sparse veg + snow
-        BiomeKind::Forest       => [0.0, 0.1, 0.7, 0.2],  // heavy vegetation
-        BiomeKind::Grassland    => [0.0, 0.1, 0.8, 0.1],  // grass dominant
-        BiomeKind::Desert       => [0.0, 0.2, 0.0, 0.8],  // sand dominant (slot 1 via special)
-        BiomeKind::Wetland      => [0.4, 0.1, 0.4, 0.1],  // water + vegetation
-        BiomeKind::Coastal      => [0.3, 0.2, 0.3, 0.2],  // water + sand + veg
-        BiomeKind::SubalpineShrub => [0.0, 0.3, 0.5, 0.2],
-        BiomeKind::Savanna      => [0.0, 0.2, 0.6, 0.2],
-        BiomeKind::Taiga        => [0.0, 0.1, 0.7, 0.2],
-        BiomeKind::TropicalRainforest => [0.1, 0.0, 0.8, 0.1],
+        BiomeKind::Alpine             => [0.00, 0.50, 0.05, 0.45],
+        BiomeKind::Tundra             => [0.00, 0.40, 0.20, 0.40],
+        BiomeKind::Forest             => [0.00, 0.05, 0.70, 0.25],
+        BiomeKind::Grassland          => [0.00, 0.05, 0.75, 0.20],
+        BiomeKind::Desert             => [0.00, 0.10, 0.00, 0.90],
+        BiomeKind::Wetland            => [0.40, 0.05, 0.40, 0.15],
+        BiomeKind::Coastal            => [0.30, 0.10, 0.25, 0.35],
+        BiomeKind::SubalpineShrub     => [0.00, 0.25, 0.50, 0.25],
+        BiomeKind::Savanna            => [0.00, 0.10, 0.55, 0.35],
+        BiomeKind::Taiga              => [0.00, 0.10, 0.65, 0.25],
+        BiomeKind::TropicalRainforest => [0.10, 0.00, 0.80, 0.10],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BiomeNode
+// ---------------------------------------------------------------------------
+
+pub struct BiomeNode {
+    world_height: f32,
+}
+
+impl Default for BiomeNode {
+    fn default() -> Self { Self { world_height: 400.0 } }
+}
+
+impl OchromaNode for BiomeNode {
+    fn descriptor(&self) -> NodeDescriptor {
+        NodeDescriptor {
+            type_name: "biome",
+            inputs:  vec![PortSpec { name: "terrain",   port_type: PortType::Terrain,  optional: false }],
+            outputs: vec![PortSpec { name: "biome_map", port_type: PortType::BiomeMap, optional: false }],
+        }
+    }
+
+    fn set_param(&mut self, key: &str, value: NodeParam) -> Result<(), NodeError> {
+        match key {
+            "world_height" => self.world_height = value.as_float()? as f32,
+            other          => return Err(NodeError::UnknownParam(other.to_string())),
+        }
+        Ok(())
+    }
+
+    fn cook(&self, inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
+        let terrain = inputs.get("terrain")
+            .ok_or_else(|| NodeError::MissingInput("terrain".into()))?
+            .as_terrain()
+            .ok_or_else(|| NodeError::TypeMismatch("terrain".into()))?;
+
+        let cells: Vec<BiomeKind> = terrain.heights.iter().map(|&h| {
+            let t = (h / self.world_height).clamp(0.0, 1.0);
+            // Altitude-based classification (mirrors forge-terrain classify_biomes):
+            if t > 0.85      { BiomeKind::Alpine }
+            else if t > 0.70 { BiomeKind::Tundra }
+            else if t > 0.55 { BiomeKind::SubalpineShrub }
+            else if t < 0.05 { BiomeKind::Coastal }
+            else             { BiomeKind::Forest }  // default; flow_map upgrades to Wetland in WetnessOverrideNode
+        }).collect();
+
+        let biome_map = BiomeMap { cells, resolution: terrain.resolution };
+        let mut out = NodeOutputs::new();
+        out.insert("biome_map", PortData::BiomeMap(biome_map));
+        Ok(out)
     }
 }
 ```
@@ -2555,29 +2673,329 @@ pub fn biome_to_splat_weights_local(biome: BiomeKind, height: f32, world_height:
 - [ ] **Step 4: Run test — expect PASS**
 
 ```bash
-cargo test -p vox_editor biome_tests
+cargo test -p vox_editor biome_node
 ```
 
 Expected: PASS
 
-- [ ] **Step 5: Wire into TerrainNode.cook()**
-
-In `TerrainNode::cook()`, after terrain grid is generated, classify biomes and populate splat_weights. Add to the cook return:
-
-```rust
-// In TerrainNode::cook(), after computing heights:
-let mats = SpectralTerrainMaterials::default();
-// For each cell, map biome_id → splat_weights using biome_to_splat_weights_local
-// Store in output port as TerrainWithSplatWeights
-```
-
-The `TerrainData` port output gains a `splat_weights: Vec<[f32; 4]>` field. SplatizeNode reads `splat_weights` and blends spectral bands from `mats.slots` using the 4-channel weights.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add crates/vox_editor/src/nodes/terrain_node.rs crates/vox_editor/src/nodes/splatize_node.rs
-git commit -m "feat(editor): biome_to_splat_weights + SpectralTerrainMaterials for terrain splat assignment"
+git add crates/vox_editor/src/nodes/biome_node.rs crates/vox_editor/src/nodes/mod.rs
+git commit -m "feat(editor): BiomeNode — standalone biome classification node with BiomeMap port type"
+```
+
+---
+
+### Task 8b: SplatWeightNode — BiomeMap → splat_weights per cell
+
+- [ ] **Step 1: Write failing test**
+
+Create `crates/vox_editor/src/nodes/splat_weight_node.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_splat_weight_node_forest_dominant_veg() {
+        let node = SplatWeightNode::default();
+        let biome_map = BiomeMap {
+            cells: vec![BiomeKind::Forest; 4],
+            resolution: 2,
+        };
+        let terrain = HeightfieldData {
+            resolution: 2,
+            world_size: 100.0,
+            heights: vec![40.0; 4],
+            ..Default::default()
+        };
+        let mut inputs = NodeInputs::new();
+        inputs.insert("biome_map", PortData::BiomeMap(biome_map));
+        inputs.insert("terrain",   PortData::Terrain(terrain));
+
+        let out = node.cook(inputs).unwrap();
+        let weights = out.get("splat_weights").unwrap()
+            .as_splat_weights().unwrap();
+
+        assert_eq!(weights.len(), 4);
+        // Forest: vegetation channel (2) should be > 0.5 for all cells
+        assert!(weights.iter().all(|w| w[2] > 0.5),
+            "Forest cells should have vegetation weight > 0.5");
+    }
+
+    #[test]
+    fn test_splat_weight_node_custom_biome_map() {
+        // This test demonstrates the override use-case: user supplies a custom
+        // BiomeMap (e.g. hand-painted), SplatWeightNode produces correct weights
+        // without any dependency on the BiomeNode output.
+        let node = SplatWeightNode::default();
+        let custom_map = BiomeMap {
+            cells: vec![BiomeKind::Desert, BiomeKind::Coastal,
+                        BiomeKind::Alpine, BiomeKind::Wetland],
+            resolution: 2,
+        };
+        let terrain = HeightfieldData {
+            resolution: 2,
+            world_size: 100.0,
+            heights: vec![10.0, 5.0, 350.0, 3.0],
+            ..Default::default()
+        };
+        let mut inputs = NodeInputs::new();
+        inputs.insert("biome_map", PortData::BiomeMap(custom_map));
+        inputs.insert("terrain",   PortData::Terrain(terrain));
+
+        let out = node.cook(inputs).unwrap();
+        let weights = out.get("splat_weights").unwrap().as_splat_weights().unwrap();
+
+        // Desert cell (0): ground channel (3) dominant
+        assert!(weights[0][3] > 0.7, "Desert: ground channel should dominate");
+        // Wetland cell (3): water channel (0) significant
+        assert!(weights[3][0] > 0.3, "Wetland: water channel should be present");
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+cargo test -p vox_editor splat_weight_node 2>&1 | head -20
+```
+
+Expected: compile error.
+
+- [ ] **Step 3: Implement SplatWeightNode**
+
+```rust
+//! SplatWeightNode — converts a BiomeMap to per-cell splat blend weights.
+//!
+//! Inputs:
+//!   "biome_map" : BiomeMap  (from BiomeNode or a custom painted BiomeMapInputNode)
+//!   "terrain"   : HeightfieldData  (for height-dependent weight modulation)
+//! Output:
+//!   "splat_weights": Vec<[f32; 4]>  (one weight array per terrain cell)
+//!
+//! Downstream: SplatizeNode reads splat_weights + SpectralTerrainMaterials
+//! to assign 16-band spectral values per splat.
+
+use crate::node_graph::{OchromaNode, NodeDescriptor, PortSpec, PortType,
+                        NodeInputs, NodeOutputs, NodeError, NodeParam, PortData};
+use super::biome_node::{BiomeKind, biome_to_splat_weights};
+
+pub struct SplatWeightNode {
+    world_height: f32,
+}
+
+impl Default for SplatWeightNode {
+    fn default() -> Self { Self { world_height: 400.0 } }
+}
+
+impl OchromaNode for SplatWeightNode {
+    fn descriptor(&self) -> NodeDescriptor {
+        NodeDescriptor {
+            type_name: "splat_weight",
+            inputs: vec![
+                PortSpec { name: "biome_map", port_type: PortType::BiomeMap, optional: false },
+                PortSpec { name: "terrain",   port_type: PortType::Terrain,  optional: false },
+            ],
+            outputs: vec![
+                PortSpec { name: "splat_weights", port_type: PortType::SplatWeights, optional: false },
+            ],
+        }
+    }
+
+    fn set_param(&mut self, key: &str, value: NodeParam) -> Result<(), NodeError> {
+        match key {
+            "world_height" => self.world_height = value.as_float()? as f32,
+            other          => return Err(NodeError::UnknownParam(other.to_string())),
+        }
+        Ok(())
+    }
+
+    fn cook(&self, inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
+        let biome_map = inputs.get("biome_map")
+            .ok_or_else(|| NodeError::MissingInput("biome_map".into()))?
+            .as_biome_map()
+            .ok_or_else(|| NodeError::TypeMismatch("biome_map".into()))?;
+        let terrain = inputs.get("terrain")
+            .ok_or_else(|| NodeError::MissingInput("terrain".into()))?
+            .as_terrain()
+            .ok_or_else(|| NodeError::TypeMismatch("terrain".into()))?;
+
+        let weights: Vec<[f32; 4]> = biome_map.cells.iter()
+            .zip(terrain.heights.iter())
+            .map(|(&biome, &h)| biome_to_splat_weights(biome, h, self.world_height))
+            .collect();
+
+        let mut out = NodeOutputs::new();
+        out.insert("splat_weights", PortData::SplatWeights(weights));
+        Ok(out)
+    }
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_editor splat_weight_node
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_editor/src/nodes/splat_weight_node.rs crates/vox_editor/src/nodes/mod.rs
+git commit -m "feat(editor): SplatWeightNode — BiomeMap → splat_weights, composable with custom BiomeMap override"
+```
+
+---
+
+### Task 8c: WetnessOverrideNode — DripResult upgrades dry biomes to Wetland
+
+- [ ] **Step 1: Write failing test**
+
+Add to `crates/vox_editor/src/nodes/biome_node.rs`:
+
+```rust
+#[cfg(test)]
+mod wetness_override_tests {
+    use super::*;
+
+    #[test]
+    fn test_wetness_overrides_dry_cells_to_wetland() {
+        let node = WetnessOverrideNode { drip_threshold: 0.6, world_height: 400.0 };
+
+        let biome_map = BiomeMap {
+            cells: vec![BiomeKind::Grassland, BiomeKind::Forest,
+                        BiomeKind::Desert,    BiomeKind::Tundra],
+            resolution: 2,
+        };
+        // Cells 0 and 2 have high drip intensity → should become Wetland
+        let drip = vec![0.8f32, 0.2, 0.9, 0.1];
+        let heights = vec![5.0f32; 4]; // low altitude — not Alpine, upgrade allowed
+
+        let result = node.apply(&biome_map, &drip, &heights);
+        assert_eq!(result.cells[0], BiomeKind::Wetland, "high drip + low altitude → Wetland");
+        assert_eq!(result.cells[1], BiomeKind::Forest,  "low drip → unchanged");
+        assert_eq!(result.cells[2], BiomeKind::Wetland, "high drip + low altitude → Wetland");
+        assert_eq!(result.cells[3], BiomeKind::Tundra,  "low drip → unchanged");
+    }
+
+    #[test]
+    fn test_wetness_does_not_override_alpine() {
+        let node = WetnessOverrideNode { drip_threshold: 0.5, world_height: 400.0 };
+        let biome_map = BiomeMap {
+            cells: vec![BiomeKind::Alpine],
+            resolution: 1,
+        };
+        let drip = vec![0.9f32];    // high drip
+        let heights = vec![360.0f32]; // but high altitude — stays Alpine (snow, not water)
+        let result = node.apply(&biome_map, &drip, &heights);
+        assert_eq!(result.cells[0], BiomeKind::Alpine, "Alpine should not become Wetland");
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+cargo test -p vox_editor wetness_override_tests 2>&1 | head -20
+```
+
+Expected: compile error.
+
+- [ ] **Step 3: Implement WetnessOverrideNode**
+
+```rust
+/// Optional node between BiomeNode and SplatWeightNode.
+/// Upgrades Grassland/Forest/Desert cells with high drip_intensity to Wetland/Coastal,
+/// integrating forge-flow-maps DripResult into the biome pipeline.
+pub struct WetnessOverrideNode {
+    pub drip_threshold: f32,   // drip_intensity threshold for upgrade (default 0.6)
+    pub world_height:   f32,   // cells above 60% world_height are exempt (snow, not water)
+}
+
+impl Default for WetnessOverrideNode {
+    fn default() -> Self { Self { drip_threshold: 0.6, world_height: 400.0 } }
+}
+
+impl WetnessOverrideNode {
+    /// Apply wetness override to a BiomeMap given drip_intensity and heights.
+    /// Pure function — does not modify the input, returns a new BiomeMap.
+    pub fn apply(&self, biome_map: &BiomeMap, drip: &[f32], heights: &[f32]) -> BiomeMap {
+        let cells = biome_map.cells.iter()
+            .zip(drip.iter())
+            .zip(heights.iter())
+            .map(|((&biome, &d), &h)| {
+                let altitude_frac = h / self.world_height;
+                let is_high_altitude = altitude_frac > 0.60;
+                if d >= self.drip_threshold && !is_high_altitude {
+                    // Coastal if near sea level (< 10% world height), else Wetland
+                    if altitude_frac < 0.10 { BiomeKind::Coastal } else { BiomeKind::Wetland }
+                } else {
+                    biome
+                }
+            })
+            .collect();
+        BiomeMap { cells, resolution: biome_map.resolution }
+    }
+}
+```
+
+Add `WetnessOverrideNode` as a `CrucibleNode`-style node with inputs `biome_map`, `drip_intensity` (ScalarVec), `terrain`:
+
+```rust
+impl OchromaNode for WetnessOverrideNode {
+    fn descriptor(&self) -> NodeDescriptor {
+        NodeDescriptor {
+            type_name: "wetness_override",
+            inputs: vec![
+                PortSpec { name: "biome_map",     port_type: PortType::BiomeMap,   optional: false },
+                PortSpec { name: "drip_intensity", port_type: PortType::ScalarVec, optional: false },
+                PortSpec { name: "terrain",        port_type: PortType::Terrain,   optional: false },
+            ],
+            outputs: vec![
+                PortSpec { name: "biome_map", port_type: PortType::BiomeMap, optional: false },
+            ],
+        }
+    }
+
+    fn set_param(&mut self, key: &str, value: NodeParam) -> Result<(), NodeError> {
+        match key {
+            "drip_threshold" => self.drip_threshold = value.as_float()? as f32,
+            "world_height"   => self.world_height   = value.as_float()? as f32,
+            other            => return Err(NodeError::UnknownParam(other.to_string())),
+        }
+        Ok(())
+    }
+
+    fn cook(&self, inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
+        let biome_map   = inputs.get("biome_map").unwrap().as_biome_map().unwrap();
+        let drip        = inputs.get("drip_intensity").unwrap().as_scalar_vec().unwrap();
+        let terrain     = inputs.get("terrain").unwrap().as_terrain().unwrap();
+        let result      = self.apply(&biome_map, &drip, &terrain.heights);
+        let mut out     = NodeOutputs::new();
+        out.insert("biome_map", PortData::BiomeMap(result));
+        Ok(out)
+    }
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_editor wetness_override_tests
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_editor/src/nodes/biome_node.rs
+git commit -m "feat(editor): WetnessOverrideNode — DripResult upgrades dry biomes to Wetland/Coastal"
 ```
 
 ---
