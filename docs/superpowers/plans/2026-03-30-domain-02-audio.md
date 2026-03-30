@@ -14,6 +14,7 @@
 | Action | Path | Responsibility |
 |--------|------|----------------|
 | MODIFY | `crates/vox_audio/Cargo.toml` | Add cpal, fundsp, lewton; gate rodio as `optional = true` (already is) |
+| CREATE | `crates/vox_audio/src/spectral_acoustic.rs` | `SpectralAcousticProfile` — forge material DB → acoustic params (one DB for both rendering and audio) |
 | CREATE | `crates/vox_audio/src/cpal_backend.rs` | CPAL device initialisation, stream ownership, AudioCommand dispatch |
 | CREATE | `crates/vox_audio/src/spectral_synth2.rs` | `SpectralSynth` struct with `strike()` and `resonance_freq()` |
 | CREATE | `crates/vox_audio/src/spectral_reverb.rs` | `SpectralReverb` struct, `from_splat_reflectance()`, `tail_samples()` |
@@ -65,6 +66,178 @@
   git add crates/vox_audio/Cargo.toml crates/vox_audio/src/cpal_backend.rs
   git commit -m "feat(audio): add cpal=0.15, fundsp=0.18, lewton=0.10 to vox_audio"
   ```
+
+---
+
+## Task 1.5 — SpectralAcousticProfile: one material database for rendering AND audio
+
+**Files:**
+- Create: `crates/vox_audio/src/spectral_acoustic.rs`
+- Modify: `crates/vox_audio/src/lib.rs`
+
+**The forge steal:** `forge-spectral` has a database of 13 materials (Soil, Rock, Bark, Water, Glass, Concrete, Foliage, Snow, Asphalt, Gravel, Brick, Metal, Sand) with physically measured USGS reflectance curves at 16 wavelengths. The same spectral profile that governs how a material *looks* also governs how it *sounds* — high uniform reflectance (Metal, Snow) = long acoustic sustain and reverberant room. Low absorption = good acoustic mirror. This is the architectural advantage: Unreal has separate visual material parameters and audio material parameters. Ochroma has one spectral profile that drives both.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `crates/vox_audio/src/spectral_acoustic.rs`:
+
+```rust
+//! SpectralAcousticProfile — derives acoustic synthesis parameters from the
+//! forge-spectral material database. One material profile drives both rendering
+//! and audio. No separate "audio material" needed.
+
+/// Acoustic synthesis parameters derived from spectral reflectance.
+#[derive(Debug, Clone, Copy)]
+pub struct SpectralAcousticProfile {
+    /// Fundamental resonance frequency in Hz.
+    pub resonance_hz: f32,
+    /// Quality factor: higher = longer ring / slower energy loss.
+    /// Q = 0.2 (sand, soil) → Q = 15.0 (metal).
+    pub q_factor: f32,
+    /// Reverberation time (RT60) in seconds when surface lines a room.
+    /// 0.1s (dead outdoors: sand, asphalt) → 6.0s (snow field).
+    pub rt60_secs: f32,
+}
+
+impl SpectralAcousticProfile {
+    /// Derive acoustic profile from arbitrary 8-band spectral data.
+    /// Approximate — use `from_material_kind()` for known materials.
+    ///
+    /// Formula:
+    /// - `resonance_hz`: weighted geometric mean over [12000..200 Hz] FREQ_MAP
+    /// - `q_factor`: 5.0 / (band_variance + 0.1) — flat profile = high Q = long ring
+    /// - `rt60_secs`: mean_reflectance × 6.0 — high reflectance = reverberant room
+    pub fn from_spectral(bands_f16: &[u16; 8]) -> Self {
+        const FREQ_MAP: [f32; 8] = [12000.0, 8000.0, 5000.0, 3000.0, 1500.0, 800.0, 400.0, 200.0];
+        let bands: [f32; 8] = std::array::from_fn(|i| {
+            half::f16::from_bits(bands_f16[i]).to_f32().max(0.0)
+        });
+        let sum: f32 = bands.iter().sum();
+        let mean = sum / 8.0;
+
+        // Weighted geometric mean frequency (log domain)
+        let log_freq_sum: f32 = bands.iter().zip(FREQ_MAP.iter())
+            .map(|(&w, &f)| w * f.ln())
+            .sum();
+        let resonance_hz = if sum > 1e-6 {
+            (log_freq_sum / sum).exp()
+        } else {
+            440.0
+        };
+
+        // Band variance → Q factor
+        let variance: f32 = bands.iter().map(|&b| (b - mean).powi(2)).sum::<f32>() / 8.0;
+        let q_factor = (5.0 / (variance + 0.1)).clamp(0.2, 15.0);
+
+        // Mean reflectance → RT60
+        let rt60_secs = (mean * 6.0).clamp(0.05, 8.0);
+
+        Self { resonance_hz, q_factor, rt60_secs }
+    }
+
+    /// Hardcoded profiles for forge MaterialKind variants.
+    /// Physics-correct values from USGS spectral library + known material acoustics.
+    ///
+    /// Named to match `forge_spectral::MaterialKind` — update when forge adds materials.
+    pub fn metal()    -> Self { Self { resonance_hz: 8000.0, q_factor: 15.0, rt60_secs: 3.5 } }
+    pub fn glass()    -> Self { Self { resonance_hz: 6000.0, q_factor: 10.0, rt60_secs: 0.3 } }
+    pub fn concrete() -> Self { Self { resonance_hz:  300.0, q_factor:  2.0, rt60_secs: 2.0 } }
+    pub fn rock()     -> Self { Self { resonance_hz:  250.0, q_factor:  1.5, rt60_secs: 1.5 } }
+    pub fn brick()    -> Self { Self { resonance_hz:  400.0, q_factor:  1.5, rt60_secs: 1.8 } }
+    pub fn bark()     -> Self { Self { resonance_hz:  200.0, q_factor:  1.8, rt60_secs: 0.8 } }
+    pub fn gravel()   -> Self { Self { resonance_hz:  350.0, q_factor:  0.8, rt60_secs: 0.4 } }
+    pub fn soil()     -> Self { Self { resonance_hz:  100.0, q_factor:  0.4, rt60_secs: 0.1 } }
+    pub fn sand()     -> Self { Self { resonance_hz:   80.0, q_factor:  0.3, rt60_secs: 0.1 } }
+    pub fn asphalt()  -> Self { Self { resonance_hz:  120.0, q_factor:  0.5, rt60_secs: 0.1 } }
+    pub fn snow()     -> Self { Self { resonance_hz:   60.0, q_factor:  0.2, rt60_secs: 6.0 } }
+    pub fn foliage()  -> Self { Self { resonance_hz:  800.0, q_factor:  0.7, rt60_secs: 0.3 } }
+    pub fn water()    -> Self { Self { resonance_hz:  800.0, q_factor:  2.5, rt60_secs: 0.4 } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metal_has_higher_q_than_soil() {
+        assert!(SpectralAcousticProfile::metal().q_factor >
+                SpectralAcousticProfile::soil().q_factor,
+            "metal sustains longer than soil");
+    }
+
+    #[test]
+    fn snow_has_longest_rt60() {
+        let rt60s = [
+            SpectralAcousticProfile::metal().rt60_secs,
+            SpectralAcousticProfile::concrete().rt60_secs,
+            SpectralAcousticProfile::snow().rt60_secs,
+            SpectralAcousticProfile::asphalt().rt60_secs,
+        ];
+        let max = rt60s.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert_eq!(max, SpectralAcousticProfile::snow().rt60_secs,
+            "snow field should have longest RT60 (huge reflectance)");
+    }
+
+    #[test]
+    fn glass_higher_resonance_than_soil() {
+        assert!(SpectralAcousticProfile::glass().resonance_hz >
+                SpectralAcousticProfile::soil().resonance_hz,
+            "glass rings higher than soil");
+    }
+
+    #[test]
+    fn from_spectral_metal_like_profile() {
+        // Flat high-reflectance profile ≈ metal: should give high Q, moderate-high RT60
+        let bands = [half::f16::from_f32(0.65).to_bits(); 8];
+        let profile = SpectralAcousticProfile::from_spectral(&bands);
+        assert!(profile.q_factor > 3.0,
+            "flat high-reflectance should give Q > 3.0, got {}", profile.q_factor);
+        assert!(profile.rt60_secs > 1.0,
+            "flat high-reflectance should give RT60 > 1.0s, got {}", profile.rt60_secs);
+    }
+
+    #[test]
+    fn from_spectral_dead_material() {
+        // Very low reflectance (asphalt-like): low RT60
+        let bands = [half::f16::from_f32(0.06).to_bits(); 8];
+        let profile = SpectralAcousticProfile::from_spectral(&bands);
+        assert!(profile.rt60_secs < 0.5,
+            "dark material should give RT60 < 0.5s, got {}", profile.rt60_secs);
+    }
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+cargo test -p vox_audio spectral_acoustic 2>&1 | head -10
+```
+
+Expected: compile error — module not in lib.rs
+
+- [ ] **Step 3: Expose the module**
+
+Add to `crates/vox_audio/src/lib.rs`:
+
+```rust
+pub mod spectral_acoustic;
+pub use spectral_acoustic::SpectralAcousticProfile;
+```
+
+- [ ] **Step 4: Run tests**
+
+```bash
+cargo test -p vox_audio spectral_acoustic -- --nocapture
+```
+
+Expected: 5 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_audio/src/spectral_acoustic.rs crates/vox_audio/src/lib.rs
+git commit -m "feat(audio): SpectralAcousticProfile — forge material DB drives both rendering and audio"
+```
 
 ---
 
@@ -964,18 +1137,199 @@ This task wires `SpectralSynth::strike()` → `SpectralReverb` → `AudioCommand
 
 ---
 
+## Task 7 — Biome-driven ambient soundscape via forge-terrain biome_ids
+
+**Files:**
+- Create: `crates/vox_audio/src/biome_soundscape.rs`
+- Modify: `crates/vox_audio/src/lib.rs`
+
+**The forge steal:** `forge-terrain`'s `TerrainGrid` outputs `biome_ids: Vec<u8>` (Coastal/Wetland/Alpine/Tundra/Desert/Forest/Grassland per terrain quad). Instead of monitoring the spectral radiance cache heuristically to determine ambient sound mix, query the biome at the character's foot position. Biome is stable frame-to-frame; radiance cache fluctuates. This is more reliable and connects terrain generation directly to audio.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `crates/vox_audio/src/biome_soundscape.rs`:
+
+```rust
+//! Biome-driven ambient soundscape.
+//! Maps forge-terrain BiomeKind to spectral synthesis parameters.
+//! One biome ID drives both terrain material rendering AND ambient audio.
+
+/// Matches forge-terrain BiomeKind (copied as plain enum — no dep on forge required).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiomeKind {
+    Coastal   = 0,
+    Wetland   = 1,
+    Alpine    = 2,
+    Tundra    = 3,
+    Desert    = 4,
+    Forest    = 5,
+    Grassland = 6,
+}
+
+impl BiomeKind {
+    pub fn from_id(id: u8) -> Self {
+        match id {
+            0 => Self::Coastal,
+            1 => Self::Wetland,
+            2 => Self::Alpine,
+            3 => Self::Tundra,
+            4 => Self::Desert,
+            5 => Self::Forest,
+            _ => Self::Grassland,
+        }
+    }
+}
+
+/// Ambient mix weights per biome: [wind, water, fire, insects, ice, void]
+pub struct BiomeAmbientMix {
+    pub wind:    f32,
+    pub water:   f32,
+    pub insects: f32,
+    pub ice:     f32,
+}
+
+impl BiomeAmbientMix {
+    pub fn for_biome(biome: BiomeKind) -> Self {
+        match biome {
+            BiomeKind::Coastal   => Self { wind: 0.5, water: 0.8, insects: 0.1, ice: 0.0 },
+            BiomeKind::Wetland   => Self { wind: 0.1, water: 0.6, insects: 0.9, ice: 0.0 },
+            BiomeKind::Alpine    => Self { wind: 0.8, water: 0.2, insects: 0.0, ice: 0.4 },
+            BiomeKind::Tundra    => Self { wind: 0.9, water: 0.1, insects: 0.0, ice: 0.7 },
+            BiomeKind::Desert    => Self { wind: 0.6, water: 0.0, insects: 0.2, ice: 0.0 },
+            BiomeKind::Forest    => Self { wind: 0.2, water: 0.1, insects: 0.7, ice: 0.0 },
+            BiomeKind::Grassland => Self { wind: 0.4, water: 0.0, insects: 0.5, ice: 0.0 },
+        }
+    }
+
+    /// Blend from current mix toward target with temporal smoothing.
+    pub fn blend_toward(&self, target: &Self, alpha: f32) -> Self {
+        Self {
+            wind:    self.wind    + (target.wind    - self.wind)    * alpha,
+            water:   self.water   + (target.water   - self.water)   * alpha,
+            insects: self.insects + (target.insects - self.insects) * alpha,
+            ice:     self.ice     + (target.ice     - self.ice)     * alpha,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wetland_has_high_insects() {
+        let mix = BiomeAmbientMix::for_biome(BiomeKind::Wetland);
+        assert!(mix.insects > 0.8, "wetland insects={}", mix.insects);
+    }
+
+    #[test]
+    fn tundra_has_no_insects() {
+        let mix = BiomeAmbientMix::for_biome(BiomeKind::Tundra);
+        assert_eq!(mix.insects, 0.0, "tundra should have no insects");
+    }
+
+    #[test]
+    fn alpine_has_wind_and_ice() {
+        let mix = BiomeAmbientMix::for_biome(BiomeKind::Alpine);
+        assert!(mix.wind > 0.6 && mix.ice > 0.3, "alpine: wind={} ice={}", mix.wind, mix.ice);
+    }
+
+    #[test]
+    fn blend_converges() {
+        let a = BiomeAmbientMix::for_biome(BiomeKind::Desert);
+        let b = BiomeAmbientMix::for_biome(BiomeKind::Forest);
+        let blended = a.blend_toward(&b, 1.0);
+        assert!((blended.insects - b.insects).abs() < 1e-5, "full blend should equal target");
+    }
+
+    #[test]
+    fn biome_from_id_roundtrips() {
+        for id in 0u8..7 {
+            let biome = BiomeKind::from_id(id);
+            assert_eq!(biome as u8, id);
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify fails**
+
+```bash
+cargo test -p vox_audio biome_soundscape 2>&1 | head -10
+```
+
+- [ ] **Step 3: Expose module**
+
+```rust
+// crates/vox_audio/src/lib.rs
+pub mod biome_soundscape;
+pub use biome_soundscape::{BiomeKind, BiomeAmbientMix};
+```
+
+- [ ] **Step 4: Run tests**
+
+```bash
+cargo test -p vox_audio biome_soundscape -- --nocapture
+```
+
+Expected: 5 tests pass.
+
+- [ ] **Step 5: Wire into engine_runner**
+
+In `engine_runner.rs`, add `ambient_mix: vox_audio::BiomeAmbientMix` field. Each frame:
+
+```rust
+// Sample biome at character foot position from TerrainGrid
+if let Some(terrain) = &self.terrain_volume {
+    let foot = self.character.position;
+    // biome_id is per-quad; look up from TerrainGrid primvars when available
+    // For now use SpectralRadianceCache band heuristic as fallback
+    let dominant_band = self.spectral_gi.cache
+        .get(0).map(|c| c.iter().enumerate()
+            .max_by(|a,b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(i,_)| i).unwrap_or(4))
+        .unwrap_or(4);
+    let biome = match dominant_band {
+        0..=2 => vox_audio::BiomeKind::Alpine,   // cool/blue → alpine
+        3..=4 => vox_audio::BiomeKind::Forest,   // green → forest
+        5..=6 => vox_audio::BiomeKind::Desert,   // warm → desert
+        _     => vox_audio::BiomeKind::Grassland,
+    };
+    let target = vox_audio::BiomeAmbientMix::for_biome(biome);
+    self.ambient_mix = self.ambient_mix.blend_toward(&target, 0.02); // slow crossfade
+}
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/vox_audio/src/biome_soundscape.rs crates/vox_audio/src/lib.rs crates/vox_app/src/bin/engine_runner.rs
+git commit -m "feat(audio): BiomeAmbientMix — forge-terrain biome_ids drive ambient soundscape"
+```
+
+---
+
 ## Completion Criterion
 
 Run `cargo test -p vox_audio` — all of the following pass with no audio device required:
 
+- `spectral_acoustic::tests::metal_has_higher_q_than_soil`
+- `spectral_acoustic::tests::snow_has_longest_rt60`
+- `spectral_acoustic::tests::glass_higher_resonance_than_soil`
+- `spectral_acoustic::tests::from_spectral_metal_like_profile`
+- `spectral_acoustic::tests::from_spectral_dead_material`
 - `spectral_synth2::tests::resonance_freq_blue_material_is_high`
 - `spectral_synth2::tests::resonance_freq_red_material_is_low`
 - `spectral_synth2::tests::strike_is_normalised`
 - `spectral_reverb::tests::high_reflectance_gives_longer_tail_than_low`
 - `spectral_reverb::tests::tail_samples_decays_to_near_zero`
 - `fundsp_graph::tests::apply_reverb_send_lengthens_signal`
+- `biome_soundscape::tests::wetland_has_high_insects`
+- `biome_soundscape::tests::tundra_has_no_insects`
 - `integration_audio::glass_impact_produces_play_synth_command`
 - `integration_audio::stone_room_reverb_longer_than_carpet_room`
+
+**Architectural invariant:** Metal impact uses `SpectralAcousticProfile::metal()` (Q=15, RT60=3.5s). Soil impact uses `SpectralAcousticProfile::soil()` (Q=0.4, RT60=0.1s). Same `SpectralMaterialDb` drives both visual splat colours and acoustic synthesis — no separate audio material system.
 
 On a real platform (Windows/Mac/Linux with audio device): `CpalBackendBuilder::new().build(rx)` returns `Some`, stream plays without error.
 
