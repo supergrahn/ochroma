@@ -34,9 +34,12 @@ The goal of this roadmap: every domain is designed to surpass Unreal on its own 
 ## Execution Order
 
 ```
-Build/Platform → Audio → UI → Scripting → Asset Pipeline → Rendering →
-Networking → Character → Editor → Physics → AI/LLM → Spectral Frontier
+Spectral GI Wiring (12a) → Build/Platform → Audio → UI → Scripting →
+Asset Pipeline → Rendering → Networking → Character → Editor → Physics →
+AI/LLM → Spectral Frontier (12b–12e)
 ```
+
+**Why Spectral GI first:** `SpectralRadianceCache`, `GpuGiPass`, and `SpectralAtmosphere` are already written and tested but not wired. Nine downstream domains (audio, UI, scripting, networking, rendering, physics, editor, AI, spectral frontier) depend on live spectral radiance data being available at runtime. Wiring first means every subsequent domain builds on real data, not stubbed constants.
 
 Docs are written per domain as each completes. Getting-started guide and CONTRIBUTING.md after Build/Platform — first point at which something runnable exists.
 
