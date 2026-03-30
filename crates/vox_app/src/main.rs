@@ -120,6 +120,7 @@ impl App {
         world.insert_resource(CameraState {
             position: Vec3::ZERO,
             view_proj: Mat4::IDENTITY,
+            view: Mat4::IDENTITY,
         });
         world.insert_resource(VisibleSplats::default());
         world.insert_resource(SimulationState::new());
@@ -445,6 +446,7 @@ impl ApplicationHandler for App {
                 if let Some(mut cam_state) = self.world.get_resource_mut::<CameraState>() {
                     cam_state.position = self.camera.position;
                     cam_state.view_proj = self.camera.view_proj();
+                    cam_state.view = self.camera.view_matrix();
                 }
 
                 // --- Run ECS systems (frustum cull -> LOD select -> gather splats) ---

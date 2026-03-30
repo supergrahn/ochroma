@@ -14,6 +14,8 @@ use vox_render::SpectraCameraParams;
 pub struct CameraState {
     pub position: Vec3,
     pub view_proj: glam::Mat4,
+    /// View matrix (without projection). Used to extract camera direction vectors.
+    pub view: glam::Mat4,
 }
 
 /// Resource: visible splats after culling + LOD.
@@ -90,7 +92,7 @@ pub fn gather_splats_system(
 /// a `SplatInstanceComponent` changes in the ECS. `vox_render` has no Bevy
 /// dep; change detection lives here.
 ///
-/// Camera orientation is derived from `CameraState.view_proj` (inverse).
+/// Camera orientation is derived from `CameraState.view` (view-matrix inverse).
 /// `fov_y`, `near`, and `far` use defaults until `CameraState` exposes them.
 #[cfg(feature = "spectra-native")]
 pub fn spectra_render_system(
@@ -101,11 +103,12 @@ pub fn spectra_render_system(
 ) {
     let scene_changed = !changed.is_empty();
 
-    // Derive camera vectors from the inverse view-projection matrix.
-    let inv = camera.view_proj.inverse();
-    let fwd = (inv * glam::Vec4::new(0.0, 0.0, -1.0, 0.0)).truncate().normalize();
-    let up  = (inv * glam::Vec4::new(0.0, 1.0,  0.0, 0.0)).truncate().normalize();
-    let pos = camera.position;  // direct field — correct for any matrix type
+    // Use view matrix inverse (not view_proj inverse) for direction vectors.
+    // P_inv distorts directions; V_inv maps NDC directions to world space correctly.
+    let inv_view = camera.view.inverse();
+    let fwd = (inv_view * glam::Vec4::new(0.0, 0.0, -1.0, 0.0)).truncate().normalize();
+    let up  = (inv_view * glam::Vec4::new(0.0, 1.0,  0.0, 0.0)).truncate().normalize();
+    let pos = camera.position;
 
     let cam = SpectraCameraParams {
         position: pos.into(),
@@ -117,5 +120,8 @@ pub fn spectra_render_system(
         far:   1000.0,
     };
 
-    backend.tick(&visible.splats, cam, scene_changed);
+    // TODO: wire the returned Arc<Vec<u8>> into a Bevy Image resource so the
+    // rendered frame reaches the display pipeline. For now the frame is produced
+    // by the render thread but not consumed here.
+    let _ = backend.tick(&visible.splats, cam, scene_changed);
 }
