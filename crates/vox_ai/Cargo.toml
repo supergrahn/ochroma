@@ -1,0 +1,19 @@
+[package]
+name = "vox_ai"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+candle-core        = { version = "0.8", features = ["default"] }
+candle-nn          = "0.8"
+anyhow   = "1"
+serde    = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio    = { version = "1", features = ["rt-multi-thread", "macros"] }
+glam     = { workspace = true }
+half     = { workspace = true }
+vox_core = { path = "../vox_core" }
+
+[dev-dependencies]
+tempfile = "3"
+tokio    = { version = "1", features = ["rt-multi-thread", "macros"] }
