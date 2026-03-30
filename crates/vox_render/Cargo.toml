@@ -28,10 +28,11 @@ vox_ui    = { workspace = true }
 bevy_ecs = { workspace = true }
 bevy_app = { workspace = true }
 spectra-renderer = { path = "../../../aetherspectra/.worktrees/ochroma-spectra-integration/spectra/rust/spectra-renderer", optional = true }
+spectra-gpu = { path = "../../../aetherspectra/.worktrees/ochroma-spectra-integration/spectra/rust/spectra-gpu", optional = true }
 
 [features]
 default = []
-spectra-native = ["dep:spectra-renderer"]
+spectra-native = ["dep:spectra-renderer", "dep:spectra-gpu"]
 
 [dev-dependencies]
 vox_sim = { path = "../vox_sim" }

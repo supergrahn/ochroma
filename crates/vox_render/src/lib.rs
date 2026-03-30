@@ -82,3 +82,5 @@ pub mod platform_profiles;
 pub mod spectral_uplift;
 #[cfg(feature = "spectra-native")]
 pub mod splat_convert;
+#[cfg(feature = "spectra-native")]
+pub mod splat_backend;
