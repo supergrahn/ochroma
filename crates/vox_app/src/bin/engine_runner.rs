@@ -299,6 +299,9 @@ struct EngineApp {
     quic_transport: Option<vox_net::quic_transport::QuicTransport>,
     // Per-client replication state (one entry per connected peer on server)
     replication_states: Vec<vox_net::replication_loop::ClientReplicationState>,
+
+    // Rapier KCC body for the player character (None until character controller is first enabled)
+    character_body: Option<vox_physics::character_body::CharacterBody>,
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +527,7 @@ impl EngineApp {
             entity_script_store,
             quic_transport: None,
             replication_states: Vec::new(),
+            character_body: None,
         }
     }
 
@@ -1832,7 +1836,27 @@ impl EngineApp {
         }
 
         // 4b. Step Rapier physics and sync dynamic bodies back to ECS
-        // Update character controller before physics step
+        // Update character controller before physics step.
+        // If character_body is initialized, use Rapier KCC for ground detection
+        // instead of the flat-plane Y=0.9 check inside character.update().
+        if let Some(ref cb) = self.character_body {
+            if self.character.enabled {
+                let vel = Vec3::new(0.0, self.character.vertical_velocity, 0.0);
+                let output = cb.move_and_slide(
+                    vel, dt,
+                    self.physics.rigid_body_set(),
+                    self.physics.collider_set(),
+                    self.physics.query_pipeline(),
+                );
+                self.character.on_ground = output.grounded;
+                if output.grounded && self.character.vertical_velocity < 0.0 {
+                    self.character.vertical_velocity = 0.0;
+                }
+                cb.apply_translation(output.effective_translation, self.physics.rigid_body_set_mut());
+                let pos = cb.position(self.physics.rigid_body_set());
+                self.character.position = pos;
+            }
+        }
         self.character.update(&self.input_state, dt, &mut self.physics);
         // If character is enabled, drive camera position from character
         if self.character.enabled {
