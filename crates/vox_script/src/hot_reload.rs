@@ -34,7 +34,11 @@ impl ScriptWatcher {
             }
         })?;
 
-        let _ = watcher.watch(dir, RecursiveMode::Recursive);
+        if let Err(e) = watcher.watch(dir, RecursiveMode::Recursive) {
+            // Directory may not exist yet (created at runtime) — this is expected at startup
+            // Log non-trivially so the caller knows hot-reload is inactive
+            eprintln!("[ochroma/hot_reload] ScriptWatcher: cannot watch {:?}: {}", dir, e);
+        }
 
         Ok(Self { _watcher: watcher, changed_paths: changed })
     }
@@ -56,10 +60,9 @@ mod tests {
 
     #[test]
     fn drain_returns_empty_initially() {
-        // Watch a non-existent dir so no filesystem events interfere
         let watcher = ScriptWatcher::new(Path::new("/tmp/ochroma_hr_empty_test_dir")).unwrap();
         let paths = watcher.drain();
-        let _ = paths;
+        assert!(paths.is_empty(), "fresh watcher should drain empty, got {} paths", paths.len());
     }
 
     #[test]

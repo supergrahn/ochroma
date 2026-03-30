@@ -16,7 +16,6 @@ pub enum LuaError {
 
 pub struct LuaRuntime {
     lua: Lua,
-    loaded: Vec<(PathBuf, String)>,
     pub pending_reload: Vec<PathBuf>,
 }
 
@@ -44,7 +43,7 @@ impl LuaRuntime {
                 end
             end
         "#).exec()?;
-        Ok(Self { lua, loaded: Vec::new(), pending_reload: Vec::new() })
+        Ok(Self { lua, pending_reload: Vec::new() })
     }
 
     pub fn exec_file(&mut self, path: &Path) -> Result<(), LuaError> {
@@ -53,7 +52,6 @@ impl LuaRuntime {
         }
         let src = std::fs::read_to_string(path)?;
         self.lua.load(&src).set_name(path.to_string_lossy().as_ref()).exec()?;
-        self.loaded.push((path.to_path_buf(), src));
         Ok(())
     }
 

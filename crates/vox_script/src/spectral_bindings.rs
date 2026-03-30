@@ -79,12 +79,29 @@ pub fn register_spectral_bindings(
 }
 
 pub fn tick_thresholds(lua: &Lua, state: &Mutex<SpectralState>) -> Result<(), mlua::Error> {
-    let guard = state.lock().unwrap();
-    for entry in &guard.thresholds {
-        if entry.band < 16 && guard.band_energy[entry.band] >= entry.threshold {
+    // Snapshot energies and collect indices of entries that should fire — lock released after this block
+    let (energies, fired_indices) = {
+        let guard = state.lock().unwrap();
+        let energies = guard.band_energy;
+        let fired: Vec<usize> = guard.thresholds.iter().enumerate()
+            .filter(|(_, e)| e.band < 16 && energies[e.band] >= e.threshold)
+            .map(|(i, _)| i)
+            .collect();
+        (energies, fired)
+    };
+
+    // For each fired entry: briefly re-lock to fetch the callback, then call outside the lock
+    for idx in fired_indices {
+        let (band_f, energy_f, cb) = {
+            let guard = state.lock().unwrap();
+            let entry = match guard.thresholds.get(idx) {
+                Some(e) => e,
+                None => continue,
+            };
             let cb: LuaFunction = lua.registry_value(&entry.registry_key)?;
-            cb.call::<()>((entry.band as f32, guard.band_energy[entry.band]))?;
-        }
+            (entry.band as f32, energies[entry.band], cb)
+        }; // lock released here
+        cb.call::<()>((band_f, energy_f))?; // called outside the lock
     }
     Ok(())
 }
