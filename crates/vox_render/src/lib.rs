@@ -33,6 +33,7 @@ pub mod spatial_ui;
 pub mod hand_tracking;
 pub mod ar_placement;
 pub mod hierarchical_lod;
+pub mod hlod_baker;
 pub mod benchmark;
 pub mod memory_pool;
 #[allow(unexpected_cfgs)]
@@ -66,8 +67,18 @@ pub mod multi_viewport;
 pub mod gpu_particles;
 pub mod particle_ecs;
 pub mod splat_particles;
+pub mod splat_buffer_pool;
+pub mod biome;
+pub mod pcg;
+pub mod spline;
 pub mod movie_render;
 pub mod level_streaming;
 pub mod material_hotreload;
 pub mod gi_baker;
 pub mod spectral_viewport;
+pub mod morph_targets;
+pub mod hair;
+pub mod platform_profiles;
+pub mod spectral_uplift;
+#[cfg(feature = "spectra-native")]
+pub mod splat_convert;
