@@ -2,6 +2,7 @@
 name = "vox_app"
 edition.workspace = true
 version.workspace = true
+repository.workspace = true
 
 [dependencies]
 vox_core = { path = "../vox_core" }
