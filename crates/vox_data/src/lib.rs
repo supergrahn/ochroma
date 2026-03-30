@@ -30,3 +30,5 @@ pub use spectral_upsampler::{SpectralUpsampler, SpectralMaterialDb, SpectralMate
 pub mod spectral_capture;
 pub use spectral_capture::{LightSpd, SpectralMaterialProfile};
 pub use vxm::VxmFileV3;
+pub mod colmap_pipeline;
+pub use colmap_pipeline::{ColmapPipeline, ColmapPoint, ColmapError};
