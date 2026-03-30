@@ -86,31 +86,35 @@ struct SpectraCamera {
 fn ochroma_to_gaussian3d(splat: &GaussianSplat, illuminant: &Illuminant) -> Gaussian3D {
     // Decode spectral bands to RGB
     let bands = SpectralBands(std::array::from_fn(|i| {
-        f16::from_bits(splat.spectral[i]).to_f32()
+        f16::from_bits(splat.spectral()[i]).to_f32()
     }));
     let xyz = spectral_to_xyz(&bands, illuminant);
     let rgb = xyz_to_srgb(xyz);
 
+    let (su, sv, sw) = match splat.kind() {
+        0 => (splat.scale_u(), splat.scale_v(), 1e-4_f32), // 2DGS disk
+        _ => (splat.scale_u(), splat.scale_v(), splat.scale_w()), // 3DGS ellipsoid
+    };
     Gaussian3D {
-        position: splat.position,
+        position: splat.position(),
         log_scale: [
-            splat.scale[0].max(0.001).ln(),
-            splat.scale[1].max(0.001).ln(),
-            splat.scale[2].max(0.001).ln(),
+            su.max(0.001).ln(),
+            sv.max(0.001).ln(),
+            sw.max(0.001).ln(),
         ],
         rotation: [
             // Ochroma stores [x, y, z, w] as i16; Spectra expects [w, x, y, z] as f32
-            splat.rotation[3] as f32 / 32767.0, // w
-            splat.rotation[0] as f32 / 32767.0, // x
-            splat.rotation[1] as f32 / 32767.0, // y
-            splat.rotation[2] as f32 / 32767.0, // z
+            splat.rotation_raw()[3] as f32 / 32767.0, // w
+            splat.rotation_raw()[0] as f32 / 32767.0, // x
+            splat.rotation_raw()[1] as f32 / 32767.0, // y
+            splat.rotation_raw()[2] as f32 / 32767.0, // z
         ],
         color: [
             rgb[0].clamp(0.0, 1.0),
             rgb[1].clamp(0.0, 1.0),
             rgb[2].clamp(0.0, 1.0),
         ],
-        opacity: splat.opacity as f32 / 255.0,
+        opacity: splat.opacity() as f32 / 255.0,
     }
 }
 
@@ -138,21 +142,26 @@ pub fn band_to_heatmap(t: f32) -> [f32; 3] {
 
 /// Converts a GaussianSplat to Gaussian3D using one spectral band as false-color.
 fn splat_to_gaussian3d_band(splat: &GaussianSplat, band: usize) -> Gaussian3D {
+    let (su, sv, sw) = match splat.kind() {
+        0 => (splat.scale_u(), splat.scale_v(), 1e-4_f32), // 2DGS disk
+        _ => (splat.scale_u(), splat.scale_v(), splat.scale_w()), // 3DGS ellipsoid
+    };
     let log_scale = [
-        splat.scale[0].max(1e-6).ln(),
-        splat.scale[1].max(1e-6).ln(),
-        splat.scale[2].max(1e-6).ln(),
+        su.max(1e-6).ln(),
+        sv.max(1e-6).ln(),
+        sw.max(1e-6).ln(),
     ];
-    let qx = splat.rotation[0] as f32 / 32767.0;
-    let qy = splat.rotation[1] as f32 / 32767.0;
-    let qz = splat.rotation[2] as f32 / 32767.0;
-    let qw = splat.rotation[3] as f32 / 32767.0;
+    let rot = splat.rotation_raw();
+    let qx = rot[0] as f32 / 32767.0;
+    let qy = rot[1] as f32 / 32767.0;
+    let qz = rot[2] as f32 / 32767.0;
+    let qw = rot[3] as f32 / 32767.0;
     let len = (qx * qx + qy * qy + qz * qz + qw * qw).sqrt().max(1e-8);
     let rotation = [qw / len, qx / len, qy / len, qz / len];
-    let opacity = splat.opacity as f32 / 255.0;
-    let intensity = splat.spectral_f32(band.min(7));
+    let opacity = splat.opacity() as f32 / 255.0;
+    let intensity = splat.spectral_f32(band.min(15));
     let color = band_to_heatmap(intensity);
-    Gaussian3D { position: splat.position, log_scale, rotation, color, opacity }
+    Gaussian3D { position: splat.position(), log_scale, rotation, color, opacity }
 }
 
 /// Render the scene as a false-color heatmap of a single spectral band.
@@ -633,14 +642,13 @@ mod tests {
     use glam::{Mat4, Vec3};
 
     fn make_test_splat(pos: [f32; 3], spd_val: f32) -> GaussianSplat {
-        GaussianSplat {
-            position: pos,
-            scale: [0.3, 0.3, 0.3],
-            rotation: [0, 0, 0, 32767], // identity quaternion [x,y,z,w]
-            opacity: 230,
-            _pad: [0; 3],
-            spectral: std::array::from_fn(|_| f16::from_f32(spd_val).to_bits()),
-        }
+        GaussianSplat::volume(
+            pos,
+            [0.3, 0.3, 0.3],
+            glam::Quat::IDENTITY,
+            230,
+            std::array::from_fn(|_| f16::from_f32(spd_val).to_bits()),
+        )
     }
 
     fn make_camera(eye: Vec3, target: Vec3, w: u32, h: u32) -> RenderCamera {
@@ -741,17 +749,16 @@ mod tests {
 
     #[test]
     fn render_spectral_band_differs_per_band_when_nonzero_spectral() {
-        let mut spectral = [0u16; 8];
+        let mut spectral = [0u16; 16];
         spectral[0] = half::f16::from_f32(1.0).to_bits();
         spectral[7] = half::f16::from_f32(0.0).to_bits();
-        let splat = GaussianSplat {
-            position: [0.0, 0.0, -2.0],
-            scale: [0.5, 0.5, 0.5],
-            rotation: [0, 0, 0, 32767],
-            opacity: 255,
-            _pad: [0; 3],
+        let splat = GaussianSplat::volume(
+            [0.0, 0.0, -2.0],
+            [0.5, 0.5, 0.5],
+            glam::Quat::IDENTITY,
+            255,
             spectral,
-        };
+        );
         let camera = RenderCamera {
             view: glam::Mat4::IDENTITY,
             proj: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 100.0),
@@ -766,14 +773,13 @@ mod tests {
     #[test]
     fn shadow_mask_darkens_pixel() {
         use vox_core::spectral::Illuminant;
-        let splat = GaussianSplat {
-            position: [0.0, 0.0, 0.0],
-            scale: [0.5, 0.5, 0.5],
-            rotation: [0, 0, 0, 32767],
-            opacity: 220,
-            _pad: [0; 3],
-            spectral: std::array::from_fn(|_| f16::from_f32(0.8).to_bits()),
-        };
+        let splat = GaussianSplat::volume(
+            [0.0, 0.0, 0.0],
+            [0.5, 0.5, 0.5],
+            glam::Quat::IDENTITY,
+            220,
+            std::array::from_fn(|_| f16::from_f32(0.8).to_bits()),
+        );
         let cam = make_camera(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, 32, 32);
         let lit = render_with_spectra_u8_shadowed(
             &[splat.clone()], &cam, 32, 32, &Illuminant::d65(), None,
@@ -786,5 +792,93 @@ mod tests {
         let lit_lum = lit[centre][0] as u32 + lit[centre][1] as u32 + lit[centre][2] as u32;
         let shad_lum = shadowed[centre][0] as u32 + shadowed[centre][1] as u32 + shadowed[centre][2] as u32;
         assert!(shad_lum <= lit_lum, "shadowed pixel must not be brighter than lit");
+    }
+
+    #[cfg(all(test, feature = "spectra-native"))]
+    #[test]
+    fn spectra_backend_system_new_does_not_panic() {
+        use crate::splat_backend::SpectraRenderBackend;
+        // Construction requires GPU — just verify the type builds.
+        let _: fn(u32, u32) -> Result<SpectraRenderBackend, String> =
+            SpectraRenderBackend::realtime;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spectra native backend system (spectra-native feature only)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "spectra-native")]
+pub mod native {
+    use crate::splat_backend::SpectraRenderBackend;
+    use crate::splat_convert::convert_splats;
+    use spectra_renderer::{SplatScene, CameraParams};
+    use vox_core::types::GaussianSplat;
+
+    /// Per-viewport Spectra backend. One instance per active Spectra viewport.
+    pub struct SpectraBackendSystem {
+        backend: SpectraRenderBackend,
+        scene_dirty: bool,
+        last_splat_count: usize,
+    }
+
+    impl SpectraBackendSystem {
+        pub fn realtime(width: u32, height: u32) -> Result<Self, String> {
+            Ok(Self {
+                backend: SpectraRenderBackend::realtime(width, height)?,
+                scene_dirty: true,
+                last_splat_count: 0,
+            })
+        }
+
+        pub fn cinematic(width: u32, height: u32) -> Result<Self, String> {
+            Ok(Self {
+                backend: SpectraRenderBackend::cinematic(width, height)?,
+                scene_dirty: true,
+                last_splat_count: 0,
+            })
+        }
+
+        /// Call once per Bevy render tick.
+        ///
+        /// `splats`  — all GaussianSplat components from the ECS world.
+        /// `camera`  — extracted Bevy camera this frame.
+        ///
+        /// Returns `Some(rgba8)` when a completed frame is available (one tick of latency),
+        /// or `None` if no frame has been completed yet.
+        pub fn tick(
+            &mut self,
+            splats:  &[GaussianSplat],
+            camera:  CameraParams,
+        ) -> Option<Vec<u8>> {
+            // Rebuild scene only when splat count changes (cheap dirty check).
+            // Full hash-based change detection is a follow-on improvement.
+            let new_scene = if self.scene_dirty || splats.len() != self.last_splat_count {
+                let (surfaces, volumes) = convert_splats(splats);
+                self.last_splat_count = splats.len();
+                self.scene_dirty = false;
+                Some(SplatScene::new(surfaces, volumes))
+            } else {
+                None
+            };
+
+            if let Err(e) = self.backend.submit_frame(new_scene, camera) {
+                eprintln!("[SpectraBackendSystem] submit_frame error: {e}");
+                return None;
+            }
+
+            let output = self.backend.read_last_output();
+            if output.is_empty() { None } else { Some(output) }
+        }
+
+        /// Force scene rebuild on next tick (e.g. after ECS structural change).
+        pub fn mark_dirty(&mut self) { self.scene_dirty = true; }
+
+        /// Consecutive failure count — caller should fallback to BuiltIn at 3.
+        pub fn fail_count(&self) -> u32 { self.backend.fail_count() }
+
+        pub fn dimensions(&self) -> (u32, u32) {
+            (self.backend.width(), self.backend.height())
+        }
     }
 }
