@@ -1513,3 +1513,429 @@ git commit -m "feat(app): wire SpectralPerceptionAgent into patrol agents — sp
 **candle production wiring:** `LlmInference::generate()` for the `Local` backend contains commented production code showing the exact candle API pattern (`Llama::load`, tokenizer, logits sampling loop). Implement by uncommenting and filling in the quantized_llama model config. The stub path is correct and keeps tests fast without a ~2GB model file.
 
 **Spectral emotion → dialogue:** `NpcContext.emotional_state` comes from `SpectralPerceptionAgent::update_emotion()`. The full loop is: `ThermalEmitter` (Domain 10) elevates bands 5-7 → `SpectralRadianceCache` propagates → `SpectralPerceptionAgent::sense()` samples → `EmotionalState::from_ambient()` computes Anxious/Calm → `NpcContext` injects into LLM prompt. No scripted triggers anywhere in the chain.
+
+---
+
+## Task 7: BuildingDescriptionGenerator — LLM → BuildingDescription JSON
+
+**Files:**
+- Create: `crates/vox_ai/src/building_director.rs`
+- Modify: `crates/vox_ai/src/lib.rs`
+
+**Context:** `BuildingDescription` is a semantic building spec (Program, Setting, style_key, era, condition, detail_atoms, organic_atoms) that compiles to `BuildingParams` for the WFC geometry generator. The LLM generates `BuildingDescription` JSON from a text prompt — it does NOT call geometry APIs directly. This separates authoring (LLM) from geometry generation (WFC), keeping each concern isolated. detail_atoms and organic_atoms are string tag lists like `["exposed_rafter_tails", "tapered_columns"]` that drive the Ornament and Organic assembly channels.
+
+System prompt instructs the LLM to output valid `BuildingDescription` JSON only. No prose. The `BuildingDirector::generate()` method sends the prompt, parses the JSON output, validates required fields, and returns a `BuildingDescription` that can be directly compiled to `BuildingParams`.
+
+- [ ] **Step 1: Write failing test**
+
+Create `crates/vox_ai/src/building_director.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_building_description_json() {
+        let json = r#"{
+            "program": "Residential",
+            "setting": "Suburban",
+            "style_key": "craftsman",
+            "era": "1920s",
+            "condition": "Aged",
+            "floors": 2,
+            "floor_height": 3.0,
+            "seed": 42,
+            "detail_atoms": ["exposed_rafter_tails", "tapered_porch_columns"],
+            "organic_atoms": ["weathered_cedar"]
+        }"#;
+
+        let desc: BuildingDescription = serde_json::from_str(json).unwrap();
+        assert_eq!(desc.style_key, "craftsman");
+        assert_eq!(desc.floors, 2);
+        assert_eq!(desc.detail_atoms.as_ref().unwrap().len(), 2);
+        assert!(desc.detail_atoms.as_ref().unwrap().contains(&"exposed_rafter_tails".to_string()));
+    }
+
+    #[test]
+    fn test_building_description_compiles_to_params() {
+        let desc = BuildingDescription {
+            program: Program::Residential,
+            setting: Setting::Suburban,
+            style_key: "craftsman".into(),
+            era: "1920s".into(),
+            condition: BuildingCondition::Aged,
+            floors: 2,
+            floor_height: 3.0,
+            seed: 42,
+            detail_atoms: Some(vec!["exposed_rafter_tails".into()]),
+            organic_atoms: None,
+        };
+        let params = desc.to_building_params();
+        assert_eq!(params.floors, 2);
+        assert_eq!(params.floor_height, 3.0);
+        // Craftsman → Colonial fallback until full style mapping
+        assert!(matches!(params.grading, GradingStrategy::LevelPad)); // Suburban → LevelPad
+    }
+
+    #[test]
+    fn test_building_director_system_prompt_contains_json_schema() {
+        let prompt = BuildingDirector::system_prompt();
+        assert!(prompt.contains("BuildingDescription"), "prompt must reference schema type");
+        assert!(prompt.contains("detail_atoms"), "prompt must explain detail_atoms");
+        assert!(prompt.contains("JSON"), "prompt must require JSON output");
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+cargo test -p vox_ai building_director 2>&1 | head -20
+```
+
+Expected: compile error.
+
+- [ ] **Step 3: Implement BuildingDirector**
+
+```rust
+//! BuildingDirector — LLM-driven BuildingDescription authoring.
+//!
+//! The LLM generates a BuildingDescription JSON from a text prompt.
+//! BuildingDescription compiles to BuildingParams for WFC geometry generation.
+//! Separation of concerns: LLM = authoring, WFC = geometry, never mixed.
+
+use serde::{Serialize, Deserialize};
+use crate::llm::LlmInference;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub enum Program { #[default] Residential, Agricultural, Civic, Religious, Commercial, Industrial, Utility }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub enum Setting { Urban, #[default] Suburban, Rural, Industrial, Waterfront, HistoricalOldTown }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub enum BuildingCondition { New, #[default] Aged, Weathered, Derelict }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub enum GradingStrategy { #[default] LevelPad, Stepped, Pier, CutIntoSlope }
+
+pub struct BuildingParams {
+    pub floors:       u8,
+    pub floor_height: f32,
+    pub style:        BuildingStyle,
+    pub grading:      GradingStrategy,
+    pub seed:         u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum BuildingStyle { Victorian, Modern, Colonial, Industrial, Gothic, Brutalist, Medieval, Tudor, Mediterranean, Craftsman }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BuildingDescription {
+    pub program:       Program,
+    pub setting:       Setting,
+    pub style_key:     String,
+    pub era:           String,
+    pub condition:     BuildingCondition,
+    pub floors:        u8,
+    pub floor_height:  f32,
+    pub seed:          u64,
+    /// Ornament assembly tags: "exposed_rafter_tails", "ornate_cornice", "brass_doorknob"
+    pub detail_atoms:  Option<Vec<String>>,
+    /// Organic/weathering tags: "ivy_creep", "weathered_brick", "moss_patches"
+    pub organic_atoms: Option<Vec<String>>,
+}
+
+impl BuildingDescription {
+    pub fn to_building_params(&self) -> BuildingParams {
+        let style = match self.style_key.to_lowercase().as_str() {
+            s if s.starts_with("victorian")    => BuildingStyle::Victorian,
+            s if s.starts_with("modern")       => BuildingStyle::Modern,
+            s if s.starts_with("gothic")       => BuildingStyle::Gothic,
+            s if s.starts_with("brutalist")    => BuildingStyle::Brutalist,
+            s if s.starts_with("medieval")     => BuildingStyle::Medieval,
+            s if s.starts_with("tudor")        => BuildingStyle::Tudor,
+            s if s.starts_with("mediterranean") => BuildingStyle::Mediterranean,
+            s if s.starts_with("craftsman")    => BuildingStyle::Craftsman,
+            s if s.starts_with("industrial")   => BuildingStyle::Industrial,
+            _                                  => BuildingStyle::Colonial,
+        };
+        let grading = match self.setting {
+            Setting::Waterfront        => GradingStrategy::Pier,
+            Setting::Rural             => GradingStrategy::CutIntoSlope,
+            Setting::HistoricalOldTown => GradingStrategy::Stepped,
+            _                          => GradingStrategy::LevelPad,
+        };
+        BuildingParams {
+            floors:       self.floors.max(1),
+            floor_height: if self.floor_height > 0.0 { self.floor_height } else { 3.0 },
+            style,
+            grading,
+            seed: self.seed,
+        }
+    }
+}
+
+pub struct BuildingDirector;
+
+impl BuildingDirector {
+    /// System prompt for LLM: instructs to output only BuildingDescription JSON.
+    pub fn system_prompt() -> String {
+        r#"You are a building architect for a game engine. Given a description of a building,
+output ONLY valid JSON matching the BuildingDescription schema. No prose, no markdown fences.
+
+Schema:
+{
+  "program": "Residential" | "Civic" | "Commercial" | "Industrial" | "Religious" | "Agricultural" | "Utility",
+  "setting": "Urban" | "Suburban" | "Rural" | "Industrial" | "Waterfront" | "HistoricalOldTown",
+  "style_key": string (e.g. "craftsman", "victorian", "brutalist", "gothic"),
+  "era": string (e.g. "1920s", "medieval", "contemporary"),
+  "condition": "New" | "Aged" | "Weathered" | "Derelict",
+  "floors": integer (1-20),
+  "floor_height": float (2.5-5.0 meters),
+  "seed": integer,
+  "detail_atoms": [string] | null (ornament tags like "exposed_rafter_tails", "ornate_cornice"),
+  "organic_atoms": [string] | null (weathering tags like "ivy_creep", "moss_patches")
+}
+
+Output only the JSON object. No other text."#.to_string()
+    }
+
+    /// Generate a BuildingDescription from a text prompt using the local LLM.
+    pub async fn generate(
+        llm: &LlmInference,
+        prompt: &str,
+    ) -> anyhow::Result<BuildingDescription> {
+        let full_prompt = format!("{}\n\nUser: {}", Self::system_prompt(), prompt);
+        let json_output = llm.generate(&full_prompt, 512).await?;
+        // Extract JSON from output (handle potential leading/trailing whitespace)
+        let json_str = json_output.trim();
+        let desc: BuildingDescription = serde_json::from_str(json_str)
+            .map_err(|e| anyhow::anyhow!("BuildingDescription parse error: {e}\nOutput was: {json_str}"))?;
+        Ok(desc)
+    }
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_ai building_director
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_ai/src/building_director.rs crates/vox_ai/src/lib.rs
+git commit -m "feat(ai): BuildingDirector — LLM generates BuildingDescription JSON → WFC geometry"
+```
+
+---
+
+## Task 8: SceneQualityReport — iterative director feedback loop
+
+**Files:**
+- Modify: `crates/vox_ai/src/asset_director.rs`
+- Create: `crates/vox_ai/src/quality_evaluator.rs`
+
+**Context:** `SceneQualityReport::from_directive(d)` checks: lighting rig completeness (key/fill/rim/practical), camera DOF and shot type, atmosphere presence, scatter density. This becomes the reward signal for the `AssetDirector` loop: generate → evaluate quality → if quality low, re-prompt LLM with feedback about what's missing → regenerate. Maximum 3 iterations before accepting.
+
+`SceneQualityReport` is re-implemented here (not imported from crucible) to keep vox_ai independent.
+
+- [ ] **Step 1: Write failing test**
+
+Create `crates/vox_ai/src/quality_evaluator.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quality_report_empty_scene() {
+        let scene = SceneSpec::default();
+        let report = SceneQualityReport::evaluate(&scene);
+        assert!(!report.has_key_light,    "empty scene has no key light");
+        assert!(!report.has_atmosphere,   "empty scene has no atmosphere");
+        assert_eq!(report.quality_score(), 0.0, "empty scene should score 0");
+    }
+
+    #[test]
+    fn test_quality_report_well_lit_scene() {
+        let scene = SceneSpec {
+            lights: vec![
+                LightSpec { role: "key".into(),      intensity: 100_000.0 },
+                LightSpec { role: "fill".into(),     intensity: 20_000.0  },
+                LightSpec { role: "rim".into(),      intensity: 15_000.0  },
+            ],
+            has_atmosphere: true,
+            has_scatter: true,
+            camera_dof: true,
+            ..Default::default()
+        };
+        let report = SceneQualityReport::evaluate(&scene);
+        assert!(report.has_key_light);
+        assert!(report.has_fill_light);
+        assert!(report.has_atmosphere);
+        assert!(report.quality_score() > 0.8, "well-lit scene should score above 0.8");
+    }
+
+    #[test]
+    fn test_quality_feedback_message_for_missing_fill() {
+        let report = SceneQualityReport {
+            has_key_light:   true,
+            has_fill_light:  false,
+            has_rim_light:   false,
+            has_atmosphere:  true,
+            has_scatter:     false,
+            camera_dof:      true,
+            light_count:     1,
+        };
+        let msg = report.feedback_message();
+        assert!(msg.contains("fill"), "feedback should mention missing fill light");
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+cargo test -p vox_ai quality_evaluator 2>&1 | head -20
+```
+
+Expected: compile error.
+
+- [ ] **Step 3: Implement SceneQualityReport + quality loop in AssetDirector**
+
+```rust
+//! SceneQualityReport — evaluates generated scenes for lighting rig completeness,
+//! atmosphere, scatter, and camera quality. Used as reward signal in the AssetDirector loop.
+
+/// Minimal scene spec used for quality evaluation (independent of full scene representation).
+#[derive(Default)]
+pub struct SceneSpec {
+    pub lights:         Vec<LightSpec>,
+    pub has_atmosphere: bool,
+    pub has_scatter:    bool,
+    pub camera_dof:     bool,
+}
+
+#[derive(Default)]
+pub struct LightSpec {
+    pub role:      String,   // "key", "fill", "rim", "practical", "sky"
+    pub intensity: f32,
+}
+
+pub struct SceneQualityReport {
+    pub has_key_light:  bool,
+    pub has_fill_light: bool,
+    pub has_rim_light:  bool,
+    pub has_atmosphere: bool,
+    pub has_scatter:    bool,
+    pub camera_dof:     bool,
+    pub light_count:    usize,
+}
+
+impl SceneQualityReport {
+    pub fn evaluate(scene: &SceneSpec) -> Self {
+        let has_key  = scene.lights.iter().any(|l| l.role.to_lowercase().contains("key"));
+        let has_fill = scene.lights.iter().any(|l| l.role.to_lowercase().contains("fill"));
+        let has_rim  = scene.lights.iter().any(|l| l.role.to_lowercase().contains("rim"));
+        Self {
+            has_key_light:  has_key,
+            has_fill_light: has_fill,
+            has_rim_light:  has_rim,
+            has_atmosphere: scene.has_atmosphere,
+            has_scatter:    scene.has_scatter,
+            camera_dof:     scene.camera_dof,
+            light_count:    scene.lights.len(),
+        }
+    }
+
+    /// Quality score in [0, 1]. Weighted: key=0.3, fill=0.15, atmosphere=0.2,
+    /// scatter=0.15, rim=0.1, dof=0.1.
+    pub fn quality_score(&self) -> f32 {
+        let mut score = 0.0f32;
+        if self.has_key_light  { score += 0.30; }
+        if self.has_fill_light { score += 0.15; }
+        if self.has_rim_light  { score += 0.10; }
+        if self.has_atmosphere { score += 0.20; }
+        if self.has_scatter    { score += 0.15; }
+        if self.camera_dof     { score += 0.10; }
+        score
+    }
+
+    /// Human-readable feedback for LLM re-prompt.
+    pub fn feedback_message(&self) -> String {
+        let mut issues = Vec::new();
+        if !self.has_key_light  { issues.push("add a key light (role: \"key\") with high intensity"); }
+        if !self.has_fill_light { issues.push("add a fill light (role: \"fill\") at ~1/5 key intensity"); }
+        if !self.has_rim_light  { issues.push("add a rim light (role: \"rim\") for depth"); }
+        if !self.has_atmosphere { issues.push("enable atmosphere (sky + fog)"); }
+        if !self.has_scatter    { issues.push("add scatter instances for ground cover"); }
+        if issues.is_empty() {
+            "Scene quality is good.".to_string()
+        } else {
+            format!("Scene quality issues: {}", issues.join("; "))
+        }
+    }
+}
+```
+
+Add quality loop to `AssetDirector` in `asset_director.rs`:
+
+```rust
+/// Run the asset director loop with quality evaluation.
+/// Generates a scene, evaluates quality, re-prompts if quality is low.
+/// Maximum 3 iterations.
+pub async fn run_with_quality_loop(
+    &self,
+    llm: &LlmInference,
+    prompt: &str,
+) -> anyhow::Result<AssetPipelineState> {
+    let mut current_prompt = prompt.to_string();
+    let quality_threshold = 0.6;
+
+    for attempt in 0..3 {
+        let state = self.run(llm, &current_prompt).await?;
+        let scene = state.to_scene_spec();
+        let report = SceneQualityReport::evaluate(&scene);
+        let score = report.quality_score();
+
+        if score >= quality_threshold {
+            return Ok(state);
+        }
+        if attempt < 2 {
+            // Append quality feedback to prompt for next attempt
+            let feedback = report.feedback_message();
+            current_prompt = format!(
+                "{}\n\nPrevious attempt scored {:.0}%. Please fix: {}",
+                prompt, score * 100.0, feedback
+            );
+        }
+    }
+    // Return last attempt regardless
+    self.run(llm, &current_prompt).await
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_ai quality_evaluator
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_ai/src/quality_evaluator.rs crates/vox_ai/src/asset_director.rs crates/vox_ai/src/lib.rs
+git commit -m "feat(ai): SceneQualityReport — iterative director feedback loop with LLM re-prompting"
+```

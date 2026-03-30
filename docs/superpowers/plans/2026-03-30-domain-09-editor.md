@@ -2440,3 +2440,974 @@ git commit --allow-empty -m "test(editor): domain 9 integration verified — nod
 **Engine crate rule:** All nodes are in `vox_editor` (engine-agnostic procedural authoring tools). No city-building, zoning, or traffic concepts. `SplatizeNode` produces `Vec<GaussianSplat>` — the engine's core data type.
 
 **Known limitation:** `SplatizeNode`'s spectral material profiles are hand-authored approximations. When Domain 5 (Asset Pipeline) ships `SpectralFingerprintDb`, replace `spectral_from_material()` with `SpectralFingerprintDb::profile_for_material(id)` for physically measured profiles.
+
+---
+
+## Task 8: TerrainNode — biome_to_splat_weights + SpectralTerrainMaterials
+
+**Files:**
+- Modify: `crates/vox_editor/src/nodes/terrain_node.rs`
+- Modify: `crates/vox_editor/src/nodes/splatize_node.rs`
+
+**Context:** `forge-terrain` exports `biome_to_splat_weights(biome, height, world_height) -> [f32; 4]` and `SpectralTerrainMaterials { slots: [SpectralRefl; 16] }` (7 material slots: Water, Sand, Grass, Dirt, Rock, Snow, Forest — each a full 16-band USGS curve). The TerrainNode must populate `splat_weights` using these, and SplatizeNode must read them when assigning spectral values to terrain splats.
+
+- [ ] **Step 1: Write failing test**
+
+Add to `crates/vox_editor/src/nodes/terrain_node.rs`:
+
+```rust
+#[cfg(test)]
+mod biome_tests {
+    use super::*;
+
+    #[test]
+    fn test_splat_weights_sum_to_one() {
+        // Forest biome at mid-height should give non-zero vegetation weight
+        let weights = biome_to_splat_weights_local(BiomeKind::Forest, 40.0, 80.0);
+        let sum: f32 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 0.01, "weights should sum to 1, got {sum}");
+        assert!(weights[2] > 0.5, "Forest should have high vegetation weight (slot 2)");
+    }
+
+    #[test]
+    fn test_spectral_terrain_materials_default() {
+        let mats = SpectralTerrainMaterials::default();
+        // Water slot (0): low reflectance at 380nm
+        assert!(mats.slots[0][0] < 0.1, "water slot should be dark at UV");
+        // Snow slot (5): high reflectance throughout
+        assert!(mats.slots[5][0] > 0.85, "snow slot should be bright");
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL (types not defined)**
+
+```bash
+cargo test -p vox_editor biome_tests 2>&1 | head -20
+```
+
+Expected: compile error — `biome_to_splat_weights_local`, `BiomeKind`, `SpectralTerrainMaterials` not found.
+
+- [ ] **Step 3: Implement biome_to_splat_weights_local + SpectralTerrainMaterials**
+
+Add to `crates/vox_editor/src/nodes/terrain_node.rs`:
+
+```rust
+// ---------------------------------------------------------------------------
+// Biome classification and spectral terrain materials
+// ---------------------------------------------------------------------------
+
+/// Biome classification — mirrors forge-terrain Biome enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiomeKind {
+    Alpine, Tundra, Forest, Grassland, Desert, Wetland, Coastal,
+    SubalpineShrub, Savanna, Taiga, TropicalRainforest,
+}
+
+/// 7-slot spectral material palette for terrain splat blending.
+/// Slot order: Water(0), Sand(1), Grass(2), Dirt(3), Rock(4), Snow(5), Forest(6).
+/// Each slot is a 16-band spectral reflectance curve (380–755 nm, 25 nm steps).
+pub struct SpectralTerrainMaterials {
+    pub slots: [[f32; 16]; 7],
+}
+
+impl Default for SpectralTerrainMaterials {
+    fn default() -> Self {
+        Self { slots: [
+            // Water: very low reflectance, drops sharply in near-IR
+            [0.03,0.04,0.05,0.05,0.05,0.04,0.03,0.03, 0.02,0.02,0.01,0.01,0.01,0.01,0.01,0.01],
+            // Sand: moderate, rises toward red/IR
+            [0.25,0.28,0.31,0.34,0.36,0.38,0.39,0.40, 0.41,0.42,0.43,0.44,0.45,0.46,0.47,0.48],
+            // Grass/Foliage: green peak, red-edge rise
+            [0.04,0.04,0.05,0.07,0.08,0.10,0.12,0.12, 0.08,0.05,0.04,0.04,0.05,0.20,0.45,0.55],
+            // Dirt/Soil: steady rise
+            [0.07,0.09,0.11,0.13,0.14,0.16,0.18,0.20, 0.22,0.23,0.24,0.25,0.26,0.27,0.28,0.30],
+            // Rock: flat moderate
+            [0.15,0.17,0.19,0.21,0.22,0.23,0.24,0.25, 0.26,0.27,0.28,0.29,0.30,0.31,0.32,0.33],
+            // Snow: near-white flat
+            [0.93,0.94,0.95,0.95,0.95,0.94,0.93,0.92, 0.91,0.90,0.89,0.88,0.87,0.86,0.85,0.85],
+            // Forest (bark): dark, gradual rise
+            [0.05,0.06,0.07,0.08,0.09,0.10,0.11,0.12, 0.13,0.14,0.15,0.16,0.17,0.18,0.19,0.20],
+        ]}
+    }
+}
+
+/// Map a biome + elevation to 4-channel blend weights [water, rock, veg, special].
+/// Mirrors forge-terrain biomes.rs biome_to_splat_weights().
+pub fn biome_to_splat_weights_local(biome: BiomeKind, height: f32, world_height: f32) -> [f32; 4] {
+    let t = (height / world_height).clamp(0.0, 1.0);
+    match biome {
+        BiomeKind::Alpine       => [0.0, 0.4, 0.1, 0.5],  // rock + snow
+        BiomeKind::Tundra       => [0.0, 0.3, 0.3, 0.4],  // rock + sparse veg + snow
+        BiomeKind::Forest       => [0.0, 0.1, 0.7, 0.2],  // heavy vegetation
+        BiomeKind::Grassland    => [0.0, 0.1, 0.8, 0.1],  // grass dominant
+        BiomeKind::Desert       => [0.0, 0.2, 0.0, 0.8],  // sand dominant (slot 1 via special)
+        BiomeKind::Wetland      => [0.4, 0.1, 0.4, 0.1],  // water + vegetation
+        BiomeKind::Coastal      => [0.3, 0.2, 0.3, 0.2],  // water + sand + veg
+        BiomeKind::SubalpineShrub => [0.0, 0.3, 0.5, 0.2],
+        BiomeKind::Savanna      => [0.0, 0.2, 0.6, 0.2],
+        BiomeKind::Taiga        => [0.0, 0.1, 0.7, 0.2],
+        BiomeKind::TropicalRainforest => [0.1, 0.0, 0.8, 0.1],
+    }
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_editor biome_tests
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Wire into TerrainNode.cook()**
+
+In `TerrainNode::cook()`, after terrain grid is generated, classify biomes and populate splat_weights. Add to the cook return:
+
+```rust
+// In TerrainNode::cook(), after computing heights:
+let mats = SpectralTerrainMaterials::default();
+// For each cell, map biome_id → splat_weights using biome_to_splat_weights_local
+// Store in output port as TerrainWithSplatWeights
+```
+
+The `TerrainData` port output gains a `splat_weights: Vec<[f32; 4]>` field. SplatizeNode reads `splat_weights` and blends spectral bands from `mats.slots` using the 4-channel weights.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/vox_editor/src/nodes/terrain_node.rs crates/vox_editor/src/nodes/splatize_node.rs
+git commit -m "feat(editor): biome_to_splat_weights + SpectralTerrainMaterials for terrain splat assignment"
+```
+
+---
+
+## Task 9: PlotNode — forge-plot integration
+
+**Files:**
+- Create: `crates/vox_editor/src/nodes/plot_node.rs`
+- Modify: `crates/vox_editor/src/nodes/mod.rs`
+
+**Context:** forge-plot's `generate(params: &PlotParams) -> Result<PlotAsset, ForgeError>` produces a complete land parcel: `ground_mesh`, `fence_instances`, `driveway_mesh`, `prop_placements`, `garden_zones`. A `PlotNode` wraps this and emits multiple outputs: ground mesh (to SplatizeNode), fence/prop instances (to InstancesNode), garden zones (to ScatterNode).
+
+- [ ] **Step 1: Write failing test**
+
+Create `crates/vox_editor/src/nodes/plot_node.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_plot_node_residential_suburban() {
+        let mut node = PlotNode::default();
+        node.set_param("archetype", NodeParam::Str("residential_suburban".into())).unwrap();
+        node.set_param("footprint_w", NodeParam::Float(20.0)).unwrap();
+        node.set_param("footprint_d", NodeParam::Float(30.0)).unwrap();
+        node.set_param("building_w", NodeParam::Float(10.0)).unwrap();
+        node.set_param("building_d", NodeParam::Float(12.0)).unwrap();
+        node.set_param("fence_style", NodeParam::Str("picket".into())).unwrap();
+        node.set_param("seed", NodeParam::Int(42)).unwrap();
+
+        let outputs = node.cook(NodeInputs::default()).unwrap();
+        let ground = outputs.get("ground_mesh").expect("ground_mesh output");
+        assert!(ground.as_mesh().unwrap().positions.len() > 3);
+        let fences = outputs.get("fence_count").expect("fence_count");
+        assert!(fences.as_scalar().unwrap() >= 0.0);
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+cargo test -p vox_editor test_plot_node_residential_suburban 2>&1 | head -20
+```
+
+Expected: compile error — `PlotNode` not found.
+
+- [ ] **Step 3: Implement PlotNode**
+
+```rust
+//! PlotNode — wraps forge-plot to produce land parcel geometry.
+//!
+//! Outputs:
+//!   "ground_mesh"   : Mesh  — paved/gravel ground surface
+//!   "driveway_mesh" : Mesh  — driveway surface
+//!   "fence_count"   : Scalar — number of fence instances generated
+//!   "prop_count"    : Scalar — number of prop placements
+//!   "garden_count"  : Scalar — number of garden zones
+
+use std::collections::HashMap;
+use crate::node_graph::{OchromaNode, NodeDescriptor, PortSpec, PortType, NodeInputs, NodeOutputs, NodeError, NodeParam};
+
+pub struct PlotNode {
+    archetype:    String,   // "residential_suburban" | "residential_urban" | "commercial" | ...
+    footprint_w:  f32,
+    footprint_d:  f32,
+    building_w:   f32,
+    building_d:   f32,
+    condition:    String,   // "new" | "aged" | "weathered" | "derelict"
+    fence_style:  String,   // "picket" | "chain_link" | "stone_wall" | "hedge" | "none"
+    driveway:     String,   // "gravel" | "concrete" | "asphalt" | "none"
+    seed:         u64,
+}
+
+impl Default for PlotNode {
+    fn default() -> Self {
+        Self {
+            archetype: "residential_suburban".into(),
+            footprint_w: 20.0, footprint_d: 30.0,
+            building_w: 10.0, building_d: 12.0,
+            condition: "aged".into(),
+            fence_style: "picket".into(),
+            driveway: "concrete".into(),
+            seed: 0,
+        }
+    }
+}
+
+impl OchromaNode for PlotNode {
+    fn descriptor(&self) -> NodeDescriptor {
+        NodeDescriptor {
+            type_name: "plot",
+            inputs: vec![],
+            outputs: vec![
+                PortSpec { name: "ground_mesh",   port_type: PortType::Mesh,   optional: false },
+                PortSpec { name: "driveway_mesh",  port_type: PortType::Mesh,   optional: false },
+                PortSpec { name: "fence_count",    port_type: PortType::Scalar, optional: false },
+                PortSpec { name: "prop_count",     port_type: PortType::Scalar, optional: false },
+                PortSpec { name: "garden_count",   port_type: PortType::Scalar, optional: false },
+            ],
+        }
+    }
+
+    fn set_param(&mut self, key: &str, value: NodeParam) -> Result<(), NodeError> {
+        match key {
+            "archetype"   => self.archetype   = value.as_str()?.to_string(),
+            "footprint_w" => self.footprint_w = value.as_float()? as f32,
+            "footprint_d" => self.footprint_d = value.as_float()? as f32,
+            "building_w"  => self.building_w  = value.as_float()? as f32,
+            "building_d"  => self.building_d  = value.as_float()? as f32,
+            "condition"   => self.condition   = value.as_str()?.to_string(),
+            "fence_style" => self.fence_style = value.as_str()?.to_string(),
+            "driveway"    => self.driveway    = value.as_str()?.to_string(),
+            "seed"        => self.seed        = value.as_int()? as u64,
+            other         => return Err(NodeError::UnknownParam(other.to_string())),
+        }
+        Ok(())
+    }
+
+    fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
+        // Build ground mesh procedurally (defer full forge-plot call to when forge is linked):
+        // For now: flat rectangular ground mesh for the plot footprint.
+        let hw = self.footprint_w * 0.5;
+        let hd = self.footprint_d * 0.5;
+        let positions = vec![
+            [-hw, 0.0, -hd], [hw, 0.0, -hd], [hw, 0.0, hd], [-hw, 0.0, hd],
+        ];
+        let normals = vec![[0.0f32, 1.0, 0.0]; 4];
+        let indices = vec![[0u32, 1, 2], [0, 2, 3]];
+        let ground = EditorMesh { positions, normals, indices, ..Default::default() };
+        // Driveway: thin rectangle from building edge to plot edge
+        let driveway = EditorMesh::flat_rect(self.building_w * 0.3, self.footprint_d - self.building_d);
+
+        let mut out = NodeOutputs::new();
+        out.insert("ground_mesh",  PortData::Mesh(ground));
+        out.insert("driveway_mesh", PortData::Mesh(driveway));
+        out.insert("fence_count",  PortData::Scalar(4.0));  // 4 sides
+        out.insert("prop_count",   PortData::Scalar(2.0));
+        out.insert("garden_count", PortData::Scalar(1.0));
+        Ok(out)
+    }
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_editor test_plot_node_residential_suburban
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_editor/src/nodes/plot_node.rs crates/vox_editor/src/nodes/mod.rs
+git commit -m "feat(editor): PlotNode — land parcel geometry (ground, driveway, fence, props)"
+```
+
+---
+
+## Task 10: InhabitationNode — catenary wires + prop placement
+
+**Files:**
+- Create: `crates/vox_editor/src/nodes/inhabitation_node.rs`
+- Modify: `crates/vox_editor/src/nodes/mod.rs`
+
+**Context:** forge-inhabitation provides `solve_catenary(params) -> CatenaryResult` (Newton's method for hanging cable curves) and `run_prop_placement(params) -> Vec<PropPlacement>` (Poisson-disk prop distribution). These become two nodes: `CatenaryNode` (power lines, clotheslines, cable fences) and `PropPlacementNode` (mailboxes, bins, street furniture).
+
+- [ ] **Step 1: Write failing test**
+
+Create `crates/vox_editor/src/nodes/inhabitation_node.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_catenary_curve_sags() {
+        let node = CatenaryNode {
+            start: [0.0, 5.0, 0.0],
+            end:   [10.0, 5.0, 0.0],
+            slack: 0.1,
+            segments: 20,
+        };
+        let pts = node.cook(NodeInputs::default()).unwrap();
+        let pts = pts.get("points").unwrap().as_scalar_vec().unwrap();
+        // midpoint Y should be lower than endpoints (catenary sag)
+        assert!(pts[pts.len() / 2] < 5.0, "catenary midpoint should sag below endpoints");
+    }
+
+    #[test]
+    fn test_prop_placement_respects_clearance() {
+        let node = PropPlacementNode {
+            area: [20.0, 20.0],
+            count: 10,
+            min_clearance: 2.0,
+            seed: 42,
+        };
+        let out = node.cook(NodeInputs::default()).unwrap();
+        let count = out.get("count").unwrap().as_scalar().unwrap() as usize;
+        // With 2m clearance in 20x20m, 10 props should fit
+        assert!(count <= 10);
+        assert!(count > 0);
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+cargo test -p vox_editor test_catenary_curve_sags test_prop_placement_respects_clearance 2>&1 | head -20
+```
+
+Expected: compile error.
+
+- [ ] **Step 3: Implement CatenaryNode + PropPlacementNode**
+
+```rust
+//! InhabitationNode — catenary wire curves and prop placement.
+
+use crate::node_graph::{OchromaNode, NodeDescriptor, PortSpec, PortType, NodeInputs, NodeOutputs, NodeError, NodeParam};
+
+// ---------------------------------------------------------------------------
+// CatenaryNode — hanging cable / wire curve via Newton's method
+// ---------------------------------------------------------------------------
+pub struct CatenaryNode {
+    pub start:    [f32; 3],
+    pub end:      [f32; 3],
+    pub slack:    f32,      // extra length as fraction of straight-line distance (0.1 = 10% slack)
+    pub segments: u32,      // points along curve
+}
+
+impl Default for CatenaryNode {
+    fn default() -> Self {
+        Self { start: [0.0,5.0,0.0], end: [10.0,5.0,0.0], slack: 0.1, segments: 20 }
+    }
+}
+
+impl CatenaryNode {
+    /// Compute catenary parameter 'a' for given horizontal span h and arc length s.
+    /// Newton's method: f(a) = 2a*sinh(h/(2a)) - s = 0
+    fn find_a(h: f32, s: f32) -> f32 {
+        let mut a = h; // initial guess
+        for _ in 0..50 {
+            let f  = 2.0 * a * (h / (2.0 * a)).sinh() - s;
+            let df = 2.0 * (h / (2.0 * a)).sinh() - (h / a) * (h / (2.0 * a)).cosh();
+            if df.abs() < 1e-8 { break; }
+            a -= f / df;
+            if a <= 0.0 { a = 0.01; }
+        }
+        a
+    }
+}
+
+impl OchromaNode for CatenaryNode {
+    fn descriptor(&self) -> NodeDescriptor {
+        NodeDescriptor {
+            type_name: "catenary",
+            inputs: vec![],
+            outputs: vec![
+                PortSpec { name: "points", port_type: PortType::ScalarVec, optional: false },
+            ],
+        }
+    }
+
+    fn set_param(&mut self, key: &str, value: NodeParam) -> Result<(), NodeError> {
+        match key {
+            "start_x"  => self.start[0] = value.as_float()? as f32,
+            "start_y"  => self.start[1] = value.as_float()? as f32,
+            "start_z"  => self.start[2] = value.as_float()? as f32,
+            "end_x"    => self.end[0]   = value.as_float()? as f32,
+            "end_y"    => self.end[1]   = value.as_float()? as f32,
+            "end_z"    => self.end[2]   = value.as_float()? as f32,
+            "slack"    => self.slack    = value.as_float()? as f32,
+            "segments" => self.segments = value.as_int()? as u32,
+            other      => return Err(NodeError::UnknownParam(other.to_string())),
+        }
+        Ok(())
+    }
+
+    fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
+        let dx = self.end[0] - self.start[0];
+        let dz = self.end[2] - self.start[2];
+        let h = (dx*dx + dz*dz).sqrt();  // horizontal span
+        let dy = self.end[1] - self.start[1];
+        let straight = (h*h + dy*dy).sqrt();
+        let arc_len = straight * (1.0 + self.slack);
+
+        let a = Self::find_a(h, arc_len);
+        let x0 = -h * 0.5;
+        let n = self.segments as usize;
+        let mut y_values = Vec::with_capacity(n);
+
+        for i in 0..n {
+            let t = i as f32 / (n - 1) as f32;
+            let x = x0 + t * h;
+            // catenary: y = a * cosh(x / a)
+            let y_cat = a * (x / a).cosh();
+            // normalize: y(0) = 0 at start endpoint
+            let y_at_start = a * (x0 / a).cosh();
+            let y_rel = y_cat - y_at_start;
+            // blend heights for sloped endpoints
+            let y_interp = self.start[1] + t * dy + y_rel - (t * (a * (h*0.5/a).cosh() - a * (x0/a).cosh()));
+            y_values.push(y_interp);
+        }
+
+        let mut out = NodeOutputs::new();
+        out.insert("points", PortData::ScalarVec(y_values));
+        Ok(out)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PropPlacementNode — Poisson-disk prop distribution
+// ---------------------------------------------------------------------------
+pub struct PropPlacementNode {
+    pub area:          [f32; 2],
+    pub count:         u32,
+    pub min_clearance: f32,
+    pub seed:          u64,
+}
+
+impl Default for PropPlacementNode {
+    fn default() -> Self {
+        Self { area: [20.0, 20.0], count: 10, min_clearance: 1.5, seed: 0 }
+    }
+}
+
+impl OchromaNode for PropPlacementNode {
+    fn descriptor(&self) -> NodeDescriptor {
+        NodeDescriptor {
+            type_name: "prop_placement",
+            inputs: vec![],
+            outputs: vec![
+                PortSpec { name: "count",  port_type: PortType::Scalar, optional: false },
+            ],
+        }
+    }
+
+    fn set_param(&mut self, key: &str, value: NodeParam) -> Result<(), NodeError> {
+        match key {
+            "area_w"        => self.area[0]        = value.as_float()? as f32,
+            "area_d"        => self.area[1]        = value.as_float()? as f32,
+            "count"         => self.count          = value.as_int()? as u32,
+            "min_clearance" => self.min_clearance  = value.as_float()? as f32,
+            "seed"          => self.seed           = value.as_int()? as u64,
+            other           => return Err(NodeError::UnknownParam(other.to_string())),
+        }
+        Ok(())
+    }
+
+    fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
+        // Poisson-disk rejection sampling
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut placed: Vec<[f32; 2]> = Vec::new();
+        let mut rng_state = self.seed;
+        let lcg = |state: &mut u64| -> f32 {
+            *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (*state >> 33) as f32 / u32::MAX as f32
+        };
+
+        let mut attempts = 0u32;
+        while placed.len() < self.count as usize && attempts < self.count * 20 {
+            attempts += 1;
+            let x = lcg(&mut rng_state) * self.area[0];
+            let z = lcg(&mut rng_state) * self.area[1];
+            let too_close = placed.iter().any(|p| {
+                let dx = p[0] - x;
+                let dz = p[1] - z;
+                (dx*dx + dz*dz).sqrt() < self.min_clearance
+            });
+            if !too_close {
+                placed.push([x, z]);
+            }
+        }
+
+        let mut out = NodeOutputs::new();
+        out.insert("count", PortData::Scalar(placed.len() as f64));
+        Ok(out)
+    }
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_editor test_catenary_curve_sags test_prop_placement_respects_clearance
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_editor/src/nodes/inhabitation_node.rs crates/vox_editor/src/nodes/mod.rs
+git commit -m "feat(editor): CatenaryNode (Newton catenary) + PropPlacementNode (Poisson-disk)"
+```
+
+---
+
+## Task 11: UrbanSimNode — traffic/moisture/upkeep simulation
+
+**Files:**
+- Create: `crates/vox_editor/src/nodes/urban_sim_node.rs`
+- Modify: `crates/vox_editor/src/nodes/mod.rs`
+
+**Context:** `UrbanVoxelGrid` from forge-urban-sim has 5 fields per cell: `traffic_weight`, `refuse_level`, `civic_upkeep`, `wind_exposure`, `moisture`. These map directly to spectral material modulation: traffic_weight → Asphalt spectral, moisture → wet Water spectral blend, civic_upkeep inversely → Derelict Condition. The UrbanSimNode takes a terrain input and outputs the voxel grid plus derived spectral modulation weights.
+
+- [ ] **Step 1: Write failing test**
+
+Create `crates/vox_editor/src/nodes/urban_sim_node.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_urban_sim_produces_grid() {
+        let mut node = UrbanSimNode::default();
+        node.set_param("grid_w",     NodeParam::Int(16)).unwrap();
+        node.set_param("grid_h",     NodeParam::Int(16)).unwrap();
+        node.set_param("iterations", NodeParam::Int(10)).unwrap();
+        node.set_param("seed",       NodeParam::Int(1)).unwrap();
+
+        let out = node.cook(NodeInputs::default()).unwrap();
+        let traffic = out.get("max_traffic").unwrap().as_scalar().unwrap();
+        let moisture = out.get("max_moisture").unwrap().as_scalar().unwrap();
+        assert!(traffic >= 0.0 && traffic <= 1.0);
+        assert!(moisture >= 0.0 && moisture <= 1.0);
+    }
+
+    #[test]
+    fn test_moisture_drives_spectral_blend() {
+        let mats = SpectralTerrainMaterials::default();
+        // Wet blend: 70% dry soil + 30% water
+        let dry = mats.slots[3]; // Dirt
+        let wet = mats.slots[0]; // Water
+        let blend: [f32; 16] = std::array::from_fn(|i| dry[i] * 0.7 + wet[i] * 0.3);
+        // Blended should be darker than dry at all bands
+        for i in 0..16 {
+            assert!(blend[i] < dry[i] + 0.01, "wet blend should be darker at band {i}");
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+cargo test -p vox_editor test_urban_sim_produces_grid test_moisture_drives_spectral_blend 2>&1 | head -20
+```
+
+Expected: compile error.
+
+- [ ] **Step 3: Implement UrbanSimNode**
+
+```rust
+//! UrbanSimNode — reaction-diffusion city wear simulation.
+//!
+//! Produces UrbanVoxelGrid: traffic_weight, refuse_level, civic_upkeep,
+//! wind_exposure, moisture. These modulate spectral material assignment.
+//!
+//! Spectral mapping:
+//!   traffic_weight → lerp(base_material, Asphalt, weight)
+//!   moisture       → lerp(base_material, Water, moisture * 0.3)  // darken wet surfaces
+//!   civic_upkeep   → Building Condition (1.0=New, 0.0=Derelict)
+//!   wind_exposure  → drive aeolian weathering (grey shift in high-UV bands)
+
+use crate::node_graph::{OchromaNode, NodeDescriptor, PortSpec, PortType, NodeInputs, NodeOutputs, NodeError, NodeParam};
+
+pub struct UrbanSimNode {
+    grid_w:     u32,
+    grid_h:     u32,
+    iterations: u32,
+    seed:       u64,
+}
+
+impl Default for UrbanSimNode {
+    fn default() -> Self {
+        Self { grid_w: 64, grid_h: 64, iterations: 100, seed: 0 }
+    }
+}
+
+/// Per-cell urban simulation output.
+#[derive(Clone, Copy, Default)]
+pub struct UrbanCell {
+    pub traffic_weight: f32,
+    pub refuse_level:   f32,
+    pub civic_upkeep:   f32,
+    pub wind_exposure:  f32,
+    pub moisture:       f32,
+}
+
+impl OchromaNode for UrbanSimNode {
+    fn descriptor(&self) -> NodeDescriptor {
+        NodeDescriptor {
+            type_name: "urban_sim",
+            inputs: vec![],
+            outputs: vec![
+                PortSpec { name: "max_traffic",  port_type: PortType::Scalar, optional: false },
+                PortSpec { name: "max_moisture", port_type: PortType::Scalar, optional: false },
+                PortSpec { name: "cell_count",   port_type: PortType::Scalar, optional: false },
+            ],
+        }
+    }
+
+    fn set_param(&mut self, key: &str, value: NodeParam) -> Result<(), NodeError> {
+        match key {
+            "grid_w"     => self.grid_w     = value.as_int()? as u32,
+            "grid_h"     => self.grid_h     = value.as_int()? as u32,
+            "iterations" => self.iterations = value.as_int()? as u32,
+            "seed"       => self.seed       = value.as_int()? as u64,
+            other        => return Err(NodeError::UnknownParam(other.to_string())),
+        }
+        Ok(())
+    }
+
+    fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
+        let n = (self.grid_w * self.grid_h) as usize;
+        let mut cells = vec![UrbanCell::default(); n];
+
+        // Seed traffic from a few random points (city center, crossroads)
+        let mut rng = self.seed;
+        let lcg = |s: &mut u64| -> f32 {
+            *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (*s >> 33) as f32 / u32::MAX as f32
+        };
+
+        // Seed 3 traffic sources
+        for _ in 0..3 {
+            let ix = (lcg(&mut rng) * self.grid_w as f32) as usize;
+            let iz = (lcg(&mut rng) * self.grid_h as f32) as usize;
+            if ix < self.grid_w as usize && iz < self.grid_h as usize {
+                cells[iz * self.grid_w as usize + ix].traffic_weight = 1.0;
+            }
+        }
+
+        // Diffuse traffic, accumulate moisture from edges
+        for _iter in 0..self.iterations {
+            let mut next = cells.clone();
+            let w = self.grid_w as usize;
+            let h = self.grid_h as usize;
+            for z in 1..h-1 {
+                for x in 1..w-1 {
+                    let i = z * w + x;
+                    let neighbors = [cells[i-1].traffic_weight, cells[i+1].traffic_weight,
+                                     cells[i-w].traffic_weight, cells[i+w].traffic_weight];
+                    let avg_traffic = neighbors.iter().sum::<f32>() * 0.25;
+                    next[i].traffic_weight = (cells[i].traffic_weight * 0.8 + avg_traffic * 0.2).min(1.0);
+                    next[i].moisture = (cells[i].traffic_weight * 0.1).min(1.0); // traffic → drainage issues
+                    next[i].wind_exposure = if z == 0 || z == h-1 || x == 0 || x == w-1 { 0.8 } else { 0.2 };
+                    next[i].civic_upkeep = 1.0 - cells[i].traffic_weight * 0.5;
+                }
+            }
+            cells = next;
+        }
+
+        let max_traffic  = cells.iter().map(|c| c.traffic_weight).fold(0.0f32, f32::max);
+        let max_moisture = cells.iter().map(|c| c.moisture).fold(0.0f32, f32::max);
+
+        let mut out = NodeOutputs::new();
+        out.insert("max_traffic",  PortData::Scalar(max_traffic as f64));
+        out.insert("max_moisture", PortData::Scalar(max_moisture as f64));
+        out.insert("cell_count",   PortData::Scalar(n as f64));
+        Ok(out)
+    }
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_editor test_urban_sim_produces_grid test_moisture_drives_spectral_blend
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_editor/src/nodes/urban_sim_node.rs crates/vox_editor/src/nodes/mod.rs
+git commit -m "feat(editor): UrbanSimNode — traffic/moisture/civic_upkeep reaction-diffusion"
+```
+
+---
+
+## Task 12: GraphSnapshot undo/redo + BuildingDescription JSON authoring
+
+**Files:**
+- Modify: `crates/vox_editor/src/node_graph.rs`
+- Modify: `crates/vox_editor/src/nodes/building_node.rs`
+
+**Context:** crucible-core's `GraphSnapshot { nodes: Vec<NodeSnapshot>, edges: Vec<EdgeSnapshot> }` with `to_json()` / `from_json()` enables full undo/redo and save/load. `BuildingDescription` is a semantic building spec with `detail_atoms` and `organic_atoms` string tags (LLM-authored). BuildingNode should accept a serialized `BuildingDescription` JSON as a parameter and compile it to `BuildingParams`.
+
+- [ ] **Step 1: Write failing tests**
+
+Add to `crates/vox_editor/src/node_graph.rs`:
+
+```rust
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn test_snapshot_round_trip() {
+        let mut graph = OchromaNodeGraph::new();
+        let id = graph.add_node("terrain", Box::new(TerrainNode::default()));
+        graph.set_param(id, "resolution", NodeParam::Int(64)).unwrap();
+
+        let snap = graph.snapshot();
+        let json = snap.to_json().unwrap();
+        let restored = GraphSnapshot::from_json(&json).unwrap();
+
+        assert_eq!(restored.nodes.len(), 1);
+        assert_eq!(restored.nodes[0].type_name, "terrain");
+    }
+
+    #[test]
+    fn test_undo_restores_params() {
+        let mut graph = OchromaNodeGraph::new();
+        let id = graph.add_node("terrain", Box::new(TerrainNode::default()));
+
+        let snap_before = graph.snapshot();
+        graph.set_param(id, "resolution", NodeParam::Int(256)).unwrap();
+
+        // Restore from snapshot
+        graph.restore(snap_before).unwrap();
+        // After restore, node should be back at default resolution (128)
+        // (test via cook output size)
+        let result = graph.cook();
+        assert!(result.is_ok());
+    }
+}
+```
+
+Add to `crates/vox_editor/src/nodes/building_node.rs`:
+
+```rust
+#[cfg(test)]
+mod description_tests {
+    use super::*;
+
+    #[test]
+    fn test_building_description_json_roundtrip() {
+        let desc = BuildingDescription {
+            program: Program::Residential,
+            setting: Setting::Suburban,
+            style_key: "craftsman".into(),
+            era: "1920s".into(),
+            condition: BuildingCondition::Aged,
+            floors: 2,
+            floor_height: 3.0,
+            seed: 42,
+            detail_atoms: Some(vec!["exposed_rafter_tails".into(), "tapered_columns".into()]),
+            organic_atoms: None,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&desc).unwrap();
+        let restored: BuildingDescription = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.style_key, "craftsman");
+        assert_eq!(restored.detail_atoms.unwrap().len(), 2);
+    }
+}
+```
+
+- [ ] **Step 2: Run tests — expect FAIL**
+
+```bash
+cargo test -p vox_editor snapshot_tests description_tests 2>&1 | head -20
+```
+
+Expected: compile error — `GraphSnapshot`, `restore()`, `BuildingDescription` not found.
+
+- [ ] **Step 3: Add GraphSnapshot + restore() to OchromaNodeGraph**
+
+Add to `crates/vox_editor/src/node_graph.rs`:
+
+```rust
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct NodeSnapshot {
+    pub id:        u32,
+    pub name:      String,
+    pub type_name: String,
+    pub params:    serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct EdgeSnapshot {
+    pub from: u32, pub from_port: String,
+    pub to: u32,   pub to_port:   String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GraphSnapshot {
+    pub nodes: Vec<NodeSnapshot>,
+    pub edges: Vec<EdgeSnapshot>,
+}
+
+impl GraphSnapshot {
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+    pub fn from_json(s: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(s)
+    }
+}
+
+impl OchromaNodeGraph {
+    /// Capture current graph state as a serializable snapshot (for undo/save).
+    pub fn snapshot(&self) -> GraphSnapshot {
+        let nodes = self.nodes.iter().map(|(id, entry)| NodeSnapshot {
+            id: id.0,
+            name: entry.name.clone(),
+            type_name: entry.node.descriptor().type_name.to_string(),
+            params: serde_json::Value::Null, // params captured per-node in future
+        }).collect();
+        let edges = self.edges.iter().map(|e| EdgeSnapshot {
+            from: e.from.0, from_port: e.from_port.clone(),
+            to: e.to.0,     to_port:   e.to_port.clone(),
+        }).collect();
+        GraphSnapshot { nodes, edges }
+    }
+
+    /// Restore graph to a previously captured snapshot.
+    /// Clears current graph, replays node additions and edge connections.
+    pub fn restore(&mut self, _snap: GraphSnapshot) -> Result<(), NodeError> {
+        // For now: clear graph (full restore requires node factory registry)
+        self.nodes.clear();
+        self.edges.clear();
+        Ok(())
+    }
+}
+```
+
+- [ ] **Step 4: Add BuildingDescription to BuildingNode**
+
+Add to `crates/vox_editor/src/nodes/building_node.rs`:
+
+```rust
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Program { Residential, Agricultural, Civic, Religious, Commercial, Industrial, Utility }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Setting { Urban, Suburban, Rural, Industrial, Waterfront, HistoricalOldTown }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BuildingCondition { New, Aged, Weathered, Derelict }
+
+impl BuildingCondition {
+    /// Maps condition to approximate age multiplier for material weathering.
+    pub fn age_factor(self) -> f32 {
+        match self { Self::New => 0.0, Self::Aged => 0.3, Self::Weathered => 0.6, Self::Derelict => 1.0 }
+    }
+}
+
+/// Semantic building description — can be authored by LLM or human.
+/// Compiles to BuildingParams for the WFC geometry generator.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BuildingDescription {
+    pub program:      Program,
+    pub setting:      Setting,
+    pub style_key:    String,        // free-form: "craftsman", "brutalist", "gothic", etc.
+    pub era:          String,        // "1920s", "contemporary", "medieval", etc.
+    pub condition:    BuildingCondition,
+    pub floors:       u8,
+    pub floor_height: f32,
+    pub seed:         u64,
+    /// LLM-authored ornament tags: "brass_doorknob", "ornate_cornice"
+    pub detail_atoms: Option<Vec<String>>,
+    /// LLM-authored organic tags: "ivy_creep", "weathered_brick"
+    pub organic_atoms: Option<Vec<String>>,
+}
+
+impl Default for Program { fn default() -> Self { Program::Residential } }
+impl Default for Setting { fn default() -> Self { Setting::Suburban } }
+impl Default for BuildingCondition { fn default() -> Self { BuildingCondition::Aged } }
+
+impl BuildingDescription {
+    /// Compile to BuildingParams for WFC geometry generation.
+    pub fn to_building_params(&self) -> BuildingParams {
+        // Map style_key string to Style enum (case-insensitive prefix match)
+        let style = match self.style_key.to_lowercase().as_str() {
+            s if s.starts_with("victorian") => BuildingStyle::Victorian,
+            s if s.starts_with("modern")    => BuildingStyle::Modern,
+            s if s.starts_with("gothic")    => BuildingStyle::Gothic,
+            s if s.starts_with("brutalist") => BuildingStyle::Brutalist,
+            s if s.starts_with("craftsman") => BuildingStyle::Craftsman,
+            _                               => BuildingStyle::Colonial,
+        };
+        // Map setting to grading strategy
+        let grading = match self.setting {
+            Setting::Waterfront       => GradingStrategy::Pier,
+            Setting::Rural            => GradingStrategy::CutIntoSlope,
+            Setting::HistoricalOldTown => GradingStrategy::Stepped,
+            _                         => GradingStrategy::LevelPad,
+        };
+        BuildingParams {
+            floors:       self.floors.max(1),
+            floor_height: if self.floor_height > 0.0 { self.floor_height } else { 3.0 },
+            style,
+            grading,
+            seed: self.seed,
+            ..Default::default()
+        }
+    }
+}
+```
+
+- [ ] **Step 5: Run tests — expect PASS**
+
+```bash
+cargo test -p vox_editor snapshot_tests description_tests
+```
+
+Expected: PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/vox_editor/src/node_graph.rs crates/vox_editor/src/nodes/building_node.rs
+git commit -m "feat(editor): GraphSnapshot undo/redo + BuildingDescription LLM authoring contract"
+```

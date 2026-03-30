@@ -1519,3 +1519,224 @@ git commit -m "test(net): replication bandwidth integration — <50% vs naive RG
 **Known limitation — self-signed certs:** `SkipServerVerification` is a development convenience. Production deployment should use certificate pinning: the client embeds the server's cert DER and verifies by digest match. This is a 10-line change to `QuicTransport::connect()` and does not change any interfaces.
 
 **Architecture note — TCP removal:** The existing `vox_net` TCP code should be gated behind a `#[cfg(feature = "tcp-legacy")]` feature flag rather than deleted immediately, to avoid breaking any existing integration tests. The flag defaults to `false` in this plan.
+
+---
+
+## Task 8: UrbanVoxelGrid replication — city-scale simulation state sync
+
+**Files:**
+- Create: `crates/vox_net/src/urban_replication.rs`
+- Modify: `crates/vox_net/src/lib.rs`
+
+**Context:** `UrbanVoxelGrid` (from Domain 09 UrbanSimNode) has 5 float fields per cell: traffic_weight, refuse_level, civic_upkeep, wind_exposure, moisture. In a multiplayer session, the server runs the urban simulation and replicates the voxel grid to clients. Unlike per-entity splat replication (delta compressed via `changed_bands: u8` bitmask), the urban grid is replicated as a compressed snapshot:
+
+- Grid is chunked into 16×16 cell tiles
+- Each tile is sent as a separate packet when any cell changes
+- Per-cell values are quantized to u8 (255 steps is sufficient for these simulation fields)
+- Zstd compression is applied to tile payload (5 floats/cell → 5 u8/cell = 256 bytes/tile, compresses to ~80 bytes typical)
+
+This separates urban sim replication from entity replication — urban data flows server→clients only (no client authority).
+
+- [ ] **Step 1: Write failing test**
+
+Create `crates/vox_net/src/urban_replication.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_urban_tile_encode_decode_roundtrip() {
+        let tile = UrbanTile {
+            tile_x: 2,
+            tile_z: 3,
+            cells: [UrbanCellPacked { traffic: 128, refuse: 50, upkeep: 200, wind: 30, moisture: 180 }; 256],
+        };
+        let encoded = tile.encode();
+        let decoded = UrbanTile::decode(&encoded).expect("decode should succeed");
+        assert_eq!(decoded.tile_x, 2);
+        assert_eq!(decoded.tile_z, 3);
+        assert_eq!(decoded.cells[0].traffic, 128);
+        assert_eq!(decoded.cells[127].moisture, 180);
+    }
+
+    #[test]
+    fn test_urban_tile_quantization() {
+        // f32 [0,1] → u8 → f32 should round-trip within 1/255 tolerance
+        let original = 0.73f32;
+        let quantized = (original * 255.0) as u8;
+        let restored = quantized as f32 / 255.0;
+        assert!((restored - original).abs() < 1.0 / 255.0 + f32::EPSILON);
+    }
+
+    #[test]
+    fn test_urban_grid_to_tiles() {
+        // 32×32 grid → 4 tiles of 16×16
+        let cells = vec![UrbanCellF32 { traffic: 0.5, refuse: 0.1, upkeep: 0.8, wind: 0.3, moisture: 0.4 }; 32 * 32];
+        let grid = UrbanVoxelGridNet { cells, width: 32, height: 32 };
+        let tiles = grid.to_tiles(16);
+        assert_eq!(tiles.len(), 4, "32×32 / 16×16 = 4 tiles");
+        assert_eq!(tiles[0].cells.len(), 256);
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+cargo test -p vox_net urban_replication 2>&1 | head -20
+```
+
+Expected: compile error — `UrbanTile`, `UrbanCellPacked`, `UrbanVoxelGridNet` not found.
+
+- [ ] **Step 3: Implement UrbanVoxelGrid replication types**
+
+```rust
+//! UrbanVoxelGrid replication — city simulation state sync (server→clients only).
+//!
+//! Grid chunked into TILE_SIZE×TILE_SIZE tiles.
+//! Per-cell values quantized to u8. Tile packet = 2-byte header + 5*256 u8 bytes.
+
+pub const TILE_SIZE: usize = 16;
+pub const CELLS_PER_TILE: usize = TILE_SIZE * TILE_SIZE;
+
+/// Urban cell in f32 form (runtime simulation state).
+#[derive(Clone, Copy, Default)]
+pub struct UrbanCellF32 {
+    pub traffic:  f32,  // [0,1]
+    pub refuse:   f32,
+    pub upkeep:   f32,
+    pub wind:     f32,
+    pub moisture: f32,
+}
+
+/// Urban cell quantized to u8 for wire transmission.
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct UrbanCellPacked {
+    pub traffic:  u8,
+    pub refuse:   u8,
+    pub upkeep:   u8,
+    pub wind:     u8,
+    pub moisture: u8,
+}
+
+impl UrbanCellPacked {
+    pub fn from_f32(c: &UrbanCellF32) -> Self {
+        Self {
+            traffic:  (c.traffic.clamp(0.0,1.0) * 255.0) as u8,
+            refuse:   (c.refuse.clamp(0.0,1.0) * 255.0) as u8,
+            upkeep:   (c.upkeep.clamp(0.0,1.0) * 255.0) as u8,
+            wind:     (c.wind.clamp(0.0,1.0) * 255.0) as u8,
+            moisture: (c.moisture.clamp(0.0,1.0) * 255.0) as u8,
+        }
+    }
+
+    pub fn to_f32(&self) -> UrbanCellF32 {
+        UrbanCellF32 {
+            traffic:  self.traffic as f32 / 255.0,
+            refuse:   self.refuse as f32 / 255.0,
+            upkeep:   self.upkeep as f32 / 255.0,
+            wind:     self.wind as f32 / 255.0,
+            moisture: self.moisture as f32 / 255.0,
+        }
+    }
+}
+
+/// One 16×16 tile of packed urban cells.
+pub struct UrbanTile {
+    pub tile_x: u16,
+    pub tile_z: u16,
+    pub cells:  [UrbanCellPacked; CELLS_PER_TILE],
+}
+
+impl UrbanTile {
+    /// Encode to bytes: 4-byte header (tile_x u16 LE, tile_z u16 LE) + 5 bytes/cell.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(4 + CELLS_PER_TILE * 5);
+        buf.extend_from_slice(&self.tile_x.to_le_bytes());
+        buf.extend_from_slice(&self.tile_z.to_le_bytes());
+        for cell in &self.cells {
+            buf.push(cell.traffic);
+            buf.push(cell.refuse);
+            buf.push(cell.upkeep);
+            buf.push(cell.wind);
+            buf.push(cell.moisture);
+        }
+        buf
+    }
+
+    /// Decode from bytes produced by encode().
+    pub fn decode(data: &[u8]) -> Option<Self> {
+        if data.len() < 4 + CELLS_PER_TILE * 5 { return None; }
+        let tile_x = u16::from_le_bytes([data[0], data[1]]);
+        let tile_z = u16::from_le_bytes([data[2], data[3]]);
+        let mut cells = [UrbanCellPacked::default(); CELLS_PER_TILE];
+        for (i, cell) in cells.iter_mut().enumerate() {
+            let base = 4 + i * 5;
+            cell.traffic  = data[base];
+            cell.refuse   = data[base+1];
+            cell.upkeep   = data[base+2];
+            cell.wind     = data[base+3];
+            cell.moisture = data[base+4];
+        }
+        Some(UrbanTile { tile_x, tile_z, cells })
+    }
+}
+
+/// Full urban voxel grid for network replication.
+pub struct UrbanVoxelGridNet {
+    pub cells:  Vec<UrbanCellF32>,
+    pub width:  u32,
+    pub height: u32,
+}
+
+impl UrbanVoxelGridNet {
+    /// Split grid into TILE_SIZE×TILE_SIZE tiles for chunked replication.
+    pub fn to_tiles(&self, tile_size: usize) -> Vec<UrbanTile> {
+        let tiles_x = (self.width as usize).div_ceil(tile_size);
+        let tiles_z = (self.height as usize).div_ceil(tile_size);
+        let w = self.width as usize;
+        let mut tiles = Vec::with_capacity(tiles_x * tiles_z);
+
+        for tz in 0..tiles_z {
+            for tx in 0..tiles_x {
+                let mut packed_cells = [UrbanCellPacked::default(); CELLS_PER_TILE];
+                for lz in 0..tile_size {
+                    for lx in 0..tile_size {
+                        let gx = tx * tile_size + lx;
+                        let gz = tz * tile_size + lz;
+                        let local_idx = lz * tile_size + lx;
+                        if gx < self.width as usize && gz < self.height as usize {
+                            let g_idx = gz * w + gx;
+                            packed_cells[local_idx] = UrbanCellPacked::from_f32(&self.cells[g_idx]);
+                        }
+                    }
+                }
+                tiles.push(UrbanTile {
+                    tile_x: tx as u16,
+                    tile_z: tz as u16,
+                    cells: packed_cells,
+                });
+            }
+        }
+        tiles
+    }
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_net urban_replication
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_net/src/urban_replication.rs crates/vox_net/src/lib.rs
+git commit -m "feat(net): UrbanVoxelGrid replication — 16x16 tile chunking, u8 quantization, encode/decode"
+```

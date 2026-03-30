@@ -1485,4 +1485,222 @@ git commit -m "bench(physics): PBF performance test — 50k particle budget veri
 
 **Constraint solver note:** The WGSL solve pass (Task 2) runs one Jacobi iteration per frame. For production stability, increase to 3–5 iterations by dispatching the solve pass N times per frame. The CPU fallback `cpu_step()` also runs one iteration — both are consistent.
 
+---
+
+## Task 7: WetnessSim — drip simulation + urban moisture → spectral wet blending
+
+**Files:**
+- Create: `crates/vox_physics/src/wetness.rs`
+- Modify: `crates/vox_physics/src/lib.rs`
+
+**Context:** forge-flow-maps `run_drip_simulation(heights, normals, resolution, params) -> DripResult` produces a `drip_intensity: Vec<f32>` per terrain cell — the rainfall drainage flow map. High drip_intensity + flat curvature = standing water (puddle). Combined with `UrbanVoxelGrid.moisture` (from Domain 09 UrbanSimNode), this drives spectral wet material blending: wet surfaces blend toward the Water USGS spectral curve (darkening in NIR, slight blue shift in visible).
+
+The spectral blend formula: `wet_spectral[λ] = dry_spectral[λ] × (1 - wet_factor) + water_curve[λ] × wet_factor`
+where `wet_factor = drip_intensity.clamp(0, 0.35)` (fully wet surfaces still retain ~65% base material character — standing water does not eliminate the surface entirely).
+
+- [ ] **Step 1: Write failing test**
+
+Create `crates/vox_physics/src/wetness.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_drip_simulation_produces_flow_map() {
+        let resolution = 16u32;
+        let n = (resolution * resolution) as usize;
+        // Flat terrain with a slight slope
+        let mut heights = vec![0.0f32; n];
+        for z in 0..resolution as usize {
+            for x in 0..resolution as usize {
+                heights[z * resolution as usize + x] = x as f32 * 0.5;
+            }
+        }
+        let normals = vec![[0.0f32, 1.0, 0.0]; n];
+        let params = DripParams { particle_count: 100, max_steps: 50, seed: 42 };
+        let result = run_drip_simulation(&heights, &normals, resolution, &params);
+
+        assert_eq!(result.drip_intensity.len(), n);
+        let max_intensity = result.drip_intensity.iter().cloned().fold(0.0f32, f32::max);
+        assert!(max_intensity > 0.0, "slope should produce nonzero flow");
+        // Low-X cells (uphill) should generally have less accumulation than high-X (downhill)
+        let uphill_avg: f32 = (0..resolution as usize)
+            .map(|z| result.drip_intensity[z * resolution as usize + 0])
+            .sum::<f32>() / resolution as f32;
+        let downhill_avg: f32 = (0..resolution as usize)
+            .map(|z| result.drip_intensity[z * resolution as usize + (resolution as usize - 1)])
+            .sum::<f32>() / resolution as f32;
+        assert!(downhill_avg >= uphill_avg, "downhill should accumulate more flow");
+    }
+
+    #[test]
+    fn test_wet_spectral_blend_darkens_nir() {
+        // Dry soil vs wet soil
+        let dry_soil: [f32; 16] = [
+            0.07,0.09,0.11,0.13,0.14,0.16,0.18,0.20,
+            0.22,0.23,0.24,0.25,0.26,0.27,0.28,0.30
+        ];
+        let wet_factor = 0.3;
+        let wet = blend_wet_spectral(&dry_soil, wet_factor);
+        // Near-IR (bands 8-15) should be darker when wet
+        for band in 8..16 {
+            assert!(wet[band] < dry_soil[band],
+                "wet NIR band {band} ({}) should be darker than dry ({})", wet[band], dry_soil[band]);
+        }
+        // Visible should also darken slightly
+        let visible_wet_avg: f32 = wet[0..8].iter().sum::<f32>() / 8.0;
+        let visible_dry_avg: f32 = dry_soil[0..8].iter().sum::<f32>() / 8.0;
+        assert!(visible_wet_avg < visible_dry_avg, "wet visible bands should be darker");
+    }
+
+    #[test]
+    fn test_puddle_detection_from_drip_and_curvature() {
+        let drip = vec![0.8f32, 0.2, 0.1, 0.9]; // cells 0 and 3 have high flow
+        let curvature = vec![-0.1f32, 0.3, 0.2, -0.05]; // negative curvature = concave = puddle candidate
+        let puddles = detect_puddles(&drip, &curvature, 0.5, -0.02);
+        // Cells 0 and 3 qualify: high drip AND concave
+        assert!(puddles[0], "cell 0 should be a puddle");
+        assert!(!puddles[1], "cell 1 has low drip, not a puddle");
+        assert!(puddles[3], "cell 3 should be a puddle");
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+cargo test -p vox_physics wetness 2>&1 | head -20
+```
+
+Expected: compile error — `DripParams`, `run_drip_simulation`, `blend_wet_spectral`, `detect_puddles` not found.
+
+- [ ] **Step 3: Implement WetnessSim**
+
+```rust
+//! WetnessSim — drip simulation, puddle detection, and spectral wet blending.
+//!
+//! Integrates with DripResult from forge-flow-maps (replicated here to avoid direct dep)
+//! and UrbanVoxelGrid.moisture from Domain 09 UrbanSimNode.
+//!
+//! Spectral wet blend: wet_spectral = dry × (1-f) + water × f
+//! where f = drip_intensity.clamp(0, 0.35)
+
+/// Parameters for rain-particle drip simulation (mirrors forge-flow-maps DripParams).
+pub struct DripParams {
+    pub particle_count: u32,   // default 10_000
+    pub max_steps:      u32,   // default 500
+    pub seed:           u64,
+}
+
+impl Default for DripParams {
+    fn default() -> Self { Self { particle_count: 10_000, max_steps: 500, seed: 0 } }
+}
+
+/// Result of drip simulation: per-cell flow accumulation intensity.
+pub struct DripResult {
+    pub drip_intensity: Vec<f32>,   // [0, 1], per cell
+    pub resolution:     u32,
+}
+
+/// Run rain-particle drip simulation on a heightfield.
+/// Particles spawn at random positions, follow steepest descent, accumulate per cell.
+pub fn run_drip_simulation(
+    heights: &[f32],
+    normals: &[[f32; 3]],
+    resolution: u32,
+    params: &DripParams,
+) -> DripResult {
+    let n = (resolution * resolution) as usize;
+    let mut accumulation = vec![0u32; n];
+    let res = resolution as usize;
+
+    // LCG RNG
+    let mut rng = params.seed;
+    let lcg = |s: &mut u64| -> f32 {
+        *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (*s >> 33) as f32 / u32::MAX as f32
+    };
+
+    for _ in 0..params.particle_count {
+        // Spawn particle at random cell
+        let mut x = (lcg(&mut rng) * res as f32) as usize;
+        let mut z = (lcg(&mut rng) * res as f32) as usize;
+        x = x.min(res - 1);
+        z = z.min(res - 1);
+
+        for _step in 0..params.max_steps {
+            let idx = z * res + x;
+            accumulation[idx] += 1;
+
+            // Find steepest downhill neighbor (4-connected)
+            let h = heights[idx];
+            let mut best_dh = 0.0f32;
+            let mut best_nx = x;
+            let mut best_nz = z;
+
+            if x > 0      && heights[z*res + x-1] < h - best_dh { best_dh = h - heights[z*res+x-1]; best_nx = x-1; best_nz = z; }
+            if x < res-1  && heights[z*res + x+1] < h - best_dh { best_dh = h - heights[z*res+x+1]; best_nx = x+1; best_nz = z; }
+            if z > 0      && heights[(z-1)*res+x]  < h - best_dh { best_dh = h - heights[(z-1)*res+x];  best_nx = x; best_nz = z-1; }
+            if z < res-1  && heights[(z+1)*res+x]  < h - best_dh { best_dh = h - heights[(z+1)*res+x];  best_nx = x; best_nz = z+1; }
+
+            if best_dh < 0.001 { break; } // particle settled
+            x = best_nx;
+            z = best_nz;
+        }
+    }
+
+    // Normalize to [0, 1]
+    let max_acc = *accumulation.iter().max().unwrap_or(&1) as f32;
+    let drip_intensity = accumulation.iter()
+        .map(|&v| (v as f32 / max_acc).sqrt()) // sqrt to compress dynamic range
+        .collect();
+
+    DripResult { drip_intensity, resolution }
+}
+
+/// Water spectral curve (USGS, 16 bands 380–755 nm).
+const WATER_SPECTRAL: [f32; 16] = [
+    0.03,0.04,0.05,0.05,0.05,0.04,0.03,0.03,
+    0.02,0.02,0.01,0.01,0.01,0.01,0.01,0.01
+];
+
+/// Blend a dry spectral curve toward water using wet_factor ∈ [0, 0.35].
+/// wet_factor = 0 → unchanged, wet_factor = 0.35 → heavily wet surface.
+pub fn blend_wet_spectral(dry: &[f32; 16], wet_factor: f32) -> [f32; 16] {
+    let f = wet_factor.clamp(0.0, 0.35);
+    std::array::from_fn(|i| dry[i] * (1.0 - f) + WATER_SPECTRAL[i] * f)
+}
+
+/// Detect puddle cells where drip_intensity > threshold AND curvature < concavity_threshold.
+/// Returns bool mask of same length as drip.
+pub fn detect_puddles(
+    drip: &[f32],
+    curvature: &[f32],
+    drip_threshold: f32,
+    concavity_threshold: f32,
+) -> Vec<bool> {
+    assert_eq!(drip.len(), curvature.len());
+    drip.iter().zip(curvature.iter())
+        .map(|(&d, &c)| d >= drip_threshold && c <= concavity_threshold)
+        .collect()
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_physics wetness
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_physics/src/wetness.rs crates/vox_physics/src/lib.rs
+git commit -m "feat(physics): WetnessSim — drip simulation, puddle detection, spectral wet blending"
+```
+
 **Thermal → GI bridge:** `ThermalEmitter::hot_emitters()` returns an iterator of `(Vec3, [f32; 8])` that maps directly onto `SpectralRadianceCache::propagate()` in `vox_render`. The domain boundary is at the engine runner: call `hot_emitters()` each frame and inject into the GI cache as additional emissive sources.

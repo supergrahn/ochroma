@@ -1154,28 +1154,38 @@ Create `crates/vox_audio/src/biome_soundscape.rs`:
 //! Maps forge-terrain BiomeKind to spectral synthesis parameters.
 //! One biome ID drives both terrain material rendering AND ambient audio.
 
-/// Matches forge-terrain BiomeKind (copied as plain enum — no dep on forge required).
+/// Matches forge-terrain BiomeKind exactly (copied as plain enum — no dep on forge required).
+/// Full variant list from forge-terrain biomes.rs exhaustive read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BiomeKind {
-    Coastal   = 0,
-    Wetland   = 1,
-    Alpine    = 2,
-    Tundra    = 3,
-    Desert    = 4,
-    Forest    = 5,
-    Grassland = 6,
+    Alpine          = 0,
+    Tundra          = 1,
+    Forest          = 2,
+    Grassland       = 3,
+    Desert          = 4,
+    Wetland         = 5,
+    Coastal         = 6,
+    SubalpineShrub  = 7,
+    Savanna         = 8,
+    Taiga           = 9,
+    TropicalRainforest = 10,
 }
 
 impl BiomeKind {
     pub fn from_id(id: u8) -> Self {
         match id {
-            0 => Self::Coastal,
-            1 => Self::Wetland,
-            2 => Self::Alpine,
-            3 => Self::Tundra,
-            4 => Self::Desert,
-            5 => Self::Forest,
-            _ => Self::Grassland,
+            0  => Self::Alpine,
+            1  => Self::Tundra,
+            2  => Self::Forest,
+            3  => Self::Grassland,
+            4  => Self::Desert,
+            5  => Self::Wetland,
+            6  => Self::Coastal,
+            7  => Self::SubalpineShrub,
+            8  => Self::Savanna,
+            9  => Self::Taiga,
+            10 => Self::TropicalRainforest,
+            _  => Self::Grassland,
         }
     }
 }
@@ -1191,13 +1201,17 @@ pub struct BiomeAmbientMix {
 impl BiomeAmbientMix {
     pub fn for_biome(biome: BiomeKind) -> Self {
         match biome {
-            BiomeKind::Coastal   => Self { wind: 0.5, water: 0.8, insects: 0.1, ice: 0.0 },
-            BiomeKind::Wetland   => Self { wind: 0.1, water: 0.6, insects: 0.9, ice: 0.0 },
-            BiomeKind::Alpine    => Self { wind: 0.8, water: 0.2, insects: 0.0, ice: 0.4 },
-            BiomeKind::Tundra    => Self { wind: 0.9, water: 0.1, insects: 0.0, ice: 0.7 },
-            BiomeKind::Desert    => Self { wind: 0.6, water: 0.0, insects: 0.2, ice: 0.0 },
-            BiomeKind::Forest    => Self { wind: 0.2, water: 0.1, insects: 0.7, ice: 0.0 },
-            BiomeKind::Grassland => Self { wind: 0.4, water: 0.0, insects: 0.5, ice: 0.0 },
+            BiomeKind::Alpine             => Self { wind: 0.8, water: 0.2, insects: 0.0, ice: 0.4 },
+            BiomeKind::Tundra             => Self { wind: 0.9, water: 0.1, insects: 0.0, ice: 0.7 },
+            BiomeKind::Forest             => Self { wind: 0.2, water: 0.1, insects: 0.7, ice: 0.0 },
+            BiomeKind::Grassland          => Self { wind: 0.4, water: 0.0, insects: 0.5, ice: 0.0 },
+            BiomeKind::Desert             => Self { wind: 0.6, water: 0.0, insects: 0.2, ice: 0.0 },
+            BiomeKind::Wetland            => Self { wind: 0.1, water: 0.6, insects: 0.9, ice: 0.0 },
+            BiomeKind::Coastal            => Self { wind: 0.5, water: 0.8, insects: 0.1, ice: 0.0 },
+            BiomeKind::SubalpineShrub     => Self { wind: 0.6, water: 0.1, insects: 0.2, ice: 0.2 },
+            BiomeKind::Savanna            => Self { wind: 0.5, water: 0.0, insects: 0.6, ice: 0.0 },
+            BiomeKind::Taiga              => Self { wind: 0.3, water: 0.1, insects: 0.4, ice: 0.1 },
+            BiomeKind::TropicalRainforest => Self { wind: 0.1, water: 0.3, insects: 1.0, ice: 0.0 },
         }
     }
 

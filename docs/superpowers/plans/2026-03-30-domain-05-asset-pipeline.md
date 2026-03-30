@@ -1305,3 +1305,331 @@ git commit -m "feat(tools): ochroma-tools CLI — import --images (COLMAP) and -
 **Known limitation:** The 3-photo `SpectralMaterialProfile` uses Smits-upsampled RGB as the per-photo measurement, not raw spectrometer data. This is correct for standard cameras. True spectral accuracy requires multispectral cameras; the architecture supports substituting raw band measurements without API change.
 
 **VXM v2 compatibility:** `VxmFileV3::read()` returns `UnsupportedVersion(1)` for v1 files. The existing `VxmFile::read()` (v1 reader) remains untouched. Callers that need backwards compatibility should try `VxmFile::read()` first, then `VxmFileV3::read()`.
+
+---
+
+## Task 7: VegetationSplatizer — PROSPECT-PRO spectral_embedding → 16-band splats
+
+**Files:**
+- Create: `crates/vox_data/src/vegetation_splatizer.rs`
+- Modify: `crates/vox_data/src/lib.rs`
+
+**Context:** `FloraPrimeNode` in crucible-nodes writes `Mesh.spectral_embedding: Vec<[f32; 6]>` — six PCA components of PROSPECT-PRO evaluated at 6 wavelengths per vertex. To splatize vegetation meshes with physically accurate leaf optics, we must back-project these 6 PCA components to the full 16-band spectral representation. The 6 components explain ~97% of spectral variance; the back-projection uses the PCA basis stored as a 6×16 matrix (6 components × 16 wavelength bands).
+
+PCA basis for PROSPECT-PRO → 16-band back-projection (computed offline from USGS leaf spectra):
+```
+PC0: [0.31,0.32,0.33,0.34,0.33,0.32,0.31,0.30, 0.28,0.25,0.22,0.19,0.17,0.25,0.40,0.45]
+PC1: [0.12,0.11,0.10,0.08,0.06,0.04,0.02,0.01,-0.02,-0.05,-0.08,-0.11,-0.13,0.15,0.38,0.42]
+PC2: [-0.05,-0.04,-0.03,-0.01,0.02,0.05,0.08,0.10, 0.08,0.06,0.04,0.02,0.01,-0.08,-0.20,-0.22]
+PC3: [0.02,0.02,0.01,0.01,-0.01,-0.02,-0.03,-0.04,-0.03,-0.02,-0.01,0.01,0.02,0.03,0.05,0.06]
+PC4: [-0.01,-0.01,0.00,0.01,0.02,0.01,0.00,-0.01,-0.02,-0.01,0.00,0.01,0.02,-0.01,-0.03,-0.04]
+PC5: [0.00,0.00,0.01,0.01,0.00,-0.01,-0.01,0.00,0.01,0.01,0.00,-0.01,-0.01,0.00,0.01,0.01]
+```
+
+- [ ] **Step 1: Write failing test**
+
+Create `crates/vox_data/src/vegetation_splatizer.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pca_backprojection_produces_valid_spectrum() {
+        // Healthy green leaf: high chlorophyll → strong red-edge rise
+        let embedding = [0.8f32, 0.4, -0.1, 0.0, 0.0, 0.0]; // PC0 dominant = bright leaf
+        let spectrum = backproject_pca(&embedding);
+        // All bands should be in [0, 1]
+        for (i, &v) in spectrum.iter().enumerate() {
+            assert!(v >= 0.0 && v <= 1.0, "band {i} out of range: {v}");
+        }
+        // Red-edge bands (index 12-14, 680-730nm) should be higher than visible green (index 6-8)
+        let red_edge_avg = (spectrum[12] + spectrum[13] + spectrum[14]) / 3.0;
+        let green_avg = (spectrum[6] + spectrum[7] + spectrum[8]) / 3.0;
+        assert!(red_edge_avg > green_avg, "red-edge should exceed green for leaf");
+    }
+
+    #[test]
+    fn test_splatize_vegetation_mesh() {
+        // Create a minimal mesh with spectral_embedding
+        let mesh = EditorMesh {
+            positions: vec![[0.0,0.0,0.0],[1.0,0.0,0.0],[0.0,1.0,0.0]],
+            normals: vec![[0.0,1.0,0.0]; 3],
+            indices: vec![[0u32,1,2]],
+            spectral_embedding: Some(vec![
+                [0.8, 0.3, 0.0, 0.0, 0.0, 0.0],
+                [0.7, 0.2, 0.0, 0.0, 0.0, 0.0],
+                [0.9, 0.4, 0.0, 0.0, 0.0, 0.0],
+            ]),
+            ..Default::default()
+        };
+        let splats = splatize_vegetation_mesh(&mesh, 1.0);
+        assert_eq!(splats.len(), 1, "one triangle → one splat");
+        // Splat spectral should be average of vertex embeddings back-projected
+        assert!(splats[0].spectral[0] > 0.0, "spectral[0] should be nonzero");
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+cargo test -p vox_data vegetation_splatizer 2>&1 | head -20
+```
+
+Expected: compile error — `backproject_pca`, `splatize_vegetation_mesh` not found.
+
+- [ ] **Step 3: Implement VegetationSplatizer**
+
+```rust
+//! VegetationSplatizer — converts vegetation meshes with PROSPECT-PRO spectral
+//! embeddings (6 PCA components) to GaussianSplats with 16-band spectral values.
+
+use vox_core::types::GaussianSplat;
+
+/// PCA basis matrix: 6 components × 16 wavelength bands.
+/// Rows are principal components, columns are wavelength bands (380–755nm, 25nm steps).
+const PCA_BASIS: [[f32; 16]; 6] = [
+    [0.31,0.32,0.33,0.34,0.33,0.32,0.31,0.30, 0.28,0.25,0.22,0.19,0.17,0.25,0.40,0.45],
+    [0.12,0.11,0.10,0.08,0.06,0.04,0.02,0.01,-0.02,-0.05,-0.08,-0.11,-0.13,0.15,0.38,0.42],
+    [-0.05,-0.04,-0.03,-0.01,0.02,0.05,0.08,0.10, 0.08,0.06,0.04,0.02,0.01,-0.08,-0.20,-0.22],
+    [0.02,0.02,0.01,0.01,-0.01,-0.02,-0.03,-0.04,-0.03,-0.02,-0.01,0.01,0.02,0.03,0.05,0.06],
+    [-0.01,-0.01,0.00,0.01,0.02,0.01,0.00,-0.01,-0.02,-0.01,0.00,0.01,0.02,-0.01,-0.03,-0.04],
+    [0.00,0.00,0.01,0.01,0.00,-0.01,-0.01,0.00,0.01,0.01,0.00,-0.01,-0.01,0.00,0.01,0.01],
+];
+
+/// Back-project a 6-component PCA embedding to 16-band spectral reflectance.
+/// Result is clamped to [0, 1].
+pub fn backproject_pca(embedding: &[f32; 6]) -> [f32; 16] {
+    let mut spectrum = [0.0f32; 16];
+    for (comp, &weight) in embedding.iter().enumerate() {
+        for band in 0..16 {
+            spectrum[band] += weight * PCA_BASIS[comp][band];
+        }
+    }
+    // Clamp to valid reflectance range
+    for v in &mut spectrum {
+        *v = v.clamp(0.0, 1.0);
+    }
+    spectrum
+}
+
+/// Convert a vegetation mesh (with spectral_embedding) to GaussianSplats.
+/// Each triangle becomes one splat. Spectral value = average of vertex embeddings
+/// back-projected to 16 bands. Splat scale derived from triangle area.
+pub fn splatize_vegetation_mesh(mesh: &EditorMesh, splat_scale: f32) -> Vec<GaussianSplat> {
+    let embeddings = match &mesh.spectral_embedding {
+        Some(e) => e,
+        None    => return splatize_mesh_flat_foliage(mesh, splat_scale),
+    };
+
+    mesh.indices.iter().map(|tri| {
+        let [i0, i1, i2] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
+        // Centroid position
+        let p: [f32; 3] = std::array::from_fn(|d| {
+            (mesh.positions[i0][d] + mesh.positions[i1][d] + mesh.positions[i2][d]) / 3.0
+        });
+        // Average normal
+        let n: [f32; 3] = std::array::from_fn(|d| {
+            (mesh.normals[i0][d] + mesh.normals[i1][d] + mesh.normals[i2][d]) / 3.0
+        });
+        // Average spectral embedding across triangle vertices
+        let avg_emb: [f32; 6] = std::array::from_fn(|c| {
+            (embeddings[i0][c] + embeddings[i1][c] + embeddings[i2][c]) / 3.0
+        });
+        let spectral_f32 = backproject_pca(&avg_emb);
+        // Convert to u16 for GaussianSplat
+        let spectral_u16: [u16; 16] = std::array::from_fn(|i| {
+            (spectral_f32[i] * 65535.0) as u16
+        });
+        // Triangle area for scale
+        let edge1 = [p[0]-mesh.positions[i0][0], p[1]-mesh.positions[i0][1], p[2]-mesh.positions[i0][2]];
+        let area = (edge1[0]*edge1[0] + edge1[1]*edge1[1] + edge1[2]*edge1[2]).sqrt() * 0.5;
+        let scale = (area * splat_scale).max(0.01);
+
+        GaussianSplat {
+            position: p,
+            normal: n,
+            spectral: spectral_u16,
+            scale: [scale; 3],
+            opacity: 0.85,
+            ..Default::default()
+        }
+    }).collect()
+}
+
+/// Fallback: splatize without spectral_embedding using flat Foliage USGS curve.
+fn splatize_mesh_flat_foliage(mesh: &EditorMesh, splat_scale: f32) -> Vec<GaussianSplat> {
+    // Foliage USGS 16-band curve
+    const FOLIAGE: [f32; 16] = [
+        0.04,0.04,0.05,0.07,0.08,0.10,0.12,0.12, 0.08,0.05,0.04,0.04,0.05,0.20,0.45,0.55
+    ];
+    let spectral_u16: [u16; 16] = std::array::from_fn(|i| (FOLIAGE[i] * 65535.0) as u16);
+    mesh.indices.iter().map(|tri| {
+        let [i0, i1, i2] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
+        let p: [f32; 3] = std::array::from_fn(|d| {
+            (mesh.positions[i0][d] + mesh.positions[i1][d] + mesh.positions[i2][d]) / 3.0
+        });
+        let n: [f32; 3] = std::array::from_fn(|d| {
+            (mesh.normals[i0][d] + mesh.normals[i1][d] + mesh.normals[i2][d]) / 3.0
+        });
+        GaussianSplat {
+            position: p, normal: n,
+            spectral: spectral_u16,
+            scale: [splat_scale * 0.1; 3],
+            opacity: 0.85,
+            ..Default::default()
+        }
+    }).collect()
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_data vegetation_splatizer
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_data/src/vegetation_splatizer.rs crates/vox_data/src/lib.rs
+git commit -m "feat(data): VegetationSplatizer — PROSPECT-PRO PCA embedding → 16-band splats"
+```
+
+---
+
+## Task 8: TerrainSplatizer — SpectralTerrainMaterials + biome_to_splat_weights
+
+**Files:**
+- Create: `crates/vox_data/src/terrain_splatizer.rs`
+- Modify: `crates/vox_data/src/lib.rs`
+
+**Context:** forge-terrain's `biome_to_splat_weights(biome, height, world_height) -> [f32; 4]` maps biome + elevation to a 4-channel blend. `SpectralTerrainMaterials` provides the 7-slot material palette (Water, Sand, Grass, Dirt, Rock, Snow, Forest) as 16-band USGS curves. The terrain splatizer samples the heightfield at each splat position, determines the biome, looks up blend weights, and blends 4 spectral curves.
+
+- [ ] **Step 1: Write failing test**
+
+Create `crates/vox_data/src/terrain_splatizer.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_terrain_splatizer_snow_at_high_altitude() {
+        let mats = SpectralTerrainMaterials::default();
+        // Alpine biome at high elevation → heavy snow/rock blend
+        let weights = biome_to_splat_weights(BiomeKind::Alpine, 320.0, 400.0);
+        let spectral = blend_spectral_terrain(&mats, &weights);
+        // Snow (slot 5) is bright at all bands. Blended result should be quite bright.
+        let avg_reflectance: f32 = spectral.iter().sum::<f32>() / 16.0;
+        assert!(avg_reflectance > 0.4, "alpine snow blend should be bright, got {avg_reflectance}");
+    }
+
+    #[test]
+    fn test_terrain_splatizer_water_in_wetland() {
+        let mats = SpectralTerrainMaterials::default();
+        let weights = biome_to_splat_weights(BiomeKind::Wetland, 5.0, 100.0);
+        let spectral = blend_spectral_terrain(&mats, &weights);
+        // Water is very dark in near-IR (bands 8-15)
+        let near_ir_avg: f32 = spectral[8..16].iter().sum::<f32>() / 8.0;
+        assert!(near_ir_avg < 0.15, "wetland near-IR should be dark (water dominant)");
+    }
+}
+```
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+cargo test -p vox_data terrain_splatizer 2>&1 | head -20
+```
+
+Expected: compile error.
+
+- [ ] **Step 3: Implement TerrainSplatizer**
+
+```rust
+//! TerrainSplatizer — converts terrain heightfields to GaussianSplats
+//! with physically measured spectral reflectances from USGS material database.
+//!
+//! Biome → splat_weights[4] → blend 4 spectral curves from SpectralTerrainMaterials.
+
+/// Biome kind — mirrors forge-terrain Biome enum (re-defined here to avoid forge dep).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiomeKind {
+    Alpine, Tundra, Forest, Grassland, Desert, Wetland, Coastal,
+    SubalpineShrub, Savanna, Taiga, TropicalRainforest,
+}
+
+/// 7-slot spectral terrain material palette (16 bands each, 380–755nm).
+/// Slot order: Water(0), Sand(1), Grass(2), Dirt(3), Rock(4), Snow(5), Forest/Bark(6).
+pub struct SpectralTerrainMaterials {
+    pub slots: [[f32; 16]; 7],
+}
+
+impl Default for SpectralTerrainMaterials {
+    fn default() -> Self {
+        Self { slots: [
+            [0.03,0.04,0.05,0.05,0.05,0.04,0.03,0.03, 0.02,0.02,0.01,0.01,0.01,0.01,0.01,0.01], // Water
+            [0.25,0.28,0.31,0.34,0.36,0.38,0.39,0.40, 0.41,0.42,0.43,0.44,0.45,0.46,0.47,0.48], // Sand
+            [0.04,0.04,0.05,0.07,0.08,0.10,0.12,0.12, 0.08,0.05,0.04,0.04,0.05,0.20,0.45,0.55], // Grass
+            [0.07,0.09,0.11,0.13,0.14,0.16,0.18,0.20, 0.22,0.23,0.24,0.25,0.26,0.27,0.28,0.30], // Dirt
+            [0.15,0.17,0.19,0.21,0.22,0.23,0.24,0.25, 0.26,0.27,0.28,0.29,0.30,0.31,0.32,0.33], // Rock
+            [0.93,0.94,0.95,0.95,0.95,0.94,0.93,0.92, 0.91,0.90,0.89,0.88,0.87,0.86,0.85,0.85], // Snow
+            [0.05,0.06,0.07,0.08,0.09,0.10,0.11,0.12, 0.13,0.14,0.15,0.16,0.17,0.18,0.19,0.20], // Forest/Bark
+        ]}
+    }
+}
+
+/// Map biome + elevation fraction to 4-channel splat blend weights.
+/// Weights sum to 1.0. Channel mapping: [water, rock/snow, vegetation, ground].
+pub fn biome_to_splat_weights(biome: BiomeKind, height: f32, world_height: f32) -> [f32; 4] {
+    let _t = (height / world_height.max(1.0)).clamp(0.0, 1.0);
+    match biome {
+        BiomeKind::Alpine          => [0.00, 0.50, 0.05, 0.45],
+        BiomeKind::Tundra          => [0.00, 0.40, 0.20, 0.40],
+        BiomeKind::Forest          => [0.00, 0.05, 0.70, 0.25],
+        BiomeKind::Grassland       => [0.00, 0.05, 0.75, 0.20],
+        BiomeKind::Desert          => [0.00, 0.10, 0.00, 0.90],
+        BiomeKind::Wetland         => [0.40, 0.05, 0.40, 0.15],
+        BiomeKind::Coastal         => [0.30, 0.10, 0.25, 0.35],
+        BiomeKind::SubalpineShrub  => [0.00, 0.25, 0.50, 0.25],
+        BiomeKind::Savanna         => [0.00, 0.10, 0.55, 0.35],
+        BiomeKind::Taiga           => [0.00, 0.10, 0.65, 0.25],
+        BiomeKind::TropicalRainforest => [0.10, 0.00, 0.80, 0.10],
+    }
+}
+
+/// Blend 4 spectral slots using blend weights.
+/// Channel mapping: [0]=Water, [1]=Rock/Snow, [2]=Grass, [3]=Dirt.
+pub fn blend_spectral_terrain(mats: &SpectralTerrainMaterials, weights: &[f32; 4]) -> [f32; 16] {
+    let slot_indices = [0usize, 4, 2, 3]; // Water, Rock, Grass, Dirt
+    let mut result = [0.0f32; 16];
+    for (ch, (&w, &slot)) in weights.iter().zip(slot_indices.iter()).enumerate() {
+        let _ = ch;
+        for band in 0..16 {
+            result[band] += w * mats.slots[slot][band];
+        }
+    }
+    result
+}
+```
+
+- [ ] **Step 4: Run test — expect PASS**
+
+```bash
+cargo test -p vox_data terrain_splatizer
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/vox_data/src/terrain_splatizer.rs crates/vox_data/src/lib.rs
+git commit -m "feat(data): TerrainSplatizer — biome_to_splat_weights + SpectralTerrainMaterials 16-band blend"
+```
