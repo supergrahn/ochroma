@@ -281,6 +281,15 @@ struct EngineApp {
 
     // Biome-driven ambient soundscape mix (blended each frame toward target biome)
     ambient_mix: vox_audio::BiomeAmbientMix,
+
+    // Lua scripting runtime (mlua Lua 5.4)
+    lua: vox_script::LuaRuntime,
+    // Script watcher for hot-reload
+    script_watcher: Option<vox_script::ScriptWatcher>,
+    // Shared spectral state for Lua spectral.* bindings
+    spectral_script_state: std::sync::Arc<std::sync::Mutex<vox_script::SpectralState>>,
+    // Shared entity store for Lua entity.* bindings
+    entity_script_store: std::sync::Arc<std::sync::Mutex<vox_script::EntityStore>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +398,13 @@ impl EngineApp {
         );
         println!("[ochroma] Character controller initialised at (0, 0.9, 0)");
 
+        let spectral_script_state = std::sync::Arc::new(std::sync::Mutex::new(
+            vox_script::SpectralState::new()
+        ));
+        let entity_script_store = std::sync::Arc::new(std::sync::Mutex::new(
+            vox_script::EntityStore::new()
+        ));
+
         Self {
             engine,
             window: None,
@@ -479,6 +495,24 @@ impl EngineApp {
             terrain_volume: None,
             spectral_viewport_mode: vox_render::spectral_viewport::SpectralViewportMode::default(),
             ambient_mix: vox_audio::BiomeAmbientMix::for_biome(vox_audio::BiomeKind::Grassland),
+            lua: {
+                let mut rt = vox_script::LuaRuntime::new()
+                    .expect("Lua 5.4 init failed");
+                vox_script::register_spectral_bindings(rt.lua(), spectral_script_state.clone())
+                    .expect("spectral bindings");
+                vox_script::register_entity_bindings(rt.lua(), entity_script_store.clone())
+                    .expect("entity bindings");
+                let game_script = std::path::Path::new("assets/scripts/game.lua");
+                if game_script.exists() {
+                    rt.exec_file(game_script).expect("game.lua load failed");
+                }
+                rt
+            },
+            script_watcher: vox_script::ScriptWatcher::new(
+                std::path::Path::new("assets/scripts")
+            ).ok(),
+            spectral_script_state,
+            entity_script_store,
         }
     }
 
@@ -1831,6 +1865,22 @@ impl EngineApp {
                     }
                 }
             }
+        }
+
+        // 4c-lua. Per-frame Lua update + spectral threshold callbacks
+        {
+            if let Some(watcher) = &self.script_watcher {
+                for path in watcher.drain() {
+                    self.lua.pending_reload.push(path);
+                }
+            }
+            if let Err(e) = self.lua.call_update(dt) {
+                eprintln!("[ochroma] Lua update error: {}", e);
+            }
+            vox_script::tick_thresholds(
+                self.lua.lua(),
+                &self.spectral_script_state,
+            ).ok();
         }
 
         // 4d. Sync entity positions to splats — when scripts move entities,
