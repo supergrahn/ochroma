@@ -2,6 +2,36 @@ use glam::Vec2;
 use std::collections::{HashMap, BinaryHeap};
 use std::cmp::Ordering;
 
+#[derive(Default, Clone)]
+struct NavMeshGrid {
+    cell_size: f32,
+    cells: HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl NavMeshGrid {
+    fn new(cell_size: f32) -> Self {
+        Self { cell_size, cells: HashMap::new() }
+    }
+    fn cell(&self, pos: Vec2) -> (i32, i32) {
+        ((pos.x / self.cell_size).floor() as i32, (pos.y / self.cell_size).floor() as i32)
+    }
+    fn insert(&mut self, id: u32, pos: Vec2) {
+        self.cells.entry(self.cell(pos)).or_default().push(id);
+    }
+    fn candidates(&self, pos: Vec2) -> Vec<u32> {
+        let (cx, cz) = self.cell(pos);
+        let mut out = Vec::new();
+        for dx in -1..=1i32 {
+            for dz in -1..=1i32 {
+                if let Some(ids) = self.cells.get(&(cx + dx, cz + dz)) {
+                    out.extend_from_slice(ids);
+                }
+            }
+        }
+        out
+    }
+}
+
 /// A navigation mesh node.
 #[derive(Debug, Clone)]
 pub struct NavNode {
@@ -23,6 +53,7 @@ pub struct NavMesh {
     pub nodes: Vec<NavNode>,
     pub edges: Vec<NavEdge>,
     adjacency: HashMap<u32, Vec<(u32, f32)>>, // node_id -> [(neighbor_id, cost)]
+    grid: NavMeshGrid,
 }
 
 impl Default for NavMesh {
@@ -33,11 +64,20 @@ impl Default for NavMesh {
 
 impl NavMesh {
     pub fn new() -> Self {
-        Self { nodes: Vec::new(), edges: Vec::new(), adjacency: HashMap::new() }
+        Self { nodes: Vec::new(), edges: Vec::new(), adjacency: HashMap::new(), grid: NavMeshGrid::new(5.0) }
+    }
+
+    /// Rebuild the spatial grid index from current nodes. Must be called after bulk node insertion.
+    pub fn rebuild_grid(&mut self) {
+        self.grid = NavMeshGrid::new(5.0);
+        for node in &self.nodes {
+            self.grid.insert(node.id, node.position);
+        }
     }
 
     pub fn add_node(&mut self, id: u32, position: Vec2, walkable: bool) {
         self.nodes.push(NavNode { id, position, walkable });
+        self.grid.insert(id, position);
     }
 
     pub fn add_edge(&mut self, from: u32, to: u32) {
@@ -105,6 +145,22 @@ impl NavMesh {
 
     /// Find the nearest walkable node to a world position.
     pub fn nearest_node(&self, position: Vec2) -> Option<u32> {
+        let candidates = self.grid.candidates(position);
+        let walkable_candidates: Vec<u32> = candidates.into_iter()
+            .filter(|&id| {
+                self.nodes.iter().find(|n| n.id == id).map(|n| n.walkable).unwrap_or(false)
+            })
+            .collect();
+        if !walkable_candidates.is_empty() {
+            return walkable_candidates.into_iter().min_by(|&a, &b| {
+                let pos_a = self.nodes.iter().find(|n| n.id == a).unwrap().position;
+                let pos_b = self.nodes.iter().find(|n| n.id == b).unwrap().position;
+                let da = pos_a.distance(position);
+                let db = pos_b.distance(position);
+                da.partial_cmp(&db).unwrap_or(Ordering::Equal)
+            });
+        }
+        // Fallback: linear scan (e.g. if grid cell is empty but nodes exist farther away)
         self.nodes.iter()
             .filter(|n| n.walkable)
             .min_by(|a, b| {
