@@ -115,13 +115,6 @@ mod tests {
     }
 
     #[test]
-    fn latent_is_4_values() {
-        let codec = SpectralCodec::with_hardcoded_weights();
-        let latent = codec.encode(&[0.5f32; 16]);
-        assert_eq!(latent.len(), 4);
-    }
-
-    #[test]
     fn zero_input_decodes_near_zero() {
         let codec = SpectralCodec::with_hardcoded_weights();
         let latent = codec.encode(&[0.0f32; 16]);

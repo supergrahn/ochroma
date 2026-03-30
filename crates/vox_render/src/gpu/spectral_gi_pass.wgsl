@@ -1,6 +1,6 @@
 // Spectral GI compute pass — gathers radiance from nearby emissive splats.
 // GpuSplatEntry layout: position(vec3) + _pad(f32) + radiance([f32;16]) + reflectance([f32;16])
-// = 4 + 1 + 16 + 16 = 37 floats, but padded to 36 → 144 bytes in Rust repr(C).
+// = position(3) + _pad0(1) + radiance(16) + reflectance(16) = 36 floats × 4 = 144 bytes.
 
 struct GpuSplatEntry {
     position: vec3<f32>,

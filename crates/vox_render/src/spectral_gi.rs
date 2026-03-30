@@ -15,6 +15,12 @@ pub struct SplatGiEntry {
     pub reflectance: [f32; 16],
 }
 
+/// Accumulated radiance probe — result of a `gather_radiance` call stored for inspection or GI baking.
+#[derive(Clone, Debug)]
+pub struct GiProbe {
+    pub bands: [f32; 16],
+}
+
 pub fn gather_radiance(
     receiver_pos: [f32; 3],
     emitters: &[SplatGiEntry],
@@ -38,9 +44,12 @@ pub fn gather_radiance(
     radiance
 }
 
+/// Blend `incoming` into `cache` using EMA.
+/// `alpha` = retain-old weight: alpha=0.9 means 90% old value, 10% new.
+/// This matches the `propagate` method convention in `SpectralRadianceCache`.
 pub fn temporal_blend(cache: &mut [f32; 16], incoming: &[f32; 16], alpha: f32) {
     for b in 0..16 {
-        cache[b] = cache[b] * (1.0 - alpha) + incoming[b] * alpha;
+        cache[b] = cache[b] * alpha + incoming[b] * (1.0 - alpha);
     }
 }
 
@@ -360,7 +369,13 @@ mod tests {
         let emitter = make_emissive_splat([0.0, 0.0, 0.0], 3, 1.0);
         let receiver_pos = [0.5, 0.0, 0.0];
         let radiance = gather_radiance(receiver_pos, &[emitter], 2.0);
-        assert!(radiance[3] > 0.0, "band 3 should receive radiance from nearby emitter");
+        // emitter at 0m, receiver at 0.5m, emissive[3]=1.0, reflectance=0.5
+        // expected: 1.0 * 0.5 / (0.5^2) = 2.0
+        assert!(
+            radiance[3] > 1.0,
+            "band 3 radiance should be > 1.0 for nearby emitter at 0.5m (got {})",
+            radiance[3]
+        );
     }
 
     #[test]
@@ -437,5 +452,24 @@ mod tests {
     #[test]
     fn gi_params_size() {
         assert_eq!(std::mem::size_of::<GiParamsUniform>(), 16);
+    }
+
+    #[test]
+    fn spectral_gi_bake_produces_nonzero_radiance() {
+        // Emitter at origin with band 3 = 1.0 (visible green), receiver at 0.5m
+        let emitter = SplatGiEntry {
+            position: [0.0, 0.0, 0.0],
+            emissive: { let mut e = [0.0f32; 16]; e[3] = 1.0; e },
+            reflectance: [0.5; 16],
+        };
+        let probe_pos = [0.5, 0.0, 0.0];
+        let radiance = gather_radiance(probe_pos, &[emitter], 2.0);
+        let probe = GiProbe { bands: radiance };
+        // expected: 1.0 * 0.5 / (0.5^2) = 2.0
+        assert!(
+            probe.bands[3] > 0.001,
+            "GI bake must produce non-zero indirect radiance in band 3, got {}",
+            probe.bands[3]
+        );
     }
 }

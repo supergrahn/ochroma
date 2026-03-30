@@ -207,6 +207,11 @@ mod tests {
         let profile = SpectralMaterialProfile::from_three_photos([&gray, &gray, &gray], lights);
         let min = profile.reflectance.iter().copied().fold(f32::MAX, f32::min);
         let max = profile.reflectance.iter().copied().fold(f32::MIN, f32::max);
+        // Three-illuminant case: illuminant variation (D65/tungsten/cool-LED) causes up to ~0.4
+        // band spread for identical grey RGB inputs — each light has a different per-band SPD,
+        // so the reconstructed reflectance legitimately varies per band. This is expected
+        // calibration variance, not a failure of the flatness requirement (which applies only
+        // to `from_single_image` with a neutral illuminant — see `neutral_grey_produces_flat_reflectance`).
         assert!(
             max - min < 0.4,
             "gray surface should have relatively flat reflectance, range was {:.3}",

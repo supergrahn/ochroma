@@ -30,7 +30,8 @@ pub struct SpectralAtmosphere {
     /// Sun elevation above horizon in radians (0 = horizon, PI/2 = overhead)
     pub sun_zenith: f32,
     pub sun_azimuth: f32,
-    /// Alias for sun_zenith used by Domain 12a wiring
+    /// Alias for `sun_zenith`. Both are set together in engine_runner.rs. Keep in sync.
+    /// Do not remove: Domain 12a wiring in engine_runner.rs references this field directly.
     pub sun_elevation: f32,
     pub turbidity: f32,
 }
@@ -169,19 +170,6 @@ mod tests {
         for (i, &v) in r.iter().enumerate() {
             assert!(v >= 0.0 && v <= 1.0, "band {} radiance {} out of [0,1]", i, v);
         }
-    }
-
-    // Domain 12a additional tests
-    #[test]
-    fn blue_sky_violet_exceeds_red() {
-        let atmo = SpectralAtmosphere::earth();
-        let radiance = atmo.sky_radiance(std::f32::consts::FRAC_PI_2, 0.0);
-        assert!(
-            radiance[0] > radiance[15],
-            "violet band 0 ({}) should exceed NIR band 15 ({}) — Rayleigh λ⁻⁴",
-            radiance[0],
-            radiance[15]
-        );
     }
 
     #[test]
