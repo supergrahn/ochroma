@@ -96,6 +96,106 @@ impl SpectralMaterialGraph {
     }
 }
 
+/// Wrapper holding a root node that can be compiled to a naga::Module.
+pub struct MaterialGraph {
+    pub root: MaterialNode,
+}
+
+impl MaterialGraph {
+    pub fn new(root: MaterialNode) -> Self {
+        Self { root }
+    }
+
+    /// Compile the graph to a validated naga::Module.
+    ///
+    /// The module contains a single function `evaluate_material() -> array<f32, 16>`.
+    /// Callers pass the module to `wgpu::Device::create_shader_module_from_naga()`.
+    pub fn compile(&self) -> Result<naga::Module, naga::WithSpan<naga::valid::ValidationError>> {
+        use crate::naga_builder::NagaBuilder;
+        let module = self.build_module();
+        NagaBuilder::validate(&module)?;
+        Ok(module)
+    }
+
+    fn build_module(&self) -> naga::Module {
+        use naga::{Function, FunctionResult, Module, Span, Statement};
+        use crate::naga_builder::NagaBuilder;
+
+        let mut module = Module::default();
+        let arr_ty = NagaBuilder::array_f32_8(&mut module.types);
+
+        let mut func = Function::default();
+        func.name = Some("evaluate_material".into());
+        func.result = Some(FunctionResult { ty: arr_ty, binding: None });
+
+        // CPU-evaluate the node tree to produce the constant SPD for the shader.
+        let spd = self.evaluate_cpu();
+        let (expr, compose_start) = NagaBuilder::emit_constant_spd(
+            &spd.0,
+            &mut func.expressions,
+            &mut module.types,
+        );
+
+        let emit_range = func.expressions.range_from(compose_start);
+        func.body.push(Statement::Emit(emit_range), Span::UNDEFINED);
+        func.body.push(Statement::Return { value: Some(expr) }, Span::UNDEFINED);
+
+        module.functions.append(func, Span::UNDEFINED);
+        module
+    }
+
+    /// CPU evaluation used to seed the naga constant SPD.
+    fn evaluate_cpu(&self) -> vox_core::spectral::SpectralBands {
+        self.root.evaluate()
+    }
+}
+
+#[cfg(test)]
+mod material_graph_tests {
+    use super::*;
+
+    #[test]
+    fn compile_constant_graph_produces_valid_module() {
+        let graph = MaterialGraph::new(MaterialNode::Constant {
+            spd: [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2],
+        });
+        let result = graph.compile();
+        assert!(result.is_ok(), "compile() returned error: {:?}", result.err());
+    }
+
+    #[test]
+    fn compile_multiply_graph_validates() {
+        let graph = MaterialGraph::new(MaterialNode::Multiply {
+            a: Box::new(MaterialNode::Constant { spd: [0.5; 16] }),
+            b: Box::new(MaterialNode::Constant { spd: [0.8; 16] }),
+        });
+        assert!(graph.compile().is_ok());
+    }
+
+    #[test]
+    fn compile_mix_graph_validates() {
+        let graph = MaterialGraph::new(MaterialNode::Mix {
+            a: Box::new(MaterialNode::Constant { spd: [0.2; 16] }),
+            b: Box::new(MaterialNode::Constant { spd: [0.9; 16] }),
+            factor: 0.3,
+        });
+        assert!(graph.compile().is_ok());
+    }
+
+    #[test]
+    fn compiled_module_has_correct_function_name() {
+        let graph = MaterialGraph::new(MaterialNode::Scale {
+            input: Box::new(MaterialNode::Constant { spd: [1.0; 16] }),
+            factor: 0.5,
+        });
+        let module = graph.compile().unwrap();
+        let names: Vec<_> = module.functions.iter()
+            .filter_map(|(_, f)| f.name.as_deref())
+            .collect();
+        assert!(names.contains(&"evaluate_material"));
+    }
+}
+
 /// Serialize a material graph to TOML for storage.
 pub fn serialize_material(mat: &SpectralMaterialGraph) -> Result<String, String> {
     toml::to_string_pretty(mat).map_err(|e| e.to_string())
