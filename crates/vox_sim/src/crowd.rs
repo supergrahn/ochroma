@@ -9,6 +9,8 @@ pub struct CrowdAgent {
     pub target: Vec3,
     pub speed: f32,
     pub radius: f32,
+    pub path: Vec<[f32; 3]>,
+    pub path_index: usize,
 }
 
 /// Manages a crowd of agents with simple steering and avoidance.
@@ -36,6 +38,8 @@ impl CrowdSimulation {
             target,
             speed,
             radius: 0.5,
+            path: Vec::new(),
+            path_index: 0,
         });
         idx
     }
@@ -47,6 +51,25 @@ impl CrowdSimulation {
     /// Advance the simulation by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
         let count = self.agents.len();
+
+        // Advance waypoints before computing forces
+        for agent in self.agents.iter_mut() {
+            const WAYPOINT_ARRIVAL_DIST: f32 = 0.4;
+            if !agent.path.is_empty() && agent.path_index < agent.path.len() {
+                let wp = agent.path[agent.path_index];
+                let wp_pos = Vec3::new(wp[0], wp[1], wp[2]);
+                if (agent.position - wp_pos).length() < WAYPOINT_ARRIVAL_DIST {
+                    agent.path_index += 1;
+                    if agent.path_index < agent.path.len() {
+                        let next = agent.path[agent.path_index];
+                        agent.target = Vec3::new(next[0], next[1], next[2]);
+                    }
+                } else {
+                    agent.target = wp_pos;
+                }
+            }
+        }
+
         // Compute desired velocities and avoidance forces
         let mut forces: Vec<Vec3> = Vec::with_capacity(count);
 
@@ -91,6 +114,41 @@ impl CrowdSimulation {
                 agent.velocity = agent.velocity.normalize() * speed_limit;
             }
             agent.position += agent.velocity * dt;
+        }
+    }
+}
+
+impl CrowdAgent {
+    pub fn set_navmesh_destination(&mut self, dest: Vec3, navmesh: &vox_core::navmesh::NavMesh) {
+        self.path.clear();
+        self.path_index = 0;
+        let start_pos2 = glam::Vec2::new(self.position.x, self.position.z);
+        let goal_pos2 = glam::Vec2::new(dest.x, dest.z);
+        let Some(start_id) = navmesh.nearest_node(start_pos2) else {
+            self.target = dest;
+            return;
+        };
+        let Some(goal_id) = navmesh.nearest_node(goal_pos2) else {
+            self.target = dest;
+            return;
+        };
+        if let Some(node_ids) = navmesh.find_path(start_id, goal_id) {
+            // Convert node IDs to world positions ([f32; 3])
+            // NavNode.position is Vec2 (x, z in world space); y is preserved from agent.position
+            let agent_y = self.position.y;
+            self.path = node_ids
+                .iter()
+                .filter_map(|&id| {
+                    navmesh.nodes.iter().find(|n| n.id == id).map(|n| {
+                        [n.position.x, agent_y, n.position.y]
+                    })
+                })
+                .collect();
+            if let Some(wp) = self.path.first() {
+                self.target = Vec3::new(wp[0], wp[1], wp[2]);
+            }
+        } else {
+            self.target = dest;
         }
     }
 }
