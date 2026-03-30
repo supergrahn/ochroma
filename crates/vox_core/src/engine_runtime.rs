@@ -263,7 +263,7 @@ fn process_script_commands_system(world: &mut World) {
                 }
                 ScriptCommand::SetRotation { rotation } => {
                     if let Some(mut transform) = world.get_mut::<TransformComponent>(entity) {
-                        transform.rotation = glam::Quat::from_xyzw(
+                        transform.rotation = Quat::from_xyzw(
                             rotation[0], rotation[1], rotation[2], rotation[3],
                         );
                     }
@@ -274,7 +274,7 @@ fn process_script_commands_system(world: &mut World) {
                         NameComponent("Spawned".to_string()),
                         TransformComponent {
                             position: Vec3::from_array(position),
-                            rotation: glam::Quat::from_xyzw(
+                            rotation: Quat::from_xyzw(
                                 rotation[0], rotation[1], rotation[2], rotation[3],
                             ),
                             scale: Vec3::from_array(scale),
