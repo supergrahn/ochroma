@@ -136,7 +136,7 @@ impl PbfFluidSim {
                     grad_sq += (g * dx) * (g * dx) + (g * dy) * (g * dy) + (g * dz) * (g * dz);
                 }
             }
-            self.particles[i].lambda = -ci / (grad_sq / rho0 + eps);
+            self.particles[i].lambda = -ci / (grad_sq / (rho0 * rho0) + eps);
         }
 
         let mut deltas = vec![[0.0f32; 3]; n];

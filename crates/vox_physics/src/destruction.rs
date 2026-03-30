@@ -223,8 +223,8 @@ impl SplatAssembly {
 /// Spectral shift applied to splats on fracture (burn/crumble effect).
 /// Reduces high-frequency bands (0-1), slightly increases mid bands (3-4).
 pub fn spectral_shift_on_break(splat: &mut GaussianSplat) {
-    // band 0 and 1: reduce by 40% (loss of UV/blue emission — char/ash)
-    for b in 0..2 {
+    // bands 0-2 (UV/violet): reduce by 40% (loss of UV/blue emission — char/ash; glass cracking)
+    for b in 0..3 {
         let val = half::f16::from_bits(splat.spectral()[b]).to_f32();
         splat.spectral_mut()[b] = half::f16::from_f32(val * 0.6).to_bits();
     }
