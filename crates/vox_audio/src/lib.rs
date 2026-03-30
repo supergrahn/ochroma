@@ -1,3 +1,5 @@
+pub mod biome_soundscape;
+pub use biome_soundscape::{BiomeKind, BiomeAmbientMix};
 pub mod acoustic_raytracer;
 pub mod av_sync;
 pub mod audio_graph;
@@ -293,6 +295,30 @@ impl Default for AudioEngine {
     fn default() -> Self {
         Self::new(64)
     }
+}
+
+// ---------------------------------------------------------------------------
+// synthesize_and_play — physics-triggered impact sound dispatch
+// ---------------------------------------------------------------------------
+
+/// Synthesise an impact sound from a splat's spectral material and queue it
+/// for CPAL playback, applying a reverb tail derived from nearby splat reflectance.
+///
+/// Called by the physics layer on `CollisionEvent` or `FractureEvent`.
+pub fn synthesize_and_play(
+    spectral: &[u16; 16],
+    impulse: f32,
+    nearby_splats: &[[u16; 16]],
+    sender: &std::sync::mpsc::Sender<AudioCommand>,
+) {
+    let dry = crate::spectral_synth2::SpectralSynth::strike(spectral, impulse);
+    let reverb = crate::spectral_reverb::SpectralReverb::from_splat_reflectance(nearby_splats);
+    let wet    = 0.25_f32;
+    let output = crate::fundsp_graph::apply_reverb_send(&dry, wet, reverb.tail_length_secs.min(2.0));
+    let _ = sender.send(AudioCommand::PlaySynth {
+        samples: output,
+        volume: impulse.clamp(0.01, 1.0),
+    });
 }
 
 // ---------------------------------------------------------------------------
