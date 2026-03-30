@@ -21,7 +21,10 @@ members = [
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-license = "MIT"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ochroma-engine/ochroma"
+homepage = "https://ochroma.dev"
+authors = ["Ochroma Contributors"]
 
 [workspace.dependencies]
 glam = { version = "0.29", features = ["serde"] }
