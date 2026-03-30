@@ -381,6 +381,42 @@ mod tests {
     }
 
     #[test]
+    fn ply_import_produces_nonzero_spectral() {
+        // Binary PLY with direct uchar vertex colours (red and green vertices)
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_spectral_ply.ply");
+
+        let header = b"ply\nformat binary_little_endian 1.0\nelement vertex 2\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n";
+        let mut data = header.to_vec();
+        // Red vertex: x=0, y=0, z=0
+        for v in &0.0f32.to_le_bytes() { data.push(*v); }
+        for v in &0.0f32.to_le_bytes() { data.push(*v); }
+        for v in &0.0f32.to_le_bytes() { data.push(*v); }
+        data.push(255u8); data.push(0u8); data.push(0u8);
+        // Green vertex: x=1, y=0, z=0
+        for v in &1.0f32.to_le_bytes() { data.push(*v); }
+        for v in &0.0f32.to_le_bytes() { data.push(*v); }
+        for v in &0.0f32.to_le_bytes() { data.push(*v); }
+        data.push(0u8); data.push(255u8); data.push(0u8);
+
+        std::fs::write(&path, &data).unwrap();
+        let result = import_asset(&path, &ImportSettings::default()).unwrap();
+
+        for splat in &result.splats {
+            let any_nonzero = splat.spectral().iter().any(|&v| v != 0);
+            assert!(any_nonzero, "spectral must be populated from vertex colour");
+        }
+        // Red vertex (255,0,0) should have higher high-band energy than low-band
+        let red_splat = &result.splats[0];
+        let low: f32 = (0..4).map(|b| red_splat.spectral_f32(b)).sum::<f32>() / 4.0;
+        let high: f32 = (8..16).map(|b| red_splat.spectral_f32(b)).sum::<f32>() / 8.0;
+        println!("red vertex should have higher spectral energy in bands 8-15: high {:.3} vs low {:.3}", high, low);
+        assert!(high > low, "red vertex: high {:.3} vs low {:.3}", high, low);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn test_default_settings_sensible() {
         let settings = ImportSettings::default();
         assert!(settings.generate_collision);
