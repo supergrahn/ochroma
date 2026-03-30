@@ -329,6 +329,136 @@ impl FluidSimulation {
 }
 
 // ---------------------------------------------------------------------------
+// SpectralFluid — PBF-backed fluid with per-particle spectral[16]
+// ---------------------------------------------------------------------------
+
+use crate::pbf::{PbfFluidSim, BLOOD_SPECTRAL, LAVA_SPECTRAL, WATER_SPECTRAL};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SpectralFluidKind {
+    Water,
+    Blood,
+    Lava,
+    Custom([f32; 16]),
+}
+
+pub struct SpectralFluid {
+    pub kind: SpectralFluidKind,
+    pub sim: PbfFluidSim,
+}
+
+impl SpectralFluid {
+    pub fn new(kind: SpectralFluidKind) -> Self {
+        Self { kind, sim: PbfFluidSim::new(1000.0, 0.1) }
+    }
+
+    pub fn spectral_for_kind(kind: SpectralFluidKind) -> [f32; 16] {
+        match kind {
+            SpectralFluidKind::Water => WATER_SPECTRAL,
+            SpectralFluidKind::Blood => BLOOD_SPECTRAL,
+            SpectralFluidKind::Lava => LAVA_SPECTRAL,
+            SpectralFluidKind::Custom(s) => s,
+        }
+    }
+
+    /// Spawn a particle with the kind's canonical spectral profile.
+    pub fn spawn(&mut self, pos: [f32; 3], vel: [f32; 3]) {
+        let spectral = Self::spectral_for_kind(self.kind);
+        self.sim.spawn(pos, vel, spectral);
+    }
+
+    /// Spawn a particle whose spectral profile is linearly mixed between
+    /// the kind's profile and `mix` at weight `mix_weight ∈ [0,1]`.
+    pub fn spawn_mixed(&mut self, pos: [f32; 3], vel: [f32; 3], mix: &[f32; 16], mix_weight: f32) {
+        let base = Self::spectral_for_kind(self.kind);
+        let w = mix_weight.clamp(0.0, 1.0);
+        let mut spectral = [0.0f32; 16];
+        for b in 0..16 {
+            spectral[b] = base[b] * (1.0 - w) + mix[b] * w;
+        }
+        self.sim.spawn(pos, vel, spectral);
+    }
+
+    /// Advance simulation by one CPU step.
+    pub fn step(&mut self) {
+        self.sim.cpu_step();
+    }
+
+    pub fn particle_count(&self) -> usize {
+        self.sim.particles.len()
+    }
+
+    /// Return the mean spectral radiance across all particles.
+    pub fn mean_spectral(&self) -> [f32; 16] {
+        let n = self.sim.particles.len();
+        if n == 0 {
+            return [0.0f32; 16];
+        }
+        let mut acc = [0.0f32; 16];
+        for p in &self.sim.particles {
+            for b in 0..16 {
+                acc[b] += p.spectral[b];
+            }
+        }
+        for v in &mut acc {
+            *v /= n as f32;
+        }
+        acc
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SpectralFluid tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod spectral_fluid_tests {
+    use super::*;
+
+    #[test]
+    fn water_particles_have_blue_spectral() {
+        let mut fluid = SpectralFluid::new(SpectralFluidKind::Water);
+        fluid.spawn([0.0, 1.0, 0.0], [0.0; 3]);
+        let s = &fluid.sim.particles[0].spectral;
+        assert!(s[1] > s[12], "water band 1 (blue) must exceed band 12 (red)");
+    }
+
+    #[test]
+    fn blood_particles_have_red_spectral() {
+        let mut fluid = SpectralFluid::new(SpectralFluidKind::Blood);
+        fluid.spawn([0.0, 1.0, 0.0], [0.0; 3]);
+        let s = &fluid.sim.particles[0].spectral;
+        assert!(s[9] > s[0], "blood band 9 (red) must exceed band 0 (violet)");
+    }
+
+    #[test]
+    fn mixed_spawn_blends_spectral() {
+        let mut fluid = SpectralFluid::new(SpectralFluidKind::Water);
+        fluid.spawn_mixed([0.0, 1.0, 0.0], [0.0; 3], &LAVA_SPECTRAL, 0.5);
+        let s = fluid.sim.particles[0].spectral;
+        assert!(
+            s[14] > WATER_SPECTRAL[14],
+            "mixed particle band 14 should exceed pure water"
+        );
+        assert!(
+            s[14] < LAVA_SPECTRAL[14],
+            "mixed particle band 14 should not fully reach lava"
+        );
+    }
+
+    #[test]
+    fn step_does_not_zero_spectral() {
+        let mut fluid = SpectralFluid::new(SpectralFluidKind::Water);
+        for i in 0..5 {
+            fluid.spawn([i as f32 * 0.1, 2.0, 0.0], [0.0; 3]);
+        }
+        fluid.step();
+        let mean = fluid.mean_spectral();
+        assert!(mean[2] > 0.0, "water blue band must persist after physics step");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
