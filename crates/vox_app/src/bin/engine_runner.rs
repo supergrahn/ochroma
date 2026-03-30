@@ -323,6 +323,10 @@ struct EngineApp {
 
     // Rapier KCC body for the player character (None until character controller is first enabled)
     character_body: Option<vox_physics::character_body::CharacterBody>,
+
+    // Game UI widgets (Manor Lords style resource panels, tooltips, buttons)
+    game_widgets: vox_ui::GameWidgets,
+    widget_cmds: Vec<vox_ui::WidgetCmd>,
 }
 
 // ---------------------------------------------------------------------------
@@ -551,6 +555,17 @@ impl EngineApp {
             quic_transport: None,
             replication_states: Vec::new(),
             character_body: None,
+            game_widgets: vox_ui::GameWidgets::new(),
+            widget_cmds: vec![
+                vox_ui::WidgetCmd::Panel {
+                    title: "Resources".to_string(),
+                    rows: vec![
+                        vox_ui::ResourceRow { label: "Wood".to_string(), count: 0, icon_color: egui::Color32::from_rgb(139, 90, 43) },
+                        vox_ui::ResourceRow { label: "Stone".to_string(), count: 0, icon_color: egui::Color32::from_rgb(160, 160, 160) },
+                        vox_ui::ResourceRow { label: "Food".to_string(), count: 0, icon_color: egui::Color32::from_rgb(200, 180, 60) },
+                    ],
+                },
+            ],
         }
     }
 
@@ -2238,6 +2253,9 @@ impl EngineApp {
                         self.vfx_editor_ui.show(ctx);
                         self.editor.show_vfx_editor = self.vfx_editor_ui.open;
                     }
+                    // Game widgets (resource panels, tooltips, buttons)
+                    self.game_widgets.render(ctx, &self.widget_cmds);
+
                     // Always show HUD
                     egui::Area::new(egui::Id::new("hud_overlay"))
                         .fixed_pos(egui::pos2(4.0, 4.0))
