@@ -278,6 +278,9 @@ struct EngineApp {
 
     // Spectral viewport mode (Tab cycles bands)
     spectral_viewport_mode: vox_render::spectral_viewport::SpectralViewportMode,
+
+    // Biome-driven ambient soundscape mix (blended each frame toward target biome)
+    ambient_mix: vox_audio::BiomeAmbientMix,
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +478,7 @@ impl EngineApp {
             patrol_agents: Vec::new(),
             terrain_volume: None,
             spectral_viewport_mode: vox_render::spectral_viewport::SpectralViewportMode::default(),
+            ambient_mix: vox_audio::BiomeAmbientMix::for_biome(vox_audio::BiomeKind::Grassland),
         }
     }
 
@@ -1585,6 +1589,13 @@ impl EngineApp {
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
         self.frame_dt = dt;
+
+        // Biome ambient soundscape: blend toward current biome target each frame
+        {
+            let biome = vox_audio::BiomeKind::Grassland; // default; terrain integration in future domain
+            let target = vox_audio::BiomeAmbientMix::for_biome(biome);
+            self.ambient_mix = self.ambient_mix.blend_toward(&target, 0.02);
+        }
 
         // Update patrol agents along navmesh
         if let Some(nm) = &self.navmesh {
