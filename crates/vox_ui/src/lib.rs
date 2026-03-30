@@ -1,6 +1,7 @@
 pub mod canvas;
 pub mod node_graph_widget;
 pub mod theme;
+pub mod vello_ctx;
 
 use serde::{Deserialize, Serialize};
 
