@@ -7,6 +7,9 @@ pub use lua_runtime::{LuaRuntime, LuaError};
 pub mod spectral_bindings;
 pub use spectral_bindings::{SpectralState, register_spectral_bindings, tick_thresholds};
 
+pub mod entity_bindings;
+pub use entity_bindings::{EntityStore, register_entity_bindings};
+
 pub mod mod_manager;
 pub mod visual_script;
 pub mod visual_graph;
