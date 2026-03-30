@@ -855,7 +855,7 @@ pub mod native {
             &mut self,
             splats:  &[GaussianSplat],
             camera:  CameraParams,
-        ) -> Option<Vec<u8>> {
+        ) -> Option<std::sync::Arc<Vec<u8>>> {
             let needs_rebuild = self.scene_dirty || splats.len() != self.last_splat_count;
             let new_scene = if needs_rebuild {
                 let (surfaces, volumes) = convert_splats(splats);
