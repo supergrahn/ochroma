@@ -9,6 +9,8 @@ pub struct CrowdAgent {
     pub target: Vec3,
     pub speed: f32,
     pub radius: f32,
+    pub path: Vec<[f32; 3]>,
+    pub path_index: usize,
 }
 
 /// Manages a crowd of agents with simple steering and avoidance.
@@ -36,6 +38,8 @@ impl CrowdSimulation {
             target,
             speed,
             radius: 0.5,
+            path: Vec::new(),
+            path_index: 0,
         });
         idx
     }
@@ -46,51 +50,101 @@ impl CrowdSimulation {
 
     /// Advance the simulation by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
-        let count = self.agents.len();
-        // Compute desired velocities and avoidance forces
-        let mut forces: Vec<Vec3> = Vec::with_capacity(count);
+        let n = self.agents.len();
+        if n == 0 { return; }
 
-        for i in 0..count {
+        let mut hash = crate::spatial_hash::SpatialHash::new(self.separation_distance * 1.5);
+        for (i, agent) in self.agents.iter().enumerate() {
+            hash.insert(i, agent.position);
+        }
+
+        let mut deltas: Vec<Vec3> = Vec::with_capacity(n);
+        for i in 0..n {
             let agent = &self.agents[i];
-            let to_target = agent.target - agent.position;
-            let dist_to_target = to_target.length();
 
-            // Desired velocity toward target
+            let effective_target = if !agent.path.is_empty() && agent.path_index < agent.path.len() {
+                let wp = agent.path[agent.path_index];
+                Vec3::new(wp[0], wp[1], wp[2])
+            } else {
+                agent.target
+            };
+
+            let to_target = effective_target - agent.position;
+            let dist_to_target = to_target.length();
             let desired = if dist_to_target > 0.01 {
-                (to_target / dist_to_target) * agent.speed
+                to_target / dist_to_target * agent.speed
             } else {
                 Vec3::ZERO
             };
 
-            // Avoidance force from nearby agents
             let mut avoidance = Vec3::ZERO;
-            for j in 0..count {
-                if i == j {
-                    continue;
-                }
+            let neighbours = hash.neighbours(agent.position, self.separation_distance);
+            for &j in &neighbours {
+                if j == i { continue; }
                 let other = &self.agents[j];
                 let diff = agent.position - other.position;
                 let dist = diff.length();
-                let min_sep = self.separation_distance;
-                if dist < min_sep && dist > 0.001 {
-                    // Repulsion inversely proportional to distance
-                    let strength = self.avoidance_weight * (min_sep - dist) / min_sep;
+                if dist < self.separation_distance && dist > 1e-4 {
+                    let strength = self.avoidance_weight * (self.separation_distance - dist) / self.separation_distance;
                     avoidance += (diff / dist) * strength;
                 }
             }
 
-            forces.push(desired + avoidance);
+            let velocity = (desired + avoidance).clamp_length_max(agent.speed * 1.5);
+            deltas.push(velocity);
         }
 
-        // Apply forces
-        for (i, agent) in self.agents.iter_mut().enumerate() {
-            let force = forces[i];
-            let speed_limit = agent.speed * 1.5; // allow slight overshoot for avoidance
-            agent.velocity = force;
-            if agent.velocity.length() > speed_limit {
-                agent.velocity = agent.velocity.normalize() * speed_limit;
+        for (agent, vel) in self.agents.iter_mut().zip(deltas.iter()) {
+            agent.velocity = *vel;
+            agent.position += *vel * dt;
+
+            const WAYPOINT_ARRIVAL_DIST: f32 = 0.4;
+            if !agent.path.is_empty() && agent.path_index < agent.path.len() {
+                let wp = agent.path[agent.path_index];
+                let wp_pos = Vec3::new(wp[0], wp[1], wp[2]);
+                if (agent.position - wp_pos).length() < WAYPOINT_ARRIVAL_DIST {
+                    agent.path_index += 1;
+                    if agent.path_index < agent.path.len() {
+                        let next = agent.path[agent.path_index];
+                        agent.target = Vec3::new(next[0], next[1], next[2]);
+                    }
+                }
             }
-            agent.position += agent.velocity * dt;
+        }
+    }
+}
+
+impl CrowdAgent {
+    pub fn set_navmesh_destination(&mut self, dest: Vec3, navmesh: &vox_core::navmesh::NavMesh) {
+        self.path.clear();
+        self.path_index = 0;
+        let start_pos2 = glam::Vec2::new(self.position.x, self.position.z);
+        let goal_pos2 = glam::Vec2::new(dest.x, dest.z);
+        let Some(start_id) = navmesh.nearest_node(start_pos2) else {
+            self.target = dest;
+            return;
+        };
+        let Some(goal_id) = navmesh.nearest_node(goal_pos2) else {
+            self.target = dest;
+            return;
+        };
+        if let Some(node_ids) = navmesh.find_path(start_id, goal_id) {
+            // Convert node IDs to world positions ([f32; 3])
+            // NavNode.position is Vec2 (x, z in world space); y is preserved from agent.position
+            let agent_y = self.position.y;
+            self.path = node_ids
+                .iter()
+                .filter_map(|&id| {
+                    navmesh.nodes.iter().find(|n| n.id == id).map(|n| {
+                        [n.position.x, agent_y, n.position.y]
+                    })
+                })
+                .collect();
+            if let Some(wp) = self.path.first() {
+                self.target = Vec3::new(wp[0], wp[1], wp[2]);
+            }
+        } else {
+            self.target = dest;
         }
     }
 }
