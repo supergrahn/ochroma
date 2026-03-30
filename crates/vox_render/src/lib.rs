@@ -86,6 +86,8 @@ pub mod morph_targets;
 pub mod hair;
 pub mod platform_profiles;
 pub mod spectral_uplift;
+pub mod spectral_atmosphere;
+pub mod spectral_gi;
 #[cfg(feature = "spectra-native")]
 pub mod splat_convert;
 #[cfg(feature = "spectra-native")]
