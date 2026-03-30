@@ -13,16 +13,10 @@ use naga::{
     Span, Statement, Type, TypeInner, UniqueArena,
 };
 
-/// Builder accumulates naga IR for a single material evaluation function.
-pub struct NagaBuilder {
-    module: Module,
-}
+/// Provides static helpers for building naga IR for material evaluation functions.
+pub struct NagaBuilder;
 
 impl NagaBuilder {
-    pub fn new() -> Self {
-        Self { module: Module::default() }
-    }
-
     /// Add an `array<f32, 16>` type to the module's type arena, returning its handle.
     /// UniqueArena deduplicates identical types.
     pub fn array_f32_8(types: &mut UniqueArena<Type>) -> Handle<Type> {

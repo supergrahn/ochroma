@@ -168,6 +168,24 @@ mod tests {
     }
 
     #[test]
+    fn spectral_remap_human_grass() {
+        // Grass SPD: peak reflectance at bands 5-7 (505-555nm, green) and
+        // red-edge bump at bands 13-15 (705-755nm, NIR). Human vision perceives grass as green.
+        let mut spd = [0.04f32; 16];
+        // Green peak
+        spd[5] = 0.50; spd[6] = 0.55; spd[7] = 0.50;
+        // Red-edge (NIR, minimal human contribution)
+        spd[13] = 0.45; spd[14] = 0.55; spd[15] = 0.60;
+        let rgb = SpeciesView::Human.remap(&spd);
+        println!("grass SPD -> Human RGB: {:?}", rgb);
+        assert!(
+            rgb[1] > rgb[0] && rgb[1] > rgb[2],
+            "grass should appear green (G channel dominant): R={:.3} G={:.3} B={:.3}",
+            rgb[0], rgb[1], rgb[2]
+        );
+    }
+
+    #[test]
     fn species_view_human_cie_weights_give_nonzero_luminance() {
         let spd = [1.0f32; 16];
         let rgb = SpeciesView::Human.remap(&spd);
