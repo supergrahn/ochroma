@@ -797,10 +797,10 @@ mod tests {
     #[cfg(all(test, feature = "spectra-native"))]
     #[test]
     fn spectra_backend_system_new_does_not_panic() {
-        use crate::splat_backend::SpectraRenderBackend;
-        // Construction requires GPU — just verify the type builds.
-        let _: fn(u32, u32) -> Result<SpectraRenderBackend, String> =
-            SpectraRenderBackend::realtime;
+        use crate::spectra_render::native::SpectraBackendSystem;
+        // Construction requires GPU — just verify the type and constructors are accessible.
+        let _: fn(u32, u32) -> Result<SpectraBackendSystem, String> = SpectraBackendSystem::realtime;
+        let _: fn(u32, u32) -> Result<SpectraBackendSystem, String> = SpectraBackendSystem::cinematic;
     }
 }
 
@@ -846,17 +846,20 @@ pub mod native {
         ///
         /// Returns `Some(rgba8)` when a completed frame is available (one tick of latency),
         /// or `None` if no frame has been completed yet.
+        ///
+        /// # Notes
+        ///
+        /// Only the splat **count** is used as a dirty signal. If splat data changes without
+        /// a count change (positions, scales, spectral values), call `mark_dirty()` before
+        /// the next tick to force a scene rebuild.
         pub fn tick(
             &mut self,
             splats:  &[GaussianSplat],
             camera:  CameraParams,
         ) -> Option<Vec<u8>> {
-            // Rebuild scene only when splat count changes (cheap dirty check).
-            // Full hash-based change detection is a follow-on improvement.
-            let new_scene = if self.scene_dirty || splats.len() != self.last_splat_count {
+            let needs_rebuild = self.scene_dirty || splats.len() != self.last_splat_count;
+            let new_scene = if needs_rebuild {
                 let (surfaces, volumes) = convert_splats(splats);
-                self.last_splat_count = splats.len();
-                self.scene_dirty = false;
                 Some(SplatScene::new(surfaces, volumes))
             } else {
                 None
@@ -865,6 +868,12 @@ pub mod native {
             if let Err(e) = self.backend.submit_frame(new_scene, camera) {
                 eprintln!("[SpectraBackendSystem] submit_frame error: {e}");
                 return None;
+            }
+
+            // Only commit the dirty-flag reset after a successful submit.
+            if needs_rebuild {
+                self.scene_dirty = false;
+                self.last_splat_count = splats.len();
             }
 
             let output = self.backend.read_last_output();
