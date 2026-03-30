@@ -38,26 +38,23 @@ impl NodeEditorPanel {
     pub fn new() -> Self { Self::default() }
 
     pub fn ensure_layouts(&mut self, graph: &OchromaNodeGraph) {
-        // Only assign layouts for nodes that exist in the graph and don't yet have one.
+        // Remove stale layouts for nodes that no longer exist.
+        let live_ids: std::collections::HashSet<NodeId> = graph.node_ids().collect();
+        self.layouts.retain(|id, _| live_ids.contains(id));
+        // Assign grid positions to newly added nodes.
         let mut idx = self.layouts.len();
-        // Iterate through node IDs that the graph knows about by querying the count.
-        // Since OchromaNodeGraph doesn't expose an iterator of NodeIds, we try
-        // contiguous IDs up to node_count * 4 (generous upper bound for gaps).
-        let max_probe = (graph.node_count() * 4 + 10) as u32;
-        for i in 0..max_probe {
-            let id = NodeId(i);
-            if !self.layouts.contains_key(&id) {
-                // Only add a layout if this node actually exists in the graph.
-                // We probe by checking if adding it would exceed the actual node count.
-                if self.layouts.len() >= graph.node_count() { break; }
-                let col = idx % 4;
-                let row = idx / 4;
-                self.layouts.insert(id, NodeLayout {
-                    pos:  Pos2::new(20.0 + col as f32 * 220.0, 20.0 + row as f32 * 160.0),
-                    size: Vec2::new(180.0, 120.0),
-                });
-                idx += 1;
-            }
+        let mut ids: Vec<NodeId> = graph.node_ids()
+            .filter(|id| !self.layouts.contains_key(id))
+            .collect();
+        ids.sort();
+        for id in ids {
+            let col = idx % 4;
+            let row = idx / 4;
+            self.layouts.insert(id, NodeLayout {
+                pos:  Pos2::new(20.0 + col as f32 * 220.0, 20.0 + row as f32 * 160.0),
+                size: Vec2::new(180.0, 120.0),
+            });
+            idx += 1;
         }
     }
 

@@ -42,7 +42,7 @@ impl BiomeKind {
 
 fn classify(height: f32, world_height: f32, moisture: f32) -> BiomeKind {
     let norm_h = (height / world_height).clamp(0.0, 1.0);
-    if norm_h >= 0.85 { return BiomeKind::Alpine; }
+    if norm_h >= 0.90 { return BiomeKind::Alpine; }
     if norm_h >= 0.70 { return BiomeKind::Tundra; }
     if norm_h >= 0.55 { return if moisture > 0.5 { BiomeKind::Taiga } else { BiomeKind::SubalpineShrub }; }
     if norm_h >= 0.30 {

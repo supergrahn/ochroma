@@ -7,7 +7,7 @@
 //!   - Idempotent duplicate-edge guard in connect()
 //!   - Type-checked port connections via OchromaNode::descriptor()
 
-use std::collections::{BinaryHeap, VecDeque};
+use std::collections::{BinaryHeap, HashSet};
 use std::cmp::Reverse;
 use hashbrown::HashMap;
 use thiserror::Error;
@@ -211,6 +211,10 @@ impl OchromaNodeGraph {
 
     pub fn node_count(&self) -> usize { self.nodes.len() }
 
+    pub fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.nodes.keys().copied()
+    }
+
     pub fn remove_node(&mut self, id: NodeId) -> Result<(), GraphError> {
         if !self.nodes.contains_key(&id) { return Err(GraphError::NodeNotFound(id)); }
         self.nodes.remove(&id);
@@ -288,7 +292,9 @@ impl OchromaNodeGraph {
 
     pub fn mark_dirty(&mut self, id: NodeId) {
         let mut stack = vec![id];
+        let mut visited: HashSet<NodeId> = HashSet::new();
         while let Some(cur) = stack.pop() {
+            if !visited.insert(cur) { continue; }
             if let Some(e) = self.nodes.get_mut(&cur) { e.dirty = true; }
             for edge in &self.edges {
                 if edge.from == cur { stack.push(edge.to); }
