@@ -286,9 +286,13 @@ struct EngineApp {
     lua: vox_script::LuaRuntime,
     // Script watcher for hot-reload
     script_watcher: Option<vox_script::ScriptWatcher>,
-    // Shared spectral state for Lua spectral.* bindings
+    // Shared spectral state for Lua spectral.* bindings.
+    // Must be kept alive here so the Arc inside Lua closures stays valid.
+    #[allow(dead_code)]
     spectral_script_state: std::sync::Arc<std::sync::Mutex<vox_script::SpectralState>>,
-    // Shared entity store for Lua entity.* bindings
+    // Shared entity store for Lua entity.* bindings.
+    // Must be kept alive here so the Arc inside Lua closures stays valid.
+    #[allow(dead_code)]
     entity_script_store: std::sync::Arc<std::sync::Mutex<vox_script::EntityStore>>,
 }
 
