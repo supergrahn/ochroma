@@ -294,6 +294,11 @@ struct EngineApp {
     // Must be kept alive here so the Arc inside Lua closures stays valid.
     #[allow(dead_code)]
     entity_script_store: std::sync::Arc<std::sync::Mutex<vox_script::EntityStore>>,
+
+    // QUIC transport (Some if --server or --connect flag passed)
+    quic_transport: Option<vox_net::quic_transport::QuicTransport>,
+    // Per-client replication state (one entry per connected peer on server)
+    replication_states: Vec<vox_net::replication_loop::ClientReplicationState>,
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +522,8 @@ impl EngineApp {
             ).ok(),
             spectral_script_state,
             entity_script_store,
+            quic_transport: None,
+            replication_states: Vec::new(),
         }
     }
 
@@ -954,6 +961,36 @@ impl EngineApp {
                     );
                     // TODO(domain-6): accumulate refraction.transmitted into caustic_buffer
                     // and apply to render_splats at surrounding positions
+                }
+            }
+        }
+
+        // Spectral replication: server broadcasts changed splat bands to connected clients
+        if let Some(transport) = &self.quic_transport {
+            if transport.role == vox_net::quic_transport::TransportRole::Server {
+                use vox_net::spectral_relevance::{SplatSpectral, ObserverProfile};
+                use vox_net::replication_loop::{replicate_tick, ReplicationConfig};
+
+                let net_splats: Vec<SplatSpectral> = render_splats.iter()
+                    .map(|s| SplatSpectral { bands: *s.spectral() })
+                    .collect();
+
+                if self.replication_states.is_empty() {
+                    self.replication_states.push(
+                        vox_net::replication_loop::ClientReplicationState::new(
+                            0, net_splats.len(), ObserverProfile::human()
+                        )
+                    );
+                }
+
+                let config = ReplicationConfig::default();
+                for client_state in &mut self.replication_states {
+                    let _stats = replicate_tick(
+                        &net_splats, client_state, &config,
+                        |_packet_bytes| {
+                            // TODO(domain-7): write packet_bytes to Quinn stream/datagram
+                        },
+                    );
                 }
             }
         }
