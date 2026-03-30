@@ -9,7 +9,9 @@ pub mod ecs;
 pub mod spectral_synth;
 pub mod sdf_reverb;
 pub mod cpal_backend;
+pub mod spectral_acoustic;
 pub use spectral_synth::{synthesize_impact, create_impact_wav, synthesize_impact_from_splat_spectral};
+pub use spectral_acoustic::SpectralAcousticProfile;
 
 pub use spatial::{compute_spatial, Listener, SpatialAudioManager};
 pub use synth::{generate_click, generate_collect_sound, generate_place_sound, generate_tone, save_wav};
