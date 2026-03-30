@@ -16,11 +16,27 @@ The engine's differentiator is spectral Gaussian splatting — 8 spectral bands 
 
 ---
 
+## Why This Engine Can Surpass Unreal
+
+Unreal Engine's advantages are real but they are ecosystem and momentum advantages — not architectural ones. Its core weaknesses are structural and not patchable:
+
+- **Lumen's GI is a screen-space approximation** built on a rasterizer with no concept of wavelength. Physical spectral accuracy requires replacing the renderer, not extending it. They cannot patch their way there.
+- **Blueprint's runtime slowness is architectural.** It compiles to interpreted bytecode. Fifteen years of optimization have not changed the fundamental model.
+- **Their networking predates QUIC by 15 years.** The abstractions are wrong at the protocol level.
+- **C++ is not patchable to memory safety.** Every year the Ochroma codebase grows, the safety gap widens.
+- **The 8-band spectral space is not addable.** Ochroma's renderer, physics, audio, AI perception, and material recognition all share the same representation from day one. Unreal's systems were built in isolation over 25 years and speak different languages. A spectral rendering mode can be bolted on; spectral coherence across all systems cannot.
+
+Gaussian splatting is also the right bet for the next decade of content creation: as photogrammetry and NeRF-to-splat pipelines mature, the ability to capture the real world at spectral fidelity becomes more valuable than any artist-created asset library. Megascans is impressive today. A spectral capture pipeline that produces physically accurate materials from a phone camera is the future.
+
+The goal of this roadmap is not parity with Unreal. It is to surpass Unreal on the axes that define what rendering engines will look like in 2030.
+
+---
+
 ## Execution Order
 
 ```
 Build/Platform → Audio → UI → Scripting → Asset Pipeline → Rendering →
-Networking → Character → Editor → Physics → AI/LLM
+Networking → Character → Editor → Physics → AI/LLM → Spectral Frontier
 ```
 
 Docs are written *per domain* as each completes. The getting-started guide and contributor guide are written after Build/Platform — the first point at which there is something runnable to document.
@@ -252,6 +268,69 @@ Purpose: a demo reel. Shows every "what makes this different" feature in one uni
 
 ---
 
+---
+
+## Domain 12 — Spectral Frontier
+
+**Current state:** The spectral pipeline exists at the rendering level. It does not yet drive light transport dynamically, does not capture real-world spectral reflectance from photographs, and does not couple optical properties to physics behavior. These are the features that make Ochroma architecturally superior to any rasterizer-first engine — they need to be built to production quality.
+
+**Completion spec:**
+
+### 12a — Real-Time Spectral Global Illumination
+
+Unreal's Lumen traces screen-space rays and approximates indirect lighting. Ochroma can do better: each Gaussian splat already carries an 8-band spectral emission and reflectance profile. Real-time spectral GI propagates actual wavelength-dependent radiance between splats.
+
+- **`SpectralRadianceCache`**: a spatial hash of splat clusters. Each cluster stores an incoming radiance estimate per spectral band, updated each frame from neighbouring emissive splats.
+- **Propagation pass** (compute shader): for each splat, gather radiance from its `N` nearest emissive neighbours (N=8, distance-weighted). Attenuate by the receiving splat's per-band reflectance. Accumulate into a temporal buffer with exponential moving average (α=0.1) for stability.
+- **Output**: each splat's `spectral` field at render time = base reflectance × (sun contribution + radiance cache contribution). The spectral tonemapper already consumes this correctly — no render pipeline changes needed.
+- **Performance target**: 500k splats, full radiance propagation, <3ms on an RTX 3060 compute pass.
+- Physical accuracy claim: a red wall illuminated by a blue light source will show correct spectral mixing (purple-shifted reflectance). Lumen cannot do this without per-wavelength ray tracing.
+
+### 12b — Spectral Atmosphere (Rayleigh + Mie per wavelength)
+
+Unreal's sky atmosphere is a single-scattering approximation with RGB values. Ochroma can simulate the actual physics: Rayleigh scattering is proportional to λ⁻⁴, meaning violet (380nm) scatters ~9× more than red (700nm). This is why the sky is blue. It is *not* a texture or a gradient — it is a wavelength-dependent physical process.
+
+- **`SpectralAtmosphere`**: replaces the existing `atmosphere.rs` with a physically grounded model.
+- Per-frame sky radiance computed as: for each of the 8 spectral bands, apply Rayleigh coefficient `β_R(λ) = 8π³(n²-1)²/(3Nλ⁴)` and Mie coefficient `β_M` (wavelength-independent, particle-size dependent). Sun angle drives optical depth per band.
+- Output: an 8-band sky radiance value fed into the spectral GI cache as the primary light source.
+- Result: correct blue sky, correct orange sunset, correct purple twilight — from physics, not from artist-painted sky spheres.
+- **Aerosol support**: `AerosolProfile { particle_radius_nm, density }` modulates Mie scattering for haze, fog, volcanic ash.
+
+### 12c — Spectral Material Capture Pipeline
+
+Photogrammetry today captures RGB. Ochroma should capture spectral reflectance — the actual optical properties of a material across the 8 bands, not an artist's approximation of it.
+
+- **Multi-band capture protocol**: photograph subjects under 3 known light conditions (neutral daylight, warm tungsten, cool LED). These three images, combined with the known spectral power distributions of the light sources, overdetermine the 8-band reflectance via a least-squares solve.
+- **`SpectralCaptureProcessor`**: reads 3 RAW photographs + 3 `LightSpd` spectral power distributions → outputs a `SpectralMaterialProfile { reflectance: [f32; 8], variance: [f32; 8] }`.
+- **CLI**: `ochroma-tools capture-spectral --images a.dng b.dng c.dng --lights daylight.json tungsten.json led.json --out material.spm`
+- **Integration with asset pipeline**: `.spm` files are referenced by `GaussianSplat.spectral` during import, replacing the `SpectralUpliftLut` approximation with measured data where available.
+- Implication: a marble floor captured with this pipeline reflects light *exactly as marble does*, not as an artist imagined it. No other shipping engine can claim this.
+
+### 12d — Spectral Resonance Physics
+
+Materials have optical-acoustic coupling: their spectral absorption profile is related to their molecular structure, which also determines their acoustic resonance and fracture behaviour. This is not an approximation — it is solid-state physics.
+
+- **`SpectralResonanceProfile`**: derived from a material's `[u16; 8]` spectral data. Metal (low absorption in visible, high reflectance) has high stiffness and metallic ring. Glass (sharp absorption edges) has brittle fracture and high-frequency resonance. Wood (chlorophyll-like mid-band absorption) has organic fracture patterns.
+- **`SpectralFracture::compute_planes(splat_cloud, impact: Vec3, impulse: f32) -> Vec<FracturePlane>`**: fracture planes are oriented along the principal stress axes, modulated by the material's resonance profile. Crystalline materials (high spectral regularity) fracture in planes. Amorphous materials (irregular spectral profile) fracture in curves.
+- **Integration with `vox_physics::destruction`**: `DestructibleBody::fracture_at()` calls `SpectralFracture::compute_planes()` instead of pure Voronoi. Pre-fracture geometry is generated at import time but plane orientations are spectral-material-dependent, not random.
+- **Acoustic emission**: fracture events emit sound via the AV sync system using the material's resonance frequency (derived from peak spectral band). A glass window shattering produces a high-frequency ring; a wooden plank breaking produces a low-frequency crack.
+
+### 12e — Spectral Neural Compression
+
+The 8-band spectral representation is 4× larger than RGB. For streaming and storage, this needs to compress efficiently while preserving physical accuracy. RGB compression (JPEG, BC7) destroys spectral information. A learned spectral codec can outperform both.
+
+- **`SpectralCodec`**: a small candle-based autoencoder (encoder: 8→4 latent, decoder: 4→8 reconstruction). Trained on the engine's own spectral data distribution.
+- **Compression target**: 4 latent floats per splat instead of 8 unsigned shorts — 50% size reduction with <2% mean spectral error.
+- **`SpectralCodec::encode(spectral: [f32; 8]) -> [f16; 4]`** and **`::decode(latent: [f16; 4]) -> [f32; 8]`**
+- **Usage**: `.vxm` format v3 stores latent codes; decompression happens on GPU during the splat upload pass. Network replication sends latent codes (8 bytes vs 16 bytes per spectral field).
+- **Training data**: generated from `SpectralUpliftLut` on a large set of RGB images — no external dataset needed.
+
+---
+
+**Domain 12 completion criterion:** A real-world object photographed under 3 light conditions produces a `.spm` material profile. That profile is applied to a splat cloud, which then participates in the real-time spectral GI pass, shatters along spectrally-determined fracture planes, emits acoustically correct sound at fracture, and transmits over the network using spectral neural compression — all simultaneously, at 60fps.
+
+---
+
 ## Cross-Cutting Requirements
 
 **Testing:** Each domain must ship with tests covering its completion criterion scenario, not just unit tests of internal functions. Integration tests live in `tests/` adjacent to the relevant crate.
@@ -260,9 +339,12 @@ Purpose: a demo reel. Shows every "what makes this different" feature in one uni
 
 **Performance budgets:**
 - Rendering: 60fps at 1080p on RTX 3060 class hardware with 500k splats visible
+- Spectral GI: <3ms per frame for radiance propagation pass (500k splats)
+- Spectral atmosphere: <0.5ms per frame
 - Audio: <2ms latency on CPAL callback thread
 - Physics: 50k PBF particles + full Rapier world at 60fps
 - Scripting: Lua frame budget <1ms per entity per frame for typical game logic
+- Spectral neural compression: encode/decode <0.1ms per frame for active splat set
 
 **Spectral invariant:** Every system that touches a `GaussianSplat` must preserve or intentionally modify its `.spectral: [u16; 8]` field. Systems must not zero out or ignore spectral data as a convenience shortcut.
 
@@ -274,6 +356,6 @@ Purpose: a demo reel. Shows every "what makes this different" feature in one uni
 - Mobile (iOS, Android) — deferred post-v1.0
 - Multiplayer voice chat
 - LLM training / fine-tuning (inference only)
-- Full Gaussian splatting training pipeline (COLMAP for capture; trained splats imported via `.vxm`)
-- Rust-native SfM (not feasible at production quality currently)
+- Rust-native SfM (not feasible at production quality currently; COLMAP subprocess used instead)
+- Full neural Gaussian splatting training pipeline (3DGS optimization from raw images — compute-intensive, Python ecosystem owns this; Ochroma imports the output)
 - Steam achievements / leaderboards (framework exists; integration deferred)
