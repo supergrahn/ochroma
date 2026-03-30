@@ -50,10 +50,54 @@ impl CrowdSimulation {
 
     /// Advance the simulation by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
-        let count = self.agents.len();
+        let n = self.agents.len();
+        if n == 0 { return; }
 
-        // Advance waypoints before computing forces
-        for agent in self.agents.iter_mut() {
+        let mut hash = crate::spatial_hash::SpatialHash::new(self.separation_distance * 1.5);
+        for (i, agent) in self.agents.iter().enumerate() {
+            hash.insert(i, agent.position);
+        }
+
+        let mut deltas: Vec<Vec3> = Vec::with_capacity(n);
+        for i in 0..n {
+            let agent = &self.agents[i];
+
+            let effective_target = if !agent.path.is_empty() && agent.path_index < agent.path.len() {
+                let wp = agent.path[agent.path_index];
+                Vec3::new(wp[0], wp[1], wp[2])
+            } else {
+                agent.target
+            };
+
+            let to_target = effective_target - agent.position;
+            let dist_to_target = to_target.length();
+            let desired = if dist_to_target > 0.01 {
+                to_target / dist_to_target * agent.speed
+            } else {
+                Vec3::ZERO
+            };
+
+            let mut avoidance = Vec3::ZERO;
+            let neighbours = hash.neighbours(agent.position, self.separation_distance);
+            for &j in &neighbours {
+                if j == i { continue; }
+                let other = &self.agents[j];
+                let diff = agent.position - other.position;
+                let dist = diff.length();
+                if dist < self.separation_distance && dist > 1e-4 {
+                    let strength = self.avoidance_weight * (self.separation_distance - dist) / self.separation_distance;
+                    avoidance += (diff / dist) * strength;
+                }
+            }
+
+            let velocity = (desired + avoidance).clamp_length_max(agent.speed * 1.5);
+            deltas.push(velocity);
+        }
+
+        for (agent, vel) in self.agents.iter_mut().zip(deltas.iter()) {
+            agent.velocity = *vel;
+            agent.position += *vel * dt;
+
             const WAYPOINT_ARRIVAL_DIST: f32 = 0.4;
             if !agent.path.is_empty() && agent.path_index < agent.path.len() {
                 let wp = agent.path[agent.path_index];
@@ -64,56 +108,8 @@ impl CrowdSimulation {
                         let next = agent.path[agent.path_index];
                         agent.target = Vec3::new(next[0], next[1], next[2]);
                     }
-                } else {
-                    agent.target = wp_pos;
                 }
             }
-        }
-
-        // Compute desired velocities and avoidance forces
-        let mut forces: Vec<Vec3> = Vec::with_capacity(count);
-
-        for i in 0..count {
-            let agent = &self.agents[i];
-            let to_target = agent.target - agent.position;
-            let dist_to_target = to_target.length();
-
-            // Desired velocity toward target
-            let desired = if dist_to_target > 0.01 {
-                (to_target / dist_to_target) * agent.speed
-            } else {
-                Vec3::ZERO
-            };
-
-            // Avoidance force from nearby agents
-            let mut avoidance = Vec3::ZERO;
-            for j in 0..count {
-                if i == j {
-                    continue;
-                }
-                let other = &self.agents[j];
-                let diff = agent.position - other.position;
-                let dist = diff.length();
-                let min_sep = self.separation_distance;
-                if dist < min_sep && dist > 0.001 {
-                    // Repulsion inversely proportional to distance
-                    let strength = self.avoidance_weight * (min_sep - dist) / min_sep;
-                    avoidance += (diff / dist) * strength;
-                }
-            }
-
-            forces.push(desired + avoidance);
-        }
-
-        // Apply forces
-        for (i, agent) in self.agents.iter_mut().enumerate() {
-            let force = forces[i];
-            let speed_limit = agent.speed * 1.5; // allow slight overshoot for avoidance
-            agent.velocity = force;
-            if agent.velocity.length() > speed_limit {
-                agent.velocity = agent.velocity.normalize() * speed_limit;
-            }
-            agent.position += agent.velocity * dt;
         }
     }
 }
