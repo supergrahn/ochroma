@@ -5,6 +5,11 @@ use vox_net::replication_loop::{
     ClientReplicationState, ReplicationConfig, ReplicationStats, replicate_tick,
 };
 
+/// Naive RGB comparison baseline: 3 channels × 4 bytes = 12 bytes, rounded to 16 for alignment.
+/// This is the per-splat cost of sending raw 8-bit RGB over the wire (no spectral data).
+/// The spectral replication cost is measured against this naive baseline, not the full 40-byte
+/// spectral packet (8-byte header + 16 × 2-byte f16 = 40), to show the spectral approach's
+/// overall benefit including the culling advantage.
 const NAIVE_RGB_BYTES_PER_SPLAT: usize = 16;
 
 fn simulate_frames(
@@ -49,8 +54,9 @@ fn fire_observer_culls_non_red_splats() {
     let stats_frames = simulate_frames(&splats, ObserverProfile::fire_observer(), 1, &config);
     let stats = &stats_frames[0];
     println!("fire observer: relevant={}", stats.splats_relevant);
-    assert!(stats.splats_relevant <= 120, "fire observer should cull blue splats: relevant={}", stats.splats_relevant);
-    assert!(stats.splats_relevant >= 80, "fire observer should see red splats: relevant={}", stats.splats_relevant);
+    // Exactly 100 red splats have energy in bands 10–15 where fire_observer has high weight.
+    // The 500 blue splats (energy only in bands 4–7) are invisible to fire_observer (weights 0.0 there).
+    assert_eq!(stats.splats_relevant, 100, "fire observer should see exactly the 100 red splats, got {}", stats.splats_relevant);
 }
 
 #[test]

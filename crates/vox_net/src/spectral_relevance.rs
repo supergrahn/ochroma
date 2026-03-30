@@ -22,6 +22,7 @@ impl ObserverProfile {
 
     /// Observer tuned for fire detection (high bands 10–15: red/near-IR).
     /// Bands 0–7 are kept at 0.0 so blue/UV splats are never falsely triggered.
+    /// Bands 8–9 provide low-weight near-IR sensitivity (580–605nm, hot embers).
     pub fn fire_observer() -> Self {
         Self { weights: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.15, 0.40, 0.8, 0.9, 1.0, 0.95, 0.9, 0.85] }
     }

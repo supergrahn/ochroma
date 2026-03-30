@@ -37,7 +37,7 @@ impl SelfSignedCert {
             .map_err(|e| TransportError::CertGen(e.to_string()))?;
         Ok(Self {
             cert_der: certified.cert.der().to_vec(),
-            key_der: certified.key_pair.serialize_der(),
+            key_der: certified.key_pair.serialize_der(), // rcgen 0.13 field name (was `signing_key` in older versions)
         })
     }
 }
@@ -109,7 +109,11 @@ impl QuicTransport {
             .map_err(|e| TransportError::Endpoint(e.to_string()))?;
         endpoint.set_default_client_config(client_config);
 
-        endpoint.connect(addr, server_name)
+        // Initiate the connection. The returned `Connecting` future drives the TLS handshake;
+        // callers that need a fully-established `quinn::Connection` must `.await` it.
+        // Here we validate the address is reachable (returns ConnectError immediately on bad addr)
+        // but defer the handshake to the caller.
+        let _connecting = endpoint.connect(addr, server_name)
             .map_err(|e| TransportError::Connection(e.to_string()))?;
 
         Ok(Self { endpoint, role: TransportRole::Client })

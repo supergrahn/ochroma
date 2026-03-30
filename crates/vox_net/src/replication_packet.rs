@@ -70,7 +70,8 @@ impl ReplicationPacket {
         }
         let entity_id = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
         let changed_bands = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-        let band_count = changed_bands.count_ones() as usize;
+        // Only the lower 16 bits are valid band flags. Bits 16–31 are reserved.
+        let band_count = (changed_bands & 0xFFFF).count_ones() as usize;
         let needed = 8 + band_count * 2;
         if buf.len() < needed {
             return Err(PacketError::BufferTooShort { needed, have: buf.len() });

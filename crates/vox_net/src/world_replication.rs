@@ -93,6 +93,11 @@ pub struct WorldChunkGridNet {
 
 impl WorldChunkGridNet {
     pub fn to_chunks(&self, chunk_size: usize) -> Vec<WorldChunk> {
+        assert_eq!(
+            chunk_size, CHUNK_SIZE,
+            "to_chunks: chunk_size must equal CHUNK_SIZE={} (WorldChunk::cells is a fixed-size array)",
+            CHUNK_SIZE
+        );
         let chunks_x = (self.width as usize).div_ceil(chunk_size);
         let chunks_z = (self.height as usize).div_ceil(chunk_size);
         let w = self.width as usize;
