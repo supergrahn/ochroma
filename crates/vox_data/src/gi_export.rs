@@ -1,15 +1,15 @@
 //! Binary serialisation for baked GI data (.vxgi format).
 //!
 //! Format: 4-byte magic "VXGI", 4-byte u32 splat count,
-//! then splat_count * 8 * 4 bytes of f32 irradiance values.
+//! then splat_count * 16 * 4 bytes of f32 irradiance values (16 spectral bands).
 
 use std::path::Path;
 
 const MAGIC: &[u8; 4] = b"VXGI";
 
 /// Save baked GI irradiance to a `.vxgi` binary file.
-pub fn save_vxgi(irradiance: &[[f32; 8]], path: &Path) -> Result<(), String> {
-    let mut buf = Vec::with_capacity(8 + irradiance.len() * 32);
+pub fn save_vxgi(irradiance: &[[f32; 16]], path: &Path) -> Result<(), String> {
+    let mut buf = Vec::with_capacity(8 + irradiance.len() * 64);
     buf.extend_from_slice(MAGIC);
     buf.extend_from_slice(&(irradiance.len() as u32).to_le_bytes());
     for entry in irradiance {
@@ -21,19 +21,19 @@ pub fn save_vxgi(irradiance: &[[f32; 8]], path: &Path) -> Result<(), String> {
 }
 
 /// Load baked GI irradiance from a `.vxgi` binary file.
-pub fn load_vxgi(path: &Path) -> Result<Vec<[f32; 8]>, String> {
+pub fn load_vxgi(path: &Path) -> Result<Vec<[f32; 16]>, String> {
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
     if data.len() < 8 { return Err("File too short".into()); }
     if &data[0..4] != MAGIC { return Err("Invalid magic bytes".into()); }
     let count = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
-    let expected = 8 + count * 32;
+    let expected = 8 + count * 64;
     if data.len() < expected {
         return Err(format!("Truncated: expected {} bytes, got {}", expected, data.len()));
     }
     let mut result = Vec::with_capacity(count);
     for i in 0..count {
-        let base = 8 + i * 32;
-        let mut entry = [0.0f32; 8];
+        let base = 8 + i * 64;
+        let mut entry = [0.0f32; 16];
         for (j, v) in entry.iter_mut().enumerate() {
             let off = base + j * 4;
             *v = f32::from_le_bytes(data[off..off+4].try_into().unwrap());
@@ -49,9 +49,9 @@ mod tests {
 
     #[test]
     fn save_load_roundtrip() {
-        let irr: Vec<[f32; 8]> = vec![
-            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
-            [0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1],
+        let irr: Vec<[f32; 16]> = vec![
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            [0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1],
         ];
         let path = std::env::temp_dir().join("test_gi.vxgi");
         save_vxgi(&irr, &path).unwrap();

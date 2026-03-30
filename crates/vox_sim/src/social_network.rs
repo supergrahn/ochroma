@@ -169,7 +169,7 @@ impl SocialNetwork {
         }
 
         // Sort communities by size (largest first)
-        communities.sort_by(|a, b| b.len().cmp(&a.len()));
+        communities.sort_by_key(|b| std::cmp::Reverse(b.len()));
         communities
     }
 

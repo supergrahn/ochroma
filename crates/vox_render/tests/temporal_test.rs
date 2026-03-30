@@ -5,7 +5,7 @@ use vox_render::spectral_framebuffer::SpectralFramebuffer;
 fn first_frame_equals_current() {
     let mut accum = TemporalAccumulator::new(4, 4);
     let mut fb = SpectralFramebuffer::new(4, 4);
-    fb.write_sample(0, 0, [0.8; 8], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 8]);
+    fb.write_sample(0, 0, [0.8; 16], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 16]);
     accum.accumulate(&fb);
     let result = accum.get(0, 0);
     assert!(
@@ -21,7 +21,7 @@ fn accumulation_converges() {
     // Accumulate the same frame 10 times
     for _ in 0..10 {
         let mut fb = SpectralFramebuffer::new(4, 4);
-        fb.write_sample(0, 0, [0.5; 8], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 8]);
+        fb.write_sample(0, 0, [0.5; 16], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 16]);
         accum.accumulate(&fb);
     }
 
@@ -42,7 +42,7 @@ fn noisy_samples_get_smoothed() {
     for i in 0..20 {
         let mut fb = SpectralFramebuffer::new(4, 4);
         let val = if i % 2 == 0 { 0.8 } else { 0.2 };
-        fb.write_sample(0, 0, [val; 8], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 8]);
+        fb.write_sample(0, 0, [val; 16], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 16]);
         accum.accumulate(&fb);
     }
 
@@ -59,12 +59,12 @@ fn noisy_samples_get_smoothed() {
 fn reset_clears_history() {
     let mut accum = TemporalAccumulator::new(4, 4);
     let mut fb = SpectralFramebuffer::new(4, 4);
-    fb.write_sample(0, 0, [1.0; 8], 10.0, [0.0, 1.0, 0.0], 0, [1.0; 8]);
+    fb.write_sample(0, 0, [1.0; 16], 10.0, [0.0, 1.0, 0.0], 0, [1.0; 16]);
     accum.accumulate(&fb);
     assert!(accum.get(0, 0)[0] > 0.5);
 
     accum.reset();
-    assert_eq!(accum.get(0, 0), [0.0; 8]);
+    assert_eq!(accum.get(0, 0), [0.0; 16]);
     assert_eq!(accum.avg_accumulated_frames(), 0.0);
 }
 
@@ -74,8 +74,8 @@ fn avg_frames_tracks_accumulation() {
     assert_eq!(accum.avg_accumulated_frames(), 0.0);
 
     let mut fb = SpectralFramebuffer::new(2, 2);
-    fb.write_sample(0, 0, [0.5; 8], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 8]);
-    fb.write_sample(1, 0, [0.5; 8], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 8]);
+    fb.write_sample(0, 0, [0.5; 16], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 16]);
+    fb.write_sample(1, 0, [0.5; 16], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 16]);
     accum.accumulate(&fb);
 
     assert!(accum.avg_accumulated_frames() > 0.0);

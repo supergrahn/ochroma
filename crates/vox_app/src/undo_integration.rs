@@ -5,6 +5,10 @@ pub struct GameUndoSystem {
     pub stack: UndoStack,
 }
 
+impl Default for GameUndoSystem {
+    fn default() -> Self { Self::new() }
+}
+
 impl GameUndoSystem {
     pub fn new() -> Self {
         Self { stack: UndoStack::new(100) }

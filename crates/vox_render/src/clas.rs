@@ -57,7 +57,7 @@ pub fn build_clusters(splats: &[GaussianSplat], target_size: usize) -> Vec<Splat
     let mut scene_min = Vec3::splat(f32::MAX);
     let mut scene_max = Vec3::splat(f32::MIN);
     for s in splats {
-        let p = Vec3::from(s.position);
+        let p = Vec3::from(s.position());
         scene_min = scene_min.min(p);
         scene_max = scene_max.max(p);
     }
@@ -92,7 +92,7 @@ pub fn build_clusters(splats: &[GaussianSplat], target_size: usize) -> Vec<Splat
     let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<u32>> = std::collections::HashMap::new();
 
     for (i, s) in splats.iter().enumerate() {
-        let p = Vec3::from(s.position) - scene_min;
+        let p = Vec3::from(s.position()) - scene_min;
         let cx = (p.x / cell_size.x.max(0.001)).floor() as i32;
         let cy = (p.y / cell_size.y.max(0.001)).floor() as i32;
         let cz = (p.z / cell_size.z.max(0.001)).floor() as i32;
@@ -128,11 +128,11 @@ fn make_cluster(id: u32, splats: &[GaussianSplat], indices: &[u32]) -> SplatClus
 
     for &idx in indices {
         let s = &splats[idx as usize];
-        let p = Vec3::from(s.position);
+        let p = Vec3::from(s.position());
         aabb_min = aabb_min.min(p);
         aabb_max = aabb_max.max(p);
         center_sum += p;
-        total_opacity += s.opacity as f32 / 255.0;
+        total_opacity += s.opacity() as f32 / 255.0;
     }
 
     let center = if indices.is_empty() { Vec3::ZERO } else { center_sum / indices.len() as f32 };

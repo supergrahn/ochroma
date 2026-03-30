@@ -16,7 +16,7 @@ fn wave_animation_changes_height() {
     let splats_t1 = river.generate_splats(1.0);
     // Heights should differ due to wave animation
     let differs = splats_t0.iter().zip(splats_t1.iter())
-        .any(|(a, b)| (a.position[1] - b.position[1]).abs() > 0.001);
+        .any(|(a, b)| (a.position()[1] - b.position()[1]).abs() > 0.001);
     assert!(differs, "Wave animation should change heights over time");
 }
 

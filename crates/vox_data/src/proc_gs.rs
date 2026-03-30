@@ -1,4 +1,4 @@
-use glam::Vec3;
+use glam::{self, Vec3};
 use half::f16;
 use rand::SeedableRng;
 use rand::Rng;
@@ -65,28 +65,23 @@ fn make_splat(
     position: Vec3,
     scale: f32,
     opacity: f32,
-    spd: &[f32; 8],
+    spd: &[f32; 16],
 ) -> GaussianSplat {
-    let mut splat = GaussianSplat {
-        position: position.into(),
-        scale: [scale, scale, scale],
-        rotation: [0i16, 0, 0, 32767],
-        opacity: (opacity.clamp(0.0, 1.0) * 255.0) as u8,
-        _pad: [0u8; 3],
-        spectral: [0u16; 8],
-    };
-
     // Random small rotation perturbation
     let rx = rng.random_range(-0.1f32..0.1);
     let ry = rng.random_range(-0.1f32..0.1);
-    splat.rotation[0] = (rx * 32767.0) as i16;
-    splat.rotation[1] = (ry * 32767.0) as i16;
-
+    let rotation = glam::Quat::from_euler(glam::EulerRot::XYZ, rx, ry, 0.0);
+    let mut spectral = [0u16; 16];
     for (i, &v) in spd.iter().enumerate() {
-        splat.spectral[i] = f16::from_f32(v).to_bits();
+        spectral[i] = f16::from_f32(v).to_bits();
     }
-
-    splat
+    GaussianSplat::volume(
+        position.into(),
+        [scale, scale, scale],
+        rotation,
+        (opacity.clamp(0.0, 1.0) * 255.0) as u8,
+        spectral,
+    )
 }
 
 /// Simple building generation without TOML rules — uses direct parameters.
@@ -96,17 +91,12 @@ pub fn emit_splats_simple(seed: u64, width: f32, depth: f32) -> Vec<GaussianSpla
     let floor_height = 3.0 + rng.random::<f32>() * 0.5;
     let total_height = floors as f32 * floor_height;
 
-    let brick_spd: [u16; 8] = [
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.10).to_bits(),
-        f16::from_f32(0.15).to_bits(),
-        f16::from_f32(0.25).to_bits(),
-        f16::from_f32(0.55).to_bits(),
-        f16::from_f32(0.65).to_bits(),
-        f16::from_f32(0.60).to_bits(),
-    ];
-    let roof_spd: [u16; 8] = std::array::from_fn(|_| f16::from_f32(0.15).to_bits());
+    let brick_spd: [u16; 16] = {
+        let v = [0.08f32, 0.08, 0.10, 0.15, 0.25, 0.55, 0.65, 0.60,
+                 0.08, 0.08, 0.10, 0.15, 0.25, 0.55, 0.65, 0.60];
+        std::array::from_fn(|i| f16::from_f32(v[i]).to_bits())
+    };
+    let roof_spd: [u16; 16] = std::array::from_fn(|_| f16::from_f32(0.15).to_bits());
 
     let mut splats = Vec::new();
 
@@ -134,32 +124,30 @@ pub fn emit_splats_simple(seed: u64, width: f32, depth: f32) -> Vec<GaussianSpla
             };
             let y = rng.random::<f32>() * total_height;
             let s = 0.04 + rng.random::<f32>() * 0.04;
-            splats.push(GaussianSplat {
-                position: [x, y, z],
-                scale: [s, s, s * 0.3],
-                rotation: [0, 0, 0, 32767],
-                opacity: 240,
-                _pad: [0; 3],
-                spectral: brick_spd,
-            });
+            splats.push(GaussianSplat::surface(
+                [x, y, z],
+                [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
+                s, s * 0.3,
+                240,
+                brick_spd,
+            ));
         }
     }
 
     // Roof
     let roof_count = (width * depth * density / 100.0) as usize;
     for _ in 0..roof_count {
-        splats.push(GaussianSplat {
-            position: [
+        splats.push(GaussianSplat::surface(
+            [
                 rng.random::<f32>() * width,
                 total_height,
                 -rng.random::<f32>() * depth,
             ],
-            scale: [0.06, 0.02, 0.06],
-            rotation: [0, 0, 0, 32767],
-            opacity: 245,
-            _pad: [0; 3],
-            spectral: roof_spd,
-        });
+            [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
+            0.06, 0.06,
+            245,
+            roof_spd,
+        ));
     }
 
     splats
@@ -179,10 +167,10 @@ pub fn emit_splats(rule: &SplatRule, seed: u64) -> Vec<GaussianSplat> {
 
     for zone in &rule.material_zones {
         // Look up SPD from material library, fall back to neutral grey
-        let spd: [f32; 8] = if let Some(mat) = lib.get(&zone.material_tag) {
+        let spd: [f32; 16] = if let Some(mat) = lib.get(&zone.material_tag) {
             mat.spd.0
         } else {
-            [0.5f32; 8]
+            [0.5f32; 16]
         };
 
         let zone_type = zone.zone_type.as_str();

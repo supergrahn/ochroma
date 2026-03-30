@@ -18,7 +18,7 @@ fn tonemap_empty_framebuffer_is_black() {
 #[test]
 fn tonemap_white_produces_bright_pixel() {
     let mut fb = SpectralFramebuffer::new(1, 1);
-    fb.write_sample(0, 0, [1.0; 8], 10.0, [0.0, 1.0, 0.0], 0, [1.0; 8]);
+    fb.write_sample(0, 0, [1.0; 16], 10.0, [0.0, 1.0, 0.0], 0, [1.0; 16]);
     let settings = ToneMapSettings::default();
     let pixels = tonemap_spectral_framebuffer(&fb, &Illuminant::d65(), &settings);
     assert!(
@@ -38,7 +38,7 @@ fn aces_compresses_hdr() {
     };
     // Very bright input
     let mut fb = SpectralFramebuffer::new(1, 1);
-    fb.write_sample(0, 0, [5.0; 8], 10.0, [0.0, 1.0, 0.0], 0, [1.0; 8]);
+    fb.write_sample(0, 0, [5.0; 16], 10.0, [0.0, 1.0, 0.0], 0, [1.0; 16]);
     let pixels = tonemap_spectral_framebuffer(&fb, &Illuminant::d65(), &settings);
     // Should be bright but not clipped to pure white
     assert!(pixels[0][0] > 200, "Should be bright");
@@ -48,7 +48,7 @@ fn aces_compresses_hdr() {
 #[test]
 fn exposure_affects_brightness() {
     let mut fb = SpectralFramebuffer::new(1, 1);
-    fb.write_sample(0, 0, [0.5; 8], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 8]);
+    fb.write_sample(0, 0, [0.5; 16], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 16]);
 
     let dark = ToneMapSettings {
         exposure: 0.5,
@@ -71,7 +71,7 @@ fn exposure_affects_brightness() {
 #[test]
 fn hdr_output_preserves_values_above_one() {
     let mut fb = SpectralFramebuffer::new(1, 1);
-    fb.write_sample(0, 0, [3.0; 8], 10.0, [0.0, 1.0, 0.0], 0, [1.0; 8]);
+    fb.write_sample(0, 0, [3.0; 16], 10.0, [0.0, 1.0, 0.0], 0, [1.0; 16]);
     let settings = ToneMapSettings {
         operator: ToneMapOperator::None,
         exposure: 1.0,
@@ -87,7 +87,7 @@ fn hdr_output_preserves_values_above_one() {
 fn different_illuminants_different_output() {
     let mut fb = SpectralFramebuffer::new(1, 1);
     // Non-uniform spectrum so illuminant differences are visible
-    fb.write_sample(0, 0, [0.1, 0.2, 0.8, 0.6, 0.3, 0.9, 0.4, 0.1], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 8]);
+    fb.write_sample(0, 0, [0.1, 0.2, 0.8, 0.6, 0.3, 0.9, 0.4, 0.1, 0.5, 0.3, 0.7, 0.2, 0.6, 0.4, 0.8, 0.3], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 16]);
     let settings = ToneMapSettings::default();
 
     let d65 = tonemap_spectral_framebuffer(&fb, &Illuminant::d65(), &settings);

@@ -1,148 +1,273 @@
-//! Physics destruction system — fracture objects into pieces on impact.
+//! Splat fracture — destructible splat assemblies.
+//! On impact, a SplatAssembly breaks into SplatParticle instances with spectral shift.
 
-use glam::{Quat, Vec3};
+use glam::{self, Vec3};
+use vox_core::types::GaussianSplat;
 
-/// A fragment of a destroyed object.
+/// A rigid group of splats that fractures as one unit.
 #[derive(Debug, Clone)]
-pub struct Fragment {
+pub struct SplatAssembly {
+    pub splats: Vec<GaussianSplat>,
     pub position: Vec3,
     pub velocity: Vec3,
-    pub rotation: Quat,
-    pub angular_velocity: Vec3,
+    pub health: f32,
+    pub max_health: f32,
     pub mass: f32,
-    pub size: Vec3,
-    pub active: bool,
+    pub is_active: bool,
+    /// Impact threshold: minimum impulse to trigger fracture
+    pub fracture_threshold: f32,
 }
 
-/// A destructible object that fractures into fragments upon taking enough damage.
-pub struct DestructibleObject {
-    pub fragments: Vec<Fragment>,
-    pub health: f32,
-    pub is_destroyed: bool,
-    #[allow(dead_code)]
-    center: Vec3,
-    #[allow(dead_code)]
-    max_health: f32,
+/// A single fracture particle ejected from a broken assembly.
+#[derive(Debug, Clone)]
+pub struct FractureParticle {
+    pub splat: GaussianSplat,
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub lifetime: f32, // seconds until despawn
+    pub age: f32,
+}
+
+/// Manages fracture simulation for a set of assemblies.
+pub struct FractureSystem {
+    pub assemblies: Vec<SplatAssembly>,
+    pub particles: Vec<FractureParticle>,
+    /// Camera position for LOD culling: no fracture beyond this distance
+    pub camera_pos: Vec3,
+    pub max_fracture_distance: f32, // default 30.0 m
+    /// Reusable particle pool (avoid alloc per frame)
+    particle_pool: Vec<FractureParticle>,
 }
 
 const GRAVITY: Vec3 = Vec3::new(0.0, -9.81, 0.0);
 
-impl DestructibleObject {
-    /// Create a destructible from a bounding box, pre-fractured into N pieces.
-    /// Fragments are arranged in a rough grid within the box.
-    pub fn from_box(center: Vec3, half_extents: Vec3, fragment_count: u32) -> Self {
-        let n = fragment_count.max(1);
-        // Approximate a cube root for 3D subdivision
-        let per_axis = (n as f32).cbrt().ceil() as u32;
-        let frag_size = (half_extents * 2.0) / per_axis as f32;
-
-        let mut fragments = Vec::new();
-        let start = center - half_extents + frag_size * 0.5;
-
-        for ix in 0..per_axis {
-            for iy in 0..per_axis {
-                for iz in 0..per_axis {
-                    if fragments.len() >= n as usize {
-                        break;
-                    }
-                    let pos = start + Vec3::new(
-                        ix as f32 * frag_size.x,
-                        iy as f32 * frag_size.y,
-                        iz as f32 * frag_size.z,
-                    );
-                    fragments.push(Fragment {
-                        position: pos,
-                        velocity: Vec3::ZERO,
-                        rotation: Quat::IDENTITY,
-                        angular_velocity: Vec3::ZERO,
-                        mass: 1.0,
-                        size: frag_size * 0.5, // half-extents
-                        active: false,         // inactive until destroyed
-                    });
-                }
-            }
-        }
-
+impl FractureSystem {
+    pub fn new() -> Self {
         Self {
-            fragments,
-            health: 100.0,
-            is_destroyed: false,
-            center,
-            max_health: 100.0,
+            assemblies: Vec::new(),
+            particles: Vec::new(),
+            camera_pos: Vec3::ZERO,
+            max_fracture_distance: 30.0,
+            particle_pool: Vec::new(),
         }
     }
 
-    /// Apply damage at a point. If health reaches 0, fracture.
-    pub fn apply_damage(&mut self, point: Vec3, force: f32) {
-        if self.is_destroyed {
+    /// Register an assembly for fracture tracking.
+    pub fn add_assembly(&mut self, assembly: SplatAssembly) -> usize {
+        let idx = self.assemblies.len();
+        self.assemblies.push(assembly);
+        idx
+    }
+
+    /// Apply an impact impulse to assembly `idx` at `impact_point`.
+    /// If impulse exceeds fracture_threshold AND assembly is within max_fracture_distance, fracture.
+    pub fn apply_impact(&mut self, idx: usize, impulse: f32, impact_point: Vec3) {
+        if idx >= self.assemblies.len() {
+            return;
+        }
+        let threshold = self.assemblies[idx].fracture_threshold;
+        let is_active = self.assemblies[idx].is_active;
+
+        if !is_active {
+            return;
+        }
+        if impulse < threshold {
             return;
         }
 
-        self.health = (self.health - force).max(0.0);
-
-        if self.health <= 0.0 {
-            self.is_destroyed = true;
-            // Activate all fragments and give them velocity radiating from impact point
-            for frag in &mut self.fragments {
-                frag.active = true;
-                let dir = (frag.position - point).normalize_or_zero();
-                let dist = frag.position.distance(point).max(0.1);
-                // Closer fragments get more force
-                let impulse = force / (dist * frag.mass);
-                frag.velocity = dir * impulse.min(20.0); // cap velocity
-                // Some angular velocity for visual effect
-                frag.angular_velocity = Vec3::new(
-                    dir.z * 3.0,
-                    0.0,
-                    -dir.x * 3.0,
-                );
-            }
+        // Check LOD distance
+        let dist = self.assemblies[idx].position.distance(self.camera_pos);
+        if dist > self.max_fracture_distance {
+            return;
         }
+
+        self.fracture_assembly(idx, impact_point, impulse);
     }
 
-    /// Step physics on active fragments (gravity + simple dynamics).
+    /// Advance simulation by `dt` seconds.
     pub fn step(&mut self, dt: f32) {
-        if !self.is_destroyed {
-            return;
-        }
+        let mut i = 0;
+        while i < self.particles.len() {
+            let p = &mut self.particles[i];
+            p.age += dt;
 
-        for frag in &mut self.fragments {
-            if !frag.active {
+            if p.age >= p.lifetime {
+                // Return to pool
+                let dead = self.particles.swap_remove(i);
+                self.particle_pool.push(dead);
                 continue;
             }
 
             // Gravity
-            frag.velocity += GRAVITY * dt;
+            p.velocity += GRAVITY * dt;
 
             // Integrate position
-            frag.position += frag.velocity * dt;
+            p.position += p.velocity * dt;
 
-            // Integrate rotation (simplified: treat angular_velocity as axis-angle rate)
-            let ang_speed = frag.angular_velocity.length();
-            if ang_speed > 1e-6 {
-                let axis = frag.angular_velocity / ang_speed;
-                let delta_rot = Quat::from_axis_angle(axis, ang_speed * dt);
-                frag.rotation = (delta_rot * frag.rotation).normalize();
+            // Ground plane bounce
+            if p.position.y < 0.0 {
+                p.position.y = 0.0;
+                p.velocity.y *= -0.3;
+                p.velocity.x *= 0.9;
+                p.velocity.z *= 0.9;
             }
 
-            // Simple ground plane
-            if frag.position.y < frag.size.y {
-                frag.position.y = frag.size.y;
-                frag.velocity.y *= -0.3;
-                frag.velocity.x *= 0.9; // friction
-                frag.velocity.z *= 0.9;
-                frag.angular_velocity *= 0.9;
-            }
+            i += 1;
         }
     }
 
-    /// Get fragment positions/rotations/sizes for rendering.
-    pub fn fragment_transforms(&self) -> Vec<(Vec3, Quat, Vec3)> {
-        self.fragments
-            .iter()
-            .filter(|f| f.active)
-            .map(|f| (f.position, f.rotation, f.size))
-            .collect()
+    /// Produce fracture particles from an assembly, applying spectral shift on break.
+    fn fracture_assembly(&mut self, idx: usize, impact_point: Vec3, impulse: f32) {
+        // LOD check: skip if assembly is outside max_fracture_distance from camera
+        let dist = self.assemblies[idx].position.distance(self.camera_pos);
+        if dist > self.max_fracture_distance {
+            return;
+        }
+
+        let assembly = &mut self.assemblies[idx];
+        assembly.is_active = false;
+
+        // Collect splat data to avoid borrow issues
+        let splats: Vec<GaussianSplat> = assembly.splats.clone();
+        let assembly_position = assembly.position;
+
+        for (splat_idx, mut splat) in splats.into_iter().enumerate() {
+            // World position: assembly_position + splat local offset (position field)
+            let world_pos = assembly_position
+                + Vec3::from(splat.position());
+
+            // Radial velocity from impact point
+            let radial_dir = (world_pos - impact_point).normalize_or_zero();
+
+            // Deterministic pseudo-random jitter per splat
+            let jitter_seed = (idx * 1664525 + splat_idx * 22695477 + 1013904223) & 0xFFFF;
+            let jitter = jitter_seed as f32 / 65535.0 - 0.5;
+            let jitter_vec = Vec3::new(jitter, jitter * 0.7 + 0.3, jitter * -0.5);
+
+            let velocity = radial_dir * impulse * 0.5 + jitter_vec;
+
+            // Spectral shift: burn/crumble effect
+            spectral_shift_on_break(&mut splat);
+
+            // Lifetime: 3.0 + pseudo-rand(0..2) using a different seed
+            let lifetime_seed = ((idx * 22695477 + splat_idx * 1664525 + 1013904223) & 0xFFFF) as f32
+                / 65535.0;
+            let lifetime = 3.0 + lifetime_seed * 2.0;
+
+            let particle = if let Some(mut pooled) = self.particle_pool.pop() {
+                pooled.splat = splat;
+                pooled.position = world_pos;
+                pooled.velocity = velocity;
+                pooled.lifetime = lifetime;
+                pooled.age = 0.0;
+                pooled
+            } else {
+                FractureParticle {
+                    splat,
+                    position: world_pos,
+                    velocity,
+                    lifetime,
+                    age: 0.0,
+                }
+            };
+
+            self.particles.push(particle);
+        }
+    }
+}
+
+use crate::spectral_fracture::{FracturePlane, SpectralResonanceFracture};
+
+impl SplatAssembly {
+    /// Compute spectral resonance fracture planes for this assembly at the
+    /// given impact point and impulse (Ns). Returns planes; also reduces
+    /// health and deactivates assembly when health reaches zero.
+    pub fn fracture_at(&mut self, impact_pos: glam::Vec3, impulse_ns: f32) -> Vec<FracturePlane> {
+        if !self.is_active {
+            return Vec::new();
+        }
+        if impulse_ns < self.fracture_threshold {
+            return Vec::new();
+        }
+        let spectral = self.mean_spectral_profile();
+        let planes =
+            SpectralResonanceFracture::compute_planes(impact_pos, impulse_ns, &spectral);
+        if !planes.is_empty() {
+            self.health -= impulse_ns;
+            if self.health <= 0.0 {
+                self.is_active = false;
+            }
+        }
+        planes
+    }
+
+    /// Compute mean spectral profile across all splats in the assembly.
+    pub fn mean_spectral_profile(&self) -> [u16; 16] {
+        if self.splats.is_empty() {
+            return [32767u16; 16];
+        }
+        let mut acc = [0u32; 16];
+        for splat in &self.splats {
+            for b in 0..16 {
+                acc[b] += splat.spectral()[b] as u32;
+            }
+        }
+        let mut out = [0u16; 16];
+        for b in 0..16 {
+            out[b] = (acc[b] / self.splats.len() as u32) as u16;
+        }
+        out
+    }
+}
+
+/// Spectral shift applied to splats on fracture (burn/crumble effect).
+/// Reduces high-frequency bands (0-1), slightly increases mid bands (3-4).
+pub fn spectral_shift_on_break(splat: &mut GaussianSplat) {
+    // bands 0-2 (UV/violet): reduce by 40% (loss of UV/blue emission — char/ash; glass cracking)
+    for b in 0..3 {
+        let val = half::f16::from_bits(splat.spectral()[b]).to_f32();
+        splat.spectral_mut()[b] = half::f16::from_f32(val * 0.6).to_bits();
+    }
+    // band 3-4: slight boost (thermal glow at break point)
+    for b in 3..5 {
+        let val = half::f16::from_bits(splat.spectral()[b]).to_f32();
+        splat.spectral_mut()[b] = half::f16::from_f32((val * 1.15).min(1.0)).to_bits();
+    }
+}
+
+impl Default for FractureSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+fn make_test_splat(spectral_val: f32) -> GaussianSplat {
+    let bits = half::f16::from_f32(spectral_val).to_bits();
+    GaussianSplat::volume(
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+        glam::Quat::IDENTITY,
+        255,
+        [bits; 16],
+    )
+}
+
+#[allow(dead_code)]
+fn make_assembly_with_splat(pos: Vec3, threshold: f32, splat_val: f32) -> SplatAssembly {
+    SplatAssembly {
+        splats: vec![make_test_splat(splat_val)],
+        position: pos,
+        velocity: Vec3::ZERO,
+        health: 100.0,
+        max_health: 100.0,
+        mass: 1.0,
+        is_active: true,
+        fracture_threshold: threshold,
     }
 }
 
@@ -151,53 +276,121 @@ mod tests {
     use super::*;
 
     #[test]
-    fn undamaged_object_is_intact() {
-        let obj = DestructibleObject::from_box(Vec3::ZERO, Vec3::splat(1.0), 8);
-        assert!(!obj.is_destroyed);
-        assert!(obj.health > 0.0);
-        assert!(obj.fragments.iter().all(|f| !f.active));
-    }
-
-    #[test]
-    fn enough_damage_destroys() {
-        let mut obj = DestructibleObject::from_box(Vec3::ZERO, Vec3::splat(1.0), 8);
-        obj.apply_damage(Vec3::ZERO, 50.0);
-        assert!(!obj.is_destroyed, "50 damage should not destroy 100hp object");
-
-        obj.apply_damage(Vec3::ZERO, 60.0);
-        assert!(obj.is_destroyed, "110 total damage should destroy 100hp object");
-        assert!(obj.fragments.iter().all(|f| f.active));
-    }
-
-    #[test]
-    fn fragments_have_velocity_after_destruction() {
-        let mut obj = DestructibleObject::from_box(Vec3::ZERO, Vec3::splat(1.0), 8);
-        obj.apply_damage(Vec3::new(-2.0, 0.0, 0.0), 200.0);
-
-        assert!(obj.is_destroyed);
-        let has_velocity = obj.fragments.iter().any(|f| f.velocity.length() > 0.1);
-        assert!(has_velocity, "fragments should have velocity after explosion");
-    }
-
-    #[test]
-    fn fragments_fall_under_gravity() {
-        let mut obj = DestructibleObject::from_box(
-            Vec3::new(0.0, 10.0, 0.0),
-            Vec3::splat(0.5),
-            8,
+    fn spectral_shift_reduces_band0() {
+        let mut splat = make_test_splat(0.8);
+        let before = half::f16::from_bits(splat.spectral()[0]).to_f32();
+        spectral_shift_on_break(&mut splat);
+        let after = half::f16::from_bits(splat.spectral()[0]).to_f32();
+        assert!(
+            after < before,
+            "Band 0 should be reduced after spectral shift: before={before}, after={after}"
         );
-        obj.apply_damage(Vec3::new(0.0, 10.0, 0.0), 200.0);
+        // Should be approximately 0.8 * 0.6 = 0.48
+        assert!(
+            (after - before * 0.6).abs() < 0.01,
+            "Band 0 reduction should be ~40%: expected ~{}, got {after}",
+            before * 0.6
+        );
+    }
 
-        let start_positions: Vec<Vec3> = obj.fragments.iter().map(|f| f.position).collect();
+    #[test]
+    fn spectral_shift_boosts_band3() {
+        let mut splat = make_test_splat(0.5);
+        let before = half::f16::from_bits(splat.spectral()[3]).to_f32();
+        spectral_shift_on_break(&mut splat);
+        let after = half::f16::from_bits(splat.spectral()[3]).to_f32();
+        assert!(
+            after > before,
+            "Band 3 should be boosted after spectral shift: before={before}, after={after}"
+        );
+        assert!(
+            (after - (before * 1.15).min(1.0)).abs() < 0.01,
+            "Band 3 boost should be ~15%: expected ~{}, got {after}",
+            before * 1.15
+        );
+    }
 
-        for _ in 0..100 {
-            obj.step(0.016);
-        }
+    #[test]
+    fn apply_impact_below_threshold_no_fracture() {
+        let mut sys = FractureSystem::new();
+        sys.camera_pos = Vec3::ZERO;
+        let asm = make_assembly_with_splat(Vec3::ZERO, 50.0, 0.5);
+        let idx = sys.add_assembly(asm);
 
-        // At least some fragments should have moved downward
-        let moved_down = obj.fragments.iter().enumerate().any(|(i, f)| {
-            f.position.y < start_positions[i].y
-        });
-        assert!(moved_down, "fragments should fall under gravity");
+        // Impulse below threshold
+        sys.apply_impact(idx, 10.0, Vec3::ZERO);
+
+        assert!(
+            sys.particles.is_empty(),
+            "No particles should be emitted for sub-threshold impulse"
+        );
+        assert!(
+            sys.assemblies[idx].is_active,
+            "Assembly should still be active after sub-threshold impact"
+        );
+    }
+
+    #[test]
+    fn apply_impact_above_threshold_fractures() {
+        let mut sys = FractureSystem::new();
+        sys.camera_pos = Vec3::ZERO;
+        sys.max_fracture_distance = 30.0;
+        let asm = make_assembly_with_splat(Vec3::new(0.0, 0.0, 5.0), 50.0, 0.5);
+        let idx = sys.add_assembly(asm);
+
+        // Impulse above threshold, camera close
+        sys.apply_impact(idx, 100.0, Vec3::ZERO);
+
+        assert!(
+            !sys.particles.is_empty(),
+            "Particles should be emitted for above-threshold impulse"
+        );
+        assert!(
+            !sys.assemblies[idx].is_active,
+            "Assembly should be deactivated after fracture"
+        );
+    }
+
+    #[test]
+    fn lod_culling_prevents_distant_fracture() {
+        let mut sys = FractureSystem::new();
+        sys.camera_pos = Vec3::ZERO;
+        sys.max_fracture_distance = 30.0;
+        // Place assembly far from camera
+        let asm = make_assembly_with_splat(Vec3::new(0.0, 0.0, 100.0), 50.0, 0.5);
+        let idx = sys.add_assembly(asm);
+
+        // Very high impulse but assembly is outside max_fracture_distance
+        sys.apply_impact(idx, 9999.0, Vec3::ZERO);
+
+        assert!(
+            sys.particles.is_empty(),
+            "No particles should be emitted for distant assembly (LOD culling)"
+        );
+        assert!(
+            sys.assemblies[idx].is_active,
+            "Assembly should remain active when culled by LOD distance"
+        );
+    }
+
+    #[test]
+    fn step_advances_particle_age() {
+        let mut sys = FractureSystem::new();
+        sys.camera_pos = Vec3::ZERO;
+        let asm = make_assembly_with_splat(Vec3::ZERO, 10.0, 0.5);
+        let idx = sys.add_assembly(asm);
+        sys.apply_impact(idx, 100.0, Vec3::new(1.0, 0.0, 0.0));
+
+        assert!(!sys.particles.is_empty(), "Need at least one particle to test age");
+        let age_before = sys.particles[0].age;
+
+        sys.step(0.1);
+
+        let age_after = sys.particles[0].age;
+        assert!(
+            (age_after - (age_before + 0.1)).abs() < 1e-5,
+            "Particle age should increase by dt: expected ~{}, got {age_after}",
+            age_before + 0.1
+        );
     }
 }

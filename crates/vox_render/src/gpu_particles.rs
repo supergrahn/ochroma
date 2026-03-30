@@ -1,4 +1,5 @@
 use bytemuck::{Pod, Zeroable};
+use glam;
 
 /// GPU-friendly particle data (aligned for compute shader).
 #[repr(C)]
@@ -119,14 +120,13 @@ impl GpuParticleSystem {
             .iter()
             .map(|p| {
                 let scale_val = p.size * (1.0 - (p.age / p.lifetime).min(1.0));
-                vox_core::types::GaussianSplat {
-                    position: p.position,
-                    scale: [scale_val; 3],
-                    rotation: [0, 0, 0, 32767], // identity quaternion
-                    opacity: (p.opacity * 255.0) as u8,
-                    _pad: [0; 3],
-                    spectral: [0; 8],
-                }
+                vox_core::types::GaussianSplat::volume(
+                    p.position,
+                    [scale_val; 3],
+                    glam::Quat::IDENTITY,
+                    (p.opacity * 255.0) as u8,
+                    [0u16; 16],
+                )
             })
             .collect()
     }

@@ -1,6 +1,7 @@
 mod demo_asset;
 pub mod character_controller;
 pub mod ai_fsm;
+pub mod building_placement;
 pub mod autosave;
 pub mod debug_console;
 pub mod content_browser;

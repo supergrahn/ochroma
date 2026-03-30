@@ -1,5 +1,5 @@
-/// Reusable egui-based node graph renderer.
-/// Used by visual scripting, material editor, animation state machine, etc.
+//! Reusable egui-based node graph renderer.
+//! Used by visual scripting, material editor, animation state machine, etc.
 
 /// A visual node in the graph widget.
 #[derive(Debug, Clone)]
@@ -415,6 +415,7 @@ impl Default for NodeGraphWidget {
 
 // --- Helper drawing functions ---
 
+#[allow(clippy::too_many_arguments)]
 fn fill_rect(pixels: &mut [[u8; 4]], w: u32, h: u32, x: i32, y: i32, rw: i32, rh: i32, color: [u8; 4]) {
     for dy in 0..rh {
         for dx in 0..rw {
@@ -451,6 +452,7 @@ fn fill_circle(pixels: &mut [[u8; 4]], w: u32, h: u32, cx: i32, cy: i32, r: i32,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_rect_outline(pixels: &mut [[u8; 4]], w: u32, h: u32, x: i32, y: i32, rw: i32, rh: i32, color: [u8; 4]) {
     for dx in 0..rw {
         set_pixel(pixels, w, h, x + dx, y, color);
@@ -468,6 +470,7 @@ fn set_pixel(pixels: &mut [[u8; 4]], w: u32, h: u32, x: i32, y: i32, color: [u8;
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_line(pixels: &mut [[u8; 4]], w: u32, h: u32, x0: i32, y0: i32, x1: i32, y1: i32, color: [u8; 4]) {
     let dx = (x1 - x0).abs();
     let dy = -(y1 - y0).abs();

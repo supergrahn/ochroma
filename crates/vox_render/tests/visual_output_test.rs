@@ -55,8 +55,8 @@ fn render_buildings_at_street_level() {
         let building = vox_data::proc_gs::emit_splats_simple(42 + i as u64, 6.0, 10.0);
         for s in &building {
             let mut ws = *s;
-            ws.position[0] += i as f32 * 8.0 - 16.0;
-            ws.position[2] += 10.0;
+            ws.position_mut()[0] += i as f32 * 8.0 - 16.0;
+            ws.position_mut()[2] += 10.0;
             splats.push(ws);
         }
     }
@@ -121,8 +121,8 @@ fn render_full_city_scene() {
         let b = vox_data::proc_gs::emit_splats_simple(42 + i as u64, 5.5, 10.0);
         for s in &b {
             let mut ws = *s;
-            ws.position[0] += i as f32 * 7.0 - 24.0;
-            ws.position[2] += 15.0;
+            ws.position_mut()[0] += i as f32 * 7.0 - 24.0;
+            ws.position_mut()[2] += 15.0;
             all_splats.push(ws);
         }
     }
@@ -132,8 +132,8 @@ fn render_full_city_scene() {
         let t = vox_data::proc_gs_advanced::generate_tree(500 + i as u64, 7.0, 3.0);
         for s in &t {
             let mut ws = *s;
-            ws.position[0] += i as f32 * 10.0 - 25.0;
-            ws.position[2] += 5.0;
+            ws.position_mut()[0] += i as f32 * 10.0 - 25.0;
+            ws.position_mut()[2] += 5.0;
             all_splats.push(ws);
         }
     }
@@ -143,8 +143,8 @@ fn render_full_city_scene() {
         let l = vox_data::proc_gs_advanced::generate_lamp_post(700 + i as u64, 4.5);
         for s in &l {
             let mut ws = *s;
-            ws.position[0] += i as f32 * 12.0 - 18.0;
-            ws.position[2] += 3.0;
+            ws.position_mut()[0] += i as f32 * 12.0 - 18.0;
+            ws.position_mut()[2] += 3.0;
             all_splats.push(ws);
         }
     }

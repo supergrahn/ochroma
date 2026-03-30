@@ -13,6 +13,9 @@ pub mod vfx;
 pub mod animation;
 pub mod postprocess;
 pub mod material_graph;
+pub mod naga_builder;
+pub mod spectral_caustics;
+pub mod species_view;
 pub mod vr;
 pub mod upscaling;
 pub mod denoiser;
@@ -33,6 +36,7 @@ pub mod spatial_ui;
 pub mod hand_tracking;
 pub mod ar_placement;
 pub mod hierarchical_lod;
+pub mod hlod_baker;
 pub mod benchmark;
 pub mod memory_pool;
 #[allow(unexpected_cfgs)]
@@ -54,10 +58,13 @@ pub mod motion_matching;
 pub mod material_nodes;
 pub mod facial_animation;
 pub mod anim_editor;
+#[cfg(feature = "crucible")]
 pub mod anim_editor_ui;
+#[cfg(feature = "crucible")]
 pub mod material_editor_ui;
 pub mod sequencer;
 pub mod vfx_editor;
+#[cfg(feature = "crucible")]
 pub mod vfx_editor_ui;
 pub mod frame_debugger;
 pub mod world_partition;
@@ -66,8 +73,24 @@ pub mod multi_viewport;
 pub mod gpu_particles;
 pub mod particle_ecs;
 pub mod splat_particles;
+pub mod splat_buffer_pool;
+pub mod biome;
+pub mod pcg;
+pub mod spline;
 pub mod movie_render;
 pub mod level_streaming;
 pub mod material_hotreload;
 pub mod gi_baker;
 pub mod spectral_viewport;
+pub mod morph_targets;
+pub mod hair;
+pub mod platform_profiles;
+pub mod spectral_uplift;
+pub mod spectral_atmosphere;
+pub mod spectral_gi;
+#[cfg(feature = "spectra-native")]
+pub mod splat_convert;
+#[cfg(feature = "spectra-native")]
+pub mod splat_backend;
+#[cfg(feature = "spectra-native")]
+pub use spectra_renderer::CameraParams as SpectraCameraParams;

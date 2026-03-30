@@ -93,22 +93,21 @@ fn extract_building_positions(json: &str) -> Vec<([f32; 3], String, u64)> {
             continue;
         }
 
-        if in_slots && line.contains("\"position\"") && line.contains('[') {
-            if let Some(start) = line.find('[') {
-                if let Some(end) = line.find(']') {
-                    let nums: Vec<f32> = line[start + 1..end]
-                        .split(',')
-                        .filter_map(|s| s.trim().parse().ok())
-                        .collect();
-                    if nums.len() >= 3 {
-                        seed_counter += 1;
-                        results.push((
-                            [nums[0], nums[1], nums[2]],
-                            "building".to_string(),
-                            seed_counter,
-                        ));
-                    }
-                }
+        if in_slots && line.contains("\"position\"") && line.contains('[')
+            && let Some(start) = line.find('[')
+            && let Some(end) = line.find(']')
+        {
+            let nums: Vec<f32> = line[start + 1..end]
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if nums.len() >= 3 {
+                seed_counter += 1;
+                results.push((
+                    [nums[0], nums[1], nums[2]],
+                    "building".to_string(),
+                    seed_counter,
+                ));
             }
         }
     }
@@ -118,22 +117,21 @@ fn extract_building_positions(json: &str) -> Vec<([f32; 3], String, u64)> {
         seed_counter = 0;
         for line in json.lines() {
             let line = line.trim();
-            if line.contains("\"position\"") && line.contains('[') {
-                if let Some(start) = line.find('[') {
-                    if let Some(end) = line.find(']') {
-                        let nums: Vec<f32> = line[start + 1..end]
-                            .split(',')
-                            .filter_map(|s| s.trim().parse().ok())
-                            .collect();
-                        if nums.len() >= 3 {
-                            seed_counter += 1;
-                            results.push((
-                                [nums[0], nums[1], nums[2]],
-                                "building".to_string(),
-                                seed_counter,
-                            ));
-                        }
-                    }
+            if line.contains("\"position\"") && line.contains('[')
+                && let Some(start) = line.find('[')
+                && let Some(end) = line.find(']')
+            {
+                let nums: Vec<f32> = line[start + 1..end]
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if nums.len() >= 3 {
+                    seed_counter += 1;
+                    results.push((
+                        [nums[0], nums[1], nums[2]],
+                        "building".to_string(),
+                        seed_counter,
+                    ));
                 }
             }
         }
@@ -159,17 +157,16 @@ fn extract_prop_positions(json: &str) -> Vec<([f32; 3], String)> {
         }
 
         if in_props {
-            if line.contains("\"position\"") && line.contains('[') {
-                if let Some(start) = line.find('[') {
-                    if let Some(end) = line.find(']') {
-                        let nums: Vec<f32> = line[start + 1..end]
-                            .split(',')
-                            .filter_map(|s| s.trim().parse().ok())
-                            .collect();
-                        if nums.len() >= 3 {
-                            current_pos = Some([nums[0], nums[1], nums[2]]);
-                        }
-                    }
+            if line.contains("\"position\"") && line.contains('[')
+                && let Some(start) = line.find('[')
+                && let Some(end) = line.find(']')
+            {
+                let nums: Vec<f32> = line[start + 1..end]
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if nums.len() >= 3 {
+                    current_pos = Some([nums[0], nums[1], nums[2]]);
                 }
             }
             if line.contains("\"asset\"") {
@@ -201,17 +198,16 @@ fn extract_vegetation_positions(json: &str) -> Vec<([f32; 3], String)> {
         }
 
         if in_veg {
-            if line.contains("\"position\"") && line.contains('[') {
-                if let Some(start) = line.find('[') {
-                    if let Some(end) = line.find(']') {
-                        let nums: Vec<f32> = line[start + 1..end]
-                            .split(',')
-                            .filter_map(|s| s.trim().parse().ok())
-                            .collect();
-                        if nums.len() >= 3 {
-                            current_pos = Some([nums[0], nums[1], nums[2]]);
-                        }
-                    }
+            if line.contains("\"position\"") && line.contains('[')
+                && let Some(start) = line.find('[')
+                && let Some(end) = line.find(']')
+            {
+                let nums: Vec<f32> = line[start + 1..end]
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if nums.len() >= 3 {
+                    current_pos = Some([nums[0], nums[1], nums[2]]);
                 }
             }
             if line.contains("\"rule\"") {

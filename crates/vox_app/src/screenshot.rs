@@ -7,6 +7,10 @@ pub struct ScreenshotCapture {
     next_index: u32,
 }
 
+impl Default for ScreenshotCapture {
+    fn default() -> Self { Self::new() }
+}
+
 impl ScreenshotCapture {
     pub fn new() -> Self {
         let save_dir = dirs_next::picture_dir()

@@ -16,23 +16,23 @@ pub enum WeatherState {
 /// Each weather state scales different wavelength bands to simulate the effect of
 /// atmospheric scattering, absorption, and reflectance changes.
 pub fn apply_weather_shift(base: &SpectralBands, weather: WeatherState) -> SpectralBands {
-    // Wavelength band indices: 380, 420, 460, 500, 540, 580, 620, 660 nm
-    let factors: [f32; 8] = match weather {
-        WeatherState::Clear => [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    // Wavelength band indices: 380, 405, 430, 455, 480, 505, 530, 555, 580, 605, 630, 655, 680, 705, 730, 755 nm
+    let factors: [f32; 16] = match weather {
+        WeatherState::Clear => [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
         // Overcast: Rayleigh scattering boosts short wavelengths, mid/long attenuated
-        WeatherState::Overcast => [0.85, 0.88, 0.90, 0.92, 0.93, 0.92, 0.90, 0.88],
+        WeatherState::Overcast => [0.85, 0.86, 0.87, 0.88, 0.89, 0.90, 0.91, 0.92, 0.93, 0.92, 0.91, 0.90, 0.89, 0.88, 0.87, 0.86],
         // Light rain: blue-shift from water droplet scattering, slight overall attenuation
-        WeatherState::LightRain => [0.75, 0.80, 0.88, 0.90, 0.88, 0.85, 0.82, 0.78],
+        WeatherState::LightRain => [0.75, 0.77, 0.79, 0.80, 0.83, 0.85, 0.87, 0.88, 0.88, 0.87, 0.85, 0.83, 0.82, 0.81, 0.80, 0.78],
         // Heavy rain: strong attenuation across all bands, more pronounced in long wavelengths
-        WeatherState::HeavyRain => [0.55, 0.58, 0.62, 0.64, 0.63, 0.60, 0.57, 0.54],
+        WeatherState::HeavyRain => [0.55, 0.56, 0.57, 0.58, 0.60, 0.61, 0.62, 0.64, 0.63, 0.62, 0.61, 0.59, 0.57, 0.56, 0.55, 0.54],
         // Fog: uniform scattering of short wavelengths, long wavelengths penetrate better
-        WeatherState::Fog => [0.60, 0.65, 0.72, 0.78, 0.82, 0.85, 0.87, 0.88],
+        WeatherState::Fog => [0.60, 0.62, 0.64, 0.65, 0.68, 0.70, 0.72, 0.75, 0.78, 0.80, 0.82, 0.84, 0.85, 0.86, 0.87, 0.88],
         // Snow: high reflectance boost, slight blue shift from ice crystal scattering
-        WeatherState::Snow => [1.15, 1.18, 1.20, 1.18, 1.15, 1.12, 1.10, 1.08],
+        WeatherState::Snow => [1.15, 1.16, 1.17, 1.18, 1.19, 1.20, 1.20, 1.19, 1.18, 1.17, 1.15, 1.13, 1.12, 1.11, 1.10, 1.08],
     };
 
-    let mut result = [0.0f32; 8];
-    for i in 0..8 {
+    let mut result = [0.0f32; 16];
+    for i in 0..16 {
         result[i] = base.0[i] * factors[i];
     }
     SpectralBands(result)
@@ -45,9 +45,9 @@ pub fn apply_weather_shift(base: &SpectralBands, weather: WeatherState) -> Spect
 /// - Values in between interpolate linearly band-by-band.
 pub fn apply_wear_shift(fresh: &SpectralBands, worn: &SpectralBands, wear: f32) -> SpectralBands {
     let t = wear.clamp(0.0, 1.0);
-    let mut result = [0.0f32; 8];
-    for i in 0..8 {
-        result[i] = fresh.0[i] * (1.0 - t) + worn.0[i] * t;
+    let mut result = [0.0f32; 16];
+    for (i, val) in result.iter_mut().enumerate() {
+        *val = fresh.0[i] * (1.0 - t) + worn.0[i] * t;
     }
     SpectralBands(result)
 }

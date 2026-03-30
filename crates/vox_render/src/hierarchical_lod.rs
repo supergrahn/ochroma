@@ -1,3 +1,4 @@
+use glam;
 use vox_core::types::GaussianSplat;
 
 /// Number of LOD levels in a chain.
@@ -83,21 +84,14 @@ fn stride_sample(splats: &[GaussianSplat], fraction: f32) -> Vec<GaussianSplat> 
 /// Create a single billboard splat that represents the entire asset.
 fn create_billboard_splat(splats: &[GaussianSplat]) -> GaussianSplat {
     if splats.is_empty() {
-        return GaussianSplat {
-            position: [0.0; 3],
-            scale: [1.0; 3],
-            rotation: [0, 0, 0, 32767],
-            opacity: 255,
-            _pad: [0; 3],
-            spectral: [0; 8],
-        };
+        return GaussianSplat::volume([0.0; 3], [1.0; 3], glam::Quat::IDENTITY, 255, [0; 16]);
     }
 
     // Average position.
     let mut avg_pos = [0.0f32; 3];
     for s in splats {
-        for j in 0..3 {
-            avg_pos[j] += s.position[j];
+        for (j, val) in avg_pos.iter_mut().enumerate() {
+            *val += s.position()[j];
         }
     }
     let n = splats.len() as f32;
@@ -110,25 +104,18 @@ fn create_billboard_splat(splats: &[GaussianSplat]) -> GaussianSplat {
     let scale = [radius, radius, radius];
 
     // Average spectral values.
-    let mut avg_spectral = [0u32; 8];
+    let mut avg_spectral = [0u32; 16];
     for s in splats {
-        for j in 0..8 {
-            avg_spectral[j] += s.spectral[j] as u32;
+        for (j, val) in avg_spectral.iter_mut().enumerate() {
+            *val += s.spectral()[j] as u32;
         }
     }
-    let mut spectral = [0u16; 8];
-    for j in 0..8 {
-        spectral[j] = (avg_spectral[j] / splats.len() as u32) as u16;
+    let mut spectral = [0u16; 16];
+    for (j, val) in spectral.iter_mut().enumerate() {
+        *val = (avg_spectral[j] / splats.len() as u32) as u16;
     }
 
-    GaussianSplat {
-        position: avg_pos,
-        scale,
-        rotation: [0, 0, 0, 32767], // identity quaternion
-        opacity: 255,
-        _pad: [0; 3],
-        spectral,
-    }
+    GaussianSplat::volume(avg_pos, scale, glam::Quat::IDENTITY, 255, spectral)
 }
 
 /// Compute bounding sphere radius from a set of splats.
@@ -139,8 +126,8 @@ fn compute_bounding_radius(splats: &[GaussianSplat]) -> f32 {
 
     let mut center = [0.0f32; 3];
     for s in splats {
-        for j in 0..3 {
-            center[j] += s.position[j];
+        for (j, val) in center.iter_mut().enumerate() {
+            *val += s.position()[j];
         }
     }
     let n = splats.len() as f32;
@@ -150,9 +137,10 @@ fn compute_bounding_radius(splats: &[GaussianSplat]) -> f32 {
 
     let mut max_dist_sq = 0.0f32;
     for s in splats {
-        let dx = s.position[0] - center[0];
-        let dy = s.position[1] - center[1];
-        let dz = s.position[2] - center[2];
+        let sp = s.position();
+        let dx = sp[0] - center[0];
+        let dy = sp[1] - center[1];
+        let dz = sp[2] - center[2];
         let dist_sq = dx * dx + dy * dy + dz * dz;
         max_dist_sq = max_dist_sq.max(dist_sq);
     }
@@ -311,14 +299,7 @@ fn y_mortar(row: i32, brick_h: f32, mortar: f32) -> f32 {
 }
 
 fn make_micro_splat(position: [f32; 3], scale: [f32; 3]) -> GaussianSplat {
-    GaussianSplat {
-        position,
-        scale,
-        rotation: [0, 0, 0, 32767],
-        opacity: 255,
-        _pad: [0; 3],
-        spectral: [0; 8],
-    }
+    GaussianSplat::volume(position, scale, glam::Quat::IDENTITY, 255, [0; 16])
 }
 
 /// Temporal Anti-Aliasing accumulator for sub-pixel jitter sampling.
@@ -365,9 +346,7 @@ impl TemporalAccumulator {
 
             if mv_len > self.rejection_threshold {
                 // History rejection: replace with current sample.
-                for c in 0..4 {
-                    self.accumulated[base + c] = pixels[base + c];
-                }
+                self.accumulated[base..base + 4].copy_from_slice(&pixels[base..base + 4]);
             } else {
                 // Exponential moving average blend.
                 let weight = if self.sample_count == 0 {

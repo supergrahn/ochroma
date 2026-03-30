@@ -1,6 +1,18 @@
 use std::collections::HashMap;
 use thiserror::Error;
 
+pub mod lua_runtime;
+pub use lua_runtime::{LuaRuntime, LuaError};
+
+pub mod spectral_bindings;
+pub use spectral_bindings::{SpectralState, register_spectral_bindings, tick_thresholds};
+
+pub mod entity_bindings;
+pub use entity_bindings::{EntityStore, register_entity_bindings};
+
+pub mod hot_reload;
+pub use hot_reload::{ScriptWatcher, WatchError};
+
 pub mod mod_manager;
 pub mod visual_script;
 pub mod visual_graph;

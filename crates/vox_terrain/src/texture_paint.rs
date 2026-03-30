@@ -80,8 +80,8 @@ impl SplatMap {
         for (layer_idx, layer) in self.layers.iter().enumerate() {
             let w = self.weights[layer_idx][idx];
             if w > 0.0 {
-                for c in 0..8 {
-                    result[c] += layer.spectral[c] * w;
+                for (c, val) in result.iter_mut().enumerate() {
+                    *val += layer.spectral[c] * w;
                 }
             }
         }

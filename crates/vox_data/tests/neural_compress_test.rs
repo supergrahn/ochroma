@@ -1,16 +1,16 @@
+use glam::Quat;
 use vox_core::types::GaussianSplat;
 use vox_data::neural_compress::*;
 
 fn make_splats(count: usize) -> Vec<GaussianSplat> {
     (0..count)
-        .map(|i| GaussianSplat {
-            position: [i as f32, 0.0, 0.0],
-            scale: [0.1, 0.1, 0.1],
-            rotation: [0, 0, 0, 32767],
-            opacity: 200,
-            _pad: [0; 3],
-            spectral: [15360; 8],
-        })
+        .map(|i| GaussianSplat::volume(
+            [i as f32, 0.0, 0.0],
+            [0.1, 0.1, 0.1],
+            Quat::IDENTITY,
+            200,
+            [15360; 16],
+        ))
         .collect()
 }
 

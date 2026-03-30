@@ -15,13 +15,19 @@ members = [
     "crates/vox_ui",
     "crates/vox_tools",
     "crates/vox_nodes",
+    "crates/vox_editor",
     "crates/ochroma_engine",
+    "crates/vox_web",
+    "crates/vox_ai",
 ]
 
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-license = "MIT"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ochroma-engine/ochroma"
+homepage = "https://ochroma.dev"
+authors = ["Ochroma Contributors"]
 
 [workspace.dependencies]
 glam = { version = "0.29", features = ["serde"] }
@@ -38,10 +44,21 @@ toml = "0.8"
 puffin = "0.19"
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "macros", "net", "sync"] }
 egui = "0.31"
-crucible-core  = { path = "../aetherspectra/crucible/rust/crates/crucible-core" }
-crucible-types = { path = "../aetherspectra/crucible/rust/crates/crucible-types" }
 vox_nodes      = { path = "crates/vox_nodes" }
 vox_ui         = { path = "crates/vox_ui" }
+
+# Config for 'cargo dist'
+[workspace.metadata.dist]
+cargo-dist-version = "0.22.1"
+ci = "github"
+installers = ["shell", "powershell"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+pr-run-mode = "upload"
 
 [profile.release]
 opt-level = 3
@@ -49,3 +66,8 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

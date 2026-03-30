@@ -318,6 +318,11 @@ impl RapierPhysicsWorld {
     pub fn collider_count(&self) -> usize {
         self.collider_set.len()
     }
+
+    pub fn rigid_body_set(&self) -> &RigidBodySet { &self.rigid_body_set }
+    pub fn rigid_body_set_mut(&mut self) -> &mut RigidBodySet { &mut self.rigid_body_set }
+    pub fn collider_set(&self) -> &ColliderSet { &self.collider_set }
+    pub fn query_pipeline(&self) -> &QueryPipeline { &self.query_pipeline }
 }
 
 impl Default for RapierPhysicsWorld {

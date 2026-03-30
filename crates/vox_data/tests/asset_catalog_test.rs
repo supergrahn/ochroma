@@ -52,7 +52,7 @@ fn generate_different_seeds_different_results() {
     let differs = a
         .iter()
         .zip(b.iter())
-        .any(|(sa, sb)| sa.position != sb.position);
+        .any(|(sa, sb)| sa.position() != sb.position());
     assert!(
         differs,
         "Different seeds should produce different positions"

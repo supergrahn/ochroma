@@ -4,10 +4,7 @@ use glam::Vec3;
 use half::f16;
 
 fn make_splat(pos: [f32; 3]) -> GaussianSplat {
-    GaussianSplat {
-        position: pos, scale: [0.1, 0.1, 0.1], rotation: [0, 0, 0, 32767],
-        opacity: 200, _pad: [0; 3], spectral: [f16::from_f32(0.5).to_bits(); 8],
-    }
+    GaussianSplat::volume(pos, [0.1, 0.1, 0.1], glam::Quat::IDENTITY, 200, [f16::from_f32(0.5).to_bits(); 16])
 }
 
 #[test]
@@ -40,7 +37,7 @@ fn cluster_aabb_contains_all_splats() {
     let clusters = build_clusters(&splats, 50);
     for c in &clusters {
         for &idx in &c.splat_indices {
-            let p = Vec3::from(splats[idx as usize].position);
+            let p = Vec3::from(splats[idx as usize].position());
             assert!(c.contains_point(p), "Splat {} should be inside cluster AABB", idx);
         }
     }

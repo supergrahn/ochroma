@@ -5,14 +5,7 @@ use vox_render::gpu::software_rasteriser::{SoftwareRasteriser, Framebuffer};
 use glam::{Vec3, Mat4};
 
 fn make_test_splat(pos: [f32; 3]) -> GaussianSplat {
-    GaussianSplat {
-        position: pos,
-        scale: [0.5, 0.5, 0.5],
-        rotation: [0, 0, 0, 32767],
-        opacity: 255,
-        spectral: [15360; 8], // f16 1.0 on all bands = white
-        _pad: [0; 3],
-    }
+    GaussianSplat::volume(pos, [0.5, 0.5, 0.5], glam::Quat::IDENTITY, 255, [15360u16; 16])
 }
 
 #[test]

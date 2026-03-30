@@ -62,7 +62,8 @@ fn realistic_ply_has_valid_positions() {
     let splats = load_ply_from_reader(&mut Cursor::new(&ply)).unwrap();
     for s in &splats {
         // All positions should be on a sphere of radius ~3
-        let dist = (s.position[0].powi(2) + s.position[1].powi(2) + s.position[2].powi(2)).sqrt();
+        let pos = s.position();
+        let dist = (pos[0].powi(2) + pos[1].powi(2) + pos[2].powi(2)).sqrt();
         assert!(dist > 1.0 && dist < 5.0, "Position should be on sphere: dist={}", dist);
     }
 }
@@ -73,7 +74,7 @@ fn realistic_ply_has_valid_scales() {
     let splats = load_ply_from_reader(&mut Cursor::new(&ply)).unwrap();
     for s in &splats {
         // Scales should be small (exp(-5) ~ 0.007)
-        assert!(s.scale[0] > 0.001 && s.scale[0] < 0.1, "Scale should be small: {}", s.scale[0]);
+        assert!(s.scale_u() > 0.001 && s.scale_u() < 0.1, "Scale should be small: {}", s.scale_u());
     }
 }
 
@@ -82,8 +83,8 @@ fn realistic_ply_has_varied_colors() {
     let ply = create_realistic_ply();
     let splats = load_ply_from_reader(&mut Cursor::new(&ply)).unwrap();
     // Spectral bands should vary across splats (not all the same)
-    let first = splats[0].spectral;
-    let differs = splats.iter().any(|s| s.spectral != first);
+    let first = *splats[0].spectral();
+    let differs = splats.iter().any(|s| s.spectral() != &first);
     assert!(differs, "Realistic PLY should have varied colors");
 }
 

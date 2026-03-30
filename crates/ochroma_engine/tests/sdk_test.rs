@@ -1,16 +1,16 @@
 use ochroma_engine::prelude::*;
+use glam::Quat;
 
 #[test]
 fn engine_prelude_imports_core_types() {
-    let splat = GaussianSplat {
-        position: [0.0, 0.0, 0.0],
-        scale: [0.1, 0.1, 0.1],
-        rotation: [0, 0, 0, 32767],
-        opacity: 255,
-        _pad: [0; 3],
-        spectral: [15360; 8],
-    };
-    assert_eq!(splat.opacity, 255);
+    let splat = GaussianSplat::volume(
+        [0.0, 0.0, 0.0],
+        [0.1, 0.1, 0.1],
+        Quat::IDENTITY,
+        255,
+        [15360; 16],
+    );
+    assert_eq!(splat.opacity(), 255);
 }
 
 #[test]

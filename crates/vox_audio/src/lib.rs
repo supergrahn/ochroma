@@ -1,13 +1,28 @@
+pub mod biome_soundscape;
+pub use biome_soundscape::{BiomeKind, BiomeAmbientMix};
 pub mod acoustic_raytracer;
+pub mod av_sync;
 pub mod audio_graph;
+pub mod adaptive_music;
+pub mod hrtf;
 pub mod spatial;
 pub mod synth;
 pub mod ecs;
 pub mod spectral_synth;
+pub mod spectral_synth2;
+pub mod sdf_reverb;
+pub mod cpal_backend;
+pub mod spectral_acoustic;
+pub mod spectral_reverb;
+pub mod fundsp_graph;
 pub use spectral_synth::{synthesize_impact, create_impact_wav, synthesize_impact_from_splat_spectral};
+pub use spectral_synth2::SpectralSynth;
+pub use spectral_acoustic::SpectralAcousticProfile;
+pub use spectral_reverb::SpectralReverb;
 
 pub use spatial::{compute_spatial, Listener, SpatialAudioManager};
 pub use synth::{generate_click, generate_collect_sound, generate_place_sound, generate_tone, save_wav};
+pub use fundsp_graph::{apply_gain, apply_reverb_send};
 
 use glam::Vec3;
 
@@ -20,6 +35,7 @@ pub enum AudioCommand {
     Play { id: u32, path: String, volume: f32, looping: bool },
     Stop { id: u32 },
     StopAll,
+    PlaySynth { samples: Vec<f32>, volume: f32 },
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +88,7 @@ impl AudioThread {
                         sink.stop();
                     }
                 }
+                _ => {}
             }
         }
     }
@@ -278,6 +295,30 @@ impl Default for AudioEngine {
     fn default() -> Self {
         Self::new(64)
     }
+}
+
+// ---------------------------------------------------------------------------
+// synthesize_and_play — physics-triggered impact sound dispatch
+// ---------------------------------------------------------------------------
+
+/// Synthesise an impact sound from a splat's spectral material and queue it
+/// for CPAL playback, applying a reverb tail derived from nearby splat reflectance.
+///
+/// Called by the physics layer on `CollisionEvent` or `FractureEvent`.
+pub fn synthesize_and_play(
+    spectral: &[u16; 16],
+    impulse: f32,
+    nearby_splats: &[[u16; 16]],
+    sender: &std::sync::mpsc::Sender<AudioCommand>,
+) {
+    let dry = crate::spectral_synth2::SpectralSynth::strike(spectral, impulse);
+    let reverb = crate::spectral_reverb::SpectralReverb::from_splat_reflectance(nearby_splats);
+    let wet    = 0.25_f32;
+    let output = crate::fundsp_graph::apply_reverb_send(&dry, wet, reverb.tail_length_secs.min(2.0));
+    let _ = sender.send(AudioCommand::PlaySynth {
+        samples: output,
+        volume: impulse.clamp(0.01, 1.0),
+    });
 }
 
 // ---------------------------------------------------------------------------

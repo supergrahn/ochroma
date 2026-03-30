@@ -1,6 +1,7 @@
 use std::path::Path;
 use thiserror::Error;
 use uuid::Uuid;
+use glam;
 use vox_core::types::GaussianSplat;
 use vox_data::vxm::{VxmFile, VxmHeader, MaterialType};
 
@@ -42,14 +43,13 @@ pub fn run_turnaround(
     let splats: Vec<GaussianSplat> = (0..splat_count)
         .map(|i| {
             let t = i as f32 / splat_count as f32;
-            GaussianSplat {
-                position: [t - 0.5, 0.0, (t * 2.0 - 1.0).sin() * 0.5],
-                scale: [0.05, 0.05, 0.05],
-                rotation: [0, 0, 0, 32767],
-                opacity: 200,
-                _pad: [0; 3],
-                spectral: [0; 8],
-            }
+            GaussianSplat::volume(
+                [t - 0.5, 0.0, (t * 2.0 - 1.0).sin() * 0.5],
+                [0.05, 0.05, 0.05],
+                glam::Quat::IDENTITY,
+                200,
+                [0; 16],
+            )
         })
         .collect();
 
@@ -57,10 +57,10 @@ pub fn run_turnaround(
     let header = VxmHeader::new(uuid, splats.len() as u32, mat_type);
     let vxm = VxmFile { header, splats };
 
-    if let Some(parent) = output.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
 
     let file = std::fs::File::create(output)?;

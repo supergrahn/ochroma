@@ -131,16 +131,16 @@ impl BdiAgent {
         }
 
         // Low satisfaction triggers various desires
-        if citizen.needs.housing < self.satisfaction_threshold {
-            if !self.desires.contains(&Desire::FindHousing) {
-                self.desires.push(Desire::FindHousing);
-            }
+        if citizen.needs.housing < self.satisfaction_threshold
+            && !self.desires.contains(&Desire::FindHousing)
+        {
+            self.desires.push(Desire::FindHousing);
         }
 
-        if citizen.needs.employment < self.satisfaction_threshold {
-            if !self.desires.contains(&Desire::FindBetterJob) {
-                self.desires.push(Desire::FindBetterJob);
-            }
+        if citizen.needs.employment < self.satisfaction_threshold
+            && !self.desires.contains(&Desire::FindBetterJob)
+        {
+            self.desires.push(Desire::FindBetterJob);
         }
 
         if citizen.needs.education < self.satisfaction_threshold {

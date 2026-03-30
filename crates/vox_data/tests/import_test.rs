@@ -38,8 +38,8 @@ fn import_ply_produces_real_splats() {
     let settings = ImportSettings::default();
     let result = import_asset(&path, &settings).unwrap();
     assert_eq!(result.splats.len(), 10, "PLY import should produce one splat per vertex");
-    assert!((result.splats[0].position[0]).abs() < 0.01, "first splat near x=0");
-    let scale = result.splats[0].scale[0];
+    assert!((result.splats[0].position()[0]).abs() < 0.01, "first splat near x=0");
+    let scale = result.splats[0].scale_u();
     assert!(scale > 0.05 && scale < 0.2,
         "scale should be ~exp(-2.3)≈0.1, not dummy 0.01, got {}", scale);
 
@@ -89,10 +89,10 @@ fn import_gltf_produces_real_splats() {
     assert!(!result.splats.is_empty(), "GLTF import should produce splats");
     // Splats should be within the triangle's bounds [0,1] on x and y
     for s in &result.splats {
-        assert!(s.position[0] >= -0.01 && s.position[0] <= 1.01,
-            "splat x={} out of triangle range", s.position[0]);
-        assert!(s.position[1] >= -0.01 && s.position[1] <= 1.01,
-            "splat y={} out of triangle range", s.position[1]);
+        assert!(s.position()[0] >= -0.01 && s.position()[0] <= 1.01,
+            "splat x={} out of triangle range", s.position()[0]);
+        assert!(s.position()[1] >= -0.01 && s.position()[1] <= 1.01,
+            "splat y={} out of triangle range", s.position()[1]);
     }
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -110,14 +110,13 @@ fn import_vxm_produces_exact_splats() {
     // Write a real VXM with 5 known splats
     let file = VxmFile {
         header: VxmHeader::new(Uuid::new_v4(), 5, MaterialType::Generic),
-        splats: (0..5).map(|i| GaussianSplat {
-        position: [i as f32, 0.0, 0.0],
-        scale: [0.1, 0.1, 0.1],
-        rotation: [0, 0, 0, 16384],
-        opacity: 200,
-        _pad: [0; 3],
-        spectral: [100, 200, 150, 100, 80, 60, 40, 20],
-    }).collect(),
+        splats: (0..5).map(|i| GaussianSplat::volume(
+            [i as f32, 0.0, 0.0],
+            [0.1, 0.1, 0.1],
+            glam::Quat::IDENTITY,
+            200,
+            [100, 200, 150, 100, 80, 60, 40, 20, 100, 200, 150, 100, 80, 60, 40, 20],
+        )).collect(),
     };
     let mut buf = Vec::new();
     file.write(&mut buf).unwrap();
@@ -126,8 +125,8 @@ fn import_vxm_produces_exact_splats() {
     let settings = ImportSettings::default();
     let result = import_asset(&path, &settings).unwrap();
     assert_eq!(result.splats.len(), 5, "VXM import should produce exactly 5 splats");
-    assert!((result.splats[0].position[0]).abs() < 0.01, "first splat at x=0");
-    assert!((result.splats[4].position[0] - 4.0).abs() < 0.01, "fifth splat at x=4");
+    assert!((result.splats[0].position()[0]).abs() < 0.01, "first splat at x=0");
+    assert!((result.splats[4].position()[0] - 4.0).abs() < 0.01, "fifth splat at x=4");
 
     std::fs::remove_dir_all(&dir).ok();
 }

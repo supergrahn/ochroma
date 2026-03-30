@@ -59,7 +59,7 @@ impl SkinningCompute {
         });
         let skinned_splat_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("skinning_output_splats"),
-            size: ((base_splats.len() * std::mem::size_of::<GpuSkinSplat>()) as u64).max(64),
+            size: (std::mem::size_of_val(base_splats) as u64).max(64),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });

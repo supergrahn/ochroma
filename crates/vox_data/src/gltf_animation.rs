@@ -440,31 +440,36 @@ pub fn skin_splats(
                 .unwrap_or(Mat4::IDENTITY);
             let skin_mat = world * ibm;
 
-            let pos = Vec3::from(splat.position);
+            let pos = Vec3::from(splat.position());
             let new_pos = skin_mat.transform_point3(pos);
 
             let (skin_scale, skin_quat, _skin_t) = skin_mat.to_scale_rotation_translation();
             let _ = skin_scale;
 
+            let orig_rot = splat.rotation_raw();
             let orig_q = glam::Quat::from_xyzw(
-                splat.rotation[0] as f32 / 32767.0,
-                splat.rotation[1] as f32 / 32767.0,
-                splat.rotation[2] as f32 / 32767.0,
-                splat.rotation[3] as f32 / 32767.0,
+                orig_rot[0] as f32 / 32767.0,
+                orig_rot[1] as f32 / 32767.0,
+                orig_rot[2] as f32 / 32767.0,
+                orig_rot[3] as f32 / 32767.0,
             ).normalize();
 
             let new_q = (skin_quat * orig_q).normalize();
 
-            GaussianSplat {
-                position: [new_pos.x, new_pos.y, new_pos.z],
-                rotation: [
-                    (new_q.x * 32767.0).clamp(-32767.0, 32767.0) as i16,
-                    (new_q.y * 32767.0).clamp(-32767.0, 32767.0) as i16,
-                    (new_q.z * 32767.0).clamp(-32767.0, 32767.0) as i16,
-                    (new_q.w * 32767.0).clamp(-32767.0, 32767.0) as i16,
-                ],
-                ..*splat
+            let mut out = *splat;
+            out.set_position([new_pos.x, new_pos.y, new_pos.z]);
+            // Re-encode quaternion as i16 XYZW
+            {
+                let r = out.position_mut(); let _ = r; // borrow ends
             }
+            // Use volume constructor with same spectral/opacity but new pos+rot
+            GaussianSplat::volume(
+                [new_pos.x, new_pos.y, new_pos.z],
+                splat.scales(),
+                new_q,
+                splat.opacity(),
+                *splat.spectral(),
+            )
         })
         .collect()
 }
@@ -490,7 +495,7 @@ pub fn assign_joint_bindings(
     };
 
     splats.iter().map(|splat| {
-        let pos = Vec3::from(splat.position);
+        let pos = Vec3::from(splat.position());
         skeleton.joints.iter().enumerate()
             .min_by(|(ai, _), (bi, _)| {
                 let da = joint_world_positions[*ai].distance_squared(pos);
@@ -707,14 +712,13 @@ mod tests {
         );
 
         // Place a splat at the hand's bind-pose world position (0, 2, 0)
-        let splat = GaussianSplat {
-            position: [0.0, 2.0, 0.0],
-            scale: [0.1, 0.1, 0.1],
-            rotation: [0, 0, 0, 32767],
-            opacity: 255,
-            _pad: [0; 3],
-            spectral: [0; 8],
-        };
+        let splat = GaussianSplat::volume(
+            [0.0, 2.0, 0.0],
+            [0.1, 0.1, 0.1],
+            glam::Quat::IDENTITY,
+            255,
+            [0; 16],
+        );
 
         let joint_transforms = evaluate_animation(&skel, &anim, 1.0);
         let ibms: Vec<Mat4> = skel.joints.iter().map(|j| j.inverse_bind_matrix).collect();
@@ -726,7 +730,7 @@ mod tests {
         // skin_mat = world_transform[hand] * ibm[hand]
         // ibm[hand] brings (0,2,0) -> (0,0,0) (hand local origin)
         // world_transform[hand] puts it at (-1,1,0)
-        let p = skinned[0].position;
+        let p = skinned[0].position();
         assert!(
             approx_eq(p[0], -1.0, 0.05)
                 && approx_eq(p[1], 1.0, 0.05)
@@ -801,14 +805,13 @@ mod tests {
     #[test]
     fn assign_joint_bindings_returns_one_per_splat() {
         let skeleton = build_synthetic_skeleton(&["root", "hip", "chest"]);
-        let splats: Vec<GaussianSplat> = (0..5).map(|i| GaussianSplat {
-            position: [0.0, i as f32 * 0.5, 0.0],
-            scale: [0.1; 3],
-            rotation: [0, 0, 0, 32767],
-            opacity: 200,
-            _pad: [0; 3],
-            spectral: [0; 8],
-        }).collect();
+        let splats: Vec<GaussianSplat> = (0..5).map(|i| GaussianSplat::volume(
+            [0.0, i as f32 * 0.5, 0.0],
+            [0.1; 3],
+            glam::Quat::IDENTITY,
+            200,
+            [0; 16],
+        )).collect();
         let bindings = assign_joint_bindings(&splats, &skeleton);
         assert_eq!(bindings.len(), 5);
         for b in &bindings {
@@ -819,14 +822,13 @@ mod tests {
     #[test]
     fn skin_splats_rotation_changes_under_rotation_transform() {
         let skel = build_synthetic_skeleton(&["root", "arm"]);
-        let splat = GaussianSplat {
-            position: [0.0, 1.0, 0.0],
-            scale: [0.1; 3],
-            rotation: [0, 0, 0, 32767],
-            opacity: 255,
-            _pad: [0; 3],
-            spectral: [0; 8],
-        };
+        let splat = GaussianSplat::volume(
+            [0.0, 1.0, 0.0],
+            [0.1; 3],
+            glam::Quat::IDENTITY,
+            255,
+            [0u16; 16],
+        );
         let anim = build_synthetic_animation(
             "rotate", 1, 1.0,
             glam::Quat::IDENTITY,
@@ -836,7 +838,7 @@ mod tests {
         let ibms: Vec<glam::Mat4> = skel.joints.iter().map(|j| j.inverse_bind_matrix).collect();
         let skinned = skin_splats(&[splat], &[1], &transforms, &ibms);
         assert_eq!(skinned.len(), 1);
-        let r = skinned[0].rotation;
+        let r = skinned[0].rotation_raw();
         let is_identity = r[0].abs() < 100 && r[1].abs() < 100 && r[2].abs() < 100;
         assert!(!is_identity, "rotation should change after skinning, got {:?}", r);
     }

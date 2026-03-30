@@ -4,7 +4,7 @@
 //! via the existing `RenderBuffer`.
 
 use bevy_ecs::prelude::*;
-use glam::Vec3;
+use glam::{self, Vec3};
 use half::f16;
 use rand::prelude::*;
 
@@ -124,7 +124,15 @@ pub fn particles_to_splats(
         let opacity = ((1.0 - frac) * 240.0) as u8;
         let scale = p.size * (1.0 - frac * 0.5);
         let [r, g, b] = emitter.color;
-        let spectral: [u16; 8] = [
+        let spectral: [u16; 16] = [
+            f16::from_f32(b * 0.8).to_bits(),
+            f16::from_f32(b * 0.9).to_bits(),
+            f16::from_f32(b * 1.0).to_bits(),
+            f16::from_f32(g * 0.9).to_bits(),
+            f16::from_f32(g * 1.0).to_bits(),
+            f16::from_f32(r * 0.8).to_bits(),
+            f16::from_f32(r * 0.9).to_bits(),
+            f16::from_f32(r * 1.0).to_bits(),
             f16::from_f32(b * 0.8).to_bits(),
             f16::from_f32(b * 0.9).to_bits(),
             f16::from_f32(b * 1.0).to_bits(),
@@ -134,14 +142,13 @@ pub fn particles_to_splats(
             f16::from_f32(r * 0.9).to_bits(),
             f16::from_f32(r * 1.0).to_bits(),
         ];
-        GaussianSplat {
-            position: [p.position.x, p.position.y, p.position.z],
-            scale: [scale, scale, scale],
-            rotation: [0, 0, 0, 32767], // identity quaternion (i16)
+        GaussianSplat::volume(
+            [p.position.x, p.position.y, p.position.z],
+            [scale, scale, scale],
+            glam::Quat::IDENTITY,
             opacity,
-            _pad: [0; 3],
             spectral,
-        }
+        )
     }).collect()
 }
 
@@ -194,7 +201,8 @@ pub mod presets {
         ParticleEmitterComponent {
             max_particles: 500, emit_rate: 80.0, initial_velocity: Vec3::new(0.0, 4.0, 0.0),
             velocity_spread: 1.5, lifetime: 1.2, splat_scale: 0.2,
-            color: [1.0, 0.4, 0.05], gravity_scale: -0.3, ..Default::default()
+            color: [1.0, 0.4, 0.05], gravity_scale: -0.3,
+            local_offset: Vec3::ZERO,
         }
     }
 
@@ -203,7 +211,7 @@ pub mod presets {
             max_particles: 300, emit_rate: 30.0, local_offset: Vec3::new(0.0, 1.0, 0.0),
             initial_velocity: Vec3::new(0.0, 2.0, 0.0), velocity_spread: 0.8,
             lifetime: 3.0, splat_scale: 0.4, color: [0.3, 0.3, 0.3],
-            gravity_scale: -0.1, ..Default::default()
+            gravity_scale: -0.1,
         }
     }
 
@@ -211,7 +219,8 @@ pub mod presets {
         ParticleEmitterComponent {
             max_particles: 200, emit_rate: 100.0, initial_velocity: Vec3::new(0.0, 8.0, 0.0),
             velocity_spread: 5.0, lifetime: 0.5, splat_scale: 0.05,
-            color: [1.0, 0.9, 0.2], gravity_scale: 1.0, ..Default::default()
+            color: [1.0, 0.9, 0.2], gravity_scale: 1.0,
+            local_offset: Vec3::ZERO,
         }
     }
 
@@ -220,7 +229,7 @@ pub mod presets {
             max_particles: 2000, emit_rate: 500.0, local_offset: Vec3::new(0.0, 20.0, 0.0),
             initial_velocity: Vec3::new(0.0, -15.0, 0.0), velocity_spread: 1.0,
             lifetime: 2.0, splat_scale: 0.02, color: [0.3, 0.4, 0.8],
-            gravity_scale: 0.5, ..Default::default()
+            gravity_scale: 0.5,
         }
     }
 }
@@ -298,7 +307,7 @@ mod tests {
         let old   = Particle { position: Vec3::ZERO, velocity: Vec3::ZERO, life: 1.8, max_life: 2.0, size: 0.1 };
         let sy = particles_to_splats(&[young], &emitter);
         let so = particles_to_splats(&[old], &emitter);
-        assert!(sy[0].opacity > so[0].opacity);
+        assert!(sy[0].opacity() > so[0].opacity());
     }
 
     #[test]

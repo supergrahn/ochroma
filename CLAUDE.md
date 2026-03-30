@@ -21,3 +21,17 @@ cargo test
 ## Specs
 
 See `docs/spec/` for phase specifications.
+
+## Plans and Design Docs
+
+**Every new plan must use `docs/templates/plan.md` as its base.**
+**Every new design doc must use `docs/templates/design.md` as its base.**
+
+Key rules enforced by the templates:
+- `Done When` must name an exact command and exact human-visible output — "tests pass" is never acceptable
+- Every task implements AND wires in the same step — no "wire later" tasks
+- `todo!()` / `unimplemented!()` / empty function bodies = task failure
+- Every test checks a real computed outcome — `assert!(result.is_some())` is forbidden
+- `IMPORTANT NOTES` must contain real API signatures so agents don't invent their own
+
+Plans go in `docs/superpowers/plans/`. Design docs go in `docs/superpowers/specs/`.

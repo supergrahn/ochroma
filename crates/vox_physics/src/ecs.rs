@@ -40,6 +40,7 @@ pub struct StaticColliderRegistered;
 
 /// Registers new entities (ColliderComponent + TransformComponent, no PhysicsBodyComponent yet)
 /// into Rapier and attaches a PhysicsBodyComponent.
+#[allow(clippy::type_complexity)]
 pub fn spawn_physics_bodies_system(
     mut commands: Commands,
     mut physics: ResMut<RapierPhysicsWorld>,

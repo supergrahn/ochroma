@@ -2,9 +2,16 @@
 name = "vox_app"
 edition.workspace = true
 version.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+web = ["dep:wasm-bindgen", "dep:console_error_panic_hook", "dep:web-sys"]
+spectra-native = ["vox_render/spectra-native"]
 
 [dependencies]
 vox_core = { path = "../vox_core" }
+vox_ai   = { path = "../vox_ai" }
 vox_data = { path = "../vox_data" }
 vox_render = { path = "../vox_render" }
 vox_nn = { path = "../vox_nn" }
@@ -35,6 +42,15 @@ serde_json = "1"
 toml = { workspace = true }
 rhai = "1"
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["Window", "Document", "HtmlCanvasElement"] }
+# Force getrandom to use JS RNG on wasm32 (required by rand, uuid, etc.)
+# 0.2.x (used by uuid, older deps) needs "js"; 0.3.x / 0.4.x (used by rand 0.9) need "wasm_js".
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -57,6 +73,10 @@ path = "src/bin/platformer.rs"
 [[bin]]
 name = "render_showcase"
 path = "src/bin/render_showcase.rs"
+
+[[bin]]
+name = "hello_splat"
+path = "src/bin/hello_splat.rs"
 
 [[example]]
 name = "simple_game"

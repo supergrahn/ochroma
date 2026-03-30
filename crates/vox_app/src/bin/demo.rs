@@ -100,7 +100,7 @@ fn illuminant_for_time(hour: f32) -> Illuminant {
     let d65 = Illuminant::d65();
     let warm = Illuminant::a();
     let cool = Illuminant {
-        bands: [30.0, 45.0, 70.0, 60.0, 50.0, 40.0, 30.0, 20.0],
+        bands: [30.0, 38.0, 45.0, 55.0, 65.0, 70.0, 68.0, 62.0, 55.0, 47.0, 40.0, 35.0, 30.0, 25.0, 22.0, 20.0],
     };
 
     let (a, b, t) = if (6.0..12.0).contains(&hour) {
@@ -118,9 +118,9 @@ fn illuminant_for_time(hour: f32) -> Illuminant {
         (&cool, &warm, hour / 6.0)
     };
 
-    let mut bands = [0.0f32; 8];
-    for i in 0..8 {
-        bands[i] = a.bands[i] * (1.0 - t) + b.bands[i] * t;
+    let mut bands = [0.0f32; 16];
+    for (i, val) in bands.iter_mut().enumerate() {
+        *val = a.bands[i] * (1.0 - t) + b.bands[i] * t;
     }
     Illuminant { bands }
 }
@@ -257,8 +257,8 @@ impl DemoApp {
             );
             for s in &b {
                 let mut ws = *s;
-                ws.position[0] += i as f32 * 10.0 - 15.0;
-                ws.position[2] += 20.0;
+                ws.position_mut()[0] += i as f32 * 10.0 - 15.0;
+                ws.position_mut()[2] += 20.0;
                 building_splats.push(ws);
             }
         }
@@ -270,8 +270,8 @@ impl DemoApp {
             let t = vox_data::proc_gs_advanced::generate_tree(100 + i, 6.0 + i as f32, 2.5);
             for s in &t {
                 let mut ws = *s;
-                ws.position[0] += i as f32 * 8.0 - 20.0;
-                ws.position[2] += 10.0;
+                ws.position_mut()[0] += i as f32 * 8.0 - 20.0;
+                ws.position_mut()[2] += 10.0;
                 tree_splats.push(ws);
             }
         }
@@ -372,9 +372,9 @@ impl DemoApp {
         for (pos, splats) in &self.placed_objects {
             for s in splats {
                 let mut ws = *s;
-                ws.position[0] += pos.x;
-                ws.position[1] += pos.y;
-                ws.position[2] += pos.z;
+                ws.position_mut()[0] += pos.x;
+                ws.position_mut()[1] += pos.y;
+                ws.position_mut()[2] += pos.z;
                 all_splats.push(ws);
             }
         }
@@ -395,14 +395,22 @@ impl DemoApp {
             let b = pixel[2] as f32 / 255.0;
 
             let spectral = [
-                b * 0.3,                    // 380nm: violet
-                b * 0.7,                    // 420nm: blue
-                b * 0.8 + g * 0.1,          // 460nm: cyan-blue
-                g * 0.4 + b * 0.2,          // 500nm: green-blue
-                g * 0.9 + r * 0.05,         // 540nm: green
-                r * 0.4 + g * 0.3,          // 580nm: yellow
-                r * 0.8 + g * 0.05,         // 620nm: orange-red
-                r * 0.6,                    // 660nm: red
+                b * 0.30,                       // 380nm: violet
+                b * 0.55,                       // 405nm
+                b * 0.70,                       // 430nm
+                b * 0.80 + g * 0.05,            // 455nm: blue
+                b * 0.50 + g * 0.30,            // 480nm: cyan-blue
+                g * 0.55 + b * 0.10,            // 505nm
+                g * 0.80 + r * 0.03,            // 530nm: green
+                g * 0.90 + r * 0.05,            // 555nm: green peak
+                g * 0.60 + r * 0.20,            // 580nm: yellow
+                r * 0.45 + g * 0.25,            // 605nm: orange
+                r * 0.75 + g * 0.05,            // 630nm: orange-red
+                r * 0.80,                       // 655nm: red
+                r * 0.70,                       // 680nm
+                r * 0.65,                       // 705nm
+                r * 0.60,                       // 730nm
+                r * 0.55,                       // 755nm
             ];
             let albedo = spectral;
 

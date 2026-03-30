@@ -55,11 +55,11 @@ impl BuildingManager {
     }
 
     pub fn assign_occupant(&mut self, building_id: u32) -> bool {
-        if let Some(b) = self.buildings.iter_mut().find(|b| b.id == building_id) {
-            if b.occupants < b.capacity {
-                b.occupants += 1;
-                return true;
-            }
+        if let Some(b) = self.buildings.iter_mut().find(|b| b.id == building_id)
+            && b.occupants < b.capacity
+        {
+            b.occupants += 1;
+            return true;
         }
         false
     }

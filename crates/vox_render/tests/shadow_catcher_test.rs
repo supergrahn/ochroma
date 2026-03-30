@@ -23,14 +23,13 @@ fn shadow_mesh_from_splat_positions() {
         .map(|i| {
             let angle = i as f32 * 0.1;
             let radius = 5.0;
-            GaussianSplat {
-                position: [angle.cos() * radius, i as f32 * 0.1, angle.sin() * radius],
-                scale: [0.1, 0.1, 0.1],
-                rotation: [0, 0, 0, 32767],
-                opacity: 255,
-                _pad: [0; 3],
-                spectral: [0; 8],
-            }
+            GaussianSplat::volume(
+                [angle.cos() * radius, i as f32 * 0.1, angle.sin() * radius],
+                [0.1, 0.1, 0.1],
+                glam::Quat::IDENTITY,
+                255,
+                [0u16; 16],
+            )
         })
         .collect();
 

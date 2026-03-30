@@ -195,11 +195,11 @@ impl PluginManager {
                 .and_then(|m| m.modified())
                 .ok();
 
-            if let (Some(current), Some(last)) = (current_modified, record.last_modified) {
-                if current > last {
-                    updated.push(name.clone());
-                    record.last_modified = Some(current);
-                }
+            if let (Some(current), Some(last)) = (current_modified, record.last_modified)
+                && current > last
+            {
+                updated.push(name.clone());
+                record.last_modified = Some(current);
             }
         }
 

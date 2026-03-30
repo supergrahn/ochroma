@@ -104,27 +104,26 @@ impl Windmill {
     fn new(position: Vec3) -> Self {
         // Build base: a column of splats
         let mut base_splats = Vec::new();
-        let base_spd: [u16; 8] = std::array::from_fn(|i| {
-            let v: f32 = if i < 4 { 0.6 } else { 0.3 };
+        let base_spd: [u16; 16] = std::array::from_fn(|i| {
+            let v: f32 = if i < 8 { 0.6 } else { 0.3 };
             half::f16::from_f32(v).to_bits()
         });
         for iy in 0..8 {
             let y = iy as f32 * 0.5;
-            base_splats.push(GaussianSplat {
-                position: [position.x, position.y + y, position.z],
-                scale: [0.25, 0.25, 0.25],
-                rotation: [0, 0, 0, 32767],
-                opacity: 200,
-                _pad: [0; 3],
-                spectral: base_spd,
-            });
+            base_splats.push(GaussianSplat::volume(
+                [position.x, position.y + y, position.z],
+                [0.25, 0.25, 0.25],
+                Quat::IDENTITY,
+                200,
+                base_spd,
+            ));
         }
 
         // Build blade splats in local space (4 blades radiating outward)
         let mut blade_splats_local = Vec::new();
         let blade_height = 4.0; // attach blades at this height on the base
-        let blade_spd: [u16; 8] = std::array::from_fn(|i| {
-            let v: f32 = if (2..=5).contains(&i) { 0.85 } else { 0.4 };
+        let blade_spd: [u16; 16] = std::array::from_fn(|i| {
+            let v: f32 = if (4..=11).contains(&i) { 0.85 } else { 0.4 };
             half::f16::from_f32(v).to_bits()
         });
 
@@ -133,14 +132,13 @@ impl Windmill {
             // Each blade is a row of splats along one radial direction
             for r in 1..=5 {
                 let radius = r as f32 * 0.4;
-                blade_splats_local.push(GaussianSplat {
-                    position: [radius * angle.cos(), 0.0, radius * angle.sin()],
-                    scale: [0.18, 0.18, 0.18],
-                    rotation: [0, 0, 0, 32767],
-                    opacity: 210,
-                    _pad: [0; 3],
-                    spectral: blade_spd,
-                });
+                blade_splats_local.push(GaussianSplat::volume(
+                    [radius * angle.cos(), 0.0, radius * angle.sin()],
+                    [0.18, 0.18, 0.18],
+                    Quat::IDENTITY,
+                    210,
+                    blade_spd,
+                ));
             }
         }
 
@@ -171,13 +169,11 @@ impl Windmill {
             .iter()
             .zip(self.blade_splats_world.iter_mut())
         {
-            let local_pos = Vec3::from(src.position);
+            let local_pos = Vec3::from(src.position());
             let rotated = rot * local_pos;
             let world_pos = rotated + self.position;
-            *dst = GaussianSplat {
-                position: [world_pos.x, world_pos.y, world_pos.z],
-                ..*src
-            };
+            *dst = *src;
+            dst.set_position([world_pos.x, world_pos.y, world_pos.z]);
         }
     }
 }
@@ -269,8 +265,7 @@ impl WalkingSim {
             .collect();
 
         // Character controller — start at eye level above ground
-        let mut cc = CharacterController::default();
-        cc.speed = 8.0;
+        let cc = CharacterController { speed: 8.0, ..Default::default() };
         let cc_transform = TransformComponent {
             position: Vec3::new(0.0, cc.height * 0.5, 0.0),
             rotation: Quat::IDENTITY,
@@ -278,8 +273,7 @@ impl WalkingSim {
         };
 
         // Game UI — start on main menu; player presses Enter to begin
-        let mut game_ui = GameUI::default();
-        game_ui.game_state = GameState::MainMenu;
+        let game_ui = GameUI { game_state: GameState::MainMenu, ..Default::default() };
 
         // Spatial audio — gracefully silent if no hardware
         let audio = SpatialAudioManager::new();
@@ -366,8 +360,8 @@ impl WalkingSim {
             );
             for s in &b {
                 let mut ws = *s;
-                ws.position[0] += bx;
-                ws.position[2] += bz;
+                ws.position_mut()[0] += bx;
+                ws.position_mut()[2] += bz;
                 self.building_splats.push(ws);
             }
             self.building_boxes.push(BoundingBox {
@@ -402,8 +396,8 @@ impl WalkingSim {
             let radius = 15.0 + (i as f32 * 3.0);
             for s in &t {
                 let mut ws = *s;
-                ws.position[0] += angle.cos() * radius;
-                ws.position[2] += angle.sin() * radius;
+                ws.position_mut()[0] += angle.cos() * radius;
+                ws.position_mut()[2] += angle.sin() * radius;
                 self.tree_splats.push(ws);
             }
         }
@@ -441,12 +435,12 @@ impl WalkingSim {
         let occluder_positions: Vec<Vec3> = self
             .building_splats
             .iter()
-            .map(|s| Vec3::from(s.position))
+            .map(|s| Vec3::from(s.position()))
             .collect();
         let occluder_radii: Vec<f32> = self
             .building_splats
             .iter()
-            .map(|s| s.scale[0])
+            .map(|s| s.scale_u())
             .collect();
         self.shadow_mapper
             .render_shadow_map(&occluder_positions, &occluder_radii);
@@ -468,8 +462,8 @@ impl WalkingSim {
 
     fn generate_orb_splats(&self) -> Vec<GaussianSplat> {
         let mut splats = Vec::new();
-        let orb_spd: [u16; 8] = std::array::from_fn(|i| {
-            let v = if (3..=6).contains(&i) { 0.9 } else { 0.5 };
+        let orb_spd: [u16; 16] = std::array::from_fn(|i| {
+            let v = if (6..=13).contains(&i) { 0.9 } else { 0.5 };
             half::f16::from_f32(v).to_bits()
         });
 
@@ -497,14 +491,13 @@ impl WalkingSim {
                         }
                         let rx = dx as f32 * 0.15 * cos_a - dz as f32 * 0.15 * sin_a;
                         let rz = dx as f32 * 0.15 * sin_a + dz as f32 * 0.15 * cos_a;
-                        splats.push(GaussianSplat {
-                            position: [pos.x + rx, pos.y + dy as f32 * 0.15, pos.z + rz],
-                            scale: [scale, scale, scale],
-                            rotation: [0, 0, 0, 32767],
-                            opacity: 230,
-                            _pad: [0; 3],
-                            spectral: orb_spd,
-                        });
+                        splats.push(GaussianSplat::volume(
+                            [pos.x + rx, pos.y + dy as f32 * 0.15, pos.z + rz],
+                            [scale, scale, scale],
+                            Quat::IDENTITY,
+                            230,
+                            orb_spd,
+                        ));
                     }
                 }
             }
@@ -741,14 +734,22 @@ impl WalkingSim {
             let b = b * shadow_factor;
 
             let spectral = [
-                b * 0.3,
-                b * 0.7,
-                b * 0.8 + g * 0.1,
-                g * 0.4 + b * 0.2,
-                g * 0.9 + r * 0.05,
-                r * 0.4 + g * 0.3,
-                r * 0.8 + g * 0.05,
-                r * 0.6,
+                b * 0.30,
+                b * 0.55,
+                b * 0.70,
+                b * 0.80 + g * 0.05,
+                b * 0.50 + g * 0.30,
+                g * 0.55 + b * 0.10,
+                g * 0.80 + r * 0.03,
+                g * 0.90 + r * 0.05,
+                g * 0.60 + r * 0.20,
+                r * 0.45 + g * 0.25,
+                r * 0.75 + g * 0.05,
+                r * 0.80,
+                r * 0.70,
+                r * 0.65,
+                r * 0.60,
+                r * 0.55,
             ];
             let albedo = spectral;
 
@@ -798,7 +799,7 @@ impl ApplicationHandler for WalkingSim {
         let pos = self.cc_transform.position;
         let mut pos_el = UIElement::new(
             "pos",
-            &format!("X:{:.0} Y:{:.1} Z:{:.0}", pos.x, pos.y, pos.z),
+            format!("X:{:.0} Y:{:.1} Z:{:.0}", pos.x, pos.y, pos.z),
             UIPosition::BottomLeft,
         );
         pos_el.size = UISize::Small;

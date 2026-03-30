@@ -92,6 +92,58 @@ impl Default for AsyncAssetLoader {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Spectral codec integration — splat upload path
+// ---------------------------------------------------------------------------
+
+use vox_data::spectral_codec::SpectralCodec;
+use vox_core::types::GaussianSplat;
+
+/// Splat upload path: applies spectral codec (encode → decode) to each splat's
+/// spectral bands during upload, providing neural compression with < 0.15 per-band error.
+pub struct SplatUploadPath {
+    codec: SpectralCodec,
+}
+
+impl SplatUploadPath {
+    pub fn new() -> Self {
+        Self {
+            codec: SpectralCodec::with_hardcoded_weights(),
+        }
+    }
+
+    /// Process a single splat: encode+decode its spectral bands through the codec.
+    /// This acts as a compression step — 16 bands → 4 latent → 16 bands.
+    pub fn process_splat(&self, splat: &GaussianSplat) -> GaussianSplat {
+        // Decode f16 stored-as-u16 spectral values to f32
+        let spectral_f32: [f32; 16] = std::array::from_fn(|b| {
+            half::f16::from_bits(splat.spectral()[b]).to_f32()
+        });
+
+        // Encode to 4-element latent, then decode back to 16 bands
+        let latent = self.codec.encode(&spectral_f32);
+        let decoded = self.codec.decode(&latent);
+
+        // Re-encode back to f16 stored as u16
+        let mut out = *splat;
+        for b in 0..16 {
+            out.spectral_mut()[b] = half::f16::from_f32(decoded[b]).to_bits();
+        }
+        out
+    }
+
+    /// Process a batch of splats through the spectral codec upload path.
+    pub fn process_batch(&self, splats: &[GaussianSplat]) -> Vec<GaussianSplat> {
+        splats.iter().map(|s| self.process_splat(s)).collect()
+    }
+}
+
+impl Default for SplatUploadPath {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +184,31 @@ mod tests {
         assert_eq!(active.len(), 9);
         for t in &active {
             assert!((t.x - 5).abs() <= 1 && (t.z - 5).abs() <= 1);
+        }
+    }
+
+    #[test]
+    fn splat_upload_path_codec_round_trip() {
+        use vox_core::types::GaussianSplat;
+        let path = SplatUploadPath::new();
+        // Create a splat with known spectral values
+        let v = half::f16::from_f32(0.5).to_bits();
+        let splat = GaussianSplat::surface(
+            [0.0, 0.0, 0.0].into(),
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            0.1,
+            0.1,
+            200,
+            [v; 16],
+        );
+        let processed = path.process_splat(&splat);
+        // After encode+decode, spectral should still be close to original (< 0.15 error)
+        for b in 0..16 {
+            let orig = half::f16::from_bits(splat.spectral()[b]).to_f32();
+            let proc = half::f16::from_bits(processed.spectral()[b]).to_f32();
+            let err = (proc - orig).abs();
+            assert!(err < 0.15, "band {} upload codec error {:.4} exceeds tolerance", b, err);
         }
     }
 }

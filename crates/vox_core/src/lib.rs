@@ -1,3 +1,6 @@
+pub mod picking;
+pub use picking::{ScreenRay, SplatPickEntry};
+
 pub mod asset_watcher;
 pub mod types;
 pub mod undo;
@@ -15,9 +18,14 @@ pub mod i18n;
 pub mod script_interface;
 pub mod engine_runtime;
 pub mod character_controller;
+pub mod spectral_damage;
+pub mod motion_matching;
+pub mod skinning;
 pub mod hot_reload_system;
 pub mod game_ui;
 pub mod ai;
+pub mod ai_perception;
+pub mod spectral_fingerprint;
 pub mod behavior_tree;
 pub mod eqs;
 pub mod editor_state;

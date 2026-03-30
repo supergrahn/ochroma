@@ -3,48 +3,37 @@ use uuid::Uuid;
 use vox_core::types::GaussianSplat;
 use vox_data::vxm::{MaterialType, VxmFile, VxmHeader};
 
-/// Encode 8 spectral band values (f32) as [u16; 8] (each stored as f16 bits).
+/// Encode 16 spectral band values (f32) as [u16; 16] (each stored as f16 bits).
 #[allow(dead_code)]
-fn encode_spectral(bands: [f32; 8]) -> [u16; 8] {
-    [
-        f16::from_f32(bands[0]).to_bits(),
-        f16::from_f32(bands[1]).to_bits(),
-        f16::from_f32(bands[2]).to_bits(),
-        f16::from_f32(bands[3]).to_bits(),
-        f16::from_f32(bands[4]).to_bits(),
-        f16::from_f32(bands[5]).to_bits(),
-        f16::from_f32(bands[6]).to_bits(),
-        f16::from_f32(bands[7]).to_bits(),
-    ]
+fn encode_spectral(bands: [f32; 16]) -> [u16; 16] {
+    std::array::from_fn(|i| f16::from_f32(bands[i]).to_bits())
 }
 
 /// Brick-red SPD: low blue (380-460 nm), high red (620 nm peak).
-/// Band wavelengths: [380, 420, 460, 500, 540, 580, 620, 660] nm.
+/// Band wavelengths: 16 bands from 380nm to 700nm.
 #[allow(dead_code)]
-fn brick_spd() -> [f32; 8] {
-    // [380, 420, 460, 500, 540, 580, 620, 660]
-    [0.04, 0.05, 0.06, 0.10, 0.18, 0.35, 0.65, 0.55]
+fn brick_spd() -> [f32; 16] {
+    [0.04, 0.05, 0.06, 0.10, 0.18, 0.35, 0.65, 0.55,
+     0.50, 0.45, 0.40, 0.35, 0.30, 0.25, 0.20, 0.18]
 }
 
 /// Slate-grey SPD: flat reflectance ~0.15-0.20 across all bands.
 #[allow(dead_code)]
-fn slate_spd() -> [f32; 8] {
-    [0.16, 0.16, 0.17, 0.17, 0.18, 0.18, 0.19, 0.19]
+fn slate_spd() -> [f32; 16] {
+    [0.16, 0.16, 0.17, 0.17, 0.18, 0.18, 0.19, 0.19,
+     0.19, 0.19, 0.19, 0.18, 0.18, 0.17, 0.17, 0.16]
 }
 
 /// Build a single GaussianSplat at world position (x, y, z).
 #[allow(dead_code)]
-fn make_splat(x: f32, y: f32, z: f32, spd: [f32; 8]) -> GaussianSplat {
-    GaussianSplat {
-        position: [x, y, z],
-        // ~0.5 m radius per splat
-        scale: [0.5, 0.5, 0.5],
-        // Identity quaternion encoded as i16 (w = 1.0 → 32767)
-        rotation: [0, 0, 0, 32767],
-        opacity: 220,
-        _pad: [0u8; 3],
-        spectral: encode_spectral(spd),
-    }
+fn make_splat(x: f32, y: f32, z: f32, spd: [f32; 16]) -> GaussianSplat {
+    GaussianSplat::volume(
+        [x, y, z],
+        [0.5, 0.5, 0.5],
+        glam::Quat::IDENTITY,
+        220,
+        encode_spectral(spd),
+    )
 }
 
 /// Generate a synthetic test building as a VxmFile.

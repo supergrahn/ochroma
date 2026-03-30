@@ -1,14 +1,14 @@
 use vox_core::spectral::{SpectralBands, Illuminant, spectral_to_xyz, xyz_to_srgb};
 
 #[test]
-fn d65_illuminant_has_8_bands() {
+fn d65_illuminant_has_16_bands() {
     let d65 = Illuminant::d65();
-    assert_eq!(d65.bands.len(), 8);
+    assert_eq!(d65.bands.len(), 16);
 }
 
 #[test]
 fn flat_white_spd_under_d65_is_near_white() {
-    let spd = SpectralBands([1.0; 8]);
+    let spd = SpectralBands([1.0; 16]);
     let d65 = Illuminant::d65();
     let xyz = spectral_to_xyz(&spd, &d65);
     let rgb = xyz_to_srgb(xyz);
@@ -19,7 +19,7 @@ fn flat_white_spd_under_d65_is_near_white() {
 
 #[test]
 fn zero_spd_produces_black() {
-    let spd = SpectralBands([0.0; 8]);
+    let spd = SpectralBands([0.0; 16]);
     let d65 = Illuminant::d65();
     let xyz = spectral_to_xyz(&spd, &d65);
     let rgb = xyz_to_srgb(xyz);

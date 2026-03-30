@@ -53,6 +53,7 @@ pub struct AudioPlaybackComponent {
 
 // ── Systems ────────────────────────────────────────────────────────────────
 
+#[allow(clippy::type_complexity)]
 pub fn audio_emitter_system(
     mut commands: Commands,
     handle: Res<AudioHandleResource>,

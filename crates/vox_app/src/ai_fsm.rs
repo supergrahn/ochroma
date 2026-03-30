@@ -6,16 +6,13 @@ use glam::Vec3;
 use vox_core::ecs::TransformComponent;
 use vox_core::engine_runtime::FrameTime;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum AiState {
+    #[default]
     Idle,
     Patrol { waypoint_idx: usize },
     Chase { target: Vec3 },
     Flee { from: Vec3 },
-}
-
-impl Default for AiState {
-    fn default() -> Self { Self::Idle }
 }
 
 #[derive(Component, Debug, Clone)]

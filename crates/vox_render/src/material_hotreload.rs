@@ -118,15 +118,14 @@ impl HotMaterialLibrary {
         let mut changed = Vec::new();
         for (name, (path, last_mtime, config)) in &mut self.entries {
             let (new_config, new_mtime) = Self::load_file(path);
-            if new_mtime != *last_mtime {
-                if let Some(cfg) = new_config {
-                    if cfg.is_valid() {
-                        *last_mtime = new_mtime;
-                        *config = Some(cfg);
-                        changed.push(name.clone());
-                    }
-                    // parse failed or invalid: leave last_mtime as-is so next poll retries
-                }
+            if new_mtime != *last_mtime
+                && let Some(cfg) = new_config
+                && cfg.is_valid()
+            {
+                *last_mtime = new_mtime;
+                *config = Some(cfg);
+                changed.push(name.clone());
+                // parse failed or invalid: leave last_mtime as-is so next poll retries
                 // file unreadable: also leave last_mtime as-is
             }
         }
@@ -149,14 +148,13 @@ impl HotMaterialLibrary {
         let mut changed = Vec::new();
         for (name, (path, last_mtime, config)) in &mut self.entries {
             let (new_config, new_mtime) = Self::load_file(path);
-            if new_mtime != *last_mtime {
-                if let Some(cfg) = new_config {
-                    if cfg.is_valid() {
-                        *last_mtime = new_mtime;
-                        *config = Some(cfg);
-                        changed.push(name.clone());
-                    }
-                }
+            if new_mtime != *last_mtime
+                && let Some(cfg) = new_config
+                && cfg.is_valid()
+            {
+                *last_mtime = new_mtime;
+                *config = Some(cfg);
+                changed.push(name.clone());
             }
         }
         changed

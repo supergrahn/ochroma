@@ -138,21 +138,21 @@ impl UICanvas {
     }
 
     pub fn set_text(&mut self, id: &str, text: &str) -> bool {
-        if let Some(el) = self.find_element_mut(id) {
-            if let CanvasElementType::Text { ref mut content, .. } = el.element_type {
-                *content = text.to_string();
-                return true;
-            }
+        if let Some(el) = self.find_element_mut(id)
+            && let CanvasElementType::Text { ref mut content, .. } = el.element_type
+        {
+            *content = text.to_string();
+            return true;
         }
         false
     }
 
     pub fn set_progress(&mut self, id: &str, value: f32) -> bool {
-        if let Some(el) = self.find_element_mut(id) {
-            if let CanvasElementType::ProgressBar { value: ref mut v, .. } = el.element_type {
-                *v = value.clamp(0.0, 1.0);
-                return true;
-            }
+        if let Some(el) = self.find_element_mut(id)
+            && let CanvasElementType::ProgressBar { value: ref mut v, .. } = el.element_type
+        {
+            *v = value.clamp(0.0, 1.0);
+            return true;
         }
         false
     }

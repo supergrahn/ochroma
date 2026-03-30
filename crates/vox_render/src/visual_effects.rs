@@ -1,7 +1,7 @@
-/// CPU-side visual post-processing effects for the Ochroma engine.
-///
-/// Each effect operates on `&mut [[u8; 4]]` RGBA pixels in-place.
-/// Depth buffer is `&[f32]` with the same length as pixels.
+//! CPU-side visual post-processing effects for the Ochroma engine.
+//!
+//! Each effect operates on `&mut [[u8; 4]]` RGBA pixels in-place.
+//! Depth buffer is `&[f32]` with the same length as pixels.
 
 // ---------------------------------------------------------------------------
 // Per-effect free functions
@@ -54,7 +54,7 @@ pub fn apply_vignette(
     let w = width as usize;
     let h = height as usize;
     let len = pixels.len().min(w * h);
-    for i in 0..len {
+    for (i, px) in pixels[..len].iter_mut().enumerate() {
         let x = (i % w) as f32;
         let y = (i / w) as f32;
         let dx = (x - cx) * inv_cx;
@@ -65,7 +65,6 @@ pub fn apply_vignette(
         // blend between 1.0 (neutral) and factor (full dark) using strength
         let scale = 1.0 - strength * (1.0 - factor);
         let scale = scale.clamp(0.0, 1.0);
-        let px = &mut pixels[i];
         px[0] = (px[0] as f32 * scale) as u8;
         px[1] = (px[1] as f32 * scale) as u8;
         px[2] = (px[2] as f32 * scale) as u8;

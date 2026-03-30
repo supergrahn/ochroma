@@ -28,8 +28,8 @@ fn particles_die_after_lifetime() {
             size: CurveF32::constant(0.1),
             opacity: CurveF32::constant(1.0),
             color: ColorConfig {
-                start_spectral: [0.5; 8],
-                end_spectral: [0.5; 8],
+                start_spectral: [0.5; 16],
+                end_spectral: [0.5; 16],
             },
             gravity_scale: 0.0,
             max_particles: 1000,
@@ -92,9 +92,9 @@ fn cone_emitter_produces_directional_particles() {
         // They start at y=0, velocity is upward, gravity is inverted (buoyant)
         // so y should be positive or at least near zero
         assert!(
-            splat.position[1] >= -1.0,
+            splat.position()[1] >= -1.0,
             "fire particle y={} should not have fallen far below origin",
-            splat.position[1]
+            splat.position()[1]
         );
     }
 }
@@ -177,7 +177,7 @@ fn rain_effect_particles_move_downward() {
     assert!(!splats.is_empty());
 
     // Rain particles should have moved below spawn height
-    let below_spawn = splats.iter().filter(|s| s.position[1] < 50.0).count();
+    let below_spawn = splats.iter().filter(|s| s.position()[1] < 50.0).count();
     assert!(
         below_spawn > 0,
         "rain particles should move downward"

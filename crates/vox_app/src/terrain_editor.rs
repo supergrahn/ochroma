@@ -95,10 +95,10 @@ pub fn show_terrain_editor_panel(ui: &mut egui::Ui, state: &mut TerrainEditorSta
     });
     ui.add(egui::Slider::new(&mut state.brush.radius, 0.5..=50.0).text("Radius"));
     ui.add(egui::Slider::new(&mut state.brush.strength, 0.0..=2.0).text("Strength"));
-    if state.active_brush == ActiveBrush::Flatten {
-        if ui.add(egui::Slider::new(&mut state.flatten_height, -10.0..=50.0).text("Height")).changed() {
-            state.sync_brush();
-        }
+    if state.active_brush == ActiveBrush::Flatten
+        && ui.add(egui::Slider::new(&mut state.flatten_height, -10.0..=50.0).text("Height")).changed()
+    {
+        state.sync_brush();
     }
     ui.separator();
     ui.heading("Foliage");
@@ -119,7 +119,7 @@ pub fn apply_brush_stroke(
 ) {
     if let Some(mut vol) = world.get_resource_mut::<TerrainVolume>() {
         let brush = TerrainBrush::new(brush_type, radius, strength);
-        brush.apply(&mut *vol, center, dt);
+        brush.apply(&mut vol, center, dt);
     }
 }
 

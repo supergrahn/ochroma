@@ -1,7 +1,10 @@
-# Domain 2 — Audio Implementation Plan
+# Domain 2: Audio Implementation Plan
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the rodio backend with CPAL+fundsp, implement `SpectralSynth` (impact sound synthesis from `[u16; 8]` spectral material) and `SpectralReverb` (reverb tail length derived from surrounding splat reflectance), and wire it all cross-platform across WASAPI/CoreAudio/ALSA.
+**Goal:** Replace the rodio backend with CPAL+fundsp, implement `SpectralSynth` (impact sound synthesis from `[u16; 16]` spectral material) and `SpectralReverb` (reverb tail length derived from surrounding splat reflectance), and wire it all cross-platform across WASAPI/CoreAudio/ALSA.
+
+**Done When:** Running `cargo run` and clicking a grass splat plays an audible sound whose fundamental frequency is derived from the splat's spectral peak band — verified by a printed Hz value in the terminal matching the grass SPD peak (~530nm, band 5–6, corresponding to ~1000–1500 Hz per the spectral→audio map). The terminal must print a line like `[ochroma-audio] grass strike: resonance_hz=1124.3` before the sound plays.
 
 **Architecture:** The existing `AudioHandle` owns a background thread; that thread will switch its device ownership from `rodio::OutputStream` to a `cpal::Stream`. `fundsp` replaces the hand-rolled signal accumulation in `AudioGraph` with a composable combinator graph (`>>`, `&`, `|`). `SpectralSynth` and `SpectralReverb` are pure-Rust DSP types that live in `vox_audio` and have no dependency on any backend — they produce `Vec<f32>` buffers that CPAL feeds to the device.
 
@@ -24,64 +27,96 @@
 
 ---
 
-## Task 1 — Add cpal and fundsp to Cargo.toml
+## Capabilities
 
-**Files:** `crates/vox_audio/Cargo.toml`
-
-- [ ] Write a failing compilation test by adding a module stub that `use cpal;` — `cargo test -p vox_audio` will fail with unresolved crate.
-
-  ```rust
-  // crates/vox_audio/src/cpal_backend.rs  (stub, causes compile error until dep added)
-  use cpal::traits::HostTrait as _;
-  pub struct CpalBackend;
-  ```
-
-- [ ] Run test to confirm failure:
-  ```
-  cargo test -p vox_audio 2>&1 | grep "unresolved\|error"
-  ```
-
-- [ ] Add dependencies to `crates/vox_audio/Cargo.toml`:
-
-  ```toml
-  [dependencies]
-  # ... existing ...
-  cpal    = { version = "0.15", optional = true }
-  fundsp  = { version = "0.18", optional = true }
-  lewton  = { version = "0.10", optional = true }
-
-  [features]
-  default        = ["audio-backend"]
-  audio-backend  = ["dep:cpal", "dep:fundsp", "dep:lewton"]
-  rodio-backend  = ["dep:rodio"]
-  ```
-
-- [ ] Run test to confirm it compiles:
-  ```
-  cargo build -p vox_audio --features audio-backend
-  ```
-
-- [ ] Commit:
-  ```
-  git add crates/vox_audio/Cargo.toml crates/vox_audio/src/cpal_backend.rs
-  git commit -m "feat(audio): add cpal=0.15, fundsp=0.18, lewton=0.10 to vox_audio"
-  ```
+| Capability | Real behavior test | Stub test (forbidden) |
+|---|---|---|
+| SpectralSynth resonance | `SpectralSynth::resonance_freq` with blue-dominant spectral returns > 4000 Hz; red-dominant returns < 500 Hz | `assert!(hz > 0.0)` |
+| SpectralReverb tail | High-reflectance room (0.9) gives tail > 3× longer than low-reflectance (0.05) | `assert!(tail > 0.0)` |
+| Gain passthrough | `apply_gain(buf, 1.0)` returns buffer identical to input within 1e-6 per sample | `assert_eq!(output.len(), input.len())` |
+| Reverb lengthens signal | `apply_reverb_send(buf, 0.5, 0.2)` returns buffer longer than input | `assert!(output.len() >= input.len())` |
+| CPAL builder compiles | `CpalBackendBuilder::new().sample_rate(44100)` constructs without panic | `assert!(true)` |
+| Glass impact command | `synthesize_and_play` with blue-dominant spectral sends `PlaySynth` with peak amplitude > 0.01 | `assert!(rx.try_recv().is_ok())` |
+| Biome ambient mix | Wetland insects > 0.8; Tundra insects == 0.0; full blend toward target matches target within 1e-5 | `assert!(mix.insects >= 0.0)` |
 
 ---
 
-## Task 1.5 — SpectralAcousticProfile: one material database for rendering AND audio
+## Task 1: Add cpal and fundsp to Cargo.toml
+
+**Files:**
+- Modify: `crates/vox_audio/Cargo.toml`
+- Create: `crates/vox_audio/src/cpal_backend.rs` (stub to trigger compile failure)
+
+**Acceptance:** `cargo build -p vox_audio --features audio-backend 2>&1 | tail -3` → exits 0 with zero error lines.
+
+**Wiring requirement:** Must be called from `[features]` in `crates/vox_audio/Cargo.toml` before this task is complete. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
+
+- [ ] **Step 1: Write the failing test** (stub that imports cpal before dep is added)
+
+```rust
+// crates/vox_audio/src/cpal_backend.rs  (stub, causes compile error until dep added)
+use cpal::traits::HostTrait as _;
+pub struct CpalBackend;
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+```bash
+cargo test -p vox_audio 2>&1 | grep "unresolved\|error" | head -5
+```
+
+Expected: FAIL with `error[E0432]: unresolved import 'cpal'`
+
+- [ ] **Step 3: Implement** — add dependencies to `crates/vox_audio/Cargo.toml`
+
+```toml
+[dependencies]
+# ... existing ...
+cpal    = { version = "0.15", optional = true }
+fundsp  = { version = "0.18", optional = true }
+lewton  = { version = "0.10", optional = true }
+
+[features]
+default        = ["audio-backend"]
+audio-backend  = ["dep:cpal", "dep:fundsp", "dep:lewton"]
+rodio-backend  = ["dep:rodio"]
+```
+
+- [ ] **Step 4: Wire at exact callsite** — confirm `audio-backend` feature is in `[features]` and referenced from `cpal_backend.rs` under `#[cfg(feature = "audio-backend")]`
+
+- [ ] **Step 5: Run test — verify non-trivial output**
+
+```bash
+cargo build -p vox_audio --features audio-backend 2>&1 | tail -3
+```
+
+Expected: PASS — exits 0, no error lines.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/vox_audio/Cargo.toml crates/vox_audio/src/cpal_backend.rs
+git commit -m "feat(audio): add cpal=0.15, fundsp=0.18, lewton=0.10 to vox_audio"
+```
+
+---
+
+## Task 2: SpectralAcousticProfile — one material database for rendering AND audio
 
 **Files:**
 - Create: `crates/vox_audio/src/spectral_acoustic.rs`
 - Modify: `crates/vox_audio/src/lib.rs`
 
-**The forge steal:** `forge-spectral` has a database of 13 materials (Soil, Rock, Bark, Water, Glass, Concrete, Foliage, Snow, Asphalt, Gravel, Brick, Metal, Sand) with physically measured USGS reflectance curves at 16 wavelengths. The same spectral profile that governs how a material *looks* also governs how it *sounds* — high uniform reflectance (Metal, Snow) = long acoustic sustain and reverberant room. Low absorption = good acoustic mirror. This is the architectural advantage: Unreal has separate visual material parameters and audio material parameters. Ochroma has one spectral profile that drives both.
+**Acceptance:** `cargo test -p vox_audio spectral_acoustic -- --nocapture` → PASS, 5 tests pass, printed output shows `metal q_factor=15` and `snow rt60=6`.
 
-- [ ] **Step 1: Write the failing tests**
+**Wiring requirement:** Must be called from `pub mod spectral_acoustic` in `crates/vox_audio/src/lib.rs` before this task is complete. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
-Create `crates/vox_audio/src/spectral_acoustic.rs`:
+The forge steal: `forge-spectral` has a database of 13 materials (Soil, Rock, Bark, Water, Glass, Concrete, Foliage, Snow, Asphalt, Gravel, Brick, Metal, Sand) with physically measured USGS reflectance curves at 16 wavelengths. The same spectral profile that governs how a material *looks* also governs how it *sounds* — high uniform reflectance (Metal, Snow) = long acoustic sustain and reverberant room. This is the architectural advantage: Unreal has separate visual material parameters and audio material parameters. Ochroma has one spectral profile that drives both.
+
+- [ ] **Step 1: Write the failing test** (full test code, tests real behavior not interface shape)
 
 ```rust
+// crates/vox_audio/src/spectral_acoustic.rs
 //! SpectralAcousticProfile — derives acoustic synthesis parameters from the
 //! forge-spectral material database. One material profile drives both rendering
 //! and audio. No separate "audio material" needed.
@@ -100,20 +135,19 @@ pub struct SpectralAcousticProfile {
 }
 
 impl SpectralAcousticProfile {
-    /// Derive acoustic profile from arbitrary 8-band spectral data.
-    /// Approximate — use `from_material_kind()` for known materials.
+    /// Derive acoustic profile from arbitrary 16-band spectral data.
     ///
     /// Formula:
     /// - `resonance_hz`: weighted geometric mean over [12000..200 Hz] FREQ_MAP
     /// - `q_factor`: 5.0 / (band_variance + 0.1) — flat profile = high Q = long ring
     /// - `rt60_secs`: mean_reflectance × 6.0 — high reflectance = reverberant room
-    pub fn from_spectral(bands_f16: &[u16; 8]) -> Self {
-        const FREQ_MAP: [f32; 8] = [12000.0, 8000.0, 5000.0, 3000.0, 1500.0, 800.0, 400.0, 200.0];
-        let bands: [f32; 8] = std::array::from_fn(|i| {
+    pub fn from_spectral(bands_f16: &[u16; 16]) -> Self {
+        const FREQ_MAP: [f32; 16] = [12000.0, 10000.0, 8000.0, 6500.0, 5000.0, 4000.0, 3000.0, 2200.0, 1500.0, 1100.0, 800.0, 580.0, 400.0, 300.0, 250.0, 200.0];
+        let bands: [f32; 16] = std::array::from_fn(|i| {
             half::f16::from_bits(bands_f16[i]).to_f32().max(0.0)
         });
         let sum: f32 = bands.iter().sum();
-        let mean = sum / 8.0;
+        let mean = sum / 16.0;
 
         // Weighted geometric mean frequency (log domain)
         let log_freq_sum: f32 = bands.iter().zip(FREQ_MAP.iter())
@@ -126,7 +160,7 @@ impl SpectralAcousticProfile {
         };
 
         // Band variance → Q factor
-        let variance: f32 = bands.iter().map(|&b| (b - mean).powi(2)).sum::<f32>() / 8.0;
+        let variance: f32 = bands.iter().map(|&b| (b - mean).powi(2)).sum::<f32>() / 16.0;
         let q_factor = (5.0 / (variance + 0.1)).clamp(0.2, 15.0);
 
         // Mean reflectance → RT60
@@ -137,8 +171,6 @@ impl SpectralAcousticProfile {
 
     /// Hardcoded profiles for forge MaterialKind variants.
     /// Physics-correct values from USGS spectral library + known material acoustics.
-    ///
-    /// Named to match `forge_spectral::MaterialKind` — update when forge adds materials.
     pub fn metal()    -> Self { Self { resonance_hz: 8000.0, q_factor: 15.0, rt60_secs: 3.5 } }
     pub fn glass()    -> Self { Self { resonance_hz: 6000.0, q_factor: 10.0, rt60_secs: 0.3 } }
     pub fn concrete() -> Self { Self { resonance_hz:  300.0, q_factor:  2.0, rt60_secs: 2.0 } }
@@ -160,8 +192,9 @@ mod tests {
 
     #[test]
     fn metal_has_higher_q_than_soil() {
-        assert!(SpectralAcousticProfile::metal().q_factor >
-                SpectralAcousticProfile::soil().q_factor,
+        let metal_q = SpectralAcousticProfile::metal().q_factor;
+        println!("metal q_factor={}", metal_q as u32);
+        assert!(metal_q > SpectralAcousticProfile::soil().q_factor,
             "metal sustains longer than soil");
     }
 
@@ -174,6 +207,7 @@ mod tests {
             SpectralAcousticProfile::asphalt().rt60_secs,
         ];
         let max = rt60s.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        println!("snow rt60={}", SpectralAcousticProfile::snow().rt60_secs as u32);
         assert_eq!(max, SpectralAcousticProfile::snow().rt60_secs,
             "snow field should have longest RT60 (huge reflectance)");
     }
@@ -188,7 +222,7 @@ mod tests {
     #[test]
     fn from_spectral_metal_like_profile() {
         // Flat high-reflectance profile ≈ metal: should give high Q, moderate-high RT60
-        let bands = [half::f16::from_f32(0.65).to_bits(); 8];
+        let bands = [half::f16::from_f32(0.65).to_bits(); 16];
         let profile = SpectralAcousticProfile::from_spectral(&bands);
         assert!(profile.q_factor > 3.0,
             "flat high-reflectance should give Q > 3.0, got {}", profile.q_factor);
@@ -199,7 +233,7 @@ mod tests {
     #[test]
     fn from_spectral_dead_material() {
         // Very low reflectance (asphalt-like): low RT60
-        let bands = [half::f16::from_f32(0.06).to_bits(); 8];
+        let bands = [half::f16::from_f32(0.06).to_bits(); 16];
         let profile = SpectralAcousticProfile::from_spectral(&bands);
         assert!(profile.rt60_secs < 0.5,
             "dark material should give RT60 < 0.5s, got {}", profile.rt60_secs);
@@ -207,32 +241,32 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run to verify it fails**
 
 ```bash
 cargo test -p vox_audio spectral_acoustic 2>&1 | head -10
 ```
 
-Expected: compile error — module not in lib.rs
+Expected: FAIL with compile error — module not in lib.rs
 
-- [ ] **Step 3: Expose the module**
-
-Add to `crates/vox_audio/src/lib.rs`:
+- [ ] **Step 3: Implement** — expose the module in `crates/vox_audio/src/lib.rs`
 
 ```rust
 pub mod spectral_acoustic;
 pub use spectral_acoustic::SpectralAcousticProfile;
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 4: Wire at exact callsite** — add `pub mod spectral_acoustic` in `crates/vox_audio/src/lib.rs`
+
+- [ ] **Step 5: Run test — verify non-trivial output**
 
 ```bash
 cargo test -p vox_audio spectral_acoustic -- --nocapture
 ```
 
-Expected: 5 tests pass.
+Expected: PASS, 5 tests pass. Output shows `metal q_factor=15` and `snow rt60=6` in any printed assertions.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add crates/vox_audio/src/spectral_acoustic.rs crates/vox_audio/src/lib.rs
@@ -241,921 +275,945 @@ git commit -m "feat(audio): SpectralAcousticProfile — forge material DB drives
 
 ---
 
-## Task 2 — Implement SpectralSynth
+## Task 3: Implement SpectralSynth
 
-**Files:** `crates/vox_audio/src/spectral_synth2.rs`, `crates/vox_audio/src/lib.rs`
+**Files:**
+- Create: `crates/vox_audio/src/spectral_synth2.rs`
+- Modify: `crates/vox_audio/src/lib.rs`
 
-The existing `synthesize_impact` free function in `spectral_synth.rs` is kept for backwards compatibility. `SpectralSynth` is a new struct that wraps the same physics but exposes a clean API matching the spec signature, adds harmonic overtone generation, and accepts the raw `[u16; 8]` as the primary input type.
+**Acceptance:** `cargo test -p vox_audio spectral_synth2 -- --nocapture` → PASS, 6 tests pass. `resonance_freq_blue_material_is_high` must print a Hz value > 4000. `resonance_freq_red_material_is_low` must print a Hz value < 500.
+
+**Wiring requirement:** Must be called from `pub mod spectral_synth2` in `crates/vox_audio/src/lib.rs` before this task is complete. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
 Resonance frequency: weighted average of `FREQ_MAP` using per-band reflectance. High short-wavelength (band 0–2) weight → glassy high-frequency ring. High long-wavelength (band 5–7) weight → woody/rocky low thud.
 
-Damping: proxy for stiffness is opacity value (not available here) so we use the variance across bands — a flat profile (uniform reflectance) means homogeneous material → lower damping (longer sustain). A peaked profile means strongly coloured material → higher damping (fast decay).
+Damping: proxy for stiffness is variance across bands — a flat profile (uniform reflectance) means homogeneous material → lower damping (longer sustain). A peaked profile means strongly coloured material → higher damping (fast decay).
 
-- [ ] Write failing tests first in `crates/vox_audio/src/spectral_synth2.rs`:
+- [ ] **Step 1: Write the failing test** (full test code, tests real behavior not interface shape)
 
-  ```rust
-  // crates/vox_audio/src/spectral_synth2.rs
-  #[cfg(test)]
-  mod tests {
-      use super::*;
+```rust
+// crates/vox_audio/src/spectral_synth2.rs
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-      #[test]
-      fn resonance_freq_blue_material_is_high() {
-          // Band 0 dominant → expect frequency near 8 kHz
-          let mut spectral = [0u16; 8];
-          spectral[0] = half::f16::from_f32(1.0).to_bits();
-          let hz = SpectralSynth::resonance_freq(&spectral);
-          assert!(hz > 4000.0, "blue-dominant material resonance={hz}");
-      }
+    #[test]
+    fn resonance_freq_blue_material_is_high() {
+        // Band 0 dominant → expect frequency near 8 kHz
+        let mut spectral = [0u16; 16];
+        spectral[0] = half::f16::from_f32(1.0).to_bits();
+        let hz = SpectralSynth::resonance_freq(&spectral);
+        println!("blue resonance_hz={hz}");
+        assert!(hz > 4000.0, "blue-dominant material resonance={hz}");
+    }
 
-      #[test]
-      fn resonance_freq_red_material_is_low() {
-          // Band 7 dominant → expect frequency near 80 Hz
-          let mut spectral = [0u16; 8];
-          spectral[7] = half::f16::from_f32(1.0).to_bits();
-          let hz = SpectralSynth::resonance_freq(&spectral);
-          assert!(hz < 500.0, "red-dominant material resonance={hz}");
-      }
+    #[test]
+    fn resonance_freq_red_material_is_low() {
+        // Band 15 dominant → expect frequency near 80 Hz
+        let mut spectral = [0u16; 16];
+        spectral[15] = half::f16::from_f32(1.0).to_bits();
+        let hz = SpectralSynth::resonance_freq(&spectral);
+        println!("red resonance_hz={hz}");
+        assert!(hz < 500.0, "red-dominant material resonance={hz}");
+    }
 
-      #[test]
-      fn strike_returns_nonempty_audio() {
-          let spectral = [half::f16::from_f32(0.5).to_bits(); 8];
-          let samples = SpectralSynth::strike(&spectral, 1.0);
-          assert!(!samples.is_empty());
-      }
+    #[test]
+    fn strike_returns_nonempty_audio() {
+        let spectral = [half::f16::from_f32(0.5).to_bits(); 16];
+        let samples = SpectralSynth::strike(&spectral, 1.0);
+        assert!(!samples.is_empty());
+    }
 
-      #[test]
-      fn strike_is_normalised() {
-          let spectral = [half::f16::from_f32(1.0).to_bits(); 8];
-          let samples = SpectralSynth::strike(&spectral, 1.0);
-          let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-          assert!(peak <= 1.0 + 1e-5, "peak={peak}");
-      }
+    #[test]
+    fn strike_is_normalised() {
+        let spectral = [half::f16::from_f32(1.0).to_bits(); 16];
+        let samples = SpectralSynth::strike(&spectral, 1.0);
+        let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak <= 1.0 + 1e-5, "peak={peak}");
+    }
 
-      #[test]
-      fn strike_all_zero_spectral_is_silence() {
-          let spectral = [0u16; 8];
-          let samples = SpectralSynth::strike(&spectral, 1.0);
-          assert!(samples.iter().all(|&s| s == 0.0));
-      }
+    #[test]
+    fn strike_all_zero_spectral_is_silence() {
+        let spectral = [0u16; 16];
+        let samples = SpectralSynth::strike(&spectral, 1.0);
+        assert!(samples.iter().all(|&s| s == 0.0));
+    }
 
-      #[test]
-      fn blue_strike_sounds_different_from_red_strike() {
-          let mut blue = [0u16; 8]; blue[0] = half::f16::from_f32(1.0).to_bits();
-          let mut red  = [0u16; 8]; red[7]  = half::f16::from_f32(1.0).to_bits();
-          let b = SpectralSynth::strike(&blue, 1.0);
-          let r = SpectralSynth::strike(&red,  1.0);
-          let diff: f32 = b.iter().zip(r.iter()).map(|(a,x)| (a-x).abs()).sum();
-          assert!(diff > 0.1, "blue vs red should differ, diff={diff}");
-      }
-  }
-  ```
+    #[test]
+    fn blue_strike_sounds_different_from_red_strike() {
+        let mut blue = [0u16; 16]; blue[0]  = half::f16::from_f32(1.0).to_bits();
+        let mut red  = [0u16; 16]; red[15]  = half::f16::from_f32(1.0).to_bits();
+        let b = SpectralSynth::strike(&blue, 1.0);
+        let r = SpectralSynth::strike(&red,  1.0);
+        let diff: f32 = b.iter().zip(r.iter()).map(|(a,x)| (a-x).abs()).sum();
+        assert!(diff > 0.1, "blue vs red should differ, diff={diff}");
+    }
+}
+```
 
-- [ ] Run to confirm failure:
-  ```
-  cargo test -p vox_audio spectral_synth2 2>&1 | grep "error\|FAILED"
-  ```
+- [ ] **Step 2: Run to verify it fails**
 
-- [ ] Implement `SpectralSynth`:
+```bash
+cargo test -p vox_audio spectral_synth2 2>&1 | grep "error\|FAILED" | head -5
+```
 
-  ```rust
-  // crates/vox_audio/src/spectral_synth2.rs
-  //! SpectralSynth — synthesises impact sounds from GaussianSplat spectral profiles.
-  //!
-  //! `strike(spectral, impulse)` is the primary entry point.
-  //! All audio derives from the 8-band spectral data; no WAV files required.
+Expected: FAIL — `SpectralSynth` not defined.
 
-  use crate::spectral_synth::FREQ_MAP;
+- [ ] **Step 3: Implement** — full `SpectralSynth` implementation
 
-  pub const SAMPLE_RATE: u32 = 44_100;
-  pub const HARMONICS:   u32 = 4;      // overtone count above fundamental
+```rust
+// crates/vox_audio/src/spectral_synth2.rs
+//! SpectralSynth — synthesises impact sounds from GaussianSplat spectral profiles.
+//!
+//! `strike(spectral, impulse)` is the primary entry point.
+//! All audio derives from the 16-band spectral data; no WAV files required.
 
-  pub struct SpectralSynth;
+use crate::spectral_synth::FREQ_MAP;
 
-  impl SpectralSynth {
-      /// Weighted-average resonance frequency from spectral material profile.
-      /// Short-wavelength (high-band-index = 0) → high Hz. Long-wavelength → low Hz.
-      pub fn resonance_freq(spectral: &[u16; 8]) -> f32 {
-          let mut weight_sum = 0.0f32;
-          let mut freq_sum   = 0.0f32;
-          for (band, &freq) in FREQ_MAP.iter().enumerate() {
-              let w = half::f16::from_bits(spectral[band]).to_f32().max(0.0);
-              weight_sum += w;
-              freq_sum   += w * freq;
-          }
-          if weight_sum < 1e-6 { return 440.0; }
-          freq_sum / weight_sum
-      }
+pub const SAMPLE_RATE: u32 = 44_100;
+pub const HARMONICS:   u32 = 4;      // overtone count above fundamental
 
-      /// Damping coefficient derived from spectral variance.
-      /// Flat profile (homogeneous material) → low damping, longer sustain.
-      /// Peaked profile (strongly coloured) → high damping, fast decay.
-      fn damping(spectral: &[u16; 8]) -> f32 {
-          let weights: Vec<f32> = spectral.iter()
-              .map(|&b| half::f16::from_bits(b).to_f32().max(0.0))
-              .collect();
-          let mean = weights.iter().sum::<f32>() / 8.0;
-          let var  = weights.iter().map(|w| (w - mean).powi(2)).sum::<f32>() / 8.0;
-          // Map variance [0, 0.25] → damping [3.0, 20.0]
-          3.0 + (var / 0.25).min(1.0) * 17.0
-      }
+pub struct SpectralSynth;
 
-      /// Synthesise an impact sound from a splat's spectral material profile.
-      ///
-      /// - `spectral`: GaussianSplat.spectral — 8 half-float bands in u16 encoding.
-      /// - `impulse`: impact strength in [0.0, 1.0]; scales initial amplitude.
-      ///
-      /// Returns 44100 × 0.5 s = 22050 normalised f32 samples.
-      pub fn strike(spectral: &[u16; 8], impulse: f32) -> Vec<f32> {
-          let n_samples = (SAMPLE_RATE as f32 * 0.5) as usize;
-          let mut buf   = vec![0.0f32; n_samples];
+impl SpectralSynth {
+    /// Weighted-average resonance frequency from spectral material profile.
+    /// Short-wavelength (high-band-index = 0) → high Hz. Long-wavelength → low Hz.
+    pub fn resonance_freq(spectral: &[u16; 16]) -> f32 {
+        let mut weight_sum = 0.0f32;
+        let mut freq_sum   = 0.0f32;
+        for (band, &freq) in FREQ_MAP.iter().enumerate() {
+            let w = half::f16::from_bits(spectral[band]).to_f32().max(0.0);
+            weight_sum += w;
+            freq_sum   += w * freq;
+        }
+        if weight_sum < 1e-6 { return 440.0; }
+        freq_sum / weight_sum
+    }
 
-          let fundamental = Self::resonance_freq(spectral);
-          let decay       = -Self::damping(spectral);
+    /// Damping coefficient derived from spectral variance.
+    /// Flat profile (homogeneous material) → low damping, longer sustain.
+    /// Peaked profile (strongly coloured) → high damping, fast decay.
+    fn damping(spectral: &[u16; 16]) -> f32 {
+        let weights: Vec<f32> = spectral.iter()
+            .map(|&b| half::f16::from_bits(b).to_f32().max(0.0))
+            .collect();
+        let mean = weights.iter().sum::<f32>() / 16.0;
+        let var  = weights.iter().map(|w| (w - mean).powi(2)).sum::<f32>() / 16.0;
+        // Map variance [0, 0.25] → damping [3.0, 20.0]
+        3.0 + (var / 0.25).min(1.0) * 17.0
+    }
 
-          for harmonic in 0..HARMONICS {
-              let freq   = fundamental * (harmonic + 1) as f32;
-              // Amplitude falls off with harmonic order (1, 1/2, 1/3, 1/4)
-              let amp    = impulse / (harmonic + 1) as f32;
-              // Weight harmonic by per-band reflectance contribution at its frequency
-              let weight = Self::band_weight_at_freq(spectral, freq);
-              if weight < 1e-4 { continue; }
-              for (i, sample) in buf.iter_mut().enumerate() {
-                  let t        = i as f32 / SAMPLE_RATE as f32;
-                  let envelope = (decay * t).exp();
-                  *sample     += amp * weight * envelope
-                      * (2.0 * std::f32::consts::PI * freq * t).sin();
-              }
-          }
+    /// Synthesise an impact sound from a splat's spectral material profile.
+    ///
+    /// - `spectral`: GaussianSplat.spectral() — 16 half-float bands in u16 encoding.
+    /// - `impulse`: impact strength in [0.0, 1.0]; scales initial amplitude.
+    ///
+    /// Returns 44100 × 0.5 s = 22050 normalised f32 samples.
+    pub fn strike(spectral: &[u16; 16], impulse: f32) -> Vec<f32> {
+        let n_samples = (SAMPLE_RATE as f32 * 0.5) as usize;
+        let mut buf   = vec![0.0f32; n_samples];
 
-          let peak = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-          if peak > 1e-6 {
-              for s in &mut buf { *s /= peak; }
-          }
-          buf
-      }
+        let fundamental = Self::resonance_freq(spectral);
+        let decay       = -Self::damping(spectral);
 
-      /// Interpolate band weight at an arbitrary frequency using log-linear spacing.
-      fn band_weight_at_freq(spectral: &[u16; 8], freq: f32) -> f32 {
-          let freq = freq.clamp(FREQ_MAP[7], FREQ_MAP[0]);
-          // FREQ_MAP is high→low, so find bounding bands
-          for i in 0..7 {
-              let hi = FREQ_MAP[i];
-              let lo = FREQ_MAP[i + 1];
-              if freq <= hi && freq >= lo {
-                  let t  = (hi - freq) / (hi - lo);
-                  let w0 = half::f16::from_bits(spectral[i]).to_f32().max(0.0);
-                  let w1 = half::f16::from_bits(spectral[i + 1]).to_f32().max(0.0);
-                  return w0 * (1.0 - t) + w1 * t;
-              }
-          }
-          half::f16::from_bits(spectral[7]).to_f32().max(0.0)
-      }
-  }
-  ```
+        for harmonic in 0..HARMONICS {
+            let freq   = fundamental * (harmonic + 1) as f32;
+            // Amplitude falls off with harmonic order (1, 1/2, 1/3, 1/4)
+            let amp    = impulse / (harmonic + 1) as f32;
+            // Weight harmonic by per-band reflectance contribution at its frequency
+            let weight = Self::band_weight_at_freq(spectral, freq);
+            if weight < 1e-4 { continue; }
+            for (i, sample) in buf.iter_mut().enumerate() {
+                let t        = i as f32 / SAMPLE_RATE as f32;
+                let envelope = (decay * t).exp();
+                *sample     += amp * weight * envelope
+                    * (2.0 * std::f32::consts::PI * freq * t).sin();
+            }
+        }
 
-- [ ] Add `pub mod spectral_synth2;` to `crates/vox_audio/src/lib.rs` and re-export:
-  ```rust
-  pub use spectral_synth2::SpectralSynth;
-  ```
+        let peak = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        if peak > 1e-6 {
+            for s in &mut buf { *s /= peak; }
+        }
+        buf
+    }
 
-- [ ] Run tests to confirm green:
-  ```
-  cargo test -p vox_audio spectral_synth2
-  ```
+    /// Interpolate band weight at an arbitrary frequency using log-linear spacing.
+    fn band_weight_at_freq(spectral: &[u16; 16], freq: f32) -> f32 {
+        let freq = freq.clamp(FREQ_MAP[15], FREQ_MAP[0]);
+        // FREQ_MAP is high→low, so find bounding bands
+        for i in 0..15 {
+            let hi = FREQ_MAP[i];
+            let lo = FREQ_MAP[i + 1];
+            if freq <= hi && freq >= lo {
+                let t  = (hi - freq) / (hi - lo);
+                let w0 = half::f16::from_bits(spectral[i]).to_f32().max(0.0);
+                let w1 = half::f16::from_bits(spectral[i + 1]).to_f32().max(0.0);
+                return w0 * (1.0 - t) + w1 * t;
+            }
+        }
+        half::f16::from_bits(spectral[15]).to_f32().max(0.0)
+    }
+}
+```
 
-- [ ] Commit:
-  ```
-  git add crates/vox_audio/src/spectral_synth2.rs crates/vox_audio/src/lib.rs
-  git commit -m "feat(audio): implement SpectralSynth::strike() from spectral material profile"
-  ```
+- [ ] **Step 4: Wire at exact callsite** — add to `crates/vox_audio/src/lib.rs`
+
+```rust
+pub mod spectral_synth2;
+pub use spectral_synth2::SpectralSynth;
+```
+
+- [ ] **Step 5: Run test — verify non-trivial output**
+
+```bash
+cargo test -p vox_audio spectral_synth2 -- --nocapture
+```
+
+Expected: PASS, 6 tests pass. Printed output shows `blue resonance_hz=` a value > 4000 and `red resonance_hz=` a value < 500.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/vox_audio/src/spectral_synth2.rs crates/vox_audio/src/lib.rs
+git commit -m "feat(audio): implement SpectralSynth::strike() from spectral material profile"
+```
 
 ---
 
-## Task 3 — Implement SpectralReverb
+## Task 4: Implement SpectralReverb
 
-**Files:** `crates/vox_audio/src/spectral_reverb.rs`, `crates/vox_audio/src/lib.rs`
+**Files:**
+- Create: `crates/vox_audio/src/spectral_reverb.rs`
+- Modify: `crates/vox_audio/src/lib.rs`
+
+**Acceptance:** `cargo test -p vox_audio spectral_reverb -- --nocapture` → PASS, all 6 tests pass. `high_reflectance_gives_longer_tail_than_low` must print the two RT60 values where high > 3× low.
+
+**Wiring requirement:** Must be called from `pub mod spectral_reverb` in `crates/vox_audio/src/lib.rs` before this task is complete. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
 `SpectralReverb` derives its impulse response length from the mean reflectance of surrounding splats. High uniform reflectance (stone, glass) → long reverb tail. Low or absorbed reflectance (fabric, foam) → short, dead room. This augments the existing `sdf_reverb.rs` (Sabine formula from room geometry) with a direct splat-reflectance path that requires no room descriptor — the GI cache is the room.
 
-- [ ] Write failing tests first in `crates/vox_audio/src/spectral_reverb.rs`:
+- [ ] **Step 1: Write the failing test** (full test code, tests real behavior not interface shape)
 
-  ```rust
-  #[cfg(test)]
-  mod tests {
-      use super::*;
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-      fn make_high_reflectance() -> Vec<[u16; 8]> {
-          // All bands at 0.9 — stone-like
-          let v = half::f16::from_f32(0.9).to_bits();
-          vec![[v; 8]; 16]
-      }
+    fn make_high_reflectance() -> Vec<[u16; 16]> {
+        // All bands at 0.9 — stone-like
+        let v = half::f16::from_f32(0.9).to_bits();
+        vec![[v; 16]; 16]
+    }
 
-      fn make_low_reflectance() -> Vec<[u16; 8]> {
-          // All bands at 0.05 — dead fabric room
-          let v = half::f16::from_f32(0.05).to_bits();
-          vec![[v; 8]; 16]
-      }
+    fn make_low_reflectance() -> Vec<[u16; 16]> {
+        // All bands at 0.05 — dead fabric room
+        let v = half::f16::from_f32(0.05).to_bits();
+        vec![[v; 16]; 16]
+    }
 
-      #[test]
-      fn high_reflectance_gives_longer_tail_than_low() {
-          let high = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
-          let low  = SpectralReverb::from_splat_reflectance(&make_low_reflectance());
-          assert!(
-              high.tail_length_secs > low.tail_length_secs,
-              "high={} low={}",
-              high.tail_length_secs,
-              low.tail_length_secs,
-          );
-      }
+    #[test]
+    fn high_reflectance_gives_longer_tail_than_low() {
+        let high = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
+        let low  = SpectralReverb::from_splat_reflectance(&make_low_reflectance());
+        println!("high={} low={}", high.tail_length_secs, low.tail_length_secs);
+        assert!(
+            high.tail_length_secs > low.tail_length_secs,
+            "high={} low={}",
+            high.tail_length_secs,
+            low.tail_length_secs,
+        );
+    }
 
-      #[test]
-      fn tail_length_within_physical_bounds() {
-          // Reverb tail should be between 0.05 s (dead room) and 10 s (cathedral)
-          let reverb = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
-          assert!(reverb.tail_length_secs >= 0.05);
-          assert!(reverb.tail_length_secs <= 10.0);
-      }
+    #[test]
+    fn tail_length_within_physical_bounds() {
+        // Reverb tail should be between 0.05 s (dead room) and 10 s (cathedral)
+        let reverb = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
+        assert!(reverb.tail_length_secs >= 0.05);
+        assert!(reverb.tail_length_secs <= 10.0);
+    }
 
-      #[test]
-      fn empty_splat_list_yields_default_reverb() {
-          let reverb = SpectralReverb::from_splat_reflectance(&[]);
-          assert!(reverb.tail_length_secs > 0.0);
-      }
+    #[test]
+    fn empty_splat_list_yields_default_reverb() {
+        let reverb = SpectralReverb::from_splat_reflectance(&[]);
+        assert!(reverb.tail_length_secs > 0.0);
+    }
 
-      #[test]
-      fn tail_samples_length_matches_tail_length() {
-          let reverb = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
-          let ir     = reverb.tail_samples(44_100);
-          let expected = (reverb.tail_length_secs * 44_100.0) as usize;
-          // Allow ±1 sample rounding
-          assert!((ir.len() as isize - expected as isize).abs() <= 1);
-      }
+    #[test]
+    fn tail_samples_length_matches_tail_length() {
+        let reverb = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
+        let ir     = reverb.tail_samples(44_100);
+        let expected = (reverb.tail_length_secs * 44_100.0) as usize;
+        // Allow ±1 sample rounding
+        assert!((ir.len() as isize - expected as isize).abs() <= 1);
+    }
 
-      #[test]
-      fn tail_samples_decays_to_near_zero() {
-          let reverb = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
-          let ir     = reverb.tail_samples(44_100);
-          let last   = ir.last().copied().unwrap_or(0.0).abs();
-          assert!(last < 0.01, "IR should decay to near-zero, last={last}");
-      }
+    #[test]
+    fn tail_samples_decays_to_near_zero() {
+        let reverb = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
+        let ir     = reverb.tail_samples(44_100);
+        let last   = ir.last().copied().unwrap_or(0.0).abs();
+        assert!(last < 0.01, "IR should decay to near-zero, last={last}");
+    }
 
-      #[test]
-      fn per_band_rt60_high_reflectance_vs_low() {
-          let high = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
-          let low  = SpectralReverb::from_splat_reflectance(&make_low_reflectance());
-          for band in 0..8 {
-              assert!(
-                  high.band_rt60[band] > low.band_rt60[band],
-                  "band {band}: high_rt60={} low_rt60={}",
-                  high.band_rt60[band],
-                  low.band_rt60[band],
-              );
-          }
-      }
-  }
-  ```
+    #[test]
+    fn per_band_rt60_high_reflectance_vs_low() {
+        let high = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
+        let low  = SpectralReverb::from_splat_reflectance(&make_low_reflectance());
+        for band in 0..16usize {
+            assert!(
+                high.band_rt60[band] > low.band_rt60[band],
+                "band {band}: high_rt60={} low_rt60={}",
+                high.band_rt60[band],
+                low.band_rt60[band],
+            );
+        }
+    }
+}
+```
 
-- [ ] Run to confirm failure:
-  ```
-  cargo test -p vox_audio spectral_reverb 2>&1 | grep "error\|FAILED"
-  ```
+- [ ] **Step 2: Run to verify it fails**
 
-- [ ] Implement `SpectralReverb`:
+```bash
+cargo test -p vox_audio spectral_reverb 2>&1 | grep "error\|FAILED" | head -5
+```
 
-  ```rust
-  // crates/vox_audio/src/spectral_reverb.rs
-  //! SpectralReverb — derives room impulse response from surrounding Gaussian splat reflectance.
-  //!
-  //! High mean reflectance (stone, tile, glass) → long RT60, long tail.
-  //! Low mean reflectance (carpet, foam, fabric) → short RT60, dead room.
-  //!
-  //! No room geometry descriptor is required — the spectral data IS the room.
+Expected: FAIL — `SpectralReverb` not defined.
 
-  /// Reverb profile derived from splat reflectance.
-  #[derive(Debug, Clone)]
-  pub struct SpectralReverb {
-      /// Dominant reverb tail length in seconds (from mean reflectance).
-      pub tail_length_secs: f32,
-      /// Per-band RT60 values; shorter for high-absorption bands.
-      pub band_rt60: [f32; 8],
-      /// Mean reflectance per band used to derive this profile.
-      pub mean_reflectance: [f32; 8],
-  }
+- [ ] **Step 3: Implement** — full `SpectralReverb` implementation
 
-  impl SpectralReverb {
-      /// Derive a reverb profile from a slice of nearby splat spectral data.
-      ///
-      /// Each element is a `GaussianSplat.spectral` field — 8 half-float values
-      /// encoded as u16 (half::f16 bit pattern).
-      pub fn from_splat_reflectance(splats: &[[u16; 8]]) -> Self {
-          if splats.is_empty() {
-              return Self::default_dead_room();
-          }
+```rust
+// crates/vox_audio/src/spectral_reverb.rs
+//! SpectralReverb — derives room impulse response from surrounding Gaussian splat reflectance.
+//!
+//! High mean reflectance (stone, tile, glass) → long RT60, long tail.
+//! Low mean reflectance (carpet, foam, fabric) → short RT60, dead room.
+//!
+//! No room geometry descriptor is required — the spectral data IS the room.
 
-          // Compute per-band mean reflectance over all nearby splats.
-          let mut mean = [0.0f32; 8];
-          for s in splats {
-              for band in 0..8 {
-                  mean[band] += half::f16::from_bits(s[band]).to_f32().max(0.0);
-              }
-          }
-          for m in &mut mean { *m /= splats.len() as f32; }
+/// Reverb profile derived from splat reflectance.
+#[derive(Debug, Clone)]
+pub struct SpectralReverb {
+    /// Dominant reverb tail length in seconds (from mean reflectance).
+    pub tail_length_secs: f32,
+    /// Per-band RT60 values; shorter for high-absorption bands.
+    pub band_rt60: [f32; 16],
+    /// Mean reflectance per band used to derive this profile.
+    pub mean_reflectance: [f32; 16],
+}
 
-          // Overall mean reflectance drives the dominant tail length.
-          let overall_mean: f32 = mean.iter().sum::<f32>() / 8.0;
+impl SpectralReverb {
+    /// Derive a reverb profile from a slice of nearby splat spectral data.
+    ///
+    /// Each element is a `GaussianSplat.spectral()` field — 16 half-float values
+    /// encoded as u16 (half::f16 bit pattern).
+    pub fn from_splat_reflectance(splats: &[[u16; 16]]) -> Self {
+        if splats.is_empty() {
+            return Self::default_dead_room();
+        }
 
-          // Map reflectance [0, 1] → tail [0.05 s, 8.0 s] using Sabine-inspired curve.
-          // At r=1.0 (perfect mirror) → 8 s; at r=0.0 (dead anechoic) → 0.05 s.
-          let tail_length_secs = 0.05 + overall_mean.powi(2) * 7.95;
+        // Compute per-band mean reflectance over all nearby splats.
+        let mut mean = [0.0f32; 16];
+        for s in splats {
+            for band in 0..16usize {
+                mean[band] += half::f16::from_bits(s[band]).to_f32().max(0.0);
+            }
+        }
+        for m in &mut mean { *m /= splats.len() as f32; }
 
-          // Per-band RT60: high-reflectance bands reverberate longer.
-          // Bands 0-2 (HF) lose energy faster due to air absorption (×0.7 modifier).
-          let hf_penalty = [0.70f32, 0.75, 0.82, 0.90, 0.95, 1.00, 1.00, 1.00];
-          let band_rt60 = std::array::from_fn(|b| {
-              let r   = mean[b].clamp(0.0, 1.0);
-              let rt  = 0.05 + r.powi(2) * 7.95;
-              rt * hf_penalty[b]
-          });
+        // Overall mean reflectance drives the dominant tail length.
+        let overall_mean: f32 = mean.iter().sum::<f32>() / 16.0;
 
-          Self { tail_length_secs, band_rt60, mean_reflectance: mean }
-      }
+        // Map reflectance [0, 1] → tail [0.05 s, 8.0 s] using Sabine-inspired curve.
+        // At r=1.0 (perfect mirror) → 8 s; at r=0.0 (dead anechoic) → 0.05 s.
+        let tail_length_secs = 0.05 + overall_mean.powi(2) * 7.95;
 
-      /// Generate a mono impulse response (IR) tail as f32 samples.
-      ///
-      /// The IR is an exponentially-decaying white-noise burst shaped by `tail_length_secs`.
-      /// Suitable for convolution reverb or as a fundsp `FirHalf` input.
-      pub fn tail_samples(&self, sample_rate: u32) -> Vec<f32> {
-          let n = (self.tail_length_secs * sample_rate as f32).round() as usize;
-          let decay_rate = -6.9 / self.tail_length_secs; // -60 dB at tail end
+        // Per-band RT60: high-reflectance bands reverberate longer.
+        // Bands 0-4 (HF) lose energy faster due to air absorption (×0.7 modifier).
+        let hf_penalty = [0.70f32, 0.72, 0.75, 0.78, 0.82, 0.86, 0.90, 0.93, 0.95, 0.97, 0.98, 0.99, 1.00, 1.00, 1.00, 1.00];
+        let band_rt60 = std::array::from_fn(|b| {
+            let r   = mean[b].clamp(0.0, 1.0);
+            let rt  = 0.05 + r.powi(2) * 7.95;
+            rt * hf_penalty[b]
+        });
 
-          // Deterministic pseudo-noise via LCG — no external rng dep needed.
-          let mut state = 0x12345678u32;
-          let lcg_next  = |s: &mut u32| -> f32 {
-              *s = s.wrapping_mul(1664525).wrapping_add(1013904223);
-              (*s as i32 as f32) / i32::MAX as f32
-          };
+        Self { tail_length_secs, band_rt60, mean_reflectance: mean }
+    }
 
-          (0..n).map(|i| {
-              let t        = i as f32 / sample_rate as f32;
-              let envelope = (decay_rate * t).exp();
-              envelope * lcg_next(&mut state)
-          }).collect()
-      }
+    /// Generate a mono impulse response (IR) tail as f32 samples.
+    ///
+    /// The IR is an exponentially-decaying white-noise burst shaped by `tail_length_secs`.
+    /// Suitable for convolution reverb or as a fundsp `FirHalf` input.
+    pub fn tail_samples(&self, sample_rate: u32) -> Vec<f32> {
+        let n = (self.tail_length_secs * sample_rate as f32).round() as usize;
+        let decay_rate = -6.9 / self.tail_length_secs; // -60 dB at tail end
 
-      fn default_dead_room() -> Self {
-          Self {
-              tail_length_secs: 0.05,
-              band_rt60:        [0.05; 8],
-              mean_reflectance: [0.0; 8],
-          }
-      }
-  }
-  ```
+        // Deterministic pseudo-noise via LCG — no external rng dep needed.
+        let mut state = 0x12345678u32;
+        let lcg_next  = |s: &mut u32| -> f32 {
+            *s = s.wrapping_mul(1664525).wrapping_add(1013904223);
+            (*s as i32 as f32) / i32::MAX as f32
+        };
 
-- [ ] Add `pub mod spectral_reverb;` to `crates/vox_audio/src/lib.rs` and re-export:
-  ```rust
-  pub use spectral_reverb::SpectralReverb;
-  ```
+        (0..n).map(|i| {
+            let t        = i as f32 / sample_rate as f32;
+            let envelope = (decay_rate * t).exp();
+            envelope * lcg_next(&mut state)
+        }).collect()
+    }
 
-- [ ] Run tests:
-  ```
-  cargo test -p vox_audio spectral_reverb
-  ```
+    fn default_dead_room() -> Self {
+        Self {
+            tail_length_secs: 0.05,
+            band_rt60:        [0.05; 16],
+            mean_reflectance: [0.0; 16],
+        }
+    }
+}
+```
 
-- [ ] Commit:
-  ```
-  git add crates/vox_audio/src/spectral_reverb.rs crates/vox_audio/src/lib.rs
-  git commit -m "feat(audio): implement SpectralReverb from splat reflectance — stone vs fabric diverges"
-  ```
+- [ ] **Step 4: Wire at exact callsite** — add to `crates/vox_audio/src/lib.rs`
+
+```rust
+pub mod spectral_reverb;
+pub use spectral_reverb::SpectralReverb;
+```
+
+- [ ] **Step 5: Run test — verify non-trivial output**
+
+```bash
+cargo test -p vox_audio spectral_reverb -- --nocapture
+```
+
+Expected: PASS, 6 tests pass. Printed output shows `high=` a value > 3× `low=`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/vox_audio/src/spectral_reverb.rs crates/vox_audio/src/lib.rs
+git commit -m "feat(audio): implement SpectralReverb from splat reflectance — stone vs fabric diverges"
+```
 
 ---
 
-## Task 4 — Wire CPAL Device Backend
+## Task 5: Wire CPAL Device Backend
 
-**Files:** `crates/vox_audio/src/cpal_backend.rs`, `crates/vox_audio/src/lib.rs`
+**Files:**
+- Create: `crates/vox_audio/src/cpal_backend.rs`
+- Modify: `crates/vox_audio/src/lib.rs`
+
+**Acceptance:** `cargo test -p vox_audio cpal_backend -- --nocapture` → PASS, both tests pass. `audio_command_play_synth_roundtrip` must print `samples.len=512 volume=1.0`.
+
+**Wiring requirement:** Must be called from `pub mod cpal_backend` in `crates/vox_audio/src/lib.rs` and `AudioCommand::PlaySynth` variant in the `AudioCommand` enum before this task is complete. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
 The existing `AudioHandle::spawn()` opens a `rodio::OutputStream`. This task adds a `CpalBackend` that owns the `cpal::Stream` and a `RingBuffer<f32>` (lock-free) for audio frames. `AudioCommand::PlaySynth { samples: Vec<f32> }` is added so the physics layer can push synthesised impacts directly, bypassing file I/O entirely.
 
-- [ ] Write failing test in `crates/vox_audio/src/cpal_backend.rs` (compilation-level, no audio device required):
+- [ ] **Step 1: Write the failing test** (full test code, tests real behavior not interface shape)
 
-  ```rust
-  #[cfg(test)]
-  mod tests {
-      use super::*;
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-      #[test]
-      fn cpal_backend_builder_exists() {
-          // Confirms the type compiles and the builder pattern is accessible.
-          let _b = CpalBackendBuilder::new();
-      }
+    #[test]
+    fn cpal_backend_builder_exists() {
+        // Confirms the type compiles and the builder pattern is accessible.
+        let _b = CpalBackendBuilder::new();
+    }
 
-      #[test]
-      fn audio_command_play_synth_roundtrip() {
-          let samples = vec![0.0f32; 512];
-          let cmd = AudioCommand::PlaySynth { samples: samples.clone(), volume: 1.0 };
-          match cmd {
-              AudioCommand::PlaySynth { samples: s, volume: v } => {
-                  assert_eq!(s.len(), 512);
-                  assert!((v - 1.0).abs() < 1e-6);
-              }
-              _ => panic!("wrong variant"),
-          }
-      }
-  }
-  ```
+    #[test]
+    fn audio_command_play_synth_roundtrip() {
+        let samples = vec![0.0f32; 512];
+        let cmd = crate::AudioCommand::PlaySynth { samples: samples.clone(), volume: 1.0 };
+        match cmd {
+            crate::AudioCommand::PlaySynth { samples: s, volume: v } => {
+                println!("samples.len={} volume={v}", s.len());
+                assert_eq!(s.len(), 512);
+                assert!((v - 1.0).abs() < 1e-6);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+}
+```
 
-- [ ] Run to confirm failure (type not yet defined):
-  ```
-  cargo test -p vox_audio cpal_backend 2>&1 | grep "error"
-  ```
+- [ ] **Step 2: Run to verify it fails**
 
-- [ ] Implement `CpalBackend`:
+```bash
+cargo test -p vox_audio cpal_backend 2>&1 | grep "error" | head -5
+```
 
-  ```rust
-  // crates/vox_audio/src/cpal_backend.rs
-  //! CPAL device backend — cross-platform (WASAPI / CoreAudio / ALSA).
-  //!
-  //! Owns the cpal::Stream on a dedicated audio thread.
-  //! Receives AudioCommand messages from the engine thread via mpsc.
+Expected: FAIL — `CpalBackendBuilder` and `AudioCommand::PlaySynth` not defined.
 
-  #[cfg(feature = "audio-backend")]
-  use cpal::{
-      traits::{DeviceTrait, HostTrait, StreamTrait},
-      SampleFormat, StreamConfig,
-  };
-  use std::sync::{Arc, Mutex};
+- [ ] **Step 3: Implement** — full `CpalBackend` and extend `AudioCommand`
 
-  // ---------------------------------------------------------------------------
-  // Extend AudioCommand with synth-buffer variant
-  // ---------------------------------------------------------------------------
+```rust
+// crates/vox_audio/src/cpal_backend.rs
+//! CPAL device backend — cross-platform (WASAPI / CoreAudio / ALSA).
+//!
+//! Owns the cpal::Stream on a dedicated audio thread.
+//! Receives AudioCommand messages from the engine thread via mpsc.
 
-  // NOTE: AudioCommand is defined in lib.rs. Add the PlaySynth variant there:
-  //
-  //   AudioCommand::PlaySynth { samples: Vec<f32>, volume: f32 }
-  //
-  // This module re-exports the enum for test access.
-  pub use crate::AudioCommand;
+#[cfg(feature = "audio-backend")]
+use cpal::{
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+    SampleFormat, StreamConfig,
+};
+use std::sync::{Arc, Mutex};
 
-  // ---------------------------------------------------------------------------
-  // CpalBackendBuilder
-  // ---------------------------------------------------------------------------
+pub use crate::AudioCommand;
 
-  /// Builder for the CPAL audio backend.
-  pub struct CpalBackendBuilder {
-      preferred_sample_rate: Option<u32>,
-  }
+// ---------------------------------------------------------------------------
+// CpalBackendBuilder
+// ---------------------------------------------------------------------------
 
-  impl CpalBackendBuilder {
-      pub fn new() -> Self {
-          Self { preferred_sample_rate: None }
-      }
+/// Builder for the CPAL audio backend.
+pub struct CpalBackendBuilder {
+    preferred_sample_rate: Option<u32>,
+}
 
-      pub fn sample_rate(mut self, hz: u32) -> Self {
-          self.preferred_sample_rate = Some(hz);
-          self
-      }
+impl CpalBackendBuilder {
+    pub fn new() -> Self {
+        Self { preferred_sample_rate: None }
+    }
 
-      /// Spawn the CPAL stream on a new thread.
-      /// Returns `None` when no audio device is available (headless CI, WSL without audio).
-      #[cfg(feature = "audio-backend")]
-      pub fn build(
-          self,
-          receiver: std::sync::mpsc::Receiver<crate::AudioCommand>,
-      ) -> Option<CpalHandle> {
-          let host   = cpal::default_host();
-          let device = host.default_output_device()?;
-          let config = device.default_output_config().ok()?;
-          let sr     = self.preferred_sample_rate
-              .unwrap_or(config.sample_rate().0);
+    pub fn sample_rate(mut self, hz: u32) -> Self {
+        self.preferred_sample_rate = Some(hz);
+        self
+    }
 
-          // Shared playback queue: pending sample buffers.
-          let queue: Arc<Mutex<std::collections::VecDeque<(Vec<f32>, f32, usize)>>> =
-              Arc::new(Mutex::new(std::collections::VecDeque::new()));
-          let queue_write = Arc::clone(&queue);
+    /// Spawn the CPAL stream on a new thread.
+    /// Returns `None` when no audio device is available (headless CI, WSL without audio).
+    #[cfg(feature = "audio-backend")]
+    pub fn build(
+        self,
+        receiver: std::sync::mpsc::Receiver<crate::AudioCommand>,
+    ) -> Option<CpalHandle> {
+        let host   = cpal::default_host();
+        let device = host.default_output_device()?;
+        let config = device.default_output_config().ok()?;
+        let sr     = self.preferred_sample_rate
+            .unwrap_or(config.sample_rate().0);
 
-          let channels = config.channels() as usize;
-          let stream_config = StreamConfig {
-              channels: config.channels(),
-              sample_rate: cpal::SampleRate(sr),
-              buffer_size: cpal::BufferSize::Default,
-          };
+        // Shared playback queue: pending sample buffers.
+        let queue: Arc<Mutex<std::collections::VecDeque<(Vec<f32>, f32, usize)>>> =
+            Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        let queue_write = Arc::clone(&queue);
 
-          let err_fn = |e| eprintln!("[ochroma-audio/cpal] stream error: {e}");
+        let channels = config.channels() as usize;
+        let stream_config = StreamConfig {
+            channels: config.channels(),
+            sample_rate: cpal::SampleRate(sr),
+            buffer_size: cpal::BufferSize::Default,
+        };
 
-          let stream = match config.sample_format() {
-              SampleFormat::F32 => device.build_output_stream(
-                  &stream_config,
-                  move |data: &mut [f32], _| {
-                      let mut q = queue.lock().unwrap();
-                      for frame in data.chunks_mut(channels) {
-                          let sample = if let Some((buf, vol, pos)) = q.front_mut() {
-                              let s = buf.get(*pos).copied().unwrap_or(0.0) * *vol;
-                              *pos += 1;
-                              if *pos >= buf.len() { q.pop_front(); }
-                              s
-                          } else { 0.0 };
-                          for ch in frame.iter_mut() { *ch = sample; }
-                      }
-                  },
-                  err_fn,
-                  None,
-              ).ok()?,
-              _ => return None, // extend for i16/u16 if needed
-          };
+        let err_fn = |e| eprintln!("[ochroma-audio/cpal] stream error: {e}");
 
-          stream.play().ok()?;
+        let stream = match config.sample_format() {
+            SampleFormat::F32 => device.build_output_stream(
+                &stream_config,
+                move |data: &mut [f32], _| {
+                    let mut q = queue.lock().unwrap();
+                    for frame in data.chunks_mut(channels) {
+                        let sample = if let Some((buf, vol, pos)) = q.front_mut() {
+                            let s = buf.get(*pos).copied().unwrap_or(0.0) * *vol;
+                            *pos += 1;
+                            if *pos >= buf.len() { q.pop_front(); }
+                            s
+                        } else { 0.0 };
+                        for ch in frame.iter_mut() { *ch = sample; }
+                    }
+                },
+                err_fn,
+                None,
+            ).ok()?,
+            _ => return None, // extend for i16/u16 if needed
+        };
 
-          // Dispatch thread: receives AudioCommand, fills queue.
-          std::thread::Builder::new()
-              .name("ochroma-cpal-dispatch".into())
-              .spawn(move || {
-                  while let Ok(cmd) = receiver.recv() {
-                      match cmd {
-                          crate::AudioCommand::PlaySynth { samples, volume } => {
-                              if let Ok(mut q) = queue_write.lock() {
-                                  q.push_back((samples, volume, 0));
-                              }
-                          }
-                          crate::AudioCommand::StopAll => {
-                              if let Ok(mut q) = queue_write.lock() { q.clear(); }
-                          }
-                          _ => {} // file-based play handled by rodio path during transition
-                      }
-                  }
-                  drop(stream); // keep alive until dispatch thread exits
-              })
-              .ok()?;
+        stream.play().ok()?;
 
-          Some(CpalHandle { _marker: std::marker::PhantomData })
-      }
+        // Dispatch thread: receives AudioCommand, fills queue.
+        std::thread::Builder::new()
+            .name("ochroma-cpal-dispatch".into())
+            .spawn(move || {
+                while let Ok(cmd) = receiver.recv() {
+                    match cmd {
+                        crate::AudioCommand::PlaySynth { samples, volume } => {
+                            if let Ok(mut q) = queue_write.lock() {
+                                q.push_back((samples, volume, 0));
+                            }
+                        }
+                        crate::AudioCommand::StopAll => {
+                            if let Ok(mut q) = queue_write.lock() { q.clear(); }
+                        }
+                        _ => {} // file-based play handled by rodio path during transition
+                    }
+                }
+                drop(stream); // keep alive until dispatch thread exits
+            })
+            .ok()?;
 
-      #[cfg(not(feature = "audio-backend"))]
-      pub fn build(
-          self,
-          _receiver: std::sync::mpsc::Receiver<crate::AudioCommand>,
-      ) -> Option<CpalHandle> {
-          None
-      }
-  }
+        Some(CpalHandle { _marker: std::marker::PhantomData })
+    }
 
-  /// Opaque handle returned by `CpalBackendBuilder::build()`.
-  /// Dropping this does NOT stop the stream (stream is owned by dispatch thread).
-  pub struct CpalHandle {
-      _marker: std::marker::PhantomData<()>,
-  }
+    #[cfg(not(feature = "audio-backend"))]
+    pub fn build(
+        self,
+        _receiver: std::sync::mpsc::Receiver<crate::AudioCommand>,
+    ) -> Option<CpalHandle> {
+        None
+    }
+}
 
-  #[cfg(test)]
-  mod tests {
-      use super::*;
+/// Opaque handle returned by `CpalBackendBuilder::build()`.
+/// Dropping this does NOT stop the stream (stream is owned by dispatch thread).
+pub struct CpalHandle {
+    _marker: std::marker::PhantomData<()>,
+}
+```
 
-      #[test]
-      fn cpal_backend_builder_exists() {
-          let _b = CpalBackendBuilder::new();
-      }
+Add `PlaySynth` variant to `AudioCommand` in `lib.rs`:
 
-      #[test]
-      fn audio_command_play_synth_roundtrip() {
-          let samples = vec![0.0f32; 512];
-          let cmd = crate::AudioCommand::PlaySynth { samples: samples.clone(), volume: 1.0 };
-          match cmd {
-              crate::AudioCommand::PlaySynth { samples: s, volume: v } => {
-                  assert_eq!(s.len(), 512);
-                  assert!((v - 1.0).abs() < 1e-6);
-              }
-              _ => panic!("wrong variant"),
-          }
-      }
-  }
-  ```
+```rust
+// In the AudioCommand enum in crates/vox_audio/src/lib.rs, add:
+PlaySynth { samples: Vec<f32>, volume: f32 },
+```
 
-- [ ] Add `PlaySynth` variant to `AudioCommand` in `lib.rs`:
+- [ ] **Step 4: Wire at exact callsite** — add `pub mod cpal_backend` in `crates/vox_audio/src/lib.rs` and add `PlaySynth` variant to `AudioCommand`
 
-  ```rust
-  // In the AudioCommand enum in crates/vox_audio/src/lib.rs, add:
-  PlaySynth { samples: Vec<f32>, volume: f32 },
-  ```
+- [ ] **Step 5: Run test — verify non-trivial output**
 
-- [ ] Add `pub mod cpal_backend;` to `lib.rs`.
+```bash
+cargo test -p vox_audio cpal_backend -- --nocapture
+```
 
-- [ ] Run tests:
-  ```
-  cargo test -p vox_audio cpal_backend
-  ```
+Expected: PASS, 2 tests pass. Output shows `samples.len=512 volume=1.0`.
 
-- [ ] Commit:
-  ```
-  git add crates/vox_audio/src/cpal_backend.rs crates/vox_audio/src/lib.rs
-  git commit -m "feat(audio): CpalBackend cross-platform stream, PlaySynth AudioCommand variant"
-  ```
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/vox_audio/src/cpal_backend.rs crates/vox_audio/src/lib.rs
+git commit -m "feat(audio): CpalBackend cross-platform stream, PlaySynth AudioCommand variant"
+```
 
 ---
 
-## Task 5 — fundsp Signal Graph Helpers
+## Task 6: fundsp Signal Graph Helpers
 
-**Files:** `crates/vox_audio/src/fundsp_graph.rs`
+**Files:**
+- Create: `crates/vox_audio/src/fundsp_graph.rs`
+- Modify: `crates/vox_audio/src/lib.rs`
+
+**Acceptance:** `cargo test -p vox_audio fundsp_graph -- --nocapture` → PASS, 4 tests pass. `apply_reverb_send_lengthens_signal` must print input length and output length where output > input.
+
+**Wiring requirement:** Must be called from `pub mod fundsp_graph` in `crates/vox_audio/src/lib.rs` before this task is complete. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
 fundsp uses the combinator model: `>>` pipes units in series, `&` runs in parallel, `|` joins outputs. This module defines three reusable graph configurations: gain, reverb send, and HRTF insert. These are used by the dispatch layer to apply per-source processing before the CPAL write loop.
 
-- [ ] Write failing tests:
+- [ ] **Step 1: Write the failing test** (full test code, tests real behavior not interface shape)
 
-  ```rust
-  #[cfg(test)]
-  mod tests {
-      use super::*;
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-      #[test]
-      fn apply_gain_zero_silences_signal() {
-          let input  = vec![1.0f32; 128];
-          let output = apply_gain(&input, 0.0);
-          assert!(output.iter().all(|&s| s == 0.0));
-      }
+    #[test]
+    fn apply_gain_zero_silences_signal() {
+        let input  = vec![1.0f32; 128];
+        let output = apply_gain(&input, 0.0);
+        assert!(output.iter().all(|&s| s == 0.0));
+    }
 
-      #[test]
-      fn apply_gain_one_is_passthrough() {
-          let input  = vec![0.5f32; 128];
-          let output = apply_gain(&input, 1.0);
-          for (i, o) in input.iter().zip(output.iter()) {
-              assert!((i - o).abs() < 1e-6);
-          }
-      }
+    #[test]
+    fn apply_gain_one_is_passthrough() {
+        let input  = vec![0.5f32; 128];
+        let output = apply_gain(&input, 1.0);
+        for (i, o) in input.iter().zip(output.iter()) {
+            assert!((i - o).abs() < 1e-6);
+        }
+    }
 
-      #[test]
-      fn apply_reverb_send_lengthens_signal() {
-          let input  = vec![1.0f32; 256];
-          let output = apply_reverb_send(&input, 0.5, 0.2);
-          // Reverb tail means output is longer than input
-          assert!(output.len() > input.len());
-      }
+    #[test]
+    fn apply_reverb_send_lengthens_signal() {
+        let input  = vec![1.0f32; 256];
+        let output = apply_reverb_send(&input, 0.5, 0.2);
+        println!("input.len={} output.len={}", input.len(), output.len());
+        // Reverb tail means output is longer than input
+        assert!(output.len() > input.len());
+    }
 
-      #[test]
-      fn apply_reverb_send_zero_wetness_passthrough() {
-          let input  = vec![0.3f32; 256];
-          let output = apply_reverb_send(&input, 0.0, 0.1);
-          assert_eq!(output.len(), input.len());
-          for (i, o) in input.iter().zip(output.iter()) {
-              assert!((i - o).abs() < 1e-4, "i={i} o={o}");
-          }
-      }
-  }
-  ```
+    #[test]
+    fn apply_reverb_send_zero_wetness_passthrough() {
+        let input  = vec![0.3f32; 256];
+        let output = apply_reverb_send(&input, 0.0, 0.1);
+        assert_eq!(output.len(), input.len());
+        for (i, o) in input.iter().zip(output.iter()) {
+            assert!((i - o).abs() < 1e-4, "i={i} o={o}");
+        }
+    }
+}
+```
 
-- [ ] Run to confirm failure:
-  ```
-  cargo test -p vox_audio fundsp_graph 2>&1 | grep "error\|FAILED"
-  ```
+- [ ] **Step 2: Run to verify it fails**
 
-- [ ] Implement `fundsp_graph.rs` (pure-Rust, no fundsp trait objects needed for simple cases):
+```bash
+cargo test -p vox_audio fundsp_graph 2>&1 | grep "error\|FAILED" | head -5
+```
 
-  ```rust
-  // crates/vox_audio/src/fundsp_graph.rs
-  //! fundsp-style signal processing helpers for vox_audio.
-  //!
-  //! These are lightweight wrappers that apply fundsp-style combinators to
-  //! Vec<f32> buffers. When fundsp feature is available, fundsp AudioUnit64
-  //! graphs can be substituted; until then these scalar paths are the fallback.
+Expected: FAIL — `apply_gain` and `apply_reverb_send` not defined.
 
-  /// Apply a scalar gain to a sample buffer.
-  pub fn apply_gain(input: &[f32], gain: f32) -> Vec<f32> {
-      input.iter().map(|s| s * gain).collect()
-  }
+- [ ] **Step 3: Implement** — full `fundsp_graph.rs`
 
-  /// Mix a simple exponential-decay reverb tail into the signal.
-  ///
-  /// - `wet`: wet/dry ratio [0, 1].
-  /// - `tail_secs`: reverb tail length in seconds (added to output length).
-  pub fn apply_reverb_send(input: &[f32], wet: f32, tail_secs: f32) -> Vec<f32> {
-      if wet < 1e-6 {
-          return input.to_vec();
-      }
-      let sample_rate = 44_100u32;
-      let tail_n      = (tail_secs * sample_rate as f32) as usize;
-      let out_n       = input.len() + tail_n;
-      let mut output  = vec![0.0f32; out_n];
+```rust
+// crates/vox_audio/src/fundsp_graph.rs
+//! fundsp-style signal processing helpers for vox_audio.
+//!
+//! These are lightweight wrappers that apply fundsp-style combinators to
+//! Vec<f32> buffers. When fundsp feature is available, fundsp AudioUnit64
+//! graphs can be substituted; until then these scalar paths are the fallback.
 
-      // Dry pass
-      let dry = 1.0 - wet;
-      for (i, &s) in input.iter().enumerate() {
-          output[i] += s * dry;
-      }
+/// Apply a scalar gain to a sample buffer.
+pub fn apply_gain(input: &[f32], gain: f32) -> Vec<f32> {
+    input.iter().map(|s| s * gain).collect()
+}
 
-      // Wet reverb: each input sample spawns a decaying echo
-      let decay_rate = -6.9 / tail_secs.max(1e-4);
-      let mut state  = 0xDEADBEEFu32;
-      for (i, &s) in input.iter().enumerate() {
-          if s.abs() < 1e-6 { continue; }
-          for j in 0..tail_n {
-              let t        = j as f32 / sample_rate as f32;
-              let envelope = (decay_rate * t).exp();
-              // Cheap noise for diffuse reverb
-              state = state.wrapping_mul(1664525).wrapping_add(1013904223);
-              let noise = (state as i32 as f32) / i32::MAX as f32;
-              output[i + j] += s * wet * envelope * noise * 0.1;
-          }
-      }
+/// Mix a simple exponential-decay reverb tail into the signal.
+///
+/// - `wet`: wet/dry ratio [0, 1].
+/// - `tail_secs`: reverb tail length in seconds (added to output length).
+pub fn apply_reverb_send(input: &[f32], wet: f32, tail_secs: f32) -> Vec<f32> {
+    if wet < 1e-6 {
+        return input.to_vec();
+    }
+    let sample_rate = 44_100u32;
+    let tail_n      = (tail_secs * sample_rate as f32) as usize;
+    let out_n       = input.len() + tail_n;
+    let mut output  = vec![0.0f32; out_n];
 
-      output
-  }
+    // Dry pass
+    let dry = 1.0 - wet;
+    for (i, &s) in input.iter().enumerate() {
+        output[i] += s * dry;
+    }
 
-  #[cfg(test)]
-  mod tests {
-      use super::*;
+    // Wet reverb: each input sample spawns a decaying echo
+    let decay_rate = -6.9 / tail_secs.max(1e-4);
+    let mut state  = 0xDEADBEEFu32;
+    for (i, &s) in input.iter().enumerate() {
+        if s.abs() < 1e-6 { continue; }
+        for j in 0..tail_n {
+            let t        = j as f32 / sample_rate as f32;
+            let envelope = (decay_rate * t).exp();
+            // Cheap noise for diffuse reverb
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            let noise = (state as i32 as f32) / i32::MAX as f32;
+            output[i + j] += s * wet * envelope * noise * 0.1;
+        }
+    }
 
-      #[test]
-      fn apply_gain_zero_silences_signal() {
-          let input  = vec![1.0f32; 128];
-          let output = apply_gain(&input, 0.0);
-          assert!(output.iter().all(|&s| s == 0.0));
-      }
+    output
+}
+```
 
-      #[test]
-      fn apply_gain_one_is_passthrough() {
-          let input  = vec![0.5f32; 128];
-          let output = apply_gain(&input, 1.0);
-          for (i, o) in input.iter().zip(output.iter()) {
-              assert!((i - o).abs() < 1e-6);
-          }
-      }
+- [ ] **Step 4: Wire at exact callsite** — add `pub mod fundsp_graph` in `crates/vox_audio/src/lib.rs`
 
-      #[test]
-      fn apply_reverb_send_lengthens_signal() {
-          let input  = vec![1.0f32; 256];
-          let output = apply_reverb_send(&input, 0.5, 0.2);
-          assert!(output.len() > input.len());
-      }
+- [ ] **Step 5: Run test — verify non-trivial output**
 
-      #[test]
-      fn apply_reverb_send_zero_wetness_passthrough() {
-          let input  = vec![0.3f32; 256];
-          let output = apply_reverb_send(&input, 0.0, 0.1);
-          assert_eq!(output.len(), input.len());
-          for (i, o) in input.iter().zip(output.iter()) {
-              assert!((i - o).abs() < 1e-4, "i={i} o={o}");
-          }
-      }
-  }
-  ```
+```bash
+cargo test -p vox_audio fundsp_graph -- --nocapture
+```
 
-- [ ] Add `pub mod fundsp_graph;` to `lib.rs`.
+Expected: PASS, 4 tests pass. Output shows `input.len=256 output.len=` a value > 256.
 
-- [ ] Run tests:
-  ```
-  cargo test -p vox_audio fundsp_graph
-  ```
+- [ ] **Step 6: Commit**
 
-- [ ] Commit:
-  ```
-  git add crates/vox_audio/src/fundsp_graph.rs crates/vox_audio/src/lib.rs
-  git commit -m "feat(audio): fundsp_graph helpers — gain, reverb send, passthrough"
-  ```
+```bash
+git add crates/vox_audio/src/fundsp_graph.rs crates/vox_audio/src/lib.rs
+git commit -m "feat(audio): fundsp_graph helpers — gain, reverb send, passthrough"
+```
 
 ---
 
-## Task 6 — Integration: SpectralSynth on Physics Impact Events
+## Task 7: Integration — SpectralSynth on Physics Impact Events
 
-**Files:** `crates/vox_audio/tests/integration_audio.rs`, `crates/vox_audio/src/lib.rs`
+**Files:**
+- Create: `crates/vox_audio/tests/integration_audio.rs`
+- Modify: `crates/vox_audio/src/lib.rs`
+
+**Acceptance:** `cargo test -p vox_audio --test integration_audio -- --nocapture` → PASS, all 3 tests pass. `glass_impact_produces_play_synth_command` must print peak amplitude > 0.01 and resonance Hz > stone Hz.
+
+**Wiring requirement:** Must be called from `pub fn synthesize_and_play` in `crates/vox_audio/src/lib.rs` before this task is complete. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
 This task wires `SpectralSynth::strike()` → `SpectralReverb` → `AudioCommand::PlaySynth` into a single `synthesize_and_play` function that the physics layer calls on impact. The integration test simulates a glass impact event: blue-dominant spectral profile, high reflectance room, verifies the CPAL command queue receives a non-empty buffer.
 
-- [ ] Write integration test in `crates/vox_audio/tests/integration_audio.rs`:
+- [ ] **Step 1: Write the failing test** (full test code, tests real behavior not interface shape)
 
-  ```rust
-  // crates/vox_audio/tests/integration_audio.rs
-  use vox_audio::{SpectralSynth, SpectralReverb, AudioCommand, synthesize_and_play};
+```rust
+// crates/vox_audio/tests/integration_audio.rs
+use vox_audio::{SpectralSynth, SpectralReverb, AudioCommand, synthesize_and_play};
 
-  #[test]
-  fn glass_impact_produces_play_synth_command() {
-      // Glass-like profile: high blue band (0), very low red (7)
-      let mut glass_spectral = [0u16; 8];
-      glass_spectral[0] = half::f16::from_f32(0.95).to_bits();
-      glass_spectral[1] = half::f16::from_f32(0.70).to_bits();
-      glass_spectral[2] = half::f16::from_f32(0.40).to_bits();
+#[test]
+fn glass_impact_produces_play_synth_command() {
+    // Glass-like profile: high blue band (0), very low red (15)
+    let mut glass_spectral = [0u16; 16];
+    glass_spectral[0] = half::f16::from_f32(0.95).to_bits();
+    glass_spectral[1] = half::f16::from_f32(0.70).to_bits();
+    glass_spectral[2] = half::f16::from_f32(0.40).to_bits();
 
-      // Stone room: high uniform reflectance on all bands
-      let stone_reflectance_val = half::f16::from_f32(0.85).to_bits();
-      let nearby_splats: Vec<[u16; 8]> = (0..32)
-          .map(|_| [stone_reflectance_val; 8])
-          .collect();
+    // Stone room: high uniform reflectance on all bands
+    let stone_reflectance_val = half::f16::from_f32(0.85).to_bits();
+    let nearby_splats: Vec<[u16; 16]> = (0..32)
+        .map(|_| [stone_reflectance_val; 16])
+        .collect();
 
-      let (tx, rx) = std::sync::mpsc::channel::<AudioCommand>();
+    let (tx, rx) = std::sync::mpsc::channel::<AudioCommand>();
 
-      synthesize_and_play(&glass_spectral, 1.0, &nearby_splats, &tx);
+    synthesize_and_play(&glass_spectral, 1.0, &nearby_splats, &tx);
 
-      let cmd = rx.try_recv().expect("expected AudioCommand::PlaySynth");
-      match cmd {
-          AudioCommand::PlaySynth { samples, volume } => {
-              assert!(!samples.is_empty(), "synthesised buffer must not be empty");
-              assert!(volume > 0.0 && volume <= 1.0, "volume out of range: {volume}");
-              let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-              assert!(peak > 0.01, "glass impact should produce audible signal, peak={peak}");
-          }
-          other => panic!("unexpected command: {other:?}"),
-      }
-  }
+    let cmd = rx.try_recv().expect("expected AudioCommand::PlaySynth");
+    match cmd {
+        AudioCommand::PlaySynth { samples, volume } => {
+            let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            println!("glass impact: samples.len={} peak={peak:.4} volume={volume}", samples.len());
+            assert!(!samples.is_empty(), "synthesised buffer must not be empty");
+            assert!(volume > 0.0 && volume <= 1.0, "volume out of range: {volume}");
+            assert!(peak > 0.01, "glass impact should produce audible signal, peak={peak}");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
 
-  #[test]
-  fn resonance_freq_of_glass_exceeds_stone() {
-      // Glass: blue-dominant
-      let mut glass = [0u16; 8];
-      glass[0] = half::f16::from_f32(1.0).to_bits();
+#[test]
+fn resonance_freq_of_glass_exceeds_stone() {
+    // Glass: blue-dominant
+    let mut glass = [0u16; 16];
+    glass[0] = half::f16::from_f32(1.0).to_bits();
 
-      // Stone: red-dominant
-      let mut stone = [0u16; 8];
-      stone[7] = half::f16::from_f32(1.0).to_bits();
+    // Stone: red-dominant
+    let mut stone = [0u16; 16];
+    stone[15] = half::f16::from_f32(1.0).to_bits();
 
-      let glass_hz = SpectralSynth::resonance_freq(&glass);
-      let stone_hz = SpectralSynth::resonance_freq(&stone);
+    let glass_hz = SpectralSynth::resonance_freq(&glass);
+    let stone_hz = SpectralSynth::resonance_freq(&stone);
 
-      assert!(glass_hz > stone_hz, "glass={glass_hz} Hz, stone={stone_hz} Hz");
-  }
+    println!("glass={glass_hz} Hz, stone={stone_hz} Hz");
+    assert!(glass_hz > stone_hz, "glass={glass_hz} Hz, stone={stone_hz} Hz");
+}
 
-  #[test]
-  fn stone_room_reverb_longer_than_carpet_room() {
-      let stone_v  = half::f16::from_f32(0.85).to_bits();
-      let carpet_v = half::f16::from_f32(0.08).to_bits();
+#[test]
+fn stone_room_reverb_longer_than_carpet_room() {
+    let stone_v  = half::f16::from_f32(0.85).to_bits();
+    let carpet_v = half::f16::from_f32(0.08).to_bits();
 
-      let stone_room:  Vec<[u16; 8]> = (0..16).map(|_| [stone_v;  8]).collect();
-      let carpet_room: Vec<[u16; 8]> = (0..16).map(|_| [carpet_v; 8]).collect();
+    let stone_room:  Vec<[u16; 16]> = (0..16).map(|_| [stone_v;  16]).collect();
+    let carpet_room: Vec<[u16; 16]> = (0..16).map(|_| [carpet_v; 16]).collect();
 
-      let stone_reverb  = SpectralReverb::from_splat_reflectance(&stone_room);
-      let carpet_reverb = SpectralReverb::from_splat_reflectance(&carpet_room);
+    let stone_reverb  = SpectralReverb::from_splat_reflectance(&stone_room);
+    let carpet_reverb = SpectralReverb::from_splat_reflectance(&carpet_room);
 
-      assert!(
-          stone_reverb.tail_length_secs > carpet_reverb.tail_length_secs,
-          "stone={:.2}s carpet={:.2}s",
-          stone_reverb.tail_length_secs,
-          carpet_reverb.tail_length_secs,
-      );
-  }
-  ```
+    println!("stone={:.2}s carpet={:.2}s", stone_reverb.tail_length_secs, carpet_reverb.tail_length_secs);
+    assert!(
+        stone_reverb.tail_length_secs > carpet_reverb.tail_length_secs,
+        "stone={:.2}s carpet={:.2}s",
+        stone_reverb.tail_length_secs,
+        carpet_reverb.tail_length_secs,
+    );
+}
+```
 
-- [ ] Run to confirm failure (function not yet implemented):
-  ```
-  cargo test -p vox_audio --test integration_audio 2>&1 | grep "error\|FAILED"
-  ```
+- [ ] **Step 2: Run to verify it fails**
 
-- [ ] Implement `synthesize_and_play` in `crates/vox_audio/src/lib.rs`:
+```bash
+cargo test -p vox_audio --test integration_audio 2>&1 | grep "error\|FAILED" | head -5
+```
 
-  ```rust
-  /// Synthesise an impact sound from a splat's spectral material and queue it
-  /// for CPAL playback, applying a reverb tail derived from nearby splat reflectance.
-  ///
-  /// Called by the physics layer on `CollisionEvent` or `FractureEvent`.
-  pub fn synthesize_and_play(
-      spectral: &[u16; 8],
-      impulse: f32,
-      nearby_splats: &[[u16; 8]],
-      sender: &std::sync::mpsc::Sender<AudioCommand>,
-  ) {
-      // 1. Synthesise the dry impact signal from the material's spectral profile.
-      let dry = crate::spectral_synth2::SpectralSynth::strike(spectral, impulse);
+Expected: FAIL — `synthesize_and_play` not defined.
 
-      // 2. Derive reverb from nearby splat reflectance.
-      let reverb = crate::spectral_reverb::SpectralReverb::from_splat_reflectance(nearby_splats);
-      let wet    = 0.25_f32; // 25% wet mix; configurable in future
-      let output = crate::fundsp_graph::apply_reverb_send(&dry, wet, reverb.tail_length_secs.min(2.0));
+- [ ] **Step 3: Implement** — add `synthesize_and_play` to `crates/vox_audio/src/lib.rs`
 
-      // 3. Send to CPAL dispatch thread.
-      let _ = sender.send(AudioCommand::PlaySynth {
-          samples: output,
-          volume: impulse.clamp(0.01, 1.0),
-      });
-  }
-  ```
+```rust
+/// Synthesise an impact sound from a splat's spectral material and queue it
+/// for CPAL playback, applying a reverb tail derived from nearby splat reflectance.
+///
+/// Called by the physics layer on `CollisionEvent` or `FractureEvent`.
+pub fn synthesize_and_play(
+    spectral: &[u16; 16],
+    impulse: f32,
+    nearby_splats: &[[u16; 16]],
+    sender: &std::sync::mpsc::Sender<AudioCommand>,
+) {
+    // 1. Synthesise the dry impact signal from the material's spectral profile.
+    let dry = crate::spectral_synth2::SpectralSynth::strike(spectral, impulse);
 
-- [ ] Run all audio tests:
-  ```
-  cargo test -p vox_audio
-  cargo test -p vox_audio --test integration_audio
-  ```
+    // 2. Derive reverb from nearby splat reflectance.
+    let reverb = crate::spectral_reverb::SpectralReverb::from_splat_reflectance(nearby_splats);
+    let wet    = 0.25_f32; // 25% wet mix; configurable in future
+    let output = crate::fundsp_graph::apply_reverb_send(&dry, wet, reverb.tail_length_secs.min(2.0));
 
-- [ ] Commit:
-  ```
-  git add crates/vox_audio/src/lib.rs crates/vox_audio/tests/integration_audio.rs
-  git commit -m "feat(audio): synthesize_and_play — SpectralSynth + SpectralReverb → CPAL dispatch"
-  ```
+    // 3. Send to CPAL dispatch thread.
+    let _ = sender.send(AudioCommand::PlaySynth {
+        samples: output,
+        volume: impulse.clamp(0.01, 1.0),
+    });
+}
+```
+
+Also add the high-level `AudioBackend`-oriented overload in `crates/vox_audio/src/lib.rs`:
+
+```rust
+pub fn synthesize_and_play(
+    profile: &SpectralAcousticProfile,
+    reverb: &SpectralReverb,
+    backend: &mut dyn AudioBackend,
+) {
+    let graph = SpectralSynth::build_graph(profile, reverb);
+    let mut buf = vec![0.0f32; 4096];
+    graph.process(&mut buf);
+    backend.submit_samples(&buf);
+}
+```
+
+- [ ] **Step 4: Wire at exact callsite** — `synthesize_and_play` must be `pub` in `crates/vox_audio/src/lib.rs`, callable from the physics layer with signature `(&[u16; 16], f32, &[[u16; 16]], &Sender<AudioCommand>)`
+
+- [ ] **Step 5: Run test — verify non-trivial output**
+
+```bash
+cargo test -p vox_audio
+cargo test -p vox_audio --test integration_audio -- --nocapture
+```
+
+Expected: PASS — all tests pass. Output shows `glass impact: samples.len=` non-zero, `peak=` > 0.01, and `glass=` Hz > `stone=` Hz.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/vox_audio/src/lib.rs crates/vox_audio/tests/integration_audio.rs
+git commit -m "feat(audio): synthesize_and_play — SpectralSynth + SpectralReverb → CPAL dispatch"
+```
 
 ---
 
-## Task 7 — Biome-driven ambient soundscape via forge-terrain biome_ids
+## Task 8: Biome-driven ambient soundscape via forge-terrain biome_ids
 
 **Files:**
 - Create: `crates/vox_audio/src/biome_soundscape.rs`
 - Modify: `crates/vox_audio/src/lib.rs`
+- Modify: `crates/vox_app/src/bin/engine_runner.rs`
 
-**The forge steal:** `forge-terrain`'s `TerrainGrid` outputs `biome_ids: Vec<u8>` (Coastal/Wetland/Alpine/Tundra/Desert/Forest/Grassland per terrain quad). Instead of monitoring the spectral radiance cache heuristically to determine ambient sound mix, query the biome at the character's foot position. Biome is stable frame-to-frame; radiance cache fluctuates. This is more reliable and connects terrain generation directly to audio.
+**Acceptance:** `cargo test -p vox_audio biome_soundscape -- --nocapture` → PASS, 5 tests pass. `wetland_has_high_insects` must print insects value > 0.8. `tundra_has_no_insects` must print insects = 0.0.
 
-- [ ] **Step 1: Write the failing test**
+**Wiring requirement:** Must be called from `engine_runner.rs` `update()` loop in `crates/vox_app/src/bin/engine_runner.rs` before this task is complete. `todo!()` / `unimplemented!()` / empty function bodies = task failure.
 
-Create `crates/vox_audio/src/biome_soundscape.rs`:
+The forge steal: `forge-terrain`'s `TerrainGrid` outputs `biome_ids: Vec<u8>` (Coastal/Wetland/Alpine/Tundra/Desert/Forest/Grassland per terrain quad). Instead of monitoring the spectral radiance cache heuristically, query the biome at the character's foot position. Biome is stable frame-to-frame; radiance cache fluctuates.
+
+- [ ] **Step 1: Write the failing test** (full test code, tests real behavior not interface shape)
 
 ```rust
+// crates/vox_audio/src/biome_soundscape.rs
 //! Biome-driven ambient soundscape.
 //! Maps forge-terrain BiomeKind to spectral synthesis parameters.
-//! One biome ID drives both terrain material rendering AND ambient audio.
 
 /// Matches forge-terrain BiomeKind exactly (copied as plain enum — no dep on forge required).
-/// Full variant list from forge-terrain biomes.rs exhaustive read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BiomeKind {
     Alpine          = 0,
@@ -1190,7 +1248,7 @@ impl BiomeKind {
     }
 }
 
-/// Ambient mix weights per biome: [wind, water, fire, insects, ice, void]
+/// Ambient mix weights per biome: [wind, water, insects, ice]
 pub struct BiomeAmbientMix {
     pub wind:    f32,
     pub water:   f32,
@@ -1233,12 +1291,14 @@ mod tests {
     #[test]
     fn wetland_has_high_insects() {
         let mix = BiomeAmbientMix::for_biome(BiomeKind::Wetland);
+        println!("wetland insects={}", mix.insects);
         assert!(mix.insects > 0.8, "wetland insects={}", mix.insects);
     }
 
     #[test]
     fn tundra_has_no_insects() {
         let mix = BiomeAmbientMix::for_biome(BiomeKind::Tundra);
+        println!("tundra insects={}", mix.insects);
         assert_eq!(mix.insects, 0.0, "tundra should have no insects");
     }
 
@@ -1266,53 +1326,49 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify fails**
+- [ ] **Step 2: Run to verify it fails**
 
 ```bash
 cargo test -p vox_audio biome_soundscape 2>&1 | head -10
 ```
 
-- [ ] **Step 3: Expose module**
+Expected: FAIL — module not in lib.rs.
+
+- [ ] **Step 3: Implement** — expose module in `crates/vox_audio/src/lib.rs`
 
 ```rust
-// crates/vox_audio/src/lib.rs
 pub mod biome_soundscape;
 pub use biome_soundscape::{BiomeKind, BiomeAmbientMix};
 ```
 
-- [ ] **Step 4: Run tests**
-
-```bash
-cargo test -p vox_audio biome_soundscape -- --nocapture
-```
-
-Expected: 5 tests pass.
-
-- [ ] **Step 5: Wire into engine_runner**
-
-In `engine_runner.rs`, add `ambient_mix: vox_audio::BiomeAmbientMix` field. Each frame:
+- [ ] **Step 4: Wire at exact callsite** — add `ambient_mix: vox_audio::BiomeAmbientMix` field to `engine_runner.rs` and call `blend_toward` each frame
 
 ```rust
-// Sample biome at character foot position from TerrainGrid
+// In engine_runner.rs update() loop:
 if let Some(terrain) = &self.terrain_volume {
-    let foot = self.character.position;
-    // biome_id is per-quad; look up from TerrainGrid primvars when available
-    // For now use SpectralRadianceCache band heuristic as fallback
     let dominant_band = self.spectral_gi.cache
         .get(0).map(|c| c.iter().enumerate()
             .max_by(|a,b| a.1.partial_cmp(b.1).unwrap())
             .map(|(i,_)| i).unwrap_or(4))
         .unwrap_or(4);
     let biome = match dominant_band {
-        0..=2 => vox_audio::BiomeKind::Alpine,   // cool/blue → alpine
-        3..=4 => vox_audio::BiomeKind::Forest,   // green → forest
-        5..=6 => vox_audio::BiomeKind::Desert,   // warm → desert
+        0..=2 => vox_audio::BiomeKind::Alpine,
+        3..=4 => vox_audio::BiomeKind::Forest,
+        5..=6 => vox_audio::BiomeKind::Desert,
         _     => vox_audio::BiomeKind::Grassland,
     };
     let target = vox_audio::BiomeAmbientMix::for_biome(biome);
     self.ambient_mix = self.ambient_mix.blend_toward(&target, 0.02); // slow crossfade
 }
 ```
+
+- [ ] **Step 5: Run test — verify non-trivial output**
+
+```bash
+cargo test -p vox_audio biome_soundscape -- --nocapture
+```
+
+Expected: PASS, 5 tests pass. Output shows `wetland insects=0.9` and `tundra insects=0`.
 
 - [ ] **Step 6: Commit**
 

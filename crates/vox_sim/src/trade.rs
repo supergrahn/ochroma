@@ -97,13 +97,13 @@ impl TradeSystem {
         resource: ResourceType,
         quantity: f32,
     ) -> f64 {
-        if let Some(partner) = self.partners.iter_mut().find(|p| p.name == partner_name) {
-            if let Some((_, price)) = partner.buy_prices.iter().find(|(r, _)| *r == resource) {
-                let revenue = quantity as f64 * *price as f64;
-                partner.trust_level = (partner.trust_level + 0.01).min(1.0);
-                self.trade_balance += revenue;
-                return revenue;
-            }
+        if let Some(partner) = self.partners.iter_mut().find(|p| p.name == partner_name)
+            && let Some((_, price)) = partner.buy_prices.iter().find(|(r, _)| *r == resource)
+        {
+            let revenue = quantity as f64 * *price as f64;
+            partner.trust_level = (partner.trust_level + 0.01).min(1.0);
+            self.trade_balance += revenue;
+            return revenue;
         }
         0.0
     }
@@ -115,13 +115,13 @@ impl TradeSystem {
         resource: ResourceType,
         quantity: f32,
     ) -> f64 {
-        if let Some(partner) = self.partners.iter_mut().find(|p| p.name == partner_name) {
-            if let Some((_, price)) = partner.sell_prices.iter().find(|(r, _)| *r == resource) {
-                let cost = quantity as f64 * *price as f64;
-                partner.trust_level = (partner.trust_level + 0.01).min(1.0);
-                self.trade_balance -= cost;
-                return cost;
-            }
+        if let Some(partner) = self.partners.iter_mut().find(|p| p.name == partner_name)
+            && let Some((_, price)) = partner.sell_prices.iter().find(|(r, _)| *r == resource)
+        {
+            let cost = quantity as f64 * *price as f64;
+            partner.trust_level = (partner.trust_level + 0.01).min(1.0);
+            self.trade_balance -= cost;
+            return cost;
         }
         0.0
     }

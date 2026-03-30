@@ -11,7 +11,7 @@ fn tree_has_trunk_and_canopy() {
     // Check there are splats at different heights
     let max_y = splats
         .iter()
-        .map(|s| s.position[1])
+        .map(|s| s.position()[1])
         .fold(f32::MIN, f32::max);
     assert!(max_y > 5.0, "Tree should be tall");
 }
@@ -31,7 +31,7 @@ fn different_seeds_different_trees() {
     let differs = a.len() != b.len()
         || a.iter()
             .zip(b.iter())
-            .any(|(sa, sb)| sa.position != sb.position);
+            .any(|(sa, sb)| sa.position() != sb.position());
     assert!(differs, "Different seeds should produce different trees");
 }
 
@@ -44,7 +44,7 @@ fn bench_has_seat_and_back() {
     );
     let max_y = splats
         .iter()
-        .map(|s| s.position[1])
+        .map(|s| s.position()[1])
         .fold(f32::MIN, f32::max);
     assert!(
         max_y > 0.5,
@@ -67,7 +67,7 @@ fn lamp_post_reaches_height() {
     let splats = generate_lamp_post(42, 5.0);
     let max_y = splats
         .iter()
-        .map(|s| s.position[1])
+        .map(|s| s.position()[1])
         .fold(f32::MIN, f32::max);
     assert!(max_y > 4.5, "Lamp should reach near specified height");
 }

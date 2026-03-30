@@ -6,6 +6,10 @@ pub struct DebugConsole {
     pub max_output_lines: usize,
 }
 
+impl Default for DebugConsole {
+    fn default() -> Self { Self::new() }
+}
+
 impl DebugConsole {
     pub fn new() -> Self {
         Self {
@@ -20,7 +24,7 @@ impl DebugConsole {
 
     /// Execute a command and return the output.
     pub fn execute(&mut self, command: &str) -> String {
-        let parts: Vec<&str> = command.trim().split_whitespace().collect();
+        let parts: Vec<&str> = command.split_whitespace().collect();
         if parts.is_empty() { return String::new(); }
 
         let output = match parts[0] {

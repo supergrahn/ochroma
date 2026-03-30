@@ -50,30 +50,14 @@ pub fn generate_map(seed: u64, size: f32, density: f32) -> Vec<GaussianSplat> {
     let half = size * 0.5;
     let mut splats = Vec::with_capacity((nx * nz) as usize);
 
-    let grass_spd: [u16; 8] = [
-        f16::from_f32(0.03).to_bits(), f16::from_f32(0.04).to_bits(),
-        f16::from_f32(0.06).to_bits(), f16::from_f32(0.10).to_bits(),
-        f16::from_f32(0.40).to_bits(), f16::from_f32(0.25).to_bits(),
-        f16::from_f32(0.08).to_bits(), f16::from_f32(0.04).to_bits(),
-    ];
-    let rock_spd: [u16; 8] = [
-        f16::from_f32(0.12).to_bits(), f16::from_f32(0.13).to_bits(),
-        f16::from_f32(0.15).to_bits(), f16::from_f32(0.17).to_bits(),
-        f16::from_f32(0.18).to_bits(), f16::from_f32(0.18).to_bits(),
-        f16::from_f32(0.17).to_bits(), f16::from_f32(0.16).to_bits(),
-    ];
-    let water_spd: [u16; 8] = [
-        f16::from_f32(0.02).to_bits(), f16::from_f32(0.04).to_bits(),
-        f16::from_f32(0.08).to_bits(), f16::from_f32(0.10).to_bits(),
-        f16::from_f32(0.08).to_bits(), f16::from_f32(0.04).to_bits(),
-        f16::from_f32(0.02).to_bits(), f16::from_f32(0.01).to_bits(),
-    ];
-    let sand_spd: [u16; 8] = [
-        f16::from_f32(0.20).to_bits(), f16::from_f32(0.22).to_bits(),
-        f16::from_f32(0.25).to_bits(), f16::from_f32(0.30).to_bits(),
-        f16::from_f32(0.35).to_bits(), f16::from_f32(0.38).to_bits(),
-        f16::from_f32(0.36).to_bits(), f16::from_f32(0.32).to_bits(),
-    ];
+    // 16-band SPD: 380–755 nm at 25 nm steps (USGS wavelength grid)
+    let spd_to_u16 = |vals: [f32; 16]| -> [u16; 16] {
+        std::array::from_fn(|i| f16::from_f32(vals[i]).to_bits())
+    };
+    let grass_spd = spd_to_u16([0.03, 0.03, 0.04, 0.04, 0.05, 0.06, 0.10, 0.38, 0.36, 0.22, 0.14, 0.08, 0.06, 0.42, 0.46, 0.48]);
+    let rock_spd  = spd_to_u16([0.12, 0.13, 0.15, 0.17, 0.18, 0.18, 0.17, 0.16, 0.16, 0.15, 0.15, 0.15, 0.14, 0.14, 0.14, 0.13]);
+    let water_spd = spd_to_u16([0.02, 0.03, 0.05, 0.08, 0.10, 0.09, 0.07, 0.05, 0.04, 0.03, 0.02, 0.01, 0.01, 0.01, 0.01, 0.01]);
+    let sand_spd  = spd_to_u16([0.18, 0.20, 0.22, 0.25, 0.28, 0.30, 0.32, 0.35, 0.38, 0.40, 0.42, 0.43, 0.44, 0.45, 0.46, 0.47]);
 
     for ix in 0..nx {
         for iz in 0..nz {
@@ -104,14 +88,15 @@ pub fn generate_map(seed: u64, size: f32, density: f32) -> Vec<GaussianSplat> {
                 (base_height.max(0.0), grass_spd)
             };
 
-            splats.push(GaussianSplat {
-                position: [x, height, z],
-                scale: [spacing * 0.5, 0.05, spacing * 0.5],
-                rotation: [0, 0, 0, 32767],
-                opacity: 250,
-                _pad: [0; 3],
-                spectral: spd,
-            });
+            splats.push(GaussianSplat::surface(
+                [x, height, z],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                spacing * 0.5,
+                spacing * 0.5,
+                250,
+                spd,
+            ));
         }
     }
 

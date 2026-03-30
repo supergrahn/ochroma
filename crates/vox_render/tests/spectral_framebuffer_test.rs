@@ -4,7 +4,7 @@ use vox_render::spectral_framebuffer::SpectralFramebuffer;
 fn new_framebuffer_is_clear() {
     let fb = SpectralFramebuffer::new(64, 64);
     assert_eq!(fb.pixel_count(), 4096);
-    assert_eq!(fb.spectral[0], [0.0; 8]);
+    assert_eq!(fb.spectral[0], [0.0; 16]);
     assert_eq!(fb.depth[0], f32::MAX);
     assert_eq!(fb.sample_count[0], 0);
 }
@@ -12,9 +12,9 @@ fn new_framebuffer_is_clear() {
 #[test]
 fn write_single_sample() {
     let mut fb = SpectralFramebuffer::new(4, 4);
-    fb.write_sample(1, 1, [0.5; 8], 10.0, [0.0, 1.0, 0.0], 42, [0.3; 8]);
+    fb.write_sample(1, 1, [0.5; 16], 10.0, [0.0, 1.0, 0.0], 42, [0.3; 16]);
     let i = fb.idx(1, 1);
-    assert_eq!(fb.spectral[i], [0.5; 8]);
+    assert_eq!(fb.spectral[i], [0.5; 16]);
     assert_eq!(fb.depth[i], 10.0);
     assert_eq!(fb.object_id[i], 42);
     assert_eq!(fb.sample_count[i], 1);
@@ -23,8 +23,8 @@ fn write_single_sample() {
 #[test]
 fn accumulate_multiple_samples() {
     let mut fb = SpectralFramebuffer::new(4, 4);
-    fb.write_sample(0, 0, [1.0; 8], 10.0, [0.0, 1.0, 0.0], 1, [0.5; 8]);
-    fb.write_sample(0, 0, [0.0; 8], 5.0, [0.0, 1.0, 0.0], 1, [0.5; 8]);
+    fb.write_sample(0, 0, [1.0; 16], 10.0, [0.0, 1.0, 0.0], 1, [0.5; 16]);
+    fb.write_sample(0, 0, [0.0; 16], 5.0, [0.0, 1.0, 0.0], 1, [0.5; 16]);
     let i = fb.idx(0, 0);
     // Average of 1.0 and 0.0 = 0.5
     assert!((fb.spectral[i][0] - 0.5).abs() < 0.01);
@@ -36,9 +36,9 @@ fn accumulate_multiple_samples() {
 #[test]
 fn clear_resets_all() {
     let mut fb = SpectralFramebuffer::new(4, 4);
-    fb.write_sample(0, 0, [1.0; 8], 10.0, [0.0, 1.0, 0.0], 1, [0.5; 8]);
+    fb.write_sample(0, 0, [1.0; 16], 10.0, [0.0, 1.0, 0.0], 1, [0.5; 16]);
     fb.clear();
-    assert_eq!(fb.spectral[0], [0.0; 8]);
+    assert_eq!(fb.spectral[0], [0.0; 16]);
     assert_eq!(fb.sample_count[0], 0);
 }
 
@@ -47,7 +47,7 @@ fn memory_calculation() {
     let fb = SpectralFramebuffer::new(1920, 1080);
     let mb = fb.memory_bytes() as f32 / (1024.0 * 1024.0);
     println!("1080p spectral framebuffer: {:.1} MB", mb);
-    assert!(mb > 50.0 && mb < 200.0, "Should be 50-200MB at 1080p");
+    assert!(mb > 50.0 && mb < 400.0, "Should be 50-400MB at 1080p");
 }
 
 #[test]

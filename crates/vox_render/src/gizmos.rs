@@ -85,6 +85,7 @@ fn world_arrow_length(
 }
 
 /// Bresenham line drawing into an RGBA pixel buffer.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_line(
     pixels: &mut [[u8; 4]],
     width: u32,
@@ -125,6 +126,7 @@ pub fn draw_line(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_line_thick(
     pixels: &mut [[u8; 4]],
     width: u32,
@@ -142,6 +144,7 @@ fn draw_line_thick(
 }
 
 /// Draw a small arrowhead (triangle) at `tip` pointing from `base` toward `tip`.
+#[allow(clippy::too_many_arguments)]
 fn draw_arrowhead(
     pixels: &mut [[u8; 4]],
     width: u32,
@@ -248,6 +251,7 @@ impl GizmoRenderer {
 
     /// Compute the three axis endpoints in screen-space.
     /// Returns `(center, x_end, y_end, z_end)` or `None` if the entity is behind the camera.
+    #[allow(clippy::type_complexity)]
     fn axis_endpoints(
         &self,
         entity_world_pos: Vec3,

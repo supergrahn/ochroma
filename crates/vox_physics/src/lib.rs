@@ -184,10 +184,20 @@ impl Default for PhysicsWorld {
 // Rapier3D integration — always enabled, the real physics engine
 // ---------------------------------------------------------------------------
 
+pub mod character_body;
 pub mod cloth;
+pub mod collision_layers;
 pub mod destruction;
 pub mod fluid;
+pub mod pbf;
+pub mod rope;
+pub mod spectral_damage;
+pub mod spectral_fracture;
+pub mod spectral_resonance;
+pub mod thermal;
 pub mod vehicle;
+pub mod wetness;
+pub mod xpbd;
 
 pub mod rapier;
 pub mod ecs;

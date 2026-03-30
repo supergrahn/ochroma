@@ -16,17 +16,17 @@ fn test_rgb_to_spectral_coloured_input_nonzero() {
 #[test]
 fn test_rgb_to_spectral_red_high_bands() {
     let spectral = rgb_to_spectral(1.0, 0.0, 0.0);
-    let band6 = half::f16::from_bits(spectral[6]).to_f32();
-    let band7 = half::f16::from_bits(spectral[7]).to_f32();
-    assert!(band6 > 0.9, "red should have high band 6, got {band6}");
-    assert!(band7 > 0.5, "red should have high band 7, got {band7}");
+    let band11 = half::f16::from_bits(spectral[11]).to_f32();
+    let band10 = half::f16::from_bits(spectral[10]).to_f32();
+    assert!(band11 > 0.9, "red should have high band 11, got {band11}");
+    assert!(band10 > 0.5, "red should have high band 10, got {band10}");
 }
 
 #[test]
 fn test_rgb_to_spectral_green_high_band4() {
     let spectral = rgb_to_spectral(0.0, 1.0, 0.0);
-    let band4 = half::f16::from_bits(spectral[4]).to_f32();
-    assert!(band4 > 0.9, "green should have high band 4, got {band4}");
+    let band7 = half::f16::from_bits(spectral[7]).to_f32();
+    assert!(band7 > 0.9, "green should have high band 7, got {band7}");
 }
 
 #[test]

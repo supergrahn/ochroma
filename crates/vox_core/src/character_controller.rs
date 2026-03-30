@@ -78,6 +78,11 @@ pub fn slide_along_wall(velocity: Vec3, wall_normal: Vec3) -> Vec3 {
 ///
 /// This is a plain function (not a Bevy system) so it can be tested without a
 /// `World`.  A thin Bevy system can call this each frame.
+///
+/// **DEPRECATED ground detection:** the line below only works on flat Y=0 ground.
+/// Replace with `vox_physics::character_body::CharacterBody::move_and_slide()` for
+/// real collision detection on arbitrary surfaces.
+/// See: `crates/vox_physics/src/character_body.rs`
 pub fn character_controller_tick(
     cc: &mut CharacterController,
     transform: &mut TransformComponent,
@@ -85,7 +90,8 @@ pub fn character_controller_tick(
     jump_pressed: bool,
     dt: f32,
 ) {
-    // Ground detection
+    // BUG: flat-plane only. Use CharacterBody::move_and_slide for real physics.
+    // This line is the entire ground detection. It does not query the physics world.
     cc.grounded = transform.position.y <= cc.height * 0.5 + 0.05;
 
     // Gravity

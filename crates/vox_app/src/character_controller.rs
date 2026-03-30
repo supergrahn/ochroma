@@ -12,6 +12,11 @@ pub struct CharacterController {
     pub on_ground: bool,
     pub vertical_velocity: f32,
     pub enabled: bool,
+    /// When true, update() processes input and gravity but skips flat-plane position
+    /// integration — the caller (engine_runner) drives position via CharacterBody KCC.
+    pub rapier_kcc_active: bool,
+    /// Last horizontal move direction computed from input (set each update() call).
+    pub last_move_dir: Vec3,
 }
 
 impl CharacterController {
@@ -31,6 +36,8 @@ impl CharacterController {
             on_ground: true,
             vertical_velocity: 0.0,
             enabled: false,
+            rapier_kcc_active: false,
+            last_move_dir: Vec3::ZERO,
         }
     }
 
@@ -58,6 +65,7 @@ impl CharacterController {
         if move_dir.length_squared() > 0.001 {
             move_dir = move_dir.normalize() * self.speed;
         }
+        self.last_move_dir = move_dir;
 
         // Simple gravity
         if !self.on_ground {
@@ -68,6 +76,16 @@ impl CharacterController {
         if self.on_ground && input.was_just_pressed(InputSource::Key(57)) {
             self.vertical_velocity = self.jump_velocity;
             self.on_ground = false;
+        }
+
+        // When Rapier KCC is active, engine_runner drives position via CharacterBody.
+        // Skip the flat-plane integration — caller sets self.position and self.on_ground.
+        if self.rapier_kcc_active {
+            physics.set_kinematic_position(
+                self.body_handle,
+                [self.position.x, self.position.y, self.position.z],
+            );
+            return;
         }
 
         let next_pos = self.position + (move_dir + Vec3::Y * self.vertical_velocity) * dt;
@@ -114,6 +132,8 @@ mod tests {
             on_ground: true,
             vertical_velocity: 0.0,
             enabled: true,
+            rapier_kcc_active: false,
+            last_move_dir: Vec3::ZERO,
         };
         let cam = ctrl.camera_position();
         assert!(cam.y > ctrl.position.y);
@@ -132,6 +152,8 @@ mod tests {
             on_ground: false,
             vertical_velocity: -50.0, // strong downward
             enabled: true,
+            rapier_kcc_active: false,
+            last_move_dir: Vec3::ZERO,
         };
         // next_pos.y = 0.9 + (-50.0) * 0.016 = 0.9 - 0.8 = 0.1 < 0.9 → clamped
         let next_y = ctrl.position.y + ctrl.vertical_velocity * 0.016;

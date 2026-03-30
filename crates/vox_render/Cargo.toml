@@ -27,9 +27,19 @@ vox_nodes = { workspace = true }
 vox_ui    = { workspace = true }
 bevy_ecs = { workspace = true }
 bevy_app = { workspace = true }
+spectra-renderer = { path = "../../../aetherspectra/.worktrees/ochroma-spectra-integration/spectra/rust/spectra-renderer", optional = true }
+spectra-gpu = { path = "../../../aetherspectra/.worktrees/ochroma-spectra-integration/spectra/rust/spectra-gpu", optional = true }
+
+[features]
+default = ["crucible"]
+spectra-native = ["dep:spectra-renderer", "dep:spectra-gpu"]
+crucible = ["vox_nodes/crucible"]
 
 [dev-dependencies]
 vox_sim = { path = "../vox_sim" }
 vox_terrain = { path = "../vox_terrain" }
 tempfile = "3"
-naga = { version = "24", features = ["wgsl-in"] }
+
+[dependencies.naga]
+version = "24"
+features = ["wgsl-in", "wgsl-out"]

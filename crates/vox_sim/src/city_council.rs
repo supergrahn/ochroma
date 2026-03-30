@@ -293,11 +293,11 @@ impl CityCouncil {
         self.vote_history.push(result.clone());
 
         // Enact if passed
-        if passed {
-            if let Some(proposal) = self.proposals.iter_mut().find(|p| p.id == proposal_id) {
-                proposal.enacted = true;
-                self.enacted_policies.push(proposal.clone());
-            }
+        if passed
+            && let Some(proposal) = self.proposals.iter_mut().find(|p| p.id == proposal_id)
+        {
+            proposal.enacted = true;
+            self.enacted_policies.push(proposal.clone());
         }
 
         // Remove from active proposals

@@ -30,9 +30,8 @@ fn gather_world_splats(instances: &[(Vec3, Vec<GaussianSplat>)]) -> Vec<Gaussian
     for (pos, splats) in instances {
         for s in splats {
             let mut ws = *s;
-            ws.position[0] += pos.x;
-            ws.position[1] += pos.y;
-            ws.position[2] += pos.z;
+            let p = ws.position();
+            ws.set_position([p[0] + pos.x, p[1] + pos.y, p[2] + pos.z]);
             world.push(ws);
         }
     }
@@ -211,8 +210,8 @@ pub fn render_turntable(
         let building = emit_splats_simple(seed + i as u64, 5.5, 10.0);
         for s in &building {
             let mut ws = *s;
-            ws.position[0] += x;
-            ws.position[2] += 15.0;
+            let p = ws.position();
+            ws.set_position([p[0] + x, p[1], p[2] + 15.0]);
             all_splats.push(ws);
         }
     }
@@ -222,8 +221,8 @@ pub fn render_turntable(
         let tree = generate_tree(seed + 500 + i as u64, 8.0, 3.0);
         for s in &tree {
             let mut ws = *s;
-            ws.position[0] += i as f32 * 10.0 - 25.0;
-            ws.position[2] += 5.0;
+            let p = ws.position();
+            ws.set_position([p[0] + i as f32 * 10.0 - 25.0, p[1], p[2] + 5.0]);
             all_splats.push(ws);
         }
     }

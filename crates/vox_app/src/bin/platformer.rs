@@ -66,8 +66,16 @@ impl Platform {
 // ---------------------------------------------------------------------------
 
 /// Make a spectral power distribution from approximate RGB.
-fn spd_from_rgb(r: f32, g: f32, b: f32) -> [u16; 8] {
+fn spd_from_rgb(r: f32, g: f32, b: f32) -> [u16; 16] {
     let spectral = [
+        b * 0.3,
+        b * 0.7,
+        b * 0.8 + g * 0.1,
+        g * 0.4 + b * 0.2,
+        g * 0.9 + r * 0.05,
+        r * 0.4 + g * 0.3,
+        r * 0.8 + g * 0.05,
+        r * 0.6,
         b * 0.3,
         b * 0.7,
         b * 0.8 + g * 0.1,
@@ -118,14 +126,13 @@ fn generate_platform(index: usize, position: Vec3, size: Vec3) -> Platform {
                 let x = position.x - size.x + ix as f32 * step;
                 let y = position.y - size.y + iy as f32 * step;
                 let z = position.z - size.z + iz as f32 * step;
-                splats.push(GaussianSplat {
-                    position: [x, y, z],
-                    scale: [0.2, 0.2, 0.2],
-                    rotation: [0, 0, 0, 32767],
-                    opacity: 220,
-                    _pad: [0; 3],
-                    spectral: spd,
-                });
+                splats.push(GaussianSplat::volume(
+                    [x, y, z],
+                    [0.2, 0.2, 0.2],
+                    Quat::IDENTITY,
+                    220,
+                    spd,
+                ));
             }
         }
     }
@@ -144,18 +151,17 @@ fn generate_player_splats(pos: Vec3) -> Vec<GaussianSplat> {
     for dx in -1..=1 {
         for dy in -1..=1 {
             for dz in -1..=1 {
-                splats.push(GaussianSplat {
-                    position: [
+                splats.push(GaussianSplat::volume(
+                    [
                         pos.x + dx as f32 * 0.15,
                         pos.y + dy as f32 * 0.15,
                         pos.z + dz as f32 * 0.15,
                     ],
-                    scale: [0.12, 0.12, 0.12],
-                    rotation: [0, 0, 0, 32767],
-                    opacity: 240,
-                    _pad: [0; 3],
-                    spectral: spd,
-                });
+                    [0.12, 0.12, 0.12],
+                    Quat::IDENTITY,
+                    240,
+                    spd,
+                ));
             }
         }
     }
@@ -234,10 +240,7 @@ impl PlatformerGame {
             platforms[0].position.z,
         );
 
-        let mut player = CharacterController::default();
-        player.speed = 6.0;
-        player.jump_force = 10.0;
-        player.gravity = 22.0;
+        let player = CharacterController { speed: 6.0, jump_force: 10.0, gravity: 22.0, ..Default::default() };
 
         let player_transform = TransformComponent {
             position: spawn_point,
@@ -245,8 +248,7 @@ impl PlatformerGame {
             scale: Vec3::ONE,
         };
 
-        let mut ui = GameUI::default();
-        ui.game_state = GameState::MainMenu;
+        let ui = GameUI { game_state: GameState::MainMenu, ..Default::default() };
 
         let audio = SpatialAudioManager::new();
         if audio.is_available() {
@@ -468,14 +470,22 @@ impl PlatformerGame {
             let g = pixel[1] as f32 / 255.0;
             let b = pixel[2] as f32 / 255.0;
             let spectral = [
-                b * 0.3,
-                b * 0.7,
-                b * 0.8 + g * 0.1,
-                g * 0.4 + b * 0.2,
-                g * 0.9 + r * 0.05,
-                r * 0.4 + g * 0.3,
-                r * 0.8 + g * 0.05,
-                r * 0.6,
+                b * 0.30,
+                b * 0.55,
+                b * 0.70,
+                b * 0.80 + g * 0.05,
+                b * 0.50 + g * 0.30,
+                g * 0.55 + b * 0.10,
+                g * 0.80 + r * 0.03,
+                g * 0.90 + r * 0.05,
+                g * 0.60 + r * 0.20,
+                r * 0.45 + g * 0.25,
+                r * 0.75 + g * 0.05,
+                r * 0.80,
+                r * 0.70,
+                r * 0.65,
+                r * 0.60,
+                r * 0.55,
             ];
             let albedo = spectral;
             self.spectral_fb
@@ -517,7 +527,7 @@ impl ApplicationHandler for PlatformerGame {
         // Set up HUD elements
         let mut level_el = UIElement::new(
             "level",
-            &format!("Level: 1  |  Platform: 1/{}", PLATFORM_COUNT),
+            format!("Level: 1  |  Platform: 1/{}", PLATFORM_COUNT),
             UIPosition::TopLeft,
         );
         level_el.size = UISize::Normal;
@@ -527,7 +537,7 @@ impl ApplicationHandler for PlatformerGame {
         let pos = self.player_transform.position;
         let mut pos_el = UIElement::new(
             "pos",
-            &format!("X:{:.1} Y:{:.1} Z:{:.1}", pos.x, pos.y, pos.z),
+            format!("X:{:.1} Y:{:.1} Z:{:.1}", pos.x, pos.y, pos.z),
             UIPosition::BottomLeft,
         );
         pos_el.size = UISize::Small;

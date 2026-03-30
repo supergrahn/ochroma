@@ -6,6 +6,16 @@ version.workspace = true
 [dependencies]
 vox_core = { path = "../vox_core" }
 glam = { workspace = true }
+half = { workspace = true }
+bytemuck = { workspace = true }
 rapier3d = "0.22"
 bevy_ecs = { workspace = true }
 bevy_app = { workspace = true }
+wgpu = "24"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "pbf_perf"
+harness = false

@@ -1,7 +1,10 @@
+use glam;
+use half::f16;
 use std::io::Read;
 use std::path::Path;
-use vox_core::spectral::rgb_to_spectral;
 use vox_core::types::GaussianSplat;
+
+use crate::spectral_upsampler::SpectralUpsampler;
 
 #[derive(Debug)]
 pub enum PlyError {
@@ -171,6 +174,10 @@ pub fn load_ply_from_reader(reader: &mut impl Read) -> Result<Vec<GaussianSplat>
     let i_fdc0 = find_prop(&header, "f_dc_0");
     let i_fdc1 = find_prop(&header, "f_dc_1");
     let i_fdc2 = find_prop(&header, "f_dc_2");
+    // Direct vertex colours (uchar red/green/blue) — preferred when present
+    let i_r = find_prop(&header, "red");
+    let i_g = find_prop(&header, "green");
+    let i_b = find_prop(&header, "blue");
 
     let sh_c0: f32 = 0.282_094_8; // 1 / (2 * sqrt(pi))
 
@@ -205,22 +212,40 @@ pub fn load_ply_from_reader(reader: &mut impl Read) -> Result<Vec<GaussianSplat>
         let opacity_raw = i_opacity.map(|i| read_float(&data, &header, v, i)).unwrap_or(0.0);
         let opacity = (sigmoid(opacity_raw) * 255.0) as u8;
 
-        // Colour: SH DC -> linear RGB -> approximate spectral
-        let r = i_fdc0.map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0)).unwrap_or(0.5);
-        let g = i_fdc1.map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0)).unwrap_or(0.5);
-        let b = i_fdc2.map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0)).unwrap_or(0.5);
+        // Colour: prefer direct vertex colours (red/green/blue), fall back to SH DC coefficients
+        let (r, g, b) = if let (Some(ir), Some(ig), Some(ib)) = (i_r, i_g, i_b) {
+            (
+                read_float(&data, &header, v, ir),
+                read_float(&data, &header, v, ig),
+                read_float(&data, &header, v, ib),
+            )
+        } else {
+            (
+                i_fdc0.map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0)).unwrap_or(0.5),
+                i_fdc1.map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0)).unwrap_or(0.5),
+                i_fdc2.map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0)).unwrap_or(0.5),
+            )
+        };
 
-        // Convert RGB to approximate spectral bands
-        let spectral = rgb_to_spectral(r, g, b);
+        // Convert vertex RGB to 16-band spectral via Smits 1999 upsampling
+        let spectral_f32 = SpectralUpsampler::from_rgb(r, g, b);
+        let spectral: [u16; GaussianSplat::BANDS] =
+            std::array::from_fn(|i| f16::from_f32(spectral_f32[i]).to_bits());
 
-        splats.push(GaussianSplat {
-            position: [x, y, z],
-            scale: [sx, sy, sz],
-            rotation,
+        // rotation is stored as i16 XYZW; convert to Quat for volume constructor
+        let qx = rotation[0] as f32 / 32767.0;
+        let qy = rotation[1] as f32 / 32767.0;
+        let qz = rotation[2] as f32 / 32767.0;
+        let qw = rotation[3] as f32 / 32767.0;
+        let rotation_quat = glam::Quat::from_xyzw(qx, qy, qz, qw).normalize();
+
+        splats.push(GaussianSplat::volume(
+            [x, y, z],
+            [sx, sy, sz],
+            rotation_quat,
             opacity,
-            _pad: [0; 3],
             spectral,
-        });
+        ));
     }
 
     Ok(splats)

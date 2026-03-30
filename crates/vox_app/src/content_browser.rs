@@ -236,19 +236,19 @@ impl ContentBrowser {
                     }
 
                     // Import button for the selected entry
-                    if let Some(entry_idx) = self.selected {
-                        if entry_idx < self.entries.len() {
-                            let entry = &self.entries[entry_idx];
-                            let importable = matches!(
-                                entry.entry_type,
-                                ContentType::GaussianSplat
-                                    | ContentType::Mesh
-                                    | ContentType::OchromaAsset
-                            );
-                            if importable && ui.small_button("Import into Scene").clicked() {
-                                self.pending_action =
-                                    Some(ContentAction::ImportAsset(entry.path.clone()));
-                            }
+                    if let Some(entry_idx) = self.selected
+                        && entry_idx < self.entries.len()
+                    {
+                        let entry = &self.entries[entry_idx];
+                        let importable = matches!(
+                            entry.entry_type,
+                            ContentType::GaussianSplat
+                                | ContentType::Mesh
+                                | ContentType::OchromaAsset
+                        );
+                        if importable && ui.small_button("Import into Scene").clicked() {
+                            self.pending_action =
+                                Some(ContentAction::ImportAsset(entry.path.clone()));
                         }
                     }
                 });

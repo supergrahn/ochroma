@@ -1,6 +1,13 @@
 use thiserror::Error;
 
+pub mod quic_transport;
+pub mod spectral_relevance;
+pub mod replication_packet;
+pub mod replication_loop;
+pub mod world_replication;
 pub mod crdt;
+pub mod rollback;
+pub mod splat_replication;
 pub mod lobby;
 pub mod replication;
 pub mod replication_system;

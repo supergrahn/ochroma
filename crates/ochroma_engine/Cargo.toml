@@ -2,7 +2,13 @@
 name = "ochroma_engine"
 edition.workspace = true
 version.workspace = true
-description = "Ochroma Spectral Gaussian Splatting Game Engine"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Spectral Gaussian Splatting game engine — 16-band spectral rendering, physics, audio, and AI"
+keywords = ["game-engine", "gaussian-splatting", "spectral", "rendering", "wgpu"]
+categories = ["game-engines", "rendering", "graphics"]
 
 [features]
 default = ["rendering", "simulation", "audio"]

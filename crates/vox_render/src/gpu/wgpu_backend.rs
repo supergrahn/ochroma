@@ -203,6 +203,64 @@ impl WgpuBackend {
         output.present();
     }
 
+    /// Write raw RGBA8 pixel data into an existing wgpu texture.
+    ///
+    /// `pixels` must be exactly `width * height * 4` bytes.
+    /// Use this when you already hold a surface texture (e.g. during a GPU render pass).
+    /// For standalone presentation from a CPU framebuffer use [`present_framebuffer`] instead.
+    pub fn write_pixels_to_texture(
+        &self,
+        texture: &wgpu::Texture,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) {
+        let unpadded_bytes_per_row = width * 4;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
+
+        if padded_bytes_per_row == unpadded_bytes_per_row {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(unpadded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            );
+        } else {
+            let mut padded: Vec<u8> = vec![0u8; (padded_bytes_per_row * height) as usize];
+            for row in 0..height as usize {
+                let src = row * unpadded_bytes_per_row as usize;
+                let dst = row * padded_bytes_per_row as usize;
+                padded[dst..dst + unpadded_bytes_per_row as usize]
+                    .copy_from_slice(&pixels[src..src + unpadded_bytes_per_row as usize]);
+            }
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &padded,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            );
+        }
+    }
+
     /// Reconfigure the surface after a window resize.
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {

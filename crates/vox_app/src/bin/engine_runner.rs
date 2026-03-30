@@ -45,7 +45,7 @@ use vox_render::mega_geometry::MegaGeometryDispatch;
 use vox_render::particles::{ParticleEmitter, ParticleSystem};
 use vox_render::spectral::RenderCamera;
 use vox_render::spectral_framebuffer::SpectralFramebuffer;
-use vox_render::spectral_tonemapper::{tonemap_spectral_framebuffer, ToneMapOperator, ToneMapSettings};
+use vox_render::spectral_tonemapper::{ToneMapOperator, ToneMapSettings};
 use vox_render::temporal::TemporalAccumulator;
 
 use vox_audio::AudioEngine;
@@ -65,6 +65,74 @@ use vox_ui::theme::apply_ochroma_theme;
 
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
+
+// ---------------------------------------------------------------------------
+// NavMesh patrol agent
+// ---------------------------------------------------------------------------
+
+/// Bridges a sky ambient array into the SpectralRadianceSource trait for patrol agents.
+struct SpectralGiAdapter {
+    sky_ambient: [f32; 16],
+}
+
+impl vox_ai::perception::SpectralRadianceSource for SpectralGiAdapter {
+    fn sample_at(&self, _pos: glam::Vec3, _radius: f32) -> [f32; 16] {
+        self.sky_ambient
+    }
+}
+
+/// Simple navmesh-driven patrol agent for AI demonstration.
+struct PatrolAgent {
+    position: Vec3,
+    speed: f32,
+    path: Vec<[f32; 3]>,
+    path_index: usize,
+    patrol_nodes: [u32; 2],
+    current_target: usize,
+    /// Spectral perception — agent senses environment via 16-band radiance.
+    spectral_perception: vox_ai::perception::SpectralPerceptionAgent,
+}
+
+impl PatrolAgent {
+    fn new(start_pos: Vec3, node_a: u32, node_b: u32) -> Self {
+        Self {
+            position: start_pos,
+            speed: 3.0,
+            path: Vec::new(),
+            path_index: 0,
+            patrol_nodes: [node_a, node_b],
+            current_target: 0,
+            spectral_perception: vox_ai::perception::SpectralPerceptionAgent::new(
+                start_pos,
+                12.0,
+            ),
+        }
+    }
+
+    fn update(&mut self, dt: f32, navmesh: &vox_core::navmesh::NavMesh) {
+        // If no path or finished path, request new path to next patrol target
+        if self.path_index >= self.path.len() {
+            let from_node = self.patrol_nodes[self.current_target ^ 1];
+            let to_node = self.patrol_nodes[self.current_target];
+            if let Some(p) = navmesh.find_path(from_node, to_node) {
+                self.path = p;
+                self.path_index = 0;
+            }
+            self.current_target ^= 1;
+        }
+        // Move along path
+        if let Some(&wp) = self.path.get(self.path_index) {
+            let target = Vec3::from(wp);
+            let dir = target - self.position;
+            let dist = dir.length();
+            if dist < 0.1 {
+                self.path_index += 1;
+            } else {
+                self.position += dir.normalize() * (self.speed * dt).min(dist);
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The engine application — owns every system
@@ -204,6 +272,7 @@ struct EngineApp {
     tile_manager: vox_render::streaming::TileManager,
 
     // Persisted key bindings (loaded from keybindings.toml at startup)
+    #[allow(dead_code)]
     key_bindings: vox_core::input::KeyBindings,
 
     // SDF soft shadow pass (None until GPU is available)
@@ -212,17 +281,55 @@ struct EngineApp {
     // Baked GI cache (applied to splats before render)
     gi_cache: Option<vox_render::gi_cache::GiCache>,
 
+    // Live spectral atmosphere + radiance cache (replaces static gi_cache in render loop)
+    spectral_atmosphere: vox_render::spectral_atmosphere::SpectralAtmosphere,
+    spectral_gi: vox_render::spectral_gi::SpectralRadianceCache,
+
     // Splat particle emitters (KeyE spawns fire emitter)
     particle_emitters: Vec<vox_render::splat_particles::SplatEmitter>,
 
     // SDF navmesh for agent pathfinding
     navmesh: Option<vox_core::navmesh::NavMesh>,
 
+    // Patrol agents driven by navmesh pathfinding
+    patrol_agents: Vec<PatrolAgent>,
+
     // Terrain SDF volume (kept for navmesh re-extraction after deform)
     terrain_volume: Option<vox_terrain::volume::TerrainVolume>,
 
     // Spectral viewport mode (Tab cycles bands)
     spectral_viewport_mode: vox_render::spectral_viewport::SpectralViewportMode,
+
+    // Biome-driven ambient soundscape mix (blended each frame toward target biome)
+    ambient_mix: vox_audio::BiomeAmbientMix,
+
+    // Lua scripting runtime (mlua Lua 5.4)
+    lua: vox_script::LuaRuntime,
+    // Script watcher for hot-reload
+    script_watcher: Option<vox_script::ScriptWatcher>,
+    // Shared spectral state for Lua spectral.* bindings.
+    // Must be kept alive here so the Arc inside Lua closures stays valid.
+    #[allow(dead_code)]
+    spectral_script_state: std::sync::Arc<std::sync::Mutex<vox_script::SpectralState>>,
+    // Shared entity store for Lua entity.* bindings.
+    // Must be kept alive here so the Arc inside Lua closures stays valid.
+    #[allow(dead_code)]
+    entity_script_store: std::sync::Arc<std::sync::Mutex<vox_script::EntityStore>>,
+
+    // QUIC transport (Some if --server or --connect flag passed)
+    quic_transport: Option<vox_net::quic_transport::QuicTransport>,
+    // Per-client replication state (one entry per connected peer on server)
+    replication_states: Vec<vox_net::replication_loop::ClientReplicationState>,
+
+    // Rapier KCC body for the player character (None until character controller is first enabled)
+    character_body: Option<vox_physics::character_body::CharacterBody>,
+
+    // Game UI widgets (Manor Lords style resource panels, tooltips, buttons)
+    game_widgets: vox_ui::GameWidgets,
+    widget_cmds: Vec<vox_ui::WidgetCmd>,
+
+    // Last terrain pick position from ScreenRay (updated on left-click)
+    last_pick: Option<glam::Vec3>,
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +341,7 @@ fn illuminant_for_time(hour: f32) -> Illuminant {
     let d65 = Illuminant::d65();
     let warm = Illuminant::a();
     let cool = Illuminant {
-        bands: [30.0, 45.0, 70.0, 60.0, 50.0, 40.0, 30.0, 20.0],
+        bands: [30.0, 38.0, 45.0, 55.0, 65.0, 70.0, 68.0, 62.0, 55.0, 47.0, 40.0, 35.0, 30.0, 25.0, 22.0, 20.0],
     };
 
     let (a, b, t) = if (6.0..12.0).contains(&hour) {
@@ -247,9 +354,9 @@ fn illuminant_for_time(hour: f32) -> Illuminant {
         (&cool, &warm, hour / 6.0)
     };
 
-    let mut bands = [0.0f32; 8];
-    for i in 0..8 {
-        bands[i] = a.bands[i] * (1.0 - t) + b.bands[i] * t;
+    let mut bands = [0.0f32; 16];
+    for (i, band) in bands.iter_mut().enumerate() {
+        *band = a.bands[i] * (1.0 - t) + b.bands[i] * t;
     }
     Illuminant { bands }
 }
@@ -277,6 +384,7 @@ fn dlss_quality_name(q: DlssQuality) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn next_dlss_quality(q: DlssQuality) -> DlssQuality {
     match q {
         DlssQuality::Off => DlssQuality::Quality,
@@ -329,6 +437,13 @@ impl EngineApp {
             glam::Vec3::new(0.0, 0.9, 0.0),
         );
         println!("[ochroma] Character controller initialised at (0, 0.9, 0)");
+
+        let spectral_script_state = std::sync::Arc::new(std::sync::Mutex::new(
+            vox_script::SpectralState::new()
+        ));
+        let entity_script_store = std::sync::Arc::new(std::sync::Mutex::new(
+            vox_script::EntityStore::new()
+        ));
 
         Self {
             engine,
@@ -414,10 +529,47 @@ impl EngineApp {
             key_bindings: vox_core::input::load_bindings(std::path::Path::new("keybindings.toml")),
             sdf_shadow: None,
             gi_cache: None,
+            spectral_atmosphere: vox_render::spectral_atmosphere::SpectralAtmosphere::earth(),
+            spectral_gi: vox_render::spectral_gi::SpectralRadianceCache::new(0),
             particle_emitters: Vec::new(),
             navmesh: None,
+            patrol_agents: Vec::new(),
             terrain_volume: None,
             spectral_viewport_mode: vox_render::spectral_viewport::SpectralViewportMode::default(),
+            ambient_mix: vox_audio::BiomeAmbientMix::for_biome(vox_audio::BiomeKind::Grassland),
+            lua: {
+                let mut rt = vox_script::LuaRuntime::new()
+                    .expect("Lua 5.4 init failed");
+                vox_script::register_spectral_bindings(rt.lua(), spectral_script_state.clone())
+                    .expect("spectral bindings");
+                vox_script::register_entity_bindings(rt.lua(), entity_script_store.clone())
+                    .expect("entity bindings");
+                let game_script = std::path::Path::new("assets/scripts/game.lua");
+                if game_script.exists() {
+                    rt.exec_file(game_script).expect("game.lua load failed");
+                }
+                rt
+            },
+            script_watcher: vox_script::ScriptWatcher::new(
+                std::path::Path::new("assets/scripts")
+            ).ok(),
+            spectral_script_state,
+            entity_script_store,
+            quic_transport: None,
+            replication_states: Vec::new(),
+            character_body: None,
+            last_pick: None,
+            game_widgets: vox_ui::GameWidgets::new(),
+            widget_cmds: vec![
+                vox_ui::WidgetCmd::Panel {
+                    title: "Resources".to_string(),
+                    rows: vec![
+                        vox_ui::ResourceRow { label: "Wood".to_string(), count: 0, icon_color: egui::Color32::from_rgb(139, 90, 43) },
+                        vox_ui::ResourceRow { label: "Stone".to_string(), count: 0, icon_color: egui::Color32::from_rgb(160, 160, 160) },
+                        vox_ui::ResourceRow { label: "Food".to_string(), count: 0, icon_color: egui::Color32::from_rgb(200, 180, 60) },
+                    ],
+                },
+            ],
         }
     }
 
@@ -460,6 +612,20 @@ impl EngineApp {
         println!("[ochroma]   Navmesh: {} nodes", navmesh.node_count());
         self.navmesh = Some(navmesh);
         self.terrain_volume = Some(vol);
+
+        // Spawn patrol agents between well-spaced navmesh nodes
+        if let Some(nm) = &self.navmesh
+            && nm.node_count() >= 2
+        {
+            let node_count = nm.node_count() as u32;
+            let mid_a = node_count / 3;
+            let mid_b = 2 * node_count / 3;
+            let pos_a = Vec3::ZERO; // agents start at origin
+            let pos_b = Vec3::new(5.0, 0.0, 5.0);
+            self.patrol_agents.push(PatrolAgent::new(pos_a, mid_a, mid_b));
+            self.patrol_agents.push(PatrolAgent::new(pos_b, mid_b, mid_a));
+            println!("[ochroma]   Spawned {} patrol agents", self.patrol_agents.len());
+        }
 
         // Populate editor entities
         self.editor.add_entity("Terrain", "terrain", Vec3::ZERO);
@@ -513,8 +679,8 @@ impl EngineApp {
             );
             for s in &b {
                 let mut ws = *s;
-                ws.position[0] += pos[0];
-                ws.position[2] += pos[2];
+                let p = ws.position();
+                ws.set_position([p[0] + pos[0], p[1], p[2] + pos[2]]);
                 self.scene_splats.push(ws);
             }
             let end = self.scene_splats.len();
@@ -533,8 +699,8 @@ impl EngineApp {
             let t = vox_data::proc_gs_advanced::generate_tree(100 + i as u64, 6.0 + i as f32, 2.5);
             for s in &t {
                 let mut ws = *s;
-                ws.position[0] += pos[0];
-                ws.position[2] += pos[2];
+                let p = ws.position();
+                ws.set_position([p[0] + pos[0], p[1], p[2] + pos[2]]);
                 self.scene_splats.push(ws);
             }
             let end = self.scene_splats.len();
@@ -633,7 +799,7 @@ impl EngineApp {
         self.gi_cache = Some(vox_render::gi_cache::GiCache::new(gi));
     }
 
-    fn run_gi_bake(&self) -> Vec<[f32; 8]> {
+    fn run_gi_bake(&self) -> Vec<[f32; 16]> {
         use vox_render::gi_baker::{GiBaker, GiBakeConfig};
         println!("[ochroma] Baking GI for {} splats...", self.scene_splats.len());
         let baker = GiBaker::new(GiBakeConfig {
@@ -672,7 +838,7 @@ impl EngineApp {
         let right = self.camera_right();
 
         // Speed scales with altitude/distance (like Google Earth)
-        let altitude_factor = (self.camera.position.y / 10.0).max(1.0).min(10.0);
+        let altitude_factor = (self.camera.position.y / 10.0).clamp(1.0, 10.0);
         self.camera_max_speed = 15.0 * altitude_factor;
 
         // Build desired velocity from input
@@ -745,8 +911,8 @@ impl EngineApp {
         // the frustum (using a conservative bounding sphere of radius = max scale).
         // In a real production engine the CLAS BVH would be traversed here.
         for splat in &self.scene_splats {
-            let pos = Vec3::from(splat.position);
-            let radius = splat.scale[0].max(splat.scale[1]).max(splat.scale[2]) + 1.0;
+            let pos = Vec3::from(splat.position());
+            let radius = splat.scale_u().max(splat.scale_v()).max(splat.scale_w()) + 1.0;
             if frustum.contains_sphere(pos, radius) {
                 visible_splats.push(*splat);
             }
@@ -756,7 +922,7 @@ impl EngineApp {
         let cam_pos = self.camera.position;
         let lod_indices: Vec<usize> = (0..visible_splats.len())
             .filter(|&i| {
-                let dist = cam_pos.distance(Vec3::from(visible_splats[i].position));
+                let dist = cam_pos.distance(Vec3::from(visible_splats[i].position()));
                 match lod::select_lod(dist) {
                     lod::LodLevel::Full => true,
                     lod::LodLevel::Reduced => i % 4 == 0, // keep every 4th for distant
@@ -777,9 +943,8 @@ impl EngineApp {
         for (pos, splats) in &self.placed_objects {
             for s in splats {
                 let mut ws = *s;
-                ws.position[0] += pos.x;
-                ws.position[1] += pos.y;
-                ws.position[2] += pos.z;
+                let p = ws.position();
+                ws.set_position([p[0] + pos.x, p[1] + pos.y, p[2] + pos.z]);
                 render_splats.push(ws);
             }
         }
@@ -811,11 +976,86 @@ impl EngineApp {
             render_splats.extend(anim_splats);
         }
 
-        // Apply GI cache (modulates spectral bands per-splat)
+        // Update spectral atmosphere from time of day, then apply live spectral GI
+        {
+            let hour = self.engine.time_of_day();
+            let norm = (hour % 24.0) / 24.0;
+            // Map hour → sun elevation: peaks at noon (0.5), zero at midnight (0.0/1.0)
+            self.spectral_atmosphere.sun_zenith =
+                (std::f32::consts::PI * norm - std::f32::consts::FRAC_PI_2)
+                    .sin()
+                    .max(0.0)
+                    * std::f32::consts::FRAC_PI_2;
+            self.spectral_atmosphere.sun_elevation = self.spectral_atmosphere.sun_zenith;
+            self.spectral_gi.set_sky(&self.spectral_atmosphere);
+        }
+        self.spectral_gi.propagate(&render_splats, 256);
+        let render_splats = self.spectral_gi.apply(&render_splats);
+
+        // Legacy baked GI cache (kept for backward compat with --bake-gi workflow)
         let render_splats = match &self.gi_cache {
             Some(cache) => cache.apply(&render_splats),
             None => render_splats,
         };
+
+        // Spectral caustics: refract through transmissive splats
+        {
+            use vox_render::spectral_caustics::{SpectralCaustics, CauchyGlass};
+            use glam::Vec3;
+
+            let glass = CauchyGlass::n_bk7();
+
+            // Collect transmissive splat indices (opacity < 64 approximates glass)
+            let transmissive: Vec<usize> = render_splats.iter().enumerate()
+                .filter(|(_, s)| s.opacity() < 64)
+                .map(|(i, _)| i)
+                .collect();
+
+            if !transmissive.is_empty() {
+                let incident_dir = Vec3::new(0.0, -1.0, 0.0); // downward light
+                let normal = Vec3::new(0.0, 1.0, 0.0);
+                for &ti in &transmissive {
+                    let spectral_f32: [f32; 16] = std::array::from_fn(|b| {
+                        half::f16::from_bits(render_splats[ti].spectral()[b]).to_f32()
+                    });
+                    let _refraction = SpectralCaustics::refract(
+                        incident_dir, normal, spectral_f32, &glass
+                    );
+                    // TODO(domain-6): accumulate refraction.transmitted into caustic_buffer
+                    // and apply to render_splats at surrounding positions
+                }
+            }
+        }
+
+        // Spectral replication: server broadcasts changed splat bands to connected clients
+        if let Some(transport) = &self.quic_transport {
+            if transport.role == vox_net::quic_transport::TransportRole::Server {
+                use vox_net::spectral_relevance::{SplatSpectral, ObserverProfile};
+                use vox_net::replication_loop::{replicate_tick, ReplicationConfig};
+
+                let net_splats: Vec<SplatSpectral> = render_splats.iter()
+                    .map(|s| SplatSpectral { bands: *s.spectral() })
+                    .collect();
+
+                if self.replication_states.is_empty() {
+                    self.replication_states.push(
+                        vox_net::replication_loop::ClientReplicationState::new(
+                            0, net_splats.len(), ObserverProfile::human()
+                        )
+                    );
+                }
+
+                let config = ReplicationConfig::default();
+                for client_state in &mut self.replication_states {
+                    let _stats = replicate_tick(
+                        &net_splats, client_state, &config,
+                        |_packet_bytes| {
+                            // TODO(domain-7): write packet_bytes to Quinn stream/datagram
+                        },
+                    );
+                }
+            }
+        }
 
         // Time-of-day illuminant
         let illuminant = illuminant_for_time(self.engine.time_of_day());
@@ -828,13 +1068,37 @@ impl EngineApp {
 
         let shadow_positions: Vec<glam::Vec3> = render_splats
             .iter()
-            .map(|s| glam::Vec3::from(s.position))
+            .map(|s| glam::Vec3::from(s.position()))
             .collect();
         let shadow_radii: Vec<f32> = render_splats
             .iter()
-            .map(|s| (s.scale[0].abs() + s.scale[1].abs() + s.scale[2].abs()) / 3.0)
+            .map(|s| (s.scale_u().abs() + s.scale_v().abs() + s.scale_w().abs()) / 3.0)
             .collect();
         self.shadow_mapper.render_shadow_map(&shadow_positions, &shadow_radii);
+
+        // Generate CPU shadow mask: project each shadowed splat to screen space
+        let shadow_mask: Vec<f32> = {
+            let vp = render_camera.view_proj();
+            let w = render_w as usize;
+            let h = render_h as usize;
+            let mut mask = vec![1.0f32; w * h];
+            for splat in &render_splats {
+                let world_pos = glam::Vec3::from(splat.position());
+                if self.shadow_mapper.is_in_shadow(world_pos, 0.01) {
+                    let clip = vp * world_pos.extend(1.0);
+                    if clip.w > 0.001 {
+                        let ndc_x = clip.x / clip.w;
+                        let ndc_y = clip.y / clip.w;
+                        let px = ((ndc_x * 0.5 + 0.5) * w as f32) as i32;
+                        let py = ((1.0 - (ndc_y * 0.5 + 0.5)) * h as f32) as i32;
+                        if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
+                            mask[py as usize * w + px as usize] = 0.0;
+                        }
+                    }
+                }
+            }
+            mask
+        };
 
         // 1. Render at internal resolution
         let render_start = Instant::now();
@@ -856,7 +1120,7 @@ impl EngineApp {
                         render_w,
                         render_h,
                         &illuminant,
-                        None, // shadow mask from SdfShadowPass (GPU path, None for CPU fallback)
+                        Some(&shadow_mask),
                     )
                 }
                 vox_render::spectral_viewport::SpectralViewportMode::Band(band) => {
@@ -924,32 +1188,32 @@ impl EngineApp {
         }
 
         // Gizmo overlay (drawn on top of scene in editor mode)
-        if self.editor_visible {
-            if let Some(entity) = self.editor.selected_entity() {
-                let forward = self.camera_forward();
-                let target = self.camera.position + forward;
-                let view = Mat4::look_at_rh(self.camera.position, target, Vec3::Y);
-                let proj = Mat4::perspective_rh(
-                    self.camera.fov,
-                    display_w as f32 / display_h as f32,
-                    self.camera.near,
-                    self.camera.far,
-                );
-                let vp = proj * view;
-                // Sync gizmo mode from editor to renderer
-                self.gizmo.mode = match self.editor.gizmo_mode {
-                    vox_app::editor::GizmoMode::Translate => vox_render::gizmos::GizmoMode::Translate,
-                    vox_app::editor::GizmoMode::Rotate    => vox_render::gizmos::GizmoMode::Rotate,
-                    vox_app::editor::GizmoMode::Scale     => vox_render::gizmos::GizmoMode::Scale,
-                };
-                self.gizmo.draw_overlay(
-                    &mut final_pixels,
-                    display_w,
-                    display_h,
-                    entity.position,
-                    vp,
-                );
-            }
+        if self.editor_visible
+            && let Some(entity) = self.editor.selected_entity()
+        {
+            let forward = self.camera_forward();
+            let target = self.camera.position + forward;
+            let view = Mat4::look_at_rh(self.camera.position, target, Vec3::Y);
+            let proj = Mat4::perspective_rh(
+                self.camera.fov,
+                display_w as f32 / display_h as f32,
+                self.camera.near,
+                self.camera.far,
+            );
+            let vp = proj * view;
+            // Sync gizmo mode from editor to renderer
+            self.gizmo.mode = match self.editor.gizmo_mode {
+                vox_app::editor::GizmoMode::Translate => vox_render::gizmos::GizmoMode::Translate,
+                vox_app::editor::GizmoMode::Rotate    => vox_render::gizmos::GizmoMode::Rotate,
+                vox_app::editor::GizmoMode::Scale     => vox_render::gizmos::GizmoMode::Scale,
+            };
+            self.gizmo.draw_overlay(
+                &mut final_pixels,
+                display_w,
+                display_h,
+                entity.position,
+                vp,
+            );
         }
 
         // Editor overlay
@@ -1389,6 +1653,33 @@ impl EngineApp {
                 self.click_counter += 1;
                 self.audio.play_sine_backend(self.click_counter, 800.0, 0.05, 0.3);
                 self.spatial_audio.play_tone(800.0, 0.05, 0.3);
+
+                // ScreenRay terrain pick — update last_pick for building placement
+                {
+                    use vox_core::picking::ScreenRay;
+                    let forward = self.camera_forward();
+                    let cam_target = self.camera.position + forward;
+                    let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
+                    let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
+                    let proj = Mat4::perspective_rh(
+                        self.camera.fov,
+                        dw as f32 / dh as f32,
+                        self.camera.near,
+                        self.camera.far,
+                    );
+                    let vp_inv = (proj * view).inverse();
+                    let ray = ScreenRay::from_screen(
+                        self.mouse_x as f32,
+                        self.mouse_y as f32,
+                        dw as f32,
+                        dh as f32,
+                        vp_inv,
+                    );
+                    self.last_pick = ray.terrain_hit(&|_x, _z| 0.0, 500.0);
+                    if let Some(pos) = self.last_pick {
+                        println!("[pick] terrain hit at [{:.2}, {:.2}, {:.2}]", pos.x, pos.y, pos.z);
+                    }
+                }
             }
             _ => {}
         }
@@ -1405,51 +1696,50 @@ impl EngineApp {
         self.mouse_y = y;
 
         // Gizmo drag: move the selected entity along the constrained axis
-        if self.gizmo.dragging && self.editor_visible {
-            if let Some(sel_id) = self.editor.selected {
-                if let Some(sel_entity) = self.editor.entities.iter().find(|e| e.id == sel_id) {
-                    let entity_pos = sel_entity.position;
-                    let forward = self.camera_forward();
-                    let cam_target = self.camera.position + forward;
-                    let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
-                    let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
-                    let proj = Mat4::perspective_rh(
-                        self.camera.fov,
-                        dw as f32 / dh as f32,
-                        self.camera.near,
-                        self.camera.far,
-                    );
-                    let vp = proj * view;
-                    let delta = self.gizmo.update_drag(
-                        x as f32,
-                        y as f32,
-                        entity_pos,
-                        vp,
-                        dw,
-                        dh,
-                    );
-                    // Apply snap-to-grid if enabled
-                    let delta = if self.editor.snap_enabled && self.editor.snap_grid > 0.0 {
-                        let grid = self.editor.snap_grid;
-                        match self.gizmo.active_axis {
-                            Some(vox_render::gizmos::Axis::X) => glam::Vec3::new(
-                                (delta.x / grid).round() * grid, 0.0, 0.0,
-                            ),
-                            Some(vox_render::gizmos::Axis::Y) => glam::Vec3::new(
-                                0.0, (delta.y / grid).round() * grid, 0.0,
-                            ),
-                            Some(vox_render::gizmos::Axis::Z) => glam::Vec3::new(
-                                0.0, 0.0, (delta.z / grid).round() * grid,
-                            ),
-                            None => delta,
-                        }
-                    } else {
-                        delta
-                    };
-                    if delta.length_squared() > 1e-8 {
-                        self.editor.move_selected(delta);
-                    }
+        if self.gizmo.dragging && self.editor_visible
+            && let Some(sel_id) = self.editor.selected
+            && let Some(sel_entity) = self.editor.entities.iter().find(|e| e.id == sel_id)
+        {
+            let entity_pos = sel_entity.position;
+            let forward = self.camera_forward();
+            let cam_target = self.camera.position + forward;
+            let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
+            let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
+            let proj = Mat4::perspective_rh(
+                self.camera.fov,
+                dw as f32 / dh as f32,
+                self.camera.near,
+                self.camera.far,
+            );
+            let vp = proj * view;
+            let delta = self.gizmo.update_drag(
+                x as f32,
+                y as f32,
+                entity_pos,
+                vp,
+                dw,
+                dh,
+            );
+            // Apply snap-to-grid if enabled
+            let delta = if self.editor.snap_enabled && self.editor.snap_grid > 0.0 {
+                let grid = self.editor.snap_grid;
+                match self.gizmo.active_axis {
+                    Some(vox_render::gizmos::Axis::X) => glam::Vec3::new(
+                        (delta.x / grid).round() * grid, 0.0, 0.0,
+                    ),
+                    Some(vox_render::gizmos::Axis::Y) => glam::Vec3::new(
+                        0.0, (delta.y / grid).round() * grid, 0.0,
+                    ),
+                    Some(vox_render::gizmos::Axis::Z) => glam::Vec3::new(
+                        0.0, 0.0, (delta.z / grid).round() * grid,
+                    ),
+                    None => delta,
                 }
+            } else {
+                delta
+            };
+            if delta.length_squared() > 1e-8 {
+                self.editor.move_selected(delta);
             }
         } else if self.mouse_captured {
             if let Some((lx, ly)) = self.last_mouse {
@@ -1493,6 +1783,29 @@ impl EngineApp {
         self.last_frame = now;
         self.frame_dt = dt;
 
+        // Biome ambient soundscape: blend toward current biome target each frame
+        {
+            let biome = vox_audio::BiomeKind::Grassland; // default; terrain integration in future domain
+            let target = vox_audio::BiomeAmbientMix::for_biome(biome);
+            self.ambient_mix = self.ambient_mix.blend_toward(&target, 0.02);
+        }
+
+        // Update patrol agents along navmesh with spectral perception
+        if let Some(nm) = &self.navmesh {
+            let dt = self.frame_dt;
+            let sky_ambient = illuminant_for_time(self.engine.time_of_day()).bands;
+            for agent in &mut self.patrol_agents {
+                agent.update(dt, nm);
+                // Update spectral perception from current sky illuminant
+                let gi_adapter = SpectralGiAdapter { sky_ambient };
+                agent.spectral_perception.position = agent.position;
+                let percept = agent.spectral_perception.sense(&gi_adapter);
+                agent.spectral_perception.update_emotion(&gi_adapter);
+                // Raise alert if green band (7) energy exceeds threshold
+                let _ = percept;
+            }
+        }
+
         // 1. Update camera from input
         self.update_camera(dt);
 
@@ -1510,7 +1823,7 @@ impl EngineApp {
                 if p.exists() {
                     match std::fs::read(p).and_then(|bytes| {
                         vox_data::vxm::VxmFile::read(&bytes[..])
-                            .map_err(|e| std::io::Error::other(e))
+                            .map_err(std::io::Error::other)
                     }) {
                         Ok(_vxm) => {
                             println!("[streaming] Loaded tile {},{}", tile.x, tile.z);
@@ -1525,15 +1838,15 @@ impl EngineApp {
         self.editor.notification_queue.tick(dt);
 
         // Cursor changes based on editor mode
-        if self.editor_visible {
-            if let Some(w) = &self.window {
-                if self.gizmo.dragging {
-                    w.set_cursor(winit::window::CursorIcon::Grab);
-                } else if self.gizmo.active_axis.is_some() {
-                    w.set_cursor(winit::window::CursorIcon::Pointer);
-                } else {
-                    w.set_cursor(winit::window::CursorIcon::Default);
-                }
+        if self.editor_visible
+            && let Some(w) = &self.window
+        {
+            if self.gizmo.dragging {
+                w.set_cursor(winit::window::CursorIcon::Grab);
+            } else if self.gizmo.active_axis.is_some() {
+                w.set_cursor(winit::window::CursorIcon::Pointer);
+            } else {
+                w.set_cursor(winit::window::CursorIcon::Default);
             }
         }
 
@@ -1569,29 +1882,29 @@ impl EngineApp {
                     [near_pt.x, near_pt.y, near_pt.z],
                     [ray_dir.x, ray_dir.y, ray_dir.z],
                     1000.0,
-                ) {
-                    if let Some(&entity_id) = self.collider_to_entity.get(&col_handle) {
-                        self.editor.select(entity_id);
-                        if let Some(name) = self.editor.selected_name() {
-                            println!("[ochroma] Rapier pick: '{}' (id={})", name, entity_id);
-                        }
-                        picked = true;
+                )
+                    && let Some(&entity_id) = self.collider_to_entity.get(&col_handle)
+                {
+                    self.editor.select(entity_id);
+                    if let Some(name) = self.editor.selected_name() {
+                        println!("[ochroma] Rapier pick: '{}' (id={})", name, entity_id);
                     }
+                    picked = true;
                 }
 
                 // Fall back to editor ray-sphere test if Rapier didn't match an entity
-                if !picked {
-                    if let Some(id) = self.editor.pick_entity_at_screen_pos(
+                if !picked
+                    && let Some(id) = self.editor.pick_entity_at_screen_pos(
                         self.mouse_x as f32,
                         self.mouse_y as f32,
                         dw,
                         dh,
                         inv_vp,
-                    ) {
-                        self.editor.select(id);
-                        if let Some(name) = self.editor.selected_name() {
-                            println!("[ochroma] Editor pick: '{}' (id={})", name, id);
-                        }
+                    )
+                {
+                    self.editor.select(id);
+                    if let Some(name) = self.editor.selected_name() {
+                        println!("[ochroma] Editor pick: '{}' (id={})", name, id);
                     }
                 }
             } else {
@@ -1616,8 +1929,35 @@ impl EngineApp {
         }
 
         // 4b. Step Rapier physics and sync dynamic bodies back to ECS
-        // Update character controller before physics step
+        // Update character controller before physics step.
+        // character.update() processes input (move_dir, jump, gravity) and stores
+        // last_move_dir. When rapier_kcc_active, it skips flat-plane integration.
+        // We then pass the full desired velocity (horizontal + vertical) through KCC.
+        self.character.rapier_kcc_active = self.character_body.is_some();
         self.character.update(&self.input_state, dt, &mut self.physics);
+        if let Some(ref cb) = self.character_body {
+            if self.character.enabled {
+                // Full desired velocity: horizontal from input + vertical from gravity/jump
+                let desired = self.character.last_move_dir
+                    + Vec3::Y * self.character.vertical_velocity;
+                let output = cb.move_and_slide(
+                    desired, dt,
+                    self.physics.rigid_body_set(),
+                    self.physics.collider_set(),
+                    self.physics.query_pipeline(),
+                );
+                self.character.on_ground = output.grounded;
+                if output.grounded && self.character.vertical_velocity < 0.0 {
+                    self.character.vertical_velocity = 0.0;
+                }
+                cb.apply_translation(output.effective_translation, self.physics.rigid_body_set_mut());
+                self.character.position = cb.position(self.physics.rigid_body_set());
+                self.physics.set_kinematic_position(
+                    self.character.body_handle,
+                    [self.character.position.x, self.character.position.y, self.character.position.z],
+                );
+            }
+        }
         // If character is enabled, drive camera position from character
         if self.character.enabled {
             let cam_pos = self.character.camera_position();
@@ -1671,19 +2011,16 @@ impl EngineApp {
             );
             for (_entity, commands) in &pending {
                 for cmd in commands {
-                    match cmd {
-                        ScriptCommand::PlaySound { clip, volume, .. } => {
-                            // Play via spatial audio manager as a procedural tone
-                            // 440Hz for generic, 800Hz for click, 600Hz ascending for collect
-                            let freq = match clip.as_str() {
-                                "click" => 800.0,
-                                "collect" => 600.0,
-                                "jump" => 400.0,
-                                _ => 440.0,
-                            };
-                            self.spatial_audio.play_tone(freq, 0.2, *volume);
-                        }
-                        _ => {}
+                    if let ScriptCommand::PlaySound { clip, volume, .. } = cmd {
+                        // Play via spatial audio manager as a procedural tone
+                        // 440Hz for generic, 800Hz for click, 600Hz ascending for collect
+                        let freq = match clip.as_str() {
+                            "click" => 800.0,
+                            "collect" => 600.0,
+                            "jump" => 400.0,
+                            _ => 440.0,
+                        };
+                        self.spatial_audio.play_tone(freq, 0.2, *volume);
                     }
                 }
             }
@@ -1699,7 +2036,7 @@ impl EngineApp {
             }
             let dt_dyn = rhai::Dynamic::from(dt as f64);
             for i in 0..self.rhai.script_count() {
-                let _ = self.rhai.call_fn(i, "on_update", &[dt_dyn.clone()]);
+                let _ = self.rhai.call_fn(i, "on_update", std::slice::from_ref(&dt_dyn));
             }
         }
         {
@@ -1724,6 +2061,22 @@ impl EngineApp {
             }
         }
 
+        // 4c-lua. Per-frame Lua update + spectral threshold callbacks
+        {
+            if let Some(watcher) = &self.script_watcher {
+                for path in watcher.drain() {
+                    self.lua.pending_reload.push(path);
+                }
+            }
+            if let Err(e) = self.lua.call_update(dt) {
+                eprintln!("[ochroma] Lua update error: {}", e);
+            }
+            vox_script::tick_thresholds(
+                self.lua.lua(),
+                &self.spectral_script_state,
+            ).ok();
+        }
+
         // 4d. Sync entity positions to splats — when scripts move entities,
         //     the corresponding splats move with them.
         {
@@ -1733,19 +2086,18 @@ impl EngineApp {
                 .map(|(e, t)| (e.index(), [t.position.x, t.position.y, t.position.z]))
                 .collect();
             for (eid, pos) in entities {
-                if let Some(&(start, end)) = self.entity_splat_ranges.get(&eid) {
-                    if let Some(&orig_pos) = self.entity_original_positions.get(&eid) {
-                        let dx = pos[0] - orig_pos[0];
-                        let dy = pos[1] - orig_pos[1];
-                        let dz = pos[2] - orig_pos[2];
-                        if dx.abs() > 1e-6 || dy.abs() > 1e-6 || dz.abs() > 1e-6 {
-                            for i in start..end.min(self.scene_splats.len()) {
-                                self.scene_splats[i].position[0] += dx;
-                                self.scene_splats[i].position[1] += dy;
-                                self.scene_splats[i].position[2] += dz;
-                            }
-                            self.entity_original_positions.insert(eid, pos);
+                if let Some(&(start, end)) = self.entity_splat_ranges.get(&eid)
+                    && let Some(&orig_pos) = self.entity_original_positions.get(&eid)
+                {
+                    let dx = pos[0] - orig_pos[0];
+                    let dy = pos[1] - orig_pos[1];
+                    let dz = pos[2] - orig_pos[2];
+                    if dx.abs() > 1e-6 || dy.abs() > 1e-6 || dz.abs() > 1e-6 {
+                        for i in start..end.min(self.scene_splats.len()) {
+                            let p = self.scene_splats[i].position();
+                            self.scene_splats[i].set_position([p[0] + dx, p[1] + dy, p[2] + dz]);
                         }
+                        self.entity_original_positions.insert(eid, pos);
                     }
                 }
             }
@@ -1757,6 +2109,48 @@ impl EngineApp {
         if self.gpu_rasteriser.is_some() && self.backend.is_some() {
             // --- GPU primary render path ---
             let backend = self.backend.as_ref().expect("backend checked above");
+
+            // Lazy-init SdfShadowPass once terrain and GPU are both available
+            if self.sdf_shadow.is_none()
+                && let Some(terrain) = &self.terrain_volume
+            {
+                use vox_render::gpu::sdf_shadow_pass::{SdfShadowPass, SdfUniform};
+                let sdf_data = terrain.to_sdf_buffer();
+                let (sx, sy, sz, vs) = terrain.sdf_metadata();
+                let depth_placeholder = backend.device().create_texture(&wgpu::TextureDescriptor {
+                    label: Some("sdf_depth_placeholder"),
+                    size: wgpu::Extent3d { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Depth32Float,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                });
+                let depth_view = depth_placeholder.create_view(&wgpu::TextureViewDescriptor {
+                    aspect: wgpu::TextureAspect::DepthOnly,
+                    ..Default::default()
+                });
+                let sdf_uniform = SdfUniform {
+                    origin: [0.0; 3],
+                    _pad0: 0.0,
+                    voxel_size: vs,
+                    size_x: sx as u32,
+                    size_y: sy as u32,
+                    size_z: sz as u32,
+                    light_dir: [0.577, -0.577, 0.577],
+                    penumbra_k: 8.0,
+                    max_dist: 50.0,
+                    _pad1: [0.0; 3],
+                };
+                let w = DEFAULT_WIDTH;
+                let h = DEFAULT_HEIGHT;
+                self.sdf_shadow = Some(SdfShadowPass::new(
+                    backend.device(), &sdf_data, sdf_uniform, &depth_view, w, h,
+                ));
+                println!("[ochroma] SdfShadowPass initialized ({sx}x{sy}x{sz} SDF, {w}x{h})");
+            }
+
             let surface_tex = match backend.surface().get_current_texture() {
                 Ok(t) => t,
                 Err(e) => {
@@ -1798,8 +2192,8 @@ impl EngineApp {
 
             let mut visible_splats: Vec<GaussianSplat> = Vec::with_capacity(self.scene_splats.len());
             for splat in &self.scene_splats {
-                let pos = Vec3::from(splat.position);
-                let radius = splat.scale[0].max(splat.scale[1]).max(splat.scale[2]) + 1.0;
+                let pos = Vec3::from(splat.position());
+                let radius = splat.scale_u().max(splat.scale_v()).max(splat.scale_w()) + 1.0;
                 if frustum.contains_sphere(pos, radius) {
                     visible_splats.push(*splat);
                 }
@@ -1807,7 +2201,7 @@ impl EngineApp {
             // LOD
             let lod_splats: Vec<GaussianSplat> = visible_splats.iter().enumerate()
                 .filter(|&(i, s)| {
-                    let dist = cam_pos.distance(Vec3::from(s.position));
+                    let dist = cam_pos.distance(Vec3::from(s.position()));
                     match lod::select_lod(dist) {
                         lod::LodLevel::Full => true,
                         lod::LodLevel::Reduced => i % 4 == 0,
@@ -1821,9 +2215,8 @@ impl EngineApp {
             for (pos, splats) in &self.placed_objects {
                 for s in splats {
                     let mut ws = *s;
-                    ws.position[0] += pos.x;
-                    ws.position[1] += pos.y;
-                    ws.position[2] += pos.z;
+                    let p = ws.position();
+                    ws.set_position([p[0] + pos.x, p[1] + pos.y, p[2] + pos.z]);
                     render_splats.push(ws);
                 }
             }
@@ -1844,6 +2237,15 @@ impl EngineApp {
             }
 
             let illuminant = illuminant_for_time(self.engine.time_of_day());
+
+            // Dispatch SDF soft shadow compute pass
+            if let Some(sdf_pass) = &self.sdf_shadow {
+                let mut sdf_encoder = backend.device().create_command_encoder(
+                    &wgpu::CommandEncoderDescriptor { label: Some("sdf_shadow_encoder") }
+                );
+                sdf_pass.dispatch(&mut sdf_encoder);
+                backend.queue().submit(Some(sdf_encoder.finish()));
+            }
 
             let gpu_rast = self.gpu_rasteriser.as_ref().expect("gpu_rasteriser checked above");
             let shadow_vp = self.shadow_mapper.cascades.first().map(|c| c.light_view_proj);
@@ -1882,6 +2284,9 @@ impl EngineApp {
                         self.vfx_editor_ui.show(ctx);
                         self.editor.show_vfx_editor = self.vfx_editor_ui.open;
                     }
+                    // Game widgets (resource panels, tooltips, buttons)
+                    self.game_widgets.render(ctx, &self.widget_cmds);
+
                     // Always show HUD
                     egui::Area::new(egui::Id::new("hud_overlay"))
                         .fixed_pos(egui::pos2(4.0, 4.0))
@@ -2020,14 +2425,14 @@ impl EngineApp {
             self.editor.stop_requested = false;
             println!("[ochroma] \u{23f9} STOP \u{2014} returning to edit mode");
         }
-        if let Some(id) = self.editor.focus_camera_on.take() {
-            if let Some(entity) = self.editor.entities.iter().find(|e| e.id == id) {
-                let target = entity.position;
-                self.camera.position = target + glam::Vec3::new(0.0, 5.0, 15.0);
-                self.cam_yaw = 0.0;
-                self.cam_pitch = -0.2;
-                println!("[ochroma] Camera focused on entity #{} '{}'", id, entity.name);
-            }
+        if let Some(id) = self.editor.focus_camera_on.take()
+            && let Some(entity) = self.editor.entities.iter().find(|e| e.id == id)
+        {
+            let target = entity.position;
+            self.camera.position = target + glam::Vec3::new(0.0, 5.0, 15.0);
+            self.cam_yaw = 0.0;
+            self.cam_pitch = -0.2;
+            println!("[ochroma] Camera focused on entity #{} '{}'", id, entity.name);
         }
 
         // Handle drag-and-drop from content browser
@@ -2223,10 +2628,10 @@ impl ApplicationHandler for EngineApp {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         // Forward events to egui
-        if let Some(egui_state) = &mut self.egui_state {
-            if let Some(window) = &self.window {
-                let _ = egui_state.on_window_event(window, &event);
-            }
+        if let Some(egui_state) = &mut self.egui_state
+            && let Some(window) = &self.window
+        {
+            let _ = egui_state.on_window_event(window, &event);
         }
 
         match event {

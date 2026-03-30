@@ -7,6 +7,37 @@
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::cmp::Ordering;
 
+/// Spatial grid index for O(1) average nearest-node lookup.
+#[derive(Default, Clone, Debug)]
+struct NavMeshGrid {
+    cell_size: f32,
+    cells: HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl NavMeshGrid {
+    fn new(cell_size: f32) -> Self {
+        Self { cell_size, cells: HashMap::new() }
+    }
+    fn cell(&self, pos: [f32; 3]) -> (i32, i32) {
+        ((pos[0] / self.cell_size).floor() as i32, (pos[2] / self.cell_size).floor() as i32)
+    }
+    fn insert(&mut self, id: u32, pos: [f32; 3]) {
+        self.cells.entry(self.cell(pos)).or_default().push(id);
+    }
+    fn candidates(&self, pos: [f32; 3]) -> Vec<u32> {
+        let (cx, cz) = self.cell(pos);
+        let mut out = Vec::new();
+        for dx in -1..=1i32 {
+            for dz in -1..=1i32 {
+                if let Some(ids) = self.cells.get(&(cx + dx, cz + dz)) {
+                    out.extend_from_slice(ids);
+                }
+            }
+        }
+        out
+    }
+}
+
 /// A walkable position in the navmesh.
 #[derive(Debug, Clone)]
 pub struct NavNode {
@@ -17,9 +48,16 @@ pub struct NavNode {
 }
 
 /// Walkable graph derived from terrain SDF.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct NavMesh {
     pub nodes: Vec<NavNode>,
+    grid: NavMeshGrid,
+}
+
+impl Default for NavMesh {
+    fn default() -> Self {
+        Self { nodes: Vec::new(), grid: NavMeshGrid::new(5.0) }
+    }
 }
 
 impl NavMesh {
@@ -28,8 +66,26 @@ impl NavMesh {
     /// Number of walkable nodes.
     pub fn node_count(&self) -> usize { self.nodes.len() }
 
-    /// Find the nearest node to a world position. O(n) — use for path queries, not per-frame.
+    /// Rebuild the spatial grid index from current nodes.
+    /// Call after batch-inserting nodes or after `merge()` / `invalidate_region()`.
+    pub fn rebuild_grid(&mut self) {
+        self.grid = NavMeshGrid::new(5.0);
+        for node in &self.nodes {
+            self.grid.insert(node.id, node.world_pos);
+        }
+    }
+
+    /// Find the nearest node to a world position.
+    /// Uses spatial grid when available (O(1) avg), falls back to O(n) linear scan.
     pub fn nearest_node(&self, world_pos: [f32; 3]) -> Option<u32> {
+        let candidates = self.grid.candidates(world_pos);
+        if !candidates.is_empty() {
+            return candidates.into_iter().min_by(|&a, &b| {
+                let da = dist2(self.nodes[a as usize].world_pos, world_pos);
+                let db = dist2(self.nodes[b as usize].world_pos, world_pos);
+                da.partial_cmp(&db).unwrap_or(Ordering::Equal)
+            });
+        }
         self.nodes.iter()
             .min_by(|a, b| {
                 let da = dist2(a.world_pos, world_pos);
@@ -100,6 +156,7 @@ impl NavMesh {
             node.neighbours = node.neighbours.iter().map(|&n| n + id_offset).collect();
             self.nodes.push(node);
         }
+        self.rebuild_grid();
     }
 
     fn reconstruct_path(&self, came_from: &HashMap<u32, u32>, goal: u32) -> Vec<[f32; 3]> {

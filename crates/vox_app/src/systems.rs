@@ -4,18 +4,35 @@ use vox_core::ecs::{SplatInstanceComponent, SplatAssetComponent, LodLevel};
 use vox_core::types::GaussianSplat;
 use vox_render::frustum::Frustum;
 use vox_render::lod;
+#[cfg(feature = "spectra-native")]
+use vox_render::spectra_render::native::SpectraBackendSystem;
+#[cfg(feature = "spectra-native")]
+use vox_render::SpectraCameraParams;
 
 /// Resource: current camera state.
 #[derive(Resource, Debug)]
 pub struct CameraState {
     pub position: Vec3,
     pub view_proj: glam::Mat4,
+    /// View matrix (without projection). Used to extract camera direction vectors.
+    pub view: glam::Mat4,
 }
 
 /// Resource: visible splats after culling + LOD.
 #[derive(Resource, Default)]
 pub struct VisibleSplats {
     pub splats: Vec<GaussianSplat>,
+}
+
+/// Resource: latest completed Spectra-rendered frame (RGBA8, gamma-corrected).
+///
+/// Populated each tick by `spectra_render_system`. Holds `None` until the first
+/// frame completes (the Spectra render thread has one frame of latency).
+/// The main render loop reads this and blits it to the wgpu surface texture.
+#[cfg(feature = "spectra-native")]
+#[derive(Resource, Default)]
+pub struct SpectraFrameOutput {
+    pub frame: Option<std::sync::Arc<Vec<u8>>>,
 }
 
 /// Component: marks an instance as visible this frame.
@@ -46,10 +63,13 @@ pub fn lod_select_system(
 ) {
     for mut instance in query.iter_mut() {
         let distance = instance.position.distance(camera.position);
-        instance.lod = match lod::select_lod(distance) {
+        let new_lod = match lod::select_lod(distance) {
             lod::LodLevel::Full => LodLevel::Full,
             lod::LodLevel::Reduced => LodLevel::Reduced,
         };
+        if instance.lod != new_lod {
+            instance.lod = new_lod;
+        }
     }
 }
 
@@ -66,13 +86,60 @@ pub fn gather_splats_system(
                 let offset = instance.position;
                 for splat in &asset.splats {
                     let mut ws = *splat;
-                    ws.position[0] += offset.x;
-                    ws.position[1] += offset.y;
-                    ws.position[2] += offset.z;
+                    let p = ws.position();
+                    ws.set_position([p[0] + offset.x, p[1] + offset.y, p[2] + offset.z]);
                     visible.splats.push(ws);
                 }
                 break;
             }
         }
+    }
+}
+
+/// Drive the Spectra native GPU renderer one tick and capture the output frame.
+///
+/// Uses Bevy's `Changed<SplatInstanceComponent>` to detect mutations —
+/// fires whenever position, scale, spectral values, or any other field on
+/// a `SplatInstanceComponent` changes in the ECS. `vox_render` has no Bevy
+/// dep; change detection lives here.
+///
+/// Camera orientation is derived from `CameraState.view` (view-matrix inverse).
+/// `fov_y`, `near`, and `far` use defaults until `CameraState` exposes them.
+///
+/// The completed frame is stored in `SpectraFrameOutput`. The main render loop
+/// reads it and blits it to the wgpu surface texture via `write_pixels_to_texture`.
+#[cfg(feature = "spectra-native")]
+pub fn spectra_render_system(
+    backend:    Option<ResMut<SpectraBackendSystem>>,
+    mut frame_out: ResMut<SpectraFrameOutput>,
+    changed:    Query<(), Changed<SplatInstanceComponent>>,
+    visible:    Res<VisibleSplats>,
+    camera:     Res<CameraState>,
+) {
+    let mut backend = match backend {
+        Some(b) => b,
+        None => return,
+    };
+
+    let scene_changed = !changed.is_empty();
+
+    // Use view matrix inverse (not view_proj inverse) for direction vectors.
+    // P_inv distorts directions; V_inv maps NDC directions to world space correctly.
+    let inv_view = camera.view.inverse();
+    let fwd = (inv_view * glam::Vec4::new(0.0, 0.0, -1.0, 0.0)).truncate().normalize();
+    let up  = (inv_view * glam::Vec4::new(0.0, 1.0,  0.0, 0.0)).truncate().normalize();
+    let pos = camera.position;
+
+    let cam = SpectraCameraParams {
+        position: pos.into(),
+        forward:  fwd.into(),
+        up:       up.into(),
+        fov_y: std::f32::consts::FRAC_PI_4,
+        near:  0.1,
+        far:   1000.0,
+    };
+
+    if let Some(frame) = backend.tick(&visible.splats, cam, scene_changed) {
+        frame_out.frame = Some(frame);
     }
 }

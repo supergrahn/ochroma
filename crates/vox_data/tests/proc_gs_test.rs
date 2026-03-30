@@ -61,8 +61,8 @@ fn emit_splats_deterministic() {
     let b = emit_splats(&rule, 12345);
     assert_eq!(a.len(), b.len());
     for (sa, sb) in a.iter().zip(b.iter()) {
-        assert_eq!(sa.position, sb.position);
-        assert_eq!(sa.opacity, sb.opacity);
+        assert_eq!(sa.position(), sb.position());
+        assert_eq!(sa.opacity(), sb.opacity());
     }
 }
 
@@ -73,6 +73,6 @@ fn emit_splats_different_seeds_produce_different_output() {
     let b = emit_splats(&rule, 2);
     // At minimum the counts or positions should differ
     let same = a.len() == b.len()
-        && a.iter().zip(b.iter()).all(|(sa, sb)| sa.position == sb.position);
+        && a.iter().zip(b.iter()).all(|(sa, sb)| sa.position() == sb.position());
     assert!(!same, "expected different output for different seeds");
 }

@@ -8,15 +8,13 @@ use half::f16;
 
 fn make_splats(count: usize) -> Vec<GaussianSplat> {
     (0..count).map(|i| {
-        let _t = i as f32 / count as f32;
-        GaussianSplat {
-            position: [(i % 100) as f32 * 0.5, (i / 100 % 100) as f32 * 0.5, (i / 10000) as f32 * 0.5],
-            scale: [0.1, 0.1, 0.1],
-            rotation: [0, 0, 0, 32767],
-            opacity: 200,
-            _pad: [0; 3],
-            spectral: [f16::from_f32(0.5).to_bits(); 8],
-        }
+        GaussianSplat::volume(
+            [(i % 100) as f32 * 0.5, (i / 100 % 100) as f32 * 0.5, (i / 10000) as f32 * 0.5],
+            [0.1, 0.1, 0.1],
+            glam::Quat::IDENTITY,
+            200,
+            [f16::from_f32(0.5).to_bits(); 16],
+        )
     }).collect()
 }
 
@@ -80,7 +78,7 @@ fn benchmark_frustum_culling() {
 
     let start = Instant::now();
     let visible: usize = splats.iter().filter(|s| {
-        frustum.contains_sphere(Vec3::from(s.position), 0.5)
+        frustum.contains_sphere(Vec3::from(s.position()), 0.5)
     }).count();
     let ms = start.elapsed().as_secs_f32() * 1000.0;
 
