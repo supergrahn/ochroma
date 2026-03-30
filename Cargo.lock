@@ -7487,6 +7487,7 @@ dependencies = [
  "tempfile",
  "toml",
  "uuid",
+ "vox_ai",
  "vox_audio",
  "vox_core",
  "vox_data",
