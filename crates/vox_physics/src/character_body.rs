@@ -176,11 +176,20 @@ mod tests {
     }
 
     #[test]
-    fn apply_translation_moves_rigid_body() {
+    fn apply_translation_queues_correct_kinematic_position() {
         let (mut bodies, mut colliders, _) = make_world();
-        let cb = CharacterBody::new(Vec3::new(0.0, 2.0, 0.0), 0.8, 0.3, &mut bodies, &mut colliders);
+        let spawn = Vec3::new(0.0, 2.0, 0.0);
+        let cb = CharacterBody::new(spawn, 0.8, 0.3, &mut bodies, &mut colliders);
         cb.apply_translation(Vec3::new(1.0, 0.0, 0.0), &mut bodies);
-        let pos = cb.position(&bodies);
-        assert!(!pos.x.is_nan());
+        // set_next_kinematic_translation queues the move for the next physics step.
+        // Verify via next_position() that the correct translation was queued.
+        let rb = &bodies[cb.rigid_body];
+        let next = rb.next_position();
+        assert!(
+            (next.translation.x - (spawn.x + 1.0)).abs() < 0.01,
+            "queued x should be spawn.x + 1.0 = {}, got {}",
+            spawn.x + 1.0,
+            next.translation.x
+        );
     }
 }

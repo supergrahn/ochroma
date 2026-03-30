@@ -1837,13 +1837,18 @@ impl EngineApp {
 
         // 4b. Step Rapier physics and sync dynamic bodies back to ECS
         // Update character controller before physics step.
-        // If character_body is initialized, use Rapier KCC for ground detection
-        // instead of the flat-plane Y=0.9 check inside character.update().
+        // character.update() processes input (move_dir, jump, gravity) and stores
+        // last_move_dir. When rapier_kcc_active, it skips flat-plane integration.
+        // We then pass the full desired velocity (horizontal + vertical) through KCC.
+        self.character.rapier_kcc_active = self.character_body.is_some();
+        self.character.update(&self.input_state, dt, &mut self.physics);
         if let Some(ref cb) = self.character_body {
             if self.character.enabled {
-                let vel = Vec3::new(0.0, self.character.vertical_velocity, 0.0);
+                // Full desired velocity: horizontal from input + vertical from gravity/jump
+                let desired = self.character.last_move_dir
+                    + Vec3::Y * self.character.vertical_velocity;
                 let output = cb.move_and_slide(
-                    vel, dt,
+                    desired, dt,
                     self.physics.rigid_body_set(),
                     self.physics.collider_set(),
                     self.physics.query_pipeline(),
@@ -1853,11 +1858,13 @@ impl EngineApp {
                     self.character.vertical_velocity = 0.0;
                 }
                 cb.apply_translation(output.effective_translation, self.physics.rigid_body_set_mut());
-                let pos = cb.position(self.physics.rigid_body_set());
-                self.character.position = pos;
+                self.character.position = cb.position(self.physics.rigid_body_set());
+                self.physics.set_kinematic_position(
+                    self.character.body_handle,
+                    [self.character.position.x, self.character.position.y, self.character.position.z],
+                );
             }
         }
-        self.character.update(&self.input_state, dt, &mut self.physics);
         // If character is enabled, drive camera position from character
         if self.character.enabled {
             let cam_pos = self.character.camera_position();
