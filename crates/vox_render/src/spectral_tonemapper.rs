@@ -1,4 +1,5 @@
 use crate::spectral_framebuffer::SpectralFramebuffer;
+use crate::species_view::SpeciesView;
 use vox_core::spectral::{spectral_to_xyz, xyz_to_srgb, linear_to_srgb_gamma, SpectralBands, Illuminant};
 
 /// Tone mapping operator.
@@ -18,6 +19,8 @@ pub struct ToneMapSettings {
     pub white_point: f32,  // Brightest value that maps to white
     pub gamma: f32,        // Display gamma (2.2 for sRGB)
     pub saturation: f32,   // 0 = greyscale, 1 = normal, >1 = boosted
+    /// If Some, remap spectral data through species sensitivity before tonemapping.
+    pub species_view: Option<SpeciesView>,
 }
 
 impl Default for ToneMapSettings {
@@ -28,6 +31,7 @@ impl Default for ToneMapSettings {
             white_point: 1.0,
             gamma: 2.2,
             saturation: 1.0,
+            species_view: None,
         }
     }
 }
@@ -105,9 +109,14 @@ pub fn tonemap_spectral_framebuffer(
     for i in 0..fb.pixel_count() {
         let spectral = SpectralBands(fb.spectral[i]);
 
-        // Spectral -> XYZ -> linear RGB
-        let xyz = spectral_to_xyz(&spectral, illuminant);
-        let linear_rgb = xyz_to_srgb(xyz);
+        // Species pre-pass: remap through species sensitivity before CIE conversion.
+        let linear_rgb = if let Some(sv) = &settings.species_view {
+            sv.remap(&spectral.0)
+        } else {
+            // Spectral -> XYZ -> linear RGB
+            let xyz = spectral_to_xyz(&spectral, illuminant);
+            xyz_to_srgb(xyz)
+        };
 
         // Tone map
         let mapped = apply_tonemap(linear_rgb[0], linear_rgb[1], linear_rgb[2], settings);
@@ -128,6 +137,41 @@ pub fn tonemap_spectral_framebuffer(
     output
 }
 
+#[cfg(test)]
+mod cie_tests {
+    use crate::spectra_render::spectral_to_xyz;
+
+    #[test]
+    fn monochromatic_580nm_band_produces_yellow() {
+        let mut spd = [0.0f32; 16];
+        spd[8] = 1.0; // 580nm — yellow-orange
+        let [x, y, z] = spectral_to_xyz(&spd);
+        // x̄ at 580nm = 0.74300, ȳ = 0.86800, z̄ ≈ 0
+        println!("580nm: x={:.4}, y={:.4}, z={:.4}", x, y, z);
+        assert!(x > y * 0.5, "580nm should have strong X: x={:.4}, y={:.4}", x, y);
+        assert!(z < 0.01, "580nm should have near-zero Z: z={:.4}", z);
+    }
+
+    #[test]
+    fn monochromatic_430nm_band_produces_high_z() {
+        let mut spd = [0.0f32; 16];
+        spd[2] = 1.0; // 430nm — blue
+        let [x, y, z] = spectral_to_xyz(&spd);
+        println!("430nm: x={:.4}, y={:.4}, z={:.4}", x, y, z);
+        assert!(z > x, "430nm should have Z > X: x={:.4}, z={:.4}", x, z);
+        assert!(z > 1.0, "430nm z̄ weight is 1.299: z={:.4}", z);
+    }
+
+    #[test]
+    fn flat_spd_produces_near_neutral_xyz() {
+        let spd = [1.0f32; 16];
+        let [x, y, z] = spectral_to_xyz(&spd);
+        let ratio_xy = (x / (y + 1e-6)).max(y / (x + 1e-6));
+        println!("flat SPD: x={:.3}, y={:.3}, z={:.3}, ratio_xy={:.3}", x, y, z, ratio_xy);
+        assert!(ratio_xy < 5.0, "flat SPD X/Y ratio too extreme: x={:.3}, y={:.3}", x, y);
+    }
+}
+
 /// Convert spectral framebuffer to HDR f32 RGB (for DLSS input).
 pub fn tonemap_spectral_to_hdr(
     fb: &SpectralFramebuffer,
@@ -138,8 +182,12 @@ pub fn tonemap_spectral_to_hdr(
 
     for i in 0..fb.pixel_count() {
         let spectral = SpectralBands(fb.spectral[i]);
-        let xyz = spectral_to_xyz(&spectral, illuminant);
-        let linear_rgb = xyz_to_srgb(xyz);
+        let linear_rgb = if let Some(sv) = &settings.species_view {
+            sv.remap(&spectral.0)
+        } else {
+            let xyz = spectral_to_xyz(&spectral, illuminant);
+            xyz_to_srgb(xyz)
+        };
         let mapped = apply_tonemap(linear_rgb[0], linear_rgb[1], linear_rgb[2], settings);
         output.push([mapped[0], mapped[1], mapped[2], 1.0]);
     }

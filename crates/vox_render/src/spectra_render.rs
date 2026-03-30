@@ -10,7 +10,7 @@
 
 use half::f16;
 use rayon::prelude::*;
-use vox_core::spectral::{spectral_to_xyz, xyz_to_srgb, Illuminant, SpectralBands};
+use vox_core::spectral::{xyz_to_srgb, Illuminant, SpectralBands};
 use vox_core::types::GaussianSplat;
 
 use crate::spectral::RenderCamera;
@@ -88,7 +88,7 @@ fn ochroma_to_gaussian3d(splat: &GaussianSplat, illuminant: &Illuminant) -> Gaus
     let bands = SpectralBands(std::array::from_fn(|i| {
         f16::from_bits(splat.spectral()[i]).to_f32()
     }));
-    let xyz = spectral_to_xyz(&bands, illuminant);
+    let xyz = vox_core::spectral::spectral_to_xyz(&bands, illuminant);
     let rgb = xyz_to_srgb(xyz);
 
     let (su, sv, sw) = match splat.kind() {
@@ -116,6 +116,21 @@ fn ochroma_to_gaussian3d(splat: &GaussianSplat, illuminant: &Illuminant) -> Gaus
         ],
         opacity: splat.opacity() as f32 / 255.0,
     }
+}
+
+/// Convert a 16-band SPD to CIE XYZ tristimulus values.
+///
+/// Uses the CIE 1931 2° observer weights at the 16 Ochroma band centres (380–755nm, 25nm steps).
+/// This is the unweighted version (no illuminant normalisation) used for testing CIE weight correctness.
+pub fn spectral_to_xyz(spd: &[f32; 16]) -> [f32; 3] {
+    const CIE_X: [f32; 16] = [0.01741, 0.08028, 0.26000, 0.21000, 0.00949, 0.00000, 0.11201, 0.38000, 0.74300, 1.02200, 0.71600, 0.38100, 0.19700, 0.09020, 0.03400, 0.01180];
+    const CIE_Y: [f32; 16] = [0.00039, 0.00232, 0.01998, 0.09520, 0.17399, 0.46600, 0.69500, 0.94500, 0.86800, 0.65100, 0.38100, 0.18000, 0.08000, 0.03300, 0.01200, 0.00400];
+    const CIE_Z: [f32; 16] = [0.08290, 0.38637, 1.29900, 1.24500, 0.45640, 0.05250, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000];
+
+    let x: f32 = spd.iter().zip(CIE_X.iter()).map(|(s, w)| s * w).sum();
+    let y: f32 = spd.iter().zip(CIE_Y.iter()).map(|(s, w)| s * w).sum();
+    let z: f32 = spd.iter().zip(CIE_Z.iter()).map(|(s, w)| s * w).sum();
+    [x, y, z]
 }
 
 /// Maps a scalar intensity [0, 1] to a 5-stop false-color gradient:
