@@ -37,7 +37,9 @@ mod inner {
 
         /// Spawn render thread with full offline config (128 spp).
         pub fn cinematic(width: u32, height: u32) -> Result<Self, String> {
-            let config = RenderConfig::default();
+            let mut config = RenderConfig::default();
+            config.width = width;
+            config.height = height;
             Self::spawn(config, width, height)
         }
 
