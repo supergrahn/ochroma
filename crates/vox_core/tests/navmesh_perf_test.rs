@@ -1,6 +1,5 @@
 use std::time::Instant;
-use glam::Vec2;
-use vox_core::navmesh::NavMesh;
+use vox_core::navmesh::{NavMesh, NavNode};
 
 #[test]
 fn navmesh_nearest_node_1000_nodes_under_1ms() {
@@ -8,11 +7,11 @@ fn navmesh_nearest_node_1000_nodes_under_1ms() {
     for i in 0u32..1000 {
         let x = (i % 32) as f32 * 3.16;
         let z = (i / 32) as f32 * 3.16;
-        nm.add_node(i, Vec2::new(x, z), true);
+        nm.nodes.push(NavNode { id: i, world_pos: [x, 0.0, z], neighbours: vec![] });
     }
     nm.rebuild_grid();
 
-    let query_pos = Vec2::new(50.0, 50.0);
+    let query_pos = [50.0f32, 0.0, 50.0];
     let start = Instant::now();
     for _ in 0..100 {
         let _ = nm.nearest_node(query_pos);
@@ -28,6 +27,6 @@ fn navmesh_nearest_node_1000_nodes_under_1ms() {
 
     let result = nm.nearest_node(query_pos).unwrap();
     let found = nm.nodes.iter().find(|n| n.id == result).unwrap();
-    let dist = (found.position - query_pos).length();
+    let dist = ((found.world_pos[0] - 50.0).powi(2) + (found.world_pos[2] - 50.0).powi(2)).sqrt();
     assert!(dist < 4.0, "nearest node must be within 4m of query, got {:.2}m", dist);
 }

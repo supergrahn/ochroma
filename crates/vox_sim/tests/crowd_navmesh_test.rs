@@ -1,12 +1,11 @@
 use glam::Vec3;
-use vox_core::navmesh::NavMesh;
+use vox_core::navmesh::{NavMesh, NavNode};
 use vox_sim::crowd::{CrowdAgent, CrowdSimulation};
 
 fn two_node_navmesh() -> NavMesh {
     let mut nm = NavMesh::new();
-    nm.add_node(0, glam::Vec2::new(0.0, 0.0), true);
-    nm.add_node(1, glam::Vec2::new(10.0, 0.0), true);
-    nm.add_edge(0, 1);
+    nm.nodes.push(NavNode { id: 0, world_pos: [0.0, 0.0, 0.0], neighbours: vec![1] });
+    nm.nodes.push(NavNode { id: 1, world_pos: [10.0, 0.0, 0.0], neighbours: vec![0] });
     nm
 }
 
@@ -31,11 +30,9 @@ fn crowd_agent_set_navmesh_destination_stores_path() {
 #[test]
 fn crowd_agent_follows_navmesh_path_around_obstacle() {
     let mut nm = NavMesh::new();
-    nm.add_node(0, glam::Vec2::new(0.0, 0.0), true);
-    nm.add_node(1, glam::Vec2::new(5.0, 0.0), true);
-    nm.add_node(2, glam::Vec2::new(10.0, 0.0), true);
-    nm.add_edge(0, 1);
-    nm.add_edge(1, 2);
+    nm.nodes.push(NavNode { id: 0, world_pos: [0.0, 0.0, 0.0], neighbours: vec![1] });
+    nm.nodes.push(NavNode { id: 1, world_pos: [5.0, 0.0, 0.0], neighbours: vec![0, 2] });
+    nm.nodes.push(NavNode { id: 2, world_pos: [10.0, 0.0, 0.0], neighbours: vec![1] });
 
     let mut sim = CrowdSimulation::new();
     let idx = sim.add_agent(Vec3::new(0.1, 0.0, 0.0), Vec3::new(10.0, 0.0, 0.0), 5.0);

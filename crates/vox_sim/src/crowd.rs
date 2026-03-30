@@ -118,28 +118,18 @@ impl CrowdAgent {
     pub fn set_navmesh_destination(&mut self, dest: Vec3, navmesh: &vox_core::navmesh::NavMesh) {
         self.path.clear();
         self.path_index = 0;
-        let start_pos2 = glam::Vec2::new(self.position.x, self.position.z);
-        let goal_pos2 = glam::Vec2::new(dest.x, dest.z);
-        let Some(start_id) = navmesh.nearest_node(start_pos2) else {
+        let start_pos = [self.position.x, self.position.y, self.position.z];
+        let goal_pos  = [dest.x, dest.y, dest.z];
+        let Some(start_id) = navmesh.nearest_node(start_pos) else {
             self.target = dest;
             return;
         };
-        let Some(goal_id) = navmesh.nearest_node(goal_pos2) else {
+        let Some(goal_id) = navmesh.nearest_node(goal_pos) else {
             self.target = dest;
             return;
         };
-        if let Some(node_ids) = navmesh.find_path(start_id, goal_id) {
-            // Convert node IDs to world positions ([f32; 3])
-            // NavNode.position is Vec2 (x, z in world space); y is preserved from agent.position
-            let agent_y = self.position.y;
-            self.path = node_ids
-                .iter()
-                .filter_map(|&id| {
-                    navmesh.nodes.iter().find(|n| n.id == id).map(|n| {
-                        [n.position.x, agent_y, n.position.y]
-                    })
-                })
-                .collect();
+        if let Some(waypoints) = navmesh.find_path(start_id, goal_id) {
+            self.path = waypoints;
             if let Some(wp) = self.path.first() {
                 self.target = Vec3::new(wp[0], wp[1], wp[2]);
             }
