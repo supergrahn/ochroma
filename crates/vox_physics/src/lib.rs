@@ -189,9 +189,13 @@ pub mod cloth;
 pub mod collision_layers;
 pub mod destruction;
 pub mod fluid;
+pub mod pbf;
 pub mod rope;
 pub mod spectral_damage;
+pub mod spectral_fracture;
+pub mod thermal;
 pub mod vehicle;
+pub mod wetness;
 pub mod xpbd;
 
 pub mod rapier;
