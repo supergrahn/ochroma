@@ -186,6 +186,12 @@ impl AgentComputePipeline {
     ) {
         queue.write_buffer(&self.uniform_buf, 0, bytes_of(&uniforms));
 
+        if self.desc_snapshot.spectral && spectral_samples.is_none() {
+            // Caller must provide spectral_samples when AgentStateDesc::spectral is true.
+            // Without it, the bind group would be missing a required binding.
+            return;
+        }
+
         let mut entries: Vec<wgpu::BindGroupEntry> = vec![
             wgpu::BindGroupEntry { binding: 0, resource: buffers.read_positions().as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: buffers.write_positions().as_entire_binding() },
