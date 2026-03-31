@@ -29,3 +29,4 @@ pub mod soundscape;
 pub mod tutorial;
 pub mod terrain_editor;
 pub mod walk_animation;
+pub mod editor_app;
