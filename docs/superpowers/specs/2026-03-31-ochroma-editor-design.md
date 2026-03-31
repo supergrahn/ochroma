@@ -49,7 +49,7 @@ A human at the keyboard can verify each of the above visually without reading co
 
 The editor is organized around **6 workflow modes**: Sculpt, Objects, Lighting, Animate, Logic, Simulate. The mode strip is a vertical icon bar on the left edge of the viewport. Switching modes triggers a `WorkspaceMode` event that the context panel and floating tool strip both subscribe to.
 
-The **context panel** is a right-side drawer that changes its entire contents based on the active mode and the current selection. It is never a fixed set of tabs — it is a reactive surface. The three-tab **right sidebar** (Context / Scene / Assets) lives within this drawer: Context shows selection-specific tools for the active mode, Scene is the scene hierarchy, Assets is the browsable/searchable asset library.
+The **context panel** is a right-side drawer with three fixed tabs: **Context**, **Scene**, and **Assets**. The tab bar itself is always present. What changes reactively is the *contents of the Context tab* — it renders different tools and properties based on the active mode and the current selection. Scene is always the scene hierarchy; Assets is always the asset library. The tabs are stable; only Context's interior adapts.
 
 The **floating tool strip** appears inside the viewport near the selection and contains the 5–8 most common actions for the current mode. It does not persist after deselection.
 
@@ -65,7 +65,7 @@ The AI bar occupies a fixed strip at the bottom of the editor window. It is **al
 
 **Expand button**: slides the bar upward to reveal conversation history sidebar (left) and a large input area (right). From the expanded state the user can also access the **Sensory Palettes** canvas (Phase 2).
 
-If the user somehow hides the bar (future: user preference), a `✦` tab on the bottom edge restores it instantly.
+The bar is always visible and has no close button. A future preference may allow minimizing it to a `✦` tab on the bottom edge; clicking the tab expands it again. At Phase 1, minimizing to a single collapsed line is the minimum state.
 
 ### 4.3 Intent Narrative Hierarchy
 
@@ -89,7 +89,7 @@ AI action → badge appears → user clicks → graph slides up with highlights 
 
 The Assets tab replaces filename-based browsing with a search-first interface. The search bar accepts natural language. Queries are embedded using an LVM and matched against pre-computed embeddings for all assets in the library.
 
-If no result exceeds a similarity threshold, the library shows an "AI Generate" option that sends the query to the generation backend and returns a new asset. The user is never blocked.
+If no result has cosine similarity ≥ 0.6, the library shows an "AI Generate" option that sends the query to the generation backend and returns a new asset. The user is never blocked by a missing asset.
 
 ### 4.6 Ghost Overlays (Phase 1 — Gemini idea)
 
@@ -109,7 +109,7 @@ These overlays are viewport-layer composites — they do not affect the scene or
 
 **Sensory Palettes** — a mood board canvas accessible from the AI bar's expanded state. Drag in photos, audio clips, or text. The LVM watches it as a continuous live prompt. New objects created while a palette is active inherit its visual/textural character.
 
-**Director's Gaze** — a toggleable cinematography overlay in Lighting/Cinematic mode. Adapts rule-of-thirds and golden spiral guides to current camera framing. LVM analyses the viewport continuously and provides real-time framing feedback in the AI bar.
+**Director's Gaze** — a toggleable cinematography overlay in Lighting mode. Adapts rule-of-thirds and golden spiral guides to current camera framing. LVM analyses the viewport continuously and provides real-time framing feedback in the AI bar.
 
 ### 4.8 Phase 3: Mastery Layer
 
@@ -159,14 +159,21 @@ impl SceneNode {
     }
 }
 
+/// Opaque handle for an in-flight AI job. Use to cancel or poll from the UI.
+pub struct JobHandle(u64);
+
+/// Node ID within a procedural node graph — distinct from `NodeId` (scene node).
+pub struct GraphNodeId(u32);
+
 /// Diff produced after an AI action that modifies a node graph asset.
 pub struct NodeGraphDiff {
     asset_id: AssetId,
-    added_nodes: Vec<NodeId>,
-    modified_nodes: Vec<NodeId>,
+    added_nodes: Vec<GraphNodeId>,
+    modified_nodes: Vec<GraphNodeId>,
 }
 
 impl NodeGraphDiff {
+    pub fn asset_id(&self) -> AssetId { self.asset_id }
     pub fn changed_count(&self) -> usize {
         self.added_nodes.len() + self.modified_nodes.len()
     }
@@ -184,28 +191,40 @@ pub struct AssetEntry {
 
 ## 6. API
 
-The editor UI layer communicates with the engine through an event bus. Key editor-side APIs:
+All editor API calls go through `EditorApp`, the single owner of editor state. Events (`WorkspaceModeChanged`, `AiActionComplete`) are broadcast on `EditorApp`'s internal event bus; UI panels subscribe at startup.
 
 ```rust
-// Switch active workspace mode. Broadcasts WorkspaceModeChanged event.
-pub fn set_mode(mode: WorkspaceMode);
+/// Events broadcast on the internal bus.
+pub enum EditorEvent {
+    WorkspaceModeChanged { mode: WorkspaceMode },
+    AiActionComplete { diff: Option<NodeGraphDiff> },
+}
 
-// Submit a prompt to the AI bar. Returns a job handle; result arrives via AiActionComplete event.
-pub fn submit_ai_prompt(
-    prompt: &str,
-    scope: AiScope,
-    selection: Option<&[NodeId]>,
-) -> JobHandle;
+impl EditorApp {
+    // Switch active workspace mode. Broadcasts WorkspaceModeChanged.
+    pub fn set_mode(&mut self, mode: WorkspaceMode);
 
-// Query the asset library by natural language. Returns ranked results.
-// If results.is_empty() after this call, callers should offer AI generation.
-pub fn search_assets(query: &str) -> Vec<(AssetEntry, f32 /* similarity score */)>;
+    // Submit a prompt to the AI bar. Returns a handle; result arrives via AiActionComplete.
+    // Threading: non-blocking; AI request runs on a background thread.
+    pub fn submit_ai_prompt(
+        &mut self,
+        prompt: &str,
+        scope: AiScope,
+        selection: Option<&[NodeId]>,
+    ) -> JobHandle;
 
-// Open the node graph reveal panel for the given asset, highlighting the provided diff.
-pub fn reveal_node_graph(asset_id: AssetId, diff: &NodeGraphDiff);
+    // Query the asset library by natural language description.
+    // Returns results with cosine similarity score, filtered to >= 0.6.
+    // Empty result means no match — callers should offer AI generation fallback.
+    pub fn search_assets(&self, query: &str) -> Vec<(AssetEntry, f32)>;
 
-// Toggle ghost overlays on/off in the viewport (Simulate mode only).
-pub fn set_ghost_overlays_enabled(enabled: bool);
+    // Open the node graph reveal panel, highlighting AI-modified nodes from diff.
+    // diff.asset_id() determines which graph to open.
+    pub fn reveal_node_graph(&mut self, diff: &NodeGraphDiff);
+
+    // Enable or disable ghost overlays. No-op outside Simulate mode.
+    pub fn set_ghost_overlays_enabled(&mut self, enabled: bool);
+}
 ```
 
 ---
@@ -214,14 +233,14 @@ pub fn set_ghost_overlays_enabled(enabled: bool);
 
 | Component | Called from | File | Notes |
 |---|---|---|---|
-| `set_mode()` | Mode strip button click handler | `crates/vox_app/src/editor/mode_strip.rs` | Called on every mode button press |
-| `WorkspaceModeChanged` event | Context panel, floating tool strip | `crates/vox_app/src/editor/context_panel.rs` | Subscribed at editor startup |
-| `submit_ai_prompt()` | AI bar submit handler | `crates/vox_app/src/editor/ai_bar.rs` | Fires on Enter or button click |
-| `AiActionComplete` event | Node graph badge | `crates/vox_app/src/editor/context_panel.rs` | Badge appears if `diff.changed_count() > 0` |
-| `reveal_node_graph()` | Badge click handler | `crates/vox_app/src/editor/node_graph_panel.rs` | Triggers slide-up animation |
-| `search_assets()` | Assets tab search bar | `crates/vox_app/src/editor/asset_library.rs` | Called on every keystroke (debounced 150ms) |
-| `set_ghost_overlays_enabled()` | Simulate mode activation | `crates/vox_app/src/editor/mode_strip.rs` | Enabled when entering Simulate, disabled on exit |
-| `SceneNode::intent` | Scene tree renderer | `crates/vox_app/src/editor/scene_tree.rs` | Subtitle row rendered if `intent.is_some()` |
+| `EditorApp::set_mode()` | Mode strip button click handler | `crates/vox_app/src/editor/mode_strip.rs` | Called on every mode button press |
+| `EditorEvent::WorkspaceModeChanged` | Context panel, floating tool strip | `crates/vox_app/src/editor/context_panel.rs` | Subscribed at editor startup |
+| `EditorApp::submit_ai_prompt()` | AI bar submit handler | `crates/vox_app/src/editor/ai_bar.rs` | Fires on Enter or button click |
+| `EditorEvent::AiActionComplete` | Node graph badge | `crates/vox_app/src/editor/context_panel.rs` | Badge appears if `diff.is_some() && diff.changed_count() > 0` |
+| `EditorApp::reveal_node_graph()` | Badge click handler | `crates/vox_app/src/editor/node_graph_panel.rs` | Triggers slide-up animation |
+| `EditorApp::search_assets()` | Assets tab search bar | `crates/vox_app/src/editor/asset_library.rs` | Called on every keystroke (debounced 150ms) |
+| `EditorApp::set_ghost_overlays_enabled()` | Simulate mode activation | `crates/vox_app/src/editor/mode_strip.rs` | Enabled when entering Simulate, disabled on exit |
+| `SceneNode::intent()` | Scene tree renderer | `crates/vox_app/src/editor/scene_tree.rs` | Subtitle row rendered if `intent().is_some()` |
 
 ---
 
