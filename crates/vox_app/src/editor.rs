@@ -15,6 +15,17 @@ pub struct EditorEntity {
     pub scripts: Vec<String>,
     pub parent: Option<u32>,
     pub children: Vec<u32>,
+    pub intent: Option<String>, // AI creation prompt; shown as subtitle in scene tree
+}
+
+impl EditorEntity {
+    pub fn intent(&self) -> Option<&str> {
+        self.intent.as_deref()
+    }
+
+    pub fn set_intent(&mut self, prompt: impl Into<String>) {
+        self.intent = Some(prompt.into());
+    }
 }
 
 /// The scene editor state.
@@ -253,6 +264,7 @@ impl SceneEditor {
             scripts: Vec::new(),
             parent: None,
             children: Vec::new(),
+            intent: None,
         });
         self.undo_stack.push(EditorAction::AddEntity { id });
         self.redo_stack.clear();
@@ -363,6 +375,7 @@ impl SceneEditor {
                             scripts: Vec::new(),
                             parent: None,
                             children: Vec::new(),
+                            intent: None,
                         });
                     }
                 }
@@ -480,6 +493,7 @@ impl SceneEditor {
                 scripts: obj.scripts.clone(),
                 parent: None,
                 children: Vec::new(),
+                intent: None,
             });
         }
     }
@@ -1248,5 +1262,41 @@ mod tests {
     fn viewport_layout_all_labels() {
         assert_eq!(ViewportLayout::Single.label(), "1 View");
         assert_eq!(ViewportLayout::Quad.label(), "4 Views");
+    }
+
+    fn make_entity(id: u32) -> EditorEntity {
+        EditorEntity {
+            id,
+            name: "Test".into(),
+            asset_path: "".into(),
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+            visible: true,
+            locked: false,
+            scripts: vec![],
+            parent: None,
+            children: vec![],
+            intent: None,
+        }
+    }
+
+    #[test]
+    fn editor_entity_intent_starts_none() {
+        let e = make_entity(1);
+        assert_eq!(e.intent(), None);
+    }
+
+    #[test]
+    fn editor_entity_set_intent_stores_prompt() {
+        let mut e = make_entity(2);
+        e.set_intent("a ruined watchtower");
+        assert_eq!(e.intent(), Some("a ruined watchtower"));
+    }
+
+    #[test]
+    fn editor_entity_intent_none_when_manually_created() {
+        let e = make_entity(3);
+        assert!(e.intent().is_none(), "manually created entities have no intent");
     }
 }
