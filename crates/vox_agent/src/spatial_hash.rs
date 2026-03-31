@@ -1,7 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 use crate::desc::SpatialHashDesc;
-use crate::state::AgentStateBuffers;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -148,16 +147,6 @@ impl SpatialHashPipelines {
     }
 }
 
-/// Placeholder: actual dispatch is in AgentComputeLayer::tick() which has access to wgpu::Device
-/// for bind group creation. SpatialHashPipelines exposes the BGLs; AgentComputeLayer creates BGs.
-pub fn rebuild_spatial_hash(
-    _encoder: &mut wgpu::CommandEncoder,
-    _pipelines: &SpatialHashPipelines,
-    _buffers: &AgentStateBuffers,
-) {
-    // Intentionally empty: bind groups require &wgpu::Device which isn't available here.
-    // See AgentComputeLayer::tick() for the full 3-pass dispatch.
-}
 
 #[cfg(test)]
 mod tests {
@@ -180,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn neighbour_query_correctness() {
+    fn upload_positions_and_mark_alive_does_not_panic() {
         // Place 20 agents: 10 near (5,0,5), 10 near (15,0,5).
         // This test verifies shader compilation and buffer setup succeed.
         // Full dispatch correctness is in the integration test (Task 8).

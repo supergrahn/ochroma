@@ -18,7 +18,7 @@ mod gpu;
 pub use desc::{AgentStateDesc, SpatialHashDesc};
 pub use state::AgentStateBuffers;
 pub use uniforms::AgentUniforms;
-pub use spatial_hash::{SpatialHashPipelines, rebuild_spatial_hash};
+pub use spatial_hash::SpatialHashPipelines;
 pub use compute::{AgentComputePipeline, ShaderSource, PipelineError};
 pub use scheduler::{TierScheduler, AgentSlice, AgentWriteQueue};
 
