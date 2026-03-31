@@ -330,6 +330,9 @@ struct EngineApp {
 
     // Last terrain pick position from ScreenRay (updated on left-click)
     last_pick: Option<glam::Vec3>,
+
+    // New editor app (mode strip, context panel, AI bar)
+    editor_app: vox_app::editor_app::EditorApp,
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +562,7 @@ impl EngineApp {
             replication_states: Vec::new(),
             character_body: None,
             last_pick: None,
+            editor_app: vox_app::editor_app::EditorApp::new(),
             game_widgets: vox_ui::GameWidgets::new(),
             widget_cmds: vec![
                 vox_ui::WidgetCmd::Panel {
@@ -2132,16 +2136,22 @@ impl EngineApp {
                     ..Default::default()
                 });
                 let sdf_uniform = SdfUniform {
-                    origin: [0.0; 3],
-                    _pad0: 0.0,
-                    voxel_size: vs,
-                    size_x: sx as u32,
-                    size_y: sy as u32,
-                    size_z: sz as u32,
-                    light_dir: [0.577, -0.577, 0.577],
-                    penumbra_k: 8.0,
-                    max_dist: 50.0,
-                    _pad1: [0.0; 3],
+                    view_proj:     glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    inv_view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    viewport_size: [DEFAULT_WIDTH as f32, DEFAULT_HEIGHT as f32],
+                    _cam_pad:      [0.0; 2],
+                    origin:        [0.0; 3],
+                    _pad0:         0.0,
+                    voxel_size:    vs,
+                    size_x:        sx as u32,
+                    size_y:        sy as u32,
+                    size_z:        sz as u32,
+                    light_dir:     [0.577, -0.577, 0.577],
+                    penumbra_k:    8.0,
+                    max_dist:      50.0,
+                    _pad1a:        0.0,
+                    _pad1b:        0.0,
+                    _pad1c:        0.0,
                 };
                 let w = DEFAULT_WIDTH;
                 let h = DEFAULT_HEIGHT;
@@ -2284,6 +2294,21 @@ impl EngineApp {
                         self.vfx_editor_ui.show(ctx);
                         self.editor.show_vfx_editor = self.vfx_editor_ui.open;
                     }
+                    // Update ghost overlay history from patrol agent positions
+                    let agent_positions: Vec<[f32; 3]> = self.patrol_agents.iter()
+                        .map(|a| a.position.to_array())
+                        .collect();
+                    self.editor_app.update_ghost_overlays(&agent_positions);
+
+                    let selection_ids: Vec<u32> = self.editor
+                        .selected
+                        .map(|id| vec![id])
+                        .unwrap_or_default();
+                    self.editor_app.show(ctx, &self.editor.entities, selection_ids);
+
+                    // Consume ghost splats (submitted to renderer when GPU path supports it)
+                    let _ghost_splat_count = self.editor_app.ghost_overlay_splats().len();
+
                     // Game widgets (resource panels, tooltips, buttons)
                     self.game_widgets.render(ctx, &self.widget_cmds);
 
