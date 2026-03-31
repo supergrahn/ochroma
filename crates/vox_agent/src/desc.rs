@@ -51,6 +51,7 @@ impl AgentStateDesc {
 
     /// Total byte size of the spectral cache buffer (N * 16 * 4 bytes).
     pub fn spectral_size(&self) -> u64 {
+        if !self.spectral { return 0; }
         self.agent_count as u64 * 16 * 4
     }
 }
@@ -61,13 +62,14 @@ mod tests {
 
     #[test]
     fn grid_width_rounds_up() {
+        // 105.0 / 10.0 = 10.5 → ceil = 11, not 10
         let sh = SpatialHashDesc {
             grid_origin_x: 0.0,
             grid_origin_z: 0.0,
-            grid_extent: 100.0,
+            grid_extent: 105.0,
             cell_size: 10.0,
         };
-        assert_eq!(sh.grid_width(), 10);
+        assert_eq!(sh.grid_width(), 11);
     }
 
     #[test]
@@ -110,5 +112,27 @@ mod tests {
             spatial_hash: None,
         };
         assert_eq!(desc.custom_size(), 100 * 8 * 4);
+    }
+
+    #[test]
+    fn spectral_size_zero_when_spectral_disabled() {
+        let desc = AgentStateDesc {
+            agent_count: 100,
+            custom_floats: 0,
+            spectral: false,
+            spatial_hash: None,
+        };
+        assert_eq!(desc.spectral_size(), 0);
+    }
+
+    #[test]
+    fn spectral_size_correct_when_spectral_enabled() {
+        let desc = AgentStateDesc {
+            agent_count: 100,
+            custom_floats: 0,
+            spectral: true,
+            spatial_hash: None,
+        };
+        assert_eq!(desc.spectral_size(), 100 * 16 * 4);
     }
 }
