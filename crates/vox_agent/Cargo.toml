@@ -1,0 +1,26 @@
+[package]
+name = "vox_agent"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+vox_core   = { path = "../vox_core" }
+wgpu       = "24"
+bytemuck   = { workspace = true }
+glam       = { workspace = true }
+rayon      = "1.10"
+serde      = { workspace = true }
+serde_json = "1"
+pollster   = "0.4"
+thiserror  = { workspace = true }
+
+[dependencies.egui]
+workspace = true
+optional = true
+
+[features]
+default = []
+editor  = ["dep:egui"]
+
+[dev-dependencies]
+pollster = "0.4"

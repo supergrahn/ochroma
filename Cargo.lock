@@ -7447,6 +7447,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vox_agent"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "egui",
+ "glam 0.29.3",
+ "pollster",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "vox_core",
+ "wgpu 24.0.5",
+]
+
+[[package]]
 name = "vox_ai"
 version = "0.1.0"
 dependencies = [
@@ -7692,6 +7708,7 @@ version = "0.1.0"
 dependencies = [
  "glam 0.29.3",
  "rand 0.9.2",
+ "rayon",
  "serde",
  "serde_json",
  "uuid",

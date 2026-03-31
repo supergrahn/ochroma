@@ -19,6 +19,7 @@ members = [
     "crates/ochroma_engine",
     "crates/vox_web",
     "crates/vox_ai",
+    "crates/vox_agent",
 ]
 
 [workspace.package]
@@ -51,7 +52,7 @@ vox_ui         = { path = "crates/vox_ui" }
 [workspace.metadata.dist]
 cargo-dist-version = "0.22.1"
 ci = "github"
-installers = ["shell", "powershell"]
+installers = ["shell", "powershell", "msi"]
 targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
