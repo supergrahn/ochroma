@@ -218,7 +218,7 @@ impl AgentComputeLayer {
         self.buffers.swap();
 
         // 5. Check pending hot-swap
-        if let Some(pending) = &self.pending {
+        if let Some(pending) = self.pending.clone() {
             if let Ok(mut guard) = pending.try_lock() {
                 if let Some(new_pipeline) = guard.take() {
                     self.pipeline = Some(new_pipeline);
