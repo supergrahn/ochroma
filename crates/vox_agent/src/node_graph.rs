@@ -46,6 +46,8 @@ pub enum CycleError {
 pub enum ValidationError {
     #[error("node {0}: uses feature not enabled in AgentStateDesc ({1})")]
     FeatureNotEnabled(NodeId, &'static str),
+    #[error("node {0}: custom kind '{1}' is not registered")]
+    UnregisteredKind(NodeId, String),
 }
 
 /// IR for a complete agent behavior program.
@@ -104,9 +106,10 @@ impl AgentNodeGraph {
         while let Some(id) = queue.pop_front() {
             order.push(id);
             for c in self.connections.iter().filter(|c| c.src_node == id) {
-                let d = in_degree.entry(c.dst_node).or_insert(0);
-                *d = d.saturating_sub(1);
-                if *d == 0 { queue.push_back(c.dst_node); }
+                if let Some(d) = in_degree.get_mut(&c.dst_node) {
+                    *d = d.saturating_sub(1);
+                    if *d == 0 { queue.push_back(c.dst_node); }
+                }
             }
         }
         if order.len() == self.nodes.len() { Ok(order) } else { Err(CycleError::Cycle) }
@@ -115,7 +118,7 @@ impl AgentNodeGraph {
     /// Type-checks connections and validates feature requirements against desc.
     pub fn validate(
         &self,
-        _registry: &AgentNodeRegistry,
+        registry: &AgentNodeRegistry,
         desc: &crate::desc::AgentStateDesc,
     ) -> Result<(), Vec<ValidationError>> {
         let mut errors = Vec::new();
@@ -140,6 +143,11 @@ impl AgentNodeGraph {
                 AgentNodeKind::ReadCustom { .. } | AgentNodeKind::WriteCustom { .. } => {
                     if desc.custom_floats == 0 {
                         errors.push(ValidationError::FeatureNotEnabled(node.id, "custom_floats"));
+                    }
+                }
+                AgentNodeKind::Custom { kind_name } => {
+                    if registry.get(kind_name).is_none() {
+                        errors.push(ValidationError::UnregisteredKind(node.id, kind_name.clone()));
                     }
                 }
                 _ => {}
@@ -324,5 +332,25 @@ mod tests {
         let mut g = AgentNodeGraph::new("test");
         g.add_node(AgentNodeKind::SampleSpectral { band: 5 }, [0.0, 0.0]);
         assert!(g.validate(&registry(), &desc).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_unregistered_custom_node() {
+        let registry = AgentNodeRegistry::new(); // empty registry
+        let desc = desc_minimal();
+        let mut g = AgentNodeGraph::new("test");
+        g.add_node(AgentNodeKind::Custom { kind_name: "Unregistered".to_string() }, [0.0, 0.0]);
+        let errors = g.validate(&registry, &desc).unwrap_err();
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn validate_accepts_registered_custom_node() {
+        let mut registry = AgentNodeRegistry::new();
+        registry.register("MyKind", SlangFragment("var {output} = 1.0;".to_string()));
+        let desc = desc_minimal();
+        let mut g = AgentNodeGraph::new("test");
+        g.add_node(AgentNodeKind::Custom { kind_name: "MyKind".to_string() }, [0.0, 0.0]);
+        assert!(g.validate(&registry, &desc).is_ok());
     }
 }
