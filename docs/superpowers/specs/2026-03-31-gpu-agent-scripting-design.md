@@ -433,10 +433,23 @@ The spectral field buffer (`vox_render`'s 16-band GPU buffer) is passed into `Ag
 
 ---
 
-## 10. Related Plans / Designs
+## 10. Spectra Integration Note
+
+The `spectral_field` buffer supplied to the agent compute kernel will eventually come from Spectra (the CUDA path tracer). Three concrete items land on Spectra's side — **deferred to a separate session:**
+
+1. **SpectralProbeGather pass** — after main render, a CUDA gather kernel samples the rendered spectral texture at each agent's screen-space position and writes a compact `N_agents × 16` float buffer. Screen-space first; a sparse 3D probe grid is the upgrade path.
+2. **CUDA → wgpu buffer transfer** — CPU readback/upload shim as first-pass (acceptable given agents update at 4Hz behavioral tier, so latency = 1 render frame = ~16ms). CUDA external memory → Vulkan (`cudaExternalMemory` + `VK_KHR_external_memory`) is the zero-copy upgrade, following the existing DLSS interop pattern.
+3. **32 → 16 band resampling** — Spectra's HWSS-4 accumulates 32 bands (380–780nm at 12.5nm). The agent buffer uses 16 bands (380–755nm at 25nm), matching `GaussianSplat::spectral`. The gather kernel resamples by linear interpolation at the 16 band centers before writing.
+
+**Until Spectra produces this buffer**, `vox_agent` accepts a wgpu buffer passed in from the caller. The integration test (`spectral_node_reads_live_field`) uses a CPU-filled test buffer — no Spectra dependency for the initial implementation.
+
+---
+
+## 11. Related Plans / Designs
 
 - Depends on: Domain 06 Rendering Plan (spectral field buffer must be a `wgpu::Buffer` accessible outside `vox_render`)
 - Depends on: Domain 10 Physics Plan (spatial hash counting sort pattern from PBF solver)
 - Required before: any design that adds per-agent visual scripting from the editor UI
 - Related: Domain 11 AI/LLM Plan (LLM-generated node graphs target `AgentNodeGraph` IR)
 - Related: Domain 12 Spectral Frontier Plan (spectral field queries in agents)
+- Blocks: Spectra SpectralProbeGather session (see §10)
