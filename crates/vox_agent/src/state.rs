@@ -22,7 +22,7 @@ fn make_buffer(device: &wgpu::Device, size: u64, label: &str, usage: wgpu::Buffe
 {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        size: size.max(4), // wgpu requires size > 0
+        size: size.max(4), // wgpu requires size > 0; agent_count = 0 is valid for init/test use
         usage,
         mapped_at_creation: false,
     })
@@ -43,8 +43,8 @@ impl AgentStateBuffers {
                 let cells = sh.cell_count() as u64;
                 (
                     Some(make_buffer(device, n * 4, "agent_spatial_cell", STORAGE_RW)),
-                    Some(make_buffer(device, cells * 4, "agent_cell_counts",
-                        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST)),
+                    // COPY_DST is required: encoder.clear_buffer() zeroes this buffer before each pass
+                    Some(make_buffer(device, cells * 4, "agent_cell_counts", STORAGE_RW)),
                     Some(make_buffer(device, (cells + 1) * 4, "agent_cell_offsets", STORAGE_RW)),
                     Some(make_buffer(device, n * 4, "agent_cell_data", STORAGE_RW)),
                 )
@@ -105,14 +105,17 @@ impl AgentStateBuffers {
     pub fn custom(&self) -> Option<&wgpu::Buffer> { self.custom.as_ref() }
     pub fn spectral_cache(&self) -> Option<&wgpu::Buffer> { self.spectral_cache.as_ref() }
 
-    /// Initialize positions from a CPU slice. Slice must be exactly agent_count * 3 floats.
+    /// Initialize positions from a CPU slice. Must be called before the first `tick()`.
+    /// Writes into the current read buffer (source for the first dispatch).
+    /// Slice must be exactly `agent_count` elements of `[f32; 3]`.
     pub fn upload_positions(&self, queue: &wgpu::Queue, positions: &[[f32; 3]]) {
         assert_eq!(positions.len() as u32, self.desc.agent_count);
         let flat: Vec<f32> = positions.iter().flat_map(|p| p.iter().copied()).collect();
         queue.write_buffer(self.read_positions(), 0, bytemuck::cast_slice(&flat));
     }
 
-    /// Initialize velocities from a CPU slice. Slice must be exactly agent_count * 3 floats.
+    /// Initialize velocities from a CPU slice. Must be called before the first `tick()`.
+    /// Slice must be exactly `agent_count` elements of `[f32; 3]`.
     pub fn upload_velocities(&self, queue: &wgpu::Queue, velocities: &[[f32; 3]]) {
         assert_eq!(velocities.len() as u32, self.desc.agent_count);
         let flat: Vec<f32> = velocities.iter().flat_map(|v| v.iter().copied()).collect();
