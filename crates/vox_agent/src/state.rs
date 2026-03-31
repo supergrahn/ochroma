@@ -29,7 +29,10 @@ fn make_buffer(device: &wgpu::Device, size: u64, label: &str, usage: wgpu::Buffe
 }
 
 const STORAGE_RW: wgpu::BufferUsages =
-    wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::COPY_DST);
+    wgpu::BufferUsages::STORAGE
+        .union(wgpu::BufferUsages::COPY_DST)
+        // COPY_SRC is needed for GPU readback in tests and for future debug tooling.
+        .union(wgpu::BufferUsages::COPY_SRC);
 
 impl AgentStateBuffers {
     pub fn new(device: &wgpu::Device, desc: AgentStateDesc) -> Self {
