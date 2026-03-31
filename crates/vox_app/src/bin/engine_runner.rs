@@ -333,6 +333,9 @@ struct EngineApp {
 
     // New editor app (mode strip, context panel, AI bar)
     editor_app: vox_app::editor_app::EditorApp,
+
+    // GPU agent compute layer (None until GPU backend is initialised)
+    agent_layer: Option<vox_app::agent_layer::AgentComputeLayerHandle>,
 }
 
 // ---------------------------------------------------------------------------
@@ -563,6 +566,7 @@ impl EngineApp {
             character_body: None,
             last_pick: None,
             editor_app: vox_app::editor_app::EditorApp::new(),
+            agent_layer: None,
             game_widgets: vox_ui::GameWidgets::new(),
             widget_cmds: vec![
                 vox_ui::WidgetCmd::Panel {
@@ -2248,6 +2252,21 @@ impl EngineApp {
 
             let illuminant = illuminant_for_time(self.engine.time_of_day());
 
+            // Dispatch GPU agent compute tick
+            if let Some(agent_layer) = &mut self.agent_layer {
+                let mut agent_encoder = backend.device().create_command_encoder(
+                    &wgpu::CommandEncoderDescriptor { label: Some("agent_encoder") },
+                );
+                agent_layer.layer.tick(
+                    backend.device(),
+                    &mut agent_encoder,
+                    backend.queue(),
+                    None, // spectral_samples: None until Spectra integration
+                    dt,
+                );
+                backend.queue().submit(Some(agent_encoder.finish()));
+            }
+
             // Dispatch SDF soft shadow compute pass
             if let Some(sdf_pass) = &self.sdf_shadow {
                 let mut sdf_encoder = backend.device().create_command_encoder(
@@ -2308,6 +2327,15 @@ impl EngineApp {
 
                     // Consume ghost splats (submitted to renderer when GPU path supports it)
                     let _ghost_splat_count = self.editor_app.ghost_overlay_splats().len();
+
+                    // Agents panel: egui window for the GPU agent node editor
+                    if let Some(agent_layer) = &mut self.agent_layer {
+                        egui::Window::new("GPU Agents")
+                            .default_open(false)
+                            .show(ctx, |ui| {
+                                agent_layer.layer.show_editor(ui);
+                            });
+                    }
 
                     // Game widgets (resource panels, tooltips, buttons)
                     self.game_widgets.render(ctx, &self.widget_cmds);
@@ -2539,6 +2567,10 @@ impl ApplicationHandler for EngineApp {
                 println!("[ochroma] GPU rasteriser created (primary render path)");
                 self.gpu_rasteriser = Some(gpu_rast);
                 self.backend = Some(backend);
+                self.agent_layer = Some(vox_app::agent_layer::AgentComputeLayerHandle::new(
+                    self.backend.as_ref().unwrap().device(),
+                ));
+                println!("[ochroma] GPU agent compute layer initialised (0 agents, 40km grid)");
             }
             Err(e) => {
                 eprintln!("[ochroma] GPU init failed: {}", e);

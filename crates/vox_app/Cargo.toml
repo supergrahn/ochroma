@@ -3,6 +3,13 @@ name = "vox_app"
 edition.workspace = true
 version.workspace = true
 repository.workspace = true
+authors.workspace = true
+
+[package.metadata.wix]
+upgrade-guid = "4211AFA2-6E9F-4D12-9A15-6168ED46AF39"
+path-guid = "0D30FD2D-EC42-4D70-B3E5-E861EA401CDC"
+license = false
+eula = false
 
 [features]
 default = []
@@ -10,8 +17,9 @@ web = ["dep:wasm-bindgen", "dep:console_error_panic_hook", "dep:web-sys"]
 spectra-native = ["vox_render/spectra-native"]
 
 [dependencies]
-vox_core = { path = "../vox_core" }
-vox_ai   = { path = "../vox_ai" }
+vox_core  = { path = "../vox_core" }
+vox_agent = { path = "../vox_agent", features = ["editor"] }
+vox_ai    = { path = "../vox_ai" }
 vox_data = { path = "../vox_data" }
 vox_render = { path = "../vox_render" }
 vox_nn = { path = "../vox_nn" }
