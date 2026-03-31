@@ -10,7 +10,7 @@ pub struct AgentSlice<'a> {
 
 /// Queues mutations from CPU callbacks. Applied to GPU at start of next tick.
 pub struct AgentWriteQueue {
-    flag_writes:     Vec<(u32, u32)>,
+    flag_writes:     Vec<(u32, u32, u32)>,  // (agent_id, mask, value)
     custom_writes:   Vec<(u32, u32, f32)>,
     velocity_writes: Vec<(u32, [f32; 3])>,
 }
@@ -24,8 +24,8 @@ impl AgentWriteQueue {
         }
     }
 
-    pub fn write_flag_bits(&mut self, agent_id: u32, _mask: u32, value: u32) {
-        self.flag_writes.push((agent_id, value));
+    pub fn write_flag_bits(&mut self, agent_id: u32, mask: u32, value: u32) {
+        self.flag_writes.push((agent_id, mask, value));
     }
 
     pub fn write_custom(&mut self, agent_id: u32, slot: u32, value: f32) {
@@ -130,9 +130,10 @@ impl TierScheduler {
         }
 
         // Apply write-queue to CPU mirrors
-        for &(id, val) in &self.write_queue.flag_writes {
+        for &(id, mask, val) in &self.write_queue.flag_writes {
             if (id as usize) < self.cpu_flags.len() {
-                self.cpu_flags[id as usize] = val;
+                self.cpu_flags[id as usize] =
+                    (self.cpu_flags[id as usize] & !mask) | (val & mask);
             }
         }
         let cf = self.custom_floats as usize;
@@ -142,17 +143,20 @@ impl TierScheduler {
                 self.cpu_custom[idx] = val;
             }
         }
-
-        self.write_queue = AgentWriteQueue::new();
+        // Queue is intentionally NOT cleared here.
+        // flush_write_backs() uploads the pending writes to GPU and clears the queue.
     }
 
     /// Upload pending write-backs to GPU. Call at the start of each tick, before dispatch.
     pub fn flush_write_backs(&mut self, queue: &wgpu::Queue, buffers: &AgentStateBuffers) {
         if self.write_queue.is_empty() { return; }
 
-        for &(id, val) in &self.write_queue.flag_writes {
+        for &(id, _mask, _val) in &self.write_queue.flag_writes {
+            // Use the CPU mirror value (already updated by the previous tick's mask-apply)
+            // rather than the raw queue value so read-modify-write semantics are correct.
+            let v = self.cpu_flags[id as usize];
             let offset = id as u64 * 4;
-            queue.write_buffer(buffers.flags(), offset, bytemuck::bytes_of(&val));
+            queue.write_buffer(buffers.flags(), offset, bytemuck::bytes_of(&v));
         }
         if let Some(custom_buf) = buffers.custom() {
             let cf = self.custom_floats as u64;
