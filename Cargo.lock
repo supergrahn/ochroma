@@ -7686,6 +7686,7 @@ dependencies = [
  "serde_json",
  "spectra-gpu",
  "spectra-renderer",
+ "spectra-scene-state",
  "tempfile",
  "tokio",
  "toml",

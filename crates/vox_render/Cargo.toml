@@ -29,10 +29,11 @@ bevy_ecs = { workspace = true }
 bevy_app = { workspace = true }
 spectra-renderer = { path = "../../../spectra/rust/spectra-renderer", optional = true }
 spectra-gpu = { path = "../../../spectra/rust/spectra-gpu", optional = true }
+spectra-scene-state = { path = "../../../spectra/rust/spectra-scene-state", optional = true }
 
 [features]
 default = ["crucible"]
-spectra-native = ["dep:spectra-renderer", "dep:spectra-gpu"]
+spectra-native = ["dep:spectra-renderer", "dep:spectra-gpu", "dep:spectra-scene-state"]
 crucible = ["vox_nodes/crucible"]
 
 [dev-dependencies]

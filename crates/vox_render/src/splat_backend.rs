@@ -14,14 +14,16 @@ use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{channel, Sender};
 
 #[cfg(feature = "spectra-native")]
-use spectra_renderer::{Renderer, RenderConfig, SplatScene, CameraParams};
+use spectra_renderer::{Renderer, RenderConfig};
+#[cfg(feature = "spectra-native")]
+use spectra_scene_state::{CameraLayer, SceneState};
 #[cfg(feature = "spectra-native")]
 use spectra_gpu::CudarcSlangBackend;
 
 #[cfg(feature = "spectra-native")]
 enum RtCommand {
-    /// Update scene (new splat data), camera, and render one frame.
-    Render { scene: Option<SplatScene>, camera: CameraParams },
+    /// Update scene (new tessellated splat geometry), camera, and render one frame.
+    Render { scene: Option<SceneState>, camera: CameraLayer },
     /// Terminate the render thread.
     Shutdown,
 }
@@ -82,24 +84,45 @@ impl SpectraRenderBackend {
                     match cmd {
                         RtCommand::Shutdown => break,
                         RtCommand::Render { scene, camera } => {
+                            // New scene geometry: upload the tessellated splat mesh.
+                            // `load_scene_state` replaces the old `load_splat_scene`.
                             if let Some(s) = scene {
-                                if let Err(e) = renderer.load_splat_scene(s) {
-                                    eprintln!("[spectra-render] load_splat_scene: {e}");
+                                if let Err(e) = renderer.load_scene_state(s) {
+                                    eprintln!("[spectra-render] load_scene_state: {e}");
                                 }
                             }
-                            if let Err(e) = renderer.set_camera(camera) {
-                                eprintln!("[spectra-render] set_camera: {e}");
-                                continue;
-                            }
-                            if let Err(e) = renderer.render_splat_frame() {
-                                eprintln!("[spectra-render] render_splat_frame: {e}");
-                                continue;
-                            }
-                            // Write to a thread-local buffer — if readback fails, the previous
-                            // published frame stays intact in the shared Arc.
-                            if let Err(e) = renderer.read_splat_output_into(&mut render_buf) {
-                                eprintln!("[spectra-render] read_splat_output_into: {e}");
-                                continue;
+                            // Camera: the new renderer takes a column-major view matrix.
+                            // `set_camera_view_matrix` writes it into the scene's CameraLayer
+                            // (and keeps u_view_proj in sync); `set_view_proj` makes the
+                            // current-frame matrix explicit for temporal reprojection.
+                            renderer.set_camera_view_matrix(camera.view_matrix);
+                            renderer.set_view_proj(camera.view_matrix);
+
+                            // Render one full frame. `render()` replaces `render_splat_frame()`
+                            // and returns the tonemapped FrameOutput (no separate readback call).
+                            let frame = match renderer.render() {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    eprintln!("[spectra-render] render: {e}");
+                                    continue;
+                                }
+                            };
+
+                            // Convert FrameOutput.beauty (tonemapped linear RGBA f32 in [0,1])
+                            // into the published u8 RGBA buffer. This is the readback step that
+                            // the old `read_splat_output_into` performed internally.
+                            let px = (frame.width * frame.height) as usize;
+                            render_buf.clear();
+                            render_buf.reserve(px * 4);
+                            for i in 0..px {
+                                let r = frame.beauty[i * 4];
+                                let g = frame.beauty[i * 4 + 1];
+                                let b = frame.beauty[i * 4 + 2];
+                                let a = frame.beauty[i * 4 + 3];
+                                render_buf.push((r.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+                                render_buf.push((g.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+                                render_buf.push((b.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+                                render_buf.push((a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
                             }
                             // Readback succeeded — swap into shared slot.
                             // Arc::make_mut reuses the Vec allocation when no reader holds the Arc
@@ -123,8 +146,8 @@ impl SpectraRenderBackend {
     /// previously loaded scene.
     pub fn submit_frame(
         &mut self,
-        new_scene: Option<SplatScene>,
-        camera: CameraParams,
+        new_scene: Option<SceneState>,
+        camera: CameraLayer,
     ) -> Result<(), String> {
         self.tx.send(RtCommand::Render { scene: new_scene, camera })
             .map_err(|e| {

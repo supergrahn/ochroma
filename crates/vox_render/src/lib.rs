@@ -92,5 +92,7 @@ pub mod spectral_gi;
 pub mod splat_convert;
 #[cfg(feature = "spectra-native")]
 pub mod splat_backend;
+// The native renderer consumes `spectra_scene_state::CameraLayer` (column-major
+// view matrix + FOV); the old `spectra_renderer::CameraParams` type was removed.
 #[cfg(feature = "spectra-native")]
-pub use spectra_renderer::CameraParams as SpectraCameraParams;
+pub use spectra_scene_state::CameraLayer as SpectraCameraParams;

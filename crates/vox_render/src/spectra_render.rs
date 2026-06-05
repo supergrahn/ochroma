@@ -821,10 +821,10 @@ mod tests {
     #[test]
     fn spectra_backend_system_tick_signature_takes_scene_changed() {
         use crate::spectra_render::native::SpectraBackendSystem;
-        use spectra_renderer::CameraParams;
+        use spectra_scene_state::CameraLayer;
         use vox_core::types::GaussianSplat;
         // Compile-time check: tick() must accept scene_changed: bool
-        let _: fn(&mut SpectraBackendSystem, &[GaussianSplat], CameraParams, bool)
+        let _: fn(&mut SpectraBackendSystem, &[GaussianSplat], CameraLayer, bool)
                 -> Option<std::sync::Arc<Vec<u8>>> = SpectraBackendSystem::tick;
     }
 }
@@ -837,8 +837,8 @@ mod tests {
 pub mod native {
     use bevy_ecs::prelude::*;
     use crate::splat_backend::SpectraRenderBackend;
-    use crate::splat_convert::convert_splats;
-    use spectra_renderer::{SplatScene, CameraParams};
+    use crate::splat_convert::splats_to_scene;
+    use spectra_scene_state::CameraLayer;
     use vox_core::types::GaussianSplat;
 
     /// Per-viewport Spectra backend. One instance per active Spectra viewport.
@@ -879,14 +879,14 @@ pub mod native {
         pub fn tick(
             &mut self,
             splats:        &[GaussianSplat],
-            camera:        CameraParams,
+            camera:        CameraLayer,
             scene_changed: bool,
         ) -> Option<std::sync::Arc<Vec<u8>>> {
             let needs_rebuild = self.scene_dirty || scene_changed
                 || splats.len() != self.last_splat_count;
             let new_scene = if needs_rebuild {
-                let (surfaces, volumes) = convert_splats(splats);
-                Some(SplatScene::new(surfaces, volumes))
+                let (w, h) = (self.backend.width(), self.backend.height());
+                Some(splats_to_scene(splats, w, h))
             } else {
                 None
             };
