@@ -6218,10 +6218,12 @@ dependencies = [
 name = "spectra-gpu"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "cudarc",
  "hashbrown 0.15.5",
  "rayon",
  "serde",
+ "serde_json",
  "shader-slang",
  "slang-sys",
  "spectra-types",

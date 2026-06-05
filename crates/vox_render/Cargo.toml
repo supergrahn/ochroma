@@ -33,7 +33,20 @@ spectra-scene-state = { path = "../../../spectra/rust/spectra-scene-state", opti
 
 [features]
 default = ["crucible"]
-spectra-native = ["dep:spectra-renderer", "dep:spectra-gpu", "dep:spectra-scene-state"]
+# spectra-native: glue to the native spectra path-tracer.
+#
+# `spectra-gpu/vulkan-backend` makes `VulkanSlangBackend` (Slang->SPIR-V + ash)
+# available alongside the default CUDA backend. The runtime selector in
+# `splat_backend.rs` tries Vulkan first and falls back to CUDA, so this feature
+# runs on boxes with no NVIDIA GPU (e.g. Mesa/lavapipe CPU Vulkan) while leaving
+# the CUDA path intact where a driver is present. `spectra-renderer`'s own
+# default features keep `cuda` enabled, so the CUDA backend remains compiled in.
+spectra-native = [
+    "dep:spectra-renderer",
+    "dep:spectra-gpu",
+    "dep:spectra-scene-state",
+    "spectra-gpu/vulkan-backend",
+]
 crucible = ["vox_nodes/crucible"]
 
 [dev-dependencies]
