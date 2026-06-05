@@ -11,6 +11,20 @@
 
 ---
 
+## DECIDED PATH (2026-06-05, post-audit)
+
+The 18-domain ground-truth audit (`docs/superpowers/specs/2026-06-05-ochroma-audit-results.json`) found the engine is **~50% done-and-playable, not 80–95%** — every domain has a well-tested library that is largely DEAD in the running game (2059 green tests measure isolated logic, not live wiring). Root cause: the richest live loop (spectral GI, dynamic physics, impact audio, navmesh, Lua/Rhai) already exists in `engine_runner` ("ochroma" bin), while the dogfood `walking_sim` has almost none of it. **The blitz is won mostly by porting/wiring, not building.** User decisions:
+
+1. **Architecture = UNIFY.** Extract `engine_runner`'s live systems into a shared `EngineLoop` (owns GI cache, physics step, audio tick, AI/navmesh, script hooks, render). `walking_sim` becomes a thin game shell; `engine_runner` an editor shell over the same core. Kills the 3-binary split (walking_sim / engine_runner / main.rs city-builder). **Serial, single-owner, highest-collision** (rewrites walking_sim.rs + engine_runner.rs + vox_core EngineRuntime) — do NOT parallelize; run AFTER the parallel-safe fixes land + cherry-pick.
+2. **Scope = FULL BREADTH.** All 12 domains wired, depth-limited where the week runs out. Several will land "wired + demoable," not "finished" — mark each honestly.
+3. **Crucible = PUBLISH to crates.io.** Replaces the out-of-repo local path dep so the default build works on clean checkouts. **Irreversible + separate repo + own dep closure** — being scoped (dependency closure / name availability / dry-run) BEFORE any real publish. **Publish now gates honest CI** (the critic's #1 item: CI must build the real default config + windowed binaries, which need crucible reachable). The actual `cargo publish` requires explicit user go/no-go.
+
+**Revised critical path:** parallel-safe fixes (running) → cherry-pick → scope+publish crucible (unblocks honest CI) → fix CI false-green (default config + windowed binaries) → **unify EngineLoop** → breadth wiring across 12 domains on the unified loop → integration dogfood → ship.
+
+**Top cross-domain risks (from audit):** (1) binary-split ambiguity — RESOLVED by unify; (2) the live GI cache is a shared dependency hub (UI HUD, audio reverb, script state, AI perception all read it) — lock its read API `band_energy_at(pos)->[f32;16]` first; (3) shared-file collision in walking_sim/engine_runner — serialize via the unify owner; (4) Vello feature-flag blast radius — quarantine; (5) VXM version seam spans 3 crates; (6) Track S owns vox_render GPU/spectra files — blitz vox_render work stays in CPU/anim/gizmo files.
+
+---
+
 ## IMPORTANT NOTES
 
 <!-- Real API signatures and constraints. Verify each against the live source before a task starts;
