@@ -13,7 +13,11 @@ pub mod replication;
 pub mod replication_system;
 pub mod transport;
 pub mod world_hosting;
+pub use quic_transport::{
+    QuicClient, QuicConnection, QuicServer, QuicTransport, TransportError, TransportRole,
+};
 pub use replication::{EntityDelta, NetMessage, PlayerAction, ReplicationClient, ReplicationServer};
+pub use replication_packet::ReplicationPacket;
 pub use transport::{GameClient, GameServer};
 
 #[derive(Debug, Error)]
