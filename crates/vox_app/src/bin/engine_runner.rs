@@ -50,7 +50,10 @@ use vox_render::temporal::TemporalAccumulator;
 
 use ochroma_engine::engine_loop::{EngineLoop, SystemMask};
 use vox_render::gizmos::GizmoRenderer;
+use vox_ui::game_hud::GameHud;
+use vox_ui::spectral_hud::SpectralRadianceCache;
 use vox_ui::theme::apply_ochroma_theme;
+use vox_ui::vello_ctx::VelloCtxCpu;
 
 // NavMesh + patrol demo (uncomment to enable):
 // use vox_app::ai_fsm::NavMeshPlugin;
@@ -325,6 +328,11 @@ struct EngineApp {
 
     // Last terrain pick position from ScreenRay (updated on left-click)
     last_pick: Option<glam::Vec3>,
+
+    // Live spectral GI bands: the spectral() (f16 BITS, NOT linear-quantized
+    // u16) of the GI-lit splat nearest the camera, captured each frame in
+    // render_frame after loop_.step_gi. Fed (decoded) to the Vello GameHud.
+    latest_gi_bands: [u16; 16],
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +542,7 @@ impl EngineApp {
             replication_states: Vec::new(),
             character_body: None,
             last_pick: None,
+            latest_gi_bands: [0u16; 16],
             game_widgets: vox_ui::GameWidgets::new(),
             widget_cmds: vec![
                 vox_ui::WidgetCmd::Panel {
@@ -959,6 +968,16 @@ impl EngineApp {
         let hour = self.loop_.time_of_day();
         let render_splats = self.loop_.step_gi(&render_splats, hour);
 
+        // Capture the live GI readout for the HUD: spectral of the GI-lit splat
+        // nearest the camera. *spectral() is f16 BITS (decoded at HUD time).
+        if let Some(nearest) = render_splats.iter().min_by(|a, b| {
+            let da = (Vec3::from(a.position()) - cam_pos).length_squared();
+            let db = (Vec3::from(b.position()) - cam_pos).length_squared();
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            self.latest_gi_bands = *nearest.spectral();
+        }
+
         // Legacy baked GI cache (kept for backward compat with --bake-gi workflow)
         let render_splats = match &self.gi_cache {
             Some(cache) => cache.apply(&render_splats),
@@ -1245,6 +1264,38 @@ impl EngineApp {
                     }
                 }
             }
+        }
+
+        // Vello-style game HUD: live 16-band spectral GI readout (bottom-left
+        // translucent panel) + a top-left progress bar, composited over the
+        // final frame. Drawn in the shared render path so the windowed editor
+        // gets it too, not just smoke.
+        {
+            let mut hud_ctx = VelloCtxCpu::new(display_w, display_h);
+            // latest_gi_bands holds f16 BITS (the splat spectral encoding), NOT
+            // linear-quantized u16 — decode before feeding the HUD so a radiance
+            // of 1.0 fills a bar exactly. (from_u16 would misread the bits.)
+            let mut energy = [0.0f32; 16];
+            for (e, bits) in energy.iter_mut().zip(self.latest_gi_bands) {
+                *e = half::f16::from_bits(bits).to_f32().clamp(0.0, 1.0);
+            }
+            let bands = SpectralRadianceCache::from_f32(energy);
+            // The editor has no orbs: repurpose the progress bar as a
+            // selected-entity-of-total indicator (selection index / entity count).
+            let entity_count = self.editor.entity_count() as u32;
+            let selected_idx = self
+                .editor
+                .selected
+                .and_then(|sel| self.editor.entities.iter().position(|e| e.id == sel))
+                .map(|i| i as u32 + 1)
+                .unwrap_or(0);
+            GameHud::new(display_w, display_h).compose(
+                &mut hud_ctx,
+                &bands,
+                selected_idx,   // "collected" = selected entity ordinal (1-based)
+                entity_count,   // "total"     = scene entity count
+            );
+            hud_ctx.rasterize_into(&mut final_pixels, display_w, display_h);
         }
 
         final_pixels
@@ -2736,6 +2787,52 @@ fn run_smoke() {
         ppm_path,
     );
     println!("[ochroma] SMOKE SUMMARY: distinct_colors={}", distinct_colors);
+
+    // --- Live GI + Vello HUD proof ---
+    // (a) latest_gi_bands (f16 bits of the GI-lit splat nearest the camera) has
+    //     at least one non-zero band after the run.
+    let gi_nonzero_bands = app.latest_gi_bands.iter().filter(|&&b| b > 0).count();
+    let gi_max_band = app.latest_gi_bands.iter().copied().max().unwrap_or(0);
+
+    // (b) The GameHud actually composited into the final frame. The bottom-left
+    //     spectral panel paints a translucent black backdrop [0,0,0,0.55] over
+    //     the scene, so a pixel inside it must be DARKER than the mean frame
+    //     luminance. Compute the panel rect from the HUD's known geometry
+    //     (margin=16, panel_w=176, panel_h=76, anchored bottom-left) and sample
+    //     just inside the panel's top edge (backdrop region, above the bars).
+    let mean_lum: f32 = {
+        let sum: u64 = last_pixels
+            .iter()
+            .map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64)
+            .sum();
+        (sum as f32 / 3.0) / last_pixels.len().max(1) as f32
+    };
+    let margin = 16.0f32;
+    let panel_h = 76.0f32; // BARS_MAX_HEIGHT(60) + PANEL_PAD(8)*2
+    let panel_x = margin;
+    let panel_y = dh as f32 - margin - panel_h;
+    let sx = (panel_x + 4.0) as u32;
+    let sy = (panel_y + 4.0) as u32;
+    let panel_px = last_pixels[(sy * dw + sx) as usize];
+    let panel_lum = (panel_px[0] as f32 + panel_px[1] as f32 + panel_px[2] as f32) / 3.0;
+
+    println!(
+        "[ochroma] SMOKE SUMMARY: gi_nonzero_bands={} gi_max_band={} hud_panel_px=({},{})={:?} panel_lum={:.1} mean_lum={:.1}",
+        gi_nonzero_bands, gi_max_band, sx, sy, panel_px, panel_lum, mean_lum
+    );
+
+    assert!(
+        gi_nonzero_bands > 0 && gi_max_band > 0,
+        "live GI produced no lit bands: nonzero={} max={} — step_gi readout not wired",
+        gi_nonzero_bands,
+        gi_max_band
+    );
+    assert!(
+        panel_lum < mean_lum,
+        "HUD panel pixel at ({sx},{sy}) lum {:.1} not darker than frame mean {:.1} — GameHud backdrop did not composite",
+        panel_lum,
+        mean_lum
+    );
 
     // --- Assertions: real frame + advanced sim (panic => non-zero exit). ---
     let total_px = (dw * dh) as usize;
