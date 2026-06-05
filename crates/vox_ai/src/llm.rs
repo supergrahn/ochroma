@@ -1,6 +1,11 @@
-//! Local LLM inference via candle GGUF.
-//! Loads a quantized model (Phi-3-mini Q4_K_M recommended).
-//! Falls back to LlmBackend::Remote or LlmBackend::Stub when no local model is configured.
+//! Local LLM inference scaffold.
+//!
+//! DEPTH LIMIT (honest): this module does NOT run real inference. `load_gguf`
+//! only validates the GGUF magic bytes; `generate` returns a deterministic
+//! placeholder string for every backend. A real implementation would load a
+//! quantized model (e.g. Phi-3-mini Q4_K_M) via an inference crate (candle,
+//! llama.cpp bindings, etc.) behind an optional feature. `LlmBackend::Stub`
+//! and `LlmBackend::Remote` exist for callers to select once that lands.
 
 use anyhow::{bail, Result};
 
