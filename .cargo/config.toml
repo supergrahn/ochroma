@@ -8,3 +8,17 @@ incremental = false
 
 [profile.release]
 incremental = false
+
+# Slang SDK location for the optional `spectra-native` feature of vox_render.
+# Only read by shader-slang-sys / spectra-* build scripts, which are ONLY in the
+# dep graph when `--features spectra-native` is active. The default build
+# (crucible feature) never pulls these crates, so this env var is inert there.
+# SDK: shader-slang/slang release v2024.14.5 (matches shader-slang-sys 0.1.0,
+# which is "Based on Slang version 2024.14.5"). Installed to a user dir, no sudo.
+[env]
+SLANG_DIR = "/home/tom-espen/.local/slang"
+# bindgen (in shader-slang-sys) drives libclang-18, but the clang resource
+# headers (stddef.h etc. from clang-18/libclang-common-18-dev) are NOT installed
+# on this box — only libclang-18.so. Point clang at GCC 13's freestanding
+# headers so `#include <stddef.h>` resolves. Inert for the default build.
+BINDGEN_EXTRA_CLANG_ARGS = "-isystem /usr/lib/gcc/x86_64-linux-gnu/13/include"

@@ -20,6 +20,10 @@ members = [
     "crates/vox_web",
     "crates/vox_ai",
 ]
+# vendor/shader-slang is a patched copy of the crates.io `shader-slang 0.1.0`
+# crate, used only as a [patch.crates-io] target for the optional
+# `spectra-native` feature. It is NOT a workspace member.
+exclude = ["vendor/shader-slang"]
 
 [workspace.package]
 edition = "2024"
@@ -71,3 +75,18 @@ panic = "abort"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# ---------------------------------------------------------------------------
+# Track S — spectra-native (Vulkan + Slang) bring-up.
+#
+# The `shader-slang 0.1.0` crate (pulled by spectra-renderer/spectra-gpu when
+# the OPTIONAL `vox_render/spectra-native` feature is enabled) references the
+# FFI symbol `spReflectionVariable_GetDefaultValueInt`, which does NOT exist in
+# the Slang 2024.14.5 SDK — the version whose C++ vtable ABI `shader-slang-sys
+# 0.1.0` is hand-written against. (The symbol was first added in Slang v2025.6,
+# which is too new to keep the 0.1.0 vtable ABI valid.) We vendor a copy of
+# `shader-slang 0.1.0` with that single unused method stubbed and substitute it
+# here. This patch is INERT for the default build, which never pulls
+# shader-slang (it uses the `crucible` feature).
+[patch.crates-io]
+shader-slang = { path = "vendor/shader-slang" }

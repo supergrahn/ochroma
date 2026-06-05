@@ -1622,6 +1622,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "5.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
 name = "dirs-next"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1629,6 +1638,18 @@ checksum = "b98cf8ebf19c3d1b223e151f99a4f9f0690dca41414773390fc824184ac833e1"
 dependencies = [
  "cfg-if",
  "dirs-sys-next",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -4505,6 +4526,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "option-ext"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
 name = "orbclient"
 version = "0.3.51"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5871,8 +5898,6 @@ dependencies = [
 [[package]]
 name = "shader-slang"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f87ca0837663794c1d9db2c8c9383832557605a354a60ae754c7e56015596b7"
 dependencies = [
  "shader-slang-sys",
 ]
@@ -6348,7 +6373,6 @@ dependencies = [
 name = "spectra-renderer"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "glam 0.29.3",
  "quick-xml 0.37.5",
  "rand 0.8.5",
@@ -6435,12 +6459,17 @@ dependencies = [
 name = "spectra-scene-upload"
 version = "0.1.0"
 dependencies = [
+ "dirs",
+ "rayon",
  "serde",
+ "serde_json",
  "spectra-gpu",
  "spectra-scene-data",
  "spectra-scene-state",
  "spectra-types",
  "thiserror 2.0.18",
+ "tracing",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -7692,6 +7721,7 @@ version = "0.1.0"
 dependencies = [
  "glam 0.29.3",
  "rand 0.9.2",
+ "rayon",
  "serde",
  "serde_json",
  "uuid",
@@ -9254,6 +9284,12 @@ name = "xml-rs"
 version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
 
 [[package]]
 name = "yasna"
