@@ -85,18 +85,26 @@
 - [ ] **Step 5: Launch** — `cargo run --bin walking_sim` opens a window (screenshot it)
 - [ ] **Step 6: Commit** — `git commit -m "fix(build): repoint spectra dep, restore full-workspace green build"`
 
-### Task 1.2: CI matrix (test + clippy + doc)
+### Task 1.2: Fix CI matrix — it EXISTS but has never been green
+
+> **Finding (2026-06-05):** `.github/workflows/ci.yml` already exists and is broken in 3 ways. Remote is `git@github.com:supergrahn/ochroma.git`. This is a FIX task, not a create task.
+> 1. **No ALSA install step** on the ubuntu runner. It currently masks this by running `cargo test --workspace --no-default-features`, which disables `vox_audio`'s `default = ["audio-backend"]` (cpal/fundsp/rodio/lewton) AND `vox_render`'s default `crucible` feature → **CI tests a degenerate config no user runs and never exercises audio or GI**. The local green baseline (2059 tests) was with DEFAULT features.
+> 2. **`RUSTFLAGS: "-D warnings"` + `clippy -D warnings`** fail on the existing `unused_mut` warning at `crates/vox_physics/src/wetness.rs:33` (`let mut lcg`). Must fix the warning (drop `mut`) for CI to pass.
+> 3. **`build-web` job** runs `web/build.sh` and asserts `web/dist/hello_splat_bg.wasm` exists; `vox_web` is 15 LOC (framework-only), so this fails until Day 3's web task. Mark `continue-on-error` until then.
 
 **Files:**
-- Create: `.github/workflows/ci.yml`
+- Modify: `.github/workflows/ci.yml`
+- Modify: `crates/vox_physics/src/wetness.rs` (drop spurious `mut` so `-D warnings` passes)
 
-**Acceptance:** Pushed branch shows a green CI run executing `cargo test --workspace`, `cargo clippy --workspace`, `cargo doc --no-deps` on ubuntu (windows/macos allowed-to-fail initially, hardened Day 7).
+**Acceptance:** A pushed branch shows a green CI run that runs `cargo test --workspace` + `cargo clippy --workspace -- -D warnings` **with default features** (ALSA installed on ubuntu via `apt-get install -y libasound2-dev pkg-config`), ≥2059 tests pass. Windows/macos in matrix (CoreAudio/WASAPI need no apt step); `build-web` is `continue-on-error` until Day 3.
 
-**Wiring requirement:** Workflow runs on push + PR to `master`. Empty/always-pass job = task failure.
+**Wiring requirement:** Runs on push + PR to `master`. Must test the REAL default-feature config, not `--no-default-features`. Empty/always-pass job = task failure.
 
-- [ ] Step 1: Write `ci.yml` with the three commands + `libasound2-dev` apt step on ubuntu
-- [ ] Step 2: Push, observe run, capture the green check URL
-- [ ] Step 3: Commit
+- [ ] Step 1: Add `libasound2-dev pkg-config` apt step (ubuntu only); switch test/clippy to default features
+- [ ] Step 2: Fix the `vox_physics` warning so `-D warnings` passes
+- [ ] Step 3: Mark `build-web` `continue-on-error` (flip in Day-3 web task)
+- [ ] Step 4: Push branch, observe run, capture the green check URL
+- [ ] Step 5: Commit
 
 ### Task 1.3: Wire Spectral GI (Domain 12a) — live radiance at runtime — via crucible/CPU path
 
