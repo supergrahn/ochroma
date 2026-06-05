@@ -13,6 +13,9 @@
 //! without touching any binary.
 
 use crate::deform;
+use crate::foliage::{scatter_foliage, FoliageInstance, FoliageRule};
+use crate::heightmap::Heightmap;
+use crate::texture_paint::SplatMap;
 use crate::volume::{
     default_volume_materials, sculpt, volume_to_splats, TerrainVolume, VolumeMaterial,
 };
@@ -26,6 +29,11 @@ pub struct TerrainScene {
     /// Seed used for the (jittered) splat generation so re-splats are
     /// deterministic across deforms.
     splat_seed: u64,
+    /// Optional per-texel material-weight splat map used for texture painting.
+    /// `None` until [`TerrainScene::init_splat_map`] is called; this keeps the
+    /// existing constructors and their behaviour unchanged for callers that
+    /// never paint.
+    splat_map: Option<SplatMap>,
 }
 
 impl TerrainScene {
@@ -37,6 +45,7 @@ impl TerrainScene {
             volume: TerrainVolume::new(size_x, size_y, size_z, voxel_size),
             materials: default_volume_materials(),
             splat_seed,
+            splat_map: None,
         }
     }
 
@@ -122,6 +131,133 @@ impl TerrainScene {
     /// stage of the pipeline a renderer would upload.
     pub fn build_splats(&self) -> Vec<GaussianSplat> {
         volume_to_splats(&self.volume, &self.materials, self.splat_seed)
+    }
+
+    // --- foliage scatter --------------------------------------------------
+
+    /// Extract a top-surface [`Heightmap`] from the current SDF volume.
+    ///
+    /// For each `(x, z)` voxel column the highest solid voxel (SDF <= 0) is
+    /// found and its world-space top is recorded as the terrain height for that
+    /// cell. Columns that are entirely air fall back to the volume's bottom edge
+    /// (`origin.y`), so foliage rules with a positive `min_height` naturally
+    /// reject them. The resulting heightmap shares the volume's horizontal
+    /// origin and uses the volume's `voxel_size` as its cell size, so foliage
+    /// positions come back in the same world frame as [`build_splats`].
+    ///
+    /// [`build_splats`]: TerrainScene::build_splats
+    pub fn build_surface_heightmap(&self) -> Heightmap {
+        let vol = &self.volume;
+        let w = vol.size_x;
+        let h = vol.size_z;
+        let mut data = vec![vol.origin[1]; w * h];
+
+        for z in 0..h {
+            for x in 0..w {
+                // Scan top-down for the highest solid voxel in this column.
+                let mut top: Option<usize> = None;
+                for y in (0..vol.size_y).rev() {
+                    if vol.get(x, y, z) <= 0.0 {
+                        top = Some(y);
+                        break;
+                    }
+                }
+                if let Some(ty) = top {
+                    // World-space top face of that voxel.
+                    let wy = vol.voxel_to_world(x, ty, z)[1] + vol.voxel_size * 0.5;
+                    data[z * w + x] = wy;
+                }
+            }
+        }
+
+        let mut hm = Heightmap::from_data(w, h, data, vol.voxel_size);
+        // Share the volume's horizontal world origin so foliage lands in the
+        // same frame as the splats.
+        hm.origin = [vol.origin[0], vol.origin[2]];
+        hm
+    }
+
+    /// Scatter foliage across the current terrain surface.
+    ///
+    /// Derives a [`Heightmap`] from the live volume (via
+    /// [`build_surface_heightmap`]) and runs the crate's
+    /// [`scatter_foliage`](crate::foliage::scatter_foliage) over the supplied
+    /// rules, honouring each rule's density, height band, slope limit, scale
+    /// range and rotation. Returns the placed [`FoliageInstance`]s — the same
+    /// list a binary would feed to the asset instancer. Deterministic for a
+    /// given `seed` and surface.
+    ///
+    /// [`build_surface_heightmap`]: TerrainScene::build_surface_heightmap
+    pub fn scatter_foliage(&self, rules: &[FoliageRule], seed: u64) -> Vec<FoliageInstance> {
+        let hm = self.build_surface_heightmap();
+        scatter_foliage(&hm, rules, seed)
+    }
+
+    // --- texture paint ----------------------------------------------------
+
+    /// Create the scene's per-texel material [`SplatMap`] at the given
+    /// resolution, replacing any existing one. Layers are added afterwards with
+    /// [`add_material_layer`]; the first layer added becomes the fully-weighted
+    /// base layer everywhere (matching [`SplatMap`] semantics).
+    ///
+    /// [`add_material_layer`]: TerrainScene::add_material_layer
+    pub fn init_splat_map(&mut self, width: usize, height: usize) {
+        self.splat_map = Some(SplatMap::new(width, height));
+    }
+
+    /// Add a material layer to the scene's splat map and return its layer index.
+    ///
+    /// Panics if [`init_splat_map`](TerrainScene::init_splat_map) has not been
+    /// called yet — a splat map must exist before layers can be painted.
+    pub fn add_material_layer(&mut self, name: &str, material: &str, spectral: [f32; 8]) -> usize {
+        self.splat_map
+            .as_mut()
+            .expect("init_splat_map must be called before add_material_layer")
+            .add_layer(name, material, spectral)
+    }
+
+    /// Paint a material `layer` into the splat map with a circular brush.
+    ///
+    /// `(texel_x, texel_z)` is the brush centre in splat-map texels, `strength`
+    /// is the added (falloff-scaled) weight, and `radius` is the brush radius in
+    /// texels. Weights are clamped and re-normalised per texel by the underlying
+    /// [`SplatMap`]. No-op if no splat map has been initialised.
+    pub fn paint_material(
+        &mut self,
+        texel_x: usize,
+        texel_z: usize,
+        layer: usize,
+        strength: f32,
+        radius: usize,
+    ) {
+        if let Some(map) = self.splat_map.as_mut() {
+            map.paint(texel_x, texel_z, layer, strength, radius);
+        }
+    }
+
+    /// Read-only access to the scene's splat map, if one has been initialised.
+    pub fn splat_map(&self) -> Option<&SplatMap> {
+        self.splat_map.as_ref()
+    }
+
+    /// The normalised material weight of `layer` at splat-map texel
+    /// `(texel_x, texel_z)`, or `None` if no splat map exists or the layer index
+    /// is out of range. This is the painted value a shader would blend with.
+    pub fn material_weight_at(&self, texel_x: usize, texel_z: usize, layer: usize) -> Option<f32> {
+        let map = self.splat_map.as_ref()?;
+        if layer >= map.layer_count() {
+            return None;
+        }
+        let x = texel_x.min(map.width.saturating_sub(1));
+        let z = texel_z.min(map.height.saturating_sub(1));
+        Some(map.weights[layer][z * map.width + x])
+    }
+
+    /// The blended spectral coefficients at splat-map texel `(texel_x,
+    /// texel_z)`, or `None` if no splat map exists. Mirrors
+    /// [`SplatMap::sample`].
+    pub fn sample_material_spectral(&self, texel_x: usize, texel_z: usize) -> Option<[f32; 8]> {
+        self.splat_map.as_ref().map(|m| m.sample(texel_x, texel_z))
     }
 }
 
