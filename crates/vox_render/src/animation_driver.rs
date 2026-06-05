@@ -91,6 +91,69 @@ impl AnimationDriver {
         self.animations.push(anim);
     }
 
+    /// Attach a GPU blend-tree skinning pass (builder style).
+    /// Without this, `blend_gpu` is `None` and `tick_blend_gpu` is unreachable.
+    pub fn with_blend_gpu(mut self, blend_gpu: BlendSkinningCompute) -> Self {
+        self.blend_gpu = Some(blend_gpu);
+        self
+    }
+
+    /// Attach a GPU blend-tree skinning pass to an existing driver.
+    pub fn set_blend_gpu(&mut self, blend_gpu: BlendSkinningCompute) {
+        self.blend_gpu = Some(blend_gpu);
+    }
+
+    /// Whether a GPU blend pass has been attached.
+    pub fn has_blend_gpu(&self) -> bool {
+        self.blend_gpu.is_some()
+    }
+
+    /// CPU blend-tree evaluation: compose two animations at their own times and
+    /// linearly blend the resulting per-joint world transforms by `weight`
+    /// (`weight = 0.0` → pure `anim_a`, `weight = 1.0` → pure `anim_b`).
+    ///
+    /// Each joint's blended transform is reconstructed from a per-component
+    /// interpolation: scale and translation are lerped, rotation is slerped.
+    /// This is the same math the GPU `blend_skinning` pass performs, exposed for
+    /// headless callers and tests.
+    pub fn blend_poses(
+        &self,
+        anim_a: usize,
+        anim_b: usize,
+        time_a: f32,
+        time_b: f32,
+        weight: f32,
+    ) -> Vec<Mat4> {
+        let count = self.animations.len();
+        if count == 0 {
+            return self
+                .skeleton
+                .joints
+                .iter()
+                .map(|j| j.local_transform)
+                .collect();
+        }
+        let a = &self.animations[anim_a.min(count - 1)];
+        let b = &self.animations[anim_b.min(count - 1)];
+        let w = weight.clamp(0.0, 1.0);
+
+        let pose_a = evaluate_animation(&self.skeleton, a, time_a);
+        let pose_b = evaluate_animation(&self.skeleton, b, time_b);
+
+        pose_a
+            .iter()
+            .zip(pose_b.iter())
+            .map(|(ma, mb)| {
+                let (sa, ra, ta) = ma.to_scale_rotation_translation();
+                let (sb, rb, tb) = mb.to_scale_rotation_translation();
+                let s = sa.lerp(sb, w);
+                let r = ra.slerp(rb, w);
+                let t = ta.lerp(tb, w);
+                Mat4::from_scale_rotation_translation(s, r, t)
+            })
+            .collect()
+    }
+
     pub fn play(&mut self, index: usize) {
         if index < self.animations.len() {
             self.current_animation = index;
@@ -311,6 +374,77 @@ mod tests {
         driver.time = 1.5;
         driver.play(0);
         assert!((driver.time).abs() < 1e-6, "play should reset time to 0");
+    }
+
+    #[test]
+    fn blend_tree_interpolates() {
+        // Two clips that drive the SAME root joint to two different rotations.
+        // Clip A leaves the root at 0° about Z; Clip B rotates it +90° about Z.
+        // At blend weight 0.5 the root's blended transform must be a real slerp
+        // midpoint (+45°) that differs from BOTH endpoints, not equal either.
+        let skel = build_synthetic_skeleton(&["root", "tip"]);
+        let mut driver = AnimationDriver::new(skel, vec![]);
+
+        let clip_a = build_synthetic_animation(
+            "rest",
+            0,
+            1.0,
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+        );
+        let clip_b = build_synthetic_animation(
+            "rot90",
+            0,
+            1.0,
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        );
+        driver.add_animation(clip_a);
+        driver.add_animation(clip_b);
+
+        // Pure endpoints.
+        let pose_a = driver.blend_poses(0, 1, 0.0, 0.0, 0.0);
+        let pose_b = driver.blend_poses(0, 1, 0.0, 0.0, 1.0);
+        // Blended midpoint.
+        let mid = driver.blend_poses(0, 1, 0.0, 0.0, 0.5);
+
+        // Inspect the root joint's rotation about Z (world transform at index 0).
+        let z_angle = |m: &Mat4| -> f32 {
+            let (_s, r, _t) = m.to_scale_rotation_translation();
+            // Signed angle of (R * X) in the XY plane.
+            let v = r * glam::Vec3::X;
+            v.y.atan2(v.x)
+        };
+        let ang_a = z_angle(&pose_a[0]);
+        let ang_b = z_angle(&pose_b[0]);
+        let ang_mid = z_angle(&mid[0]);
+
+        // Endpoints are 0° and +90°.
+        assert!(ang_a.abs() < 1e-3, "ang_a should be ~0, got {ang_a}");
+        assert!((ang_b - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "ang_b should be ~90deg, got {ang_b}");
+        // Slerp midpoint must be ~+45° — strictly between, differing from BOTH ends.
+        let quarter = std::f32::consts::FRAC_PI_4;
+        assert!((ang_mid - quarter).abs() < 1e-3, "midpoint angle should be ~45deg, got {ang_mid}");
+        assert!((ang_mid - ang_a).abs() > 1e-2, "mid must differ from endpoint A");
+        assert!((ang_mid - ang_b).abs() > 1e-2, "mid must differ from endpoint B");
+
+        // And the translation of the tip joint (rotated by root) must also be a
+        // real blend: tip lies at root-relative (0,1,0). At 0° its world is
+        // (0,1); at 90° it swings to (-1,0). The +45° midpoint must land
+        // strictly between on BOTH x and y.
+        let tip_xy = |m: &Mat4| -> (f32, f32) {
+            let t = m.to_scale_rotation_translation().2;
+            (t.x, t.y)
+        };
+        let (ax, ay) = tip_xy(&pose_a[1]);
+        let (bx, by) = tip_xy(&pose_b[1]);
+        let (mx, my) = tip_xy(&mid[1]);
+        // Endpoints: A=(0,1), B=(-1,0).
+        assert!((ax - 0.0).abs() < 1e-3 && (ay - 1.0).abs() < 1e-3, "tip A=({ax},{ay})");
+        assert!((bx + 1.0).abs() < 1e-3 && by.abs() < 1e-3, "tip B=({bx},{by})");
+        // Midpoint (-sin45, cos45) ≈ (-0.707, 0.707) — strictly between both.
+        assert!(mx < ax - 1e-2 && mx > bx + 1e-2, "mid x must lie strictly between: a={ax} m={mx} b={bx}");
+        assert!(my < ay - 1e-2 && my > by + 1e-2, "mid y must lie strictly between: a={ay} m={my} b={by}");
     }
 
     #[test]
