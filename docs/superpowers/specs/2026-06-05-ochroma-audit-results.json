@@ -1,0 +1,1269 @@
+{
+  "audited": [
+    {
+      "domain": "core",
+      "crate": "crates/vox_core",
+      "summary": "vox_core contains a complete, well-tested native game framework: GameScript trait + ScriptRegistry + ScriptContext/ScriptCommand (script_interface.rs), an EngineRuntime built on bevy_ecs with fixed-timestep, entity builder, collision/cull/gather systems (engine_runtime.rs, 1164 LOC), a CharacterController with slope/step/wall helpers (character_controller.rs), a bitmap-font GameUI HUD/menu system (game_ui.rs), and spectral color types (spectral.rs). The code compiles and tests pass, but the central scripting abstraction is essentially dead in the live game: the live loop scripts via Rhai (vox_script), not via the native GameScript trait. game_ui.rs, spectral.rs and character_controller_tick ARE genuinely wired and running; the GameScript/ScriptRegistry/ScriptComponent path and spectral_damage/motion_matching/skinning are not.",
+      "completion_pct": 70,
+      "wired_status": "partially",
+      "wired_evidence": "EngineRuntime: constructed once at engine_runner.rs:423, started at :2579, ticked per frame at :1920 (self.engine.tick(dt)); entities spawned at :648-750. GameUI: live in walking_sim.rs — field :205, set_text :640-648, render_to_pixels :768, menu state machine :855-955. character_controller_tick: live in walking_sim.rs:541 (then ground-patched by Rapier raycast :554-568). spectral::Illuminant: live walking_sim.rs:24, engine_runner.rs:33. CONTRAST — NOT wired: GameScript trait / ScriptRegistry / register_script / with_script / ScriptComponent: ZERO occurrences in crates/vox_app/src (grep confirmed). Live scripting is Rhai instead: engine_runner.rs:2038-2039 (self.rhai.call_fn(i,\"on_update\",..)) and :2603 (on_start). vox_core's script_update_system/process_script_commands run inside engine.tick() but iterate over zero ScriptComponent entities. spectral_damage / motion_matching / skinning: ZERO occurrences in any live-loop file.",
+      "gaps": [
+        {
+          "what": "GameScript trait + ScriptRegistry + ScriptComponent are never used by the live game. No register_script/with_script/ScriptComponent call exists in vox_app. The native scripting abstraction (the entire point of script_interface.rs) is dead code; live scripting goes through Rhai in vox_script instead. To be 'done and playable' via this path, engine_runner/walking_sim must actually attach GameScripts, OR this trait should be reconciled with the Rhai path.",
+          "file_line": "crates/vox_core/src/script_interface.rs:3 (GameScript), engine_runtime.rs:566 (register_script) — both uncalled by app",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "script_update_system is statefulness-broken by design: it calls registry.registry.create(script_name) to build a FRESH GameScript instance every frame, calls on_update on it, then discards it. Any script holding state (timers, counters, health) resets every frame. Even if wired, scripts could not maintain state. Scripts are created but never cached per-entity.",
+          "file_line": "crates/vox_core/src/engine_runtime.rs:234",
+          "severity": "blocker",
+          "effort": "half-day"
+        },
+        {
+          "what": "GameScript lifecycle hooks on_collision and on_destroy are defined on the trait but NO engine system ever calls them. CollisionPairs is populated by physics_collision_system (engine_runtime.rs:371) but nothing dispatches on_collision to scripts. on_destroy is never invoked anywhere.",
+          "file_line": "crates/vox_core/src/script_interface.rs:9-11",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "ScriptCommand::Destroy is a no-op stub: it carries a u32 entity_id from the 'old API' and does nothing ('best-effort removal' that removes nothing). ScriptCommand::ApplyForce is also a no-op that only eprintln's 'not yet wired to physics'. Scripts cannot destroy entities or apply forces.",
+          "file_line": "crates/vox_core/src/engine_runtime.rs:286 (Destroy), :328 (ApplyForce)",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "character_controller_tick still ships the documented flat-plane Y=0 ground bug (cc.grounded = position.y <= height*0.5+0.05). walking_sim works around it externally via a Rapier raycast, but engine_runner uses a separate vox_physics CharacterBody KCC and does NOT call character_controller_tick at all. The slope/step/wall helpers (is_walkable_slope, compute_slope_slide, try_step_up, slide_along_wall) are test-only — zero live callsites. Domain-08 plan said keep these as utilities called by game code; they are not.",
+          "file_line": "crates/vox_core/src/character_controller.rs:95",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "spectral_damage.rs (apply_spectral_damage, DamageType fire/laser/etc, is_fire_band_exposure) is fully implemented + tested but has ZERO live callsites. The domain-08 'Done When' (walking through fire splats shifts color toward red, bands 9-14) is unmet — no live loop applies spectral damage.",
+          "file_line": "crates/vox_core/src/spectral_damage.rs:10",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "motion_matching.rs (MotionDatabase) and skinning.rs are implemented + tested but not wired into any live loop (no motion_matching/skinning/Skeleton references in walking_sim or engine_runner). Domain-08/blitz-Day4 animation blend tree goal (avatar idle<->walk transition) is not realized through these vox_core modules.",
+          "file_line": "crates/vox_core/src/motion_matching.rs:1, crates/vox_core/src/skinning.rs:1",
+          "severity": "minor",
+          "effort": "multi-day"
+        },
+        {
+          "what": "ScriptCommand UI variants (UISetText/UISetProgress/UINotification) in process_script_commands_system only println! to stdout — they do not mutate the GameUI resource. There is no bridge from native ScriptCommand UI commands to the live GameUI HUD in walking_sim.",
+          "file_line": "crates/vox_core/src/engine_runtime.rs:336-345",
+          "severity": "minor",
+          "effort": "half-day"
+        }
+      ],
+      "blitz_day": 2,
+      "parallel_safe": true,
+      "surprise": "Contradicts the 80-95% assumption: the headline GameScript framework in vox_core is essentially DEAD in the running game. Despite the blitz roadmap asserting 'GameScript already exists — audit and extend, do not re-author', the live loop scripts entirely via Rhai (vox_script), and there is not a single register_script/with_script/ScriptComponent call in vox_app. Worse, script_update_system (engine_runtime.rs:234) re-creates each script instance from scratch every frame and throws it away, so the native path is not merely unwired — it is functionally incapable of stateful scripts even if wired. The blitz Day-2 acceptance ('a Rhai script attached in walking_sim mutates entity state each frame, orb pulse visible') is ALSO unmet: walking_sim uses Rhai only for config-load + a REPL eval console (walking_sim.rs:824-834, 891), with no per-frame on_update call. game_ui/character_controller_tick/spectral are the genuinely-live parts; the trait/runtime scripting story is much more 'built but unwired' than 80-95% implies."
+    },
+    {
+      "domain": "render-gi",
+      "crate": "crates/vox_render",
+      "summary": "All three core GI types are genuinely implemented (not stubs): SpectralAtmosphere is a real Rayleigh λ⁻⁴ + Mie single-scatter sky model; SpectralRadianceCache is a working CPU inverse-square + temporal-EMA radiance gather that actually mutates splat spectral bands; GpuGiPass is a complete wgpu compute pass with a real WGSL kernel. Shadows (ShadowMapper, CPU cascaded shadow maps), SpectralFramebuffer (16-band G-buffer), and the spectral tonemapper (ACES/Reinhard/Filmic + CIE conversion) are all real implementations with substantive logic. The pieces exist; the gap is wiring depth and an unused GPU path.",
+      "completion_pct": 75,
+      "wired_status": "partially",
+      "wired_evidence": "engine_runner.rs (the \"ochroma\" bin, path=src/bin/engine_runner.rs) drives the CPU GI per-frame inside render_frame() [fn at :878, called from handle_redraw :2159/:2382 and RedrawRequested :2664]: SpectralAtmosphere constructed :532, SpectralRadianceCache :533; per-frame sun update :984-989, set_sky :990, propagate :992, apply :993 (apply mutates splat spectral bands, then those splats are rendered). ShadowMapper wired per-frame: update :1067, render_shadow_map :1077, is_in_shadow :1087, shadow mask/mapper passed to renderer :1108 and :1123. walking_sim.rs wires the CPU shadow/framebuffer/tonemap path per-frame: shadow_mapper.update :578, is_in_shadow :719, spectral_fb.clear/write_sample :680/:756, tonemap_spectral_framebuffer :761 — but walking_sim does NOT use GI/atmosphere at all. NOT wired: GpuGiPass — GpuGiPass::new and .dispatch() have zero callers outside spectral_gi.rs tests (the only .dispatch( in engine_runner, :2246, is an SDF pass). SpectralAtmosphere::sky_radiance() has zero callers repo-wide (only solar_irradiance is used). In engine_runner, spectral_fb (alloc :457/:886/:1769) is never written/read (dead) and ToneMapSettings/exposure are HUD labels + keypress toggles only (:1167/:1389), never applied to pixels.",
+      "gaps": [
+        {
+          "what": "GpuGiPass is fully built (struct + WGSL + pipeline) but never instantiated or dispatched in any live loop — GPU GI path is only-in-tests. Plan 12a Task 4 said dispatch() 'is called from the render loop when a GPU device is available'; that callsite was never written. CPU propagate() is O(N_splats × 256) every frame over ALL render_splats and apply() allocates a full Vec<GaussianSplat> clone per frame, which the plan itself flags as too slow for production (>500k splats).",
+          "file_line": "crates/vox_render/src/spectral_gi.rs:207 (GpuGiPass::new, no callers); crates/vox_app/src/bin/engine_runner.rs:992-993 (CPU O(N) path, full clone)",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "SpectralAtmosphere::sky_radiance() — the per-band physically-based sky color model — has zero callers anywhere. The sky/background is never spectrally rendered from the atmosphere; only the scalar solar_irradiance() vector seeds GI ambient. The headline 'spectral atmosphere' capability is half-wired.",
+          "file_line": "crates/vox_render/src/spectral_atmosphere.rs:87 (sky_radiance, no live caller)",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "Named acceptance tests from both governing plans are absent: 'gi_wiring_applies_indirect_to_render' (Domain 12a Done-When) and 'gi_cache_is_live' (blitz Day-1 Task 1.3 acceptance, requiring per-band per-position radiance differing by >1e-3). No integration test proves GI actually changes rendered output; existing tests only check the cache struct in isolation.",
+          "file_line": "crates/vox_render/tests/ (neither test exists); docs/superpowers/plans/2026-03-30-domain-12a-spectral-gi-wiring.md:9",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "Plan 12a Task 5 (remove static GiCache) never completed: the legacy baked gi_cache field still exists and still runs in render_frame AFTER the live cache, contradicting the plan's 'SpectralRadianceCache must be the only GI path'. Two GI systems stacked.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:282 (field), :996 (still applied per-frame)",
+          "severity": "minor",
+          "effort": "hours"
+        },
+        {
+          "what": "In engine_runner the spectral tonemapper and SpectralFramebuffer are effectively dead: spectral_fb is allocated but never written or read, and ToneMapSettings/exposure are only HUD text + keypress toggles, never applied to pixels (the spectra renderer tonemaps internally and ignores them). Exposure/tonemap controls in the flagship bin do nothing visible.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:457 (fb alloc, no writes), :1167/:1389 (tonemap label-only)",
+          "severity": "minor",
+          "effort": "half-day"
+        },
+        {
+          "what": "GI 'night' is impossible: sun_zenith/elevation are clamped with .max(0.0), so the sun never goes below the horizon and solar_irradiance never reaches zero — time-of-day GI ambient never darkens to a true night even at hour 0.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:984-989",
+          "severity": "minor",
+          "effort": "hours"
+        }
+      ],
+      "surprise": "Mixed vs the 80-95% claim. More-broken: GpuGiPass (a whole GPU compute path with shader) is dead code — never dispatched in any live loop — and sky_radiance() is uncalled, so the 'spectral atmosphere' sky is never rendered. The two flagship CPU subsystems are split across binaries (GI lives only in engine_runner; shadow/framebuffer/tonemap fully live only in walking_sim) and engine_runner's tonemap/exposure/spectral_fb are inert. More-done than feared: the actual algorithms are real and substantive (no todo!/unimplemented! found), and the CPU GI genuinely modulates splat spectra in engine_runner's live per-frame loop — so a real spectral indirect-lighting contribution IS reaching the screen there. Doc drift: the blitz roadmap asserts an '8-band [u16;8]' cross-system invariant, but GaussianSplat is actually [u16;16] (16-band f16) and the GI code correctly uses 16 — the roadmap is wrong, the code is consistent.",
+      "parallel_safe": true,
+      "blitz_day": 1
+    },
+    {
+      "domain": "render-anim",
+      "crate": "crates/vox_render",
+      "summary": "Four sub-areas with very uneven wiring. (1) rigid_animation/RigidClip is a complete, well-tested CPU keyframe+slerp clip and a RigidStateMachine with transitions/blend. The bare RigidClip is genuinely wired into walking_sim (windmill: constructed, sampled per-frame, animated splats rendered). (2) splat_particles/SplatEmitter is complete and genuinely wired into engine_runner (KeyE spawn, ticked+rendered per-frame, particle-death impact audio). (3) GPU blend trees (BlendSkinningCompute + AnimationDriver::tick_blend_gpu) compile and have a WGSL-validates test, but blend_gpu is never populated — AnimationDriver::new hardcodes blend_gpu:None and there is NO setter anywhere, so the GPU blend path is unreachable in the live loop. (4) gpu_particles::GpuParticleSystem has zero non-test callers anywhere in the workspace, and its intended ECS replacement particle_ecs::ParticlePlugin is also unwired. So 2 of 4 are live, 2 are test-only.",
+      "completion_pct": 60,
+      "wired_status": "partially",
+      "wired_evidence": "RigidClip WIRED in walking_sim.rs: construct crates/vox_app/src/bin/walking_sim.rs:148 (RigidClip::rotation_loop), per-frame sample :163 via Windmill::tick called :584, animated splats rendered :672. SplatEmitter WIRED in engine_runner.rs: field :289, spawn-on-KeyE :1447, per-frame tick+render :959-961, death audio :962-967. AnimationDriver CPU-tick wired engine_runner.rs:2234-2236 (only if assets/character.glb exists — it does NOT exist). GPU blend tree NOT wired: blend_gpu only ever set to None (animation_driver.rs:86); grep for '.blend_gpu =' / 'blend_gpu: Some' across crates/ = zero hits; tick_blend_gpu never called from any binary. GpuParticleSystem NOT wired: only callers are its own tests (gpu_particles.rs:154,164,179,197); zero refs in vox_app. particle_ecs::ParticlePlugin NOT wired: zero refs in vox_app. RigidStateMachine only used by seq_ecs.rs:64 whose system is registered in NO binary.",
+      "gaps": [
+        {
+          "what": "GPU blend tree (BlendSkinningCompute) is dead code in the live loop: AnimationDriver::new hardcodes blend_gpu:None and gpu_skinning:None, and there is NO setter/builder to populate them anywhere in the workspace, so tick_blend_gpu/tick_gpu can never run from engine_runner. The whole GPU skinning+blend path is test-only despite a dedicated plan.",
+          "file_line": "crates/vox_render/src/animation_driver.rs:85-86",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "Blitz Day 4 Task 4.2 acceptance is unmet: the named test `cargo test -p vox_render blend_tree_interpolates` does NOT exist (zero matches in workspace), and there is no avatar/GLTF/idle-walk blend in walking_sim — walking_sim has only a CharacterController capsule and a windmill RigidClip, no skeletal character.",
+          "file_line": "docs/superpowers/plans/2026-06-05-ochroma-blitz-7day-full-roadmap.md:178",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "gpu_particles::GpuParticleSystem is fully unwired — zero non-test callers in the entire workspace. Its CPU tick_cpu/to_splats are never invoked by any binary; it has no GPU compute dispatch at all (no wgpu pipeline, just a Vec<GpuParticle> updated on CPU), so the name 'GPU' is misleading.",
+          "file_line": "crates/vox_render/src/gpu_particles.rs:31",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "particle_ecs::ParticlePlugin / particle_simulate_system / particle_splat_system (the planned ECS particle path from 2026-03-29-gpu-particles.md) is never registered in any binary; the live particle paths are instead the older particles::ParticleSystem (engine_runner.rs:953) and splat_particles::SplatEmitter. The ECS plan's engine_runner wiring step was not completed.",
+          "file_line": "crates/vox_render/src/particle_ecs.rs:1",
+          "severity": "minor",
+          "effort": "half-day"
+        },
+        {
+          "what": "RigidStateMachine (state transitions, OnTrigger/OnBool/AfterTime, blend_time) — the richer animation FSM — is only consumed by seq_ecs.rs; that ECS system (RigidAnimationComponent) is registered in NO live binary. walking_sim uses only the bare RigidClip::sample, so transitions/blends are exercised only by unit tests.",
+          "file_line": "crates/vox_render/src/seq_ecs.rs:64",
+          "severity": "minor",
+          "effort": "half-day"
+        },
+        {
+          "what": "AnimationDriver live-loop tick is gated on assets/character.glb existing (engine_runner.rs:2558); that asset is absent, so even the CPU GLTF skinning path never runs in practice — anim_driver stays None. No fallback character is shipped.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:2557-2558",
+          "severity": "minor",
+          "effort": "hours"
+        }
+      ],
+      "blitz_day": 4,
+      "surprise": "Contradicts the 80-95% estimate on the downside for this domain: 2 of the 4 named features (GPU blend trees, gpu particles) are entirely test-only with NO live-loop callsite, and a key field (blend_gpu) has no setter at all so the GPU blend path is structurally unreachable, not merely unwired. The blitz Day-4 acceptance test `blend_tree_interpolates` does not even exist, and walking_sim has no animated avatar to transition idle<->walk. The CPU pieces that ARE wired (RigidClip windmill, SplatEmitter fire) are solid and genuinely per-frame. Note also 'GpuParticleSystem' does no GPU work — it is a CPU Vec with no wgpu pipeline, unlike the real BlendSkinningCompute which has a validated compute shader.",
+      "parallel_safe": true
+    },
+    {
+      "domain": "audio",
+      "crate": "crates/vox_audio",
+      "summary": "vox_audio is a large, well-tested DSP library (~3500 LOC across 17 modules, 80+ passing unit tests) but the bulk of its headline features are dead code never reached from the game loop. What genuinely runs: rodio-backed SpatialAudioManager (distance attenuation + sine tones + WAV/OGG file playback) is constructed and ticked per-frame in walking_sim and engine_runner. The v1 spectral synth (synthesize_impact/create_impact_wav) is wired into engine_runner ONLY, and it does the OPPOSITE of the spec: writes a WAV to /tmp then plays it via rodio. The entire CPAL backend, the v2 SpectralSynth::strike, SpectralReverb-from-GI, fundsp graph, synthesize_and_play, av_sync, acoustic_raytracer, sdf_reverb, hrtf, adaptive_music, audio_graph, and spectral_acoustic modules have ZERO callers in any live binary — they exist only as lib modules + tests. Soundscape and BiomeAmbientMix are constructed but never drive playback. The default vox_app main.rs binary is entirely silent.",
+      "completion_pct": 45,
+      "wired_status": "partially",
+      "wired_evidence": "WIRED (real, per-frame): walking_sim.rs:279 SpatialAudioManager::new(); :589-591 set_listener+tick each frame; :613 play_tone on orb collect; :616-619 generate_collect_sound+save_wav. engine_runner.rs:512-514 SpatialAudioManager::new(); :524 AudioHandle::spawn(); :963-966 create_impact_wav(dead_spectral)+audio.play() on particle death (writes WAV to /tmp, plays via rodio); :1521 play_3d wind_loop.ogg (file does not exist); :1654-1655 play_sine_backend(no-op)+play_tone on click; :1988-2004 audio+spatial_audio tick/set_listener each frame; :1790 ambient_mix.blend_toward (computed then DISCARDED — drives no output). NOT in live loop (grep of all 3 binaries = 0 hits): synthesize_and_play, SpectralSynth::strike, SpectralReverb, CpalBackendBuilder, PlaySynth, apply_reverb_send, av_sync, trace_sound/AcousticScene, sdf_reverb, hrtf, adaptive_music, spectral_acoustic, audio_graph. main.rs has NO audio playback (only `pub mod soundscape;` at :25). SoundscapePlugin/AudioPlugin ECS systems never added to any App.",
+      "gaps": [
+        {
+          "what": "CPAL backend (the spec's headline 'rodio→CPAL cross-platform default') is never instantiated in any binary. Only rodio is actually used for output. CpalBackendBuilder::build is dead code; cross-platform WASAPI/CoreAudio/ALSA claim is unverified at runtime.",
+          "file_line": "crates/vox_audio/src/cpal_backend.rs:26 (never called); engine_runner.rs/walking_sim.rs (no CpalBackendBuilder)",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "Spectral impact synth NOT wired into walking_sim collision. Blitz Day-2 Task 2.1 requires 'dropping an object plays a synthesized impact with no WAV file' via the walking_sim collision callback. walking_sim has Rapier physics (ground/fall detection at :559-571) but zero impact audio; only orb-collect tones exist.",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:559-621",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "synthesize_and_play (SpectralSynth::strike + SpectralReverb-from-reflectance + apply_reverb_send → PlaySynth) is the intended physics→audio integration but has ZERO callers outside tests/integration_audio.rs. The entire v2 spectral+reverb pipeline is unreachable.",
+          "file_line": "crates/vox_audio/src/lib.rs:308",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "The one live spectral path violates its own spec: engine_runner.rs:963 uses create_impact_wav (v1 synth) which writes /tmp/ochroma_impact.wav and plays via rodio. Spec ('no WAV file loaded', plan line 7 prints '[ochroma-audio] grass strike: resonance_hz=...') is contradicted. The resonance_hz print and click-a-grass-splat trigger do not exist (grep 'resonance_hz'/'strike' in vox_app = 0).",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:963",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "Soundscape (vox_app) and BiomeAmbientMix produce no sound in the live loop. engine_runner stores soundscape as a plain field, toggles .active and prints, but never runs soundscape_sync_system / spawns AudioEmitterComponents. ambient_mix.blend_toward is computed per-frame and discarded. SoundscapePlugin/AudioPlugin ECS systems are never added to any App.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:1393-1394, 1786-1790; crates/vox_app/src/soundscape.rs:81",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "All file-based playback references nonexistent assets. No assets/audio dir exists; repo has zero .ogg/.wav files. engine_runner.rs:1522 wind_loop.ogg and all 3 Soundscape::outdoor_default layers point at missing files that silently fail to decode (rodio Decoder error printed, no sound).",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:1522; crates/vox_app/src/soundscape.rs:42-60",
+          "severity": "major",
+          "effort": "hours"
+        },
+        {
+          "what": "lewton (0.10) declared as audio-backend dep but used nowhere in the codebase — dead dependency (OGG decoding actually goes through rodio's internal decoder).",
+          "file_line": "crates/vox_audio/Cargo.toml:15",
+          "severity": "minor",
+          "effort": "hours"
+        },
+        {
+          "what": "Default vox_app binary (main.rs, the canonical game) is entirely silent — no AudioHandle/SpatialAudioManager/AudioPlugin instantiated. Audio only exists in the walking_sim/engine_runner example binaries.",
+          "file_line": "crates/vox_app/src/main.rs:25",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "fundsp dep is declared and fundsp_graph.rs exists, but it contains hand-rolled LCG-noise convolution, not fundsp combinators (spec Task 6 expected real fundsp graph). apply_reverb_send is also O(n*tail_n) per nonzero sample — for a 0.5s strike (22050 samples) with a 2s tail this is ~2 billion ops, a per-impact frame hitch if ever wired in.",
+          "file_line": "crates/vox_audio/src/fundsp_graph.rs:30-39",
+          "severity": "minor",
+          "effort": "half-day"
+        }
+      ],
+      "surprise": "Contradicts the 80-95% estimate strongly: this is closer to 40-50% DONE-AND-PLAYABLE. The library code is genuinely built and tested (so 'mostly built' is fair), but the integration is far worse than 'possibly unwired' — the marquee features (CPAL cross-platform backend, spectral impact synth on physics, reverb-from-GI, biome soundscape playback) are 100% absent from the running game. Worse, the single live spectral path actively contradicts the current blitz spec (uses a /tmp WAV file when the spec demands 'no WAV file'). The canonical game binary (main.rs) is silent. No audio assets exist on disk, so even the rodio file-playback paths that ARE wired would produce only decode errors.",
+      "parallel_safe": true,
+      "blitz_day": 2
+    },
+    {
+      "domain": "physics",
+      "crate": "vox_physics",
+      "summary": "RapierPhysicsWorld (rapier.rs) is a complete, genuine Rapier3D wrapper (bodies, colliders, raycast, forces, impulses, kinematic char controller) and IS stepped every frame in both walking_sim (line 550) and engine_runner (line 1967). Beyond that core, the crate contains a large, fully-implemented-and-tested but UNWIRED spectral/soft-body layer: pbf (CPU+GPU 4-pass WGSL), thermal, spectral_fracture, fluid, wetness, cloth, rope, xpbd, vehicle, destruction, spectral_damage/resonance. 95 vox_physics tests pass including the plan's named Done-When test rigid_body_impact_cracks_glass_spectral. The catch: in both live loops Rapier only ever holds STATIC colliders — no dynamic body is ever spawned, so the per-frame step() integrates nothing dynamic; the player is moved by a flat-plane character controller + a single ground raycast, not Rapier dynamics.",
+      "completion_pct": 55,
+      "wired_status": "partially",
+      "wired_evidence": "walking_sim.rs:35 imports RapierPhysicsWorld; :326 constructs it; :328 add_static_collider(ground); :380 add_static_collider(buildings) — STATIC only; :550 self.physics.step() each frame; :554 raycast for ground. engine_runner.rs:53 import; :429 construct; :690/:711 add_static_collider (buildings/trees) STATIC only; :1937 self.character.update(.., &mut self.physics); :1943 cb.move_and_slide (KCC) — but guarded by character_body which is None; :1967 self.physics.step() each frame; :1971-1984 dynamic-body sync loop reads entity_rapier_bodies which is NEVER inserted into (only :506 new, :1972 read). main.rs: zero physics references. No add_dynamic_box/sphere call exists in any live loop. PhysicsPlugin/ecs systems: never registered in any App (grep add_plugins+phys empty). wetness/pbf/thermal/fluid/cloth/rope/xpbd/vehicle/spectral_*: zero references in vox_app outside their own crate.",
+      "gaps": [
+        {
+          "what": "No dynamic rigid bodies are ever spawned in any live loop — Rapier only holds static colliders, so step() integrates nothing dynamic. Contradicts blitz roadmap Done-When 'watch a dropped object fall (Rapier)'. No add_dynamic_box/add_dynamic_sphere/apply_impulse callsite exists in walking_sim or engine_runner.",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:328 (only add_static_collider); engine_runner.rs:690",
+          "severity": "blocker",
+          "effort": "half-day"
+        },
+        {
+          "what": "engine_runner character_body is Option<CharacterBody> initialized None (line 560) and never set to Some — the entire Rapier KCC move_and_slide branch (1938-1959) is dead code at runtime; player uses non-Rapier flat-plane CC instead.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:560 / :1938",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "engine_runner entity_rapier_bodies map is constructed empty and only ever read (line 1972) — never inserted into. The dynamic-body→ECS transform sync loop (1968-1985) iterates an always-empty map and is a permanent no-op.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:506 (new) / :1972 (read, no insert)",
+          "severity": "major",
+          "effort": "hours"
+        },
+        {
+          "what": "Entire spectral/soft-body physics layer (pbf, thermal, spectral_fracture, fluid, wetness, cloth, rope, xpbd, vehicle, destruction, spectral_damage, spectral_resonance) is never called anywhere in vox_app — library + unit tests only. The whole point of domain-10 (PBF fluids, spectral fracture wired into live destruction, thermal feeding GI) is unwired.",
+          "file_line": "crates/vox_physics/src/lib.rs:188-200 (modules declared, no live consumer)",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "wetness.rs (drip sim, puddle detection, spectral wet blend) has zero callers outside its own tests — not wired to terrain or render despite being a named domain-10 deliverable.",
+          "file_line": "crates/vox_physics/src/wetness.rs:23 / lib.rs:199",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "PBF GPU path (upload_to_gpu/gpu_step/PbfPipelines + 4 WGSL shaders) is implemented but never invoked from any renderer/app; only cpu_step is reachable and only via tests/benches. The 50k-particle@60fps goal is unverified on GPU in any running build.",
+          "file_line": "crates/vox_physics/src/pbf.rs:217 (gpu_step, no live caller)",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "SplatAssembly::fracture_at / spectral_shift_on_break (destruction.rs) — the Done-When mechanism (drop body cracks glass spectral) — is only exercised by tests/spectral_impact_test.rs; no live impact in walking_sim/engine_runner triggers fracture. ThermalEmitter::hot_emitters → SpectralRadianceCache GI bridge described in plan is not implemented anywhere.",
+          "file_line": "crates/vox_physics/src/destruction.rs (fracture_at, no vox_app caller)",
+          "severity": "minor",
+          "effort": "day"
+        },
+        {
+          "what": "Legacy hand-rolled AABB PhysicsWorld at top of lib.rs (lines 41-181, gravity+AABB collision) is dead outside the crate's own tests — superseded by Rapier but still shipped; dead-weight/confusion.",
+          "file_line": "crates/vox_physics/src/lib.rs:41",
+          "severity": "minor",
+          "effort": "hours"
+        }
+      ],
+      "blitz_day": 5,
+      "parallel_safe": true,
+      "surprise": "Contradicts the 80-95% estimate. Core Rapier wrapper is excellent and genuinely ticked each frame, BUT physics in the live game is effectively decorative: only static colliders exist, no dynamic body is ever spawned, the Rapier KCC path is dead (character_body always None), the dynamic-sync map is never populated, and the entire spectral/soft-body/fluid/wetness/thermal/fracture layer (the actual domain-10 deliverables, ~1500 LOC + GPU shaders) has zero live consumers despite 95 passing unit tests. So 'mostly built' is true at the library/test level but 'wired into the running game' is largely false — realistic completion of a playable physics domain is ~55%, not 80-95%. The plan's own Day-7 Done-When ('watch a dropped object fall (Rapier)') currently cannot happen because nothing dynamic is added to the world."
+    },
+    {
+      "domain": "script",
+      "crate": "crates/vox_script",
+      "summary": "The vox_script crate is genuinely implemented and well-tested (48 lib + ~30 integration tests, no stubs): RhaiRuntime (compile/load/call_fn/hot-reload), LuaRuntime (sandboxed mlua 5.4 + coroutine helpers), spectral_bindings, entity_bindings, ScriptWatcher. THREE parallel script systems coexist despite the plan saying \"replace Rhai with mlua\" — native Rust ScriptComponent (vox_core), Rhai, and Lua are all present. The engine_runner (\"ochroma\") binary DOES call Rhai on_update and Lua call_update + tick_thresholds every frame inside handle_redraw (the real live loop), so the per-frame hook plumbing exists. But the DATA the scripts read/write is dead: the EntityStore and SpectralState are constructed once and never populated from real ECS/GI state nor written back to splats, so every script query returns zeros and no threshold callback can ever fire. walking_sim uses Rhai only at startup as config + a fake debug-eval key and has NO per-frame script execution.",
+      "completion_pct": 55,
+      "wired_status": "partially",
+      "wired_evidence": "engine_runner.rs:2033 self.rhai.poll_reload(); 2038-2039 for i in 0..self.rhai.script_count() { self.rhai.call_fn(i,\"on_update\",dt) } — inside handle_redraw (fn at 1780, called from WindowEvent::RedrawRequested at 2664). 2044-2061 drain_pending_commands() dispatch (but SetPosition only prints at 2046-2047, Spawn/SendEvent hit \"unhandled\" at 2057). 2071 self.lua.call_update(dt); 2074-2077 vox_script::tick_thresholds(self.lua.lua(), &self.spectral_script_state). engine.tick(dt) at 1920 runs native ScriptComponents. DEAD WIRING: entity_script_store created at engine_runner.rs:444, only used at 545 (register) and 557 (move into struct) — NEVER populated from entities, NEVER read back. spectral_script_state created [0;16] at 441, only used at 543 and 2076 — band_energy NEVER updated from GI. walking_sim.rs:824-836 Rhai config loaded once (return value discarded), 890 fake console evals hardcoded \"42*2+1\". No script usage in main.rs.",
+      "gaps": [
+        {
+          "what": "SpectralState.band_energy is created [0;16] and never updated from the real spectral GI field per frame, so spectral.get_band/field_energy always return 0 and game.lua's on_threshold fire mechanic can NEVER fire. The plan's core feature (react to spectral physics) is non-functional in the live game.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:441 (created), :2074 (ticked against zeros); crates/vox_script/src/spectral_bindings.rs:38 (x,y,z ignored)",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "EntityStore (entity_script_store) is created once and never populated from the ECS world nor read back to splats. entity.get_position(id) always returns [0,0,0]; entity.set_spectral(id,band,v) writes to a store nothing reads, so no viewport color change. Plan's Done-When (set_spectral shifts splat color) is impossible.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:444 (created, never .insert()ed with real data); crates/vox_script/src/entity_bindings.rs:7",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "Rhai ScriptCommand dispatch is incomplete: SetPosition merely prints instead of moving an entity/splat; Spawn, SendEvent, ApplyForce, Destroy, UI* commands fall through to 'unhandled command' print. Scripts can log and play sound but cannot actually move or spawn anything via Rhai.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:2046-2058",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "No Lua console exists in any binary, so the plan's Done-When (type set_spectral in the console and observe color shift) cannot be performed. walking_sim's only 'console' key (Backquote) evals a hardcoded '42*2+1' string and ignores user input.",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:889-897",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "No .rhai scripts are loaded by default: engine_runner auto-loads from a scripts/ dir that contains only shell scripts; the only .rhai file is examples/demo_scene/main.rhai (trivial log-only) loaded solely under --demo. So the per-frame on_update loop iterates over zero scripts in normal runs.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:2582; examples/demo_scene/main.rhai:11",
+          "severity": "major",
+          "effort": "hours"
+        },
+        {
+          "what": "Plan said 'Replace Rhai with mlua' but Rhai was never removed; rhai dep and RhaiRuntime still present alongside Lua, giving two overlapping hot-reload/script-hook systems plus the native ScriptComponent — fragmented surface, double maintenance, unclear which is canonical.",
+          "file_line": "crates/vox_script/Cargo.toml (rhai = \"1\" still present); crates/vox_script/src/rhai_runtime.rs:1",
+          "severity": "minor",
+          "effort": "half-day"
+        },
+        {
+          "what": "walking_sim's Rhai config (orb_count/player_speed/etc.) is evaluated via run() whose return value is discarded; the config has zero effect on the game. No per-frame Rhai/Lua hook in walking_sim at all.",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:824-831",
+          "severity": "minor",
+          "effort": "half-day"
+        },
+        {
+          "what": "Large subsystems are entirely unwired into any live-loop binary: visual_graph.rs (1010 lines), visual_script.rs, plugin_system.rs, mod_manager.rs, and wasm.rs/ScriptRuntime only appear in render_showcase (a one-shot capability demo), never in walking_sim/engine_runner/main.",
+          "file_line": "crates/vox_script/src/visual_graph.rs:1; crates/vox_script/src/plugin_system.rs:1",
+          "severity": "minor",
+          "effort": "multi-day"
+        }
+      ],
+      "surprise": "More broken than 80-95% implies. The crate's unit tests are green and the per-frame hooks ARE called, which looks done — but the I/O is hollow: both script-visible state stores (EntityStore, SpectralState) are inert placeholders never connected to the engine, so the headline feature (react to and modify spectral physics from script) cannot work in the running game and the plan's own Done-When is unachievable. Also a plan-vs-reality mismatch: 'Replace Rhai with mlua' never happened — three script systems coexist.",
+      "parallel_safe": true,
+      "blitz_day": 4
+    },
+    {
+      "domain": "net",
+      "crate": "crates/vox_net",
+      "summary": "vox_net is a library of well-tested but disconnected networking primitives: a TCP transport (GameServer/GameClient) that genuinely round-trips length-prefixed JSON NetMessages; a QUIC transport (Quinn/rustls/rcgen, self-signed TLS) that binds/creates endpoints but never completes a handshake or sends a byte; a spectral-relevance replication codec (ReplicationPacket per-band u32-mask delta compression) that is correct as a pure function; plus CRDT (Lamport LWW OperationLog), rollback buffer, client prediction, lobby, world-hosting, and chunk/splat delta replication. All 90 unit+integration tests pass. None of it forms a connection between two clients in any running binary — the codecs compute packets that are then discarded. There is NO working 2-player path; nothing transmits replication bytes over a socket in the live game.",
+      "completion_pct": 35,
+      "wired_status": "no",
+      "wired_evidence": "engine_runner.rs:558 quic_transport: None; engine_runner.rs:1031-1058 dead replication block; engine_runner.rs:1052 no-op send TODO; quic_transport.rs:116 discarded Connecting future; walking_sim.rs/main.rs zero vox_net refs",
+      "gaps": [
+        {
+          "what": "No bytes ever sent over the network in the live game: the replication send callback is a no-op TODO that throws away every computed packet. This is the single gap that makes networking non-functional even when a transport exists.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:1052",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "quic_transport is permanently None — no --server/--connect arg parsing, no QuicTransport::listen/connect call anywhere in any binary (grep for both = 0 hits outside the crate). The plan's Task 6 wiring (flags + tokio block_on) was never implemented.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:558",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "engine_runner has no tokio runtime (sync fn main); QUIC requires async. No #[tokio::main], no Runtime::new, no block_in_place. Async QUIC I/O cannot execute even if a transport were constructed.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:2674",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "QuicTransport::connect creates the Connecting future then drops it (`let _connecting = ...`), so the TLS handshake is never driven and no quinn::Connection is ever obtained. There is no API to send/recv over QUIC streams or datagrams at all.",
+          "file_line": "crates/vox_net/src/quic_transport.rs:116",
+          "severity": "blocker",
+          "effort": "multi-day"
+        },
+        {
+          "what": "No QUIC accept loop on the server side: nothing calls endpoint.accept(). Server can bind but never accepts a peer connection.",
+          "file_line": "crates/vox_net/src/quic_transport.rs:84",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "Rollback is storage-only: RollbackSession/RollbackBuffer save snapshots and inputs and report needs_rollback, but nothing ever re-simulates. GameState::apply_input is called only in the test module; get_rollback_target merely returns a frame number. No rollback-and-resimulate loop exists.",
+          "file_line": "crates/vox_net/src/rollback.rs:129",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Two parallel transports with no shared abstraction: working TCP (transport.rs, used by no binary) vs non-functional QUIC. The domain-07 plan says 'Replace the TCP transport entirely' but TCP GameServer/GameClient remain and are the only ones that actually move bytes (only in transport_test).",
+          "file_line": "crates/vox_net/src/transport.rs:53",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "CRDT OperationLog, lobby LobbyState/ChatHistory, WorldHost, ClientPrediction, world_replication chunk sync, and splat_replication delta codec are never called from any game loop — only from tests and the render_showcase print harness. No integration into client/server message flow.",
+          "file_line": "crates/vox_net/src/crdt.rs:55",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Plan domain-07 Done-When is unmet: 'two engine instances cause splats placed on server to appear on client within 100ms, client prints received 1 splat replication packet'. No client receive path, no print, no flags — verifiable as not implemented.",
+          "file_line": "docs/superpowers/plans/2026-03-30-domain-07-networking.md:7",
+          "severity": "blocker",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Replication codec only encodes spectral band values (color); it does not replicate splat position/scale/rotation/opacity in the live path (splat_replication.rs has a fuller packet but is unused). A peer would receive band updates indexed by array offset with no entity identity reconciliation.",
+          "file_line": "crates/vox_net/src/replication_loop.rs:77",
+          "severity": "major",
+          "effort": "multi-day"
+        }
+      ],
+      "surprise": "Strongly contradicts 80-95%. Real completion for a playable 2-player path is ~35%: the pieces (codec, CRDT, rollback buffer, both transports) compile and pass 90 tests, but there is literally zero end-to-end data flow. The one place it is 'wired' (engine_runner) is dead code behind a permanently-None Option, the send callback is a no-op TODO, the binary isn't even async, and QuicTransport::connect discards the handshake future so QUIC has never moved a single byte even in tests. The only byte round-trip that works is legacy TCP, which no game binary uses. The networking plan's own wiring task was never landed.",
+      "parallel_safe": true,
+      "blitz_day": 6
+    },
+    {
+      "domain": "ui-egui",
+      "crate": "crates/vox_ui",
+      "summary": "vox_ui contains several independently-built, well-tested UI pieces: an egui Ochroma dark theme (theme.rs), immediate-mode game widgets (game_widgets.rs: Panel/Tooltip/Button/StatusBar), a full interactive egui node-graph widget (node_graph_widget.rs, 601 lines: pan/zoom/drag/bezier connections), plus three pieces that are essentially dead in the live game: SpectralHUD (the 16-band spectral energy bar — the namesake deliverable of domain-03-ui), a CPU-pixel UICanvas (canvas.rs), and a Taffy LayoutTree (layout.rs). The real GPU path (VelloCtx) and the real Taffy/Parley path live behind a `game-ui` cargo feature that NO crate ever enables, so only CPU stubs compile. 35 vox_ui tests pass but are almost all pure-data/geometry tests, not live-render tests. Critically, none of the live in-game HUDs are built from vox_ui's HUD code: walking_sim uses vox_core::game_ui (CPU bitmap font, render_to_pixels) and engine_runner uses a hardcoded inline egui Area for its FPS/splat HUD.",
+      "completion_pct": 55,
+      "wired_status": "partially",
+      "wired_evidence": "walking_sim.rs: NO vox_ui usage at all (grep returns nothing); its HUD is vox_core::game_ui::GameUI rendered via render_to_pixels at walking_sim.rs:768. main.rs: NO vox_ui usage at all. engine_runner.rs uses vox_ui in exactly 3 ways: (1) apply_ochroma_theme called once at startup engine_runner.rs:2543; (2) GameWidgets::render called per-frame at engine_runner.rs:2288 but widget_cmds is constructed once at engine_runner.rs:563 (Wood/Stone/Food all count=0) and NEVER mutated -> frozen panel; (3) NodeGraphWidget reaches the screen only indirectly via vox_render's material_editor_ui.rs:156 / anim_editor_ui.rs:44 / vfx_editor_ui.rs:44 (show_egui), shown only when editor_visible (default false at engine_runner.rs:486, hotkey-toggled at 1433). The actual always-on game HUD in engine_runner is a hardcoded inline egui::Area at engine_runner.rs:2291-2309 (FPS/Spectra/splats/DLSS), NOT from vox_ui. SpectralHUD/SpectralRadianceCache/UICanvas/LayoutTree/VelloCtx from vox_ui: zero callsites in any of the three live-loop files (grep clean).",
+      "gaps": [
+        {
+          "what": "SpectralHUD (the headline deliverable of docs/.../domain-03-ui.md) is never rendered in any live loop. Plan's Done-When requires selecting a splat to show a 16-bar spectral histogram and the terminal to print '[spectral-hud] rendering 16 bars: max_band=N max_energy=X.XX' each frame; that print string exists nowhere in the codebase. Only bar_rects/render_cpu unit tests exercise it.",
+          "file_line": "crates/vox_ui/src/spectral_hud.rs:43 (bar_rects, unwired); engine_runner.rs:2291 (live HUD that should but does not include it)",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "game_widgets resource panel is permanently frozen: widget_cmds built once with Wood/Stone/Food=0 and never updated from any simulation state, so the panel shows 0/0/0 forever. No per-frame update path exists.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:563",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "The `game-ui` cargo feature (gating the real GPU VelloCtx, real Taffy LayoutTree, real Parley text) is enabled by NO crate. All four consuming Cargo.tomls (vox_app, vox_render, vox_nodes, ochroma_engine) depend on vox_ui without features, so the GPU/Taffy/Parley code never compiles into any binary; only the CPU stubs run. The blitz roadmap's Done-When explicitly requires a 'Vello-rendered HUD' in walking_sim.",
+          "file_line": "crates/vox_ui/src/layout.rs:3 and vello_ctx.rs:50 (feature-gated, never built); crates/vox_app/Cargo.toml:24",
+          "severity": "blocker",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Planned widgets.rs (ProgressBar, Label via Vello primitives) named in domain-03-ui File Map was never created.",
+          "file_line": "docs/superpowers/plans/2026-03-30-domain-03-ui.md File Map row 'CREATE crates/vox_ui/src/widgets.rs'",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "UICanvas (canvas.rs, full JSON-serializable retained UI tree with CPU pixel renderer) has zero callsites in any crate's src — built and tested in isolation, used by nothing.",
+          "file_line": "crates/vox_ui/src/canvas.rs:188 (render); zero live callers",
+          "severity": "minor",
+          "effort": "day"
+        },
+        {
+          "what": "Three parallel non-overlapping HUD systems coexist with no convergence: vox_core::game_ui (CPU bitmap, walking_sim), inline egui Area (engine_runner), and vox_ui SpectralHUD/canvas (unused). 'Done and playable' requires picking one and wiring it; right now the canonical game HUD widget (SpectralHUD) is the unused one.",
+          "file_line": "crates/vox_core/src/game_ui.rs:249 vs engine_runner.rs:2291 vs crates/vox_ui/src/spectral_hud.rs:58",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "node_graph_widget::show_egui (genuinely complete) is only reachable behind editor_visible (default false), so it is not part of the shipped game UI; fine for an editor but means the largest vox_ui module contributes nothing to the in-game HUD.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:486 (editor_visible=false)",
+          "severity": "minor",
+          "effort": "hours"
+        }
+      ],
+      "surprise": "Contradicts the 80-95% assumption. The single most-named deliverable of this domain (SpectralHUD, per docs/.../domain-03-ui.md and the blitz roadmap's 'Vello-rendered HUD') is fully unwired: zero live callsites and the mandated per-frame terminal print '[spectral-hud] rendering 16 bars' does not exist anywhere. The whole GPU/Taffy/Parley stack is gated behind a `game-ui` feature that no crate enables, so it never even compiles into a binary. The 35 passing tests create a false sense of completeness — they test geometry math (bar_rects) and data round-trips, never a live render. The actual live HUDs come from entirely different crates (vox_core::game_ui + an inline egui Area), so vox_ui's HUD work is parallel dead code, not the running UI.",
+      "parallel_safe": true,
+      "blitz_day": 3
+    },
+    {
+      "domain": "ui-vello",
+      "crate": "crates/vox_ui",
+      "summary": "The Vello+Parley+Taffy migration is a thin, test-only scaffold, not a live UI path. Behind the optional `game-ui` cargo feature (vello 0.4/parley 0.3/taffy 0.7), vox_ui has: a GPU `VelloCtx` wrapping a vello::Renderer with only `fill_rect`+`end_frame` (vello_ctx.rs:50-125), a `VelloCtxCpu` headless stub used exclusively in tests, a Taffy `LayoutTree` (layout.rs) with a no-op fallback for the default build, and a `SpectralHUD` 16-band bar widget (spectral_hud.rs) with its OWN dummy `SpectralRadianceCache` distinct from the real GI cache. It compiles cleanly behind the feature (`cargo build -p vox_ui --features game-ui` exits 0) and all 30 tests pass. But the feature is enabled by no crate, no script, and is not default; the GPU path never executes at runtime. The actual live UI everywhere is egui. Parley is a declared dep but never imported (no text rendering exists). No screens have been ported to Vello.",
+      "completion_pct": 30,
+      "wired_status": "no",
+      "wired_evidence": "VelloCtx::new / SpectralHUD::render (GPU) are called nowhere outside crates/vox_ui. Live UI is egui: engine_runner.rs:207-208,:2365; vox_ui egui usage at engine_runner.rs:328/:562/:2288 (GameWidgets), :56/:2543 (theme). walking_sim.rs:768 uses vox_core game_ui pixel rasterizer; no vox_ui/vello refs. main.rs: none. game-ui feature enabled by no Cargo.toml/script and not default.",
+      "gaps": [
+        {
+          "what": "Vello GPU path is never instantiated or driven by any binary. No VelloCtx::new call exists in the live loop; the engine renders UI via egui_wgpu. The whole vello_ctx GPU half is dead at runtime.",
+          "file_line": "crates/vox_ui/src/vello_ctx.rs:50-125",
+          "severity": "blocker",
+          "effort": "multi-day"
+        },
+        {
+          "what": "walking_sim's HUD (the blitz plan's explicit 'Done When': a Vello-rendered orb-count HUD) is rendered by vox_core::game_ui pixel rasterizer, NOT Vello. To satisfy the plan, walking_sim must construct a VelloCtx against its wgpu surface and route HUD draws through it; currently zero vox_ui/vello usage in that binary.",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:768",
+          "severity": "blocker",
+          "effort": "multi-day"
+        },
+        {
+          "what": "SpectralHUD reads vox_ui's own 16-band SpectralRadianceCache (a default-zeros stub), NOT the real 8-band vox_render::spectral_gi::SpectralRadianceCache produced by GI. No code bridges live GI radiance into the HUD, so even if drawn it would show static zeros.",
+          "file_line": "crates/vox_ui/src/spectral_hud.rs:6-13",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "Planned widgets.rs (ProgressBar/Label using Vello primitives) from domain-03-ui task list does not exist. VelloCtx only supports fill_rect; no text (parley unused), no rounded rects, no stroke, no images. Cannot port real screens.",
+          "file_line": "crates/vox_ui/src/vello_ctx.rs:8-11",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Parley (text) declared as a dep but never imported anywhere; no glyph/text rendering on the Vello path. Any real HUD needs text (orb counter), which is impossible today via Vello.",
+          "file_line": "crates/vox_ui/Cargo.toml:15",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "VelloCtx::end_frame integration with the existing wgpu surface/encoder in engine_runner is untested and unintegrated; render_to_texture vs the egui pass ordering, surface format, and depth handling are unverified against the live renderer.",
+          "file_line": "crates/vox_ui/src/vello_ctx.rs:101-119",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "Taffy LayoutTree is never used to position any widget in any binary; layout helpers exist but no widget consumes resolved rects in the live loop.",
+          "file_line": "crates/vox_ui/src/layout.rs:18-76",
+          "severity": "minor",
+          "effort": "half-day"
+        }
+      ],
+      "surprise": "Strongly contradicts the 80-95% claim for this domain. The Vello/Taffy migration is roughly 30% done and 0% wired: every runtime UI path is egui (engine_runner via egui_wgpu; walking_sim via a vox_core CPU pixel rasterizer). The GPU VelloCtx and SpectralHUD::render are exercised only by unit tests; the game-ui feature is not enabled by any crate, script, or default, so the default GREEN build never even compiles the Vello code. SpectralHUD also uses a private stub cache, not the real GI cache, so it is not reading live spectral data as the plan asserts.",
+      "parallel_safe": true,
+      "blitz_day": 5
+    },
+    {
+      "domain": "tools",
+      "crate": "vox_tools",
+      "summary": "crates/vox_tools is a 439-LOC CLI shell with TWO binaries (vox_tools, ochroma-tools); the real GLTF->splat logic lives in vox_data::gltf_import::import_gltf (gltf crate, area-proportional triangle sampling at ~200 splats/m^2 capped at 50/tri, deterministic barycentric placement, RGB->16-band spectral via rgb_to_spectral). I verified end-to-end: built both binaries, generated a 1-triangle glTF, ran `ochroma-tools import --gltf /tmp/tri.gltf --out /tmp/tri.vxm` -> 50 splats and a valid VXM written; `vox_tools import` also works. Both genuinely convert a .glb/.gltf to a .vxm. vox_tools' own code (turnaround.rs, build.rs) is a synthetic-splat placeholder plus a cargo-command string formatter.",
+      "completion_pct": 70,
+      "wired_status": "no",
+      "wired_evidence": "none found in live loop. Grepped walking_sim.rs, engine_runner.rs, main.rs for import_gltf/gltf_import/vox_tools/ochroma-tools/run_turnaround/import_asset/ImportResult -> ZERO hits. The only .vxm load in any live loop is engine_runner.rs:1821-1825 (assets/tiles/tile_{x}_{z}.vxm via VxmFile::read), but (a) assets/tiles/ does not exist and nothing writes that naming scheme so the branch never fires, and (b) the loaded result is bound to _vxm and discarded at engine_runner.rs:1828 (Ok(_vxm) => println!), never rendered. The converter is a pure offline CLI not invoked from any game loop.",
+      "gaps": [
+        {
+          "what": "FORMAT MISMATCH (functional bug): ochroma-tools writes VxmFileV3 (version=3) but the live-loop loader VxmFile::read rejects version!=1 with UnsupportedVersion. Verified by header bytes: /tmp/tri.vxm=version 3 vs /tmp/tri_v1.vxm=version 1. So the ochroma-tools converter output is NOT loadable by engine_runner.rs:1825; only vox_tools' import (v1) is.",
+          "file_line": "crates/vox_tools/src/ochroma_main.rs:65 vs crates/vox_data/src/vxm.rs:124",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "Named subcommand gltf2splat from blitz roadmap Task 3.1 does NOT exist. Actual CLI is `ochroma-tools import --gltf` / `vox_tools import --input`. The roadmap acceptance command `ochroma-tools gltf2splat assets/cube.glb /tmp/cube.vxm` fails: no such subcommand (verified via --help).",
+          "file_line": "crates/vox_tools/src/ochroma_main.rs:18; docs/superpowers/plans/2026-06-05-ochroma-blitz-7day-full-roadmap.md:167",
+          "severity": "major",
+          "effort": "hours"
+        },
+        {
+          "what": "Required test gltf2splat_cube (assert splat_count>0 and round-trip load in vox_data) does NOT exist. tests/tools_test.rs has 13 tests, ALL on BuildManifest string formatting plus one turnaround-error case; ZERO exercise GLTF import or vxm round-trip. No fixture .glb/.gltf exists anywhere in the repo (roadmap references assets/cube.glb, absent).",
+          "file_line": "crates/vox_tools/tests/tools_test.rs:1; docs/superpowers/plans/2026-06-05-ochroma-blitz-7day-full-roadmap.md:167",
+          "severity": "major",
+          "effort": "hours"
+        },
+        {
+          "what": "Converted asset never loads/renders in walking_sim, the roadmap's explicit wiring requirement. walking_sim.rs has no .vxm load path; engine_runner's only load path is dead (no files, discards result). To be done-and-playable, the produced .vxm must be loaded into the splat buffer and drawn.",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs (no vxm load); crates/vox_app/src/bin/engine_runner.rs:1828",
+          "severity": "blocker",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Two divergent import paths with different formats/quality: ochroma-tools (V3 + material classification via SpectralMaterialDb) vs vox_tools (V1, MaterialType::Generic). No single canonical converter; the V1 path that is actually loadable is the lower-fidelity one (no material_ids).",
+          "file_line": "crates/vox_tools/src/main.rs:66 vs crates/vox_tools/src/ochroma_main.rs:65",
+          "severity": "minor",
+          "effort": "half-day"
+        },
+        {
+          "what": "Output is self-described REFERENCE QUALITY placeholder: surface splats use fixed tangent/normal [1,0,0]/[0,0,-1] regardless of triangle orientation (computed face normal _normal is discarded), and barycentric sampling is a deterministic hash, not uniform.",
+          "file_line": "crates/vox_data/src/gltf_import.rs:109 and :137",
+          "severity": "minor",
+          "effort": "day"
+        },
+        {
+          "what": "turnaround.rs is a Phase-1 placeholder emitting 64 synthetic unit-cube splats regardless of input views (no real reconstruction), shipped behind `vox_tools turnaround`.",
+          "file_line": "crates/vox_tools/src/turnaround.rs:41",
+          "severity": "minor",
+          "effort": "multi-day"
+        }
+      ],
+      "blitz_day": 3,
+      "parallel_safe": true,
+      "surprise": "Contradicts the 80-95% estimate downward for THIS domain as scoped by the blitz roadmap. The Day-3 deliverable (a gltf2splat subcommand + gltf2splat_cube test + renders-in-walking_sim) is ~0% done: the subcommand name is absent, the test is absent, no fixture asset exists, and the ochroma-tools converter writes a V3 file that the live-loop V1 loader REJECTS (UnsupportedVersion). The underlying gltf_import in vox_data is genuinely good (~80% complete, verified working end-to-end by me) but lives in a different crate, is plumbed through inconsistent CLIs, and is wired into nothing playable."
+    },
+    {
+      "domain": "editor",
+      "crate": "vox_editor (+ vox_app/src/editor.rs, vox_render/src/gizmos.rs)",
+      "summary": "Two distinct \"editors\" exist. (1) The actually-wired one is vox_app/src/editor.rs's SceneEditor: entity list/selection, egui scene-hierarchy + property inspector, undo/redo, translate gizmo, snap, ray-pick. It is fully wired into engine_runner.rs (the live loop): the egui UI runs every frame via self.editor.show(ctx), the gizmo overlay is drawn per-frame into final_pixels, left-click does Rapier raycast + ray-sphere fallback picking, and gizmo drag calls move_selected. (2) The vox_editor crate itself is a node-graph editor (terrain/biome/splat nodes) that is NOT a dependency of vox_app at all and is never instantiated in any live loop — it is effectively dead code reachable only from vox_nodes/tests. The 23 vox_app editor tests + 55 vox_editor tests pass, but tests exercise logic, not the live wiring or the rotate/scale gizmo.",
+      "completion_pct": 62,
+      "wired_status": "partially",
+      "wired_evidence": "engine_runner.rs:420 `let mut editor = SceneEditor::new()`; :2275 `self.editor.show(ctx)` (egui inspector/hierarchy/toolbar run every frame); :1210 `self.gizmo.draw_overlay(&mut final_pixels,...)` per-frame when entity selected; :1632 `self.gizmo.hit_test(...)` on left-press; :1640 `begin_drag`; :1715 `self.gizmo.update_drag(...)` then :1742 `self.editor.move_selected(delta)` on mouse-move; :1604 `end_drag` on release; :1881-1905 left-click picking (Rapier raycast then `editor.pick_entity_at_screen_pos`); :1452 Delete, :1455-1473 arrow-key nudge, :1510/1516 undo/redo. CONVERSELY: grep for NodeEditorPanel/OchromaNodeGraph/vox_editor across crates/vox_app/src returns ZERO live hits, and `grep vox_editor crates/vox_app/Cargo.toml` returns nothing — the node-graph editor crate is not wired anywhere. walking_sim.rs and main.rs have no editor/gizmo/pick wiring (main.rs only `pub mod editor;`).",
+      "gaps": [
+        {
+          "what": "Rotate and Scale gizmo drag are non-functional: GizmoRenderer::update_drag always returns a translation delta (axis_dir * world_delta) and never reads self.mode; engine_runner only ever calls editor.move_selected(delta). So with Rotate/Scale mode selected, dragging the gizmo TRANSLATES the entity. EditorAction::RotateEntity/ScaleEntity variants exist in undo enum but no rotate_selected/scale_selected method exists and none is ever called.",
+          "file_line": "crates/vox_render/src/gizmos.rs:460; crates/vox_app/src/bin/engine_runner.rs:1742",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "W/E/R keys do NOT switch gizmo mode in the live loop (the editor-gizmos plan 'Done When' line 319 claims they do). KeyW is camera-forward (engine_runner:846), KeyE spawns a fire particle emitter (engine_runner:1444-1449), and there is no KeyR or gizmo_mode keyboard handler. Mode can only change via the egui toolbar buttons (editor.rs:594-611).",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:1444",
+          "severity": "minor",
+          "effort": "hours"
+        },
+        {
+          "what": "OchromaNodeGraph::restore() is a destructive stub: it clears all nodes/edges and returns Ok(()) instead of rebuilding from the snapshot; snapshot() also drops every node's params (params: serde_json::Value::Null). Node-graph undo/redo is therefore broken. domain-09 plan (line 1729/1737) explicitly required restore implemented; templates forbid empty bodies.",
+          "file_line": "crates/vox_editor/src/node_graph.rs:381",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "NodeEditorPanel::show() is non-interactive for graph editing: it draws node rects and ports but ends with `let _ = port_positions; let _ = graph;` (lines 111-112). wire_drag field is declared but never assigned, so wires cannot be created/dragged/deleted in the UI. Only node click-selection works.",
+          "file_line": "crates/vox_editor/src/editor_panel.rs:111",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "Entire vox_editor node-graph crate is unwired dead code: it is not a dependency in crates/vox_app/Cargo.toml and is never instantiated by walking_sim/engine_runner/main. The node editor (terrain/biome/splatize graph) cannot be opened or used in the running game.",
+          "file_line": "crates/vox_app/Cargo.toml (no vox_editor dep)",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Day-5 blitz acceptance unmet: the named test `cargo test -p vox_editor gizmo_drag_updates_translation` does not exist (grep finds nothing). The roadmap also requires the gizmo+inspector 'rendered via the Vello path, not egui fallback' (line 189) — actual gizmo uses the software-rasteriser pixel buffer and inspector uses egui; vello is only an optional dep in vox_ui, unused by the editor.",
+          "file_line": "docs/superpowers/plans/2026-06-05-ochroma-blitz-7day-full-roadmap.md:188",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Property inspector is incomplete: it edits name/asset/position X/Y/Z/scale/visible/locked but exposes NO rotation editor (rotation is a Quat with no UI), and scripts are read-only (listed, cannot add/remove/edit). Transform-space World/Local toggle exists in UI but is never consulted by gizmo drag or move logic.",
+          "file_line": "crates/vox_app/src/editor.rs:815",
+          "severity": "minor",
+          "effort": "half-day"
+        },
+        {
+          "what": "Gizmo drag snap stutters / no rotate-snap: snap is applied per-axis at the call-site but the editor-gizmos plan itself (line 257) notes incremental drag_start update causes sub-pixel stutter; rotate/scale have no snap path at all (moot until they function).",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:1724",
+          "severity": "minor",
+          "effort": "hours"
+        }
+      ],
+      "surprise": "Two surprises against the 80-95% assumption. (1) The vox_editor crate named as the domain's primary crate is NOT the editor that's wired into the game — it is a standalone node-graph editor that vox_app doesn't even depend on; the live editor lives entirely in vox_app/src/editor.rs. (2) The gizmo is more broken than 'mostly built' implies: rotate/scale modes render the correct shapes but functionally just translate, because update_drag ignores self.mode. The plan author papered over this — the editor-gizmos 'Done When' only requires the correct SHAPE to render, and the plan's W/E/R keyboard claim is simply false in the code.",
+      "parallel_safe": true,
+      "blitz_day": 5
+    },
+    {
+      "domain": "ai",
+      "crate": "crates/vox_ai (+ crates/vox_nn)",
+      "summary": "vox_ai is a set of well-tested data-transform helpers, NOT working AI. All \"intelligence\" is stubbed: llm.rs LlmInference::generate returns a format string for the Local backend (candle-core/candle-nn are declared deps but NEVER imported anywhere — zero real neural-net code); denoiser.rs always runs a CPU horizontal box-blur and ignores weights_loaded (no CNN); asset_director.rs is a fake stage machine that never invokes colmap and writes placeholder artifacts (splat_count:0, scene_id:0); dialogue.rs/building_director.rs/quality_evaluator.rs are pure string/data helpers. perception.rs (SpectralPerceptionAgent) is the only module with real, wired logic. vox_nn generates real splat geometry from LLM layouts but its LlmClient is mock-only (Ollama path prints 'not available, using mock'; no HTTP client dep) and is wired only into a one-shot demo binary.",
+      "completion_pct": 35,
+      "wired_status": "partially",
+      "wired_evidence": "Only vox_ai::perception is wired, and only into engine_runner.rs (NOT walking_sim.rs, NOT main.rs — both contain zero vox_ai/vox_nn references). engine_runner.rs:78 (SpectralGiAdapter impls SpectralRadianceSource), :93/:105 (PatrolAgent holds SpectralPerceptionAgent), :625-626 (2 agents constructed), :1797-1806 (per-frame: agent.spectral_perception.sense + update_emotion called every frame). BUT engine_runner.rs:1805 `let _ = percept;` explicitly DISCARDS the percept and the dead comment 'Raise alert if green band (7)' is never implemented; emotional_state is never read anywhere in vox_app (grep: NONE). So perception executes per-frame but produces zero gameplay effect. vox_nn appears only in render_showcase.rs:74-78,560-584 (one-shot demo that calls each module once and prints) — never in the interactive loop.",
+      "gaps": [
+        {
+          "what": "LlmInference has NO real inference. candle-core/candle-nn are Cargo deps but never imported; Local backend generate() returns the literal string '[local GGUF: N tokens from PATH]'. There is no LLM in this engine.",
+          "file_line": "crates/vox_ai/src/llm.rs:74-77",
+          "severity": "blocker",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Plan's own 'Done When' command does not exist: `cargo run -- --llm-scene \"a forest at sunset\"` — no --llm-scene flag anywhere in vox_app (grep NONE). The stated acceptance for the whole AI domain is unreachable.",
+          "file_line": "docs/superpowers/plans/2026-03-30-domain-11-ai-llm.md:7",
+          "severity": "blocker",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Spectral perception is wired per-frame but its output is thrown away (`let _ = percept;`) — no decision, alert, or behavior change. The 7-day roadmap's actual target ('NPC makes a spectral-perception-driven decision') is unmet.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:1805",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "Target binary mismatch: roadmap Task 6.1 requires the NPC decision in walking_sim.rs, but walking_sim.rs has zero vox_ai usage; perception lives only in engine_runner.rs.",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:1",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "vox_nn::LlmClient never calls a real LLM. Ollama provider prints 'not available, using mock' and returns hardcoded JSON/TOML from 2-3 keyword-matched templates; no reqwest/http dep in Cargo.toml.",
+          "file_line": "crates/vox_nn/src/llm_client.rs:70-76",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "SpectralDenoiser is not a CNN. apply() ignores weights_loaded and always runs blur_fallback, which is only a HORIZONTAL box blur (loops dx only, no dy) — degenerate even as a blur. safetensors/candle-transformers (named in plan) are not even in Cargo.toml.",
+          "file_line": "crates/vox_ai/src/denoiser.rs:78-113",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "AssetDirector pipeline is fake: ColmapProcess never runs config.colmap_bin, LoadVxm hardcodes splat_count:0, PlaceInScene hardcodes scene_id:0. It only writes JSON state files; produces no asset.",
+          "file_line": "crates/vox_ai/src/asset_director.rs:124-155",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "dialogue.rs, building_director.rs, quality_evaluator.rs have passing tests but ZERO callers in any binary (grep of vox_app live loops: NONE). Pure dead code from the live game's perspective.",
+          "file_line": "crates/vox_ai/src/dialogue.rs:68",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "vox_ai::denoiser::SpectralFramebuffer is shadowed/unused: engine_runner uses vox_render::spectral_framebuffer::SpectralFramebuffer (engine_runner.rs:47), and render_showcase uses vox_render::denoiser::SpectralDenoiser — the vox_ai denoiser/framebuffer are never used anywhere outside vox_ai's own tests.",
+          "file_line": "crates/vox_ai/src/denoiser.rs:13",
+          "severity": "minor",
+          "effort": "hours"
+        }
+      ],
+      "surprise": "Strongly contradicts '80-95% done'. This is the least-complete domain and the team appears to know it: (1) candle is a declared dependency with ZERO imports — there is literally no neural network or LLM running anywhere in the engine; both vox_ai and vox_nn 'LLM' paths are string-template stubs. (2) The domain-11 plan's own implementation code (lines 192-194) hardcoded the stub return value, so the plan was 'completed' by writing the stub. (3) The 7-day blitz roadmap (2026-06-05) explicitly tags AI/LLM as 'Day 6 — DEPTH-LIMITED' with acceptance 'Commit body lists what is stubbed' (line 196,201). Realistic completion for actual AI/LLM capability is ~35%, almost all of which is the perception data-model + tests; the wired perception path is a no-op (output discarded). Note the heavy passing test count (38 in vox_ai) is misleading — tests assert string/format-helper behavior, not inference.",
+      "parallel_safe": true,
+      "blitz_day": 6
+    },
+    {
+      "domain": "terrain",
+      "crate": "crates/vox_terrain",
+      "summary": "vox_terrain is a well-implemented, fully-tested static-terrain library: SDF TerrainVolume with trilinear sampling, sculpt ops (sphere/cliff/cave/arch), volume_to_splats (surface-voxel splatting), a runtime deform API (deform.rs), editor brushes (brushes.rs), heightmap sampling + zone-based splatting, foliage scattering, splat-map texture painting, and TWO separate navmesh extractors (navmesh.rs triangle-based via external crate; navmesh_bridge.rs voxel-graph via vox_core::navmesh). All 4 test files + inline tests pass with real computed assertions (24 unit/integration tests, no is_some()-style cheats). Crucially the library is mostly REAL but only a thin slice is live-wired: the demo SDF volume is generated once, splatted once, and rendered; a navmesh is extracted once and drives patrol agents per-frame; the SDF buffer feeds a GPU shadow pass. Everything authoring-facing (brushes, foliage scatter, heightmap pipeline, texture paint, runtime deform, triangle navmesh) is dead code reachable only from tests.",
+      "completion_pct": 75,
+      "wired_status": "partially",
+      "wired_evidence": "CONSTRUCTED-ONCE (static): engine_runner.rs:606 `generate_demo_volume(42)`, :608 `volume_to_splats(&vol,&materials,42)` (rendered every frame but volume never updated), :611 `extract_from_volume(&vol,1.5,2)`; walking_sim.rs:339-341 same volume+volume_to_splats; main.rs:154 -> terrain_setup.rs:13 `generate_demo_volume(42)` inserted as ECS resource. LIVE PER-FRAME CONSUMERS: engine_runner.rs:1798 `agent.update(dt, nm)` uses the terrain-extracted NavMesh for pathfinding (find_path at :117); engine_runner.rs:2118-2119 `terrain.to_sdf_buffer()`/`sdf_metadata()` feed SdfShadowPass GPU compute (dispatched :2246). UNWIRED: ai_fsm NavMeshPlugin (uses navmesh.rs::build_navmesh) commented out at engine_runner.rs:59; terrain_editor apply_brush_stroke/resplat_terrain/scatter_foliage_on_terrain called ONLY in tests; editor.rs:862 \"Scatter Foliage\" button only prints. No carve/fill/deform/extract_region/invalidate_region call anywhere in the three live-loop files.",
+      "gaps": [
+        {
+          "what": "Terrain volume is generated once and NEVER deformed at runtime in any live binary. deform.rs (carve_sphere/fill_sphere/carve_tunnel/apply_explosion) and the whole brushes.rs sculpt API are dead outside tests — no live grep hit in walking_sim/engine_runner/main. 'Playable' destructible/sculptable terrain does not exist in the running game.",
+          "file_line": "crates/vox_terrain/src/deform.rs:12; crates/vox_app/src/bin/engine_runner.rs:614 (volume stored but never mutated)",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "Terrain editor is non-functional: the egui panel renders brush/foliage sliders but brush strokes are never applied to the live TerrainVolume and the 'Scatter Foliage' button only println!s. apply_brush_stroke/resplat_terrain/scatter_foliage_on_terrain in terrain_editor.rs are invoked only from terrain_editor_test.rs. This directly contradicts the terrain-editor plan's stated goal ('Mouse clicks in the viewport apply a TerrainBrush... after each stroke volume_to_splats regenerates the terrain splats').",
+          "file_line": "crates/vox_app/src/editor.rs:860-863; crates/vox_app/src/terrain_editor.rs:112-124",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "Two competing, redundant navmesh implementations. navmesh.rs (triangle-based, external `navmesh` 0.9 crate, find_path with waypoints) is wired only into ai_fsm.rs whose NavMeshPlugin is commented out (engine_runner.rs:59) — so it is fully dead in live loops. navmesh_bridge.rs (voxel-graph) is the one actually used. One of these is wasted surface area / divergent maintenance.",
+          "file_line": "crates/vox_terrain/src/navmesh.rs:82; crates/vox_app/src/bin/engine_runner.rs:59",
+          "severity": "minor",
+          "effort": "half-day"
+        },
+        {
+          "what": "Entire heightmap authoring pipeline is dead in the live game. Heightmap::to_splats (zone-based), default_zones, TerrainMaterialZone, load_heightmap_raw (raw f32 loader), generate_test_heightmap are never called outside the crate; only Heightmap::from_data is used, and only inside the unwired terrain_editor foliage path. The live terrain comes entirely from the SDF volume, not from any loaded/generated heightmap.",
+          "file_line": "crates/vox_terrain/src/heightmap.rs:100 (to_splats), :183 (load_heightmap_raw), :209 (generate_test_heightmap)",
+          "severity": "minor",
+          "effort": "half-day"
+        },
+        {
+          "what": "texture_paint::SplatMap (multi-layer material blending/painting) is completely unused outside its own module — zero references in vox_app/vox_sim. Spectral terrain material blending is not wired to rendering at all.",
+          "file_line": "crates/vox_terrain/src/texture_paint.rs:10",
+          "severity": "minor",
+          "effort": "half-day"
+        },
+        {
+          "what": "Top-level lib.rs TerrainTile (4096x4096 flat heightmap, 64MB) and SurfaceType are essentially orphaned: only referenced as an AssetCategory enum NAME in vox_data/asset_catalog.rs:24, never instantiated/used. Dead public API.",
+          "file_line": "crates/vox_terrain/src/lib.rs:27",
+          "severity": "minor",
+          "effort": "hours"
+        },
+        {
+          "what": "Incremental navmesh re-extraction after terrain deform (extract_region + NavMesh::invalidate_region/merge) is implemented and tested but never called live — comment at engine_runner.rs:297 says volume is 'kept for navmesh re-extraction after deform' but no deform or re-extract ever happens. Dead until deform is wired.",
+          "file_line": "crates/vox_terrain/src/navmesh_bridge.rs:79; crates/vox_app/src/bin/engine_runner.rs:297",
+          "severity": "minor",
+          "effort": "half-day"
+        },
+        {
+          "what": "Foliage scatter produces FoliageInstance ECS entities with asset_uuid: Uuid::nil() (terrain_editor.rs:181) — no actual foliage asset is bound, so even if scatter were wired, instances would reference no renderable splat asset. Foliage cannot visibly appear.",
+          "file_line": "crates/vox_app/src/terrain_editor.rs:181",
+          "severity": "major",
+          "effort": "day"
+        }
+      ],
+      "blitz_day": 5,
+      "surprise": "Contradicts the 80-95% estimate on the DOWNSIDE for 'playable': the vox_terrain library code is genuinely high-quality and ~75% feature-complete with real tests, but the GAME-FACING terrain is far less wired than implied. Live terrain is a single static demo SDF (generate_demo_volume(42)) that is never deformed, never edited, and never sculpted at runtime. The terrain editor panel is a visual shell (sliders render, but strokes/foliage do nothing but print). An entire second navmesh implementation (navmesh.rs + ai_fsm) is dead via a commented-out plugin at engine_runner.rs:59. The only genuine live consumers are: one-shot volume_to_splats for rendering, one-shot navmesh extraction for patrol agents, and the SDF buffer feeding the GPU shadow pass. Roughly half the crate (heightmap pipeline, brushes, deform, texture_paint, TerrainTile, triangle navmesh) is reachable only from tests.",
+      "parallel_safe": true
+    },
+    {
+      "domain": "data",
+      "crate": "crates/vox_data",
+      "summary": ".vxm format has three real, zstd-compressed versions (V1 VxmFile, V2 VxmFileV2, V3 VxmFileV3) each with genuine write/read round-trip tests. ply_loader is a real binary-PLY parser doing Smits RGB→16-band spectral upsampling; import_pipeline::import_asset dispatches ply/glb/gltf/vxm; world_save (JSON) and save.rs (OCHS+zstd) are real. 222 vox_data tests pass and there are zero todo!()/unimplemented!() stubs in src. The format code itself is solid; the failure is at the seams between code paths and at integration into the live game.",
+      "completion_pct": 70,
+      "wired_status": "partially",
+      "wired_evidence": "engine_runner.rs:584 vox_data::ply_loader::load_ply (build_scene, splats pushed to scene_splats:587 then GPU via run_clas:588/765 clas::build_clusters) — REAL, constructed-once at startup. engine_runner.rs:1530-1542 world_save save/load bound to KeyF/KeyL — REAL, event-driven. engine_runner.rs:791/812 gi_export load_vxgi/save_vxgi — REAL. engine_runner.rs:1825 VxmFile::read in tile streaming loop — result bound to Ok(_vxm) and DISCARDED (splats never reach renderer). walking_sim.rs: only vox_data::proc_gs_advanced (354,394) — NO .vxm/.ply/save load at all. main.rs: ZERO vox_data refs (demo_asset builds VxmFile in-memory at main.rs:120 but never serializes/deserializes — write/read byte path never exercised by live game).",
+      "gaps": [
+        {
+          "what": "CLI/loader VXM version asymmetry: ochroma-tools writes VxmFileV3 (version=3, ochroma_main.rs:65-71) but import_pipeline::import_vxm reads only VxmFile/V1 (import_pipeline.rs:198-201), which rejects version 3 with UnsupportedVersion(3). The 'round-trip' the plan claims is BROKEN across paths — each path is green in isolation but they do not interoperate. No test covers CLI-write→import_asset-read.",
+          "file_line": "crates/vox_data/src/import_pipeline.rs:198",
+          "severity": "blocker",
+          "effort": "hours"
+        },
+        {
+          "what": ".vxm files are NOT loadable by the running game. engine_runner build_scene only handles path.ends_with('.ply') (engine_runner.rs:583); any other extension prints 'Scene file format not yet supported' (engine_runner.rs:597). The asset-pipeline plan's Done-When ('cargo run -- out.vxm renders the imported scene') is therefore impossible — the CLI output cannot be opened by the game.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:583",
+          "severity": "blocker",
+          "effort": "half-day"
+        },
+        {
+          "what": "LOD tile streaming reads .vxm then throws it away: match arm binds Ok(_vxm) and only prints a log line; the loaded splats are never inserted into scene_splats or the renderer. Additionally NO code anywhere generates the assets/tiles/tile_X_Z.vxm files this loop expects (find found zero .vxm files on disk, no writer for that path), so the streaming branch is dead at runtime.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:1828",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "Day 3 roadmap names CLI subcommand 'ochroma-tools gltf2splat assets/cube.glb /tmp/cube.vxm' and test 'gltf2splat_cube' — neither exists. Actual CLI is 'import --gltf <f> --out <f>' (ochroma_main.rs:39-72) and vox_tools/tests/tools_test.rs contains only build-manifest tests, no gltf2splat test and no V3 round-trip test.",
+          "file_line": "crates/vox_tools/src/ochroma_main.rs:39",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "walking_sim (the blitz's primary playable target per Day3 'loads and renders in walking_sim') has no asset-loading at all from vox_data — only procedural generation. No path exists for a .vxm/.ply produced by the pipeline to appear in walking_sim.",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:354",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "AssetCatalog / asset_catalog.rs and hot_reload.rs are not wired into any live loop (material hot-reload is commented out at engine_runner.rs:63-64; AssetCatalog appears only in render_showcase, not the three live binaries). Catalog/hot-reload features exist as tested library code but are unused by the game.",
+          "file_line": "crates/vox_data/src/asset_catalog.rs:1",
+          "severity": "minor",
+          "effort": "day"
+        }
+      ],
+      "surprise": "More broken than '80-95%' implies for the integration claim: each VXM version and the importer have green tests in isolation, but the two real code paths (the ochroma-tools CLI writer and the import_asset/.vxm reader) use DIFFERENT, incompatible versions (V3 write vs V1 read), so the production round-trip the asset-pipeline plan's Done-When asserts does not actually work — and there is no test that exercises both together. Separately, the running game (engine_runner) cannot open a .vxm at all (only .ply), so 'cargo run -- out.vxm' from the plan is impossible today. The format code is high quality; the wiring/seam story is markedly weaker than reported.",
+      "parallel_safe": true,
+      "blitz_day": 3
+    },
+    {
+      "domain": "sim",
+      "crate": "vox_sim",
+      "summary": "vox_sim is a 35-module city-simulation library (crowd, navmesh-driven steering, traffic LWR flow, zoning, economy, citizens, services, roads, supply_chain, sharding, deterministic replay, social_network, city_council, bdi_agent, etc.). It is genuinely implemented at the unit level: ~151 tests, zero todo!()/unimplemented!()/stubs, builds green. Real algorithms, not placeholders. The problem is wiring: only the vox_app `src/main.rs` binary (city-builder) integrates any of it, via a `SimulationState` resource that pulls just 7 of 35 modules and ticks only 5. The flagship `ochroma` binary (engine_runner.rs) and walking_sim.rs use ZERO vox_sim.",
+      "completion_pct": 45,
+      "wired_status": "partially",
+      "wired_evidence": "Live-loop integration is ONLY in crates/vox_app/src/main.rs (the autobins `vox_app` binary), via simulation.rs: main.rs:130 inserts SimulationState resource; main.rs:461 `self.world.resource_mut::<SimulationState>().tick(dt)` per frame. simulation.rs:86/96/99/102/105 tick citizens, budget, traffic, agents, zoning. Traffic is fed by player road placement: placement.rs:53 `sim.traffic.add_segment(...)`. CRITICAL: the three named live-loop files behave differently — engine_runner.rs (the flagship `[[bin]] name=\"ochroma\"`, Cargo.toml:57-59) has ZERO `vox_sim` references (grep returned nothing); walking_sim.rs has ZERO `vox_sim` references; both implement their own AI (engine_runner.rs:85 inline `PatrolAgent`, ticked at engine_runner.rs:1797-1798 `agent.update(dt, nm)` against vox_terrain navmesh — NOT vox_sim::crowd). vox_render and ochroma_engine declare vox_sim as a dep but only ochroma_engine/src/lib.rs:39 re-exports it (`pub use vox_sim::*`); vox_render never uses it. All 35 modules are exercised in crates/vox_app/examples/city_builder_demo.rs (a one-shot main() running `for tick in 0..100` then exiting — NOT a live game loop).",
+      "gaps": [
+        {
+          "what": "28 of 35 vox_sim modules are orphans — never referenced anywhere in vox_app/src (verified per-module: advisor, buildings, disasters, districts, land_value, migration, milestones, pollution, routines, seasons, supply_chain, transport, utilities, ecosystem, employment, history, trade, vehicles, weather, bdi_agent, social_network, city_council, sharding, deterministic, crowd, spatial_hash all = 0 files). They appear only in unit tests and the one-shot example. The entire recent crowd+navmesh+sharding+deterministic+social work is dead weight at runtime.",
+          "file_line": "crates/vox_sim/src/lib.rs:1-33 (modules) vs crates/vox_app/src/simulation.rs:1-7 (only 7 imported)",
+          "severity": "blocker",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Flagship binary `ochroma` (engine_runner.rs) and walking_sim.rs contain zero city-simulation — the game-layer sim only runs in the non-default `vox_app` binary (src/main.rs). A player launching the headline binary gets no simulation. Wiring SimulationState into engine_runner, or deciding which binary is canonical, is unresolved.",
+          "file_line": "crates/vox_app/Cargo.toml:57-67 (ochroma=engine_runner, walking_sim); engine_runner.rs has no vox_sim ref",
+          "severity": "blocker",
+          "effort": "multi-day"
+        },
+        {
+          "what": "AgentManager (the one wired sim mover) is constructed but NEVER fed: SimulationState::new() spawns 10 citizens but zero agents (only citizens.spawn at lines 52-54), and nothing ever sets agent.destination. So agents.tick() at simulation.rs:102 iterates an empty HashMap every frame — wired but permanently inert.",
+          "file_line": "crates/vox_app/src/simulation.rs:62-63,102",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "roads (RoadNetwork) and services (ServiceManager) are constructed in SimulationState but have no tick at all and are never simulated (roads.rs/services.rs expose no `tick`); they are inert data only.",
+          "file_line": "crates/vox_app/src/simulation.rs:59,61 + crates/vox_sim/src/roads.rs:75 / services.rs:72 (no tick fn)",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "Citizens are simulated but invisible: main.rs only reads sim.citizens for HUD counts/avg-satisfaction (main.rs:510-527); no citizen/agent is ever rendered as a splat or ECS entity in the world. Same for crowd. Nothing in the sim is visually represented except via zoning/road placement.",
+          "file_line": "crates/vox_app/src/main.rs:507-527",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Two parallel, non-reconciled AI/path stacks: vox_sim::crowd (CrowdSimulation + CrowdAgent::set_navmesh_destination using vox_core::navmesh) is fully unused, while engine_runner.rs ships its own inline PatrolAgent against vox_terrain navmesh. The navmesh-ai plan targets vox_terrain+ai_fsm, not vox_sim — so vox_sim's crowd/navmesh effort duplicates and is orphaned. NavMeshPlugin wiring is even commented out (engine_runner.rs:59-60).",
+          "file_line": "crates/vox_sim/src/crowd.rs:118 vs crates/vox_app/src/bin/engine_runner.rs:85,1797 + :59-60 (commented NavMeshPlugin)",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Plan docs/superpowers/plans/2026-03-29-navmesh-ai.md prescribes navmesh from vox_terrain + ai_fsm.rs PatrolAgent + NavMeshPlugin wired into engine_runner; the plugin is present (vox_app/src/ai_fsm.rs exists) but NOT added to engine_runner (commented at engine_runner.rs:59-60), and main.rs never references ai_fsm. The planned AI integration is incomplete.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:59-60; crates/vox_app/src/main.rs (no ai_fsm)",
+          "severity": "minor",
+          "effort": "half-day"
+        }
+      ],
+      "surprise": "Contradicts 80-95%. vox_sim is well-built per-module but ~80% of it is RUNTIME-DEAD: 28/35 modules are referenced nowhere in vox_app except a one-shot example and unit tests. The flagship `ochroma` binary (engine_runner) uses NONE of vox_sim — the city sim only lives in a non-default `vox_app` binary. Even the wired path is hollow: AgentManager is ticked on an empty map (no agents ever spawned/given destinations), roads/services have no tick, and no citizen/agent is rendered. The recent crowd+navmesh commits (ebf82a8/adcdfdc/a4e6fd8) added solid, tested code that is entirely orphaned and duplicates engine_runner's separate inline PatrolAgent stack. Realistic wired-and-playable completion is ~45%, not 80-95%.",
+      "parallel_safe": true,
+      "blitz_day": 7
+    },
+    {
+      "domain": "web",
+      "crate": "crates/vox_web",
+      "summary": "vox_web is exactly as described: 15 LOC, framework-only. crates/vox_web/src/lib.rs has a single #[cfg(target_arch=\"wasm32\")] wasm_main() that installs the panic hook and logs \"Ochroma hello_splat loaded\" to the JS console — nothing else. There is NO WebGPU rendering: no adapter/device request, no canvas getContext, no wgpu surface, no splat draw. web/build.sh and web/index.html exist and the wasm crate compiles, so wasm-pack WILL produce a >10KB bundle, but it renders nothing. The index.html canvas (#ochroma-canvas) is never touched by any code; the status div is flipped to \"Ready\" by JS unconditionally even though no WebGPU is initialised. vox_render has zero wasm32 support, so even a wired vox_web would have nothing renderable to call.",
+      "completion_pct": 10,
+      "wired_status": "n/a",
+      "wired_evidence": "none found in live loop. grep of vox_web/hello_splat/wasm/web_sys/wasm_bindgen/target_arch across crates/vox_app/src/bin/walking_sim.rs, crates/vox_app/src/bin/engine_runner.rs, crates/vox_app/src/main.rs returned EXIT 1 (zero matches). The web target is a separate wasm32 entry point (crates/vox_web/src/lib.rs:12 wasm_main, and a duplicate at crates/vox_app/src/bin/hello_splat.rs:8), not part of any native live game loop — so \"wired into the running game\" is n/a by design. But it is also not wired to ANY renderer: vox_render has no wasm32/web-sys/wasm-bindgen support (grep returned none).",
+      "gaps": [
+        {
+          "what": "No WebGPU device/adapter init — wasm_main() only logs to console; no navigator.gpu.requestAdapter, no requestDevice. Browser shows blank black canvas, never actually initialises WebGPU despite the status text.",
+          "file_line": "crates/vox_web/src/lib.rs:12-15",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "No canvas binding / WebGPU surface. index.html declares <canvas id=ochroma-canvas> but no Rust code calls getElementById/getContext. web-sys imports Window/Document/HtmlCanvasElement features (Cargo.toml:19) that are never used in code.",
+          "file_line": "crates/vox_web/src/lib.rs:12; web/index.html:14",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "No splat render pass on web at all — vox_render has zero wasm32 support (no wasm32/web-sys/wasm-bindgen anywhere in crates/vox_render). The spectral splat pipeline cannot be invoked from wasm; making hello_splat actually render a splat requires porting/feature-gating vox_render's wgpu pipeline to the WebGPU backend on wasm32.",
+          "file_line": "crates/vox_render/ (no wasm support)",
+          "severity": "blocker",
+          "effort": "multi-day"
+        },
+        {
+          "what": "index.html lies: JS sets status to 'Initialising WebGPU…' then unconditionally to 'Ready' (lines 18-20) regardless of any GPU work; await init() only runs the console-log wasm. A reviewer opening the page sees 'Ready' over a black screen and may believe it works.",
+          "file_line": "web/index.html:18-21",
+          "severity": "major",
+          "effort": "hours"
+        },
+        {
+          "what": "Duplicate dead entry point: crates/vox_app/src/bin/hello_splat.rs is byte-for-byte the same wasm_main as vox_web AND defines a native main() that just prints 'hello_splat: native mode.' build.sh builds crates/vox_web (build.sh:6,10), NOT this bin, so the vox_app hello_splat is unused for web. Two sources of truth for the same demo.",
+          "file_line": "crates/vox_app/src/bin/hello_splat.rs:8-16; web/build.sh:6",
+          "severity": "minor",
+          "effort": "hours"
+        },
+        {
+          "what": "getting-started.md falsely claims `cargo run --bin hello_splat` 'opens a window with an orbit camera looking at the default spectral splat scene' — the native bin only prints 'hello_splat: native mode.' and exits (hello_splat.rs:14-16). Documentation does not match behavior.",
+          "file_line": "docs/getting-started.md:26-29; crates/vox_app/src/bin/hello_splat.rs:14-16",
+          "severity": "minor",
+          "effort": "hours"
+        },
+        {
+          "what": "CI build-web job is NOT marked continue-on-error, contradicting the blitz plan which explicitly requires it (plan lines 93,105) until Day 3's web task lands. grep continue-on-error in .github/workflows/ci.yml returns nothing. The job DOES compile (framework-only wasm builds fine), so it likely passes green and gives a false signal that 'web works' — masking that nothing renders.",
+          "file_line": ".github/workflows/ci.yml:45-59",
+          "severity": "major",
+          "effort": "hours"
+        }
+      ],
+      "blitz_day": 3,
+      "parallel_safe": true,
+      "surprise": "Contradicts the 80-95% assumption hard: this domain is ~10% done, not 80-95%. It is genuinely framework-only — a console.log and a panic hook, no WebGPU, no canvas, no renderer path on wasm32. Three blockers (device init, canvas/surface, vox_render wasm port) stand between this and rendering a single splat in a browser; the third is multi-day because vox_render has no wasm support whatsoever. Two false-positive traps: (1) index.html unconditionally shows 'Ready' over a blank canvas, and (2) CI build-web passes green (the empty wasm compiles) without continue-on-error, both implying 'web works' when nothing renders. vox_web has zero tests (no tests/ dir, no #[test]/#[wasm_bindgen_test])."
+    },
+    {
+      "domain": "integration",
+      "crate": "crates/vox_app",
+      "summary": "The dogfood game is crates/vox_app/src/bin/walking_sim.rs (988 LOC), and its core loop is genuinely live and playable: WASD walk via CharacterController, Rapier ground raycast + static building colliders, 10-orb proximity collection with a win state, a per-frame bitmap-font HUD (orbs/pos/fps), windmill rigid animation, shadow mapper, and a rodio collect-tone. It builds green and runs. main.rs is a SEPARATE city-builder app (zoning/citizens/budget, bevy_ecs), and engine_runner.rs is a SEPARATE 2689-LOC engine sandbox/editor with a far richer live loop (Rapier KCC, spatial_gi.propagate/apply per frame, particle impact WAVs, navmesh patrol agents, Lua+Rhai). Three of these are independent ApplicationHandlers — there is no single unified game. Against the authoritative blitz \"Done When\" (2026-06-05 roadmap), walking_sim is missing the drop-object-that-falls mechanic, synthesized (no-WAV) impact audio, a Vello HUD, and live GI radiance.",
+      "completion_pct": 70,
+      "wired_status": "partially",
+      "wired_evidence": "walking_sim.rs LIVE per-frame: character_controller_tick @541; physics.step @550; physics.raycast ground @554; check_building_collision @571; shadow_mapper.update @578; windmill.tick @584; audio.set_listener/tick @589-591; orb collect+audio.play_tone @602-613; game_ui.set_text HUD @640-649; rasteriser.render @677; game_ui.render_to_pixels @768; backend.present_framebuffer @939; update(dt)+render() called from RedrawRequested @935-936. Constructed-once: RapierPhysicsWorld ground @328, building colliders @380; CLAS clusters @417 (build only); RhaiRuntime config @824 (load-once, NOT per frame). ABSENT from walking_sim: no GI/SpectralRadianceCache, no Vello, no drop/dynamic-body, no spectral_synth2::strike — grep returned 0. engine_runner.rs LIVE GI @992-993 (spectral_gi.propagate + apply per frame) — but that is the sandbox, not the dogfood game.",
+      "gaps": [
+        {
+          "what": "No 'drop object that falls + synth impact sound' mechanic in the dogfood game. walking_sim has NO key to drop an object, no dynamic Rapier rigid body (only static colliders @328/@380), and never calls spectral_synth2::strike. This is an explicit clause of the blitz Done When and Task 2.1/7.1; it is entirely absent.",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:508 (update fn — no drop branch)",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "HUD is bitmap-font (GameUI::render_to_pixels), not Vello. Blitz Done When requires a 'Vello-rendered HUD'. The vello/parley/taffy stack exists as the vox_ui 'game-ui' cargo feature but is NOT enabled or wired into any binary.",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:768; crates/vox_ui/Cargo.toml game-ui feature",
+          "severity": "major",
+          "effort": "multi-day"
+        },
+        {
+          "what": "No live Spectral GI in the dogfood game. Render fakes spectra by a hardcoded RGB→16-band linear spread; no SpectralRadianceCache/SpectralAtmosphere. Blitz Done When requires the GI cache feeding live non-constant radiance into render/audio/UI. (engine_runner DOES wire spectral_gi @992 but that is the sandbox, not walking_sim.)",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:736-757",
+          "severity": "blocker",
+          "effort": "day"
+        },
+        {
+          "what": "Collect/impact audio path is rodio-based and writes a WAV to temp on every orb (synth::generate_collect_sound + save_wav). Blitz requires a synthesized impact with 'no WAV file loaded' via CPAL. cpal_backend.rs and spectral_synth2::strike exist but are wired into ZERO binaries (grep across crates/vox_app/src = 0 hits).",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:616-622",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "SpatialAudioManager::new() uses rodio OutputStream::try_default(), not CPAL. CPAL backend (crates/vox_audio/src/cpal_backend.rs) is unwired. So cross-platform audio per roadmap is not delivered through the manager the game uses.",
+          "file_line": "crates/vox_audio/src/spatial.rs:97",
+          "severity": "major",
+          "effort": "half-day"
+        },
+        {
+          "what": "Zero automated tests for the dogfood game logic. walking_sim's 988 LOC (orb collection, win condition, ground snap, drop) have NO unit/integration tests; vox_app/tests cover only the city-builder main.rs path (ECS/SimulationState/save-load). The 2059-test baseline does not exercise the playthrough.",
+          "file_line": "crates/vox_app/tests/integration_test.rs:1 (covers main.rs, not walking_sim)",
+          "severity": "major",
+          "effort": "day"
+        },
+        {
+          "what": "Three divergent app entrypoints (walking_sim, main.rs city-builder, engine_runner sandbox) with no shared game loop. The richest wiring (live GI, KCC physics, navmesh AI, dynamic-body impacts) lives in engine_runner, NOT the dogfood target, so the 'end-to-end playthrough' must reimplement/port features that already exist one binary over.",
+          "file_line": "crates/vox_app/src/bin/engine_runner.rs:141 vs walking_sim.rs:181",
+          "severity": "minor",
+          "effort": "multi-day"
+        },
+        {
+          "what": "Rhai in walking_sim is load-once at startup (config eval @824) and a one-shot eval on backquote @890; it does NOT mutate entity/orb state per frame. Blitz Task 2.2 wants a per-frame Rhai hook (orb pulse). Orb pulse is currently pure Rust @482.",
+          "file_line": "crates/vox_app/src/bin/walking_sim.rs:824",
+          "severity": "minor",
+          "effort": "half-day"
+        }
+      ],
+      "blitz_day": 7,
+      "surprise": "Mostly MORE broken than '80-95% done' for the SPECIFIC dogfood Done-When, but in an interesting split. (1) The most-complete live loop is in the WRONG binary: engine_runner.rs (the sandbox) already wires live spectral GI @992, dynamic Rapier KCC, particle impact sounds, navmesh agents — while walking_sim.rs (the actual ship target) has none of GI, drop-mechanic, Vello, or CPAL. (2) Every named-missing capability has supporting library code present but UNWIRED: spectral_synth2::strike, cpal_backend, spectral_reverb/sdf_reverb, and the vox_ui vello game-ui feature are referenced by ZERO app binaries. So it is genuinely '~70% built, key pieces sitting on the shelf next to the game rather than plugged in.' (3) walking_sim's 988 lines of game logic have zero tests, so its 'green build' tells you nothing about whether the playthrough works.",
+      "parallel_safe": true
+    }
+  ],
+  "punchlist": {
+    "critical_path": "The dogfood ship target is walking_sim.rs, but every blitz Done-When clause it must satisfy is already implemented and wired ONE BINARY OVER in engine_runner.rs (live spectral GI propagate/apply at engine_runner.rs:990-997, Rapier KCC, particle-impact audio, navmesh agents). So the critical path is NOT \"build features\" — it is \"port/wire the already-live engine_runner features into walking_sim, plus the genuinely-missing library hooks.\" Ordered, each link blocks ship:\n\n1. (Day 1, FOUNDATION) Decide canonical binary. Either promote walking_sim to consume the engine_runner wiring patterns, or designate engine_runner the ship target. Every downstream wiring task depends on this. Recommend: keep walking_sim as dogfood, port the 4 missing wirings into it. CI green-gate web/spectra continue-on-error.\n2. (Day 1) Wire SpectralRadianceCache.propagate/apply into walking_sim's render path (the only missing live-loop GI; engine_runner already proves the pattern at :990-997). This is the foundation other domains read from (audio reverb, UI HUD, AI perception all want live band energy). BLOCKS: spectral-HUD, reverb-from-GI, perception-decision.\n3. (Day 2) Add a dynamic Rapier body + drop-key + spectral_synth2::strike (no-WAV) impact in walking_sim. The drop-object-that-falls-and-sounds mechanic is the single most-cited missing Done-When clause and is referenced by physics+audio+integration. add_dynamic_box does not exist in any live loop today.\n4. (Day 2) Fix script I/O hollowness: populate SpectralState.band_energy from the live GI cache (engine_runner.rs:441/2074) and EntityStore from ECS — without this every script path returns zeros and can never fire a threshold. Depends on (2).\n5. (Day 3) Fix the VXM V3-write / V1-read mismatch (vox_tools writes version=3, import_pipeline/engine_runner read only version=1) and add a .vxm load path to walking_sim. Without this the entire asset pipeline produces files the game cannot open. Verified live.\n6. (Day 5) Vello+Taffy SpectralHUD convergence: enable the game-ui feature (currently enabled by NO crate), add text via parley, route walking_sim HUD through VelloCtx reading the live GI cache from (2). Multi-day; the biggest single risk.\n7. (Day 7) Integration dogfood: one continuous walking_sim playthrough hitting walk+collect+drop+sound+GI+HUD, plus the FIRST automated test of walking_sim's 988 LOC (currently zero).\n\nIf Day-6 Vello slips, fall back to the bitmap HUD reading live GI (keeps the \"non-constant radiance into UI\" clause via vox_core::game_ui) and ship without Vello — do not let Vello block the playthrough.",
+    "headline": "REALITY: this is ~50% done-and-playable, not 80-95%. Of 18 audited domains, only 2 are genuinely wired-and-functional end-to-end (terrain SDF->splat/navmesh, and the core Rapier static-collider step). The build is green with 2059 tests, but the tests are the trap: they prove library logic in isolation, not live wiring. Wired-status tally: 0 fully-wired-AND-functional headline domains; 11 \"partially\" (live hook exists but the data flowing through it is inert — empty maps, zeroed band-energy, discarded results, None Options); 5 effectively NOT wired (net, ui-vello, web, plus the GameScript trait and most of audio/AI). The single structural root cause: the dogfood ship target (walking_sim.rs) is the WRONG binary — the richest live loop (spectral GI, KCC physics, impact audio, navmesh AI) lives in engine_runner.rs (\"ochroma\" bin), while walking_sim has none of GI/drop-mechanic/Vello/CPAL. Every named-missing capability has real library code sitting UNWIRED next to the game: spectral_synth2::strike, cpal_backend, VelloCtx, blend_gpu (no setter exists), GpuGiPass (never dispatched), dynamic Rapier bodies (never spawned), QUIC (connect() discards the handshake future). Verified live: walking_sim has 0 refs to vox_sim/GI/Vello/dynamic-body; engine_runner has 0 GameScript wiring; quic_transport and character_body are both permanently None; game-ui cargo feature is enabled by no crate; VXM writer emits v3 while the loader rejects everything but v1.",
+    "surprises": "1. The headline scripting framework in vox_core (GameScript/ScriptRegistry/ScriptComponent) is DEAD — zero callsites in vox_app (verified). Worse, script_update_system (engine_runtime.rs:234) re-creates each script instance from scratch every frame, so it is structurally incapable of stateful scripts even if wired. The live game scripts via Rhai+Lua instead, but THOSE read inert zeroed stores too. Three script systems coexist despite the plan saying \"replace Rhai with mlua.\"\n\n2. The most-complete live loop is in the WRONG binary. engine_runner.rs (the sandbox) wires live spectral GI at :990-997, dynamic KCC, particle impact sounds, navmesh agents. walking_sim.rs (the actual ship/dogfood target) has NONE of them. The blitz can largely be won by porting, not building.\n\n3. \"GPU\" is frequently a misnomer. gpu_particles::GpuParticleSystem is a CPU Vec with no wgpu pipeline. GpuGiPass has a real shader but is never dispatched. PBF GPU path exists but only cpu_step is reachable. blend_gpu has NO setter anywhere — the GPU blend path is structurally unreachable, not merely unwired.\n\n4. Doc drift in the governing roadmap itself: it asserts an 8-band [u16;8] cross-system invariant, but GaussianSplat is actually [u16;16] and the GI code correctly uses 16. The roadmap is wrong; the code is consistent. Multiple named acceptance tests (gi_cache_is_live, blend_tree_interpolates, gltf2splat_cube, gizmo_drag_updates_translation) DO NOT EXIST. Several Done-When CLI invocations (--llm-scene, gltf2splat subcommand, cargo run -- out.vxm) are unrunnable today.\n\n5. Two false-green CI traps: web/index.html unconditionally shows \"Ready\" over a blank black canvas with no WebGPU init, and the CI build-web job lacks continue-on-error so an empty-wasm compile passes green and signals \"web works\" when nothing renders. No audio assets exist on disk, so even the wired rodio file-playback paths only produce decode errors. The single live spectral-audio path actively VIOLATES its own spec (writes /tmp WAV when spec demands \"no WAV file\").\n\n6. VXM round-trip is broken across the seam: each path is green in isolation (v3 writer test passes, v1 reader test passes) but they are incompatible versions, and NO test exercises CLI-write -> game-read. Classic \"green tests, broken integration.\"",
+    "cross_domain_risks": "1. THE BINARY-SPLIT RISK (highest). Three independent ApplicationHandlers (walking_sim dogfood, main.rs city-builder, engine_runner sandbox) with no shared game loop. Any task that says \"wire X into the live game\" is ambiguous until the canonical binary is fixed on Day 1. If two agents wire the same feature into two different binaries, collision + wasted work. MITIGATION: Day-1 decision, written into every task as \"target = walking_sim.rs\".\n\n2. THE LIVE GI CACHE IS A SHARED DEPENDENCY HUB. Spectral-HUD (ui), reverb-from-GI (audio), script SpectralState (script), and AI perception-decision (ai) ALL want to read live per-band radiance. Today that cache is only live in engine_runner; in walking_sim it does not exist. If GI-into-walking_sim (Day 1) slips, four downstream domains cannot satisfy their Done-When. This is the most fan-out-heavy single task. Sequence it first and lock its public read API (cache.band_energy_at(pos) -> [f32;16]) before the four consumers start.\n\n3. SHARED-FILE COLLISION IN walking_sim.rs AND engine_runner.rs. Physics-drop, audio-impact, script-hook, GI-wire, and Vello-HUD ALL edit walking_sim.rs's update()/render(). These cannot be parallelized against the same file without merge hell. Either serialize all walking_sim edits behind one owner per day, or stage them as separate well-bounded functions. This is why parallel_safe_now lists only NON-walking_sim crate-internal work.\n\n4. VELLO FEATURE-FLAG BLAST RADIUS. Enabling game-ui pulls vello/parley/taffy into the build for the first time; it may break the GREEN build (new deps, wasm interaction, surface/format/depth ordering vs the egui pass — all unverified per audit). Quarantine on a branch; do not let it touch the Day-1/2/3 critical path. Have the bitmap-HUD-reading-live-GI fallback ready.\n\n5. VXM VERSION MISMATCH is a cross-crate seam (vox_tools writes, vox_data reads, vox_app loads). Fixing it touches three crates; coordinate so the version constant and the round-trip test land together.\n\n6. TRACK S OVERLAP: vox_render is shared between blitz (CPU/crucible GI, Vello) and Track S (Vulkan/Slang). Any blitz vox_render edit risks colliding with spectra-native bring-up. Confine blitz vox_render work to spectral_gi.rs/spectral_atmosphere.rs/animation_driver.rs (CPU paths) and avoid the GPU backend/pipeline files Track S owns.",
+    "parallel_safe_now": [
+      {
+        "task": "Fix the VXM version seam: make import_pipeline::import_vxm and VxmFile::read accept v1/v2/v3 (or downcast), so ochroma-tools (writes v3) output is loadable. Add the missing CLI-write->import-read round-trip test.",
+        "crate": "crates/vox_data (+crates/vox_tools)",
+        "why_safe": "Pure library/CLI fix; no live-loop file edit, no walking_sim/engine_runner touch, no Track S overlap. Self-contained seam between two non-render crates. Blocks asset pipeline but collides with nothing."
+      },
+      {
+        "task": "Fix script_update_system to cache one GameScript instance per entity instead of re-creating every frame (engine_runtime.rs:234); make ScriptCommand::Destroy/ApplyForce real instead of eprintln stubs.",
+        "crate": "crates/vox_core",
+        "why_safe": "Internal to vox_core engine_runtime.rs; no app-binary edit, no other agent currently in vox_core. Makes the native script path capable of state regardless of which binary later wires it."
+      },
+      {
+        "task": "Add the blend_gpu/gpu_skinning setter (builder method) to AnimationDriver so the GPU blend path is reachable; add the named test blend_tree_interpolates.",
+        "crate": "crates/vox_render",
+        "why_safe": "Confined to animation_driver.rs (CPU/setter side, not the GPU backend Track S owns). No live-loop file. Verified blend_gpu has no setter today — this is a clean additive change."
+      },
+      {
+        "task": "Wire SpectralAtmosphere::sky_radiance() so the sky is spectrally rendered, and add the missing gi_cache_is_live integration test asserting per-band per-position radiance differs by >1e-3.",
+        "crate": "crates/vox_render",
+        "why_safe": "spectral_atmosphere.rs / spectral_gi.rs are CPU GI files, not Track S GPU pipeline. Test-only + a self-contained function call. Different file from the AnimationDriver task so two render agents can run if they stay in their files."
+      },
+      {
+        "task": "Make the CPAL backend actually instantiate and the v2 spectral synth (SpectralSynth::strike -> reverb -> PlaySynth) reachable via a single synthesize_and_play entry; remove the dead lewton dep.",
+        "crate": "crates/vox_audio",
+        "why_safe": "All inside vox_audio lib (cpal_backend.rs, lib.rs:308, spectral_synth2). No app binary edit yet — the wiring INTO walking_sim is a later serialized step. Preparing the callable surface collides with nothing."
+      },
+      {
+        "task": "Implement OchromaNodeGraph::restore() (currently a destructive clear-stub) and make NodeEditorPanel wire-drag functional; add the gizmo rotate_selected/scale_selected methods so update_drag honors self.mode.",
+        "crate": "crates/vox_editor (+crates/vox_render/src/gizmos.rs)",
+        "why_safe": "vox_editor is not even a dep of vox_app, so editing it cannot break the live game. gizmos.rs update_drag is a self-contained mode-switch fix. No walking_sim/engine_runner edit needed for the logic itself."
+      },
+      {
+        "task": "Replace the horizontal-only box blur in SpectralDenoiser with a real 2D blur and remove the candle dead-deps OR gate them; make vox_nn LlmClient return deterministic non-mock layouts. (DEPTH-LIMITED: stub honestly, document.)",
+        "crate": "crates/vox_ai (+crates/vox_nn)",
+        "why_safe": "Day-6 depth-limited domain, fully self-contained in vox_ai/vox_nn libs. No live-loop wiring required for the depth-limited acceptance. Zero overlap with any other crate or Track S."
+      }
+    ],
+    "days": [
+      {
+        "day": 1,
+        "focus": "Foundation: pick canonical binary, wire live Spectral GI into the dogfood target, harden CI.",
+        "tasks": [
+          {
+            "title": "DECISION+RECORD: designate walking_sim.rs the dogfood ship target; document that engine_runner is the feature-source to port FROM. Write target binary into every blitz task.",
+            "crate": "crates/vox_app",
+            "parallelizable": false,
+            "effort": "hours",
+            "depends_on": "none"
+          },
+          {
+            "title": "Wire SpectralRadianceCache.propagate/apply per-frame into walking_sim render path (mirror engine_runner.rs:990-997); expose cache.band_energy_at(pos)->[f32;16] as the shared read API for audio/ui/script/ai.",
+            "crate": "crates/vox_app (+crates/vox_render)",
+            "parallelizable": false,
+            "effort": "day",
+            "depends_on": "DECISION"
+          },
+          {
+            "title": "Add gi_cache_is_live + gi_wiring_applies_indirect_to_render tests (per-band per-position radiance differs >1e-3); wire SpectralAtmosphere::sky_radiance into the sky.",
+            "crate": "crates/vox_render",
+            "parallelizable": true,
+            "effort": "half-day",
+            "depends_on": "none"
+          },
+          {
+            "title": "CI hardening: mark build-web and any spectra-native jobs continue-on-error; fix web/index.html to not show 'Ready' over a blank canvas.",
+            "crate": ".github/workflows + crates/vox_web",
+            "parallelizable": true,
+            "effort": "hours",
+            "depends_on": "none"
+          },
+          {
+            "title": "Remove duplicate GI path: delete legacy baked gi_cache field so SpectralRadianceCache is the only GI path; unclamp sun zenith so true night is reachable.",
+            "crate": "crates/vox_app (engine_runner)",
+            "parallelizable": true,
+            "effort": "hours",
+            "depends_on": "none"
+          }
+        ]
+      },
+      {
+        "day": 2,
+        "focus": "Audio + scripting: drop-object-with-synth-impact, and make script I/O non-hollow.",
+        "tasks": [
+          {
+            "title": "Add dynamic Rapier body + drop-key in walking_sim; on impact call spectral_synth2::strike via CPAL (no WAV). Satisfies the most-cited Done-When clause.",
+            "crate": "crates/vox_app (+crates/vox_physics +crates/vox_audio)",
+            "parallelizable": false,
+            "effort": "day",
+            "depends_on": "Day1 GI-wire (shares walking_sim update())"
+          },
+          {
+            "title": "Populate SpectralState.band_energy from the live GI cache per-frame (engine_runner.rs:441/2074) and EntityStore from ECS, write set_spectral back to splats. Makes Rhai/Lua threshold callbacks able to fire.",
+            "crate": "crates/vox_app (+crates/vox_script)",
+            "parallelizable": false,
+            "effort": "day",
+            "depends_on": "Day1 GI band_energy_at API"
+          },
+          {
+            "title": "Make CPAL backend the default output and route SpatialAudioManager through it; remove dead lewton dep; complete Rhai ScriptCommand dispatch (SetPosition/Spawn actually move/spawn, not print).",
+            "crate": "crates/vox_audio (+crates/vox_app)",
+            "parallelizable": true,
+            "effort": "day",
+            "depends_on": "none"
+          },
+          {
+            "title": "Add at least one default per-frame Rhai on_update hook (orb pulse) in walking_sim so the per-frame script path iterates >0 scripts.",
+            "crate": "crates/vox_app",
+            "parallelizable": false,
+            "effort": "half-day",
+            "depends_on": "script-store population"
+          }
+        ]
+      },
+      {
+        "day": 3,
+        "focus": "Assets + rendering + web: make produced assets actually load and render.",
+        "tasks": [
+          {
+            "title": "Fix VXM v3-write/v1-read mismatch across vox_tools+vox_data; add gltf2splat subcommand alias + gltf2splat_cube test + a cube.glb fixture.",
+            "crate": "crates/vox_data (+crates/vox_tools)",
+            "parallelizable": true,
+            "effort": "half-day",
+            "depends_on": "none"
+          },
+          {
+            "title": "Add a .vxm/.ply load path to walking_sim and render the loaded splats (currently zero asset load in dogfood target).",
+            "crate": "crates/vox_app",
+            "parallelizable": false,
+            "effort": "day",
+            "depends_on": "VXM seam fix"
+          },
+          {
+            "title": "Wire SplatEmitter particles or animated content visibly into walking_sim if not present; ensure engine_runner LOD tile-stream actually inserts loaded splats (currently discards Ok(_vxm)).",
+            "crate": "crates/vox_app",
+            "parallelizable": true,
+            "effort": "half-day",
+            "depends_on": "none"
+          },
+          {
+            "title": "WEB (depth-limited): minimal WebGPU adapter/device + canvas surface init in vox_web; or honestly document as framework-only and keep CI continue-on-error.",
+            "crate": "crates/vox_web (+crates/vox_render wasm gate)",
+            "parallelizable": true,
+            "effort": "day",
+            "depends_on": "none"
+          }
+        ]
+      },
+      {
+        "day": 4,
+        "focus": "Net + character/anim: minimal 2-player byte flow and a reachable blend path.",
+        "tasks": [
+          {
+            "title": "Make QUIC move bytes: drive the connect() handshake future (stop discarding it at quic_transport.rs:116), add server accept loop, add --server/--connect flags + a tokio runtime to engine_runner; replace the no-op send TODO (engine_runner.rs:1052) with a real socket send.",
+            "crate": "crates/vox_net (+crates/vox_app)",
+            "parallelizable": true,
+            "effort": "day",
+            "depends_on": "none"
+          },
+          {
+            "title": "Add the AnimationDriver blend_gpu/gpu_skinning setter + blend_tree_interpolates test; ship a fallback character or CPU blend so an idle<->walk avatar exists in walking_sim.",
+            "crate": "crates/vox_render (+crates/vox_app)",
+            "parallelizable": true,
+            "effort": "day",
+            "depends_on": "none"
+          },
+          {
+            "title": "Wire AI perception output into a real decision (stop discarding percept at engine_runner.rs:1805): raise an alert/behavior change on a spectral band, reading the live GI cache.",
+            "crate": "crates/vox_app (+crates/vox_ai)",
+            "parallelizable": true,
+            "effort": "half-day",
+            "depends_on": "Day1 GI cache"
+          }
+        ]
+      },
+      {
+        "day": 5,
+        "focus": "Editor + physics + Vello convergence (highest-risk day).",
+        "tasks": [
+          {
+            "title": "Enable the game-ui cargo feature in vox_app; build VelloCtx against walking_sim's wgpu surface; add parley text; route the orb-count HUD through Vello reading the live GI cache. FALLBACK: keep bitmap HUD reading live GI if Vello slips.",
+            "crate": "crates/vox_ui (+crates/vox_app)",
+            "parallelizable": false,
+            "effort": "multi-day",
+            "depends_on": "Day1 GI cache; whole-day risk"
+          },
+          {
+            "title": "Make gizmo rotate/scale functional (update_drag honor self.mode; add rotate_selected/scale_selected); add W/E/R mode keys; add gizmo_drag_updates_translation test.",
+            "crate": "crates/vox_render/gizmos.rs (+crates/vox_app/editor.rs)",
+            "parallelizable": true,
+            "effort": "day",
+            "depends_on": "none"
+          },
+          {
+            "title": "Wire one live physics deliverable beyond static colliders: either set engine_runner character_body=Some (activate KCC) or populate entity_rapier_bodies so dynamic-sync stops being a no-op; trigger SplatAssembly::fracture_at on a real impact.",
+            "crate": "crates/vox_app (+crates/vox_physics)",
+            "parallelizable": true,
+            "effort": "day",
+            "depends_on": "Day2 dynamic body"
+          },
+          {
+            "title": "Wire one terrain deform stroke (carve_sphere via editor brush) into the live TerrainVolume + resplat, proving destructible terrain end-to-end.",
+            "crate": "crates/vox_app (+crates/vox_terrain)",
+            "parallelizable": true,
+            "effort": "day",
+            "depends_on": "none"
+          }
+        ]
+      },
+      {
+        "day": 6,
+        "focus": "AI/LLM + frontier (DEPTH-LIMITED: wire honest stubs, document what is faked).",
+        "tasks": [
+          {
+            "title": "Add a --llm-scene flag that runs vox_nn layout->splat generation end-to-end with a deterministic non-mock template; commit body lists exactly what is stubbed (no candle inference).",
+            "crate": "crates/vox_app (+crates/vox_nn)",
+            "parallelizable": true,
+            "effort": "day",
+            "depends_on": "none"
+          },
+          {
+            "title": "Replace horizontal-only box blur in SpectralDenoiser with a real 2D blur; gate/remove unused candle deps; document the absence of a real CNN/LLM.",
+            "crate": "crates/vox_ai",
+            "parallelizable": true,
+            "effort": "half-day",
+            "depends_on": "none"
+          },
+          {
+            "title": "Frontier depth-limited pick ONE: replication-loop sends real splat band+position over the Day-4 QUIC link and client prints 'received 1 splat replication packet'. Honest stub the rest.",
+            "crate": "crates/vox_net (+crates/vox_app)",
+            "parallelizable": true,
+            "effort": "day",
+            "depends_on": "Day4 QUIC bytes"
+          }
+        ]
+      },
+      {
+        "day": 7,
+        "focus": "Integration dogfood + ship: one continuous walking_sim playthrough + first tests of the playthrough.",
+        "tasks": [
+          {
+            "title": "End-to-end playthrough in walking_sim: walk(WASD)+collect(10 orbs/win)+drop-object-falls(Rapier)+synth-impact(CPAL no WAV)+live-GI-radiance(non-constant into render/audio/UI)+HUD. Verify each Done-When clause by command and visible output.",
+            "crate": "crates/vox_app",
+            "parallelizable": false,
+            "effort": "day",
+            "depends_on": "Days 1-5"
+          },
+          {
+            "title": "Add the FIRST automated tests for walking_sim's 988 LOC (orb collect, win condition, ground snap, drop spawn) — currently zero coverage of the ship target.",
+            "crate": "crates/vox_app",
+            "parallelizable": true,
+            "effort": "day",
+            "depends_on": "playthrough wiring"
+          },
+          {
+            "title": "Ship gate: cargo test --workspace green, walking_sim runs the full loop, CI green with web/spectra continue-on-error, doc-drift fixes (getting-started hello_splat claim, roadmap 8-band->16-band).",
+            "crate": "workspace",
+            "parallelizable": true,
+            "effort": "half-day",
+            "depends_on": "all"
+          }
+        ]
+      }
+    ]
+  },
+  "critic": "Fully confirmed and worse than the punch-list stated. The seam is concretely:\n- `ochroma-tools` (the shipping CLI, `ochroma_main.rs:65`) writes **`VxmFileV3`** (v3).\n- `import_pipeline.rs:198` and `engine_runner.rs:1825` both read with **`VxmFile::read`** which rejects anything but v1 (`vxm.rs:124`).\n- So the flagship tool's output is unreadable by both the import pipeline AND the live game. The punch-list said \"vox_tools writes v3\" — it's actually the `ochroma-tools` binary specifically, and `vox_tools/main.rs` writes v1 (loadable). The fix must reconcile which CLI is canonical.\n\nI have enough verified evidence across all gap categories. Final synthesis.\n\n---\n\n## Coverage gaps the audit missed\n\n**(1) Whole crates / modules never audited**\n\n- **`vox_sim` (6,260 LOC) is a second, fully-wired game.** It's the city-builder sim (citizens, zoning, traffic, economy, roads, services, trade, employment, weather) and it IS live-wired into `vox_app/src/simulation.rs`, `main.rs`, `growth.rs`, `placement.rs`, `road_builder.rs`. The punch-list's \"binary-split risk\" names three binaries but treats `main.rs` as just \"city-builder\"; in reality `main.rs` drives an entire 6.2k-LOC simulation that no domain audit examined. If walking_sim is the dogfood target, this entire subsystem is orphaned ship-weight that still must compile and stay green.\n- **`ochroma_engine` is the advertised public SDK and is depended on by NOTHING.** It re-exports every crate as `ochroma_engine::{core,render,sim,...}` and ships a `prelude`, with `tests/sdk_test.rs`. The `prelude` (lib.rs:78-105) is a hard-coded list of paths — any of those that have moved/renamed will fail only when someone uses the SDK, which CI's `--no-default-features` test of `ochroma_engine` may or may not exercise. This is the public face of the engine and it's untested against real consumer use.\n- **`vox_nodes` (427 LOC, `OchrGraph`/`mat_nodes`) was not in the audit list** yet is a live dep of `vox_render` (material_editor_ui, anim_editor_ui, vfx_editor_ui). The editor node-graph the Day-5 task wants to make functional partly lives HERE, not in vox_editor.\n- **`vox_nn` was folded into \"ai\" but is a separate crate** with its own `llm.rs` save/load and is depended on by vox_app AND ochroma_engine. The `--llm-scene` Day-6 task touches a crate the AI audit may not have opened.\n- **Three more binaries + three example projects went unexamined:** `platformer.rs` (667 LOC), `demo.rs` (847 LOC, imports DLSS/temporal/mega-geometry), `render_showcase.rs` (671 LOC), `hello_splat.rs`, plus `examples/{demo_scene,simple_game,city_builder}`. `platformer.rs` already has a working spectral-framebuffer + tonemapper render path (not GI, but more than walking_sim's render) — it may be a better port-source than the audit's \"engine_runner only\" framing. The `examples/` projects are **NOT workspace members** (no Cargo membership), so they are never built by anything and will silently rot.\n\n**(2) Cross-cutting concerns no single domain owns**\n\n- **CI is a workspace-wide false-green, not just web.** `ci.yml` runs ONLY `cargo clippy/test --workspace --no-default-features`. But `vox_render` default = `[\"crucible\"]` and `vox_audio` default = `[\"audio-backend\"]` (rodio/cpal/fundsp/lewton). **CI never compiles the crucible GI renderer and never compiles the entire CPAL/rodio audio backend** — exactly the two subsystems the blitz wants to wire. The 2,061 tests (verified count) prove the no-backend paths only. `RUSTFLAGS:-D warnings` applies only to the no-default path; the default build emits warnings (verified) that would never gate. **No CI job builds ANY windowed binary** (walking_sim/engine_runner/platformer/demo) — they can break and CI stays green. This is the highest-leverage miss in the whole audit.\n- **Save/load is a real subsystem the audit skipped:** `vox_data/world_save.rs`, `vox_app/persistence.rs`, `vox_data/prefab.rs`, wired into `main.rs` and `engine_runner.rs` but not walking_sim. If walking_sim is the ship target, it has no persistence and the existing save/load code is exercised only by the abandoned binary.\n- **Hot-reload is a 5-module subsystem (`vox_data/hot_reload.rs`, `vox_core/asset_watcher.rs`, `vox_core/hot_reload_system.rs`, `vox_render/material_hotreload.rs`, `vox_script` reload) that is wired into NO live game** — `render_showcase.rs` instantiates `AssetWatcher` for a one-shot print, and engine_runner has it commented out (lines 63-64). Pure dead weight nobody audited.\n- **ECS schedule/ordering has no owner.** System registration is scattered across `vox_render/{render,particle,lod}_ecs.rs`, `vox_physics/ecs.rs`, `vox_audio/ecs.rs`, `vox_app/{soundscape,ai_fsm}.rs`, `main.rs`. No domain audited whether these compose into one coherent `Schedule` with correct before/after ordering, or whether walking_sim even uses bevy_ecs at all (it appears to be a hand-rolled `ApplicationHandler`, meaning the entire ECS schedule investment may be bypassed by the ship target).\n- **Cross-platform (Win/Mac) is asserted by `cargo-dist` targets + CI matrix but unverifiable:** the CI matrix runs `windows-latest`/`macos-latest` but only on the no-backend build, so the cpal (platform-specific audio) and crucible paths are never built on any non-Linux runner. `release.yml`/cargo-dist will be the first thing to ever compile the real binary on Win/Mac — at release time.\n\n**(3) \"Wired\" claims that still smell unverified**\n\n- The VXM mismatch is concretely worse than stated: there are **two tool binaries** — `ochroma-tools` (`ochroma_main.rs:65`) writes `VxmFileV3` (v3), while `vox_tools` (`main.rs:78`) and `turnaround.rs` write `VxmFile` (v1). The readers (`import_pipeline.rs:198`, `engine_runner.rs:1825`) call `VxmFile::read`, which hard-rejects non-v1 (`vxm.rs:124`). So the *flagship* CLI's output is unloadable, but the *legacy* CLI's is fine. The fix must first decide which CLI is canonical — the punch-list treats it as one writer.\n\n**(4) Integration seams no single audit checked**\n\n- **vox_sim ↔ vox_app simulation loop** (does the 6.2k-LOC sim actually tick under any running binary, or only in unit tests?).\n- **ochroma_engine prelude ↔ moved APIs** (SDK re-export drift).\n- **examples/ ↔ workspace** (orphaned, unbuilt — will not compile against current APIs).\n- **release.yml/cargo-dist ↔ default-feature build** (first real cross-platform compile happens at release, untested in CI).\n\n---\n\n## Single most important thing to verify next\n\n**Run `cargo build --workspace --all-targets` (default features) and a per-binary `cargo build --bin {walking_sim,engine_runner,platformer,demo}` on a clean tree, then add those exact commands to CI.** Everything in this plan (\"wire X into the live game,\" \"port engine_runner features,\" \"make audio reachable\") presumes the default-feature build and the windowed binaries compile — but the ONLY build CI runs is `--no-default-features`, which excludes the crucible GI renderer and the entire CPAL audio backend the blitz depends on. Until you prove the default build of the actual ship binary is green, every Day-1-to-7 wiring task is building on unverified ground, and the \"2,061 green tests / green build\" headline is measuring a configuration that contains none of the features being shipped."
+}
