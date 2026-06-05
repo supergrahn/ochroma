@@ -22,3 +22,11 @@ SLANG_DIR = "/home/tom-espen/.local/slang"
 # on this box — only libclang-18.so. Point clang at GCC 13's freestanding
 # headers so `#include <stddef.h>` resolves. Inert for the default build.
 BINDGEN_EXTRA_CLANG_ARGS = "-isystem /usr/lib/gcc/x86_64-linux-gnu/13/include"
+# NOTE on libslang.so at build time: spectra-renderer/spectra-gpu build scripts
+# link libslang.so and are EXECUTED during the build, so the SDK lib dir must be
+# on the RUNTIME loader path. Cargo's [env] table does NOT propagate
+# LD_LIBRARY_PATH to the build-script process's dynamic loader (verified
+# 2026-06-05) — it must be in the shell environment. To build spectra-native:
+#   LD_LIBRARY_PATH=/home/tom-espen/.local/slang/lib cargo check -p vox_render --features spectra-native
+# (or `sudo ldconfig` the SDK lib dir to register it permanently). Track S owns
+# finalizing this + the remaining vox_render spectra-native API-drift fixes.

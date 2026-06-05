@@ -140,11 +140,13 @@
 **Completion criterion:** `cargo check -p vox_render --features spectra-native` exits 0, AND a spectra-native GI smoke test produces non-constant radiance matching the crucible path within tolerance, on Linux.
 
 **Steps (agent-owned, time-boxed probe first):**
-- [ ] Probe: classify the failure (compile vs Vulkan ICD vs Slang version) — turn "don't know" into an estimate
-- [ ] Install matching Slang SDK to a user dir; wire `SLANG_DIR` via ochroma `.cargo/config.toml` `[env]` (no sudo)
-- [ ] Get `shader-slang-sys` + `spectra-gpu`/`spectra-renderer` compiling on Linux
-- [ ] Resolve Vulkan runtime (loader/ICD/validation) so a spectra-native smoke test runs
-- [ ] Report what it took; flip Task 1.3 backend when green
+- [x] Probe: classified — was a stack of layers, not one issue (Slang version + ABI + loader + API drift).
+- [x] Install matching Slang SDK (v2024.14.5) to `~/.local/slang`; `SLANG_DIR` wired in `.cargo/config.toml`.
+- [x] `shader-slang-sys` compiles — required vendoring `shader-slang 0.1.0` with `spReflectionVariable_GetDefaultValueInt` stubbed (`[patch.crates-io]`), and `BINDGEN_EXTRA_CLANG_ARGS` for missing clang resource headers.
+- [x] Entire spectra dep graph (`spectra-renderer`, `spectra-usd`, `spectra-scene-upload`, `spectra-checkpoint`, `crucible-core`) compiles, given `LD_LIBRARY_PATH=~/.local/slang/lib` exported in the SHELL (cargo `[env]` does not reach build-script loader resolution).
+- [ ] **NEXT: fix vox_render's own spectra-native glue — 8 API-drift errors** (E0432 unresolved imports, E0599 e.g. `read_splat_output_into` not on `Renderer<CudarcSlangBackend>`). vox_render's integration code targets an older spectra-renderer API; update to the current `~/src/spectra` API. Repro: `LD_LIBRARY_PATH=/home/tom-espen/.local/slang/lib cargo check -p vox_render --features spectra-native`.
+- [ ] Resolve Vulkan runtime (loader/ICD/validation) so a spectra-native smoke test actually RUNS on a GPU — may need `mesa-vulkan-drivers`/`vulkan-tools` (sudo).
+- [ ] Persist `LD_LIBRARY_PATH` (wrapper script or `sudo ldconfig`); report; flip Task 1.3 backend when green.
 
 ---
 
