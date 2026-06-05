@@ -74,6 +74,9 @@ pub mod nn {
     pub use vox_nn::*;
 }
 
+/// Unified per-frame simulation driver (composes `EngineRuntime`).
+pub mod engine_loop;
+
 /// Commonly used types re-exported for convenience.
 pub mod prelude {
     // Core

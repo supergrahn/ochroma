@@ -34,3 +34,5 @@ vox_script = { path = "../vox_script" }
 vox_nn = { path = "../vox_nn" }
 glam = { workspace = true }
 uuid = { workspace = true }
+bevy_ecs = { workspace = true }
+half = { workspace = true }

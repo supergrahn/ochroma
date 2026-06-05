@@ -4474,7 +4474,9 @@ dependencies = [
 name = "ochroma_engine"
 version = "0.1.0"
 dependencies = [
+ "bevy_ecs",
  "glam 0.29.3",
+ "half",
  "uuid",
  "vox_audio",
  "vox_core",
