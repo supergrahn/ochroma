@@ -98,22 +98,45 @@
 - [ ] Step 2: Push, observe run, capture the green check URL
 - [ ] Step 3: Commit
 
-### Task 1.3: Wire Spectral GI (Domain 12a) — live radiance at runtime
+### Task 1.3: Wire Spectral GI (Domain 12a) — live radiance at runtime — via crucible/CPU path
+
+> **Backend decision (2026-06-05):** GI wires through the **default `crucible`/CPU path**, which compiles and is green. The `spectra-native` GPU path is NOT on the blitz critical path because Spectra's Linux Vulkan+Slang support is itself not yet working (see **Track S** below). The GI interface MUST stay backend-agnostic so spectra-native drops in later with no caller changes.
 
 **Files:**
 - Modify: `crates/vox_render/src/` (GI modules — confirm exact paths via grep)
 - Modify: `crates/vox_app/src/bin/engine_runner.rs` / `walking_sim.rs` (consume cache in the frame loop)
 - Test: `crates/vox_render/tests/` GI integration test
 
-**Acceptance:** `cargo test -p vox_render gi_cache_is_live -- --nocapture` → sampled radiance at two distinct lit positions differs per-band by > 1e-3 (prove it's not a constant); `walking_sim` visibly changes scene tint when the illuminant changes.
+**Acceptance:** `cargo test -p vox_render gi_cache_is_live -- --nocapture` → sampled radiance at two distinct lit positions differs per-band by > 1e-3 (prove it's not a constant); `walking_sim` visibly changes scene tint when the illuminant changes. Runs with **default features only** (no spectra-native).
 
-**Wiring requirement:** `SpectralRadianceCache` must be updated each frame inside the engine's render/update tick (name the exact function once located) and read by at least the render pass. Constants/stubs downstream = task failure.
+**Wiring requirement:** `SpectralRadianceCache` must be updated each frame inside the engine's render/update tick (name the exact function once located) and read by at least the render pass. Constants/stubs downstream = task failure. Backend abstraction must not leak `spectra-*` types into the caller.
 
 - [ ] Step 1: `grep -rn "SpectralRadianceCache\|GpuGiPass\|SpectralAtmosphere" crates/vox_render/src` — map real signatures
 - [ ] Step 2: Failing test asserting non-constant, per-band, per-position radiance
-- [ ] Step 3: Wire cache update into the frame tick; feed render pass
+- [ ] Step 3: Wire cache update into the frame tick (crucible/CPU backend); feed render pass
 - [ ] Step 4: Run test → PASS with real differing values
-- [ ] Step 5: Commit — `feat(render): wire SpectralRadianceCache into live frame (Domain 12a)`
+- [ ] Step 5: Commit — `feat(render): wire SpectralRadianceCache into live frame via crucible path (Domain 12a)`
+
+---
+
+## Track S — Spectra-native (Vulkan + Slang) Linux bring-up — PARALLEL, NON-BLOCKING
+
+> Runs in its own track; **must not gate any blitz day**. When it lands, `vox_render`'s `spectra-native` feature replaces the crucible/CPU GI backend with no caller changes (Task 1.3's abstraction guarantees this). Owner: a dedicated background agent.
+
+**Known facts (2026-06-05):**
+- `shader-slang-sys 0.1.0` build.rs needs env `SLANG_DIR` (→ `$SLANG_DIR/include/slang.h` + `$SLANG_DIR/lib/libslang.so`), or `SLANG_INCLUDE_DIR`+`SLANG_LIB_DIR`, or `VULKAN_SDK`. Links `dylib=slang`. Uses bindgen → libclang (libclang-18 present ✓).
+- Rust crates pinned at `shader-slang` / `shader-slang-sys` **0.1.0** (early-2024) — the installed Slang SDK's `slang.h` must still satisfy the 0.1.0 bindgen allowlists (`spReflection.*`, `slang_.*`, `SLANG_.*`). Version match is the main risk.
+- `~/src/spectra/slang/` holds `.slang` SOURCE shaders, NOT the SDK. SDK must be obtained separately (prebuilt release from shader-slang/slang).
+- User reports Spectra's Linux Vulkan+Slang path "not working" — scope unknown; likely a compile gap in `spectra-gpu`, a Vulkan loader/ICD gap, or a Slang version mismatch.
+
+**Completion criterion:** `cargo check -p vox_render --features spectra-native` exits 0, AND a spectra-native GI smoke test produces non-constant radiance matching the crucible path within tolerance, on Linux.
+
+**Steps (agent-owned, time-boxed probe first):**
+- [ ] Probe: classify the failure (compile vs Vulkan ICD vs Slang version) — turn "don't know" into an estimate
+- [ ] Install matching Slang SDK to a user dir; wire `SLANG_DIR` via ochroma `.cargo/config.toml` `[env]` (no sudo)
+- [ ] Get `shader-slang-sys` + `spectra-gpu`/`spectra-renderer` compiling on Linux
+- [ ] Resolve Vulkan runtime (loader/ICD/validation) so a spectra-native smoke test runs
+- [ ] Report what it took; flip Task 1.3 backend when green
 
 ---
 
