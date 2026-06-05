@@ -985,7 +985,176 @@ impl ApplicationHandler for WalkingSim {
     }
 }
 
+/// Headless smoke test: run the REAL per-frame simulation + software render
+/// without a window/GPU. Proves the unified EngineLoop + game logic + render
+/// actually run on a headless box. Exits 0 on success, panics (non-zero) if the
+/// loop/render is broken.
+fn run_smoke() {
+    println!("[walking_sim] === HEADLESS SMOKE MODE (no window/GPU) ===");
+
+    // Build the app exactly as `resumed()` would, minus the window + GPU surface.
+    // WalkingSim::new() already constructs the EngineLoop + scene state; only the
+    // window/backend are created in resumed(), and render() never touches them.
+    let mut app = WalkingSim::new();
+    app.build_scene();
+
+    // Replicate the non-window HUD setup from resumed() so render() draws the HUD.
+    {
+        let mut orb_el = UIElement::new("orbs", "ORBS: 0/10", UIPosition::TopLeft);
+        orb_el.size = UISize::Normal;
+        orb_el.color = [255, 255, 100];
+        app.game_ui.add_element(orb_el);
+
+        let pos = app.cc_transform.position;
+        let mut pos_el = UIElement::new(
+            "pos",
+            format!("X:{:.0} Y:{:.1} Z:{:.0}", pos.x, pos.y, pos.z),
+            UIPosition::BottomLeft,
+        );
+        pos_el.size = UISize::Small;
+        pos_el.color = [180, 255, 180];
+        app.game_ui.add_element(pos_el);
+
+        let mut fps_el = UIElement::new("fps", "FPS: --", UIPosition::TopRight);
+        fps_el.size = UISize::Small;
+        fps_el.color = [180, 220, 255];
+        app.game_ui.add_element(fps_el);
+    }
+
+    // Bypass the ENTER-on-menu gate: start the game directly.
+    app.game_ui.game_state = GameState::Playing;
+
+    let spawn_pos = app.cc_transform.position;
+    let windmill_anim_start = app.windmill.anim_time;
+    let dt = 1.0 / 60.0; // fixed 60Hz step
+    let total_frames = 160u32;
+    // Inject "walk forward" input for nearly the whole run so the real
+    // CharacterController movement code carries the player into an orb (nearest
+    // orb is ~21m out; at 8 m/s collection radius 2.5m is reached by ~frame 140).
+    let walk_frames = total_frames - 5;
+
+    let mut last_pixels: Vec<[u8; 4]> = Vec::new();
+    for frame in 0..total_frames {
+        if frame < walk_frames {
+            // Aim yaw at the nearest uncollected orb, then hold W. Movement is
+            // performed by the REAL CharacterController code inside update().
+            let player = app.cc_transform.position;
+            if let Some(orb) = app
+                .orbs
+                .iter()
+                .filter(|o| !o.collected)
+                .min_by(|a, b| {
+                    let da = (a.position - player).length_squared();
+                    let db = (b.position - player).length_squared();
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                })
+            {
+                let to_orb = orb.position - player;
+                // forward_xz used by update() is (sin(yaw), 0, -cos(yaw)); solve
+                // for the yaw that points it at the orb in the XZ plane.
+                app.player_yaw = to_orb.x.atan2(-to_orb.z);
+            }
+            app.keys_held.insert(KeyCode::KeyW);
+        } else {
+            app.keys_held.remove(&KeyCode::KeyW);
+        }
+
+        app.update(dt);
+        last_pixels = app.render();
+    }
+
+    let final_pos = app.cc_transform.position;
+    let moved = (final_pos - spawn_pos).length();
+    let windmill_advanced = (app.windmill.anim_time - windmill_anim_start).abs();
+
+    // Count non-black pixels in the final frame.
+    let non_black = last_pixels
+        .iter()
+        .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+        .count();
+    // Count distinct RGB colors — a flat/blank fill has ~1 color; a real scene
+    // (terrain + sky + splats + HUD) has many. This is a much stronger "the scene
+    // actually rendered" signal than non-black alone.
+    let distinct_colors = last_pixels
+        .iter()
+        .map(|p| (p[0], p[1], p[2]))
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    // Write the final frame to a PPM (P6).
+    let ppm_path = "/tmp/ochroma_walking_sim_smoke.ppm";
+    {
+        let mut data = format!("P6\n{} {}\n255\n", WIDTH, HEIGHT).into_bytes();
+        for p in &last_pixels {
+            data.push(p[0]);
+            data.push(p[1]);
+            data.push(p[2]);
+        }
+        std::fs::write(ppm_path, &data).expect("failed to write smoke PPM");
+    }
+
+    println!(
+        "[walking_sim] SMOKE SUMMARY: frames={} final_pos=({:.2},{:.2},{:.2}) orbs={}/{} non_black_px={}/{} distinct_colors={} windmill_dt={:.2} moved={:.2} ppm={}",
+        total_frames,
+        final_pos.x,
+        final_pos.y,
+        final_pos.z,
+        app.orbs_collected,
+        app.total_orbs,
+        non_black,
+        last_pixels.len(),
+        distinct_colors,
+        windmill_advanced,
+        moved,
+        ppm_path,
+    );
+
+    // --- Assertions: real frame + advanced sim (panic => non-zero exit). ---
+    let total_px = (WIDTH * HEIGHT) as usize;
+    assert_eq!(
+        last_pixels.len(),
+        total_px,
+        "render() produced {} pixels, expected {}",
+        last_pixels.len(),
+        total_px
+    );
+    // Scene actually rendered (not a blank buffer): require a substantial fraction
+    // of the frame to be non-black.
+    let min_non_black = total_px / 20; // >5% of the frame
+    assert!(
+        non_black >= min_non_black,
+        "frame too empty: {} non-black px (< {} required) — render likely broken",
+        non_black,
+        min_non_black
+    );
+    // Real geometry rendered, not a uniform fill: require many distinct colors
+    // (terrain shading + sky + splats + HUD text all contribute).
+    assert!(
+        distinct_colors >= 16,
+        "frame has only {} distinct colors — looks like a flat fill, not a real render",
+        distinct_colors
+    );
+    // Sim advanced: the windmill always animates, the player walked, and orbs were
+    // collected. Require an evolving quantity to have changed.
+    assert!(
+        windmill_advanced > 0.0,
+        "windmill did not animate — sim did not advance"
+    );
+    assert!(
+        moved > 1.0 || app.orbs_collected > 0,
+        "player did not move ({:.2}m) and collected no orbs — movement/physics broken",
+        moved
+    );
+
+    println!("[walking_sim] SMOKE PASS: loop + game logic + render verified headlessly.");
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "--smoke") {
+        run_smoke();
+        return;
+    }
+
     println!("========================================");
     println!("  Ochroma Walking Simulator");
     println!("  Collect all 10 glowing orbs to win!");

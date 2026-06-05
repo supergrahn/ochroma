@@ -1752,295 +1752,11 @@ impl EngineApp {
         self.last_frame = now;
         self.frame_dt = dt;
 
-        // Biome ambient soundscape: blend toward current biome target each frame
-        {
-            let biome = vox_audio::BiomeKind::Grassland; // default; terrain integration in future domain
-            let target = vox_audio::BiomeAmbientMix::for_biome(biome);
-            self.ambient_mix = self.ambient_mix.blend_toward(&target, 0.02);
-        }
+        // All window/GPU-free per-frame simulation (camera, AI, physics, audio,
+        // scripts, entity sync) lives in step_simulation — shared verbatim with
+        // the headless smoke path (run_smoke).
+        self.step_simulation(dt);
 
-        // Update patrol agents along navmesh with spectral perception
-        if let Some(nm) = &self.navmesh {
-            let dt = self.frame_dt;
-            let sky_ambient = illuminant_for_time(self.loop_.time_of_day()).bands;
-            for agent in &mut self.patrol_agents {
-                agent.update(dt, nm);
-                // Update spectral perception from current sky illuminant
-                let gi_adapter = SpectralGiAdapter { sky_ambient };
-                agent.spectral_perception.position = agent.position;
-                let percept = agent.spectral_perception.sense(&gi_adapter);
-                agent.spectral_perception.update_emotion(&gi_adapter);
-                // Raise alert if green band (7) energy exceeds threshold
-                let _ = percept;
-            }
-        }
-
-        // 1. Update camera from input
-        self.update_camera(dt);
-
-        // LOD streaming: update tile manager and load newly active tiles
-        {
-            let cam_pos = self.camera.position;
-            let cam_tile = vox_core::lwc::TileCoord {
-                x: (cam_pos.x / vox_core::lwc::TILE_SIZE as f32) as i32,
-                z: (cam_pos.z / vox_core::lwc::TILE_SIZE as f32) as i32,
-            };
-            let newly_active = self.tile_manager.update_camera(cam_tile);
-            for tile in &newly_active {
-                let path = format!("assets/tiles/tile_{}_{}.vxm", tile.x, tile.z);
-                let p = std::path::Path::new(&path);
-                if p.exists() {
-                    match std::fs::read(p).and_then(|bytes| {
-                        vox_data::vxm::VxmFile::read(&bytes[..])
-                            .map_err(std::io::Error::other)
-                    }) {
-                        Ok(_vxm) => {
-                            println!("[streaming] Loaded tile {},{}", tile.x, tile.z);
-                        }
-                        Err(e) => eprintln!("[streaming] Failed to load {path}: {e}"),
-                    }
-                }
-            }
-        }
-
-        // Tick notification queue (decrement TTLs, expire old toasts)
-        self.editor.notification_queue.tick(dt);
-
-        // Cursor changes based on editor mode
-        if self.editor_visible
-            && let Some(w) = &self.window
-        {
-            if self.gizmo.dragging {
-                w.set_cursor(winit::window::CursorIcon::Grab);
-            } else if self.gizmo.active_axis.is_some() {
-                w.set_cursor(winit::window::CursorIcon::Pointer);
-            } else {
-                w.set_cursor(winit::window::CursorIcon::Default);
-            }
-        }
-
-        // 2. Handle left-click: Rapier raycast for editor pick, or object placement
-        if self.left_click_pending {
-            if self.editor_visible {
-                // Unproject screen coords to get a world-space ray
-                let forward = self.camera_forward();
-                let cam_target = self.camera.position + forward;
-                let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
-                let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
-                let proj = Mat4::perspective_rh(
-                    self.camera.fov,
-                    dw as f32 / dh as f32,
-                    self.camera.near,
-                    self.camera.far,
-                );
-                let inv_vp = (proj * view).inverse();
-                let ndc_x = (2.0 * self.mouse_x as f32 / dw as f32) - 1.0;
-                let ndc_y = 1.0 - (2.0 * self.mouse_y as f32 / dh as f32);
-                let unproject = |ndc_z: f32| -> Vec3 {
-                    let clip = glam::Vec4::new(ndc_x, ndc_y, ndc_z, 1.0);
-                    let world = inv_vp * clip;
-                    Vec3::new(world.x / world.w, world.y / world.w, world.z / world.w)
-                };
-                let near_pt = unproject(-1.0);
-                let far_pt = unproject(1.0);
-                let ray_dir = (far_pt - near_pt).normalize();
-
-                // Try Rapier raycast first for precise physics-based picking
-                let mut picked = false;
-                if let Some((col_handle, _hit_pos, _dist)) = self.loop_.physics.raycast_with_collider(
-                    [near_pt.x, near_pt.y, near_pt.z],
-                    [ray_dir.x, ray_dir.y, ray_dir.z],
-                    1000.0,
-                )
-                    && let Some(&entity_id) = self.collider_to_entity.get(&col_handle)
-                {
-                    self.editor.select(entity_id);
-                    if let Some(name) = self.editor.selected_name() {
-                        println!("[ochroma] Rapier pick: '{}' (id={})", name, entity_id);
-                    }
-                    picked = true;
-                }
-
-                // Fall back to editor ray-sphere test if Rapier didn't match an entity
-                if !picked
-                    && let Some(id) = self.editor.pick_entity_at_screen_pos(
-                        self.mouse_x as f32,
-                        self.mouse_y as f32,
-                        dw,
-                        dh,
-                        inv_vp,
-                    )
-                {
-                    self.editor.select(id);
-                    if let Some(name) = self.editor.selected_name() {
-                        println!("[ochroma] Editor pick: '{}' (id={})", name, id);
-                    }
-                }
-            } else {
-                self.place_object_at_cursor();
-            }
-            self.left_click_pending = false;
-        }
-
-        // 3. Tick particles
-        self.particles.tick(dt);
-
-        // 4. Tick engine runtime (scripts, time advance) on the loop's world —
-        // the single ticked ECS (S4). NOTE: we call runtime.tick directly rather
-        // than loop_.step_scripts here because step_scripts also DRAINS the
-        // RenderBuffer; the shell's animation_system below appends to that same
-        // RenderBuffer *after* the tick, and the render path drains it once
-        // afterward. Draining here would lose the gather_splats output, so the
-        // tick stays drain-free to preserve behavior exactly.
-        self.loop_.runtime.tick(dt);
-
-        // 4a. Run procedural animation — appends bobbing splats to RenderBuffer
-        // (operates on the loop's world, where the NPC was spawned).
-        {
-            use bevy_ecs::system::{IntoSystem, System};
-            let mut sys = IntoSystem::into_system(animation_system);
-            sys.initialize(self.loop_.world_mut());
-            sys.run((), self.loop_.world_mut());
-            sys.apply_deferred(self.loop_.world_mut());
-        }
-
-        // 4b. Step Rapier physics and sync dynamic bodies back to ECS
-        // Update character controller before physics step.
-        // character.update() processes input (move_dir, jump, gravity) and stores
-        // last_move_dir. When rapier_kcc_active, it skips flat-plane integration.
-        // We then pass the full desired velocity (horizontal + vertical) through KCC.
-        self.character.rapier_kcc_active = self.character_body.is_some();
-        self.character.update(&self.input_state, dt, &mut self.loop_.physics);
-        if let Some(ref cb) = self.character_body {
-            if self.character.enabled {
-                // Full desired velocity: horizontal from input + vertical from gravity/jump
-                let desired = self.character.last_move_dir
-                    + Vec3::Y * self.character.vertical_velocity;
-                let output = cb.move_and_slide(
-                    desired, dt,
-                    self.loop_.physics.rigid_body_set(),
-                    self.loop_.physics.collider_set(),
-                    self.loop_.physics.query_pipeline(),
-                );
-                self.character.on_ground = output.grounded;
-                if output.grounded && self.character.vertical_velocity < 0.0 {
-                    self.character.vertical_velocity = 0.0;
-                }
-                cb.apply_translation(output.effective_translation, self.loop_.physics.rigid_body_set_mut());
-                self.character.position = cb.position(self.loop_.physics.rigid_body_set());
-                self.loop_.physics.set_kinematic_position(
-                    self.character.body_handle,
-                    [self.character.position.x, self.character.position.y, self.character.position.z],
-                );
-            }
-        }
-        // If character is enabled, drive camera position from character
-        if self.character.enabled {
-            let cam_pos = self.character.camera_position();
-            self.camera.position = cam_pos;
-            self.camera.target = cam_pos + self.character.camera_forward();
-        }
-        // EngineLoop S1: step Rapier physics and sync dynamic bodies back to ECS.
-        // (Relocated from the inline block; the ECS<->Rapier body map now lives in
-        // self.loop_.entity_rapier_bodies.)
-        self.loop_.step_physics(dt);
-
-        // 4c. Tick audio (legacy AudioEngine + spatial audio manager) via EngineLoop (S2).
-        // Listener pose: when the character controller is enabled, use its
-        // position/forward directly so the listener tracks the character even
-        // before camera sync; otherwise use the camera. `audio.set_listener`
-        // historically used `camera.position`, which already equals
-        // `character.camera_position()` once the camera was synced above, so the
-        // single `listener_pos` below preserves both backends' behavior exactly.
-        let (listener_pos, listener_fwd) = if self.character.enabled {
-            (self.character.camera_position(), self.character.camera_forward())
-        } else {
-            (self.camera.position, self.camera_forward())
-        };
-        self.loop_.step_audio(dt, listener_pos, listener_fwd);
-
-        // Process pending script commands for audio playback via EngineLoop (S4).
-        // drain_sound_commands is a byte-for-byte relocation of the old inline
-        // block: it drains PendingScriptCommands from the loop's world, maps each
-        // PlaySound clip to a tone frequency, plays it on the loop's spatial
-        // audio, and restores unprocessed commands.
-        self.loop_.drain_sound_commands();
-
-        // 4c-rhai. Per-frame Rhai script update + command dispatch
-        {
-            let reloaded = self.rhai.poll_reload();
-            for name in &reloaded {
-                println!("[ochroma] hot-reload: {}", name);
-            }
-            let dt_dyn = rhai::Dynamic::from(dt as f64);
-            for i in 0..self.rhai.script_count() {
-                let _ = self.rhai.call_fn(i, "on_update", std::slice::from_ref(&dt_dyn));
-            }
-        }
-        {
-            use vox_core::script_interface::ScriptCommand;
-            for cmd in vox_script::rhai_runtime::drain_pending_commands() {
-                match cmd {
-                    ScriptCommand::SetPosition { position } => {
-                        println!("[script] set_position ({}, {}, {})", position[0], position[1], position[2]);
-                    }
-                    ScriptCommand::PlaySound { clip, volume, .. } => {
-                        if let Some(ref h) = self.audio_handle {
-                            let _ = h.play(&clip, volume, false);
-                        }
-                    }
-                    ScriptCommand::Log { message } => {
-                        println!("[script] {}", message);
-                    }
-                    other => {
-                        println!("[script] unhandled command: {:?}", other);
-                    }
-                }
-            }
-        }
-
-        // 4c-lua. Per-frame Lua update + spectral threshold callbacks
-        {
-            if let Some(watcher) = &self.script_watcher {
-                for path in watcher.drain() {
-                    self.lua.pending_reload.push(path);
-                }
-            }
-            if let Err(e) = self.lua.call_update(dt) {
-                eprintln!("[ochroma] Lua update error: {}", e);
-            }
-            vox_script::tick_thresholds(
-                self.lua.lua(),
-                &self.spectral_script_state,
-            ).ok();
-        }
-
-        // 4d. Sync entity positions to splats — when scripts move entities,
-        //     the corresponding splats move with them.
-        {
-            use vox_core::ecs::TransformComponent;
-            let world = self.loop_.world_mut();
-            let mut query = world.query::<(bevy_ecs::prelude::Entity, &TransformComponent)>();
-            let entities: Vec<(u32, [f32; 3])> = query.iter(world)
-                .map(|(e, t)| (e.index(), [t.position.x, t.position.y, t.position.z]))
-                .collect();
-            for (eid, pos) in entities {
-                if let Some(&(start, end)) = self.entity_splat_ranges.get(&eid)
-                    && let Some(&orig_pos) = self.entity_original_positions.get(&eid)
-                {
-                    let dx = pos[0] - orig_pos[0];
-                    let dy = pos[1] - orig_pos[1];
-                    let dz = pos[2] - orig_pos[2];
-                    if dx.abs() > 1e-6 || dy.abs() > 1e-6 || dz.abs() > 1e-6 {
-                        for i in start..end.min(self.scene_splats.len()) {
-                            let p = self.scene_splats[i].position();
-                            self.scene_splats[i].set_position([p[0] + dx, p[1] + dy, p[2] + dz]);
-                        }
-                        self.entity_original_positions.insert(eid, pos);
-                    }
-                }
-            }
-        }
 
         // 5. Render + present
         //    Primary path: GPU rasteriser directly to surface texture.
@@ -2421,6 +2137,306 @@ impl EngineApp {
             w.request_redraw();
         }
     }
+
+    /// All window/GPU-free per-frame simulation: biome blend, patrol AI, camera,
+    /// LOD streaming, notifications, cursor, left-click handling, particles, ECS
+    /// runtime tick, procedural animation, physics + character controller, audio,
+    /// scripts (Rhai/Lua), and entity->splat sync. Called every frame by
+    /// handle_redraw (windowed) and by run_smoke (headless). The only
+    /// window-dependent bits (cursor icon) are guarded by `self.window` and
+    /// no-op headlessly.
+    fn step_simulation(&mut self, dt: f32) {
+        // Biome ambient soundscape: blend toward current biome target each frame
+        {
+            let biome = vox_audio::BiomeKind::Grassland; // default; terrain integration in future domain
+            let target = vox_audio::BiomeAmbientMix::for_biome(biome);
+            self.ambient_mix = self.ambient_mix.blend_toward(&target, 0.02);
+        }
+
+        // Update patrol agents along navmesh with spectral perception
+        if let Some(nm) = &self.navmesh {
+            let dt = self.frame_dt;
+            let sky_ambient = illuminant_for_time(self.loop_.time_of_day()).bands;
+            for agent in &mut self.patrol_agents {
+                agent.update(dt, nm);
+                // Update spectral perception from current sky illuminant
+                let gi_adapter = SpectralGiAdapter { sky_ambient };
+                agent.spectral_perception.position = agent.position;
+                let percept = agent.spectral_perception.sense(&gi_adapter);
+                agent.spectral_perception.update_emotion(&gi_adapter);
+                // Raise alert if green band (7) energy exceeds threshold
+                let _ = percept;
+            }
+        }
+
+        // 1. Update camera from input
+        self.update_camera(dt);
+
+        // LOD streaming: update tile manager and load newly active tiles
+        {
+            let cam_pos = self.camera.position;
+            let cam_tile = vox_core::lwc::TileCoord {
+                x: (cam_pos.x / vox_core::lwc::TILE_SIZE as f32) as i32,
+                z: (cam_pos.z / vox_core::lwc::TILE_SIZE as f32) as i32,
+            };
+            let newly_active = self.tile_manager.update_camera(cam_tile);
+            for tile in &newly_active {
+                let path = format!("assets/tiles/tile_{}_{}.vxm", tile.x, tile.z);
+                let p = std::path::Path::new(&path);
+                if p.exists() {
+                    match std::fs::read(p).and_then(|bytes| {
+                        vox_data::vxm::VxmFile::read(&bytes[..])
+                            .map_err(std::io::Error::other)
+                    }) {
+                        Ok(_vxm) => {
+                            println!("[streaming] Loaded tile {},{}", tile.x, tile.z);
+                        }
+                        Err(e) => eprintln!("[streaming] Failed to load {path}: {e}"),
+                    }
+                }
+            }
+        }
+
+        // Tick notification queue (decrement TTLs, expire old toasts)
+        self.editor.notification_queue.tick(dt);
+
+        // Cursor changes based on editor mode (no-op when headless: window is None)
+        if self.editor_visible
+            && let Some(w) = &self.window
+        {
+            if self.gizmo.dragging {
+                w.set_cursor(winit::window::CursorIcon::Grab);
+            } else if self.gizmo.active_axis.is_some() {
+                w.set_cursor(winit::window::CursorIcon::Pointer);
+            } else {
+                w.set_cursor(winit::window::CursorIcon::Default);
+            }
+        }
+
+        // 2. Handle left-click: Rapier raycast for editor pick, or object placement
+        if self.left_click_pending {
+            if self.editor_visible {
+                // Unproject screen coords to get a world-space ray
+                let forward = self.camera_forward();
+                let cam_target = self.camera.position + forward;
+                let view = Mat4::look_at_rh(self.camera.position, cam_target, Vec3::Y);
+                let (dw, dh) = (self.dlss.display_width, self.dlss.display_height);
+                let proj = Mat4::perspective_rh(
+                    self.camera.fov,
+                    dw as f32 / dh as f32,
+                    self.camera.near,
+                    self.camera.far,
+                );
+                let inv_vp = (proj * view).inverse();
+                let ndc_x = (2.0 * self.mouse_x as f32 / dw as f32) - 1.0;
+                let ndc_y = 1.0 - (2.0 * self.mouse_y as f32 / dh as f32);
+                let unproject = |ndc_z: f32| -> Vec3 {
+                    let clip = glam::Vec4::new(ndc_x, ndc_y, ndc_z, 1.0);
+                    let world = inv_vp * clip;
+                    Vec3::new(world.x / world.w, world.y / world.w, world.z / world.w)
+                };
+                let near_pt = unproject(-1.0);
+                let far_pt = unproject(1.0);
+                let ray_dir = (far_pt - near_pt).normalize();
+
+                // Try Rapier raycast first for precise physics-based picking
+                let mut picked = false;
+                if let Some((col_handle, _hit_pos, _dist)) = self.loop_.physics.raycast_with_collider(
+                    [near_pt.x, near_pt.y, near_pt.z],
+                    [ray_dir.x, ray_dir.y, ray_dir.z],
+                    1000.0,
+                )
+                    && let Some(&entity_id) = self.collider_to_entity.get(&col_handle)
+                {
+                    self.editor.select(entity_id);
+                    if let Some(name) = self.editor.selected_name() {
+                        println!("[ochroma] Rapier pick: '{}' (id={})", name, entity_id);
+                    }
+                    picked = true;
+                }
+
+                // Fall back to editor ray-sphere test if Rapier didn't match an entity
+                if !picked
+                    && let Some(id) = self.editor.pick_entity_at_screen_pos(
+                        self.mouse_x as f32,
+                        self.mouse_y as f32,
+                        dw,
+                        dh,
+                        inv_vp,
+                    )
+                {
+                    self.editor.select(id);
+                    if let Some(name) = self.editor.selected_name() {
+                        println!("[ochroma] Editor pick: '{}' (id={})", name, id);
+                    }
+                }
+            } else {
+                self.place_object_at_cursor();
+            }
+            self.left_click_pending = false;
+        }
+
+        // 3. Tick particles
+        self.particles.tick(dt);
+
+        // 4. Tick engine runtime (scripts, time advance) on the loop's world —
+        // the single ticked ECS (S4). NOTE: we call runtime.tick directly rather
+        // than loop_.step_scripts here because step_scripts also DRAINS the
+        // RenderBuffer; the shell's animation_system below appends to that same
+        // RenderBuffer *after* the tick, and the render path drains it once
+        // afterward. Draining here would lose the gather_splats output, so the
+        // tick stays drain-free to preserve behavior exactly.
+        self.loop_.runtime.tick(dt);
+
+        // 4a. Run procedural animation — appends bobbing splats to RenderBuffer
+        // (operates on the loop's world, where the NPC was spawned).
+        {
+            use bevy_ecs::system::{IntoSystem, System};
+            let mut sys = IntoSystem::into_system(animation_system);
+            sys.initialize(self.loop_.world_mut());
+            sys.run((), self.loop_.world_mut());
+            sys.apply_deferred(self.loop_.world_mut());
+        }
+
+        // 4b. Step Rapier physics and sync dynamic bodies back to ECS
+        // Update character controller before physics step.
+        // character.update() processes input (move_dir, jump, gravity) and stores
+        // last_move_dir. When rapier_kcc_active, it skips flat-plane integration.
+        // We then pass the full desired velocity (horizontal + vertical) through KCC.
+        self.character.rapier_kcc_active = self.character_body.is_some();
+        self.character.update(&self.input_state, dt, &mut self.loop_.physics);
+        if let Some(ref cb) = self.character_body {
+            if self.character.enabled {
+                // Full desired velocity: horizontal from input + vertical from gravity/jump
+                let desired = self.character.last_move_dir
+                    + Vec3::Y * self.character.vertical_velocity;
+                let output = cb.move_and_slide(
+                    desired, dt,
+                    self.loop_.physics.rigid_body_set(),
+                    self.loop_.physics.collider_set(),
+                    self.loop_.physics.query_pipeline(),
+                );
+                self.character.on_ground = output.grounded;
+                if output.grounded && self.character.vertical_velocity < 0.0 {
+                    self.character.vertical_velocity = 0.0;
+                }
+                cb.apply_translation(output.effective_translation, self.loop_.physics.rigid_body_set_mut());
+                self.character.position = cb.position(self.loop_.physics.rigid_body_set());
+                self.loop_.physics.set_kinematic_position(
+                    self.character.body_handle,
+                    [self.character.position.x, self.character.position.y, self.character.position.z],
+                );
+            }
+        }
+        // If character is enabled, drive camera position from character
+        if self.character.enabled {
+            let cam_pos = self.character.camera_position();
+            self.camera.position = cam_pos;
+            self.camera.target = cam_pos + self.character.camera_forward();
+        }
+        // EngineLoop S1: step Rapier physics and sync dynamic bodies back to ECS.
+        // (Relocated from the inline block; the ECS<->Rapier body map now lives in
+        // self.loop_.entity_rapier_bodies.)
+        self.loop_.step_physics(dt);
+
+        // 4c. Tick audio (legacy AudioEngine + spatial audio manager) via EngineLoop (S2).
+        // Listener pose: when the character controller is enabled, use its
+        // position/forward directly so the listener tracks the character even
+        // before camera sync; otherwise use the camera. `audio.set_listener`
+        // historically used `camera.position`, which already equals
+        // `character.camera_position()` once the camera was synced above, so the
+        // single `listener_pos` below preserves both backends' behavior exactly.
+        let (listener_pos, listener_fwd) = if self.character.enabled {
+            (self.character.camera_position(), self.character.camera_forward())
+        } else {
+            (self.camera.position, self.camera_forward())
+        };
+        self.loop_.step_audio(dt, listener_pos, listener_fwd);
+
+        // Process pending script commands for audio playback via EngineLoop (S4).
+        // drain_sound_commands is a byte-for-byte relocation of the old inline
+        // block: it drains PendingScriptCommands from the loop's world, maps each
+        // PlaySound clip to a tone frequency, plays it on the loop's spatial
+        // audio, and restores unprocessed commands.
+        self.loop_.drain_sound_commands();
+
+        // 4c-rhai. Per-frame Rhai script update + command dispatch
+        {
+            let reloaded = self.rhai.poll_reload();
+            for name in &reloaded {
+                println!("[ochroma] hot-reload: {}", name);
+            }
+            let dt_dyn = rhai::Dynamic::from(dt as f64);
+            for i in 0..self.rhai.script_count() {
+                let _ = self.rhai.call_fn(i, "on_update", std::slice::from_ref(&dt_dyn));
+            }
+        }
+        {
+            use vox_core::script_interface::ScriptCommand;
+            for cmd in vox_script::rhai_runtime::drain_pending_commands() {
+                match cmd {
+                    ScriptCommand::SetPosition { position } => {
+                        println!("[script] set_position ({}, {}, {})", position[0], position[1], position[2]);
+                    }
+                    ScriptCommand::PlaySound { clip, volume, .. } => {
+                        if let Some(ref h) = self.audio_handle {
+                            let _ = h.play(&clip, volume, false);
+                        }
+                    }
+                    ScriptCommand::Log { message } => {
+                        println!("[script] {}", message);
+                    }
+                    other => {
+                        println!("[script] unhandled command: {:?}", other);
+                    }
+                }
+            }
+        }
+
+        // 4c-lua. Per-frame Lua update + spectral threshold callbacks
+        {
+            if let Some(watcher) = &self.script_watcher {
+                for path in watcher.drain() {
+                    self.lua.pending_reload.push(path);
+                }
+            }
+            if let Err(e) = self.lua.call_update(dt) {
+                eprintln!("[ochroma] Lua update error: {}", e);
+            }
+            vox_script::tick_thresholds(
+                self.lua.lua(),
+                &self.spectral_script_state,
+            ).ok();
+        }
+
+        // 4d. Sync entity positions to splats — when scripts move entities,
+        //     the corresponding splats move with them.
+        {
+            use vox_core::ecs::TransformComponent;
+            let world = self.loop_.world_mut();
+            let mut query = world.query::<(bevy_ecs::prelude::Entity, &TransformComponent)>();
+            let entities: Vec<(u32, [f32; 3])> = query.iter(world)
+                .map(|(e, t)| (e.index(), [t.position.x, t.position.y, t.position.z]))
+                .collect();
+            for (eid, pos) in entities {
+                if let Some(&(start, end)) = self.entity_splat_ranges.get(&eid)
+                    && let Some(&orig_pos) = self.entity_original_positions.get(&eid)
+                {
+                    let dx = pos[0] - orig_pos[0];
+                    let dy = pos[1] - orig_pos[1];
+                    let dz = pos[2] - orig_pos[2];
+                    if dx.abs() > 1e-6 || dy.abs() > 1e-6 || dz.abs() > 1e-6 {
+                        for i in start..end.min(self.scene_splats.len()) {
+                            let p = self.scene_splats[i].position();
+                            self.scene_splats[i].set_position([p[0] + dx, p[1] + dy, p[2] + dz]);
+                        }
+                        self.entity_original_positions.insert(eid, pos);
+                    }
+                }
+            }
+        }
+    }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -2610,8 +2626,164 @@ impl ApplicationHandler for EngineApp {
 // main -- launch the engine
 // ---------------------------------------------------------------------------
 
+/// Headless smoke test: run the REAL per-frame simulation (step_simulation) +
+/// software render (render_frame) without a window/GPU. Proves the unified
+/// EngineLoop + editor/game logic + render run on a headless box. Exits 0 on
+/// success, panics (non-zero) if the loop/render is broken.
+fn run_smoke() {
+    println!("[ochroma] === HEADLESS SMOKE MODE (no window/GPU) ===");
+
+    // Build the app exactly as resumed() would, minus window + GPU + egui. No
+    // asset path (use the default scene). EngineApp::new constructs the
+    // EngineLoop + character; build_scene() + runtime.start() are window-free.
+    let mut app = EngineApp::new(None);
+    app.build_scene();
+    app.loop_.runtime.start();
+
+    // The legacy baked GI cache (build_scene -> rebuild_gi) is sized for the FULL
+    // scene_splats, but render_frame applies it to the frustum-culled + LOD subset
+    // (GiCache::apply asserts equal lengths). The windowed build never hits this
+    // because it renders via the GPU primary path; render_frame is the software
+    // fallback. The legacy cache is optional (backward-compat with --bake-gi), so
+    // drop it for the headless software render. The live spectral GI (loop_.step_gi)
+    // still runs every frame.
+    app.gi_cache = None;
+
+    // Render via the engine's DEFAULT SPECTRA path (tile-based EWA Gaussian
+    // splatting at a reduced internal resolution, then DLSS-upscaled) — the same
+    // path the windowed app uses by default, and far cheaper per frame than the
+    // full-res software rasteriser, which keeps the headless run tractable on CPU.
+    app.spectral_bypass = false;
+
+    // Frame the default scene (terrain + buildings at z~20, trees at z~10) from
+    // above and in front. forward = (sin(yaw), sin(pitch), -cos(yaw)); yaw=0 with
+    // a downward pitch looks toward -Z and down onto the scene. Walking forward
+    // (-Z) then moves the camera over the scene, keeping it in frame.
+    app.camera.position = Vec3::new(0.0, 18.0, 50.0);
+    app.cam_yaw = 0.0; // forward = -Z (toward the scene at lower z)
+    app.cam_pitch = -0.35;
+
+    let dt = 1.0 / 60.0; // fixed 60Hz step
+    // 30 frames is enough to prove the loop + sim + render run headlessly; the
+    // EWA spectra render of ~240k splats is the per-frame cost driver on CPU.
+    let total_frames = 30u32;
+    let start_cam = app.camera.position;
+    let start_frame_no = app.loop_.runtime.stats.frame_number;
+    let start_patrol: Vec<Vec3> = app.patrol_agents.iter().map(|a| a.position).collect();
+
+    let mut last_pixels: Vec<[u8; 4]> = Vec::new();
+    for frame in 0..total_frames {
+        // Inject "walk forward" for the first ~3/4 of the run so the REAL
+        // update_camera movement code moves the camera through the scene.
+        if frame < (total_frames * 3) / 4 {
+            app.keys.insert(KeyCode::KeyW);
+        } else {
+            app.keys.remove(&KeyCode::KeyW);
+        }
+        app.frame_dt = dt;
+        app.step_simulation(dt);
+        last_pixels = app.render_frame();
+        app.input_state.end_frame();
+    }
+
+    let (dw, dh) = (app.dlss.display_width, app.dlss.display_height);
+    let cam_moved = (app.camera.position - start_cam).length();
+    let frames_ticked = app.loop_.runtime.stats.frame_number.saturating_sub(start_frame_no);
+    let patrol_moved: f32 = app
+        .patrol_agents
+        .iter()
+        .zip(start_patrol.iter())
+        .map(|(a, &s)| (a.position - s).length())
+        .fold(0.0, f32::max);
+
+    let non_black = last_pixels
+        .iter()
+        .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+        .count();
+    // Distinct RGB colors — a flat/blank fill has ~1 color; a real scene
+    // (terrain + sky + splats + HUD) has many. Stronger "scene rendered" signal.
+    let distinct_colors = last_pixels
+        .iter()
+        .map(|p| (p[0], p[1], p[2]))
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    // Write final frame to PPM (P6).
+    let ppm_path = "/tmp/ochroma_engine_runner_smoke.ppm";
+    {
+        let mut data = format!("P6\n{} {}\n255\n", dw, dh).into_bytes();
+        for p in &last_pixels {
+            data.push(p[0]);
+            data.push(p[1]);
+            data.push(p[2]);
+        }
+        std::fs::write(ppm_path, &data).expect("failed to write smoke PPM");
+    }
+
+    println!(
+        "[ochroma] SMOKE SUMMARY: frames={} cam_pos=({:.2},{:.2},{:.2}) splats={} entities={} ecs_frames={} patrol_moved={:.2} cam_moved={:.2} non_black_px={}/{} ppm={}",
+        total_frames,
+        app.camera.position.x,
+        app.camera.position.y,
+        app.camera.position.z,
+        app.scene_splats.len(),
+        app.loop_.runtime.entity_count(),
+        frames_ticked,
+        patrol_moved,
+        cam_moved,
+        non_black,
+        last_pixels.len(),
+        ppm_path,
+    );
+    println!("[ochroma] SMOKE SUMMARY: distinct_colors={}", distinct_colors);
+
+    // --- Assertions: real frame + advanced sim (panic => non-zero exit). ---
+    let total_px = (dw * dh) as usize;
+    assert_eq!(
+        last_pixels.len(),
+        total_px,
+        "render_frame() produced {} pixels, expected {}",
+        last_pixels.len(),
+        total_px
+    );
+    let min_non_black = total_px / 20; // >5% of the frame
+    assert!(
+        non_black >= min_non_black,
+        "frame too empty: {} non-black px (< {} required) — render likely broken",
+        non_black,
+        min_non_black
+    );
+    // Real geometry rendered, not a uniform fill: require many distinct colors.
+    assert!(
+        distinct_colors >= 16,
+        "frame has only {} distinct colors — looks like a flat fill, not a real render",
+        distinct_colors
+    );
+    // Sim advanced: the ECS runtime ticked, and either the camera walked or a
+    // patrol agent moved along the navmesh.
+    assert!(
+        frames_ticked >= total_frames as u64,
+        "ECS only ticked {} frames (expected >= {}) — runtime did not advance",
+        frames_ticked,
+        total_frames
+    );
+    assert!(
+        cam_moved > 1.0 || patrol_moved > 0.5,
+        "neither camera ({:.2}m) nor patrol agents ({:.2}m) moved — movement/AI broken",
+        cam_moved,
+        patrol_moved
+    );
+
+    println!("[ochroma] SMOKE PASS: loop + editor/game logic + render verified headlessly.");
+}
+
 fn main() {
     println!("Ochroma Engine v0.1.0 -- Spectral Gaussian Splatting");
+
+    if std::env::args().any(|a| a == "--smoke") {
+        run_smoke();
+        return;
+    }
 
     let asset_path = std::env::args().nth(1);
     if let Some(ref path) = asset_path {
