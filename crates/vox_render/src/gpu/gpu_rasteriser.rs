@@ -581,15 +581,6 @@ impl GpuRasteriser {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn depth_texture_descriptor_format_is_depth32float() {
-        assert_eq!(
-            wgpu::TextureFormat::Depth32Float,
-            wgpu::TextureFormat::Depth32Float,
-        );
-    }
-}
+// NOTE: the former test module here held a single tautological assertion
+// (Depth32Float == Depth32Float) — removed; real GPU-rasteriser coverage needs
+// a wgpu device and lives in the integration suites.

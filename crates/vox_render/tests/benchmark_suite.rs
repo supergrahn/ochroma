@@ -61,10 +61,10 @@ fn benchmark_50k_splats() {
 fn benchmark_low_resolution() {
     let (ms, _) = bench_render(10_000, 64, 64);
     println!("[bench] 10k splats @ 64x64: {:.1}ms", ms);
-    // Lower res should be faster
-    let (ms_high, _) = bench_render(10_000, 256, 256);
-    // Allow some variance — low res is usually faster but not always due to OS scheduling
-    assert!(ms < ms_high * 2.0, "Lower res should be roughly faster: {}ms vs {}ms", ms, ms_high);
+    // An absolute bound, like the other benches. The old assert compared two
+    // noisy wall-clock measurements (64x64 vs 256x256) and flaked under
+    // machine load — relative timing is not a stable invariant.
+    assert!(ms < 10000.0, "10k splats @ 64x64 should render in <10s: {:.1}ms", ms);
 }
 
 #[test]

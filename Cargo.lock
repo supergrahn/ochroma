@@ -6215,6 +6215,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "spectra-gaussian-render"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "glam 0.29.3",
+ "ndarray",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "spectra-gpu"
 version = "0.1.0"
 dependencies = [
@@ -7695,6 +7708,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "spectra-gaussian-render",
  "spectra-gpu",
  "spectra-renderer",
  "spectra-scene-state",

@@ -27,6 +27,7 @@ vox_nodes = { workspace = true }
 vox_ui    = { workspace = true }
 bevy_ecs = { workspace = true }
 bevy_app = { workspace = true }
+spectra-gaussian-render = { path = "../../../spectra/rust/spectra-gaussian-render" }
 spectra-renderer = { path = "../../../spectra/rust/spectra-renderer", optional = true }
 spectra-gpu = { path = "../../../spectra/rust/spectra-gpu", optional = true }
 spectra-scene-state = { path = "../../../spectra/rust/spectra-scene-state", optional = true }
