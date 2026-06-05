@@ -76,6 +76,50 @@ fn bar_colors_form_visible_spectrum_gradient() {
 }
 
 #[test]
+fn live_u16_band_energy_drives_taller_bar_through_render() {
+    // Simulate a live quantized band-energy readback (e.g. GPU/wire): band 9
+    // is full-scale, band 2 is near-zero. Feed it through the u16 path and
+    // confirm the rendered geometry reflects the input energy ordering.
+    let mut bands = [0u16; 16];
+    bands[2] = 512;          // low energy
+    bands[9] = u16::MAX;     // full energy
+
+    let bars = SpectralHUD::bar_rects_u16(bands, [16.0, 900.0], 160.0, 64.0);
+    assert_eq!(bars.len(), 16, "expected 16 bars, got {}", bars.len());
+    assert!(
+        bars[9][3] > bars[2][3],
+        "live u16: band9 h={} should be taller than band2 h={}",
+        bars[9][3], bars[2][3],
+    );
+
+    // The same live input must reach pixels: build a cache from u16 and render.
+    let cache = SpectralRadianceCache::from_u16(bands);
+    let mut ctx = VelloCtxCpu::new(1920, 1080);
+    ctx.begin_frame();
+    SpectralHUD::render_cpu(&mut ctx, &cache, [16.0, 900.0]);
+    assert!(
+        ctx.commands().len() >= 32,
+        "expected ≥32 draw commands (16 bg + 16 bars), got {}",
+        ctx.commands().len(),
+    );
+
+    // render_cpu emits, per band, a background track followed by the energy
+    // bar (foreground). Foreground bars are therefore at odd command indices.
+    // Extract band 9 vs band 2 foreground heights from the real command stream.
+    let fg_h = |band: usize| -> f32 {
+        match &ctx.commands()[band * 2 + 1] {
+            DrawCmd::FillRect { rect, .. } => rect[3],
+        }
+    };
+    let h_full = fg_h(9);
+    let h_low  = fg_h(2);
+    println!("rendered band9_fg_h={} band2_fg_h={}", h_full, h_low);
+    assert!(h_full > h_low, "rendered full-scale band9 h={} must exceed low band2 h={}", h_full, h_low);
+    // render_cpu uses a fixed 60px max height; full-scale energy fills it.
+    assert!((h_full - 60.0).abs() < 1e-3, "full-scale band should fill render_cpu max_height (60px), got {}", h_full);
+}
+
+#[test]
 fn scene_spectral_shift_moves_hud_bars() {
     let fire_cache = SpectralRadianceCache {
         band_energy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2, 0.4, 0.6, 0.7, 0.8, 0.9, 1.0],

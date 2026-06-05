@@ -12,6 +12,28 @@ impl Default for SpectralRadianceCache {
     fn default() -> Self { Self { band_energy: [0.0; 16] } }
 }
 
+impl SpectralRadianceCache {
+    /// Build a cache from a live `[f32; 16]` band-energy source.
+    ///
+    /// Values are stored as-is; `bar_rects` clamps to `[0, 1]` at draw time.
+    pub fn from_f32(band_energy: [f32; 16]) -> Self {
+        Self { band_energy }
+    }
+
+    /// Build a cache from a live `[u16; 16]` quantized band-energy source.
+    ///
+    /// Each band is dequantized as `value / u16::MAX`, so `u16::MAX` maps to
+    /// `1.0` (full energy) and `0` maps to `0.0`. This is the natural input
+    /// when band energy arrives quantized from a GPU readback or over the wire.
+    pub fn from_u16(bands: [u16; 16]) -> Self {
+        let mut band_energy = [0.0f32; 16];
+        for b in 0..16 {
+            band_energy[b] = bands[b] as f32 / u16::MAX as f32;
+        }
+        Self { band_energy }
+    }
+}
+
 pub struct SpectralHUD;
 
 const BAND_COLORS: [[f32; 4]; 16] = [
@@ -53,6 +75,21 @@ impl SpectralHUD {
             let y = pos[1] + (max_height - h);
             [x, y, bar_w, h]
         }).collect()
+    }
+
+    /// Bar geometry for a live `[u16; 16]` quantized band-energy source.
+    ///
+    /// Convenience over `bar_rects`: dequantizes each band (`value / u16::MAX`)
+    /// before laying out bars, so a higher `u16` band yields a taller bar.
+    /// Returns one `[x, y, w, h]` per band (16 total).
+    pub fn bar_rects_u16(
+        bands:       [u16; 16],
+        pos:         [f32; 2],
+        total_width: f32,
+        max_height:  f32,
+    ) -> Vec<[f32; 4]> {
+        let cache = SpectralRadianceCache::from_u16(bands);
+        Self::bar_rects(cache.band_energy, pos, total_width, max_height)
     }
 
     pub fn render_cpu(
@@ -147,5 +184,48 @@ mod tests {
         let mut ctx = crate::vello_ctx::VelloCtxCpu::new(800, 600);
         SpectralHUD::render_cpu(&mut ctx, &cache, [10.0, 10.0]);
         assert!(ctx.commands().len() >= 16, "expected ≥16 draw commands, got {}", ctx.commands().len());
+    }
+
+    #[test]
+    fn from_u16_dequantizes_full_scale_to_one() {
+        // u16::MAX is full energy -> 1.0; 0 -> 0.0; midpoint -> ~0.5.
+        let cache = SpectralRadianceCache::from_u16([
+            u16::MAX, 0, 32768, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        assert!((cache.band_energy[0] - 1.0).abs() < 1e-4, "full-scale u16 should map to 1.0, got {}", cache.band_energy[0]);
+        assert!(cache.band_energy[1].abs() < 1e-6, "zero u16 should map to 0.0, got {}", cache.band_energy[1]);
+        assert!((cache.band_energy[2] - 0.5).abs() < 1e-2, "mid u16 should map to ~0.5, got {}", cache.band_energy[2]);
+    }
+
+    #[test]
+    fn bar_rects_u16_high_band_taller_than_low_band() {
+        // Live quantized input: band 12 is full energy, band 3 is near-zero.
+        let mut bands = [0u16; 16];
+        bands[3]  = 256;        // very low energy
+        bands[12] = u16::MAX;   // full energy
+        let bars = SpectralHUD::bar_rects_u16(bands, [0.0, 0.0], 160.0, 100.0);
+        assert_eq!(bars.len(), 16, "expected 16 bars, got {}", bars.len());
+        let h_high = bars[12][3];
+        let h_low  = bars[3][3];
+        println!("u16 band12_h={} band3_h={}", h_high, h_low);
+        assert!(h_high > h_low, "full-scale band12 h={} should be taller than low band3 h={}", h_high, h_low);
+        // Full-scale band must reach (within epsilon) the max height.
+        assert!((h_high - 100.0).abs() < 1e-3, "full-scale u16 band should fill max_height, got {}", h_high);
+    }
+
+    #[test]
+    fn bar_rects_u16_matches_dequantized_f32_path() {
+        // The u16 convenience path must agree with dequantize-then-bar_rects.
+        let bands: [u16; 16] = [
+            0, 4096, 8192, 12288, 16384, 20480, 24576, 28672,
+            u16::MAX, 49152, 40960, 32768, 24576, 16384, 8192, 4096,
+        ];
+        let via_u16 = SpectralHUD::bar_rects_u16(bands, [5.0, 7.0], 160.0, 100.0);
+        let cache   = SpectralRadianceCache::from_u16(bands);
+        let via_f32 = SpectralHUD::bar_rects(cache.band_energy, [5.0, 7.0], 160.0, 100.0);
+        for b in 0..16 {
+            assert!((via_u16[b][3] - via_f32[b][3]).abs() < 1e-4,
+                "band {} height mismatch: u16 path={} f32 path={}", b, via_u16[b][3], via_f32[b][3]);
+        }
     }
 }
