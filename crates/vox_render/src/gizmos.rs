@@ -3,7 +3,48 @@
 //! Supports translate, rotate, and scale modes with mouse hit-testing
 //! and drag interaction.
 
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec3, Vec4};
+
+/// The result of a single `update_drag` step, interpreted per gizmo mode.
+///
+/// Each variant carries the *incremental* change to apply to the manipulated
+/// entity this frame (drags are processed incrementally — `update_drag` resets
+/// its drag origin every call).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GizmoDelta {
+    /// World-space translation to add to the entity position.
+    Translate(Vec3),
+    /// Incremental rotation to compose onto the entity orientation.
+    Rotate(Quat),
+    /// Per-axis multiplicative scale factor to apply to the entity scale.
+    Scale(Vec3),
+}
+
+impl GizmoDelta {
+    /// Convenience: the translation vector, or `Vec3::ZERO` for other modes.
+    pub fn translation(self) -> Vec3 {
+        match self {
+            GizmoDelta::Translate(v) => v,
+            _ => Vec3::ZERO,
+        }
+    }
+
+    /// Convenience: the rotation quaternion, or identity for other modes.
+    pub fn rotation(self) -> Quat {
+        match self {
+            GizmoDelta::Rotate(q) => q,
+            _ => Quat::IDENTITY,
+        }
+    }
+
+    /// Convenience: the per-axis scale factor, or `Vec3::ONE` for other modes.
+    pub fn scale(self) -> Vec3 {
+        match self {
+            GizmoDelta::Scale(s) => s,
+            _ => Vec3::ONE,
+        }
+    }
+}
 
 /// Which manipulation mode the gizmo is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -396,7 +437,15 @@ impl GizmoRenderer {
         self.drag_start_world = None;
     }
 
-    /// Update drag -- returns world-space delta to apply to entity.
+    /// Update drag — returns the incremental change for THIS frame, interpreted
+    /// according to `self.mode`:
+    ///
+    /// * [`GizmoMode::Translate`] → [`GizmoDelta::Translate`] world-space offset
+    ///   along the active axis.
+    /// * [`GizmoMode::Rotate`] → [`GizmoDelta::Rotate`] quaternion spinning about
+    ///   the active axis, proportional to pixel motion.
+    /// * [`GizmoMode::Scale`] → [`GizmoDelta::Scale`] per-axis multiplicative
+    ///   factor on the active axis (other axes stay at 1.0).
     pub fn update_drag(
         &mut self,
         mouse_x: f32,
@@ -405,27 +454,34 @@ impl GizmoRenderer {
         view_proj: Mat4,
         screen_width: u32,
         screen_height: u32,
-    ) -> Vec3 {
+    ) -> GizmoDelta {
+        // Mode-specific identity returned on any early-out.
+        let identity = match self.mode {
+            GizmoMode::Translate => GizmoDelta::Translate(Vec3::ZERO),
+            GizmoMode::Rotate => GizmoDelta::Rotate(Quat::IDENTITY),
+            GizmoMode::Scale => GizmoDelta::Scale(Vec3::ONE),
+        };
+
         if !self.dragging {
-            return Vec3::ZERO;
+            return identity;
         }
         let Some(axis) = self.active_axis else {
-            return Vec3::ZERO;
+            return identity;
         };
         let Some((start_x, start_y)) = self.drag_start_screen else {
-            return Vec3::ZERO;
+            return identity;
         };
 
         // Compute pixels-per-world-unit at entity depth
         let arrow_len = world_arrow_length(entity_pos, view_proj, screen_width, screen_height);
         let px_per_unit = ARROW_PIXELS / arrow_len;
         if px_per_unit < 0.001 {
-            return Vec3::ZERO;
+            return identity;
         }
 
         // Determine the screen-space direction of this axis
         let Some(center) = project_to_screen(entity_pos, view_proj, screen_width, screen_height) else {
-            return Vec3::ZERO;
+            return identity;
         };
         let axis_dir = match axis {
             Axis::X => Vec3::X,
@@ -433,7 +489,7 @@ impl GizmoRenderer {
             Axis::Z => Vec3::Z,
         };
         let Some(axis_end) = project_to_screen(entity_pos + axis_dir, view_proj, screen_width, screen_height) else {
-            return Vec3::ZERO;
+            return identity;
         };
 
         // Screen-space axis direction (normalised)
@@ -441,7 +497,7 @@ impl GizmoRenderer {
         let screen_axis_y = axis_end.1 - center.1;
         let screen_axis_len = (screen_axis_x * screen_axis_x + screen_axis_y * screen_axis_y).sqrt();
         if screen_axis_len < 0.001 {
-            return Vec3::ZERO;
+            return identity;
         }
         let sax = screen_axis_x / screen_axis_len;
         let say = screen_axis_y / screen_axis_len;
@@ -451,13 +507,38 @@ impl GizmoRenderer {
         let dy = mouse_y - start_y;
         let projected_px = dx * sax + dy * say;
 
-        // Convert pixel delta to world units
-        let world_delta = projected_px / px_per_unit;
-
         // Update drag start so subsequent calls are incremental
         self.drag_start_screen = Some((mouse_x, mouse_y));
 
-        axis_dir * world_delta
+        match self.mode {
+            GizmoMode::Translate => {
+                // Pixel delta → world units along the axis.
+                let world_delta = projected_px / px_per_unit;
+                GizmoDelta::Translate(axis_dir * world_delta)
+            }
+            GizmoMode::Rotate => {
+                // Pixel delta → rotation angle about the axis.
+                // ROTATE_PX_PER_RADIAN pixels of drag = 1 radian of spin.
+                const ROTATE_PX_PER_RADIAN: f32 = 100.0;
+                let angle = projected_px / ROTATE_PX_PER_RADIAN;
+                GizmoDelta::Rotate(Quat::from_axis_angle(axis_dir, angle))
+            }
+            GizmoMode::Scale => {
+                // Pixel delta → multiplicative scale on the active axis.
+                // SCALE_PX_PER_UNIT pixels of drag = +1.0 to the scale factor.
+                const SCALE_PX_PER_UNIT: f32 = 100.0;
+                let factor = 1.0 + projected_px / SCALE_PX_PER_UNIT;
+                // Keep scale strictly positive (avoid mirror/degenerate scale).
+                let factor = factor.max(0.01);
+                let mut s = Vec3::ONE;
+                match axis {
+                    Axis::X => s.x = factor,
+                    Axis::Y => s.y = factor,
+                    Axis::Z => s.z = factor,
+                }
+                GizmoDelta::Scale(s)
+            }
+        }
     }
 
     /// End drag.

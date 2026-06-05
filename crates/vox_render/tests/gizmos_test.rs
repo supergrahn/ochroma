@@ -1,5 +1,5 @@
 use glam::{Mat4, Vec3};
-use vox_render::gizmos::{Axis, GizmoMode, GizmoRenderer};
+use vox_render::gizmos::{Axis, GizmoDelta, GizmoMode, GizmoRenderer};
 
 fn test_view_proj() -> Mat4 {
     let view = Mat4::look_at_rh(
@@ -64,11 +64,17 @@ fn update_drag_returns_proportional_delta() {
     let vp = test_view_proj();
     let entity_pos = Vec3::ZERO;
 
+    // Default mode is Translate.
+    assert_eq!(gizmo.mode, GizmoMode::Translate);
     gizmo.begin_drag(Axis::X, 400.0, 300.0);
     assert!(gizmo.dragging);
 
     // Move mouse 50 pixels to the right
-    let delta = gizmo.update_drag(450.0, 300.0, entity_pos, vp, W, H);
+    let result = gizmo.update_drag(450.0, 300.0, entity_pos, vp, W, H);
+    let delta = match result {
+        GizmoDelta::Translate(v) => v,
+        other => panic!("translate mode should yield Translate, got {other:?}"),
+    };
 
     // Should have a non-zero X component and near-zero Y/Z
     assert!(delta.x.abs() > 0.01, "expected X delta, got {delta:?}");
@@ -81,6 +87,68 @@ fn update_drag_returns_proportional_delta() {
         delta.z.abs() < delta.x.abs() * 0.1,
         "Z should be near zero: {delta:?}"
     );
+}
+
+#[test]
+fn rotate_mode_drag_rotates_not_translates() {
+    let mut gizmo = GizmoRenderer::new();
+    gizmo.mode = GizmoMode::Rotate;
+    let vp = test_view_proj();
+    let entity_pos = Vec3::ZERO;
+
+    gizmo.begin_drag(Axis::Y, 400.0, 300.0);
+    // The Y axis projects vertically on screen (camera up = +Y), so drag the
+    // mouse vertically (60 px up) to move along the Y-axis screen direction.
+    let result = gizmo.update_drag(400.0, 240.0, entity_pos, vp, W, H);
+
+    let rot = match result {
+        GizmoDelta::Rotate(q) => q,
+        other => panic!("rotate mode must yield Rotate, got {other:?}"),
+    };
+
+    // A rotate drag must NOT collapse to identity — it must actually rotate.
+    let angle = rot.to_axis_angle().1;
+    assert!(angle.abs() > 1e-3, "rotate drag must produce a real angle, got {angle}");
+
+    // The rotation must actually move a probe vector. Rotating about the Y axis
+    // (active axis) leaves +Y fixed but moves +X off-axis.
+    let moved = rot * Vec3::X;
+    let displacement = (moved - Vec3::X).length();
+    assert!(
+        displacement > 1e-2,
+        "rotation must displace an off-axis point, got displacement={displacement} (moved={moved:?})"
+    );
+    // And it should NOT behave like a translation: convenience translation() is zero.
+    assert_eq!(result.translation(), Vec3::ZERO, "rotate must not translate");
+}
+
+#[test]
+fn scale_mode_drag_scales_not_translates() {
+    let mut gizmo = GizmoRenderer::new();
+    gizmo.mode = GizmoMode::Scale;
+    let vp = test_view_proj();
+    let entity_pos = Vec3::ZERO;
+
+    gizmo.begin_drag(Axis::X, 400.0, 300.0);
+    // Drag 50 px along the X-axis screen direction (to the right → grow).
+    let result = gizmo.update_drag(450.0, 300.0, entity_pos, vp, W, H);
+
+    let scale = match result {
+        GizmoDelta::Scale(s) => s,
+        other => panic!("scale mode must yield Scale, got {other:?}"),
+    };
+
+    // X scale factor must change away from 1.0; the other axes stay at 1.0.
+    assert!(
+        (scale.x - 1.0).abs() > 1e-2,
+        "scale drag must change X scale factor, got {scale:?}"
+    );
+    assert!((scale.y - 1.0).abs() < 1e-6, "Y scale must stay 1.0, got {scale:?}");
+    assert!((scale.z - 1.0).abs() < 1e-6, "Z scale must stay 1.0, got {scale:?}");
+    // Dragging right (positive projection) grows the axis.
+    assert!(scale.x > 1.0, "rightward drag should enlarge X, got {}", scale.x);
+    // And it must NOT behave like a translation.
+    assert_eq!(result.translation(), Vec3::ZERO, "scale must not translate");
 }
 
 #[test]
