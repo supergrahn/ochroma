@@ -1720,26 +1720,28 @@ impl EngineApp {
                 dw,
                 dh,
             );
+            // update_drag now returns GizmoDelta {Translate|Rotate|Scale}. The scene editor's
+            // move_selected is translation-only, so extract translation(); Rotate/Scale yield
+            // ZERO here (entity rotate/scale wiring is a later editor task).
+            let mut translation = delta.translation();
             // Apply snap-to-grid if enabled
-            let delta = if self.editor.snap_enabled && self.editor.snap_grid > 0.0 {
+            if self.editor.snap_enabled && self.editor.snap_grid > 0.0 {
                 let grid = self.editor.snap_grid;
-                match self.gizmo.active_axis {
+                translation = match self.gizmo.active_axis {
                     Some(vox_render::gizmos::Axis::X) => glam::Vec3::new(
-                        (delta.x / grid).round() * grid, 0.0, 0.0,
+                        (translation.x / grid).round() * grid, 0.0, 0.0,
                     ),
                     Some(vox_render::gizmos::Axis::Y) => glam::Vec3::new(
-                        0.0, (delta.y / grid).round() * grid, 0.0,
+                        0.0, (translation.y / grid).round() * grid, 0.0,
                     ),
                     Some(vox_render::gizmos::Axis::Z) => glam::Vec3::new(
-                        0.0, 0.0, (delta.z / grid).round() * grid,
+                        0.0, 0.0, (translation.z / grid).round() * grid,
                     ),
-                    None => delta,
-                }
-            } else {
-                delta
-            };
-            if delta.length_squared() > 1e-8 {
-                self.editor.move_selected(delta);
+                    None => translation,
+                };
+            }
+            if translation.length_squared() > 1e-8 {
+                self.editor.move_selected(translation);
             }
         } else if self.mouse_captured {
             if let Some((lx, ly)) = self.last_mouse {
