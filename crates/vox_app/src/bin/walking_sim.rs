@@ -25,8 +25,11 @@ use vox_audio::AudioCommand;
 use vox_core::character_controller::{CharacterController, character_controller_tick};
 use vox_core::ecs::TransformComponent;
 use vox_core::engine_runtime::EngineConfig;
-use vox_core::game_ui::{GameState, GameUI, UIElement, UIPosition, UISize};
+use vox_core::game_ui::{
+    burn_text, GameState, GameUI, UIElement, UIPosition, UISize, CHAR_H, CHAR_STRIDE,
+};
 use vox_ui::game_hud::GameHud;
+use vox_ui::game_menu::GameMenu;
 use vox_ui::spectral_hud::SpectralRadianceCache;
 use vox_ui::vello_ctx::VelloCtxCpu;
 use vox_core::spectral::Illuminant;
@@ -43,6 +46,13 @@ use vox_script::rhai_runtime::RhaiRuntime;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
+
+// ---------------------------------------------------------------------------
+// Game-menu option labels (selectable rows the shell draws over GameMenu rects)
+// ---------------------------------------------------------------------------
+const MAIN_MENU_OPTIONS: [&str; 2] = ["START", "QUIT"];
+const PAUSE_MENU_OPTIONS: [&str; 2] = ["RESUME", "QUIT"];
+const WIN_MENU_OPTIONS: [&str; 1] = ["CONTINUE"];
 
 // Sun direction (normalized, pointing toward ground = positive Y component negative)
 const SUN_DIR: Vec3 = Vec3::new(0.4, -0.8, 0.3);
@@ -416,6 +426,9 @@ struct WalkingSim {
     // Game UI
     game_ui: GameUI,
     fps_display: f32,
+    /// game_time captured when the player won (for the win screen's elapsed
+    /// readout). 0.0 until a win occurs.
+    win_time: f32,
 
     // Windmill
     windmill: Windmill,
@@ -589,6 +602,7 @@ impl WalkingSim {
             player_pitch: 0.0,
             game_ui,
             fps_display: 0.0,
+            win_time: 0.0,
             windmill,
             npc,
             time_accel: 1.0 / REAL_SECS_PER_GAME_HOUR,
@@ -1185,6 +1199,8 @@ impl WalkingSim {
                         "[walking_sim] YOU WIN! All orbs collected in {:.1} seconds!",
                         self.game_time
                     );
+                    self.win_time = self.game_time;
+                    self.game_ui.menu_selection = 0;
                     self.game_ui.game_state = GameState::GameOver {
                         message: "YOU WIN!".to_string(),
                     };
@@ -1206,6 +1222,149 @@ impl WalkingSim {
         );
         self.game_ui
             .set_text("fps", &format!("FPS: {:.0}", self.current_fps));
+    }
+
+    /// Number of selectable options in the currently active menu (0 when
+    /// Playing — there is no menu to navigate).
+    fn menu_option_count(&self) -> usize {
+        match &self.game_ui.game_state {
+            GameState::Playing => 0,
+            GameState::MainMenu => MAIN_MENU_OPTIONS.len(),
+            GameState::Paused => PAUSE_MENU_OPTIONS.len(),
+            GameState::GameOver { .. } => WIN_MENU_OPTIONS.len(),
+        }
+    }
+
+    /// Reset orbs, player, and clocks to a fresh playthrough.
+    fn reset_game(&mut self) {
+        for orb in &mut self.orbs {
+            orb.collected = false;
+        }
+        self.orbs_collected = 0;
+        self.game_time = 0.0;
+        self.win_time = 0.0;
+        self.cc = CharacterController::default();
+        self.cc.speed = 8.0;
+        self.cc_transform.position = Vec3::new(0.0, self.cc.height * 0.5, 0.0);
+    }
+
+    /// Apply the active menu's selected option (ENTER). Drives the real game
+    /// state transitions: main-menu Start/Quit, pause Resume/Quit, win Continue.
+    fn activate_menu_selection(&mut self, event_loop: &ActiveEventLoop) {
+        let sel = self.game_ui.menu_selection;
+        match &self.game_ui.game_state {
+            GameState::Playing => {}
+            GameState::MainMenu => match sel {
+                0 => {
+                    // START
+                    self.game_ui.game_state = GameState::Playing;
+                }
+                _ => event_loop.exit(), // QUIT
+            },
+            GameState::Paused => match sel {
+                0 => {
+                    // RESUME
+                    self.game_ui.game_state = GameState::Playing;
+                }
+                _ => event_loop.exit(), // QUIT
+            },
+            GameState::GameOver { .. } => {
+                // CONTINUE -> restart a fresh playthrough.
+                self.reset_game();
+                self.game_ui.menu_selection = 0;
+                self.game_ui.game_state = GameState::Playing;
+            }
+        }
+    }
+
+    /// Pixel width of a string at the given bitmap-font scale (mirrors the
+    /// private helper in vox_core::game_ui: `len*stride*scale - scale`, last
+    /// char has no trailing gap).
+    fn label_px_width(text: &str, scale: u32) -> u32 {
+        let len = text.chars().count() as u32;
+        if len == 0 {
+            return 0;
+        }
+        len * CHAR_STRIDE * scale - scale
+    }
+
+    /// Draw a single bitmap label centered horizontally and vertically inside
+    /// `rect` ([x, y, w, h]), at the given font scale and color.
+    fn draw_label_centered(
+        pixels: &mut [[u8; 4]],
+        rect: [f32; 4],
+        text: &str,
+        color: [u8; 3],
+        scale: u32,
+    ) {
+        let tw = Self::label_px_width(text, scale);
+        let th = CHAR_H * scale;
+        let x = (rect[0] + (rect[2] - tw as f32) * 0.5).max(0.0) as u32;
+        let y = (rect[1] + (rect[3] - th as f32) * 0.5).max(0.0) as u32;
+        burn_text(pixels, WIDTH, x, y, text, color, scale);
+    }
+
+    /// Composite the active game menu (main / pause / win) over `pixels`.
+    ///
+    /// Shared code path used by BOTH the windowed flow and the smoke. Builds a
+    /// [`GameMenu`] layout via the CPU Vello context (dim overlay + panel +
+    /// 16-band accent strip + option highlights), rasterises it into the frame,
+    /// then stamps bitmap text labels on top inside the menu's title/option
+    /// rects. No-op when Playing.
+    fn render_menu_overlay(&self, pixels: &mut [[u8; 4]]) {
+        let menu = GameMenu::new(WIDTH, HEIGHT);
+        let sel = self.game_ui.menu_selection;
+        let mut ctx = VelloCtxCpu::new(WIDTH, HEIGHT);
+
+        // Title label + per-option labels chosen per state.
+        let (title, options): (String, Vec<String>) = match &self.game_ui.game_state {
+            GameState::Playing => return,
+            GameState::MainMenu => {
+                menu.compose_main(&mut ctx, MAIN_MENU_OPTIONS.len(), sel);
+                (
+                    "OCHROMA".to_string(),
+                    MAIN_MENU_OPTIONS.iter().map(|s| s.to_string()).collect(),
+                )
+            }
+            GameState::Paused => {
+                menu.compose_pause(&mut ctx, PAUSE_MENU_OPTIONS.len(), sel);
+                (
+                    "PAUSED".to_string(),
+                    PAUSE_MENU_OPTIONS.iter().map(|s| s.to_string()).collect(),
+                )
+            }
+            GameState::GameOver { message } => {
+                menu.compose_win(
+                    &mut ctx,
+                    self.total_orbs,
+                    self.win_time,
+                    WIN_MENU_OPTIONS.len(),
+                    sel,
+                );
+                // Title shows the win message; the option row label includes the
+                // orb count + elapsed time so the stats are visible on screen.
+                (
+                    message.clone(),
+                    vec![format!(
+                        "ORBS {}/{}  {:.0}S  CONTINUE",
+                        self.total_orbs, self.total_orbs, self.win_time
+                    )],
+                )
+            }
+        };
+
+        // Rasterise the menu layout into the frame.
+        ctx.rasterize_into(pixels, WIDTH, HEIGHT);
+
+        // Bitmap labels on top, centered in the menu's published rects.
+        Self::draw_label_centered(pixels, menu.title_rect(), &title, [255, 255, 255], 3);
+        let rects = menu.option_rects(options.len());
+        for (i, label) in options.iter().enumerate() {
+            // Selected option: dark text on the bright gold highlight; others:
+            // light text on the dim slate highlight.
+            let color = if i == sel { [20, 20, 20] } else { [220, 220, 230] };
+            Self::draw_label_centered(pixels, rects[i], label, color, 2);
+        }
     }
 
     fn render(&mut self) -> Vec<[u8; 4]> {
@@ -1347,8 +1506,18 @@ impl WalkingSim {
             &self.tonemap_settings,
         );
 
-        // 4. Render GameUI HUD (orbs, position, fps, game-over overlay)
-        self.game_ui.render_to_pixels(&mut pixels, WIDTH, HEIGHT);
+        // 4. Render GameUI HUD text (orbs, position, fps) — only while Playing.
+        //    Menu states are drawn by the Vello game-menu overlay below, so the
+        //    old bitmap-text HUD elements are suppressed behind a menu.
+        if self.game_ui.game_state == GameState::Playing {
+            self.game_ui.render_to_pixels(&mut pixels, WIDTH, HEIGHT);
+        } else {
+            // MainMenu / Paused / GameOver: real Vello game menus (dim overlay +
+            // panel + 16-band spectral accent strip + selectable option
+            // highlights) with bitmap labels stamped on top. Shared with the
+            // windowed flow.
+            self.render_menu_overlay(&mut pixels);
+        }
 
         // 5. Vello-style game HUD: live 16-band spectral GI readout (bottom-left)
         //    + orb progress bar (top-left), composited over the frame. The band
@@ -1442,7 +1611,7 @@ impl ApplicationHandler for WalkingSim {
         }
 
         println!("[walking_sim] Walk around and collect all 10 glowing orbs to win!");
-        println!("Controls: ENTER start, WASD move, SPACE jump, right-click look, ` Rhai eval, Escape quit");
+        println!("Controls: UP/DOWN select, ENTER confirm, WASD move, SPACE jump, right-click look, ` Rhai eval, ESC pause/quit");
     }
 
     fn window_event(
@@ -1460,37 +1629,30 @@ impl ApplicationHandler for WalkingSim {
                         self.keys_held.insert(key);
                         match key {
                             KeyCode::Escape => {
-                                // If playing, pause; if paused, quit (or resume on second press)
+                                // Playing -> pause (reset selection to Resume).
+                                // On a menu, Escape quits.
                                 match &self.game_ui.game_state {
                                     GameState::Playing => {
+                                        self.game_ui.menu_selection = 0;
                                         self.game_ui.game_state = GameState::Paused;
-                                    }
-                                    GameState::Paused => {
-                                        event_loop.exit();
                                     }
                                     _ => event_loop.exit(),
                                 }
                             }
-                            KeyCode::Enter => {
-                                match &self.game_ui.game_state {
-                                    GameState::MainMenu | GameState::Paused => {
-                                        self.game_ui.game_state = GameState::Playing;
-                                    }
-                                    GameState::GameOver { .. } => {
-                                        // Restart: reset orbs, player position, game time
-                                        for orb in &mut self.orbs {
-                                            orb.collected = false;
-                                        }
-                                        self.orbs_collected = 0;
-                                        self.game_time = 0.0;
-                                        self.cc = CharacterController::default();
-                                        self.cc.speed = 8.0;
-                                        self.cc_transform.position =
-                                            Vec3::new(0.0, self.cc.height * 0.5, 0.0);
-                                        self.game_ui.game_state = GameState::Playing;
-                                    }
-                                    _ => {}
+                            // Menu navigation: Up/Down (and W/S as a convenience)
+                            // move the selection within the active menu's options.
+                            KeyCode::ArrowUp | KeyCode::ArrowDown => {
+                                let n = self.menu_option_count();
+                                if n > 0 {
+                                    let sel = self.game_ui.menu_selection;
+                                    self.game_ui.menu_selection = match key {
+                                        KeyCode::ArrowUp => (sel + n - 1) % n,
+                                        _ => (sel + 1) % n,
+                                    };
                                 }
+                            }
+                            KeyCode::Enter => {
+                                self.activate_menu_selection(event_loop);
                             }
                             KeyCode::KeyQ
                                 // Drop a dynamic physics box in front of the
@@ -1741,6 +1903,9 @@ fn run_smoke() {
             .sum();
         (sum / pixels.len() as f64) as f32
     };
+    // Force Playing so the day/night comparison frames carry no menu overlay
+    // (if all orbs were collected the state would be GameOver, which now dims).
+    app.game_ui.game_state = GameState::Playing;
     app.loop_.set_time_of_day(12.0);
     let noon_pixels = app.render();
     let noon_luma = mean_luma(&noon_pixels);
@@ -1748,6 +1913,57 @@ fn run_smoke() {
     let midnight_pixels = app.render();
     let midnight_luma = mean_luma(&midnight_pixels);
     let day_night_ratio = if midnight_luma > 0.01 { noon_luma / midnight_luma } else { f32::INFINITY };
+
+    // --- Game menus: render the SAME scene/camera under three states from a
+    //     fixed time-of-day and compare. Proves the Vello game-menu overlay
+    //     (dim overlay + 16-band spectral accent strip + selected-option
+    //     highlight) composites over the live frame in MainMenu and Paused.
+    app.loop_.set_time_of_day(12.0);
+    // Baseline Playing frame (no menu overlay).
+    app.game_ui.game_state = GameState::Playing;
+    let playing_pixels = app.render();
+    let playing_luma = mean_luma(&playing_pixels);
+
+    // MainMenu frame (Start selected = index 0).
+    app.game_ui.game_state = GameState::MainMenu;
+    app.game_ui.menu_selection = 0;
+    let mainmenu_pixels = app.render();
+    let mainmenu_luma = mean_luma(&mainmenu_pixels);
+
+    // Paused frame (Resume selected = index 0).
+    app.game_ui.game_state = GameState::Paused;
+    app.game_ui.menu_selection = 0;
+    let paused_pixels = app.render();
+    let paused_luma = mean_luma(&paused_pixels);
+
+    // Restore Playing so any later state queries are consistent.
+    app.game_ui.game_state = GameState::Playing;
+
+    // Accent-strip saturation: sample the centre of band 8 (yellow — strongly
+    // saturated) in the main-menu frame and confirm it is a saturated color
+    // (max channel - min channel large), proving the spectral strip painted.
+    let menu = GameMenu::new(WIDTH, HEIGHT);
+    let strip = menu.accent_strip_rect();
+    let cell_w = strip[2] / 16.0;
+    let accent_y = (strip[1] + strip[3] * 0.5) as u32;
+    let accent_x = (strip[0] + cell_w * 8.5) as u32; // band 8 centre
+    let accent_px = mainmenu_pixels[(accent_y * WIDTH + accent_x) as usize];
+    let menu_accent_sat = accent_px.iter().take(3).copied().max().unwrap_or(0) as i32
+        - accent_px.iter().take(3).copied().min().unwrap_or(0) as i32;
+
+    // Selected-option highlight: the selected (index 0) option rect must be
+    // brighter than an unselected one (index 1) in the main-menu frame.
+    let opt_rects = menu.option_rects(MAIN_MENU_OPTIONS.len());
+    // Sample near the left edge of each option rect (highlight fill, clear of
+    // the centered bitmap label) so the label glyphs don't skew the reading.
+    let opt_fill_luma = |r: [f32; 4], pixels: &[[u8; 4]]| -> f32 {
+        let cx = (r[0] + r[2] * 0.08) as u32;
+        let cy = (r[1] + r[3] * 0.5) as u32;
+        let p = pixels[(cy * WIDTH + cx) as usize];
+        0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32
+    };
+    let menu_sel_luma = opt_fill_luma(opt_rects[0], &mainmenu_pixels);
+    let menu_unsel_luma = opt_fill_luma(opt_rects[1], &mainmenu_pixels);
 
     // --- AI NPC stats (perception->decision path). ---
     let npc_moved = app.npc.net_moved();
@@ -1772,7 +1988,7 @@ fn run_smoke() {
     }
 
     println!(
-        "[walking_sim] SMOKE SUMMARY: frames={} final_pos=({:.2},{:.2},{:.2}) orbs={}/{} non_black_px={}/{} distinct_colors={} windmill_dt={:.2} moved={:.2} gi_nonzero_bands={} gi_max_band={} gi_changed={} drops={} box_fell={:.2}m fracture_events={} audio_events={} noon_luma={:.2} midnight_luma={:.2} day_night_ratio={:.2}x biome={} soundscape_events={} npc_moved={:.2} npc_distance={:.2} npc_state_changes={} npc_state={} ppm={}",
+        "[walking_sim] SMOKE SUMMARY: frames={} final_pos=({:.2},{:.2},{:.2}) orbs={}/{} non_black_px={}/{} distinct_colors={} windmill_dt={:.2} moved={:.2} gi_nonzero_bands={} gi_max_band={} gi_changed={} drops={} box_fell={:.2}m fracture_events={} audio_events={} noon_luma={:.2} midnight_luma={:.2} day_night_ratio={:.2}x biome={} soundscape_events={} npc_moved={:.2} npc_distance={:.2} npc_state_changes={} npc_state={} menu_playing_luma={:.2} menu_mainmenu_luma={:.2} menu_paused_luma={:.2} menu_accent_sat={} menu_sel_luma={:.2} menu_unsel_luma={:.2} ppm={}",
         total_frames,
         final_pos.x,
         final_pos.y,
@@ -1800,6 +2016,12 @@ fn run_smoke() {
         npc_distance,
         npc_state_changes,
         npc_final_state,
+        playing_luma,
+        mainmenu_luma,
+        paused_luma,
+        menu_accent_sat,
+        menu_sel_luma,
+        menu_unsel_luma,
         ppm_path,
     );
 
@@ -1924,6 +2146,31 @@ fn run_smoke() {
         npc_state_changes >= 1,
         "NPC behaviour state never changed ({} changes) — perception->decision path inert",
         npc_state_changes
+    );
+
+    // --- Game menus: the MainMenu and Paused frames must be measurably DIMMER
+    //     than the same scene rendered while Playing (the full-screen dim
+    //     overlay), the spectral accent strip must show a saturated color, and
+    //     the selected option highlight must be brighter than an unselected one.
+    assert!(
+        playing_luma > 0.0,
+        "playing baseline frame is black ({playing_luma}) — render broken"
+    );
+    assert!(
+        mainmenu_luma < playing_luma,
+        "main-menu frame ({mainmenu_luma:.2}) not dimmer than playing ({playing_luma:.2}) — dim overlay missing",
+    );
+    assert!(
+        paused_luma < playing_luma,
+        "paused frame ({paused_luma:.2}) not dimmer than playing ({playing_luma:.2}) — dim overlay missing",
+    );
+    assert!(
+        menu_accent_sat > 50,
+        "menu accent strip pixel not saturated (max-min={menu_accent_sat} <= 50) — 16-band spectral strip missing",
+    );
+    assert!(
+        menu_sel_luma > menu_unsel_luma + 20.0,
+        "selected option ({menu_sel_luma:.2}) not clearly brighter than unselected ({menu_unsel_luma:.2}) — selection highlight broken",
     );
 
     println!("[walking_sim] SMOKE PASS: loop + game logic + render verified headlessly.");
