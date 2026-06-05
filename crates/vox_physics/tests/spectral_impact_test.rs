@@ -2,6 +2,7 @@ use glam::{Quat, Vec3};
 use half;
 use vox_core::types::GaussianSplat;
 use vox_physics::destruction::{SplatAssembly, spectral_shift_on_break};
+use vox_physics::SpectralPhysics;
 
 /// Dropping a rigid body onto a glass floor causes the floor splats' spectral
 /// bands 1-3 (UV/violet) to visibly reduce (crack damage) upon impact.
@@ -72,4 +73,51 @@ fn rigid_body_impact_generates_fracture_planes() {
     let impact = Vec3::new(0.0, 0.0, 0.0);
     let planes = assembly.fracture_at(impact, 150.0);
     assert!(!planes.is_empty(), "high impulse should generate fracture planes");
+}
+
+/// Reachable facade: from a game's perspective, one call applies an impact to a
+/// spectral material and returns the fracture result. A brittle glass-like
+/// profile must fracture into MORE fragments than a ductile metal-like profile
+/// under the identical impulse.
+///
+/// Done When: `cargo test -p vox_physics facade_brittle_glass_shatters_more_than_ductile_metal`
+/// passes with the glass fragment_count strictly greater than the metal one.
+#[test]
+fn facade_brittle_glass_shatters_more_than_ductile_metal() {
+    // Brittle glass: sharp alternating absorption, low total energy.
+    let glass_spectral: [u16; 16] = [
+        60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100,
+        60000, 100, 60000, 100,
+    ];
+    // Ductile metal: flat, high-energy absorption across all bands.
+    let metal_spectral: [u16; 16] = [60000u16; 16];
+
+    let impact = Vec3::new(2.0, 0.0, -1.0);
+    let impulse = 200_000.0;
+
+    let glass = SpectralPhysics::apply_impact(impact, impulse, &glass_spectral);
+    let metal = SpectralPhysics::apply_impact(impact, impulse, &metal_spectral);
+
+    assert!(glass.fractured, "glass must fracture under {impulse} Ns");
+    assert!(metal.fractured, "metal must fracture under {impulse} Ns");
+
+    // Ordered, real outcomes (not is_some()):
+    assert!(
+        glass.brittleness > metal.brittleness,
+        "glass brittleness {} > metal {}",
+        glass.brittleness,
+        metal.brittleness
+    );
+    assert!(
+        glass.crack_count() > metal.crack_count(),
+        "glass cracks {} > metal cracks {}",
+        glass.crack_count(),
+        metal.crack_count()
+    );
+    assert!(
+        glass.fragment_count > metal.fragment_count,
+        "glass fragments {} > metal fragments {}",
+        glass.fragment_count,
+        metal.fragment_count
+    );
 }

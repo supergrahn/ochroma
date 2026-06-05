@@ -193,6 +193,7 @@ pub mod pbf;
 pub mod rope;
 pub mod spectral_damage;
 pub mod spectral_fracture;
+pub mod spectral_physics;
 pub mod spectral_resonance;
 pub mod thermal;
 pub mod vehicle;
@@ -204,6 +205,7 @@ pub mod ecs;
 
 pub use rapier::RapierPhysicsWorld;
 pub use ecs::{PhysicsBodyComponent, PhysicsBodyTypeComponent};
+pub use spectral_physics::{SpectralImpactResult, SpectralPhysics};
 
 // Re-export Rapier handle types so consumers don't need a direct rapier3d dependency
 pub use rapier3d::prelude::{ColliderHandle, RigidBodyHandle};
