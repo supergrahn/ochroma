@@ -340,6 +340,51 @@ impl OchromaNodeGraph {
         Ok(())
     }
 
+    /// Fully evaluate the graph: topologically order every node and compute its
+    /// output from its inputs threaded through the wired edges, regardless of the
+    /// dirty cache. Returns an [`EvalResult`] holding every node's outputs plus the
+    /// set of sink (terminal) nodes, so a caller can pull the final result(s).
+    ///
+    /// Unlike [`OchromaNodeGraph::cook`] (which skips clean nodes and returns `()`),
+    /// `evaluate` always recomputes the whole DAG, so changing any upstream
+    /// parameter is guaranteed to flow through to every downstream node's output.
+    pub fn evaluate(&mut self) -> Result<EvalResult, GraphError> {
+        let order = self.topo_sort()?;
+
+        // Force a full recompute in topological order so every downstream node
+        // sees the freshest upstream outputs.
+        for &id in &order {
+            let inputs = self.assemble_inputs(id)?;
+            let name   = self.nodes[&id].name.clone();
+            let output = self.nodes[&id].node.cook(inputs)
+                .map_err(|e| GraphError::CookFailed { node: name.clone(), reason: e.to_string() })?;
+            let entry = self.nodes.get_mut(&id).unwrap();
+            entry.last_output = Some(output);
+            entry.dirty = false;
+        }
+
+        // Sink nodes = nodes with no outgoing edge; these carry the graph's results.
+        let mut has_outgoing: HashSet<NodeId> = HashSet::new();
+        for e in &self.edges {
+            has_outgoing.insert(e.from);
+        }
+        let mut sinks: Vec<NodeId> = order.iter().copied()
+            .filter(|id| !has_outgoing.contains(id))
+            .collect();
+        sinks.sort_unstable();
+
+        let mut outputs: HashMap<NodeId, NodeOutputs> = HashMap::new();
+        for &id in &order {
+            if let Some(entry) = self.nodes.get(&id) {
+                if let Some(out) = entry.last_output.as_ref() {
+                    outputs.insert(id, out.clone());
+                }
+            }
+        }
+
+        Ok(EvalResult { order, sinks, outputs })
+    }
+
     pub fn get_output(&self, id: NodeId, port: &str) -> Option<&PortData> {
         self.nodes.get(&id)?.last_output.as_ref()?.get(port)
     }
@@ -431,6 +476,36 @@ impl OchromaNodeGraph {
             self.nodes.keys().map(|id| id.0 + 1).max().unwrap_or(0),
         );
         Ok(())
+    }
+}
+
+/// Result of a full graph [`OchromaNodeGraph::evaluate`] pass.
+///
+/// Holds the topological evaluation `order`, the `sinks` (terminal nodes with no
+/// outgoing edge — the graph's final results), and every node's computed
+/// `outputs` keyed by [`NodeId`].
+#[derive(Clone, Debug)]
+pub struct EvalResult {
+    pub order:   Vec<NodeId>,
+    pub sinks:   Vec<NodeId>,
+    pub outputs: HashMap<NodeId, NodeOutputs>,
+}
+
+impl EvalResult {
+    /// Fetch a specific computed output port of a node.
+    pub fn get(&self, id: NodeId, port: &str) -> Option<&PortData> {
+        self.outputs.get(&id)?.get(port)
+    }
+
+    /// All outputs of a node, if it was evaluated.
+    pub fn node_outputs(&self, id: NodeId) -> Option<&NodeOutputs> {
+        self.outputs.get(&id)
+    }
+
+    /// The single terminal sink node, if the graph has exactly one. Useful when a
+    /// linear pipeline produces one final result.
+    pub fn sole_sink(&self) -> Option<NodeId> {
+        if self.sinks.len() == 1 { Some(self.sinks[0]) } else { None }
     }
 }
 
@@ -705,5 +780,64 @@ mod tests {
         // The edge truly reconnects: with the edge present, biome has its terrain
         // input. Remove it and biome cooks would fail on missing input.
         assert_eq!(restored_biome.len(), 48 * 48);
+    }
+
+    /// Build terrain -> biome, evaluate the whole graph, and verify the downstream
+    /// biome_map is a real computed function of the upstream terrain output (one
+    /// biome byte per terrain height cell, classified from the height value).
+    #[test]
+    fn evaluate_threads_terrain_into_biome_classification() {
+        use crate::nodes::terrain_node::TerrainNode;
+        use crate::nodes::biome_node::{BiomeNode, BiomeKind};
+
+        let mut graph = OchromaNodeGraph::new();
+        // amplitude 200 -> heights in [0, 200]; with world_height 400 no cell can
+        // reach the Alpine band (norm_h >= 0.90 i.e. height >= 360).
+        let terrain = graph.add_node("terrain", Box::new(TerrainNode {
+            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 7, ..Default::default()
+        }));
+        let biome = graph.add_node("biome", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        // terrain output port "terrain" -> biome input port "terrain"
+        graph.connect(terrain, "terrain", biome, "terrain").unwrap();
+
+        let result = graph.evaluate().unwrap();
+
+        // Topological order: terrain must precede biome.
+        let pt = result.order.iter().position(|&x| x == terrain).unwrap();
+        let pb = result.order.iter().position(|&x| x == biome).unwrap();
+        assert!(pt < pb, "terrain must be evaluated before biome");
+
+        // biome is the sole sink (terminal result) of this pipeline.
+        assert_eq!(result.sole_sink(), Some(biome), "biome is the terminal node");
+
+        // Downstream output exists and has exactly one biome byte per terrain cell.
+        let heights = result.get(terrain, "terrain").unwrap().as_terrain().unwrap();
+        let biome_map_low = result.get(biome, "biome_map").unwrap().as_biome_map().unwrap();
+        assert_eq!(biome_map_low.len(), heights.heights.len(), "one biome cell per height cell");
+        assert_eq!(heights.heights.len(), 32 * 32);
+
+        // At amplitude 200 no cell reaches the Alpine band.
+        let alpine_low = biome_map_low.iter().filter(|&&b| b == BiomeKind::Alpine as u8).count();
+        assert_eq!(alpine_low, 0, "amplitude 200 cannot produce Alpine cells, got {}", alpine_low);
+
+        // Now change the UPSTREAM param: raise amplitude so peaks reach the Alpine
+        // band. fBm normalizes so the tallest cell equals `amplitude` exactly, and
+        // 800 >= 360, guaranteeing at least one Alpine cell downstream.
+        graph.set_param(terrain, "amplitude", ParamValue::Float(800.0)).unwrap();
+        let result_hi = graph.evaluate().unwrap();
+
+        let heights_hi = result_hi.get(terrain, "terrain").unwrap().as_terrain().unwrap();
+        let biome_map_hi = result_hi.get(biome, "biome_map").unwrap().as_biome_map().unwrap();
+
+        let max_height_hi = heights_hi.heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!(max_height_hi >= 360.0, "raised amplitude should push a peak into Alpine band, max={}", max_height_hi);
+
+        let alpine_hi = biome_map_hi.iter().filter(|&&b| b == BiomeKind::Alpine as u8).count();
+        println!("alpine cells: low-amplitude={} high-amplitude={}", alpine_low, alpine_hi);
+        assert!(alpine_hi > 0, "raising upstream amplitude must change downstream biome to include Alpine, got {}", alpine_hi);
+
+        // The downstream result is genuinely a different computed value after the
+        // upstream change — not merely a re-run of the same bytes.
+        assert_ne!(biome_map_low, biome_map_hi, "downstream biome map must change when upstream param changes");
     }
 }
