@@ -69,6 +69,25 @@ pub struct ScriptComponent {
     pub scripts: Vec<String>,
 }
 
+/// Linear velocity for physics-driven entities.
+///
+/// Scripts can mutate this via `ScriptCommand::ApplyForce`, which integrates
+/// the requested force into the velocity (treating mass as 1.0 unit). The
+/// physics integration step reads this and advances `TransformComponent`.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct VelocityComponent {
+    pub linear: Vec3,
+}
+
+/// Accumulated force for the current fixed step.
+///
+/// `ScriptCommand::ApplyForce` adds into `accumulated`; the physics
+/// integration step consumes it into `VelocityComponent` and clears it.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct ForceComponent {
+    pub accumulated: Vec3,
+}
+
 /// Collider shape for physics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ColliderShape {

@@ -120,6 +120,17 @@ pub struct ScriptContexts {
     pub contexts: std::collections::HashMap<bevy_ecs::entity::Entity, ScriptContext>,
 }
 
+/// Live, stateful script instances keyed by `(Entity, script_name)`.
+///
+/// The runtime creates each script instance exactly once (lazily, the first
+/// time the entity is updated) and then reuses the SAME boxed instance every
+/// frame. This is what lets a script keep internal state — timers, counters,
+/// health — across `on_update` calls instead of resetting each frame.
+#[derive(Resource, Default)]
+pub struct ScriptInstances {
+    pub scripts: std::collections::HashMap<(bevy_ecs::entity::Entity, String), Box<dyn GameScript>>,
+}
+
 /// Pending script commands collected during script update, processed afterward.
 #[derive(Resource, Default)]
 pub struct PendingScriptCommands {
@@ -228,12 +239,31 @@ fn script_update_system(world: &mut World) {
         };
 
         if let Some(mut ctx) = ctx {
-            {
-                let registry = world.resource::<ScriptRegistryResource>();
-                for script_name in scripts {
-                    if let Some(mut script) = registry.registry.create(script_name) {
-                        script.on_update(&mut ctx, fixed_dt);
+            for script_name in scripts {
+                let key = (*entity, script_name.clone());
+
+                // Take the cached instance out (or lazily create it once from
+                // the registry). The SAME boxed instance is reused every frame,
+                // so its internal state persists across ticks.
+                let mut script = {
+                    let mut instances = world.resource_mut::<ScriptInstances>();
+                    match instances.scripts.remove(&key) {
+                        Some(existing) => Some(existing),
+                        None => world
+                            .resource::<ScriptRegistryResource>()
+                            .registry
+                            .create(script_name),
                     }
+                };
+
+                if let Some(script) = script.as_mut() {
+                    script.on_update(&mut ctx, fixed_dt);
+                }
+
+                // Put the (possibly newly created) instance back so the next
+                // frame reuses it. Only cache instances the registry knew about.
+                if let Some(script) = script {
+                    world.resource_mut::<ScriptInstances>().scripts.insert(key, script);
                 }
             }
 
@@ -283,8 +313,27 @@ fn process_script_commands_system(world: &mut World) {
                     ));
                 }
                 ScriptCommand::Destroy { entity_id } => {
-                    // entity_id is a u32 from the old API — best-effort removal
-                    let _ = entity_id;
+                    // `entity_id` is a u32 entity index (from ScriptContext).
+                    // Resolve it back to a live Bevy Entity and despawn it.
+                    let target = {
+                        let mut query = world.query::<Entity>();
+                        query
+                            .iter(world)
+                            .find(|e| e.index() == entity_id)
+                    };
+                    if let Some(target) = target {
+                        // Drop any cached state tied to this entity so a future
+                        // entity reusing the same id doesn't inherit it.
+                        world
+                            .resource_mut::<ScriptInstances>()
+                            .scripts
+                            .retain(|(e, _), _| *e != target);
+                        world
+                            .resource_mut::<ScriptContexts>()
+                            .contexts
+                            .remove(&target);
+                        world.despawn(target);
+                    }
                 }
                 ScriptCommand::PlaySound { clip, volume, .. } => {
                     // Inline WAV synthesis (vox_core cannot depend on vox_audio)
@@ -325,7 +374,26 @@ fn process_script_commands_system(world: &mut World) {
                     println!("[engine] play_sound: {} vol={} -> {}", clip, volume, path.display());
                 }
                 ScriptCommand::ApplyForce { force } => {
-                    eprintln!("[engine] ApplyForce not yet wired to physics: {:?}", force);
+                    // Record the force on a ForceComponent (read by the physics
+                    // integration step) AND integrate it straight into velocity
+                    // so the effect is observable this same tick. Mass is 1.0,
+                    // so dv = force * dt.
+                    let dt = world.resource::<FixedTime>().dt;
+                    let f = Vec3::from_array(force);
+
+                    // Accumulate force (create the component if absent).
+                    if let Some(mut fc) = world.get_mut::<ForceComponent>(entity) {
+                        fc.accumulated += f;
+                    } else {
+                        world.entity_mut(entity).insert(ForceComponent { accumulated: f });
+                    }
+
+                    // Integrate into velocity (create the component if absent).
+                    if let Some(mut vel) = world.get_mut::<VelocityComponent>(entity) {
+                        vel.linear += f * dt;
+                    } else {
+                        world.entity_mut(entity).insert(VelocityComponent { linear: f * dt });
+                    }
                 }
                 ScriptCommand::SendEvent { name, data } => {
                     println!("[engine] Event: {} = {}", name, data);
@@ -344,6 +412,33 @@ fn process_script_commands_system(world: &mut World) {
                     println!("[ui] Notification: {}", message);
                 }
             }
+        }
+    }
+}
+
+/// Integrate velocities into transforms — runs in the fixed schedule.
+///
+/// Advances each entity's `TransformComponent.position` by `velocity * dt` and
+/// clears the per-step accumulated force. This is the half of the physics step
+/// that `ScriptCommand::ApplyForce` feeds into via the velocity component.
+fn physics_integration_system(world: &mut World) {
+    let dt = world.resource::<FixedTime>().dt;
+
+    let moves: Vec<(bevy_ecs::entity::Entity, Vec3)> = {
+        let mut query = world.query::<(Entity, &VelocityComponent)>();
+        query
+            .iter(world)
+            .map(|(e, v)| (e, v.linear))
+            .collect()
+    };
+
+    for (entity, linear) in moves {
+        if let Some(mut transform) = world.get_mut::<TransformComponent>(entity) {
+            transform.position += linear * dt;
+        }
+        // Clear the force accumulator for the next step.
+        if let Some(mut force) = world.get_mut::<ForceComponent>(entity) {
+            force.accumulated = Vec3::ZERO;
         }
     }
 }
@@ -529,6 +624,7 @@ impl EngineRuntime {
         world.insert_resource(AssetManagerResource::default());
         world.insert_resource(CollisionPairs::default());
         world.insert_resource(ScriptContexts::default());
+        world.insert_resource(ScriptInstances::default());
         world.insert_resource(PendingScriptCommands::default());
         world.insert_resource(FixedStepCounter::default());
         world.insert_resource(TimeOfDay::default());
@@ -601,6 +697,7 @@ impl EngineRuntime {
             // Run fixed systems inline (exclusive world access).
             script_update_system(&mut self.world);
             process_script_commands_system(&mut self.world);
+            physics_integration_system(&mut self.world);
             physics_collision_system(&mut self.world);
         }
 
@@ -637,12 +734,21 @@ impl EngineRuntime {
 
         for (entity, scripts) in &scripted {
             let mut ctx = ScriptContext::new(entity.index());
-            {
-                let registry = self.world.resource::<ScriptRegistryResource>();
-                for script_name in scripts {
-                    if let Some(mut script) = registry.registry.create(script_name) {
-                        script.on_start(&mut ctx);
-                    }
+            for script_name in scripts {
+                // Create the ONE persistent instance for this entity+script,
+                // run on_start on it, then cache it so on_update reuses the same
+                // stateful instance every frame.
+                let script = self
+                    .world
+                    .resource::<ScriptRegistryResource>()
+                    .registry
+                    .create(script_name);
+                if let Some(mut script) = script {
+                    script.on_start(&mut ctx);
+                    self.world
+                        .resource_mut::<ScriptInstances>()
+                        .scripts
+                        .insert((*entity, script_name.clone()), script);
                 }
             }
 
@@ -754,6 +860,16 @@ impl<'a> EntityBuilder<'a> {
     /// Attach a collider.
     pub fn with_collider(self, shape: ColliderShape) -> Self {
         self.runtime.world.entity_mut(self.entity).insert(ColliderComponent { shape });
+        self
+    }
+
+    /// Attach a zeroed velocity (and force accumulator) so this entity is moved
+    /// by the physics integration step and can receive `ApplyForce`.
+    pub fn with_velocity(self) -> Self {
+        self.runtime.world.entity_mut(self.entity).insert((
+            VelocityComponent::default(),
+            ForceComponent::default(),
+        ));
         self
     }
 
@@ -1131,6 +1247,145 @@ mod tests {
         assert_eq!(buffer.splats.len(), 2, "both splats should be gathered");
         assert!((buffer.splats[0].position()[1] - 10.0).abs() < 1e-5,
             "splat should be translated to entity world y=10");
+    }
+
+    // --- (A) Stateful script persistence across ticks ---
+
+    /// A script that increments an internal counter every update. If the engine
+    /// re-creates the script every frame, the counter is always 1; if the engine
+    /// caches one instance per entity, it climbs with each tick.
+    struct CounterScript {
+        ticks: u32,
+    }
+    impl crate::script_interface::GameScript for CounterScript {
+        fn on_update(&mut self, ctx: &mut ScriptContext, _dt: f32) {
+            self.ticks += 1;
+            // Stash the live counter where the test can read it (via UI text).
+            ctx.set_ui_text("counter", &self.ticks.to_string());
+        }
+        fn name(&self) -> &str { "Counter" }
+        fn as_any(&self) -> &dyn std::any::Any { self }
+    }
+
+    #[test]
+    fn script_state_persists_across_ticks() {
+        let mut engine = EngineRuntime::new(EngineConfig::default());
+        engine.register_script("Counter", || Box::new(CounterScript { ticks: 0 }));
+        let entity = engine.spawn("Ticker").with_script("Counter").id();
+        engine.start();
+
+        // Each tick of 0.02s exceeds fixed_dt (1/60) => exactly one fixed step,
+        // so one on_update call per tick. After 3 ticks the cached instance's
+        // internal counter must be 3, NOT stuck at 1.
+        engine.tick(0.02);
+        engine.tick(0.02);
+        engine.tick(0.02);
+
+        let instances = engine.world.resource::<ScriptInstances>();
+        let script = instances
+            .scripts
+            .get(&(entity, "Counter".to_string()))
+            .expect("cached script instance should exist for entity");
+        // Downcast back to CounterScript to read its private state.
+        let counter = script
+            .as_any()
+            .downcast_ref::<CounterScript>()
+            .expect("cached instance should be a CounterScript");
+        assert_eq!(counter.ticks, 3, "script counter must persist and reach 3 across 3 ticks");
+    }
+
+    // --- (B) Destroy actually despawns the target entity ---
+
+    /// A script that, on its first update, destroys a pre-chosen target entity.
+    struct DestroyerScript {
+        target: u32,
+        fired: bool,
+    }
+    impl crate::script_interface::GameScript for DestroyerScript {
+        fn on_update(&mut self, ctx: &mut ScriptContext, _dt: f32) {
+            if !self.fired {
+                ctx.destroy(self.target);
+                self.fired = true;
+            }
+        }
+        fn name(&self) -> &str { "Destroyer" }
+    }
+
+    #[test]
+    fn destroy_command_despawns_target_entity() {
+        let mut engine = EngineRuntime::new(EngineConfig::default());
+        // The victim entity we will destroy.
+        let victim = engine.spawn("Victim").id();
+        let victim_index = victim.index();
+
+        engine.register_script("Destroyer", move || {
+            Box::new(DestroyerScript { target: victim_index, fired: false })
+        });
+        engine.spawn("Killer").with_script("Destroyer");
+        engine.start();
+
+        // Sanity: both entities exist before the tick.
+        let before = engine.world.query::<&NameComponent>().iter(&engine.world).count();
+        assert_eq!(before, 2, "two entities before destroy");
+
+        engine.tick(0.02); // one fixed step -> Destroyer fires -> victim despawned
+
+        assert!(
+            engine.world.get_entity(victim).is_err(),
+            "victim entity should be removed from the world after Destroy"
+        );
+        let after = engine.world.query::<&NameComponent>().iter(&engine.world).count();
+        assert_eq!(after, 1, "only the Killer entity should remain after Destroy");
+    }
+
+    // --- (B) ApplyForce actually changes velocity ---
+
+    /// A script that applies a constant force every update.
+    struct ThrusterScript;
+    impl crate::script_interface::GameScript for ThrusterScript {
+        fn on_update(&mut self, ctx: &mut ScriptContext, _dt: f32) {
+            ctx.apply_force([10.0, 0.0, 0.0]);
+        }
+        fn name(&self) -> &str { "Thruster" }
+    }
+
+    #[test]
+    fn apply_force_changes_velocity_by_real_delta() {
+        let mut engine = EngineRuntime::new(EngineConfig::default());
+        engine.register_script("Thruster", || Box::new(ThrusterScript));
+        let entity = engine
+            .spawn("Rocket")
+            .with_position(Vec3::ZERO)
+            .with_velocity()
+            .with_script("Thruster")
+            .id();
+        engine.start();
+
+        // Velocity starts at zero.
+        let v0 = engine.world.get::<VelocityComponent>(entity).unwrap().linear;
+        assert_eq!(v0, Vec3::ZERO, "velocity starts at zero");
+
+        // fixed_dt = 1/60. force 10 over dt => dv = 10 * (1/60) = 0.16666..
+        engine.tick(0.02);
+
+        let v1 = engine.world.get::<VelocityComponent>(entity).unwrap().linear;
+        let expected_dv = 10.0 * (1.0 / 60.0);
+        assert!(
+            (v1.x - expected_dv).abs() < 1e-5,
+            "velocity.x should be {expected_dv} after one fixed step, got {}",
+            v1.x
+        );
+        assert_eq!(v1.y, 0.0);
+        assert_eq!(v1.z, 0.0);
+
+        // Position should have advanced by velocity * dt as well.
+        let pos = engine.world.get::<TransformComponent>(entity).unwrap().position;
+        let expected_pos = expected_dv * (1.0 / 60.0);
+        assert!(
+            (pos.x - expected_pos).abs() < 1e-5,
+            "position.x should integrate velocity, expected {expected_pos}, got {}",
+            pos.x
+        );
     }
 
     #[test]

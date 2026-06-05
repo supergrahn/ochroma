@@ -11,6 +11,13 @@ pub trait GameScript: Send + Sync {
     fn on_collision(&mut self, _ctx: &mut ScriptContext, _other_entity: u32) {}
     /// Script name for identification.
     fn name(&self) -> &str;
+    /// Downcast support so the engine (and tests) can recover a script's
+    /// concrete type to inspect persistent state. Implementors that want to be
+    /// downcastable should override this with `fn as_any(&self) -> &dyn std::any::Any { self }`.
+    fn as_any(&self) -> &dyn std::any::Any {
+        // Default returns a non-downcastable unit so existing scripts keep compiling.
+        &()
+    }
 }
 
 /// Context passed to scripts -- their window into the engine.
@@ -63,6 +70,11 @@ impl ScriptContext {
 
     pub fn destroy(&mut self, entity_id: u32) {
         self.commands.push(ScriptCommand::Destroy { entity_id });
+    }
+
+    /// Apply a linear force (engine integrates it into the entity's velocity).
+    pub fn apply_force(&mut self, force: [f32; 3]) {
+        self.commands.push(ScriptCommand::ApplyForce { force });
     }
 
     pub fn set_position(&mut self, pos: [f32; 3]) {
