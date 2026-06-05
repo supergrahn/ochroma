@@ -58,6 +58,52 @@ impl SpectralSynth {
         buf
     }
 
+    /// Energy-weighted spectral centroid (Hz) of a time-domain signal.
+    ///
+    /// Computed with a naive DFT over a linearly spaced bank of probe
+    /// frequencies spanning the audible resonance range of the synth
+    /// (`FREQ_MAP[15]`..`FREQ_MAP[0]`). Returns the magnitude-weighted mean
+    /// frequency: `sum(f * |X(f)|) / sum(|X(f)|)`.
+    ///
+    /// A "bright" signal (energy concentrated at high frequencies — e.g. a
+    /// glass strike) yields a higher centroid than a "dull" one (e.g. stone).
+    pub fn spectral_centroid(signal: &[f32], sample_rate: u32) -> f32 {
+        if signal.is_empty() {
+            return 0.0;
+        }
+        // Probe a bank of frequencies across the synth's resonance band.
+        const N_BINS: usize = 128;
+        let f_lo = FREQ_MAP[15];
+        let f_hi = FREQ_MAP[0];
+
+        // Analyse a fixed-length leading window so all calls are comparable
+        // and the DFT stays cheap. Use up to 8192 samples.
+        let win = signal.len().min(8192);
+        let sr = sample_rate as f32;
+
+        let mut weighted_freq = 0.0f32;
+        let mut total_mag = 0.0f32;
+        for bin in 0..N_BINS {
+            let frac = bin as f32 / (N_BINS - 1) as f32;
+            let freq = f_lo + frac * (f_hi - f_lo);
+            let omega = 2.0 * std::f32::consts::PI * freq / sr;
+            let mut re = 0.0f32;
+            let mut im = 0.0f32;
+            for (i, &s) in signal[..win].iter().enumerate() {
+                let phase = omega * i as f32;
+                re += s * phase.cos();
+                im -= s * phase.sin();
+            }
+            let mag = (re * re + im * im).sqrt();
+            weighted_freq += freq * mag;
+            total_mag += mag;
+        }
+        if total_mag < 1e-9 {
+            return 0.0;
+        }
+        weighted_freq / total_mag
+    }
+
     fn band_weight_at_freq(spectral: &[u16; 16], freq: f32) -> f32 {
         let freq = freq.clamp(FREQ_MAP[15], FREQ_MAP[0]);
         for i in 0..15 {
@@ -116,6 +162,34 @@ mod tests {
         let spectral = [0u16; 16];
         let samples = SpectralSynth::strike(&spectral, 1.0);
         assert!(samples.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn spectral_strike_centroid_glass_brighter_than_stone() {
+        // Glass: hard, brittle -> energy in short-wavelength (high-Hz) bands 0..3.
+        let mut glass = [0u16; 16];
+        glass[0] = half::f16::from_f32(0.95).to_bits();
+        glass[1] = half::f16::from_f32(0.70).to_bits();
+        glass[2] = half::f16::from_f32(0.40).to_bits();
+
+        // Stone: dull, dense -> energy in long-wavelength (low-Hz) bands 13..15.
+        let mut stone = [0u16; 16];
+        stone[13] = half::f16::from_f32(0.40).to_bits();
+        stone[14] = half::f16::from_f32(0.70).to_bits();
+        stone[15] = half::f16::from_f32(0.95).to_bits();
+
+        let glass_sig = SpectralSynth::strike(&glass, 1.0);
+        let stone_sig = SpectralSynth::strike(&stone, 1.0);
+
+        let glass_c = SpectralSynth::spectral_centroid(&glass_sig, SAMPLE_RATE);
+        let stone_c = SpectralSynth::spectral_centroid(&stone_sig, SAMPLE_RATE);
+
+        println!("glass centroid={glass_c:.1} Hz, stone centroid={stone_c:.1} Hz");
+        // Real ordered values: glass must be meaningfully brighter than stone.
+        assert!(glass_c > stone_c + 1000.0,
+            "glass centroid ({glass_c:.1} Hz) must exceed stone centroid ({stone_c:.1} Hz) by >1 kHz");
+        assert!(stone_c < 1500.0, "stone centroid should be low, got {stone_c:.1} Hz");
+        assert!(glass_c > 4000.0, "glass centroid should be high, got {glass_c:.1} Hz");
     }
 
     #[test]

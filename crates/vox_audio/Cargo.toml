@@ -15,8 +15,7 @@ bevy_app = { workspace = true }
 rodio = { version = "0.19", optional = true }
 cpal = { version = "0.15", optional = true }
 fundsp = { version = "0.18", optional = true }
-lewton = { version = "0.10", optional = true }
 
 [features]
 default = ["audio-backend"]
-audio-backend = ["dep:rodio", "dep:cpal", "dep:fundsp", "dep:lewton"]
+audio-backend = ["dep:rodio", "dep:cpal", "dep:fundsp"]

@@ -19,6 +19,7 @@ pub use spectral_synth::{synthesize_impact, create_impact_wav, synthesize_impact
 pub use spectral_synth2::SpectralSynth;
 pub use spectral_acoustic::SpectralAcousticProfile;
 pub use spectral_reverb::SpectralReverb;
+pub use cpal_backend::{CpalBackend, CpalBackendBuilder, CpalHandle};
 
 pub use spatial::{compute_spatial, Listener, SpatialAudioManager};
 pub use synth::{generate_click, generate_collect_sound, generate_place_sound, generate_tone, save_wav};
@@ -311,14 +312,52 @@ pub fn synthesize_and_play(
     nearby_splats: &[[u16; 16]],
     sender: &std::sync::mpsc::Sender<AudioCommand>,
 ) {
-    let dry = crate::spectral_synth2::SpectralSynth::strike(spectral, impulse);
-    let reverb = crate::spectral_reverb::SpectralReverb::from_splat_reflectance(nearby_splats);
-    let wet    = 0.25_f32;
-    let output = crate::fundsp_graph::apply_reverb_send(&dry, wet, reverb.tail_length_secs.min(2.0));
+    let output = synthesize_impact_buffer(spectral, impulse, nearby_splats);
     let _ = sender.send(AudioCommand::PlaySynth {
         samples: output,
         volume: impulse.clamp(0.01, 1.0),
     });
+}
+
+/// Build the wet impact buffer: `SpectralSynth::strike` -> reverb send.
+///
+/// Shared by both the channel-based [`synthesize_and_play`] and the
+/// self-contained [`synthesize_and_play_spectral`] so the synthesis path is
+/// identical regardless of how the result is delivered.
+pub fn synthesize_impact_buffer(
+    spectral: &[u16; 16],
+    impulse: f32,
+    nearby_splats: &[[u16; 16]],
+) -> Vec<f32> {
+    let dry = crate::spectral_synth2::SpectralSynth::strike(spectral, impulse);
+    let reverb = crate::spectral_reverb::SpectralReverb::from_splat_reflectance(nearby_splats);
+    let wet = 0.25_f32;
+    crate::fundsp_graph::apply_reverb_send(&dry, wet, reverb.tail_length_secs.min(2.0))
+}
+
+/// Single, directly-callable modern audio entry: synthesise an impact from a
+/// splat's spectral material and play it through the default CPAL output device.
+///
+/// This is the one reachable call site for the v2 spectral path
+/// (`SpectralSynth::strike` -> `SpectralReverb` -> CPAL). **No WAV file is
+/// written** — samples are streamed straight to the device. `walking_sim` (or
+/// any game layer) can call this directly on a collision/fracture event.
+///
+/// Returns the number of samples dispatched to the device, or `0` when no
+/// output device is available (headless CI / WSL without audio) — in which case
+/// the call is a graceful no-op rather than an error.
+///
+/// Note: this opens a fresh device per call. For a hot path, open one
+/// [`crate::cpal_backend::CpalBackend`] up front and reuse `play_samples`.
+pub fn synthesize_and_play_spectral(material_spectral: &[u16; 16], impulse: f32) -> usize {
+    // No reverb context here — pass an empty reflectance set, yielding a short
+    // "dead room" tail. Callers with surrounding splats should use
+    // `synthesize_impact_buffer` + `CpalBackend::play_samples`.
+    let output = synthesize_impact_buffer(material_spectral, impulse, &[]);
+    match crate::cpal_backend::CpalBackend::open_default() {
+        Some(backend) => backend.play_samples(output, impulse.clamp(0.01, 1.0)),
+        None => 0,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +394,47 @@ mod tests {
     fn audio_engine_active_count_starts_zero() {
         let engine = AudioEngine::new(64);
         assert_eq!(engine.active_count(), 0);
+    }
+
+    #[test]
+    fn synthesize_impact_buffer_is_audible_and_longer_than_dry() {
+        // Glass-ish bright material; empty reflectance -> short dead-room tail.
+        let mut glass = [0u16; 16];
+        glass[0] = half::f16::from_f32(0.95).to_bits();
+        glass[1] = half::f16::from_f32(0.60).to_bits();
+
+        let dry = crate::spectral_synth2::SpectralSynth::strike(&glass, 1.0);
+        let wet = synthesize_impact_buffer(&glass, 1.0, &[]);
+
+        let peak = wet.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        println!("dry.len={} wet.len={} peak={peak:.4}", dry.len(), wet.len());
+        // Reverb send appends a tail, so the wet buffer must be at least as long.
+        assert!(wet.len() >= dry.len(), "wet {} < dry {}", wet.len(), dry.len());
+        // And it must carry an audible signal.
+        assert!(peak > 0.01, "wet impact should be audible, peak={peak}");
+    }
+
+    #[cfg(feature = "audio-backend")]
+    #[test]
+    fn synthesize_and_play_spectral_dispatches_when_device_present() {
+        // This is the single reachable v2 entry: strike -> reverb -> CPAL.
+        let device_count = crate::cpal_backend::CpalBackend::output_device_count();
+        let mut stone = [0u16; 16];
+        stone[15] = half::f16::from_f32(0.90).to_bits();
+
+        let dispatched = synthesize_and_play_spectral(&stone, 0.8);
+        println!("device_count={device_count} dispatched_samples={dispatched}");
+
+        if device_count == 0 {
+            // Headless host: graceful no-op.
+            assert_eq!(dispatched, 0, "no device -> nothing dispatched");
+        } else {
+            // With a device, the full 0.5 s strike (plus dead-room tail) must
+            // be dispatched: at least SAMPLE_RATE/2 samples.
+            let min = (crate::spectral_synth2::SAMPLE_RATE / 2) as usize;
+            assert!(dispatched >= min,
+                "expected >= {min} samples dispatched, got {dispatched}");
+        }
     }
 
     #[test]
