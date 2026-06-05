@@ -3,3 +3,4 @@
 *.cubin
 .env
 .worktrees/
+.claude/worktrees/
