@@ -57,7 +57,7 @@ fn generate_heightfield(resolution: u32, amplitude: f32, octaves: usize, frequen
     heights
 }
 
-fn hydraulic_erode(heights: &mut Vec<f32>, resolution: u32, droplet_count: u32, seed: u32) {
+fn hydraulic_erode(heights: &mut [f32], resolution: u32, droplet_count: u32, seed: u32) {
     let n = resolution as usize;
     let mut rng = Pcg64::seed_from_u64(seed as u64 ^ 0xdeadbeef);
 

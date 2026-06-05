@@ -937,7 +937,7 @@ impl WalkingSim {
             // (returns 0 with no device); counted regardless so headless CI still
             // exercises the call path.
             let _samples =
-                vox_audio::synthesize_and_play_spectral(&b.material, impulse_ns.min(1.0).max(0.3));
+                vox_audio::synthesize_and_play_spectral(&b.material, impulse_ns.clamp(0.3, 1.0));
             self.audio_events += 1;
         }
     }

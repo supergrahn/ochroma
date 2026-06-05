@@ -149,7 +149,7 @@ impl AdvisorSystem {
         }
 
         // Sort by priority (highest first)
-        self.messages.sort_by(|a, b| b.priority.cmp(&a.priority));
+        self.messages.sort_by_key(|b| std::cmp::Reverse(b.priority));
 
         if !self.messages.is_empty() {
             self.cooldown_ticks = 100; // don't spam

@@ -104,6 +104,8 @@ impl PbfFluidSim {
         // Pass 2: compute density using poly6 kernel
         let poly6_coeff = 315.0 / (64.0 * std::f32::consts::PI * h.powi(9));
         let mut densities = vec![0.0f32; n];
+        // N-body kernel: index `i` couples densities[i] with self.particles[i] read inside the inner j-loop.
+        #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             let mut rho = 0.0f32;
             for j in 0..n {
@@ -120,6 +122,8 @@ impl PbfFluidSim {
 
         // Pass 3: solve density constraint — compute λᵢ and Δpᵢ
         let spiky_grad = -45.0 / (std::f32::consts::PI * h.powi(6));
+        // N-body kernel: index `i` couples densities[i] with self.particles[i] mutated in this loop.
+        #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             let ci = densities[i] / rho0 - 1.0;
             let mut grad_sq = 0.0f32;
@@ -140,6 +144,8 @@ impl PbfFluidSim {
         }
 
         let mut deltas = vec![[0.0f32; 3]; n];
+        // N-body kernel: index `i` couples deltas[i] with self.particles[i/j] read inside the inner j-loop.
+        #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             let li = self.particles[i].lambda;
             for j in 0..n {

@@ -35,6 +35,8 @@ pub fn gather_radiance(
             continue;
         }
         let weight = 1.0 / (dist * dist);
+        // Index `b` couples three arrays (radiance, e.emissive, e.reflectance); a zip obscures the kernel.
+        #[allow(clippy::needless_range_loop)]
         for b in 0..16 {
             if e.emissive[b] > 0.0 {
                 radiance[b] += e.emissive[b] * e.reflectance[b] * weight;
@@ -107,8 +109,8 @@ impl SpectralRadianceCache {
             let azimuth = n[2].atan2(n[0]);
 
             let sky = atmo.sky_radiance(view_elev, azimuth);
-            for b in 0..16 {
-                self.cache[i][b] = alpha * self.cache[i][b] + (1.0 - alpha) * sky[b];
+            for (c, &s) in self.cache[i].iter_mut().zip(sky.iter()) {
+                *c = alpha * *c + (1.0 - alpha) * s;
             }
             self.entries[i] = self.cache[i];
         }
@@ -161,15 +163,14 @@ impl SpectralRadianceCache {
                 let dz = emitter.position[2] - pos[2];
                 let dist_sq = (dx * dx + dy * dy + dz * dz).max(0.01);
                 let weight = 1.0 / dist_sq;
-                for b in 0..16 {
-                    incoming[b] += emitter.emissive[b] * weight;
+                for (inc, &em) in incoming.iter_mut().zip(emitter.emissive.iter()) {
+                    *inc += em * weight;
                 }
             }
             let max_incoming = incoming.iter().copied().fold(f32::EPSILON, f32::max);
             let scale = if max_incoming > 1.0 { 1.0 / max_incoming } else { 1.0 };
-            for b in 0..16 {
-                self.cache[i][b] = alpha * self.cache[i][b]
-                    + (1.0 - alpha) * (incoming[b] * scale).clamp(0.0, 1.0);
+            for (c, &inc) in self.cache[i].iter_mut().zip(incoming.iter()) {
+                *c = alpha * *c + (1.0 - alpha) * (inc * scale).clamp(0.0, 1.0);
             }
             self.entries[i] = self.cache[i];
         }

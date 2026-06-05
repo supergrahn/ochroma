@@ -116,7 +116,7 @@ impl SpectralCaptureProcessor {
         // Band 0 (violet, 380nm) → blue dominant; band 15 (NIR, 755nm) → red dominant.
         // t = 0..1 across bands
         let mut pixel_spectral = [0.0f32; 16];
-        for b in 0..16 {
+        for (b, ps) in pixel_spectral.iter_mut().enumerate() {
             let t = b as f32 / 15.0;
             // Weights for R, G, B that sum to 1 at every band
             let w_r = t;
@@ -127,7 +127,7 @@ impl SpectralCaptureProcessor {
             let w_r_n = w_r / sum;
             let w_g_n = w_g_raw / sum;
             let w_b_n = w_b / sum;
-            pixel_spectral[b] = rgb[0] * w_r_n + rgb[1] * w_g_n + rgb[2] * w_b_n;
+            *ps = rgb[0] * w_r_n + rgb[1] * w_g_n + rgb[2] * w_b_n;
         }
         let mut reflectance = [0.0f32; 16];
         for b in 0..16 {

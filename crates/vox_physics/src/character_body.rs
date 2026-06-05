@@ -39,18 +39,20 @@ impl CharacterBody {
             .friction(0.0)
             .build();
         let col_handle = colliders.insert_with_parent(collider, rb_handle, bodies);
-        let mut controller = KinematicCharacterController::default();
-        controller.up = Vector::y_axis();
-        controller.offset = CharacterLength::Absolute(0.01);
-        controller.slide = true;
-        controller.autostep = Some(CharacterAutostep {
-            max_height:              CharacterLength::Absolute(0.3),
-            min_width:               CharacterLength::Relative(0.5),
-            include_dynamic_bodies:  false,
-        });
-        controller.max_slope_climb_angle  = 45_f32.to_radians();
-        controller.min_slope_slide_angle  = 50_f32.to_radians();
-        controller.snap_to_ground         = Some(CharacterLength::Absolute(0.1));
+        let controller = KinematicCharacterController {
+            up: Vector::y_axis(),
+            offset: CharacterLength::Absolute(0.01),
+            slide: true,
+            autostep: Some(CharacterAutostep {
+                max_height:              CharacterLength::Absolute(0.3),
+                min_width:               CharacterLength::Relative(0.5),
+                include_dynamic_bodies:  false,
+            }),
+            max_slope_climb_angle: 45_f32.to_radians(),
+            min_slope_slide_angle: 50_f32.to_radians(),
+            snap_to_ground: Some(CharacterLength::Absolute(0.1)),
+            ..Default::default()
+        };
         Self { rigid_body: rb_handle, collider: col_handle, controller, half_height, radius }
     }
 

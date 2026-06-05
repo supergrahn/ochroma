@@ -208,8 +208,8 @@ impl SplatAssembly {
         }
         let mut acc = [0u32; 16];
         for splat in &self.splats {
-            for b in 0..16 {
-                acc[b] += splat.spectral()[b] as u32;
+            for (a, &s) in acc.iter_mut().zip(splat.spectral().iter()) {
+                *a += s as u32;
             }
         }
         let mut out = [0u16; 16];

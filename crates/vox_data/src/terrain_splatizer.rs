@@ -81,8 +81,8 @@ pub fn blend_spectral_terrain(mats: &SpectralTerrainMaterials, weights: &[f32; 4
     let mut result = [0.0f32; 16];
     for (ch, (&w, &slot)) in weights.iter().zip(slot_indices.iter()).enumerate() {
         let _ = ch;
-        for band in 0..16 {
-            result[band] += w * mats.slots[slot][band];
+        for (res, &mat) in result.iter_mut().zip(mats.slots[slot].iter()) {
+            *res += w * mat;
         }
     }
     result

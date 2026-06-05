@@ -37,7 +37,7 @@ impl ThermalEmitter {
 
     /// Update heat values and spectral bands for each splat given heat sources.
     /// Each heat source is `(position, power)`.
-    pub fn update(&mut self, splats: &mut Vec<GaussianSplat>, heat_sources: &[(Vec3, f32)]) {
+    pub fn update(&mut self, splats: &mut [GaussianSplat], heat_sources: &[(Vec3, f32)]) {
         self.resize(splats.len());
         let r2_limit = self.diffusion_radius * self.diffusion_radius;
 
@@ -82,9 +82,8 @@ impl ThermalEmitter {
             .map(|(i, splat)| {
                 let pos = Vec3::from_array(splat.position());
                 let mut spectral = [0.0f32; 16];
-                for b in 0..16 {
-                    spectral[b] =
-                        f16::from_bits(splat.spectral()[b]).to_f32() * self.heat[i];
+                for (out, &raw) in spectral.iter_mut().zip(splat.spectral().iter()) {
+                    *out = f16::from_bits(raw).to_f32() * self.heat[i];
                 }
                 (pos, spectral)
             })

@@ -80,9 +80,11 @@ impl NagaBuilder {
         let mut module = Module::default();
         let arr_ty = Self::array_f32_8(&mut module.types);
 
-        let mut func = Function::default();
-        func.name = Some("evaluate_material".into());
-        func.result = Some(FunctionResult { ty: arr_ty, binding: None });
+        let mut func = Function {
+            name: Some("evaluate_material".into()),
+            result: Some(FunctionResult { ty: arr_ty, binding: None }),
+            ..Default::default()
+        };
 
         let (expr, compose_start) = Self::emit_constant_spd(
             &spd,
@@ -104,12 +106,14 @@ impl NagaBuilder {
 
     /// Validate the built module using naga's validator.
     /// Returns `Ok(ModuleInfo)` if the module is valid naga IR.
-    pub fn validate(module: &Module) -> Result<naga::valid::ModuleInfo, naga::WithSpan<naga::valid::ValidationError>> {
+    pub fn validate(
+        module: &Module,
+    ) -> Result<naga::valid::ModuleInfo, Box<naga::WithSpan<naga::valid::ValidationError>>> {
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
         );
-        validator.validate(module)
+        validator.validate(module).map_err(Box::new)
     }
 }
 

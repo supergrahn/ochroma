@@ -78,6 +78,9 @@ impl VelloCtxCpu {
                     let ry = rect[1];
                     let rw = rect[2];
                     let rh = rect[3];
+                    // NaN must be treated as a skip: `!(rw > 0.0)` is true for NaN,
+                    // whereas `rw <= 0.0` is false for NaN — that difference matters here.
+                    #[allow(clippy::neg_cmp_op_on_partial_ord)]
                     if !(rw > 0.0) || !(rh > 0.0) {
                         continue; // zero-size (or NaN) rect: no-op
                     }

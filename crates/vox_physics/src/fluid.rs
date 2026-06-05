@@ -396,8 +396,8 @@ impl SpectralFluid {
         }
         let mut acc = [0.0f32; 16];
         for p in &self.sim.particles {
-            for b in 0..16 {
-                acc[b] += p.spectral[b];
+            for (a, &s) in acc.iter_mut().zip(p.spectral.iter()) {
+                *a += s;
             }
         }
         for v in &mut acc {

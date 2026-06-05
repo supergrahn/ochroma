@@ -45,9 +45,9 @@ impl ReplicationPacket {
             return Err(PacketError::BandCountMismatch { values: self.values.len(), expected });
         }
         let mut value_idx = 0;
-        for b in 0..16 {
+        for (b, band) in spectral.iter_mut().enumerate() {
             if self.changed_bands & (1 << b) != 0 {
-                spectral[b] = self.values[value_idx];
+                *band = self.values[value_idx];
                 value_idx += 1;
             }
         }

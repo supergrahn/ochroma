@@ -113,7 +113,7 @@ fn try_solve(grid_w: usize, grid_h: usize, grid_d: usize, seed: u64, attempt: u3
     Some(superposition)
 }
 
-fn propagate(sup: &mut Vec<u8>, start: usize, grid_w: usize, grid_h: usize, grid_d: usize) {
+fn propagate(sup: &mut [u8], start: usize, grid_w: usize, grid_h: usize, grid_d: usize) {
     use std::collections::VecDeque;
     let mut queue = VecDeque::new();
     queue.push_back(start);
@@ -121,7 +121,6 @@ fn propagate(sup: &mut Vec<u8>, start: usize, grid_w: usize, grid_h: usize, grid
         let x = (idx % (grid_w * grid_h)) % grid_w;
         let y = (idx % (grid_w * grid_h)) / grid_w;
         let z = idx / (grid_w * grid_h);
-        let tile = sup[idx];
 
         // Neighbors
         let neighbors = [
@@ -136,8 +135,9 @@ fn propagate(sup: &mut Vec<u8>, start: usize, grid_w: usize, grid_h: usize, grid
         for maybe_nb in &neighbors {
             let Some(nb) = *maybe_nb else { continue };
             let old = sup[nb];
-            // Constraint: empty can be adjacent to anything; wall adjacent to wall/corner/window/door
-            let allowed = if tile == TILE_EMPTY { ALL_TILES } else { ALL_TILES };
+            // Adjacency constraint: every tile (empty or wall) may currently neighbour any
+            // tile, so the allowed mask is ALL_TILES.
+            let allowed = ALL_TILES;
             let new_mask = old & allowed;
             if new_mask != old && new_mask != 0 {
                 sup[nb] = new_mask;

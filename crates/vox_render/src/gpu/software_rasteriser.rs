@@ -275,8 +275,8 @@ impl SoftwareRasteriser {
                         }
                         let weight = alpha * t;
                         let acc = &mut accum[px];
-                        for b in 0..16 {
-                            acc[b] += weight * rec.spectral[b];
+                        for (a, &s) in acc.iter_mut().zip(rec.spectral.iter()) {
+                            *a += weight * s;
                         }
                         transmittance[px] = t * (1.0 - alpha);
                     }

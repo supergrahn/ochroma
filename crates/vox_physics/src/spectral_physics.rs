@@ -168,9 +168,9 @@ impl SpectralPhysics {
     /// fracture model consumes (`value / 65535`).
     pub fn profile_from_splat(splat: &GaussianSplat) -> [u16; 16] {
         let mut out = [0u16; 16];
-        for b in 0..16 {
+        for (b, slot) in out.iter_mut().enumerate() {
             let v = splat.spectral_f32(b).clamp(0.0, 1.0);
-            out[b] = (v * 65535.0).round() as u16;
+            *slot = (v * 65535.0).round() as u16;
         }
         out
     }

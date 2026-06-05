@@ -110,7 +110,9 @@ impl MaterialGraph {
     ///
     /// The module contains a single function `evaluate_material() -> array<f32, 16>`.
     /// Callers pass the module to `wgpu::Device::create_shader_module_from_naga()`.
-    pub fn compile(&self) -> Result<naga::Module, naga::WithSpan<naga::valid::ValidationError>> {
+    pub fn compile(
+        &self,
+    ) -> Result<naga::Module, Box<naga::WithSpan<naga::valid::ValidationError>>> {
         use crate::naga_builder::NagaBuilder;
         let module = self.build_module();
         NagaBuilder::validate(&module)?;
@@ -124,9 +126,11 @@ impl MaterialGraph {
         let mut module = Module::default();
         let arr_ty = NagaBuilder::array_f32_8(&mut module.types);
 
-        let mut func = Function::default();
-        func.name = Some("evaluate_material".into());
-        func.result = Some(FunctionResult { ty: arr_ty, binding: None });
+        let mut func = Function {
+            name: Some("evaluate_material".into()),
+            result: Some(FunctionResult { ty: arr_ty, binding: None }),
+            ..Default::default()
+        };
 
         // CPU-evaluate the node tree to produce the constant SPD for the shader.
         let spd = self.evaluate_cpu();

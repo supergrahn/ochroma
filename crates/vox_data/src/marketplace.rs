@@ -107,7 +107,7 @@ impl MarketplaceCache {
 
     pub fn most_downloaded(&self, count: usize) -> Vec<&AssetListing> {
         let mut sorted: Vec<&AssetListing> = self.listings.iter().collect();
-        sorted.sort_by(|a, b| b.downloads.cmp(&a.downloads));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.downloads));
         sorted.into_iter().take(count).collect()
     }
 

@@ -126,8 +126,8 @@ impl SplatUploadPath {
 
         // Re-encode back to f16 stored as u16
         let mut out = *splat;
-        for b in 0..16 {
-            out.spectral_mut()[b] = half::f16::from_f32(decoded[b]).to_bits();
+        for (slot, &d) in out.spectral_mut().iter_mut().zip(decoded.iter()) {
+            *slot = half::f16::from_f32(d).to_bits();
         }
         out
     }

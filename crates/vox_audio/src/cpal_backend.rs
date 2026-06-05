@@ -5,6 +5,10 @@ use std::sync::{Arc, Mutex};
 
 pub use crate::AudioCommand;
 
+/// A queued voice: (sample buffer, gain, playback cursor into the buffer).
+#[cfg(feature = "audio-backend")]
+type VoiceQueue = Arc<Mutex<std::collections::VecDeque<(Vec<f32>, f32, usize)>>>;
+
 /// Builder for the CPAL audio backend.
 pub struct CpalBackendBuilder {
     preferred_sample_rate: Option<u32>,
@@ -34,7 +38,7 @@ impl CpalBackendBuilder {
         let config = device.default_output_config().ok()?;
         let sr     = self.preferred_sample_rate.unwrap_or(config.sample_rate().0);
 
-        let queue: Arc<Mutex<std::collections::VecDeque<(Vec<f32>, f32, usize)>>> =
+        let queue: VoiceQueue =
             Arc::new(Mutex::new(std::collections::VecDeque::new()));
         let queue_write = Arc::clone(&queue);
 
