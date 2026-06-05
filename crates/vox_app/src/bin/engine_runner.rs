@@ -48,9 +48,9 @@ use vox_render::spectral_framebuffer::SpectralFramebuffer;
 use vox_render::spectral_tonemapper::{ToneMapOperator, ToneMapSettings};
 use vox_render::temporal::TemporalAccumulator;
 
+use ochroma_engine::engine_loop::{EngineLoop, SystemMask};
 use vox_audio::AudioEngine;
 use vox_audio::SpatialAudioManager;
-use vox_physics::rapier::RapierPhysicsWorld;
 use vox_render::gizmos::GizmoRenderer;
 use vox_render::shadows::ShadowMapper;
 use vox_ui::theme::apply_ochroma_theme;
@@ -223,11 +223,12 @@ struct EngineApp {
     audio: AudioEngine,
     click_counter: u32,
 
-    // Rapier physics world
-    physics: RapierPhysicsWorld,
+    // Unified per-frame simulation driver (EngineLoop migration, S1).
+    // Owns the Rapier physics world (formerly `physics`) and the ECS<->Rapier
+    // body map (formerly `entity_rapier_bodies`). Other subsystems (audio, GI,
+    // shadows, scripts) remain inline on EngineApp until later migration steps.
+    loop_: EngineLoop,
 
-    // ECS entity index -> Rapier body handle (for entities with ColliderComponent)
-    entity_rapier_bodies: HashMap<u32, vox_physics::RigidBodyHandle>,
     // Rapier collider handle -> ECS entity index (for raycast picking)
     collider_to_entity: HashMap<vox_physics::ColliderHandle, u32>,
 
@@ -420,20 +421,18 @@ impl EngineApp {
         let mut editor = SceneEditor::new();
         editor.visible = false;
 
-        let engine = EngineRuntime::new(config);
+        let engine = EngineRuntime::new(config.clone());
 
         let dlss = DlssPipeline::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DlssQuality::Performance);
         let (render_w, render_h) = dlss.render_resolution();
 
-        let mut physics = {
-            let mut p = RapierPhysicsWorld::new();
-            // Ground plane collider — 1km x 1km
-            p.add_static_collider([0.0, -0.5, 0.0], [500.0, 0.5, 500.0]);
-            println!("[ochroma] Physics: Rapier3D world initialised (ground plane 1000x1000)");
-            p
-        };
+        // EngineLoop owns the live Rapier physics world (built with its own
+        // 1km x 1km ground plane in EngineLoop::new) plus the ECS<->Rapier body
+        // map. The character controller and scene colliders are added to it.
+        let mut loop_ = EngineLoop::new(config, SystemMask::all());
+        println!("[ochroma] Physics: Rapier3D world initialised (ground plane 1000x1000)");
         let character = vox_app::character_controller::CharacterController::new(
-            &mut physics,
+            &mut loop_.physics,
             glam::Vec3::new(0.0, 0.9, 0.0),
         );
         println!("[ochroma] Character controller initialised at (0, 0.9, 0)");
@@ -501,9 +500,8 @@ impl EngineApp {
                 audio
             },
             click_counter: 0,
-            physics,
+            loop_,
             character,
-            entity_rapier_bodies: HashMap::new(),
             collider_to_entity: HashMap::new(),
             entity_splat_ranges: HashMap::new(),
             entity_original_positions: HashMap::new(),
@@ -687,7 +685,7 @@ impl EngineApp {
             self.entity_splat_ranges.insert(entity_id, (start, end));
             self.entity_original_positions.insert(entity_id, pos);
             // Add Rapier static collider for building and track entity mapping
-            let col_handle = self.physics.add_static_collider(pos, [5.0, 10.0, 8.0]);
+            let col_handle = self.loop_.physics.add_static_collider(pos, [5.0, 10.0, 8.0]);
             self.collider_to_entity.insert(col_handle, entity_id);
         }
 
@@ -708,7 +706,7 @@ impl EngineApp {
             self.entity_original_positions.insert(entity_id, pos);
             // Add Rapier static collider for tree trunk
             let tree_height = 6.0 + i as f32;
-            let col_handle = self.physics.add_static_collider(
+            let col_handle = self.loop_.physics.add_static_collider(
                 [pos[0], tree_height * 0.5, pos[2]],
                 [1.5, tree_height * 0.5, 1.5],
             );
@@ -716,7 +714,7 @@ impl EngineApp {
         }
 
         println!("[ochroma] Physics: {} bodies, {} colliders in Rapier world",
-            self.physics.body_count(), self.physics.collider_count());
+            self.loop_.physics.body_count(), self.loop_.physics.collider_count());
         println!("[ochroma] Total scene: {} splats ({} entities tracked)",
             self.scene_splats.len(), self.entity_splat_ranges.len());
 
@@ -1880,7 +1878,7 @@ impl EngineApp {
 
                 // Try Rapier raycast first for precise physics-based picking
                 let mut picked = false;
-                if let Some((col_handle, _hit_pos, _dist)) = self.physics.raycast_with_collider(
+                if let Some((col_handle, _hit_pos, _dist)) = self.loop_.physics.raycast_with_collider(
                     [near_pt.x, near_pt.y, near_pt.z],
                     [ray_dir.x, ray_dir.y, ray_dir.z],
                     1000.0,
@@ -1936,7 +1934,7 @@ impl EngineApp {
         // last_move_dir. When rapier_kcc_active, it skips flat-plane integration.
         // We then pass the full desired velocity (horizontal + vertical) through KCC.
         self.character.rapier_kcc_active = self.character_body.is_some();
-        self.character.update(&self.input_state, dt, &mut self.physics);
+        self.character.update(&self.input_state, dt, &mut self.loop_.physics);
         if let Some(ref cb) = self.character_body {
             if self.character.enabled {
                 // Full desired velocity: horizontal from input + vertical from gravity/jump
@@ -1944,17 +1942,17 @@ impl EngineApp {
                     + Vec3::Y * self.character.vertical_velocity;
                 let output = cb.move_and_slide(
                     desired, dt,
-                    self.physics.rigid_body_set(),
-                    self.physics.collider_set(),
-                    self.physics.query_pipeline(),
+                    self.loop_.physics.rigid_body_set(),
+                    self.loop_.physics.collider_set(),
+                    self.loop_.physics.query_pipeline(),
                 );
                 self.character.on_ground = output.grounded;
                 if output.grounded && self.character.vertical_velocity < 0.0 {
                     self.character.vertical_velocity = 0.0;
                 }
-                cb.apply_translation(output.effective_translation, self.physics.rigid_body_set_mut());
-                self.character.position = cb.position(self.physics.rigid_body_set());
-                self.physics.set_kinematic_position(
+                cb.apply_translation(output.effective_translation, self.loop_.physics.rigid_body_set_mut());
+                self.character.position = cb.position(self.loop_.physics.rigid_body_set());
+                self.loop_.physics.set_kinematic_position(
                     self.character.body_handle,
                     [self.character.position.x, self.character.position.y, self.character.position.z],
                 );
@@ -1966,25 +1964,10 @@ impl EngineApp {
             self.camera.position = cam_pos;
             self.camera.target = cam_pos + self.character.camera_forward();
         }
-        self.physics.step();
-        // Sync: read positions from Rapier dynamic bodies back into ECS transforms
-        {
-            use vox_core::ecs::TransformComponent;
-            let body_map: Vec<(u32, vox_physics::RigidBodyHandle)> =
-                self.entity_rapier_bodies.iter().map(|(&e, &h)| (e, h)).collect();
-            for (eid, handle) in body_map {
-                if let Some(pos) = self.physics.body_position(handle) {
-                    // Update the ECS transform from Rapier
-                    let mut query = self.engine.world.query::<(bevy_ecs::prelude::Entity, &mut TransformComponent)>();
-                    for (entity, mut transform) in query.iter_mut(&mut self.engine.world) {
-                        if entity.index() == eid {
-                            transform.position = Vec3::new(pos[0], pos[1], pos[2]);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        // EngineLoop S1: step Rapier physics and sync dynamic bodies back to ECS.
+        // (Relocated from the inline block; the ECS<->Rapier body map now lives in
+        // self.loop_.entity_rapier_bodies.)
+        self.loop_.step_physics(dt);
 
         // 4c. Tick audio (legacy AudioEngine + spatial audio manager)
         self.audio.tick(dt);

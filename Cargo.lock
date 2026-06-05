@@ -7507,6 +7507,7 @@ dependencies = [
  "glam 0.29.3",
  "half",
  "navmesh",
+ "ochroma_engine",
  "pollster",
  "puffin",
  "puffin_http",

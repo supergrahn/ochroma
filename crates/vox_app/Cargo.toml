@@ -22,6 +22,7 @@ vox_audio = { path = "../vox_audio" }
 vox_physics = { path = "../vox_physics" }
 vox_terrain = { path = "../vox_terrain" }
 vox_ui = { path = "../vox_ui" }
+ochroma_engine = { path = "../ochroma_engine" }
 bevy_ecs = { workspace = true }
 bevy_app = { workspace = true }
 navmesh = "0.9"
