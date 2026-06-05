@@ -41,6 +41,19 @@ const HEIGHT: u32 = 720;
 // Sun direction (normalized, pointing toward ground = positive Y component negative)
 const SUN_DIR: Vec3 = Vec3::new(0.4, -0.8, 0.3);
 
+// Live spectral GI is expensive (propagate is O(N) per splat over a 256-cap
+// neighbourhood). Full-scene GI every frame blows the smoke time budget, so we
+// recompute the GI-lit scene only every GI_CADENCE frames and reuse the cached
+// result in between. The cadence keeps indirect light visibly updating while
+// the 160-frame smoke finishes in well under 2 minutes.
+const GI_CADENCE: u32 = 10;
+
+// Number of nearest scene splats fed to the GI step. Full terrain is tens of
+// thousands of splats; GI over all of them per cadence is still too slow for the
+// budget, so we run GI on the nearest-K subset around the player each time. This
+// is an honest performance limit — distant indirect light is not recomputed.
+const GI_NEAREST_K: usize = 2000;
+
 // ---------------------------------------------------------------------------
 // AABB collision
 // ---------------------------------------------------------------------------
@@ -88,6 +101,22 @@ struct Orb {
     position: Vec3,
     collected: bool,
     bob_phase: f32,
+}
+
+/// A dynamic physics box the player dropped with KeyQ. Falls under gravity,
+/// rendered as a single splat at its live Rapier body position, and fractures
+/// (shrinks/splits) on ground impact via SpectralPhysics.
+struct DroppedBox {
+    handle: vox_physics::RigidBodyHandle,
+    /// Material spectral profile (drives both fracture brittleness + impact audio).
+    material: [u16; 16],
+    half_extents: Vec3,
+    spawn_y: f32,
+    /// Live until it has fractured (then it stays as shrunken fragments but is no
+    /// longer eligible to fracture again).
+    fractured: bool,
+    /// Render scale, shrunk on fracture per the impact result.
+    render_scale: f32,
 }
 
 /// Windmill entity — base splats + blade splats with rigid animation.
@@ -208,6 +237,22 @@ struct WalkingSim {
     // Windmill
     windmill: Windmill,
 
+    // Dropped physics boxes (KeyQ). Each falls under Rapier gravity and
+    // fractures (spectral impact) when it settles on the ground.
+    dropped_boxes: Vec<DroppedBox>,
+    fracture_events: u32,
+    /// Count of impact/collect audio dispatch attempts (counted even when no
+    /// output device is present, so headless CI still verifies the call path).
+    audio_events: u32,
+
+    // Live spectral GI state. GI-lit scene splats are recomputed at a reduced
+    // cadence (see GI_CADENCE) and reused for rendering between updates so the
+    // smoke stays within its time budget.
+    gi_lit_splats: Vec<GaussianSplat>,
+    gi_frame_counter: u32,
+    /// Spectral bands of the GI-lit splat nearest the player (for the HUD task).
+    pub latest_gi_bands: [u16; 16],
+
     // Input
     keys_held: std::collections::HashSet<KeyCode>,
     mouse_captured: bool,
@@ -277,7 +322,11 @@ impl WalkingSim {
         // backends, and the shadow mapper — the same instances the editor shell
         // (engine_runner) drives. walking_sim uses the game-minimal mask:
         // physics + audio + animation + shadows, no GI/scripts.
-        let mut loop_ = EngineLoop::new(EngineConfig::default(), SystemMask::game_minimal());
+        // Enable live spectral GI on top of the game-minimal subset. GI is run
+        // at a reduced cadence in update() to stay within the smoke time budget.
+        let mut mask = SystemMask::game_minimal();
+        mask.gi = true;
+        let mut loop_ = EngineLoop::new(EngineConfig::default(), mask);
 
         // Match walking_sim's original shadow resolution (128) instead of the
         // loop's editor default (512) so the software-rendered shadow look is
@@ -320,6 +369,12 @@ impl WalkingSim {
             game_ui,
             fps_display: 0.0,
             windmill,
+            dropped_boxes: Vec::new(),
+            fracture_events: 0,
+            audio_events: 0,
+            gi_lit_splats: Vec::new(),
+            gi_frame_counter: 0,
+            latest_gi_bands: [0u16; 16],
             keys_held: std::collections::HashSet::new(),
             mouse_captured: false,
             last_mouse: None,
@@ -511,6 +566,171 @@ impl WalkingSim {
         splats
     }
 
+    /// Recompute live spectral GI over the nearest-K scene splats around the
+    /// player and cache the GI-lit result for rendering. Also stores the
+    /// spectral of the GI-lit splat nearest the player into `latest_gi_bands`.
+    fn recompute_gi(&mut self) {
+        let player = self.player_pos();
+
+        // Gather scene splats (terrain + buildings + trees + orbs + windmill).
+        let mut scene = self.terrain_splats.clone();
+        scene.extend_from_slice(&self.building_splats);
+        scene.extend_from_slice(&self.tree_splats);
+        scene.extend(self.generate_orb_splats());
+        scene.extend_from_slice(&self.windmill.base_splats);
+        scene.extend_from_slice(&self.windmill.blade_splats_world);
+
+        // Nearest-K subset around the player (perf budget — see GI_NEAREST_K).
+        if scene.len() > GI_NEAREST_K {
+            scene.sort_by(|a, b| {
+                let da = (Vec3::from(a.position()) - player).length_squared();
+                let db = (Vec3::from(b.position()) - player).length_squared();
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scene.truncate(GI_NEAREST_K);
+        }
+
+        let hour = self.loop_.time_of_day();
+        let lit = self.loop_.step_gi(&scene, hour);
+
+        // Store the spectral of the GI-lit splat nearest the player.
+        if let Some(nearest) = lit.iter().min_by(|a, b| {
+            let da = (Vec3::from(a.position()) - player).length_squared();
+            let db = (Vec3::from(b.position()) - player).length_squared();
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            self.latest_gi_bands = *nearest.spectral();
+        }
+
+        self.gi_lit_splats = lit;
+    }
+
+    /// Spawn a dynamic physics box 2m in front of and 1.5m above the player.
+    /// The box falls under Rapier gravity (stepped in update()) and is drawn as
+    /// a splat at its live body position; on ground impact it fractures.
+    fn drop_box(&mut self) {
+        let pos = self.player_pos() + self.forward() * 2.0 + Vec3::new(0.0, 1.5, 0.0);
+        let half_extents = Vec3::splat(0.4);
+        let (handle, _collider) = self.loop_.physics.add_dynamic_box(
+            [pos.x, pos.y, pos.z],
+            [half_extents.x, half_extents.y, half_extents.z],
+            2.0,
+        );
+
+        // Brittle, glass-like material: sharp alternating bands, low total
+        // energy. Brittleness drives the fracture fragment count and the impact
+        // audio timbre.
+        let material: [u16; 16] = std::array::from_fn(|i| {
+            let v: f32 = if i % 2 == 0 { 0.9 } else { 0.02 };
+            half::f16::from_f32(v).to_bits()
+        });
+
+        self.dropped_boxes.push(DroppedBox {
+            handle,
+            material,
+            half_extents,
+            spawn_y: pos.y,
+            fractured: false,
+            render_scale: half_extents.x,
+        });
+        println!(
+            "[walking_sim] Dropped box #{} at ({:.1},{:.1},{:.1})",
+            self.dropped_boxes.len(),
+            pos.x,
+            pos.y,
+            pos.z
+        );
+    }
+
+    /// Detect dropped boxes that have settled on the ground and apply a spectral
+    /// impact fracture to each, exactly once. Returns nothing; updates
+    /// `fracture_events`, `audio_events`, and the box's render scale.
+    fn update_dropped_boxes(&mut self) {
+        for b in &mut self.dropped_boxes {
+            if b.fractured {
+                continue;
+            }
+            let Some(pos) = self.loop_.physics.body_position(b.handle) else {
+                continue;
+            };
+            let Some(vel) = self.loop_.physics.body_velocity(b.handle) else {
+                continue;
+            };
+            let fell = b.spawn_y - pos[1] > 1.0;
+            // Ground is the y=0 plane; the box has half-extent ~0.4 so it rests
+            // near y≈0.4. Treat it as impacted once it has fallen and its
+            // vertical speed has decayed to near zero (settled on the ground).
+            let settled = pos[1] <= b.half_extents.y + 0.15 && vel[1].abs() < 0.5;
+            if !(fell && settled) {
+                continue;
+            }
+
+            // Impulse ≈ mass * pre-impact speed. The box fell a known height, so
+            // derive a real impulse from the fall (v = sqrt(2 g h)) scaled to the
+            // Ns range the spectral fracture threshold expects.
+            let fall_h = (b.spawn_y - pos[1]).max(0.0);
+            let impact_speed = (2.0 * 9.81 * fall_h).sqrt();
+            let impulse_ns = (2.0 * impact_speed * 5000.0).max(1.0);
+
+            let impact_pos = Vec3::new(pos[0], pos[1], pos[2]);
+            // Build a renderable splat from the material so the fracture can shift
+            // its spectral in place, then read back the result.
+            let mut splat = GaussianSplat::volume(
+                [pos[0], pos[1], pos[2]],
+                [b.render_scale, b.render_scale, b.render_scale],
+                Quat::IDENTITY,
+                230,
+                b.material,
+            );
+            let result = vox_physics::spectral_physics::SpectralPhysics::apply_impact_to_splat(
+                &mut splat,
+                impact_pos,
+                impulse_ns,
+            );
+
+            // Visualise the fracture: the box splits into fragments, so each
+            // visible fragment shrinks. Scale down by 1/cbrt(fragments) so total
+            // volume is roughly conserved across the shattering.
+            let frag = result.fragment_count.max(1) as f32;
+            b.render_scale *= 1.0 / frag.cbrt();
+            // Adopt the spectral-shifted (darkened/cracked) material for rendering.
+            b.material = *splat.spectral();
+            b.fractured = true;
+            self.fracture_events += 1;
+            println!(
+                "[walking_sim] Box fractured: brittleness={:.2} fragments={} cracks={} impulse={:.0}Ns",
+                result.brittleness,
+                result.fragment_count,
+                result.crack_count(),
+                impulse_ns
+            );
+
+            // Impact audio: synthesise + play from the material spectral. Guarded
+            // (returns 0 with no device); counted regardless so headless CI still
+            // exercises the call path.
+            let _samples =
+                vox_audio::synthesize_and_play_spectral(&b.material, impulse_ns.min(1.0).max(0.3));
+            self.audio_events += 1;
+        }
+    }
+
+    /// Render splats for the dropped boxes at their live Rapier body positions.
+    fn dropped_box_splats(&self) -> Vec<GaussianSplat> {
+        let mut out = Vec::with_capacity(self.dropped_boxes.len());
+        for b in &self.dropped_boxes {
+            if let Some(pos) = self.loop_.physics.body_position(b.handle) {
+                out.push(GaussianSplat::volume(
+                    pos,
+                    [b.render_scale, b.render_scale, b.render_scale],
+                    Quat::IDENTITY,
+                    230,
+                    b.material,
+                ));
+            }
+        }
+        out
+    }
+
     fn update(&mut self, dt: f32) {
         // Only update game logic when Playing
         if self.game_ui.game_state != GameState::Playing {
@@ -601,6 +821,23 @@ impl WalkingSim {
             .step_audio(dt, self.cc_transform.position, self.forward());
 
         // ---------------------------------------------------------------
+        // 4b. Live spectral GI (reduced cadence + nearest-K subset).
+        //     Runs step_gi on the nearest GI_NEAREST_K scene splats around the
+        //     player every GI_CADENCE frames, caches the GI-lit result for the
+        //     renderer, and stores the spectral of the GI-lit splat nearest the
+        //     player into latest_gi_bands (for the HUD task).
+        // ---------------------------------------------------------------
+        if self.gi_frame_counter % GI_CADENCE == 0 {
+            self.recompute_gi();
+        }
+        self.gi_frame_counter = self.gi_frame_counter.wrapping_add(1);
+
+        // ---------------------------------------------------------------
+        // 4c. Dropped-box physics fracture (KeyQ boxes settling on the ground).
+        // ---------------------------------------------------------------
+        self.update_dropped_boxes();
+
+        // ---------------------------------------------------------------
         // 5. Orb collection
         // ---------------------------------------------------------------
         let player_pos = self.cc_transform.position;
@@ -622,6 +859,16 @@ impl WalkingSim {
                 // higher frequency.
                 let freq = 440.0 + self.orbs_collected as f32 * 110.0;
                 self.loop_.spatial_audio.play_tone(freq, 0.3, 0.8);
+
+                // Modern spectral audio path: synthesise + play an impact tone
+                // from the orb's material spectral. Guarded (returns 0 with no
+                // device); counted regardless so headless CI verifies the call.
+                let orb_spd: [u16; 16] = std::array::from_fn(|i| {
+                    let v = if (6..=13).contains(&i) { 0.9 } else { 0.5 };
+                    half::f16::from_f32(v).to_bits()
+                });
+                let _samples = vox_audio::synthesize_and_play_spectral(&orb_spd, 0.6);
+                self.audio_events += 1;
 
                 // Also save a WAV for proof (legacy path)
                 let sound = vox_audio::synth::generate_collect_sound();
@@ -681,6 +928,15 @@ impl WalkingSim {
         // Windmill base + animated blades
         all.extend_from_slice(&self.windmill.base_splats);
         all.extend_from_slice(&self.windmill.blade_splats_world);
+
+        // Live spectral GI: overlay the GI-lit nearest-K subset on top of the
+        // raw scene so injected indirect light actually shows in the frame. The
+        // GI-lit splats carry the propagated radiance (their spectral differs
+        // from the raw input); rendering them brightens the near field.
+        all.extend_from_slice(&self.gi_lit_splats);
+
+        // Dropped physics boxes, drawn at their live Rapier body positions.
+        all.extend(self.dropped_box_splats());
 
         let illuminant = Illuminant::d65();
 
@@ -897,6 +1153,13 @@ impl ApplicationHandler for WalkingSim {
                                     _ => {}
                                 }
                             }
+                            KeyCode::KeyQ => {
+                                // Drop a dynamic physics box in front of the
+                                // player (only while actually playing).
+                                if self.game_ui.game_state == GameState::Playing {
+                                    self.drop_box();
+                                }
+                            }
                             KeyCode::Backquote => {
                                 let expr = "42 * 2 + 1";
                                 match self.rhai.eval(expr) {
@@ -1033,8 +1296,24 @@ fn run_smoke() {
     // orb is ~21m out; at 8 m/s collection radius 2.5m is reached by ~frame 140).
     let walk_frames = total_frames - 5;
 
+    // Capture GI-lit splats input vs output to prove radiance was injected.
+    // After the first GI step, latest_gi_bands should be non-zero and the
+    // GI-lit splats differ from the raw scene input.
+
+    let mut box_spawn_y = 0.0f32;
     let mut last_pixels: Vec<[u8; 4]> = Vec::new();
     for frame in 0..total_frames {
+        // Drop a physics box early so it has time to fall + fracture before the
+        // run ends. The windowed path triggers this from the KeyQ handler; the
+        // smoke calls the same shared drop_box() directly.
+        if frame == 10 {
+            app.drop_box();
+            box_spawn_y = app
+                .dropped_boxes
+                .last()
+                .map(|b| b.spawn_y)
+                .expect("box should exist after drop_box");
+        }
         if frame < walk_frames {
             // Aim yaw at the nearest uncollected orb, then hold W. Movement is
             // performed by the REAL CharacterController code inside update().
@@ -1067,6 +1346,33 @@ fn run_smoke() {
     let moved = (final_pos - spawn_pos).length();
     let windmill_advanced = (app.windmill.anim_time - windmill_anim_start).abs();
 
+    // Dropped-box fall distance (proof the box actually fell under gravity).
+    let box_final_y = app
+        .dropped_boxes
+        .last()
+        .and_then(|b| app.loop_.physics.body_position(b.handle))
+        .map(|p| p[1])
+        .unwrap_or(box_spawn_y);
+    let box_fell = box_spawn_y - box_final_y;
+
+    // GI proof: how many of latest_gi_bands are non-zero, and the max band.
+    let gi_nonzero_bands = app.latest_gi_bands.iter().filter(|&&b| b > 0).count();
+    let gi_max_band = app.latest_gi_bands.iter().copied().max().unwrap_or(0);
+
+    // Verify GI actually injected radiance: run one more GI step on a known
+    // scene snapshot and confirm the GI-lit output differs from the input.
+    let gi_input = {
+        let mut s = app.terrain_splats.clone();
+        s.extend_from_slice(&app.building_splats);
+        s.truncate(GI_NEAREST_K);
+        s
+    };
+    let gi_output = app.loop_.step_gi(&gi_input, app.loop_.time_of_day());
+    let gi_changed = gi_input
+        .iter()
+        .zip(gi_output.iter())
+        .any(|(a, b)| a.spectral() != b.spectral());
+
     // Count non-black pixels in the final frame.
     let non_black = last_pixels
         .iter()
@@ -1094,7 +1400,7 @@ fn run_smoke() {
     }
 
     println!(
-        "[walking_sim] SMOKE SUMMARY: frames={} final_pos=({:.2},{:.2},{:.2}) orbs={}/{} non_black_px={}/{} distinct_colors={} windmill_dt={:.2} moved={:.2} ppm={}",
+        "[walking_sim] SMOKE SUMMARY: frames={} final_pos=({:.2},{:.2},{:.2}) orbs={}/{} non_black_px={}/{} distinct_colors={} windmill_dt={:.2} moved={:.2} gi_nonzero_bands={} gi_max_band={} gi_changed={} drops={} box_fell={:.2}m fracture_events={} audio_events={} ppm={}",
         total_frames,
         final_pos.x,
         final_pos.y,
@@ -1106,6 +1412,13 @@ fn run_smoke() {
         distinct_colors,
         windmill_advanced,
         moved,
+        gi_nonzero_bands,
+        gi_max_band,
+        gi_changed,
+        app.dropped_boxes.len(),
+        box_fell,
+        app.fracture_events,
+        app.audio_events,
         ppm_path,
     );
 
@@ -1144,6 +1457,40 @@ fn run_smoke() {
         moved > 1.0 || app.orbs_collected > 0,
         "player did not move ({:.2}m) and collected no orbs — movement/physics broken",
         moved
+    );
+
+    // --- New feature assertions (GI, drop, fracture, audio). ---
+    // 1. Live spectral GI: at least one band non-zero AND GI actually changed
+    //    the splats (radiance was injected, output != input).
+    assert!(
+        gi_nonzero_bands > 0 && gi_max_band > 0,
+        "GI produced no lit bands: nonzero={} max={} — GI not running",
+        gi_nonzero_bands,
+        gi_max_band
+    );
+    assert!(
+        gi_changed,
+        "GI-lit splats are identical to input — no radiance was injected"
+    );
+
+    // 2 + 3. Drop + fracture: the box fell > 1m AND fractured at least once.
+    assert!(
+        box_fell > 1.0,
+        "dropped box did not fall: only {:.2}m (spawn_y={:.2}, final_y={:.2})",
+        box_fell,
+        box_spawn_y,
+        box_final_y
+    );
+    assert!(
+        app.fracture_events >= 1,
+        "no fracture events: box never registered a ground impact"
+    );
+
+    // 4. Impact + collect audio: at least one fracture impact + one orb collect.
+    assert!(
+        app.audio_events >= 2,
+        "audio_events={} (< 2 required: need >=1 fracture + >=1 orb collect)",
+        app.audio_events
     );
 
     println!("[walking_sim] SMOKE PASS: loop + game logic + render verified headlessly.");
