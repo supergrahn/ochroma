@@ -12,12 +12,24 @@
 </head>
 <body>
   <canvas id="ochroma-canvas"></canvas>
+  <!--
+    The #status text is owned by the Rust/wasm side (vox_web). It shows
+    "Initialising WebGPU…" during adapter/device bring-up and only flips to
+    "Ready" AFTER the WebGPU device is actually acquired and the canvas surface
+    is configured. Do not set it to "Ready" here — that would lie about GPU
+    readiness while the async bring-up is still in flight.
+  -->
   <div id="status">Loading…</div>
   <script type="module">
     import init from './hello_splat.js';
-    document.getElementById('status').textContent = 'Initialising WebGPU…';
-    await init();
-    document.getElementById('status').textContent = 'Ready';
+    try {
+      // `init()` runs the wasm `start` shim, which kicks off the async WebGPU
+      // bring-up. The status is driven from Rust as that bring-up progresses.
+      await init();
+    } catch (err) {
+      document.getElementById('status').textContent = 'WebGPU init failed — see console';
+      console.error(err);
+    }
   </script>
 </body>
 </html>

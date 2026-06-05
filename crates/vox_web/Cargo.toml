@@ -15,5 +15,19 @@ default = []
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1"
-web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElement", "console"] }
+log = "0.4"
+# Browser-side logger so wgpu/log output is visible in the devtools console.
+console_log = "1"
+# wgpu 24 matches the rest of the workspace. On wasm32 the `webgpu` backend is
+# enabled by default; we add `wgsl` so we can author the clear pipeline inline.
+wgpu = { version = "24", default-features = false, features = ["webgpu", "wgsl"] }
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+  "Window",
+  "Document",
+  "Element",
+  "HtmlCanvasElement",
+  "console",
+] }
