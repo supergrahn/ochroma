@@ -146,9 +146,12 @@
 - [x] Install matching Slang SDK (v2024.14.5) to `~/.local/slang`; `SLANG_DIR` wired in `.cargo/config.toml`.
 - [x] `shader-slang-sys` compiles — required vendoring `shader-slang 0.1.0` with `spReflectionVariable_GetDefaultValueInt` stubbed (`[patch.crates-io]`), and `BINDGEN_EXTRA_CLANG_ARGS` for missing clang resource headers.
 - [x] Entire spectra dep graph (`spectra-renderer`, `spectra-usd`, `spectra-scene-upload`, `spectra-checkpoint`, `crucible-core`) compiles, given `LD_LIBRARY_PATH=~/.local/slang/lib` exported in the SHELL (cargo `[env]` does not reach build-script loader resolution).
-- [ ] **NEXT: fix vox_render's own spectra-native glue — 8 API-drift errors** (E0432 unresolved imports, E0599 e.g. `read_splat_output_into` not on `Renderer<CudarcSlangBackend>`). vox_render's integration code targets an older spectra-renderer API; update to the current `~/src/spectra` API. Repro: `LD_LIBRARY_PATH=/home/tom-espen/.local/slang/lib cargo check -p vox_render --features spectra-native`.
-- [ ] Resolve Vulkan runtime (loader/ICD/validation) so a spectra-native smoke test actually RUNS on a GPU — may need `mesa-vulkan-drivers`/`vulkan-tools` (sudo).
-- [ ] Persist `LD_LIBRARY_PATH` (wrapper script or `sudo ldconfig`); report; flip Task 1.3 backend when green.
+- [x] **vox_render spectra-native glue fixed — `cargo check -p vox_render --features spectra-native` is GREEN** (commit 661cfaf). Default build still green, 2059 tests. Glue rewritten to the current spectra API (`spectra_scene_state::SceneState`/`CameraLayer`, `splats_to_scene`, `render() -> FrameOutput`). Added optional dep `spectra-scene-state`.
+- [x] Vulkan runtime AVAILABLE with **NO sudo** — loader + Mesa ICDs + lavapipe present; `vulkaninfo` reports Vulkan 1.3.275, 2 devices.
+- [x] `LD_LIBRARY_PATH` persisted via `scripts/build-spectra-native.sh` (commit 6d41973).
+- [ ] **DECISION 1 — backend:** the glue uses `CudarcSlangBackend` (CUDA), but this box has no NVIDIA GPU/CUDA → can't run as-is. `spectra-gpu` exports `VulkanSlangBackend` (same ctor, generic `Renderer<G>`); swapping it (~30 min, no sudo) would run on the available lavapipe/Vulkan stack. Risk: Vulkan/SPIR-V Slang kernel compilation unverified.
+- [ ] **DECISION 2 — Gaussian vs triangle:** the current `spectra-renderer` is a **triangle-mesh spectral path tracer** and NO LONGER renders Gaussians — true Gaussian GPU rendering moved to a separate `spectra-gaussian-render` crate that vox_render does not depend on. The current glue tessellates each splat into flat triangle quads (lossy). For an engine literally named "Spectral Gaussian Splatting," the correct spectra-native target is likely `spectra-gaussian-render`, not the triangle path tracer. Needs a user call.
+- [ ] (after decisions) wire into `vox_app` `SpectraBackendSystem::tick`; flip Task 1.3 backend when a real frame renders.
 
 ---
 
