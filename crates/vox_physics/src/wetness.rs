@@ -30,7 +30,7 @@ pub fn run_drip_simulation(
     let n = res * res;
     let mut accumulation = vec![0u32; n];
     let mut rng = params.seed;
-    let mut lcg = |s: &mut u64| -> f32 {
+    let lcg = |s: &mut u64| -> f32 {
         *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         (*s >> 33) as f32 / u32::MAX as f32
     };
