@@ -5,6 +5,7 @@ use crate::node_graph::{
     OchromaNode, ParamValue, PortData, PortSpec, PortType,
 };
 
+#[derive(Clone)]
 pub struct MoistureNode {
     pub urban_scale: f32,
 }
@@ -49,6 +50,8 @@ impl OchromaNode for MoistureNode {
             (k, _) => Err(NodeError::UnknownParam(k.into())),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
 
     fn cook(&self, inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         let drip = inputs.get("drip")

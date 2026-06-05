@@ -6,6 +6,7 @@ use crate::node_graph::{
 };
 
 /// Catenary wire node — Newton's method to find catenary parameter `a`.
+#[derive(Clone)]
 pub struct CatenaryNode {
     pub start:    [f32; 3],
     pub end:      [f32; 3],
@@ -73,6 +74,8 @@ impl OchromaNode for CatenaryNode {
         }
     }
 
+    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
+
     fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         let pts = self.compute_y_values();
         let mut out = NodeOutputs::new();
@@ -82,6 +85,7 @@ impl OchromaNode for CatenaryNode {
 }
 
 /// PropPlacementNode — LCG-based Poisson-disk rejection in 2D area.
+#[derive(Clone)]
 pub struct PropPlacementNode {
     pub area:          [f32; 2],
     pub count:         usize,
@@ -114,6 +118,8 @@ impl OchromaNode for PropPlacementNode {
             (k, _) => Err(NodeError::UnknownParam(k.into())),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
 
     fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         // LCG-based Poisson-disk sampling

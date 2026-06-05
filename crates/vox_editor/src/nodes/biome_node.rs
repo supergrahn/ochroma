@@ -103,6 +103,7 @@ impl Default for SpectralTerrainMaterials {
     }
 }
 
+#[derive(Clone)]
 pub struct BiomeNode {
     pub world_height: f32,
     pub moisture:     f32,
@@ -130,6 +131,8 @@ impl OchromaNode for BiomeNode {
             (k, _) => Err(NodeError::UnknownParam(k.into())),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
 
     fn cook(&self, inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         let terrain = inputs.get("terrain")

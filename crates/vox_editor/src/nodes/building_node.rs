@@ -56,6 +56,7 @@ impl BuildingDescription {
     }
 }
 
+#[derive(Clone)]
 pub struct BuildingNode {
     pub grid_w:      usize,
     pub grid_h:      usize,
@@ -226,6 +227,8 @@ impl OchromaNode for BuildingNode {
             (k, _) => Err(NodeError::UnknownParam(k.into())),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
 
     fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         let grid = solve_wfc(self.grid_w, self.grid_h, self.grid_d, self.seed, self.max_attempts);

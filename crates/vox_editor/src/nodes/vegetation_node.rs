@@ -4,6 +4,7 @@ use rand::SeedableRng;
 use rand::Rng;
 use rand_pcg::Pcg64;
 
+#[derive(Clone)]
 pub struct VegetationNode {
     pub seed:          u64,
     pub branch_levels: u32,
@@ -213,6 +214,8 @@ impl OchromaNode for VegetationNode {
             (k, _) => Err(NodeError::UnknownParam(k.into())),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
 
     fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         let mesh = build_tree(self.seed, self.branch_levels, self.height, self.trunk_radius);

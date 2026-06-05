@@ -13,6 +13,7 @@ use crate::node_graph::{
     OchromaNode, ParamValue, PortData, PortSpec, PortType,
 };
 
+#[derive(Clone)]
 pub struct SplatizeNode {
     pub splats_per_sqm: f64,
     pub min_splats:     usize,
@@ -148,6 +149,8 @@ impl OchromaNode for SplatizeNode {
             (k, _) => Err(NodeError::UnknownParam(k.into())),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
 
     fn cook(&self, inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         let mesh = inputs.get("mesh")

@@ -11,6 +11,7 @@ use crate::node_graph::{
     OchromaNode, ParamValue, PortData, PortSpec, PortType,
 };
 
+#[derive(Clone)]
 pub struct TerrainNode {
     pub resolution:    u32,
     pub world_size:    f32,
@@ -173,6 +174,8 @@ impl OchromaNode for TerrainNode {
             (k, _) => Err(NodeError::UnknownParam(k.into())),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
 
     fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         if self.resolution < 16 {

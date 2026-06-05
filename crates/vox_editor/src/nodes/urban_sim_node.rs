@@ -13,6 +13,7 @@ struct UrbanCell {
     moisture:       f32,
 }
 
+#[derive(Clone)]
 pub struct UrbanSimNode {
     pub grid_w:     usize,
     pub grid_h:     usize,
@@ -53,6 +54,8 @@ impl OchromaNode for UrbanSimNode {
             (k, _) => Err(NodeError::UnknownParam(k.into())),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
 
     fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         let n = self.grid_w * self.grid_h;

@@ -6,6 +6,7 @@ use crate::node_graph::{
 };
 use crate::nodes::biome_node::{biome_to_splat_weights, BiomeKind};
 
+#[derive(Clone)]
 pub struct SplatWeightNode;
 
 impl Default for SplatWeightNode {
@@ -29,6 +30,8 @@ impl OchromaNode for SplatWeightNode {
     fn set_param(&mut self, key: &str, _: ParamValue) -> Result<(), NodeError> {
         Err(NodeError::UnknownParam(key.into()))
     }
+
+    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
 
     fn cook(&self, inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         let biome_map = inputs.get("biome_map")

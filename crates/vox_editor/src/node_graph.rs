@@ -144,6 +144,10 @@ pub trait OchromaNode: Send + Sync {
     fn descriptor(&self) -> NodeDescriptor;
     fn set_param(&mut self, key: &str, value: ParamValue) -> Result<(), NodeError>;
     fn cook(&self, inputs: NodeInputs) -> Result<NodeOutputs, NodeError>;
+    /// Deep-clone this node (including all its parameters) into a fresh box.
+    /// Used by [`OchromaNodeGraph::snapshot`] / [`OchromaNodeGraph::restore`] so a
+    /// graph can be saved and restored to an identical state (nodes + params + edges).
+    fn clone_box(&self) -> Box<dyn OchromaNode>;
 }
 
 #[derive(Debug, Clone)]
@@ -364,6 +368,12 @@ impl OchromaNodeGraph {
         false
     }
 
+    /// Capture the full graph state — every node (deep-cloned with its params),
+    /// every edge, and the id allocator — so it can be restored identically later.
+    ///
+    /// The returned [`GraphSnapshot`] carries both a serializable description
+    /// (`nodes` / `edges`, suitable for `to_json`) and the live cloned node boxes
+    /// (`node_states`) needed for a faithful in-process round-trip via [`restore`].
     pub fn snapshot(&self) -> GraphSnapshot {
         let nodes = self.nodes.iter().map(|(id, entry)| NodeSnapshot {
             id: id.0,
@@ -375,12 +385,42 @@ impl OchromaNodeGraph {
             from: e.from.0, from_port: e.from_port.clone(),
             to: e.to.0, to_port: e.to_port.clone(),
         }).collect();
-        GraphSnapshot { nodes, edges }
+        let node_states = self.nodes.iter().map(|(id, entry)| NodeState {
+            id:   id.0,
+            name: entry.name.clone(),
+            node: entry.node.clone_box(),
+        }).collect();
+        GraphSnapshot { nodes, edges, node_states, next_id: self.next_id }
     }
 
-    pub fn restore(&mut self, _snap: GraphSnapshot) -> Result<(), NodeError> {
+    /// Restore the graph to exactly the state captured by [`snapshot`]: the same
+    /// nodes (with identical params), the same edges, and the same id allocator.
+    ///
+    /// After `g.restore(g.snapshot())` the graph is byte-for-byte equivalent to the
+    /// original as far as ids, edges and node parameters are concerned. All restored
+    /// nodes are marked dirty so the next `cook()` recomputes their outputs.
+    pub fn restore(&mut self, snap: GraphSnapshot) -> Result<(), NodeError> {
         self.nodes.clear();
         self.edges.clear();
+        for state in snap.node_states {
+            self.nodes.insert(NodeId(state.id), NodeEntry {
+                name:        state.name,
+                node:        state.node,
+                dirty:       true,
+                last_output: None,
+            });
+        }
+        for e in &snap.edges {
+            self.edges.push(Edge {
+                from:      NodeId(e.from),
+                from_port: e.from_port.clone(),
+                to:        NodeId(e.to),
+                to_port:   e.to_port.clone(),
+            });
+        }
+        self.next_id = snap.next_id.max(
+            self.nodes.keys().map(|id| id.0 + 1).max().unwrap_or(0),
+        );
         Ok(())
     }
 }
@@ -401,10 +441,26 @@ pub struct EdgeSnapshot {
     pub to: u32,   pub to_port:   String,
 }
 
+/// Live node state captured by [`OchromaNodeGraph::snapshot`] for in-process
+/// round-tripping. Not serializable — it carries an actual cloned trait object.
+pub struct NodeState {
+    pub id:   u32,
+    pub name: String,
+    pub node: Box<dyn OchromaNode>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct GraphSnapshot {
     pub nodes: Vec<NodeSnapshot>,
     pub edges: Vec<EdgeSnapshot>,
+    /// Next free node id at the time of the snapshot — restored verbatim so a
+    /// restored graph keeps allocating ids exactly where the original left off.
+    #[serde(default)]
+    pub next_id: u32,
+    /// Cloned live nodes. Skipped during (de)serialization (trait objects are not
+    /// serializable); only populated when produced by [`OchromaNodeGraph::snapshot`].
+    #[serde(skip)]
+    pub node_states: Vec<NodeState>,
 }
 
 impl GraphSnapshot {
@@ -433,6 +489,7 @@ pub mod tests_helpers {
             out.insert("out".into(), PortData::Scalar(1.0));
             Ok(out)
         }
+        fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(PassNode) }
     }
 
     pub fn pass_node() -> Box<dyn OchromaNode> { Box::new(PassNode) }
@@ -525,6 +582,7 @@ mod tests {
                 out.insert("out".into(), PortData::Scalar(1.0));
                 Ok(out)
             }
+            fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(CountNode(self.0.clone())) }
         }
         let mut g = OchromaNodeGraph::new();
         g.add_node("n", Box::new(CountNode(count.clone())));
@@ -546,6 +604,7 @@ mod tests {
             }
             fn set_param(&mut self, k: &str, _: ParamValue) -> Result<(), NodeError> { Err(NodeError::UnknownParam(k.into())) }
             fn cook(&self, _: NodeInputs) -> Result<NodeOutputs, NodeError> { Ok(NodeOutputs::new()) }
+            fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(TerrainOutNode) }
         }
         let mut g = OchromaNodeGraph::new();
         let a = g.add_node("a", Box::new(TerrainOutNode));
@@ -571,11 +630,71 @@ mod tests {
     fn test_undo_restores_params() {
         use crate::nodes::terrain_node::TerrainNode;
         let mut graph = OchromaNodeGraph::new();
-        let id = graph.add_node("terrain", Box::new(TerrainNode::default()));
+        // Start at resolution 32 (1024 heights), no erosion for determinism.
+        let id = graph.add_node("terrain", Box::new(TerrainNode { resolution: 32, droplet_count: 0, ..Default::default() }));
         let snap_before = graph.snapshot();
-        graph.set_param(id, "resolution", ParamValue::Int(256)).unwrap();
+
+        // Mutate the param to a different value and confirm it took effect.
+        graph.set_param(id, "resolution", ParamValue::Int(64)).unwrap();
+        graph.cook().unwrap();
+        let mutated = graph.get_output(id, "terrain").unwrap().as_terrain().unwrap();
+        assert_eq!(mutated.heights.len(), 64 * 64, "mutation must change resolution");
+
+        // Undo: restore the pre-mutation snapshot. The restored node must carry
+        // the ORIGINAL resolution (32), not the mutated 64.
         graph.restore(snap_before).unwrap();
-        let result = graph.cook();
-        assert!(result.is_ok());
+        graph.cook().unwrap();
+        let restored = graph.get_output(id, "terrain").unwrap().as_terrain().unwrap();
+        assert_eq!(restored.heights.len(), 32 * 32, "restore must roll resolution back to 32");
+        assert_eq!(restored.resolution, 32);
+    }
+
+    #[test]
+    fn restore_round_trips_nodes_edges_and_params() {
+        use crate::nodes::terrain_node::TerrainNode;
+        use crate::nodes::biome_node::BiomeNode;
+
+        // Build a graph with >=2 nodes and a real edge: terrain -> biome.
+        let mut graph = OchromaNodeGraph::new();
+        let terrain = graph.add_node("terrain", Box::new(TerrainNode { resolution: 48, seed: 7, droplet_count: 0, ..Default::default() }));
+        let biome   = graph.add_node("biome",   Box::new(BiomeNode { world_height: 123.0, moisture: 0.25 }));
+        graph.connect(terrain, "terrain", biome, "terrain").unwrap();
+
+        // Sanity: original graph cooks and produces a biome map sized by resolution.
+        graph.cook().unwrap();
+        let orig_biome = graph.get_output(biome, "biome_map").unwrap().as_biome_map().unwrap().clone();
+        assert_eq!(orig_biome.len(), 48 * 48);
+
+        let snap = graph.snapshot();
+        // Snapshot must describe BOTH nodes and the single edge.
+        assert_eq!(snap.nodes.len(), 2);
+        assert_eq!(snap.edges.len(), 1);
+        assert_eq!(snap.edges[0].from, terrain.0);
+        assert_eq!(snap.edges[0].to, biome.0);
+
+        // Vandalize the graph: drop everything, then add an unrelated node so the
+        // id allocator and topology genuinely differ from the snapshot.
+        graph.remove_node(terrain).unwrap();
+        graph.remove_node(biome).unwrap();
+        graph.add_node("junk", Box::new(BiomeNode::default()));
+        assert_eq!(graph.node_count(), 1);
+
+        // Restore: the graph must come back IDENTICAL — same node ids, same edge,
+        // same params (proven by an identical biome map after re-cook).
+        graph.restore(snap).unwrap();
+        assert_eq!(graph.node_count(), 2, "both nodes restored");
+
+        let mut restored_ids: Vec<u32> = graph.node_ids().map(|n| n.0).collect();
+        restored_ids.sort();
+        assert_eq!(restored_ids, vec![terrain.0, biome.0], "node ids preserved");
+
+        graph.cook().unwrap();
+        let restored_biome = graph.get_output(biome, "biome_map").unwrap().as_biome_map().unwrap();
+        // Same terrain seed/resolution AND same biome params => byte-identical map.
+        assert_eq!(restored_biome, &orig_biome, "edge + params must survive restore identically");
+
+        // The edge truly reconnects: with the edge present, biome has its terrain
+        // input. Remove it and biome cooks would fail on missing input.
+        assert_eq!(restored_biome.len(), 48 * 48);
     }
 }

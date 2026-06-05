@@ -5,6 +5,7 @@ use crate::node_graph::{
     OchromaNode, ParamValue, PortData, PortSpec, PortType,
 };
 
+#[derive(Clone)]
 pub struct PlotNode {
     pub archetype:   String,
     pub footprint_w: f32,
@@ -74,6 +75,8 @@ impl OchromaNode for PlotNode {
             (k, _) => Err(NodeError::UnknownParam(k.into())),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
 
     fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         let ground_mesh = make_ground_quad(self.footprint_w, self.footprint_d);
