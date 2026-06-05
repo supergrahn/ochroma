@@ -362,3 +362,181 @@ impl EngineLoop {
         sun_dir
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use half::f16;
+    use vox_core::engine_runtime::{EngineConfig, FixedStepCounter};
+    use vox_core::script_interface::{GameScript, ScriptContext};
+
+    fn test_loop() -> EngineLoop {
+        EngineLoop::new(EngineConfig::default(), SystemMask::all())
+    }
+
+    /// (1) step_physics drops a dynamic body under gravity and the result
+    /// matches a direct `RapierPhysicsWorld::step()` reference run.
+    #[test]
+    fn step_physics_drops_body_under_gravity_matching_reference() {
+        let mut lp = test_loop();
+        let (body, _) = lp.physics.add_dynamic_box([0.0, 10.0, 0.0], [0.5, 0.5, 0.5], 1.0);
+
+        for _ in 0..60 {
+            lp.step_physics(1.0 / 60.0);
+        }
+        let y_loop = lp.physics.body_position(body).expect("body exists")[1];
+
+        // Direct reference: same world setup, same number of steps.
+        let mut reference = {
+            let mut p = RapierPhysicsWorld::new();
+            p.add_static_collider([0.0, -0.5, 0.0], [500.0, 0.5, 500.0]);
+            p
+        };
+        let (ref_body, _) =
+            reference.add_dynamic_box([0.0, 10.0, 0.0], [0.5, 0.5, 0.5], 1.0);
+        for _ in 0..60 {
+            reference.step();
+        }
+        let y_ref = reference.body_position(ref_body).expect("ref body exists")[1];
+
+        assert!(
+            y_loop < 10.0,
+            "body must fall under gravity: y_loop={y_loop} should be < 10.0"
+        );
+        assert!(
+            (y_loop - y_ref).abs() < 1e-4,
+            "step_physics must match direct step(): y_loop={y_loop}, y_ref={y_ref}"
+        );
+    }
+
+    /// (2) step_gi raises a band of a dark receiver splat sitting next to a
+    /// bright opaque emitter, per the propagate/apply formula
+    /// (`out = spectral + irr * 0.5`).
+    #[test]
+    fn step_gi_brightens_receiver_band_near_emitter() {
+        let mut lp = test_loop();
+
+        // Emitter: opacity > 128 so propagate() treats it as a GI emitter,
+        // bright in every band.
+        let emitter = GaussianSplat::volume(
+            [0.0, 0.0, 0.0],
+            [0.2, 0.2, 0.2],
+            glam::Quat::IDENTITY,
+            255,
+            [f16::from_f32(1.0).to_bits(); 16],
+        );
+        // Receiver: low opacity (not an emitter), starts fully dark.
+        let receiver = GaussianSplat::volume(
+            [0.5, 0.0, 0.0],
+            [0.2, 0.2, 0.2],
+            glam::Quat::IDENTITY,
+            10,
+            [f16::from_f32(0.0).to_bits(); 16],
+        );
+
+        let input = vec![emitter, receiver];
+        let in_band = f16::from_bits(input[1].spectral()[8]).to_f32();
+        assert_eq!(in_band, 0.0, "receiver band 8 must start at 0.0");
+
+        let out = lp.step_gi(&input, 12.0);
+        let out_band = f16::from_bits(out[1].spectral()[8]).to_f32();
+
+        assert!(
+            out_band > in_band,
+            "GI must brighten the receiver: out_band={out_band} should exceed in_band={in_band}"
+        );
+        // The emitter is bright + close; with the formula out = clamp(0 + irr*0.5),
+        // and irr being the (scaled, alpha-blended) incoming radiance, the band
+        // must rise by a non-trivial amount.
+        assert!(
+            out_band > 0.001,
+            "GI band lift must be non-trivial: out_band={out_band}"
+        );
+    }
+
+    /// (3) step_scripts ticks the ECS fixed-step: a registered counting
+    /// GameScript advances once per tick and FixedStepCounter reflects it.
+    #[test]
+    fn step_scripts_advances_counting_script_and_fixed_steps() {
+        struct CounterScript {
+            ticks: u32,
+        }
+        impl GameScript for CounterScript {
+            fn on_update(&mut self, _ctx: &mut ScriptContext, _dt: f32) {
+                self.ticks += 1;
+            }
+            fn name(&self) -> &str {
+                "Counter"
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let mut lp = test_loop();
+        lp.runtime
+            .register_script("Counter", || Box::new(CounterScript { ticks: 0 }));
+        let entity = lp.runtime.spawn("Ticker").with_script("Counter").id();
+        lp.runtime.start();
+
+        // 0.02s > fixed_dt (1/60) => exactly one fixed step per tick.
+        for _ in 0..3 {
+            lp.step_scripts(0.02);
+        }
+
+        let steps = lp
+            .runtime
+            .world
+            .resource::<FixedStepCounter>()
+            .steps_this_frame;
+        assert_eq!(steps, 1, "last tick of 0.02s must run exactly one fixed step");
+
+        let instances = lp
+            .runtime
+            .world
+            .resource::<vox_core::engine_runtime::ScriptInstances>();
+        let script = instances
+            .scripts
+            .get(&(entity, "Counter".to_string()))
+            .expect("cached script instance should exist");
+        let counter = script
+            .as_any()
+            .downcast_ref::<CounterScript>()
+            .expect("instance should be a CounterScript");
+        assert_eq!(
+            counter.ticks, 3,
+            "script counter must persist and reach 3 across 3 ticks"
+        );
+    }
+
+    /// (4) Blackboard round-trip: insert a Vec<GaussianSplat>, mutate via
+    /// get_mut, and observe the mutation through get.
+    #[test]
+    fn blackboard_round_trip_persists_mutation() {
+        let mut bb = Blackboard::new();
+        let splat = GaussianSplat::volume(
+            [1.0, 2.0, 3.0],
+            [0.1, 0.1, 0.1],
+            glam::Quat::IDENTITY,
+            128,
+            [0u16; 16],
+        );
+        bb.insert(vec![splat]);
+
+        {
+            let v = bb
+                .get_mut::<Vec<GaussianSplat>>()
+                .expect("inserted vec should be retrievable");
+            v[0].set_position([9.0, 8.0, 7.0]);
+        }
+
+        let v = bb
+            .get::<Vec<GaussianSplat>>()
+            .expect("vec should still be present");
+        assert_eq!(
+            v[0].position(),
+            [9.0, 8.0, 7.0],
+            "mutation through get_mut must persist and be visible via get"
+        );
+    }
+}
