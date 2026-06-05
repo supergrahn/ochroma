@@ -49,8 +49,6 @@ use vox_render::spectral_tonemapper::{ToneMapOperator, ToneMapSettings};
 use vox_render::temporal::TemporalAccumulator;
 
 use ochroma_engine::engine_loop::{EngineLoop, SystemMask};
-use vox_audio::AudioEngine;
-use vox_audio::SpatialAudioManager;
 use vox_render::gizmos::GizmoRenderer;
 use vox_render::shadows::ShadowMapper;
 use vox_ui::theme::apply_ochroma_theme;
@@ -219,8 +217,8 @@ struct EngineApp {
     // Placed objects (from editor left-click)
     placed_objects: Vec<(Vec3, Vec<GaussianSplat>)>,
 
-    // Audio engine (with rodio backend)
-    audio: AudioEngine,
+    // Audio engine (with rodio backend) + spatial audio manager now live on
+    // `self.loop_` (EngineLoop), which constructs the single audio backend (S2).
     click_counter: u32,
 
     // Unified per-frame simulation driver (EngineLoop migration, S1).
@@ -241,9 +239,6 @@ struct EngineApp {
     gizmo: GizmoRenderer,
     // Track left mouse button held state for gizmo dragging
     left_mouse_held: bool,
-
-    // Spatial audio manager (3D positional audio with distance attenuation)
-    spatial_audio: SpatialAudioManager,
 
     // VFX editor UI window
     vfx_editor_ui: vox_render::vfx_editor_ui::VfxEditorUi,
@@ -493,12 +488,6 @@ impl EngineApp {
             spectral_bypass: false, // spectra EWA renderer by default
             asset_path,
             placed_objects: Vec::new(),
-            audio: {
-                let mut audio = AudioEngine::new(64);
-                audio.init_backend();
-                println!("[ochroma] Audio: rodio backend initialised");
-                audio
-            },
             click_counter: 0,
             loop_,
             character,
@@ -507,11 +496,6 @@ impl EngineApp {
             entity_original_positions: HashMap::new(),
             gizmo: GizmoRenderer::new(),
             left_mouse_held: false,
-            spatial_audio: {
-                let mgr = SpatialAudioManager::new();
-                println!("[ochroma] Spatial audio manager initialised (available: {})", mgr.is_available());
-                mgr
-            },
             vfx_editor_ui: vox_render::vfx_editor_ui::VfxEditorUi::new(),
             soundscape: {
                 let ss = Soundscape::outdoor_default();
@@ -1516,7 +1500,7 @@ impl EngineApp {
                         }
                     }
                     KeyCode::KeyO => {
-                        let _ = self.spatial_audio.play_3d(
+                        let _ = self.loop_.spatial_audio.play_3d(
                             std::path::Path::new("assets/audio/ambient/wind_loop.ogg"),
                             glam::Vec3::new(10.0, 0.0, 0.0),
                             0.5,
@@ -1649,8 +1633,8 @@ impl EngineApp {
                 }
                 // Play click sound through speakers (both legacy and spatial audio)
                 self.click_counter += 1;
-                self.audio.play_sine_backend(self.click_counter, 800.0, 0.05, 0.3);
-                self.spatial_audio.play_tone(800.0, 0.05, 0.3);
+                self.loop_.audio.play_sine_backend(self.click_counter, 800.0, 0.05, 0.3);
+                self.loop_.spatial_audio.play_tone(800.0, 0.05, 0.3);
 
                 // ScreenRay terrain pick — update last_pick for building placement
                 {
@@ -1969,24 +1953,19 @@ impl EngineApp {
         // self.loop_.entity_rapier_bodies.)
         self.loop_.step_physics(dt);
 
-        // 4c. Tick audio (legacy AudioEngine + spatial audio manager)
-        self.audio.tick(dt);
-        self.audio.set_listener(self.camera.position);
-
-        // Spatial audio: update listener position/orientation from active camera source.
-        // When the character controller is enabled, use its position/forward directly
-        // so the listener tracks the character even before camera sync.
-        if self.character.enabled {
-            self.spatial_audio.set_listener(
-                self.character.camera_position(),
-                self.character.camera_forward(),
-                Vec3::Y,
-            );
+        // 4c. Tick audio (legacy AudioEngine + spatial audio manager) via EngineLoop (S2).
+        // Listener pose: when the character controller is enabled, use its
+        // position/forward directly so the listener tracks the character even
+        // before camera sync; otherwise use the camera. `audio.set_listener`
+        // historically used `camera.position`, which already equals
+        // `character.camera_position()` once the camera was synced above, so the
+        // single `listener_pos` below preserves both backends' behavior exactly.
+        let (listener_pos, listener_fwd) = if self.character.enabled {
+            (self.character.camera_position(), self.character.camera_forward())
         } else {
-            let cam_fwd = self.camera_forward();
-            self.spatial_audio.set_listener(self.camera.position, cam_fwd, Vec3::Y);
-        }
-        self.spatial_audio.tick(dt);
+            (self.camera.position, self.camera_forward())
+        };
+        self.loop_.step_audio(dt, listener_pos, listener_fwd);
 
         // Process pending script commands for audio playback
         {
@@ -2005,7 +1984,7 @@ impl EngineApp {
                             "jump" => 400.0,
                             _ => 440.0,
                         };
-                        self.spatial_audio.play_tone(freq, 0.2, *volume);
+                        self.loop_.spatial_audio.play_tone(freq, 0.2, *volume);
                     }
                 }
             }
