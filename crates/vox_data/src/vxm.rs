@@ -108,6 +108,16 @@ impl VxmFile {
         Ok(())
     }
 
+    /// Read a `.vxm` file, dispatching on the version header.
+    ///
+    /// Accepts v1 (native), v2 (52-byte splats upcast to the current 96-byte
+    /// in-memory [`GaussianSplat`]), and v3 (the canonical
+    /// [`ochroma-tools`](crate::VxmFileV3) writer output — splats are native,
+    /// the optional `material_ids` section is read past and discarded since the
+    /// flat [`VxmFile`] in-memory type carries only splats).
+    ///
+    /// **Canonical writer:** new tooling should write **v3** via
+    /// [`VxmFileV3::write`]; v1/v2 remain readable for backward compatibility.
     pub fn read<R: Read>(mut reader: R) -> Result<Self, VxmError> {
         // Read 64-byte header
         let mut header_bytes = [0u8; 64];
@@ -120,11 +130,19 @@ impl VxmFile {
             return Err(VxmError::InvalidMagic);
         }
 
-        // Validate version
-        if header.version != VERSION {
-            return Err(VxmError::UnsupportedVersion(header.version));
+        // Dispatch on version. The v2/v3 sub-readers re-parse their own 64-byte
+        // header, so chain the bytes we just consumed back in front of the
+        // remaining stream for those paths.
+        match header.version {
+            VERSION => Self::read_v1_body(header, reader),
+            2 => Self::read_v2_body(header_bytes.as_slice().chain(reader)),
+            VERSION_V3 => Self::read_v3_body(header_bytes.as_slice().chain(reader)),
+            other => Err(VxmError::UnsupportedVersion(other)),
         }
+    }
 
+    /// v1 body: one zstd-compressed block of native 96-byte [`GaussianSplat`]s.
+    fn read_v1_body<R: Read>(header: VxmHeader, mut reader: R) -> Result<Self, VxmError> {
         // Read compressed size
         let mut size_bytes = [0u8; 8];
         reader.read_exact(&mut size_bytes)?;
@@ -144,6 +162,64 @@ impl VxmFile {
             .to_vec();
 
         Ok(VxmFile { header, splats })
+    }
+
+    /// v2 body: 52-byte [`GaussianSplatV2`] splats upcast to the current
+    /// 96-byte [`GaussianSplat`]. The 64-byte v2 header has the same layout as
+    /// [`VxmHeader`], so we re-read it natively (the caller already consumed
+    /// the header, so we reconstruct a v2 file from header + remaining stream).
+    fn read_v2_body<R: Read>(reader: R) -> Result<Self, VxmError> {
+        use crate::vxm_v2::VxmFileV2;
+        use glam::Quat;
+
+        // The caller chained the 64-byte header back in front of the stream, so
+        // VxmFileV2::read can re-parse it natively.
+        let v2 = VxmFileV2::read(reader)?;
+
+        let splats: Vec<GaussianSplat> = v2
+            .splats
+            .iter()
+            .map(|s| {
+                // v2 8-band spectral -> 16-band: first 8 carry, rest zero.
+                let mut spectral = [0u16; GaussianSplat::BANDS];
+                spectral[..8].copy_from_slice(&s.spectral);
+                let rot = Quat::from_xyzw(
+                    s.rotation[0] as f32 / 32767.0,
+                    s.rotation[1] as f32 / 32767.0,
+                    s.rotation[2] as f32 / 32767.0,
+                    s.rotation[3] as f32 / 32767.0,
+                );
+                GaussianSplat::volume(s.position, s.scale, rot, s.opacity, spectral)
+            })
+            .collect();
+
+        // Synthesize a v1-shaped header reporting version 2 + splat_count.
+        let mut header = VxmHeader::zeroed();
+        header.magic = *MAGIC;
+        header.version = 2;
+        header.flags = v2.header.flags;
+        header.asset_uuid = v2.header.asset_uuid;
+        header.splat_count = splats.len() as u32;
+        header.material_type = v2.header.material_type;
+
+        Ok(VxmFile { header, splats })
+    }
+
+    /// v3 body: native 96-byte splats + optional `material_ids` section.
+    /// `material_ids` / `spectral_level` are dropped — the flat [`VxmFile`]
+    /// carries only splats (callers needing materials use [`VxmFileV3::read`]).
+    fn read_v3_body<R: Read>(reader: R) -> Result<Self, VxmError> {
+        // The caller chained the 64-byte header back in front of the stream.
+        let v3 = VxmFileV3::read(reader)?;
+
+        let mut header = VxmHeader::zeroed();
+        header.magic = *MAGIC;
+        header.version = VERSION_V3;
+        header.flags = if v3.material_ids.is_empty() { 0 } else { FLAG_MATERIAL_IDS };
+        header.splat_count = v3.splats.len() as u32;
+        header._pad0[0] = v3.spectral_level;
+
+        Ok(VxmFile { header, splats: v3.splats })
     }
 }
 
