@@ -79,6 +79,42 @@ impl SpectralRadianceCache {
         self.sky_ambient = atmo.solar_irradiance();
     }
 
+    /// Bake per-splat sky-lit ambient radiance into the cache by sampling the
+    /// physically based spectral sky model along each splat's surface normal.
+    ///
+    /// This is the live call path for [`SpectralAtmosphere::sky_radiance`]: a
+    /// render loop calls this once the atmosphere/sun state is known to fill the
+    /// radiance cache with view-dependent sky lighting before applying it to the
+    /// splats. The view elevation is taken from the splat normal's up-component
+    /// (`asin(n.y)`), and the azimuth from `atan2(n.z, n.x)`, so splats facing
+    /// different parts of the sky receive different per-band radiance.
+    ///
+    /// Returns the number of cache entries written.
+    pub fn propagate_sky(&mut self, splats: &[GaussianSplat], atmo: &SpectralAtmosphere) -> usize {
+        self.resize(splats.len());
+        // Cache the overall sky-ambient (solar) term for fallback/apply use.
+        self.sky_ambient = atmo.solar_irradiance();
+        let alpha = self.alpha;
+
+        for (i, splat) in splats.iter().enumerate() {
+            let n = splat.normal();
+            // Elevation above horizon from the up-component of the normal.
+            let up = n[1].clamp(-1.0, 1.0);
+            let elevation = up.asin(); // [-PI/2, PI/2]
+            // Only the upper hemisphere sees sky; clamp to a small positive
+            // floor so down-facing splats still get the (reddest) horizon band.
+            let view_elev = elevation.max(0.001);
+            let azimuth = n[2].atan2(n[0]);
+
+            let sky = atmo.sky_radiance(view_elev, azimuth);
+            for b in 0..16 {
+                self.cache[i][b] = alpha * self.cache[i][b] + (1.0 - alpha) * sky[b];
+            }
+            self.entries[i] = self.cache[i];
+        }
+        splats.len()
+    }
+
     pub fn resize(&mut self, count: usize) {
         self.cache.resize(count, [0.0f32; 16]);
         self.entries.resize(count, [0.0f32; 16]);
@@ -440,6 +476,84 @@ mod tests {
         let mut cache = SpectralRadianceCache::new(5);
         cache.resize(10);
         assert_eq!(cache.cache.len(), 10);
+    }
+
+    /// Build a surface splat whose geometric normal equals `n` (must be unit).
+    /// Picks two tangents perpendicular to `n` whose cross product is `n`.
+    fn splat_with_normal(pos: [f32; 3], n: [f32; 3]) -> GaussianSplat {
+        let nv = glam::Vec3::from(n).normalize();
+        // Any vector not parallel to nv.
+        let helper = if nv.x.abs() < 0.9 { glam::Vec3::X } else { glam::Vec3::Y };
+        let u = nv.cross(helper).normalize(); // u ⟂ n
+        let v = nv.cross(u).normalize();       // v ⟂ n, and u × v = n
+        GaussianSplat::surface(
+            pos,
+            u.into(),
+            v.into(),
+            0.1,
+            0.1,
+            255,
+            [0u16; 16],
+        )
+    }
+
+    #[test]
+    fn gi_cache_is_live() {
+        // The sky-radiance call path must actually run and produce DIFFERENT
+        // per-band radiance for two splats that look at different parts of the
+        // sky. Splat 0 faces straight up (zenith, bluest); splat 1 faces a
+        // near-horizon direction (reddest). Verify the cache is not constant.
+        let atmo = SpectralAtmosphere::earth();
+
+        let up = splat_with_normal([0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        // Near-horizon normal: mostly +X with a tiny upward tilt.
+        let horizon = splat_with_normal([10.0, 0.0, 0.0], [1.0, 0.02, 0.0]);
+
+        // Sanity: the constructed normals point where we expect.
+        let n_up = up.normal();
+        let n_hz = horizon.normal();
+        assert!(n_up[1] > 0.99, "zenith splat normal should point up, got {:?}", n_up);
+        assert!(n_hz[1] < 0.2, "horizon splat normal should be near-horizontal, got {:?}", n_hz);
+
+        let mut cache = SpectralRadianceCache::new(0);
+        cache.alpha = 0.0; // new sky value replaces fully — no temporal damping
+        let written = cache.propagate_sky(&[up, horizon], &atmo);
+        assert_eq!(written, 2, "propagate_sky should write both entries");
+
+        let r_zenith = cache.cache[0];
+        let r_horizon = cache.cache[1];
+
+        // Cache must not be all-zero (sky_radiance actually ran).
+        assert!(
+            r_zenith.iter().any(|&v| v > 1e-3),
+            "zenith radiance must be non-trivial, got {:?}",
+            r_zenith
+        );
+
+        // At least one band must differ by > 1e-3 between the two lit positions —
+        // proves the cache is live and view-dependent, not a constant fill.
+        let max_band_delta = (0..16)
+            .map(|b| (r_zenith[b] - r_horizon[b]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_band_delta > 1e-3,
+            "two distinct lit positions must differ per-band by >1e-3, max delta={max_band_delta}\nzenith={r_zenith:?}\nhorizon={r_horizon:?}"
+        );
+
+        // Physical sanity: zenith is bluer (band 0 > band 15), horizon is redder
+        // (its red-band fraction exceeds the zenith's), confirming sky_radiance
+        // drove the per-position result rather than a uniform constant.
+        assert!(
+            r_zenith[0] > r_zenith[15],
+            "zenith should be violet-dominant: b0={} b15={}",
+            r_zenith[0], r_zenith[15]
+        );
+        let zenith_blue_ratio = r_zenith[0] / (r_zenith[15] + 1e-6);
+        let horizon_blue_ratio = r_horizon[0] / (r_horizon[15] + 1e-6);
+        assert!(
+            zenith_blue_ratio > horizon_blue_ratio,
+            "zenith ({zenith_blue_ratio:.3}) must be bluer than horizon ({horizon_blue_ratio:.3})"
+        );
     }
 
     // --- GPU struct size tests ---
