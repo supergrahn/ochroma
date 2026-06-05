@@ -1,14 +1,14 @@
 name: CI
 
 # Ochroma's workspace references sibling repos via relative path deps
-# (`../../../spectra/...`, `../../../aetherspectra/crucible/...`). Cargo must
+# (`../../../spectra/...`, `../../../crucible/...`). Cargo must
 # load those manifests even when the features that use them are disabled, so a
 # lone checkout can NEVER build (this is why every CI run since March failed at
 # "failed to load manifest"). Each job therefore checks out all three repos
 # side-by-side under $GITHUB_WORKSPACE, reproducing the local ~/src layout.
 #
 # REQUIRED SECRET: `SIBLING_REPOS_PAT` — a fine-grained PAT with read-only
-# Contents access to supergrahn/spectra and supergrahn/aetherspectra (both
+# Contents access to supergrahn/spectra and supergrahn/crucible (both
 # private). Fork PRs don't receive secrets, so their CI fails at checkout —
 # accepted, since forks can't build the private deps anyway.
 
@@ -42,9 +42,9 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: supergrahn/aetherspectra
+          repository: supergrahn/crucible
           token: ${{ secrets.SIBLING_REPOS_PAT }}
-          path: aetherspectra
+          path: crucible
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -103,9 +103,9 @@ jobs:
           path: spectra
       - uses: actions/checkout@v4
         with:
-          repository: supergrahn/aetherspectra
+          repository: supergrahn/crucible
           token: ${{ secrets.SIBLING_REPOS_PAT }}
-          path: aetherspectra
+          path: crucible
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
@@ -135,9 +135,9 @@ jobs:
           path: spectra
       - uses: actions/checkout@v4
         with:
-          repository: supergrahn/aetherspectra
+          repository: supergrahn/crucible
           token: ${{ secrets.SIBLING_REPOS_PAT }}
-          path: aetherspectra
+          path: crucible
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

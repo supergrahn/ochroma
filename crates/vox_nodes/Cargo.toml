@@ -12,9 +12,9 @@ serde          = { workspace = true }
 thiserror      = { workspace = true }
 
 [dependencies.crucible-core]
-path = "../../../aetherspectra/crucible/rust/crates/crucible-core"
+path = "../../../crucible/rust/crates/crucible-core"
 optional = true
 
 [dependencies.crucible-types]
-path = "../../../aetherspectra/crucible/rust/crates/crucible-types"
+path = "../../../crucible/rust/crates/crucible-types"
 optional = true
