@@ -54,6 +54,16 @@ impl AgentManager {
         self.agents.len()
     }
 
+    /// Remove an agent by id. Returns the removed agent if it existed.
+    pub fn remove(&mut self, id: Uuid) -> Option<Agent> {
+        self.agents.remove(&id)
+    }
+
+    /// Iterate over all agents.
+    pub fn iter(&self) -> impl Iterator<Item = &Agent> {
+        self.agents.values()
+    }
+
     /// Advance simulation by `dt` seconds.
     /// Agents move toward their destination at their speed.
     /// On arrival the destination is cleared.

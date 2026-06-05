@@ -153,6 +153,13 @@ impl CitizenManager {
         self.citizens.iter().filter(|c| c.satisfaction < threshold).count()
     }
 
+    /// Remove every citizen whose id appears in `ids`. Returns how many were removed.
+    pub fn remove_many(&mut self, ids: &[u32]) -> usize {
+        let before = self.citizens.len();
+        self.citizens.retain(|c| !ids.contains(&c.id));
+        before - self.citizens.len()
+    }
+
     pub fn all(&self) -> &[Citizen] {
         &self.citizens
     }
