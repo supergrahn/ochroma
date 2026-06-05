@@ -18,7 +18,9 @@ pub mod fundsp_graph;
 pub use spectral_synth::{synthesize_impact, create_impact_wav, synthesize_impact_from_splat_spectral};
 pub use spectral_synth2::SpectralSynth;
 pub use spectral_acoustic::SpectralAcousticProfile;
-pub use spectral_reverb::SpectralReverb;
+pub use spectral_reverb::{
+    SpectralReverb, ReverbParams, reverb_for_room, reverb_for_room_from_gi, room_impulse,
+};
 pub use cpal_backend::{CpalBackend, CpalBackendBuilder, CpalHandle};
 
 pub use spatial::{compute_spatial, Listener, SpatialAudioManager};
@@ -360,6 +362,41 @@ pub fn synthesize_and_play_spectral(material_spectral: &[u16; 16], impulse: f32)
     }
 }
 
+/// Render an ambient biome soundscape bed and queue it for CPAL playback,
+/// optionally placing it in a room whose reverb is derived from the surrounding
+/// surface spectra.
+///
+/// This is the reachable entry point for the biome soundscape mixer: it turns a
+/// [`BiomeAmbientMix`] into actual samples (via
+/// [`BiomeAmbientMix::mix_ambient_samples`]) and drives playback. Returns the
+/// number of samples queued so callers can schedule the next bed.
+///
+/// `room_surface_spectra` may be empty for an outdoor / dead-room mix.
+pub fn play_biome_soundscape(
+    mix: &biome_soundscape::BiomeAmbientMix,
+    duration_secs: f32,
+    volume: f32,
+    room_surface_spectra: &[[u16; 16]],
+    sender: &std::sync::mpsc::Sender<AudioCommand>,
+) -> usize {
+    const SR: u32 = 44_100;
+    let dry = mix.mix_ambient_samples(duration_secs, SR);
+
+    let output = if room_surface_spectra.is_empty() {
+        dry
+    } else {
+        let params = crate::spectral_reverb::reverb_for_room(room_surface_spectra);
+        crate::fundsp_graph::apply_reverb_send(&dry, params.wet_mix, params.rt60_secs.min(2.0))
+    };
+
+    let len = output.len();
+    let _ = sender.send(AudioCommand::PlaySynth {
+        samples: output,
+        volume: volume.clamp(0.0, 1.0),
+    });
+    len
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -444,5 +481,46 @@ mod tests {
         engine.play(AudioSource { id: 0, position: Vec3::ZERO, volume: 0.5, looping: false, clip: "b.wav".into() });
         engine.tick(0.016);
         assert_eq!(engine.active_count(), 1);
+    }
+
+    #[test]
+    fn play_biome_soundscape_queues_synth_command() {
+        let mix = biome_soundscape::BiomeAmbientMix::for_biome(biome_soundscape::BiomeKind::Wetland);
+        let (tx, rx) = std::sync::mpsc::channel::<AudioCommand>();
+
+        let queued = play_biome_soundscape(&mix, 0.1, 0.8, &[], &tx);
+        let expected = (0.1 * 44_100.0) as usize;
+        assert_eq!(queued, expected, "queued={queued} expected={expected}");
+
+        match rx.try_recv().expect("expected PlaySynth") {
+            AudioCommand::PlaySynth { samples, volume } => {
+                let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+                println!("soundscape: len={} peak={peak:.4} volume={volume}", samples.len());
+                assert_eq!(samples.len(), expected);
+                assert!(peak > 0.1, "ambient bed should be audible, peak={peak}");
+                assert!((volume - 0.8).abs() < 1e-6, "volume={volume}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn play_biome_soundscape_stone_room_extends_tail() {
+        let mix = biome_soundscape::BiomeAmbientMix::for_biome(biome_soundscape::BiomeKind::Forest);
+
+        // Dead-room (no reverb) bed length.
+        let (tx0, rx0) = std::sync::mpsc::channel::<AudioCommand>();
+        let dry_len = play_biome_soundscape(&mix, 0.05, 0.5, &[], &tx0);
+        let _ = rx0.try_recv();
+
+        // Stone room: high uniform reflectance → reverb tail appended.
+        let stone_v = half::f16::from_f32(0.9).to_bits();
+        let stone_room: Vec<[u16; 16]> = vec![[stone_v; 16]; 8];
+        let (tx1, _rx1) = std::sync::mpsc::channel::<AudioCommand>();
+        let wet_len = play_biome_soundscape(&mix, 0.05, 0.5, &stone_room, &tx1);
+
+        println!("dry_len={dry_len} wet_len={wet_len}");
+        assert!(wet_len > dry_len,
+            "stone-room reverb must extend the bed: dry={dry_len} wet={wet_len}");
     }
 }

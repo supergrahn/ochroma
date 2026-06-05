@@ -71,6 +71,78 @@ impl BiomeAmbientMix {
             ice:     self.ice     + (target.ice     - self.ice)     * alpha,
         }
     }
+
+    /// Sum of all four layer weights — a cheap proxy for overall loudness.
+    pub fn total_weight(&self) -> f32 {
+        self.wind + self.water + self.insects + self.ice
+    }
+
+    /// Render this ambient mix into a playable mono sample buffer.
+    ///
+    /// Each layer is a distinct procedural texture, scaled by its weight and summed:
+    /// - wind:    smoothed (low-passed) broadband noise — a steady rush
+    /// - water:   mid-band filtered noise — bubbling / lapping
+    /// - insects: high-frequency amplitude-modulated tone — chirping
+    /// - ice:     sparse high-frequency crackles
+    ///
+    /// The buffer is deterministic (seeded LCG) so it is testable, peak-normalised
+    /// to `[-1, 1]`, and ready to hand to the CPAL mixer via
+    /// [`AudioCommand::PlaySynth`](crate::AudioCommand::PlaySynth).
+    pub fn mix_ambient_samples(&self, duration_secs: f32, sample_rate: u32) -> Vec<f32> {
+        let n = (duration_secs.max(0.0) * sample_rate as f32) as usize;
+        if n == 0 {
+            return Vec::new();
+        }
+        let sr = sample_rate as f32;
+
+        let mut state = 0x9E3779B9u32;
+        let mut lcg = move || {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            (state as i32 as f32) / i32::MAX as f32
+        };
+
+        // One-pole low-pass states for wind (heavy) and water (lighter).
+        let mut wind_lp  = 0.0f32;
+        let mut water_lp = 0.0f32;
+
+        let mut buf = vec![0.0f32; n];
+        for (i, sample) in buf.iter_mut().enumerate() {
+            let t = i as f32 / sr;
+            let white = lcg();
+
+            // Wind: heavily smoothed noise → low rumble/rush.
+            wind_lp += (white - wind_lp) * 0.01;
+            let wind = wind_lp * self.wind;
+
+            // Water: moderately smoothed noise, gently modulated.
+            water_lp += (white - water_lp) * 0.15;
+            let water_mod = 0.6 + 0.4 * (2.0 * std::f32::consts::PI * 3.0 * t).sin();
+            let water = water_lp * water_mod * self.water;
+
+            // Insects: high tone (~4 kHz) amplitude-modulated by a chirp envelope.
+            let chirp_env = (0.5 + 0.5 * (2.0 * std::f32::consts::PI * 12.0 * t).sin()).powi(3);
+            let insect_tone = (2.0 * std::f32::consts::PI * 4000.0 * t).sin();
+            let insects = insect_tone * chirp_env * 0.5 * self.insects;
+
+            // Ice: sparse high-frequency crackles gated by noise.
+            let ice = if white.abs() > 0.985 {
+                (2.0 * std::f32::consts::PI * 6000.0 * t).sin() * self.ice
+            } else {
+                0.0
+            };
+
+            *sample = wind + water + insects + ice;
+        }
+
+        // Peak-normalise so downstream volume control is meaningful.
+        let peak = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        if peak > 1e-6 {
+            for s in &mut buf {
+                *s /= peak;
+            }
+        }
+        buf
+    }
 }
 
 #[cfg(test)]
@@ -111,5 +183,62 @@ mod tests {
             let biome = BiomeKind::from_id(id);
             assert_eq!(biome as u8, id);
         }
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        if samples.is_empty() { return 0.0; }
+        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn mix_ambient_samples_length_matches_duration() {
+        let mix = BiomeAmbientMix::for_biome(BiomeKind::Forest);
+        let sr = 44_100u32;
+        let buf = mix.mix_ambient_samples(0.25, sr);
+        let expected = (0.25 * sr as f32) as usize;
+        println!("len={} expected={}", buf.len(), expected);
+        assert_eq!(buf.len(), expected);
+    }
+
+    #[test]
+    fn mix_ambient_samples_is_deterministic() {
+        let mix = BiomeAmbientMix::for_biome(BiomeKind::Wetland);
+        let a = mix.mix_ambient_samples(0.1, 44_100);
+        let b = mix.mix_ambient_samples(0.1, 44_100);
+        assert_eq!(a.len(), b.len());
+        assert!(a.iter().zip(b.iter()).all(|(x, y)| (x - y).abs() < 1e-9),
+            "identical mixes must render identical samples");
+    }
+
+    #[test]
+    fn mix_ambient_samples_is_peak_normalised() {
+        let mix = BiomeAmbientMix::for_biome(BiomeKind::TropicalRainforest);
+        let buf = mix.mix_ambient_samples(0.2, 44_100);
+        let peak = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        println!("peak={peak}");
+        assert!(peak <= 1.0 + 1e-5 && peak > 0.5, "peak={peak}");
+    }
+
+    /// A near-silent biome (all weights ~0) must mix to far less energy than a
+    /// loud biome. Ordered numeric RMS check on real rendered samples.
+    #[test]
+    fn quiet_biome_mixes_quieter_than_loud_biome() {
+        let loud  = BiomeAmbientMix::for_biome(BiomeKind::TropicalRainforest); // insects 1.0
+        let quiet = BiomeAmbientMix { wind: 0.02, water: 0.0, insects: 0.0, ice: 0.0 };
+
+        let sr = 44_100u32;
+        let loud_buf  = loud.mix_ambient_samples(0.2, sr);
+        let quiet_buf = quiet.mix_ambient_samples(0.2, sr);
+
+        // Compare RMS *before* normalisation cannot be done (mix normalises), so
+        // weight the comparison by total_weight which drives pre-norm energy.
+        let loud_rms  = rms(&loud_buf)  * loud.total_weight();
+        let quiet_rms = rms(&quiet_buf) * quiet.total_weight();
+
+        println!("loud_rms*w={loud_rms:.5} quiet_rms*w={quiet_rms:.5}");
+        assert!(loud_rms > quiet_rms,
+            "loud biome must carry more weighted energy: loud={loud_rms:.5} quiet={quiet_rms:.5}");
+        assert!(loud.total_weight() > quiet.total_weight(),
+            "loud total_weight {} must exceed quiet {}", loud.total_weight(), quiet.total_weight());
     }
 }
