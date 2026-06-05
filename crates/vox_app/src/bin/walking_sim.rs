@@ -18,12 +18,13 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use ochroma_engine::engine_loop::{EngineLoop, SystemMask};
 use vox_core::character_controller::{CharacterController, character_controller_tick};
 use vox_core::ecs::TransformComponent;
+use vox_core::engine_runtime::EngineConfig;
 use vox_core::game_ui::{GameState, GameUI, UIElement, UIPosition, UISize};
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
-use vox_audio::spatial::SpatialAudioManager;
 use vox_render::clas;
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::gpu::wgpu_backend::WgpuBackend;
@@ -32,7 +33,6 @@ use vox_render::shadows::ShadowMapper;
 use vox_render::spectral::RenderCamera;
 use vox_render::spectral_framebuffer::SpectralFramebuffer;
 use vox_render::spectral_tonemapper::{tonemap_spectral_framebuffer, ToneMapSettings};
-use vox_physics::rapier::RapierPhysicsWorld;
 use vox_script::rhai_runtime::RhaiRuntime;
 
 const WIDTH: u32 = 1280;
@@ -205,12 +205,6 @@ struct WalkingSim {
     game_ui: GameUI,
     fps_display: f32,
 
-    // Spatial audio
-    audio: SpatialAudioManager,
-
-    // Shadow mapper
-    shadow_mapper: ShadowMapper,
-
     // Windmill
     windmill: Windmill,
 
@@ -236,8 +230,11 @@ struct WalkingSim {
     // Scripting
     rhai: RhaiRuntime,
 
-    // Rapier physics world
-    physics: RapierPhysicsWorld,
+    // Unified per-frame simulation driver (EngineLoop). Owns the shared
+    // physics world, audio backends (legacy + spatial), and shadow mapper.
+    // walking_sim drives the game-minimal subset: physics + audio + animation
+    // + shadows (no GI, no scripts).
+    loop_: EngineLoop,
 }
 
 impl WalkingSim {
@@ -275,16 +272,31 @@ impl WalkingSim {
         // Game UI — start on main menu; player presses Enter to begin
         let game_ui = GameUI { game_state: GameState::MainMenu, ..Default::default() };
 
-        // Spatial audio — gracefully silent if no hardware
-        let audio = SpatialAudioManager::new();
-        if audio.is_available() {
+        // Unified per-frame simulation driver. EngineLoop owns the shared
+        // physics world (built with its own 1km x 1km ground plane), the audio
+        // backends, and the shadow mapper — the same instances the editor shell
+        // (engine_runner) drives. walking_sim uses the game-minimal mask:
+        // physics + audio + animation + shadows, no GI/scripts.
+        let mut loop_ = EngineLoop::new(EngineConfig::default(), SystemMask::game_minimal());
+
+        // Match walking_sim's original shadow resolution (128) instead of the
+        // loop's editor default (512) so the software-rendered shadow look is
+        // unchanged. walking_sim drives this mapper directly with its own fixed
+        // SUN_DIR and building-only occluders (see build_scene / update).
+        loop_.shadow_mapper = ShadowMapper::new(128);
+
+        // Spatial audio — gracefully silent if no hardware. Reuse the single
+        // backend the loop already constructed.
+        if loop_.spatial_audio.is_available() {
             println!("[walking_sim] Spatial audio: available");
         } else {
             println!("[walking_sim] Spatial audio: silent mode (no hardware or rodio feature)");
         }
 
-        // Shadow mapper — small resolution for software performance
-        let shadow_mapper = ShadowMapper::new(128);
+        // Static colliders live on the loop's physics world (the ground plane
+        // was already added by EngineLoop::new). Buildings are registered later
+        // in build_scene against loop_.physics.
+        println!("[walking_sim] Physics: Rapier3D world initialised (ground plane)");
 
         // Windmill placed at the side of the scene
         let windmill = Windmill::new(Vec3::new(18.0, 0.0, -8.0));
@@ -307,8 +319,6 @@ impl WalkingSim {
             player_pitch: 0.0,
             game_ui,
             fps_display: 0.0,
-            audio,
-            shadow_mapper,
             windmill,
             keys_held: std::collections::HashSet::new(),
             mouse_captured: false,
@@ -322,13 +332,7 @@ impl WalkingSim {
             clas_cluster_count: 0,
             clas_bvh_depth: 0,
             rhai: RhaiRuntime::new(),
-            physics: {
-                let mut phys = RapierPhysicsWorld::new();
-                // Ground plane at y=0
-                phys.add_static_collider([0.0, -0.5, 0.0], [500.0, 0.5, 500.0]);
-                println!("[walking_sim] Physics: Rapier3D world initialised (ground plane)");
-                phys
-            },
+            loop_,
         }
     }
 
@@ -376,8 +380,8 @@ impl WalkingSim {
                     bz + building_depth * 0.5,
                 ),
             });
-            // Register building in Rapier physics world
-            self.physics.add_static_collider(
+            // Register building in the loop's Rapier physics world
+            self.loop_.physics.add_static_collider(
                 [bx, building_height * 0.5, bz],
                 [building_width * 0.5, building_height * 0.5, building_depth * 0.5],
             );
@@ -386,7 +390,7 @@ impl WalkingSim {
             "[walking_sim]   Buildings: {} splats ({} collision boxes, {} Rapier colliders)",
             self.building_splats.len(),
             self.building_boxes.len(),
-            self.physics.collider_count(),
+            self.loop_.physics.collider_count(),
         );
 
         // Trees scattered around
@@ -424,9 +428,11 @@ impl WalkingSim {
             stats.cluster_count, stats.bvh_depth, stats.avg_splats_per_cluster,
         );
 
-        // Prime the shadow mapper with the initial camera state
+        // Prime the loop's shadow mapper with the initial camera state.
+        // walking_sim drives the mapper directly (not via step_shadows) so the
+        // fixed SUN_DIR and building-only occluders preserve the original look.
         let sun_dir = SUN_DIR.normalize();
-        self.shadow_mapper.update(
+        self.loop_.shadow_mapper.update(
             self.cc_transform.position,
             Vec3::new(self.player_yaw.sin(), 0.0, -self.player_yaw.cos()).normalize(),
             sun_dir,
@@ -442,7 +448,7 @@ impl WalkingSim {
             .iter()
             .map(|s| s.scale_u())
             .collect();
-        self.shadow_mapper
+        self.loop_.shadow_mapper
             .render_shadow_map(&occluder_positions, &occluder_radii);
         println!("[walking_sim] Shadow mapper primed.");
     }
@@ -546,12 +552,12 @@ impl WalkingSim {
             dt,
         );
 
-        // Step Rapier physics world
-        self.physics.step();
+        // Step Rapier physics world (via the shared EngineLoop)
+        self.loop_.step_physics(dt);
 
         // Use Rapier ground raycast for ground detection: cast ray downward from feet
         let feet_y = self.cc_transform.position.y - self.cc.height * 0.5;
-        if let Some((_hit_pos, dist)) = self.physics.raycast(
+        if let Some((_hit_pos, dist)) = self.loop_.physics.raycast(
             [self.cc_transform.position.x, feet_y + 0.1, self.cc_transform.position.z],
             [0.0, -1.0, 0.0],
             0.3, // short ray: just checking if ground is within 0.3m below feet
@@ -571,11 +577,14 @@ impl WalkingSim {
         check_building_collision(&mut self.cc_transform.position, &self.building_boxes);
 
         // ---------------------------------------------------------------
-        // 2. Shadow mapper update each frame
+        // 2. Shadow mapper update each frame (via the shared EngineLoop's
+        //    shadow mapper). Driven directly with walking_sim's fixed SUN_DIR
+        //    rather than step_shadows (which derives the sun from time-of-day)
+        //    to keep the original shadow look unchanged.
         // ---------------------------------------------------------------
         let sun_dir = SUN_DIR.normalize();
         let cam_fwd = self.forward();
-        self.shadow_mapper
+        self.loop_.shadow_mapper
             .update(self.cc_transform.position, cam_fwd, sun_dir);
 
         // ---------------------------------------------------------------
@@ -584,11 +593,12 @@ impl WalkingSim {
         self.windmill.tick(dt);
 
         // ---------------------------------------------------------------
-        // 4. Spatial audio listener update
+        // 4. Spatial audio listener + tick (via the shared EngineLoop). This
+        //    drives the loop's legacy AudioEngine + SpatialAudioManager and
+        //    sets the listener pose from the player camera.
         // ---------------------------------------------------------------
-        self.audio
-            .set_listener(self.cc_transform.position, self.forward(), Vec3::Y);
-        self.audio.tick(dt);
+        self.loop_
+            .step_audio(dt, self.cc_transform.position, self.forward());
 
         // ---------------------------------------------------------------
         // 5. Orb collection
@@ -607,10 +617,11 @@ impl WalkingSim {
                     self.orbs_collected, self.total_orbs
                 );
 
-                // SpatialAudio: play a tone on collect
-                // Each successive orb plays a slightly higher frequency
+                // SpatialAudio: play a tone on collect (via the shared loop's
+                // spatial audio manager). Each successive orb plays a slightly
+                // higher frequency.
                 let freq = 440.0 + self.orbs_collected as f32 * 110.0;
-                self.audio.play_tone(freq, 0.3, 0.8);
+                self.loop_.spatial_audio.play_tone(freq, 0.3, 0.8);
 
                 // Also save a WAV for proof (legacy path)
                 let sound = vox_audio::synth::generate_collect_sound();
@@ -716,7 +727,7 @@ impl WalkingSim {
                     };
                     if t > 0.0 && t < 200.0 {
                         let world_pos = eye + world_dir * t;
-                        if self.shadow_mapper.is_in_shadow(world_pos, 0.01) {
+                        if self.loop_.shadow_mapper.is_in_shadow(world_pos, 0.01) {
                             0.6 // darken shadowed terrain by 40%
                         } else {
                             1.0
