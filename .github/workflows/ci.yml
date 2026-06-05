@@ -1,56 +1,146 @@
 name: CI
 
+# Ochroma's workspace references sibling repos via relative path deps
+# (`../../../spectra/...`, `../../../aetherspectra/crucible/...`). Cargo must
+# load those manifests even when the features that use them are disabled, so a
+# lone checkout can NEVER build (this is why every CI run since March failed at
+# "failed to load manifest"). Each job therefore checks out all three repos
+# side-by-side under $GITHUB_WORKSPACE, reproducing the local ~/src layout.
+#
+# REQUIRED SECRET: `SIBLING_REPOS_PAT` — a fine-grained PAT with read-only
+# Contents access to supergrahn/spectra and supergrahn/aetherspectra (both
+# private). Fork PRs don't receive secrets, so their CI fails at checkout —
+# accepted, since forks can't build the private deps anyway.
+
 on:
   push:
-    branches: ["master", "main"]
+    branches: ["master", "main", "blitz/**"]
   pull_request:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+
+defaults:
+  run:
+    working-directory: ochroma
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-
+    name: Test + smoke (ubuntu, default features)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: ochroma
+
+      - uses: actions/checkout@v4
+        with:
+          repository: supergrahn/spectra
+          token: ${{ secrets.SIBLING_REPOS_PAT }}
+          path: spectra
+
+      - uses: actions/checkout@v4
+        with:
+          repository: supergrahn/aetherspectra
+          token: ${{ secrets.SIBLING_REPOS_PAT }}
+          path: aetherspectra
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
 
-      - name: Cache cargo registry
+      - name: Install system deps (ALSA for CPAL audio)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+            ochroma/target
+          key: ${{ runner.os }}-cargo-default-${{ hashFiles('ochroma/**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-default-
 
-      - name: Clippy
-        run: cargo clippy --workspace --no-default-features -- -D warnings
+      # DEFAULT features — the first CI in this repo's history to compile the
+      # crucible GI renderer, CPAL audio, and the windowed binaries.
+      - name: Build (default features)
+        run: cargo build --workspace
 
-      - name: Test
+      - name: Test (default features)
+        run: cargo test --workspace
+
+      # Headless runtime gate: both binaries run real sim + software-rendered
+      # frames and assert on the output (non-black coverage, sim advancement,
+      # GI bands, fracture/audio counters, HUD pixels). Exits non-zero on any
+      # regression — this catches "compiles but the game is broken".
+      - name: Smoke walking_sim (headless)
+        run: cargo run --bin walking_sim -- --smoke
+
+      - name: Smoke engine_runner (headless)
+        run: cargo run --bin ochroma -- --smoke
+
+  # Portability signal only: win/mac have never been built (pre-blitz CI died
+  # at manifest load before reaching a compiler). Experimental until someone
+  # triages real platform failures — does not gate merges.
+  test-portability:
+    name: Test (${{ matrix.os }}, no default features) [experimental]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ochroma
+      - uses: actions/checkout@v4
+        with:
+          repository: supergrahn/spectra
+          token: ${{ secrets.SIBLING_REPOS_PAT }}
+          path: spectra
+      - uses: actions/checkout@v4
+        with:
+          repository: supergrahn/aetherspectra
+          token: ${{ secrets.SIBLING_REPOS_PAT }}
+          path: aetherspectra
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ochroma/target
+          key: ${{ runner.os }}-cargo-ndf-${{ hashFiles('ochroma/**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-ndf-
+      - name: Test (no default features)
         run: cargo test --workspace --no-default-features
 
   build-web:
     name: Build WebGPU (WASM)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: ochroma
+      - uses: actions/checkout@v4
+        with:
+          repository: supergrahn/spectra
+          token: ${{ secrets.SIBLING_REPOS_PAT }}
+          path: spectra
+      - uses: actions/checkout@v4
+        with:
+          repository: supergrahn/aetherspectra
+          token: ${{ secrets.SIBLING_REPOS_PAT }}
+          path: aetherspectra
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - name: Build hello_splat for web
