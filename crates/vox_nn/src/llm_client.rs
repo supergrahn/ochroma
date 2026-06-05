@@ -1,5 +1,36 @@
 use serde::{Deserialize, Serialize};
 
+/// Building vocabulary selected by prompt keywords. Fixes the rule names used
+/// in the deterministic-stub layout so keyword-based callers stay stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildStyle {
+    Victorian,
+    Modern,
+    Generic,
+}
+
+/// Tiny deterministic xorshift64 PRNG used only by the deterministic-stub
+/// layout generator. Reproducible across runs and platforms for a given seed.
+struct XorShift64 {
+    state: u64,
+}
+
+impl XorShift64 {
+    fn new(seed: u64) -> Self {
+        // Avoid the degenerate all-zero state.
+        Self { state: seed | 1 }
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        x
+    }
+}
+
 /// LLM provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LlmProvider {
@@ -63,82 +94,139 @@ impl LlmClient {
         Self { provider }
     }
 
-    /// Send a prompt to the LLM. Currently uses mock for offline development.
+    /// Send a prompt to the LLM.
+    ///
+    /// DEPTH LIMIT (honest): no real model is invoked. The [`LlmProvider::Ollama`]
+    /// HTTP path is not implemented; it falls back to a DETERMINISTIC STUB that
+    /// derives a reproducible layout from a hash of the prompt. Responses are
+    /// labeled `model = "deterministic-stub"` so callers never mistake them for
+    /// real inference. The same prompt always yields the same layout; different
+    /// prompts yield different layouts.
     pub fn complete(&self, prompt: &LlmPrompt) -> Result<LlmResponse, String> {
         match &self.provider {
-            LlmProvider::Mock => self.mock_complete(prompt),
+            LlmProvider::Mock => self.deterministic_complete(prompt),
             LlmProvider::Ollama { url, model: _ } => {
-                // In production: HTTP POST to Ollama API
-                // For now, fall back to mock if Ollama not available
-                eprintln!("[ochroma-llm] Ollama at {} not available, using mock", url);
-                self.mock_complete(prompt)
+                // Real HTTP POST to the Ollama API is not implemented in this
+                // build. Fall back to the deterministic stub so behaviour is
+                // reproducible and clearly labeled (not silent fake inference).
+                eprintln!(
+                    "[ochroma-llm] Ollama at {url} not reachable in this build; \
+                     using deterministic-stub layout (reproducible, NOT real inference)"
+                );
+                self.deterministic_complete(prompt)
             }
         }
     }
 
-    fn mock_complete(&self, prompt: &LlmPrompt) -> Result<LlmResponse, String> {
-        let text = if prompt.user.contains("Victorian") || prompt.user.contains("victorian") {
-            self.mock_victorian_layout()
-        } else if prompt.user.contains("rule") || prompt.user.contains("SplatRule") {
+    /// FNV-1a 64-bit hash of the full prompt. Stable across runs/platforms, so
+    /// the generated layout is reproducible for a given prompt string.
+    fn prompt_seed(prompt: &LlmPrompt) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+        let mut hash = FNV_OFFSET;
+        for byte in prompt.system.bytes().chain([0u8]).chain(prompt.user.bytes()) {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
+    }
+
+    fn deterministic_complete(&self, prompt: &LlmPrompt) -> Result<LlmResponse, String> {
+        let seed = Self::prompt_seed(prompt);
+
+        let text = if prompt.user.contains("rule") || prompt.user.contains("SplatRule") {
             self.mock_splat_rule(&prompt.user)
         } else if prompt.user.contains("modern") || prompt.user.contains("Modern") {
-            self.mock_modern_layout()
+            self.deterministic_layout(seed, BuildStyle::Modern)
+        } else if prompt.user.contains("Victorian") || prompt.user.contains("victorian") {
+            self.deterministic_layout(seed, BuildStyle::Victorian)
         } else {
-            self.mock_generic_layout()
+            self.deterministic_layout(seed, BuildStyle::Generic)
         };
 
         Ok(LlmResponse {
             text,
-            tokens_used: 256,
-            model: "mock".to_string(),
+            // Token count is itself seeded so it is reproducible yet prompt-varied.
+            tokens_used: 128 + (seed % 256) as u32,
+            model: "deterministic-stub".to_string(),
         })
     }
 
-    fn mock_victorian_layout(&self) -> String {
-        r#"{
-  "street": { "width": 8.0, "length": 120.0, "orientation_degrees": 0.0, "surface": "cobblestone" },
-  "slots": [
-    { "position": [0.0, 0.0, 5.0], "rule": "victorian_terraced", "seed": 1, "wear": 0.3 },
-    { "position": [7.0, 0.0, 5.0], "rule": "victorian_terraced", "seed": 2, "wear": 0.4 },
-    { "position": [14.0, 0.0, 5.0], "rule": "victorian_terraced", "seed": 3, "wear": 0.2 },
-    { "position": [21.0, 0.0, 5.0], "rule": "victorian_corner_shop", "seed": 4, "wear": 0.5 },
-    { "position": [0.0, 0.0, -5.0], "rule": "victorian_terraced", "seed": 5, "wear": 0.35 },
-    { "position": [7.0, 0.0, -5.0], "rule": "victorian_terraced", "seed": 6, "wear": 0.45 }
-  ],
-  "props": [
-    { "position": [3.5, 0.0, 2.0], "asset": "lamp_post_gas", "rotation": 0.0 },
-    { "position": [10.5, 0.0, 2.0], "asset": "lamp_post_gas", "rotation": 0.0 },
-    { "position": [17.5, 0.0, -2.0], "asset": "bench_victorian", "rotation": 3.14 }
-  ],
-  "vegetation": [
-    { "position": [25.0, 0.0, 0.0], "rule": "oak_mature", "seed": 99 }
-  ]
-}"#
-        .to_string()
-    }
+    /// Build a reproducible JSON street layout from a prompt-derived `seed`.
+    ///
+    /// The seed drives a tiny xorshift PRNG that varies the building count,
+    /// per-slot sub-seeds, lateral jitter and wear. The chosen `style` fixes the
+    /// rule vocabulary (so existing keyword-based callers/tests still see e.g.
+    /// `victorian_terraced`). Same seed -> byte-identical output.
+    fn deterministic_layout(&self, seed: u64, style: BuildStyle) -> String {
+        let mut rng = XorShift64::new(seed);
 
-    fn mock_modern_layout(&self) -> String {
-        r#"{
-  "street": { "width": 12.0, "length": 200.0, "orientation_degrees": 0.0, "surface": "asphalt" },
-  "slots": [
-    { "position": [0.0, 0.0, 8.0], "rule": "modern_apartment", "seed": 10, "wear": 0.1 },
-    { "position": [20.0, 0.0, 8.0], "rule": "modern_office", "seed": 11, "wear": 0.05 },
-    { "position": [45.0, 0.0, 8.0], "rule": "modern_apartment", "seed": 12, "wear": 0.15 }
-  ],
-  "props": [
-    { "position": [10.0, 0.0, 3.0], "asset": "modern_lamp", "rotation": 0.0 },
-    { "position": [30.0, 0.0, 3.0], "asset": "modern_bench", "rotation": 0.0 }
-  ],
-  "vegetation": [
-    { "position": [15.0, 0.0, -3.0], "rule": "birch_young", "seed": 50 },
-    { "position": [35.0, 0.0, -3.0], "rule": "birch_young", "seed": 51 }
-  ]
-}"#
-        .to_string()
-    }
+        let (width, length, surface, terraced_rule, corner_rule, lamp, bench, tree_rule, base_wear) =
+            match style {
+                BuildStyle::Victorian => (
+                    8.0, 120.0, "cobblestone", "victorian_terraced", "victorian_corner_shop",
+                    "lamp_post_gas", "bench_victorian", "oak_mature", 0.30,
+                ),
+                BuildStyle::Modern => (
+                    12.0, 200.0, "asphalt", "modern_apartment", "modern_office",
+                    "modern_lamp", "modern_bench", "birch_young", 0.08,
+                ),
+                BuildStyle::Generic => (
+                    10.0, 140.0, "paving", "suburban_house", "suburban_corner_store",
+                    "lamp_post", "bench_plain", "maple_mature", 0.20,
+                ),
+            };
 
-    fn mock_generic_layout(&self) -> String {
-        self.mock_victorian_layout()
+        // 4..=7 buildings, seeded.
+        let n_buildings = 4 + (rng.next() % 4) as usize;
+        let spacing = (length as f64 / (n_buildings as f64 + 1.0)) as f32;
+
+        let mut slots = String::new();
+        for i in 0..n_buildings {
+            let x = spacing * (i as f32 + 1.0);
+            // Lateral side alternates; small seeded jitter on z.
+            let side = if i % 2 == 0 { 5.0 } else { -5.0 };
+            let z_jitter = (rng.next() % 100) as f32 / 100.0 - 0.5; // [-0.5, 0.5)
+            let z = side + z_jitter;
+            // Last building on each side becomes the corner rule.
+            let rule = if i + 1 == n_buildings { corner_rule } else { terraced_rule };
+            let sub_seed = rng.next() % 100_000;
+            let wear = (base_wear + ((rng.next() % 30) as f32 / 100.0)).min(0.95);
+            if i > 0 {
+                slots.push_str(",\n");
+            }
+            slots.push_str(&format!(
+                "    {{ \"position\": [{:.2}, 0.0, {:.2}], \"rule\": \"{}\", \"seed\": {}, \"wear\": {:.2} }}",
+                x, z, rule, sub_seed, wear
+            ));
+        }
+
+        // Two seeded props.
+        let p1x = spacing * 0.5 + (rng.next() % 20) as f32 / 10.0;
+        let p2x = spacing * 1.5 + (rng.next() % 20) as f32 / 10.0;
+        let props = format!(
+            "    {{ \"position\": [{p1x:.2}, 0.0, 2.0], \"asset\": \"{lamp}\", \"rotation\": 0.0 }},\n    {{ \"position\": [{p2x:.2}, 0.0, -2.0], \"asset\": \"{bench}\", \"rotation\": 3.14 }}"
+        );
+
+        // One seeded tree.
+        let tx = spacing * (n_buildings as f32) + (rng.next() % 50) as f32 / 10.0;
+        let tree_seed = rng.next() % 100_000;
+        let vegetation = format!(
+            "    {{ \"position\": [{tx:.2}, 0.0, 0.0], \"rule\": \"{tree_rule}\", \"seed\": {tree_seed} }}"
+        );
+
+        let mut out = String::new();
+        out.push_str("{\n");
+        out.push_str("  \"_note\": \"DETERMINISTIC-STUB layout (not real LLM inference)\",\n");
+        out.push_str(&format!("  \"layout_seed\": {seed},\n"));
+        out.push_str(&format!(
+            "  \"street\": {{ \"width\": {width:.1}, \"length\": {length:.1}, \"orientation_degrees\": 0.0, \"surface\": \"{surface}\" }},\n"
+        ));
+        out.push_str(&format!("  \"slots\": [\n{slots}\n  ],\n"));
+        out.push_str(&format!("  \"props\": [\n{props}\n  ],\n"));
+        out.push_str(&format!("  \"vegetation\": [\n{vegetation}\n  ]\n"));
+        out.push('}');
+        out
     }
 
     fn mock_splat_rule(&self, prompt: &str) -> String {
