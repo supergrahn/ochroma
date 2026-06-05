@@ -1128,7 +1128,7 @@ impl WalkingSim {
         //     renderer, and stores the spectral of the GI-lit splat nearest the
         //     player into latest_gi_bands (for the HUD task).
         // ---------------------------------------------------------------
-        if self.gi_frame_counter % GI_CADENCE == 0 {
+        if self.gi_frame_counter.is_multiple_of(GI_CADENCE) {
             self.recompute_gi();
         }
         self.gi_frame_counter = self.gi_frame_counter.wrapping_add(1);
@@ -1492,13 +1492,12 @@ impl ApplicationHandler for WalkingSim {
                                     _ => {}
                                 }
                             }
-                            KeyCode::KeyQ => {
+                            KeyCode::KeyQ
                                 // Drop a dynamic physics box in front of the
                                 // player (only while actually playing).
-                                if self.game_ui.game_state == GameState::Playing {
+                                if self.game_ui.game_state == GameState::Playing => {
                                     self.drop_box();
                                 }
-                            }
                             KeyCode::Backquote => {
                                 let expr = "42 * 2 + 1";
                                 match self.rhai.eval(expr) {
@@ -1528,8 +1527,8 @@ impl ApplicationHandler for WalkingSim {
                 }
             }
 
-            WindowEvent::CursorMoved { position, .. } => {
-                if self.mouse_captured {
+            WindowEvent::CursorMoved { position, .. }
+                if self.mouse_captured => {
                     if let Some((lx, ly)) = self.last_mouse {
                         self.player_yaw += (position.x - lx) as f32 * 0.003;
                         self.player_pitch = (self.player_pitch
@@ -1538,7 +1537,6 @@ impl ApplicationHandler for WalkingSim {
                     }
                     self.last_mouse = Some((position.x, position.y));
                 }
-            }
 
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();

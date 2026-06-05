@@ -60,14 +60,14 @@ impl NodeEditorPanel {
     /// Find the node whose output port is within [`PORT_HIT_RADIUS`] of `pos`.
     pub fn output_port_at(&self, pos: Pos2) -> Option<NodeId> {
         self.layouts.keys().copied().find(|&id| {
-            self.output_port_pos(id).map_or(false, |p| p.distance(pos) <= PORT_HIT_RADIUS)
+            self.output_port_pos(id).is_some_and(|p| p.distance(pos) <= PORT_HIT_RADIUS)
         })
     }
 
     /// Find the node whose input port is within [`PORT_HIT_RADIUS`] of `pos`.
     pub fn input_port_at(&self, pos: Pos2) -> Option<NodeId> {
         self.layouts.keys().copied().find(|&id| {
-            self.input_port_pos(id).map_or(false, |p| p.distance(pos) <= PORT_HIT_RADIUS)
+            self.input_port_pos(id).is_some_and(|p| p.distance(pos) <= PORT_HIT_RADIUS)
         })
     }
 

@@ -22,16 +22,15 @@ impl ScriptWatcher {
         let changed_clone = changed.clone();
 
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
-            if let Ok(event) = res {
-                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+            if let Ok(event) = res
+                && matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                     let mut lock = changed_clone.lock().unwrap();
                     for path in event.paths {
-                        if path.extension().map_or(false, |e| e == "lua") {
+                        if path.extension().is_some_and(|e| e == "lua") {
                             lock.push(path);
                         }
                     }
                 }
-            }
         })?;
 
         if let Err(e) = watcher.watch(dir, RecursiveMode::Recursive) {

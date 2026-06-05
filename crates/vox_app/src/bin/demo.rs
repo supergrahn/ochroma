@@ -648,31 +648,26 @@ impl ApplicationHandler for DemoApp {
                                     self.editor.select(first_id);
                                 }
                             }
-                            KeyCode::Delete => {
-                                if self.editor.visible {
+                            KeyCode::Delete
+                                if self.editor.visible => {
                                     self.editor.delete_selected();
                                 }
-                            }
-                            KeyCode::ArrowUp => {
-                                if self.editor.visible {
+                            KeyCode::ArrowUp
+                                if self.editor.visible => {
                                     self.editor.move_selected(Vec3::new(0.0, 0.0, -1.0));
                                 }
-                            }
-                            KeyCode::ArrowDown => {
-                                if self.editor.visible {
+                            KeyCode::ArrowDown
+                                if self.editor.visible => {
                                     self.editor.move_selected(Vec3::new(0.0, 0.0, 1.0));
                                 }
-                            }
-                            KeyCode::ArrowLeft => {
-                                if self.editor.visible {
+                            KeyCode::ArrowLeft
+                                if self.editor.visible => {
                                     self.editor.move_selected(Vec3::new(-1.0, 0.0, 0.0));
                                 }
-                            }
-                            KeyCode::ArrowRight => {
-                                if self.editor.visible {
+                            KeyCode::ArrowRight
+                                if self.editor.visible => {
                                     self.editor.move_selected(Vec3::new(1.0, 0.0, 0.0));
                                 }
-                            }
                             KeyCode::KeyS if self.ctrl_held => {
                                 let map = self.editor.export_to_map("My Scene");
                                 let path =

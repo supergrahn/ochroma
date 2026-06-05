@@ -288,8 +288,8 @@ impl CitySim {
             });
 
             commuter.workplace = dest;
-            if let Some(dest) = dest {
-                if let Some(agent) = self.agents.get_mut(commuter.agent_id) {
+            if let Some(dest) = dest
+                && let Some(agent) = self.agents.get_mut(commuter.agent_id) {
                     // Only (re)assign if the agent isn't already heading there / parked there.
                     let at_dest = agent.destination.is_none()
                         && Self::same_spot(agent.position, dest);
@@ -298,7 +298,6 @@ impl CitySim {
                     }
                     commuting += 1;
                 }
-            }
         }
         commuting
     }
@@ -412,11 +411,9 @@ impl CitySim {
         for commuter in self.commuters.iter_mut() {
             if let Some((_, Some(res_building))) =
                 homes.iter().find(|(cid, _)| *cid == commuter.citizen_id)
-            {
-                if let Some((_, w)) = positions.iter().find(|(id, _)| id == res_building) {
+                && let Some((_, w)) = positions.iter().find(|(id, _)| id == res_building) {
                     commuter.home = *w;
                 }
-            }
         }
     }
 

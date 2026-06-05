@@ -112,7 +112,7 @@ impl RoadNetwork {
             }
         }
 
-        for (pos, segs) in intersect_starts.into_iter().chain(intersect_ends.into_iter()) {
+        for (pos, segs) in intersect_starts.into_iter().chain(intersect_ends) {
             self.create_intersection_at(pos, &segs);
         }
     }

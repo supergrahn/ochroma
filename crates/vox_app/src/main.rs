@@ -362,8 +362,8 @@ impl ApplicationHandler for App {
                 winit::event::MouseButton::Right => {
                     self.right_pressed = state.is_pressed();
                 }
-                winit::event::MouseButton::Left => {
-                    if state.is_pressed() && !self.egui_wants_input() {
+                winit::event::MouseButton::Left
+                    if state.is_pressed() && !self.egui_wants_input() => {
                         let inv_vp = self.camera.view_proj().inverse();
                         let (origin, dir) = placement::screen_to_ray(
                             self.last_mouse_x,
@@ -376,7 +376,6 @@ impl ApplicationHandler for App {
                             self.plop_ui.handle_viewport_click(ground_pos, None);
                         }
                     }
-                }
                 _ => {}
             },
 
@@ -403,8 +402,8 @@ impl ApplicationHandler for App {
             }
 
             // --- Camera input: WASD keyboard pan + Ctrl shortcuts ---
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state.is_pressed() {
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state.is_pressed() => {
                     match event.physical_key {
                         winit::keyboard::PhysicalKey::Code(
                             winit::keyboard::KeyCode::KeyW,
@@ -446,7 +445,6 @@ impl ApplicationHandler for App {
                         _ => {}
                     }
                 }
-            }
 
             WindowEvent::RedrawRequested => {
                 // --- Puffin: new frame ---

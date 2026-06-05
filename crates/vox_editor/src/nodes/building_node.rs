@@ -109,7 +109,7 @@ fn try_solve(grid_w: usize, grid_h: usize, grid_d: usize, seed: u64, attempt: u3
     }
 
     // Verify no zero-entropy cells
-    if superposition.iter().any(|&v| v == 0) { return None; }
+    if superposition.contains(&0) { return None; }
     Some(superposition)
 }
 
@@ -137,7 +137,7 @@ fn propagate(sup: &mut Vec<u8>, start: usize, grid_w: usize, grid_h: usize, grid
             let Some(nb) = *maybe_nb else { continue };
             let old = sup[nb];
             // Constraint: empty can be adjacent to anything; wall adjacent to wall/corner/window/door
-            let allowed = if tile == TILE_EMPTY { ALL_TILES } else { ALL_TILES & !0u8 };
+            let allowed = if tile == TILE_EMPTY { ALL_TILES } else { ALL_TILES };
             let new_mask = old & allowed;
             if new_mask != old && new_mask != 0 {
                 sup[nb] = new_mask;

@@ -96,16 +96,15 @@ pub fn process_education(
                     graduated += 1;
                 }
             }
-            LifecycleStage::Worker => {
+            LifecycleStage::Worker
                 if citizen.age < 25.0
                     && has_university
                     && citizen.education < EducationLevel::University
-                {
+                => {
                     citizen.education = EducationLevel::University;
                     citizen.needs.education = 0.9;
                     graduated += 1;
                 }
-            }
             _ => {}
         }
     }

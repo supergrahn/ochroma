@@ -31,6 +31,7 @@ pub fn backproject_pca(embedding: &[f32; 6]) -> [f32; 16] {
 }
 
 /// Minimal mesh type for testing. Production uses the actual EditorMesh from vox_core.
+#[derive(Default)]
 pub struct EditorMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
@@ -38,16 +39,6 @@ pub struct EditorMesh {
     pub spectral_embedding: Option<Vec<[f32; 6]>>,
 }
 
-impl Default for EditorMesh {
-    fn default() -> Self {
-        Self {
-            positions: Vec::new(),
-            normals: Vec::new(),
-            indices: Vec::new(),
-            spectral_embedding: None,
-        }
-    }
-}
 
 /// Convert a vegetation mesh (with spectral_embedding) to GaussianSplats.
 /// Each triangle becomes one splat. Spectral value = average of vertex embeddings

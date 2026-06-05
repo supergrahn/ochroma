@@ -93,14 +93,13 @@ fn parse_header(reader: &mut impl Read) -> Result<(PlyHeader, Vec<u8>), PlyError
         if parts.is_empty() { continue; }
 
         match parts[0] {
-            "format" => {
-                if parts.len() >= 2 {
+            "format"
+                if parts.len() >= 2 => {
                     header.is_binary_le = parts[1] == "binary_little_endian";
                     if parts[1] == "ascii" {
                         return Err(PlyError::UnsupportedFormat("ASCII PLY not supported, use binary_little_endian".into()));
                     }
                 }
-            }
             "element" if parts.len() >= 3 && parts[1] == "vertex" => {
                 header.vertex_count = parts[2].parse().map_err(|_| PlyError::ParseError("Invalid vertex count".into()))?;
             }

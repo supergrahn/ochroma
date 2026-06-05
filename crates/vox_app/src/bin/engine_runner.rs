@@ -1014,8 +1014,8 @@ impl EngineApp {
         }
 
         // Spectral replication: server broadcasts changed splat bands to connected clients
-        if let Some(transport) = &self.quic_transport {
-            if transport.role == vox_net::quic_transport::TransportRole::Server {
+        if let Some(transport) = &self.quic_transport
+            && transport.role == vox_net::quic_transport::TransportRole::Server {
                 use vox_net::spectral_relevance::{SplatSpectral, ObserverProfile};
                 use vox_net::replication_loop::{replicate_tick, ReplicationConfig};
 
@@ -1041,7 +1041,6 @@ impl EngineApp {
                     );
                 }
             }
-        }
 
         // Time-of-day illuminant
         let illuminant = illuminant_for_time(self.loop_.time_of_day());
@@ -1465,40 +1464,34 @@ impl EngineApp {
                         self.particle_emitters.push(SplatEmitter::new(EmitterConfig::fire(pos)));
                         println!("[ochroma] Spawned fire emitter at {:?}", pos);
                     }
-                    KeyCode::Delete => {
-                        if self.editor_visible {
+                    KeyCode::Delete
+                        if self.editor_visible => {
                             self.editor.delete_selected();
                         }
-                    }
-                    KeyCode::ArrowUp => {
-                        if self.editor_visible {
+                    KeyCode::ArrowUp
+                        if self.editor_visible => {
                             self.editor.move_selected(Vec3::new(0.0, 0.0, -1.0));
                         }
-                    }
-                    KeyCode::ArrowDown => {
-                        if self.editor_visible {
+                    KeyCode::ArrowDown
+                        if self.editor_visible => {
                             self.editor.move_selected(Vec3::new(0.0, 0.0, 1.0));
                         }
-                    }
-                    KeyCode::ArrowLeft => {
-                        if self.editor_visible {
+                    KeyCode::ArrowLeft
+                        if self.editor_visible => {
                             self.editor.move_selected(Vec3::new(-1.0, 0.0, 0.0));
                         }
-                    }
-                    KeyCode::ArrowRight => {
-                        if self.editor_visible {
+                    KeyCode::ArrowRight
+                        if self.editor_visible => {
                             self.editor.move_selected(Vec3::new(1.0, 0.0, 0.0));
                         }
-                    }
-                    KeyCode::F5 => {
-                        if self.editor_visible && self.editor.editor_mode == vox_app::editor::EditorPlayMode::Editing {
+                    KeyCode::F5
+                        if self.editor_visible && self.editor.editor_mode == vox_app::editor::EditorPlayMode::Editing => {
                             self.editor.play_requested = true;
                             self.editor.editor_mode = vox_app::editor::EditorPlayMode::Playing;
                             println!("[ochroma] Play");
                         }
-                    }
-                    KeyCode::F6 => {
-                        if self.editor_visible && self.editor.editor_mode != vox_app::editor::EditorPlayMode::Editing {
+                    KeyCode::F6
+                        if self.editor_visible && self.editor.editor_mode != vox_app::editor::EditorPlayMode::Editing => {
                             self.editor.pause_requested = true;
                             self.editor.editor_mode = if self.editor.editor_mode == vox_app::editor::EditorPlayMode::Playing {
                                 vox_app::editor::EditorPlayMode::Paused
@@ -1507,14 +1500,12 @@ impl EngineApp {
                             };
                             println!("[ochroma] Pause/Resume");
                         }
-                    }
-                    KeyCode::F7 => {
-                        if self.editor_visible && self.editor.editor_mode != vox_app::editor::EditorPlayMode::Editing {
+                    KeyCode::F7
+                        if self.editor_visible && self.editor.editor_mode != vox_app::editor::EditorPlayMode::Editing => {
                             self.editor.stop_requested = true;
                             self.editor.editor_mode = vox_app::editor::EditorPlayMode::Editing;
                             println!("[ochroma] Stop");
                         }
-                    }
                     KeyCode::KeyS if self.ctrl_held => {
                         let map = self.editor.export_to_map("Ochroma Scene");
                         let path = std::env::temp_dir().join("ochroma_scene.ochroma_map");
@@ -1523,18 +1514,16 @@ impl EngineApp {
                             Err(e) => eprintln!("[ochroma] Save failed: {}", e),
                         }
                     }
-                    KeyCode::KeyZ if self.ctrl_held => {
-                        if self.editor_visible {
+                    KeyCode::KeyZ if self.ctrl_held
+                        && self.editor_visible => {
                             self.editor.undo();
                             println!("[ochroma] Undo ({} left)", self.editor.undo_stack.len());
                         }
-                    }
-                    KeyCode::KeyY if self.ctrl_held => {
-                        if self.editor_visible {
+                    KeyCode::KeyY if self.ctrl_held
+                        && self.editor_visible => {
                             self.editor.redo();
                             println!("[ochroma] Redo ({} left)", self.editor.redo_stack.len());
                         }
-                    }
                     KeyCode::KeyO => {
                         let _ = self.loop_.spatial_audio.play_3d(
                             std::path::Path::new("assets/audio/ambient/wind_loop.ogg"),
@@ -2356,8 +2345,8 @@ impl EngineApp {
         // We then pass the full desired velocity (horizontal + vertical) through KCC.
         self.character.rapier_kcc_active = self.character_body.is_some();
         self.character.update(&self.input_state, dt, &mut self.loop_.physics);
-        if let Some(ref cb) = self.character_body {
-            if self.character.enabled {
+        if let Some(ref cb) = self.character_body
+            && self.character.enabled {
                 // Full desired velocity: horizontal from input + vertical from gravity/jump
                 let desired = self.character.last_move_dir
                     + Vec3::Y * self.character.vertical_velocity;
@@ -2378,7 +2367,6 @@ impl EngineApp {
                     [self.character.position.x, self.character.position.y, self.character.position.z],
                 );
             }
-        }
         // If character is enabled, drive camera position from character
         if self.character.enabled {
             let cam_pos = self.character.camera_position();

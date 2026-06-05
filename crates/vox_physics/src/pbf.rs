@@ -235,7 +235,7 @@ impl PbfFluidSim {
             bytemuck::cast_slice(&self.particles),
         );
         let count = self.params.particle_count;
-        let workgroups = (count + 63) / 64;
+        let workgroups = count.div_ceil(64);
         for pipeline in [
             &pipelines.predict,
             &pipelines.neighbors,

@@ -179,7 +179,7 @@ impl LlmClient {
 
         // 4..=7 buildings, seeded.
         let n_buildings = 4 + (rng.next() % 4) as usize;
-        let spacing = (length as f64 / (n_buildings as f64 + 1.0)) as f32;
+        let spacing = (length / (n_buildings as f64 + 1.0)) as f32;
 
         let mut slots = String::new();
         for i in 0..n_buildings {
