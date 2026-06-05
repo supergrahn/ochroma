@@ -18,6 +18,35 @@ impl EntityStore {
         self.positions.insert(id, pos);
         self.spectral.insert(id, spectral);
     }
+
+    /// Clean host-side write API: set an entity's spectral signature from the
+    /// engine-canonical `[u16; 16]` (f16-bits) encoding produced by
+    /// `vox_core` (`Splat::spectral`, terrain, mapgen). Decoded to linear f32
+    /// so script reads (`entity.get_spectral`) return real values.
+    pub fn set_entity_spectral(&mut self, id: u32, spectral: [u16; 16]) {
+        let decoded = vox_core::spectral_damage::decode_spectral_u16(&spectral);
+        self.spectral.insert(id, decoded);
+    }
+
+    /// Clean host-side write API: set an entity's spectral signature directly
+    /// from linear f32 values (e.g. simulation-internal energy).
+    pub fn set_entity_spectral_f32(&mut self, id: u32, spectral: [f32; 16]) {
+        self.spectral.insert(id, spectral);
+    }
+
+    /// Clean host-side write API: set an entity's world position.
+    pub fn set_entity_position(&mut self, id: u32, pos: [f32; 3]) {
+        self.positions.insert(id, pos);
+    }
+
+    /// Read a single decoded band for an entity. Returns 0.0 if the entity is
+    /// unknown or the band is out of range.
+    pub fn entity_band(&self, id: u32, band: usize) -> f32 {
+        if band >= 16 {
+            return 0.0;
+        }
+        self.spectral.get(&id).map_or(0.0, |s| s[band])
+    }
 }
 
 impl Default for EntityStore {

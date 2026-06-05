@@ -1,7 +1,9 @@
 use rhai::{Engine, AST, Scope, Dynamic};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use vox_core::script_interface::ScriptCommand;
+
+use crate::spectral_bindings::SpectralState;
 
 /// A Rhai script instance attached to an entity.
 pub struct RhaiScript {
@@ -17,6 +19,9 @@ pub struct RhaiRuntime {
     scripts: Vec<RhaiScript>,
     pub last_reload_check: std::time::Instant,
     pub reload_interval: std::time::Duration,
+    /// Live spectral field the host populates each frame; Rhai scripts read it
+    /// via the registered `field_energy` / `get_band` functions.
+    spectral: Arc<Mutex<SpectralState>>,
 }
 
 static PENDING_COMMANDS: Mutex<Vec<ScriptCommand>> = Mutex::new(Vec::new());
@@ -90,11 +95,40 @@ impl RhaiRuntime {
             (t as f64 % 1000.0) / 1000.0
         });
 
+        // Live spectral field shared with the host. Scripts read it through the
+        // functions registered below — these read REAL populated values, not 0.
+        let spectral: Arc<Mutex<SpectralState>> = Arc::new(Mutex::new(SpectralState::new()));
+
+        // get_band(x, y, z, band) -> energy at the sampled band.
+        {
+            let s = spectral.clone();
+            engine.register_fn("get_band", move |_x: f64, _y: f64, _z: f64, band: i64| -> f64 {
+                if !(0..16).contains(&band) {
+                    return 0.0;
+                }
+                let guard = s.lock().unwrap();
+                guard.band_energy(band as usize) as f64
+            });
+        }
+
+        // field_energy(x, y, z, radius, band) -> energy at the sampled band.
+        {
+            let s = spectral.clone();
+            engine.register_fn("field_energy", move |_x: f64, _y: f64, _z: f64, _radius: f64, band: i64| -> f64 {
+                if !(0..16).contains(&band) {
+                    return 0.0;
+                }
+                let guard = s.lock().unwrap();
+                guard.band_energy(band as usize) as f64
+            });
+        }
+
         Self {
             engine,
             scripts: Vec::new(),
             last_reload_check: std::time::Instant::now(),
             reload_interval: std::time::Duration::from_secs(1),
+            spectral,
         }
     }
 
@@ -214,6 +248,31 @@ impl RhaiRuntime {
 
     pub fn script_names(&self) -> Vec<&str> {
         self.scripts.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    /// Clean host-side write API: push one band of the live spectral field in
+    /// linear f32. Rhai scripts then observe this via `get_band`/`field_energy`.
+    /// Returns `false` if `band` is out of range.
+    pub fn set_band_energy(&self, band: usize, value: f32) -> bool {
+        self.spectral.lock().unwrap().set_band_energy(band, value)
+    }
+
+    /// Clean host-side write API: push one band from the engine-canonical `u16`
+    /// (f16-bits) spectral encoding. Returns `false` if `band` is out of range.
+    pub fn set_band_energy_u16(&self, band: usize, bits: u16) -> bool {
+        self.spectral.lock().unwrap().set_band_energy_u16(band, bits)
+    }
+
+    /// Clean host-side write API: overwrite all 16 bands at once from an
+    /// engine-canonical `[u16; 16]` f16-bit spectral sample.
+    pub fn set_band_energy_all_u16(&self, spectral: &[u16; 16]) {
+        self.spectral.lock().unwrap().set_band_energy_all_u16(spectral);
+    }
+
+    /// Handle to the live spectral field, so the host can share the SAME state
+    /// between the Rhai runtime and Lua bindings if desired.
+    pub fn spectral_state(&self) -> Arc<Mutex<SpectralState>> {
+        self.spectral.clone()
     }
 }
 

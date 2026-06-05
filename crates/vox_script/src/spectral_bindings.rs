@@ -20,6 +20,39 @@ impl SpectralState {
     pub fn new() -> Self {
         Self { band_energy: [0.0f32; 16], thresholds: Vec::new() }
     }
+
+    /// Write a single band's energy in linear f32. This is the clean host-side
+    /// write API the engine uses every frame to push real field samples in.
+    /// Returns `false` (and writes nothing) if `band` is out of range.
+    pub fn set_band_energy(&mut self, band: usize, value: f32) -> bool {
+        if band >= 16 {
+            return false;
+        }
+        self.band_energy[band] = value;
+        true
+    }
+
+    /// Write a single band's energy from the engine-canonical `u16` (f16-bits)
+    /// spectral encoding used by `vox_core` (`[u16; 16]`, 380–755 nm).
+    /// Decodes via `vox_core::spectral_damage::decode_spectral_u16` semantics.
+    pub fn set_band_energy_u16(&mut self, band: usize, bits: u16) -> bool {
+        if band >= 16 {
+            return false;
+        }
+        self.band_energy[band] = half::f16::from_bits(bits).to_f32();
+        true
+    }
+
+    /// Overwrite all 16 bands at once from an engine-canonical `[u16; 16]`
+    /// f16-bit spectral sample (the format `Splat`/terrain/mapgen produce).
+    pub fn set_band_energy_all_u16(&mut self, spectral: &[u16; 16]) {
+        self.band_energy = vox_core::spectral_damage::decode_spectral_u16(spectral);
+    }
+
+    /// Read a single band's energy in linear f32. Returns 0.0 for out-of-range.
+    pub fn band_energy(&self, band: usize) -> f32 {
+        if band < 16 { self.band_energy[band] } else { 0.0 }
+    }
 }
 
 impl Default for SpectralState {
