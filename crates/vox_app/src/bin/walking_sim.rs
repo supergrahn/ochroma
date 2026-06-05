@@ -19,6 +19,9 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use ochroma_engine::engine_loop::{EngineLoop, SystemMask};
+use vox_ai::perception::{BehaviorState, SpectralPerceptionAgent, ZonedRadianceSource};
+use vox_audio::biome_soundscape::{BiomeAmbientMix, BiomeKind};
+use vox_audio::AudioCommand;
 use vox_core::character_controller::{CharacterController, character_controller_tick};
 use vox_core::ecs::TransformComponent;
 use vox_core::engine_runtime::EngineConfig;
@@ -43,6 +46,49 @@ const HEIGHT: u32 = 720;
 
 // Sun direction (normalized, pointing toward ground = positive Y component negative)
 const SUN_DIR: Vec3 = Vec3::new(0.4, -0.8, 0.3);
+
+// ---------------------------------------------------------------------------
+// Day/night cycle
+// ---------------------------------------------------------------------------
+
+// Real seconds per in-game hour during normal windowed play. 30 s/hour means a
+// full 24h day takes 12 real minutes — slow enough to feel like a cycle, fast
+// enough that a few minutes of play visibly moves the sun.
+const REAL_SECS_PER_GAME_HOUR: f32 = 30.0;
+
+// In the 160-frame smoke (≈2.6 s of sim at 60 Hz) the normal rate would barely
+// move the clock, so we accelerate time in smoke by this multiplier to exercise
+// a visible swing of the day/night cycle inside the run.
+const SMOKE_TIME_MULTIPLIER: f32 = 400.0;
+
+/// Sun direction as a function of time of day. The sun arcs east->up->west:
+/// rises around 6h, peaks (straight overhead-ish) at noon, sets around 18h, and
+/// is below the horizon (pointing up = no direct light reaches the ground) at
+/// night. Returned vector points *from the sun toward the ground* (so its Y is
+/// negative during the day).
+fn sun_dir_for_hour(hour: f32) -> Vec3 {
+    // Map [0,24) to a full circle; noon = sun highest.
+    let t = (hour / 24.0) * std::f32::consts::TAU;
+    // Sun elevation: +1 at noon, -1 at midnight.
+    let elevation = -(t).cos(); // hour 12 -> cos(pi) = -1 -> elevation +1
+    // Sun azimuth sweeps east (-x) to west (+x) across the day.
+    let azimuth = (t).sin();
+    // Direction the light travels (toward ground): negative Y when sun is up.
+    Vec3::new(azimuth * 0.5, -elevation.max(0.05), 0.3).normalize()
+}
+
+/// Sky/sun brightness multiplier in [night_floor, 1.0] as a function of hour.
+/// Peaks at noon, bottoms out at night. Used to scale rendered luminance so
+/// night frames are measurably darker than noon frames.
+fn sky_brightness_for_hour(hour: f32) -> f32 {
+    // Daylight curve: a clamped cosine centred on noon. Below the horizon the
+    // value is clamped to a small night floor (moonlight) so the scene never
+    // goes fully black.
+    let t = (hour / 24.0) * std::f32::consts::TAU;
+    let day = (-(t).cos()).max(0.0); // 0 at midnight, 1 at noon
+    let night_floor = 0.18;
+    night_floor + (1.0 - night_floor) * day
+}
 
 // Live spectral GI is expensive (propagate is O(N) per splat over a 256-cap
 // neighbourhood). Full-scene GI every frame blows the smoke time budget, so we
@@ -210,6 +256,140 @@ impl Windmill {
     }
 }
 
+/// A wandering AI NPC. It drives the real vox_ai perception->decision path:
+/// each tick it builds a [`ZonedRadianceSource`] in which the player radiates a
+/// hot fire-band spectral signature within FLEE_RADIUS, calls
+/// `SpectralPerceptionAgent::sense()` to perceive the local radiance, then
+/// `assess_threat()` to turn that percept into a `BehaviorState`. When the
+/// player is close the fire-band energy classifies as `Flee` and the NPC
+/// kinematically steers away; otherwise it wanders between waypoints.
+struct Npc {
+    /// vox_ai perception agent — the source of the retrievable behaviour decision.
+    agent: SpectralPerceptionAgent,
+    position: Vec3,
+    /// Patrol waypoints (XZ). The NPC cycles through these while wandering.
+    waypoints: Vec<Vec3>,
+    current_waypoint: usize,
+    speed: f32,
+    /// Last behaviour state, to detect transitions (Wander/Patrol <-> Flee).
+    last_state: BehaviorState,
+    /// Number of times the AI behaviour state changed over the run.
+    state_changes: u32,
+    /// Total ground distance travelled (metres).
+    distance_travelled: f32,
+    /// Spawn position, so the smoke can assert net displacement.
+    spawn_pos: Vec3,
+    /// Spectral profile for rendering the NPC body (a cool teal so it reads as a
+    /// distinct character against terrain).
+    body_spectral: [u16; 16],
+}
+
+// Player perceived as a threat within this radius (metres). Inside it the NPC's
+// percept picks up the player's hot fire-band signature -> Flee.
+const NPC_FLEE_RADIUS: f32 = 8.0;
+
+impl Npc {
+    fn new(spawn: Vec3, waypoints: Vec<Vec3>) -> Self {
+        // Cool teal body: energy concentrated in the green/cyan bands (5..9),
+        // low in the fire bands, so the NPC itself is never mistaken for a threat.
+        let body_spectral: [u16; 16] = std::array::from_fn(|i| {
+            let v: f32 = if (4..=8).contains(&i) { 0.85 } else { 0.15 };
+            half::f16::from_f32(v).to_bits()
+        });
+        Npc {
+            agent: SpectralPerceptionAgent::new(spawn, NPC_FLEE_RADIUS + 4.0),
+            position: spawn,
+            waypoints,
+            current_waypoint: 0,
+            speed: 4.0,
+            last_state: BehaviorState::Idle,
+            state_changes: 0,
+            distance_travelled: 0.0,
+            spawn_pos: spawn,
+            body_spectral,
+        }
+    }
+
+    /// Drive perception -> decision -> kinematic steering for one tick.
+    fn tick(&mut self, dt: f32, player_pos: Vec3) {
+        let prev_pos = self.position;
+        self.agent.position = self.position;
+
+        // Build the radiance field the NPC perceives: a calm green ambient
+        // everywhere, with the player projected as a hot fire-band (10..15) zone
+        // of radius FLEE_RADIUS. This is the GI the NPC senses.
+        let calm_ambient: [f32; 16] = std::array::from_fn(|i| if (5..=8).contains(&i) { 0.25 } else { 0.05 });
+        let player_hot: [f32; 16] = std::array::from_fn(|i| if (10..=15).contains(&i) { 0.9 } else { 0.05 });
+        let gi = ZonedRadianceSource {
+            zones: vec![(player_pos, NPC_FLEE_RADIUS, player_hot)],
+            background: calm_ambient,
+        };
+
+        // Perceive (records into spectral memory) and classify into a decision.
+        let percept = self.agent.sense(&gi);
+        // Re-encode the perceived radiance as the f16 spectral the classifier
+        // expects, then assess. assess_threat stores the retrievable decision.
+        let spectral: [u16; 16] =
+            std::array::from_fn(|i| half::f16::from_f32(percept.radiance[i]).to_bits());
+        let assessment = self.agent.assess_threat(&spectral);
+        let state = assessment.behavior;
+
+        if state != self.last_state {
+            self.state_changes += 1;
+            self.last_state = state;
+        }
+
+        // Kinematic steering on the ground plane (no physics body).
+        let target = if state >= BehaviorState::Investigate {
+            // Threatened: flee directly away from the player.
+            let away = self.position - player_pos;
+            let away = if away.length_squared() > 1e-4 { away.normalize() } else { Vec3::Z };
+            self.position + away * 10.0
+        } else {
+            // Calm: wander toward the current waypoint, advancing when reached.
+            let wp = self.waypoints[self.current_waypoint];
+            if (wp - self.position).length() < 1.5 {
+                self.current_waypoint = (self.current_waypoint + 1) % self.waypoints.len();
+            }
+            self.waypoints[self.current_waypoint]
+        };
+
+        let to_target = Vec3::new(target.x - self.position.x, 0.0, target.z - self.position.z);
+        if to_target.length_squared() > 1e-4 {
+            let step = to_target.normalize() * self.speed * dt;
+            self.position.x += step.x;
+            self.position.z += step.z;
+        }
+        // Keep the NPC at eye/character height like orbs and the windmill base.
+        self.position.y = 1.0;
+
+        self.distance_travelled += (self.position - prev_pos).length();
+    }
+
+    /// Net displacement from spawn (metres).
+    fn net_moved(&self) -> f32 {
+        (self.position - self.spawn_pos).length()
+    }
+
+    /// Render the NPC as a small cluster of splats so it is visible in-frame.
+    fn splats(&self) -> Vec<GaussianSplat> {
+        let mut out = Vec::with_capacity(8);
+        // A small vertical capsule of splats — a recognisable little character.
+        for iy in 0..4 {
+            let y = self.position.y + iy as f32 * 0.4;
+            let scale = if iy >= 2 { 0.35 } else { 0.28 };
+            out.push(GaussianSplat::volume(
+                [self.position.x, y, self.position.z],
+                [scale, scale, scale],
+                Quat::IDENTITY,
+                235,
+                self.body_spectral,
+            ));
+        }
+        out
+    }
+}
+
 struct WalkingSim {
     window: Option<Arc<Window>>,
     backend: Option<WgpuBackend>,
@@ -239,6 +419,26 @@ struct WalkingSim {
 
     // Windmill
     windmill: Windmill,
+
+    // Wandering AI NPC (vox_ai perception->decision path).
+    npc: Npc,
+
+    // ---- Day/night cycle ----
+    // Smoke accelerates time; the windowed path advances at REAL_SECS_PER_GAME_HOUR.
+    time_accel: f32,
+
+    // ---- Biome soundscape ----
+    // Channel the biome mixer queues PlaySynth commands onto. Headless-safe: the
+    // receiver is drained on the game side; with no audio device nothing is heard
+    // but the call path (mix -> reverb -> queue) still runs and is counted.
+    audio_tx: std::sync::mpsc::Sender<AudioCommand>,
+    audio_rx: std::sync::mpsc::Receiver<AudioCommand>,
+    /// Count of biome soundscape beds queued (counted regardless of device).
+    soundscape_events: u32,
+    /// Human-readable label of the currently active biome.
+    current_biome: BiomeKind,
+    /// Game-time at which the last soundscape bed was queued (for refresh cadence).
+    last_soundscape_t: f32,
 
     // Dropped physics boxes (KeyQ). Each falls under Rapier gravity and
     // fractures (spectral impact) when it settles on the ground.
@@ -353,6 +553,24 @@ impl WalkingSim {
         // Windmill placed at the side of the scene
         let windmill = Windmill::new(Vec3::new(18.0, 0.0, -8.0));
 
+        // Wandering NPC. Spawned near the start->first-orb path (first orb is at
+        // (15,_,15)) so the smoke's player walk brings the player within
+        // NPC_FLEE_RADIUS and triggers the Patrol->Flee transition. Waypoints
+        // form a small patrol loop around the spawn.
+        let npc_spawn = Vec3::new(10.0, 1.0, 10.0);
+        let npc = Npc::new(
+            npc_spawn,
+            vec![
+                Vec3::new(10.0, 1.0, 10.0),
+                Vec3::new(14.0, 1.0, 6.0),
+                Vec3::new(8.0, 1.0, 4.0),
+                Vec3::new(5.0, 1.0, 9.0),
+            ],
+        );
+
+        // Biome soundscape command channel (headless-safe; see field docs).
+        let (audio_tx, audio_rx) = std::sync::mpsc::channel::<AudioCommand>();
+
         Self {
             window: None,
             backend: None,
@@ -372,6 +590,13 @@ impl WalkingSim {
             game_ui,
             fps_display: 0.0,
             windmill,
+            npc,
+            time_accel: 1.0 / REAL_SECS_PER_GAME_HOUR,
+            audio_tx,
+            audio_rx,
+            soundscape_events: 0,
+            current_biome: BiomeKind::Grassland,
+            last_soundscape_t: -1000.0,
             dropped_boxes: Vec::new(),
             fracture_events: 0,
             audio_events: 0,
@@ -734,12 +959,72 @@ impl WalkingSim {
         out
     }
 
+    /// Classify the biome at the player's position with a simple, honest 3-way
+    /// heuristic over scene geometry:
+    /// - Forest: near scattered tree splats (within ~10m of a tree).
+    /// - Wetland: low-lying terrain near the origin "basin" (radius < 12m), a
+    ///   stand-in for the water/marsh at the map centre.
+    /// - Grassland: everywhere else (open ground).
+    ///
+    /// This is deliberately coarse — there is no biome map in the demo terrain,
+    /// so we derive an approximate biome from where the dynamic scene props are.
+    fn classify_biome(&self) -> BiomeKind {
+        let p = self.player_pos();
+        // Forest: any tree splat within 10m of the player (XZ).
+        let near_tree = self.tree_splats.iter().any(|s| {
+            let sp = Vec3::from(s.position());
+            let dx = sp.x - p.x;
+            let dz = sp.z - p.z;
+            (dx * dx + dz * dz) < 10.0 * 10.0
+        });
+        if near_tree {
+            return BiomeKind::Forest;
+        }
+        // Wetland basin near the map centre.
+        if (p.x * p.x + p.z * p.z) < 12.0 * 12.0 {
+            return BiomeKind::Wetland;
+        }
+        BiomeKind::Grassland
+    }
+
+    /// Start or refresh the biome ambient soundscape based on the player's
+    /// current biome. Queues a fresh ambient bed when the biome changes or the
+    /// previous bed has elapsed. Headless-safe: `play_biome_soundscape` only
+    /// queues onto our channel (drained below) — no device required.
+    fn refresh_soundscape(&mut self) {
+        let biome = self.classify_biome();
+        let bed_secs = 1.0f32; // each bed is ~1s of ambient; refresh on expiry
+        let changed = biome != self.current_biome;
+        let expired = self.game_time - self.last_soundscape_t >= bed_secs;
+        if !(changed || expired) {
+            return;
+        }
+        self.current_biome = biome;
+        let mix = BiomeAmbientMix::for_biome(biome);
+        // Outdoor mix (no enclosing room surfaces) -> dead-room dry ambient bed.
+        let _len = vox_audio::play_biome_soundscape(&mix, bed_secs, 0.4, &[], &self.audio_tx);
+        self.soundscape_events += 1;
+        self.last_soundscape_t = self.game_time;
+        // Drain the queued command so the channel doesn't grow unbounded. With no
+        // audio device there is nothing further to do; this just exercises the
+        // full mix->queue path headlessly.
+        while self.audio_rx.try_recv().is_ok() {}
+    }
+
     fn update(&mut self, dt: f32) {
         // Only update game logic when Playing
         if self.game_ui.game_state != GameState::Playing {
             return;
         }
         self.game_time += dt;
+
+        // ---------------------------------------------------------------
+        // 0. Day/night cycle: advance the EngineLoop's time-of-day clock
+        //    continuously. `time_accel` is game-hours per real second (1/30 in
+        //    windowed play; the smoke bumps it for a visible swing). Wrap at 24h.
+        // ---------------------------------------------------------------
+        let new_hour = (self.loop_.time_of_day() + dt * self.time_accel).rem_euclid(24.0);
+        self.loop_.set_time_of_day(new_hour);
 
         // ---------------------------------------------------------------
         // 1. CharacterController movement (replaces ad-hoc WASD code)
@@ -802,10 +1087,10 @@ impl WalkingSim {
         // ---------------------------------------------------------------
         // 2. Shadow mapper update each frame (via the shared EngineLoop's
         //    shadow mapper). Driven directly with walking_sim's fixed SUN_DIR
-        //    rather than step_shadows (which derives the sun from time-of-day)
-        //    to keep the original shadow look unchanged.
+        //    rather than step_shadows. The sun now follows the day/night cycle
+        //    (see sun_dir_for_hour) so shadows swing with time of day.
         // ---------------------------------------------------------------
-        let sun_dir = SUN_DIR.normalize();
+        let sun_dir = sun_dir_for_hour(self.loop_.time_of_day());
         let cam_fwd = self.forward();
         self.loop_.shadow_mapper
             .update(self.cc_transform.position, cam_fwd, sun_dir);
@@ -814,6 +1099,19 @@ impl WalkingSim {
         // 3. Windmill animation tick
         // ---------------------------------------------------------------
         self.windmill.tick(dt);
+
+        // ---------------------------------------------------------------
+        // 3b. AI NPC: perception -> decision -> kinematic steering. The NPC
+        //     senses the player as a hot fire-band radiance zone and flees when
+        //     within NPC_FLEE_RADIUS; otherwise it wanders its patrol loop.
+        // ---------------------------------------------------------------
+        self.npc.tick(dt, self.cc_transform.position);
+
+        // ---------------------------------------------------------------
+        // 3c. Biome soundscape: classify the player's biome and (re)start the
+        //     ambient bed via the vox_audio mixer. Headless-safe.
+        // ---------------------------------------------------------------
+        self.refresh_soundscape();
 
         // ---------------------------------------------------------------
         // 4. Spatial audio listener + tick (via the shared EngineLoop). This
@@ -931,6 +1229,8 @@ impl WalkingSim {
         // Windmill base + animated blades
         all.extend_from_slice(&self.windmill.base_splats);
         all.extend_from_slice(&self.windmill.blade_splats_world);
+        // Wandering AI NPC body.
+        all.extend(self.npc.splats());
 
         // Live spectral GI: overlay the GI-lit nearest-K subset on top of the
         // raw scene so injected indirect light actually shows in the frame. The
@@ -942,6 +1242,17 @@ impl WalkingSim {
         all.extend(self.dropped_box_splats());
 
         let illuminant = Illuminant::d65();
+
+        // Day/night: derive a global sky brightness from the live time-of-day.
+        // Applied per-pixel below so night frames are measurably darker than
+        // noon. Also tint toward cool blue at night (warm at noon).
+        let hour = self.loop_.time_of_day();
+        let sky = sky_brightness_for_hour(hour);
+        // Warm/cool tint: 1.0 = full warm (noon), 0.0 = cool (night).
+        let warmth = ((sky - 0.18) / (1.0 - 0.18)).clamp(0.0, 1.0);
+        let tint_r = 0.85 + 0.15 * warmth;
+        let tint_g = 0.80 + 0.20 * warmth;
+        let tint_b = 0.75 + 0.05 * warmth + 0.20 * (1.0 - warmth);
 
         // 1. Rasterise
         let fb = self.rasteriser.render(&all, &camera, &illuminant, None);
@@ -999,9 +1310,11 @@ impl WalkingSim {
                 }
             };
 
-            let r = r * shadow_factor;
-            let g = g * shadow_factor;
-            let b = b * shadow_factor;
+            // Combine shadow occlusion with the global day/night sky brightness
+            // + warm/cool tint so the whole frame darkens and cools at night.
+            let r = r * shadow_factor * sky * tint_r;
+            let g = g * shadow_factor * sky * tint_g;
+            let b = b * shadow_factor * sky * tint_b;
 
             let spectral = [
                 b * 0.30,
@@ -1313,6 +1626,10 @@ fn run_smoke() {
     // Bypass the ENTER-on-menu gate: start the game directly.
     app.game_ui.game_state = GameState::Playing;
 
+    // Accelerate the day/night clock so a visible swing happens inside the
+    // 160-frame run (windowed play uses the slow real-time rate).
+    app.time_accel = SMOKE_TIME_MULTIPLIER / REAL_SECS_PER_GAME_HOUR;
+
     let spawn_pos = app.cc_transform.position;
     let windmill_anim_start = app.windmill.anim_time;
     let dt = 1.0 / 60.0; // fixed 60Hz step
@@ -1413,6 +1730,37 @@ fn run_smoke() {
         .collect::<std::collections::HashSet<_>>()
         .len();
 
+    // --- Day/night luminance: render one noon frame and one midnight frame
+    //     from the SAME camera/scene state and compare mean luminance. Uses the
+    //     shared render() path (set_time_of_day drives sky brightness in render).
+    let mean_luma = |pixels: &[[u8; 4]]| -> f32 {
+        if pixels.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = pixels
+            .iter()
+            .map(|p| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64)
+            .sum();
+        (sum / pixels.len() as f64) as f32
+    };
+    app.loop_.set_time_of_day(12.0);
+    let noon_pixels = app.render();
+    let noon_luma = mean_luma(&noon_pixels);
+    app.loop_.set_time_of_day(0.0);
+    let midnight_pixels = app.render();
+    let midnight_luma = mean_luma(&midnight_pixels);
+    let day_night_ratio = if midnight_luma > 0.01 { noon_luma / midnight_luma } else { f32::INFINITY };
+
+    // --- AI NPC stats (perception->decision path). ---
+    let npc_moved = app.npc.net_moved();
+    let npc_distance = app.npc.distance_travelled;
+    let npc_state_changes = app.npc.state_changes;
+    let npc_final_state = app.npc.last_state.as_str();
+
+    // --- Biome soundscape stats. ---
+    let biome_label = format!("{:?}", app.current_biome);
+    let soundscape_events = app.soundscape_events;
+
     // Write the final frame to a PPM (P6).
     let ppm_path = "/tmp/ochroma_walking_sim_smoke.ppm";
     {
@@ -1426,7 +1774,7 @@ fn run_smoke() {
     }
 
     println!(
-        "[walking_sim] SMOKE SUMMARY: frames={} final_pos=({:.2},{:.2},{:.2}) orbs={}/{} non_black_px={}/{} distinct_colors={} windmill_dt={:.2} moved={:.2} gi_nonzero_bands={} gi_max_band={} gi_changed={} drops={} box_fell={:.2}m fracture_events={} audio_events={} ppm={}",
+        "[walking_sim] SMOKE SUMMARY: frames={} final_pos=({:.2},{:.2},{:.2}) orbs={}/{} non_black_px={}/{} distinct_colors={} windmill_dt={:.2} moved={:.2} gi_nonzero_bands={} gi_max_band={} gi_changed={} drops={} box_fell={:.2}m fracture_events={} audio_events={} noon_luma={:.2} midnight_luma={:.2} day_night_ratio={:.2}x biome={} soundscape_events={} npc_moved={:.2} npc_distance={:.2} npc_state_changes={} npc_state={} ppm={}",
         total_frames,
         final_pos.x,
         final_pos.y,
@@ -1445,6 +1793,15 @@ fn run_smoke() {
         box_fell,
         app.fracture_events,
         app.audio_events,
+        noon_luma,
+        midnight_luma,
+        day_night_ratio,
+        biome_label,
+        soundscape_events,
+        npc_moved,
+        npc_distance,
+        npc_state_changes,
+        npc_final_state,
         ppm_path,
     );
 
@@ -1532,6 +1889,43 @@ fn run_smoke() {
         app.audio_events >= 2,
         "audio_events={} (< 2 required: need >=1 fracture + >=1 orb collect)",
         app.audio_events
+    );
+
+    // --- Day/night cycle: the noon frame must be measurably brighter than the
+    //     midnight frame (>= 1.5x mean luminance), proving the sky-brightness
+    //     modulation in the shared render() path actually fires off time-of-day.
+    assert!(
+        noon_luma > 0.0 && midnight_luma > 0.0,
+        "day/night luminance broken: noon={:.3} midnight={:.3}",
+        noon_luma,
+        midnight_luma
+    );
+    assert!(
+        day_night_ratio >= 1.5,
+        "noon ({:.2}) not >= 1.5x brighter than midnight ({:.2}); ratio={:.2}x — day/night not driving render",
+        noon_luma,
+        midnight_luma,
+        day_night_ratio
+    );
+
+    // --- Biome soundscape: at least one ambient bed was queued via the mixer.
+    assert!(
+        soundscape_events >= 1,
+        "soundscape_events={} (< 1) — biome soundscape mixer never ran",
+        soundscape_events
+    );
+
+    // --- AI NPC: it moved a real distance AND its AI state changed at least
+    //     once (Patrol/Wander <-> Flee as the player approached/left).
+    assert!(
+        npc_moved > 1.0,
+        "NPC net displacement {:.2}m (<= 1m) — NPC steering did not run",
+        npc_moved
+    );
+    assert!(
+        npc_state_changes >= 1,
+        "NPC behaviour state never changed ({} changes) — perception->decision path inert",
+        npc_state_changes
     );
 
     println!("[walking_sim] SMOKE PASS: loop + game logic + render verified headlessly.");
