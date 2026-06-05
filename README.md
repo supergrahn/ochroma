@@ -2,73 +2,126 @@
 
 **Spectral Gaussian Splatting Game Engine**
 
-Ochroma is a game engine built on 3D Gaussian Splatting with spectral rendering. It renders scenes using volumetric Gaussian splats with physically-modelled spectral reflectance.
+Ochroma is a game engine built on 3D Gaussian Splatting with spectral rendering.
+Scenes are volumetric Gaussian splats whose materials carry 8-band spectral
+reflectance, so they respond physically to any illuminant — the same geometry
+shifts colour from warm sunrise through noon to cool moonlight as the day/night
+clock advances.
 
-## What Works Today
+## Binaries
 
-- **Spectral Rendering**: 8-band spectral reflectance (380-660nm). Materials respond to any illuminant — time of day cycles from warm sunrise through noon to cool moonlight.
-- **Gaussian Splat Native**: Load .ply files from any 3DGS training tool and render them directly.
-- **Procedural Scene Generation**: Terrain, buildings, and trees generated from scratch — no external assets required.
-- **CLAS Clustering**: Splat clustering and BVH acceleration structure (software implementation).
-- **Volumetric Terrain**: SDF-based terrain with overhangs and caves.
-- **Rhai Scripting**: Embedded scripting via the Rhai engine, used for game config and debug console.
-- **Physics**: AABB collision (built-in) and Rapier rigid body physics (optional feature).
-- **Spatial Audio**: Distance-attenuation audio synthesis; WAV output on Linux when `audio-backend` feature is enabled.
-- **Walking Simulator**: A complete first game built on the engine — collect 10 orbs to win.
+The engine ships three runnable binaries (all in the `vox_app` crate):
 
-## Quick Start
+| Binary | What it is |
+|--------|-----------|
+| `ochroma` | The editor / engine runner — windowed scene with the editor overlay |
+| `walking_sim` | The game — a first-person walking simulator built on the engine |
+| `net_walk` | The networking demo — exercises the multiplayer replication path |
 
 ```bash
-# Run the full engine (default scene)
-cargo run --bin ochroma
-
-# Load a .ply Gaussian splat file
-cargo run --bin ochroma -- path/to/scene.ply
-
-# Run the walking simulator game
-cargo run --bin walking_sim
-
-# Run the interactive demo
-cargo run --bin demo
-
-# Exercise all 76 engine modules (outputs render_showcase_output.ppm)
-cargo run --bin render_showcase
-
-# Run the simple_game example (demonstrates the GameScript API)
-cargo run --example simple_game -p vox_app
+cargo run --release --bin ochroma       # editor
+cargo run --release --bin walking_sim   # game
+cargo run --release --bin net_walk      # net demo
 ```
 
-## Controls
+## Features
 
-### `ochroma` and `demo` binaries
+- **Spectral rendering** — 8-band spectral reflectance (380–660nm); materials
+  re-illuminate under the active light.
+- **Day / night cycle** — time-of-day clock drives the illuminant; scenes recolour
+  across the cycle.
+- **Global illumination** — GI via the `crucible` renderer (default feature),
+  with band-energy output the smoke tests assert on.
+- **Gaussian splat native** — load `.ply` files from any 3DGS training tool and
+  render them directly.
+- **Physics** — built-in AABB collision plus optional Rapier rigid-body physics;
+  fracture/drop interactions in the game.
+- **Spatial audio** — distance-attenuated audio synthesis with reachable-room
+  reverb and a biome soundscape mixer (CPAL backend, needs ALSA on Linux).
+- **Netplay** — multiplayer replication path, exercised by `net_walk`.
+- **Procedural generation** — terrain (SDF volumetric with overhangs/caves),
+  foliage scatter, texture paint.
+- **Rhai scripting** — embedded scripting for game config and the debug console.
 
-| Key | Action |
-|-----|--------|
-| WASD | Move camera |
-| Space / Left Shift | Move up / down |
-| Right-click + drag | Look around |
-| Left-click | Place a tree at cursor |
-| T | Advance time of day (+1 hour) |
-| +/- | Adjust exposure |
-| M | Cycle tone mapping (Linear/ACES/Reinhard/Filmic) |
-| Q | Cycle DLSS quality mode (Off/Quality/Balanced/Performance/Ultra) |
-| G | Toggle frame generation flag |
-| P | Toggle fast/spectral render mode (`ochroma` only) |
-| Tab | Toggle scene editor overlay |
-| Ctrl+S | Save scene to `.ochroma_map` file |
-| Delete | Delete selected entity in editor |
-| Arrow keys | Move selected entity in editor |
-| F12 | Save screenshot as PPM to temp directory |
-| Escape | Quit |
+GPU hardware rasterisation and hardware DLSS require an NVIDIA GPU with driver
+support; the engine falls back to a software rasteriser automatically, which is
+what the headless smoke path uses.
 
-### `walking_sim` binary
+## Verifying a build: `--smoke`
 
-| Key | Action |
-|-----|--------|
-| WASD | Move player |
-| Right-click + drag | Look around |
-| `` ` `` | Evaluate a test Rhai expression in console |
-| Escape | Quit |
+Both shipped game binaries accept `--smoke`, a headless gate that runs the REAL
+per-frame simulation plus a software-rendered frame and asserts on the output
+(non-black coverage, sim advancement, GI band energy, fracture/audio counters,
+HUD pixels). It exits non-zero on any regression — this catches "compiles but
+the game is broken".
+
+```bash
+target/release/walking_sim --smoke   # exits 0 on success
+target/release/ochroma --smoke       # exits 0 on success
+```
+
+Release-profile smoke runs in a few seconds (far faster than the debug build's
+multi-minute run).
+
+## Building from source
+
+Ochroma's workspace depends on two **sibling repositories** via relative path
+deps:
+
+- `spectra` (`supergrahn/spectra`) — Gaussian render / GPU backends, referenced
+  by `vox_render`.
+- `crucible` (`supergrahn/crucible`) — the GI renderer, a **default** feature of
+  `vox_nodes`.
+
+Cargo must load those manifests for *any* build, so the three repos must be
+checked out **side-by-side**:
+
+```
+src/
+├── ochroma/    <- this repo
+├── spectra/
+└── crucible/
+```
+
+Then, from `ochroma/`:
+
+```bash
+# Linux needs ALSA dev headers for the CPAL audio backend.
+sudo apt-get install -y libasound2-dev pkg-config
+
+cargo build --release --workspace
+cargo test --workspace
+```
+
+CI (`.github/workflows/ci.yml`) reproduces this layout by checking out all three
+repos under `$GITHUB_WORKSPACE`, authenticated with the `SIBLING_REPOS_PAT`
+secret (the sibling repos are private). A lone checkout cannot build.
+
+## Release artifacts
+
+Pushing a version tag (e.g. `v0.1.0`) triggers
+`.github/workflows/release.yml`, which builds `--release --workspace` with the
+same three-repo checkout, smoke-tests the binaries, and publishes a GitHub
+Release with a Linux x86_64 tarball + SHA-256 checksum.
+
+The release pipeline is **hand-rolled** rather than cargo-dist: cargo-dist's
+standard runner flow checks out only the tagged repo and offers no clean way to
+lay the sibling repos out side-by-side, so it cannot build this workspace. The
+hand-rolled workflow mirrors CI's checkout exactly.
+
+**Supported platform: Linux x86_64 only.** Windows and macOS have never
+compiled (the CI portability job is experimental); the workflow has a comment
+marking the expansion path.
+
+### Installing a release
+
+```bash
+tar -xzf ochroma-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+cd ochroma-vX.Y.Z-x86_64-unknown-linux-gnu
+./walking_sim --smoke   # verify it runs (exits 0)
+./walking_sim           # play (needs a display)
+./ochroma               # editor
+```
 
 ## Architecture
 
@@ -77,41 +130,18 @@ ochroma_engine (SDK crate)
 ├── vox_core     -- Types, ECS (Bevy ECS), math, spectral, input, scripting API
 ├── vox_render   -- Spectral pipeline, DLSS (software), CLAS, particles, lighting
 ├── vox_data     -- Asset formats (.vxm, .ply loader), procedural generation, maps
-├── vox_terrain  -- Volumetric SDF terrain, heightmaps, foliage
+├── vox_terrain  -- Volumetric SDF terrain, heightmaps, foliage scatter
 ├── vox_sim      -- Game simulation systems
-├── vox_audio    -- Spatial audio with distance attenuation, WAV synthesis
+├── vox_audio    -- Spatial audio, room reverb, biome soundscape mixer
 ├── vox_physics  -- AABB physics (built-in) + Rapier rigid body (optional feature)
-├── vox_net      -- Multiplayer networking with CRDT replication (in development)
+├── vox_net      -- Multiplayer networking with CRDT replication
 ├── vox_script   -- Rhai scripting runtime, visual scripting, plugin system
+├── vox_nodes    -- Crucible GI renderer bindings
 ├── vox_nn       -- LLM integration, procedural city generation (in development)
-├── vox_ui       -- UI framework
+├── vox_ui       -- UI framework (SpectralHUD)
 └── vox_tools    -- CLI asset pipeline tool (turnaround capture, GLTF import)
 ```
 
-## Rendering Pipeline
-
-```
-Scene splats -> Software Rasteriser (CPU)
-             -> Spectral Framebuffer (8 bands + depth + normals)
-             -> Temporal Accumulation (history blending)
-             -> Spectral Tone Mapper (Linear / ACES / Reinhard / Filmic)
-             -> DLSS quality mode (software upscaling pipeline)
-             -> Display via wgpu
-```
-
-Note: GPU hardware rasterisation (`GpuRasteriser`) and hardware DLSS require
-an NVIDIA GPU with appropriate driver support. The engine falls back to the
-software rasteriser automatically.
-
-## Building a Game
-
-See `examples/simple_game/` in the `vox_app` crate for a complete example.
-
-1. Implement the `GameScript` trait from `vox_core::script_interface`
-2. Create a map file using `vox_data::map_file::MapFile`
-3. Register scripts with `ScriptRegistry`
-4. Load the map and run with `cargo run --bin ochroma -- your_map.ochroma_map`
-
 ## License
 
-MIT
+MIT OR Apache-2.0

@@ -7546,6 +7546,7 @@ dependencies = [
  "vox_audio",
  "vox_core",
  "vox_data",
+ "vox_editor",
  "vox_net",
  "vox_nn",
  "vox_physics",
