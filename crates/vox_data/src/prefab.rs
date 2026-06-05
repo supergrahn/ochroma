@@ -50,6 +50,46 @@ impl Prefab {
         self.entities.len()
     }
 
+    /// Instantiate this prefab directly into world-save records.
+    ///
+    /// Each produced [`SavedEntity`](crate::world_save::SavedEntity) carries a
+    /// [`SavedPrefabRef`](crate::world_save::SavedPrefabRef) tagging it with this
+    /// prefab's name, the world-space instantiation position, and `instance_id`,
+    /// so that a later `save -> load` can re-link the instance to its source
+    /// prefab. This is the prefab -> world-save seam exercised by the world
+    /// round-trip test.
+    pub fn instantiate_into_save(
+        &self,
+        world_position: [f32; 3],
+        instance_id: u32,
+    ) -> Vec<crate::world_save::SavedEntity> {
+        use crate::world_save::{SavedEntity, SavedPrefabRef};
+        self.entities
+            .iter()
+            .map(|e| {
+                let mut saved = SavedEntity::new(
+                    &e.name,
+                    [
+                        e.local_position[0] + world_position[0],
+                        e.local_position[1] + world_position[1],
+                        e.local_position[2] + world_position[2],
+                    ],
+                );
+                saved.rotation = e.local_rotation;
+                saved.scale = e.local_scale;
+                saved.asset_path = e.asset_path.clone();
+                saved.scripts = e.scripts.clone();
+                saved.tags = e.tags.clone();
+                saved.prefab_ref = Some(SavedPrefabRef {
+                    prefab_name: self.name.clone(),
+                    instance_position: world_position,
+                    instance_id,
+                });
+                saved
+            })
+            .collect()
+    }
+
     /// Instantiate this prefab at a world position.
     /// Returns a list of entities to spawn with their world-space transforms.
     pub fn instantiate(&self, world_position: [f32; 3]) -> Vec<PrefabInstance> {

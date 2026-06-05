@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use vox_data::prefab::{Prefab, PrefabEntity};
 use vox_data::world_save::*;
 
 fn make_test_entity(name: &str) -> SavedEntity {
@@ -14,6 +15,8 @@ fn make_test_entity(name: &str) -> SavedEntity {
         collider: None,
         audio: None,
         light: None,
+        splats: vec![],
+        prefab_ref: None,
     }
 }
 
@@ -186,6 +189,142 @@ fn test_quick_save_path_valid() {
     let path = WorldSave::quick_save_path();
     assert!(path.to_str().unwrap().contains("quicksave"));
     assert!(path.to_str().unwrap().ends_with(".json"));
+}
+
+/// A distinct, deterministic 16-band spectral signature so a corrupted band
+/// (e.g. silently dropped, reordered, or rounded) makes the round-trip fail.
+fn spectral_signature(seed: f32) -> [f32; SAVED_SPLAT_BANDS] {
+    let mut bands = [0.0f32; SAVED_SPLAT_BANDS];
+    for (i, b) in bands.iter_mut().enumerate() {
+        // Mix index + seed; values are exactly representable in f32 JSON.
+        *b = (i as f32) * 0.0625 + seed * 0.5;
+    }
+    bands
+}
+
+/// COMPLETE world save -> load round-trip across every seam:
+/// multiple entities, full transforms, per-splat 16-band spectral data, and a
+/// prefab instance (with a SavedPrefabRef). Asserts the loaded world is
+/// field-identical to the original — real equality, not is_some().
+#[test]
+fn test_full_world_round_trip_spectral_and_prefab() {
+    let tmp = std::env::temp_dir().join("ochroma_full_world_round_trip.ochroma_save");
+
+    // --- Build a prefab and instantiate it into save records (prefab seam) ---
+    let mut prefab = Prefab::new("streetlamp");
+    prefab.add_entity(PrefabEntity {
+        name: "post".to_string(),
+        local_position: [0.0, 0.0, 0.0],
+        local_rotation: [0.0, 0.0, 0.0, 1.0],
+        local_scale: [1.0, 1.0, 1.0],
+        asset_path: Some("assets/post.vxm".to_string()),
+        scripts: vec![],
+        tags: vec!["structure".to_string()],
+        children_indices: vec![1],
+        components: HashMap::new(),
+    });
+    prefab.add_entity(PrefabEntity {
+        name: "bulb".to_string(),
+        local_position: [0.0, 4.0, 0.0],
+        local_rotation: [0.0, 0.0, 0.0, 1.0],
+        local_scale: [0.5, 0.5, 0.5],
+        asset_path: Some("assets/bulb.vxm".to_string()),
+        scripts: vec!["flicker.rhai".to_string()],
+        tags: vec!["light".to_string()],
+        children_indices: vec![],
+        components: HashMap::new(),
+    });
+    let prefab_world_pos = [10.0, 0.0, -5.0];
+    let prefab_instances = prefab.instantiate_into_save(prefab_world_pos, 42);
+    assert_eq!(prefab_instances.len(), 2, "prefab should produce 2 entities");
+
+    // --- Build the world ---
+    let mut save = WorldSave::new("full_world");
+
+    // Entity 0: hand-placed, carries two spectral splats.
+    let mut splat_entity = SavedEntity::new("splat_prop", [1.5, 2.5, 3.5]);
+    splat_entity.rotation = [0.0, 0.7071, 0.0, 0.7071];
+    splat_entity.scale = [2.0, 2.0, 2.0];
+    splat_entity.asset_path = Some("assets/prop.vxm".to_string());
+    splat_entity.tags = vec!["prop".to_string()];
+    splat_entity.splats = vec![
+        SavedSplat {
+            position: [0.1, 0.2, 0.3],
+            spectral: spectral_signature(1.0),
+            opacity: 0.875,
+        },
+        SavedSplat {
+            position: [-0.4, 0.5, -0.6],
+            spectral: spectral_signature(2.0),
+            opacity: 0.25,
+        },
+    ];
+    save.add_entity(splat_entity);
+
+    // Entity 1: plain transform-only entity.
+    save.add_entity(SavedEntity::new("ground", [0.0, -1.0, 0.0]));
+
+    // Entities 2 & 3: the prefab instance.
+    for e in prefab_instances {
+        save.add_entity(e);
+    }
+
+    // Snapshot the original BEFORE persisting (Clone) so equality is meaningful.
+    let original = save.clone();
+    assert_eq!(original.entity_count(), 4);
+
+    // --- Persist and reload ---
+    save.save_to_file(&tmp).unwrap();
+    let loaded = WorldSave::load_from_file(&tmp).unwrap();
+
+    // (1) Whole-world structural equality: every field of every entity +
+    //     resources + metadata must match. This is the strongest assertion.
+    assert_eq!(loaded, original, "loaded world must equal original world");
+
+    // (2) Entity count.
+    assert_eq!(loaded.entity_count(), 4);
+
+    // (3) Positions / transforms preserved exactly.
+    assert_eq!(loaded.entities[0].position, [1.5, 2.5, 3.5]);
+    assert_eq!(loaded.entities[0].rotation, [0.0, 0.7071, 0.0, 0.7071]);
+    assert_eq!(loaded.entities[0].scale, [2.0, 2.0, 2.0]);
+    assert_eq!(loaded.entities[1].position, [0.0, -1.0, 0.0]);
+
+    // (4) Spectral splat data: count, position, all 16 bands, opacity.
+    let splats = &loaded.entities[0].splats;
+    assert_eq!(splats.len(), 2, "both splats must survive the round-trip");
+    assert_eq!(splats[0].position, [0.1, 0.2, 0.3]);
+    assert_eq!(splats[0].spectral, spectral_signature(1.0));
+    assert_eq!(splats[0].opacity, 0.875);
+    assert_eq!(splats[1].spectral, spectral_signature(2.0));
+    assert_eq!(splats[1].opacity, 0.25);
+    // Band-by-band: the 7th band of splat 0 is index 6 -> 6*0.0625 + 0.5 = 0.875.
+    assert_eq!(splats[0].spectral[6], 0.875);
+    // The two splats must have genuinely different spectra (not aliased).
+    assert_ne!(splats[0].spectral, splats[1].spectral);
+
+    // (5) Prefab references preserved on instantiated entities; absent on others.
+    assert!(loaded.entities[0].prefab_ref.is_none());
+    assert!(loaded.entities[1].prefab_ref.is_none());
+
+    let post_ref = loaded.entities[2]
+        .prefab_ref
+        .as_ref()
+        .expect("prefab instance entity must carry a prefab_ref");
+    assert_eq!(post_ref.prefab_name, "streetlamp");
+    assert_eq!(post_ref.instance_position, prefab_world_pos);
+    assert_eq!(post_ref.instance_id, 42);
+    // Instantiated world-space position = local + world.
+    assert_eq!(loaded.entities[2].name, "post");
+    assert_eq!(loaded.entities[2].position, [10.0, 0.0, -5.0]);
+    assert_eq!(loaded.entities[3].name, "bulb");
+    assert_eq!(loaded.entities[3].position, [10.0, 4.0, -5.0]);
+    assert_eq!(
+        loaded.entities[3].prefab_ref.as_ref().unwrap().instance_id,
+        42
+    );
+
+    std::fs::remove_file(&tmp).ok();
 }
 
 #[test]

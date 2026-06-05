@@ -2,7 +2,7 @@ use serde::{Serialize, Deserialize};
 use std::path::Path;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldSave {
     pub version: u32,
     pub engine_version: String,
@@ -12,7 +12,7 @@ pub struct WorldSave {
     pub resources: SavedResources,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedEntity {
     pub name: String,
     pub position: [f32; 3],
@@ -25,15 +25,54 @@ pub struct SavedEntity {
     pub collider: Option<SavedCollider>,
     pub audio: Option<SavedAudio>,
     pub light: Option<SavedLight>,
+    /// Spectral Gaussian splats baked onto this entity (in entity-local space).
+    /// Each splat carries the full 16-band spectral signature (380–755 nm).
+    /// `#[serde(default)]` keeps older saves (without splats) loadable.
+    #[serde(default)]
+    pub splats: Vec<SavedSplat>,
+    /// If this entity was spawned from a prefab, the reference back to it.
+    /// `None` for hand-placed entities. `#[serde(default)]` keeps older saves loadable.
+    #[serde(default)]
+    pub prefab_ref: Option<SavedPrefabRef>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Number of spectral bands per saved splat: 380–755 nm at 25 nm steps.
+/// Matches `vox_core::types::GaussianSplat::BANDS`.
+pub const SAVED_SPLAT_BANDS: usize = 16;
+
+/// A single spectral Gaussian splat persisted inside a [`SavedEntity`].
+///
+/// Stored in plain `f32` (not f16) so the on-disk JSON round-trips bit-exactly
+/// — load(save(x)) == x for every field, which is what the world round-trip asserts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedSplat {
+    /// Entity-local centroid.
+    pub position: [f32; 3],
+    /// 16-band spectral reflectance/emission, 380–755 nm (USGS grid).
+    pub spectral: [f32; SAVED_SPLAT_BANDS],
+    /// Alpha in [0, 1].
+    pub opacity: f32,
+}
+
+/// A reference recording that an entity (or group of entities) originated from
+/// a prefab. Persisted so a load can re-link instances to their source prefab.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedPrefabRef {
+    /// Name of the prefab this instance was spawned from.
+    pub prefab_name: String,
+    /// World-space position the prefab was instantiated at.
+    pub instance_position: [f32; 3],
+    /// Stable per-instance id (distinguishes multiple instances of one prefab).
+    pub instance_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedCollider {
     pub shape_type: String,  // "box", "sphere", "capsule"
     pub dimensions: Vec<f32>, // half_extents for box, [radius] for sphere, [radius, height] for capsule
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedAudio {
     pub clip_path: String,
     pub volume: f32,
@@ -41,7 +80,7 @@ pub struct SavedAudio {
     pub spatial: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedLight {
     pub light_type: String,  // "point", "directional"
     pub color: [f32; 3],
@@ -49,12 +88,34 @@ pub struct SavedLight {
     pub radius: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedResources {
     pub time_of_day: f32,
     pub camera_position: [f32; 3],
     pub camera_rotation: [f32; 4],
     pub game_state: String,
+}
+
+impl SavedEntity {
+    /// Construct a minimal entity at `position` with identity rotation, unit
+    /// scale, and every optional component empty. Set fields after construction.
+    pub fn new(name: &str, position: [f32; 3]) -> Self {
+        Self {
+            name: name.to_string(),
+            position,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            asset_path: None,
+            scripts: Vec::new(),
+            tags: Vec::new(),
+            custom_data: HashMap::new(),
+            collider: None,
+            audio: None,
+            light: None,
+            splats: Vec::new(),
+            prefab_ref: None,
+        }
+    }
 }
 
 impl WorldSave {
@@ -164,6 +225,8 @@ mod tests {
                 collider: None,
                 audio: None,
                 light: None,
+                splats: vec![],
+                prefab_ref: None,
             }],
             resources: SavedResources {
                 time_of_day: 12.0,
