@@ -219,6 +219,15 @@ impl OchromaNodeGraph {
         self.nodes.keys().copied()
     }
 
+    /// Number of edges currently in the graph.
+    pub fn edge_count(&self) -> usize { self.edges.len() }
+
+    /// Iterate the graph's edges as `(from, from_port, to, to_port)` tuples.
+    /// Used by the editor panel to draw wires and by tests to assert connectivity.
+    pub fn edges(&self) -> impl Iterator<Item = (NodeId, &str, NodeId, &str)> + '_ {
+        self.edges.iter().map(|e| (e.from, e.from_port.as_str(), e.to, e.to_port.as_str()))
+    }
+
     pub fn remove_node(&mut self, id: NodeId) -> Result<(), GraphError> {
         if !self.nodes.contains_key(&id) { return Err(GraphError::NodeNotFound(id)); }
         self.nodes.remove(&id);

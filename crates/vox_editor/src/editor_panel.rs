@@ -34,8 +34,71 @@ impl Default for NodeEditorPanel {
     }
 }
 
+/// How close (in screen pixels) the pointer must be to a port circle to count
+/// as hovering it for the purposes of starting / completing a wire drag.
+pub const PORT_HIT_RADIUS: f32 = 9.0;
+
 impl NodeEditorPanel {
     pub fn new() -> Self { Self::default() }
+
+    /// World-space screen position of a node's single input ("in") port,
+    /// accounting for the current pan. Returns `None` if the node has no layout.
+    pub fn input_port_pos(&self, node: NodeId) -> Option<Pos2> {
+        let layout = self.layouts.get(&node)?;
+        let top_left = layout.pos + self.pan;
+        Some(top_left + Vec2::new(0.0, layout.size.y * 0.5))
+    }
+
+    /// Screen position of a node's single output ("out") port (right edge),
+    /// accounting for the current pan. Returns `None` if the node has no layout.
+    pub fn output_port_pos(&self, node: NodeId) -> Option<Pos2> {
+        let layout = self.layouts.get(&node)?;
+        let top_left = layout.pos + self.pan;
+        Some(top_left + Vec2::new(layout.size.x, layout.size.y * 0.5))
+    }
+
+    /// Find the node whose output port is within [`PORT_HIT_RADIUS`] of `pos`.
+    pub fn output_port_at(&self, pos: Pos2) -> Option<NodeId> {
+        self.layouts.keys().copied().find(|&id| {
+            self.output_port_pos(id).map_or(false, |p| p.distance(pos) <= PORT_HIT_RADIUS)
+        })
+    }
+
+    /// Find the node whose input port is within [`PORT_HIT_RADIUS`] of `pos`.
+    pub fn input_port_at(&self, pos: Pos2) -> Option<NodeId> {
+        self.layouts.keys().copied().find(|&id| {
+            self.input_port_pos(id).map_or(false, |p| p.distance(pos) <= PORT_HIT_RADIUS)
+        })
+    }
+
+    /// Begin dragging a wire out of node `from`'s output port.
+    pub fn begin_wire_drag(&mut self, from: NodeId, start: Pos2) {
+        self.wire_drag = Some(WireDrag {
+            from_node: from,
+            from_port: "out".into(),
+            current:   start,
+        });
+    }
+
+    /// Update the loose end of an in-progress wire drag.
+    pub fn update_wire_drag(&mut self, pos: Pos2) {
+        if let Some(drag) = self.wire_drag.as_mut() {
+            drag.current = pos;
+        }
+    }
+
+    /// Finish a wire drag at `release_pos`. If an input port lies under the
+    /// release point and the connection is valid, a real edge is added to
+    /// `graph` (output "out" -> input "in"). Clears the in-progress drag either way.
+    ///
+    /// Returns `true` iff a new edge was successfully created.
+    pub fn complete_wire_drag(&mut self, graph: &mut OchromaNodeGraph, release_pos: Pos2) -> bool {
+        let Some(drag) = self.wire_drag.take() else { return false };
+        let Some(target) = self.input_port_at(release_pos) else { return false };
+        // No self-loops: dragging a port back onto its own node does nothing.
+        if target == drag.from_node { return false; }
+        graph.connect(drag.from_node, &drag.from_port, target, "in").is_ok()
+    }
 
     pub fn ensure_layouts(&mut self, graph: &OchromaNodeGraph) {
         // Remove stale layouts for nodes that no longer exist.
@@ -76,10 +139,46 @@ impl NodeEditorPanel {
     pub fn show(&mut self, ui: &mut Ui, graph: &mut OchromaNodeGraph) {
         let canvas_rect = ui.available_rect_before_wrap();
         let response = ui.allocate_rect(canvas_rect, egui::Sense::drag());
-        if response.dragged() && !ui.input(|i| i.pointer.secondary_down()) {
+
+        // --- Wire-drag lifecycle (takes priority over panning) -------------
+        // A drag that starts on an output port draws a wire instead of panning.
+        let pointer_pos = response.interact_pointer_pos();
+        if response.drag_started() {
+            if let Some(pos) = pointer_pos {
+                if let Some(src) = self.output_port_at(pos) {
+                    self.begin_wire_drag(src, pos);
+                }
+            }
+        }
+        let dragging_wire = self.wire_drag.is_some();
+        if dragging_wire {
+            if let Some(pos) = pointer_pos {
+                self.update_wire_drag(pos);
+            }
+            if response.drag_stopped() {
+                let release = pointer_pos.unwrap_or_else(|| {
+                    self.wire_drag.as_ref().map(|d| d.current).unwrap_or(canvas_rect.center())
+                });
+                self.complete_wire_drag(graph, release);
+            }
+        } else if response.dragged() && !ui.input(|i| i.pointer.secondary_down()) {
             self.pan += response.drag_delta();
         }
+
         let painter = ui.painter_at(canvas_rect);
+
+        // --- Draw existing edges as wires ----------------------------------
+        for (from, _fp, to, _tp) in graph.edges() {
+            let (Some(a), Some(b)) = (self.output_port_pos(from), self.input_port_pos(to)) else { continue };
+            painter.line_segment([a, b], Stroke::new(2.0, Color32::from_rgb(180, 180, 200)));
+        }
+        // --- Draw the in-progress wire -------------------------------------
+        if let Some(drag) = &self.wire_drag {
+            if let Some(a) = self.output_port_pos(drag.from_node) {
+                painter.line_segment([a, drag.current], Stroke::new(2.0, Color32::from_rgb(120, 220, 160)));
+            }
+        }
+
         let node_ids: Vec<NodeId> = self.layouts.keys().copied().collect();
         let mut port_positions = PortPositions::new();
         for id in &node_ids {
@@ -98,18 +197,20 @@ impl NodeEditorPanel {
             painter.circle_filled(out_pos, 5.0, Color32::from_rgb(80, 200, 120));
             painter.circle_filled(in_pos,  5.0, Color32::from_rgb(200, 120, 80));
         }
-        // Handle click selections (separate pass to avoid borrow conflict)
-        if let Some(click_pos) = response.interact_pointer_pos() {
-            for id in &node_ids {
-                if let Some(layout) = self.layouts.get(id) {
-                    let top_left = layout.pos + self.pan;
-                    let rect = Rect::from_min_size(top_left, layout.size);
-                    if rect.contains(click_pos) { self.selected = Some(*id); break; }
+        // Handle click selections (separate pass to avoid borrow conflict).
+        // Skip while a wire is being dragged so wiring doesn't also re-select.
+        if !dragging_wire {
+            if let Some(click_pos) = response.interact_pointer_pos() {
+                for id in &node_ids {
+                    if let Some(layout) = self.layouts.get(id) {
+                        let top_left = layout.pos + self.pan;
+                        let rect = Rect::from_min_size(top_left, layout.size);
+                        if rect.contains(click_pos) { self.selected = Some(*id); break; }
+                    }
                 }
             }
         }
         let _ = port_positions;
-        let _ = graph;
     }
 
     pub fn show_params(&mut self, ui: &mut Ui, graph: &mut OchromaNodeGraph) {
@@ -164,5 +265,56 @@ mod tests {
     fn wire_drag_starts_none() {
         let panel = NodeEditorPanel::new();
         assert!(panel.wire_drag.is_none());
+    }
+
+    #[test]
+    fn wire_drag_from_out_to_in_creates_one_edge() {
+        let mut panel = NodeEditorPanel::new();
+        let mut graph = OchromaNodeGraph::new();
+        let a = graph.add_node("a", crate::node_graph::tests_helpers::pass_node());
+        let b = graph.add_node("b", crate::node_graph::tests_helpers::pass_node());
+
+        // Place the two nodes at known positions so port coordinates are deterministic.
+        panel.layouts.insert(a, NodeLayout { pos: Pos2::new(0.0,   0.0), size: Vec2::new(180.0, 120.0) });
+        panel.layouts.insert(b, NodeLayout { pos: Pos2::new(400.0, 0.0), size: Vec2::new(180.0, 120.0) });
+
+        let a_out = panel.output_port_pos(a).unwrap();
+        let b_in  = panel.input_port_pos(b).unwrap();
+        // A's output is on its right edge; B's input on its left edge — they differ.
+        assert_eq!(a_out, Pos2::new(180.0, 60.0));
+        assert_eq!(b_in,  Pos2::new(400.0, 60.0));
+
+        assert_eq!(graph.edge_count(), 0, "no edges before drag");
+
+        // Drag a wire from A's output port and release exactly on B's input port.
+        panel.begin_wire_drag(a, a_out);
+        assert!(panel.wire_drag.is_some(), "drag should be in progress");
+        let created = panel.complete_wire_drag(&mut graph, b_in);
+
+        assert!(created, "releasing on B's input port must create an edge");
+        assert!(panel.wire_drag.is_none(), "drag must be cleared after completion");
+        assert_eq!(graph.edge_count(), 1, "exactly one edge must exist");
+
+        let edges: Vec<(u32, &str, u32, &str)> = graph.edges()
+            .map(|(f, fp, t, tp)| (f.0, fp, t.0, tp))
+            .collect();
+        assert_eq!(edges, vec![(a.0, "out", b.0, "in")], "edge must be A.out -> B.in");
+    }
+
+    #[test]
+    fn wire_drag_release_in_empty_space_creates_no_edge() {
+        let mut panel = NodeEditorPanel::new();
+        let mut graph = OchromaNodeGraph::new();
+        let a = graph.add_node("a", crate::node_graph::tests_helpers::pass_node());
+        graph.add_node("b", crate::node_graph::tests_helpers::pass_node());
+        panel.layouts.insert(a, NodeLayout { pos: Pos2::new(0.0, 0.0), size: Vec2::new(180.0, 120.0) });
+
+        let a_out = panel.output_port_pos(a).unwrap();
+        panel.begin_wire_drag(a, a_out);
+        // Release far from any input port.
+        let created = panel.complete_wire_drag(&mut graph, Pos2::new(5000.0, 5000.0));
+        assert!(!created, "releasing in empty space must not create an edge");
+        assert_eq!(graph.edge_count(), 0);
+        assert!(panel.wire_drag.is_none(), "drag must still be cleared");
     }
 }
