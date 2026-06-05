@@ -216,6 +216,13 @@ impl EngineLoop {
         &mut self.runtime.world
     }
 
+    /// Mutable access to the composed ECS world. Same as [`world`](Self::world);
+    /// named `world_mut` so call sites that need an explicit `&mut World` (e.g.
+    /// running a one-off bevy system, building a query) read clearly.
+    pub fn world_mut(&mut self) -> &mut bevy_ecs::world::World {
+        &mut self.runtime.world
+    }
+
     pub fn time_of_day(&self) -> f32 {
         self.runtime.time_of_day()
     }

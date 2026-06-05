@@ -28,7 +28,7 @@ use vox_app::content_browser::ContentBrowser;
 use vox_app::editor::SceneEditor;
 use vox_app::soundscape::Soundscape;
 use vox_app::walk_animation::{animation_system, ProceduralWalkComponent};
-use vox_core::engine_runtime::{EngineConfig, EngineRuntime};
+use vox_core::engine_runtime::EngineConfig;
 use vox_core::game_ui::burn_text;
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
@@ -50,7 +50,6 @@ use vox_render::temporal::TemporalAccumulator;
 
 use ochroma_engine::engine_loop::{EngineLoop, SystemMask};
 use vox_render::gizmos::GizmoRenderer;
-use vox_render::shadows::ShadowMapper;
 use vox_ui::theme::apply_ochroma_theme;
 
 // NavMesh + patrol demo (uncomment to enable):
@@ -137,8 +136,9 @@ impl PatrolAgent {
 // ---------------------------------------------------------------------------
 
 struct EngineApp {
-    // Core engine runtime (scripts, ECS, time, input)
-    engine: EngineRuntime,
+    // Core engine runtime (scripts, ECS, time, input) now lives on `self.loop_`
+    // (EngineLoop::runtime) — the single, ticked ECS world (S4). There is no
+    // separate `engine` field anymore.
 
     // Window + GPU
     window: Option<Arc<Window>>,
@@ -246,8 +246,8 @@ struct EngineApp {
     // Ambient soundscape (toggled with N key)
     soundscape: Soundscape,
 
-    // Cascaded shadow mapper
-    shadow_mapper: ShadowMapper,
+    // Cascaded shadow mapper now lives on `self.loop_` (EngineLoop), driven each
+    // frame via `step_shadows` (S4).
 
     // Audio handle for high-level audio management
     audio_handle: Option<vox_audio::AudioHandle>,
@@ -415,8 +415,6 @@ impl EngineApp {
         let mut editor = SceneEditor::new();
         editor.visible = false;
 
-        let engine = EngineRuntime::new(config.clone());
-
         let dlss = DlssPipeline::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DlssQuality::Performance);
         let (render_w, render_h) = dlss.render_resolution();
 
@@ -439,7 +437,6 @@ impl EngineApp {
         ));
 
         Self {
-            engine,
             window: None,
             backend: None,
             gpu_rasteriser: None,
@@ -501,7 +498,6 @@ impl EngineApp {
                 println!("[ochroma] Soundscape: outdoor default ({} layers, active={})", ss.layers.len(), ss.active);
                 ss
             },
-            shadow_mapper: ShadowMapper::new(512),
             audio_handle: vox_audio::AudioHandle::spawn(),
             rhai: vox_script::rhai_runtime::RhaiRuntime::new(),
             anim_driver: None,
@@ -623,15 +619,16 @@ impl EngineApp {
             );
         }
 
-        // Populate engine scene entities (for scripts)
-        self.engine.spawn("Terrain").with_position(Vec3::ZERO);
+        // Populate engine scene entities (for scripts) — into the loop's world,
+        // the single ticked ECS.
+        self.loop_.runtime.spawn("Terrain").with_position(Vec3::ZERO);
         for i in 0..4u32 {
-            self.engine.spawn(&format!("Building {}", i + 1))
+            self.loop_.runtime.spawn(&format!("Building {}", i + 1))
                 .with_asset("building.ply")
                 .with_position(Vec3::new(i as f32 * 10.0 - 15.0, 0.0, 20.0));
         }
         for i in 0..6u32 {
-            self.engine.spawn(&format!("Tree {}", i + 1))
+            self.loop_.runtime.spawn(&format!("Tree {}", i + 1))
                 .with_asset("tree.ply")
                 .with_position(Vec3::new(i as f32 * 8.0 - 20.0, 0.0, 10.0));
         }
@@ -718,15 +715,15 @@ impl EngineApp {
         });
 
         // Also register lights in engine world
-        self.engine.spawn("Light1")
+        self.loop_.runtime.spawn("Light1")
             .with_position(Vec3::new(5.0, 8.0, 20.0))
             .with_light([1.0, 0.9, 0.7], 50.0, 30.0);
-        self.engine.spawn("Light2")
+        self.loop_.runtime.spawn("Light2")
             .with_position(Vec3::new(-15.0, 4.0, 10.0))
             .with_light([0.7, 0.8, 1.0], 30.0, 20.0);
 
         // Spawn procedural walk-cycle NPC at (0, 0, -3)
-        self.engine.world.spawn(
+        self.loop_.world_mut().spawn(
             ProceduralWalkComponent::humanoid_blob(glam::Vec3::new(0.0, 0.0, -3.0))
         );
         println!("[ochroma] Spawned procedural walk NPC at (0, 0, -3)");
@@ -950,7 +947,7 @@ impl EngineApp {
         // Drain animation splats from RenderBuffer (written by animation_system)
         {
             let anim_splats = std::mem::take(
-                &mut self.engine.world.resource_mut::<vox_core::engine_runtime::RenderBuffer>().splats
+                &mut self.loop_.world_mut().resource_mut::<vox_core::engine_runtime::RenderBuffer>().splats
             );
             render_splats.extend(anim_splats);
         }
@@ -959,7 +956,8 @@ impl EngineApp {
         // GI via EngineLoop (S2/S3). step_gi mutates the loop's atmosphere/GI
         // cache (sun elevation from `hour`, set_sky) and returns the
         // GI-modulated splats — byte-for-byte the old inline propagate/apply.
-        let render_splats = self.loop_.step_gi(&render_splats, self.engine.time_of_day());
+        let hour = self.loop_.time_of_day();
+        let render_splats = self.loop_.step_gi(&render_splats, hour);
 
         // Legacy baked GI cache (kept for backward compat with --bake-gi workflow)
         let render_splats = match &self.gi_cache {
@@ -1027,23 +1025,21 @@ impl EngineApp {
         }
 
         // Time-of-day illuminant
-        let illuminant = illuminant_for_time(self.engine.time_of_day());
+        let illuminant = illuminant_for_time(self.loop_.time_of_day());
 
-        // --- Shadow map update ---
-        let shadow_hour = self.engine.time_of_day();
-        let sun_dir = self.light_manager.sun.sun_direction(shadow_hour, 172);
+        // --- Shadow map update --- via EngineLoop (S4). step_shadows computes
+        // the sun direction (SunModel::new(51.5), identical to the old
+        // light_manager.sun), updates the loop's ShadowMapper for the camera,
+        // and renders the shadow map over render_splats — byte-for-byte the old
+        // inline block. Subsequent shadow reads use self.loop_.shadow_mapper.
+        let shadow_hour = self.loop_.time_of_day();
         let cam_fwd = (self.camera.target - self.camera.position).normalize_or(glam::Vec3::NEG_Z);
-        self.shadow_mapper.update(self.camera.position, cam_fwd, sun_dir);
-
-        let shadow_positions: Vec<glam::Vec3> = render_splats
-            .iter()
-            .map(|s| glam::Vec3::from(s.position()))
-            .collect();
-        let shadow_radii: Vec<f32> = render_splats
-            .iter()
-            .map(|s| (s.scale_u().abs() + s.scale_v().abs() + s.scale_w().abs()) / 3.0)
-            .collect();
-        self.shadow_mapper.render_shadow_map(&shadow_positions, &shadow_radii);
+        let _sun_dir = self.loop_.step_shadows(
+            self.camera.position,
+            cam_fwd,
+            shadow_hour,
+            &render_splats,
+        );
 
         // Generate CPU shadow mask: project each shadowed splat to screen space
         let shadow_mask: Vec<f32> = {
@@ -1053,7 +1049,7 @@ impl EngineApp {
             let mut mask = vec![1.0f32; w * h];
             for splat in &render_splats {
                 let world_pos = glam::Vec3::from(splat.position());
-                if self.shadow_mapper.is_in_shadow(world_pos, 0.01) {
+                if self.loop_.shadow_mapper.is_in_shadow(world_pos, 0.01) {
                     let clip = vp * world_pos.extend(1.0);
                     if clip.w > 0.001 {
                         let ndc_x = clip.x / clip.w;
@@ -1074,7 +1070,7 @@ impl EngineApp {
 
         let upscaled = if self.spectral_bypass {
             // FAST PATH: software rasteriser + DLSS upscale
-            let fb = self.rasteriser.render(&render_splats, &render_camera, &illuminant, Some(&self.shadow_mapper));
+            let fb = self.rasteriser.render(&render_splats, &render_camera, &illuminant, Some(&self.loop_.shadow_mapper));
             let pixel_count = (render_w * render_h) as usize;
             let depth = vec![1.0f32; pixel_count];
             let motion = vec![[0.0f32; 2]; pixel_count];
@@ -1131,7 +1127,7 @@ impl EngineApp {
             [220, 220, 220], 1);
         burn_text(&mut final_pixels, display_w, 4, y_off + 10,
             &format!("TIME {:.0}:00  EV {:.2}  {}  DLSS {}  CLAS:{}  TILES:{}  LIGHTS:{}  PARTICLES:{}",
-                self.engine.time_of_day(),
+                self.loop_.time_of_day(),
                 self.exposure,
                 tonemap_operator_name(self.tonemap.operator),
                 dlss_quality_name(self.dlss.quality),
@@ -1143,9 +1139,9 @@ impl EngineApp {
             [180, 180, 180], 1);
         burn_text(&mut final_pixels, display_w, 4, y_off + 20,
             &format!("ENTITIES: {}  SCRIPTS: {}  FRAME: {}  [P] toggle spectral",
-                self.engine.stats.entity_count,
-                self.engine.registered_script_count(),
-                self.engine.stats.frame_number,
+                self.loop_.runtime.stats.entity_count,
+                self.loop_.runtime.registered_script_count(),
+                self.loop_.runtime.stats.frame_number,
             ),
             [160, 160, 160], 1);
 
@@ -1298,7 +1294,7 @@ impl EngineApp {
             light: None,
         }).collect();
 
-        WorldSave::from_entities(entities, cam_pos, cam_rot, self.engine.time_of_day())
+        WorldSave::from_entities(entities, cam_pos, cam_rot, self.loop_.time_of_day())
     }
 }
 
@@ -1321,7 +1317,7 @@ impl EngineApp {
                                 w.set_cursor_visible(true);
                             }
                         } else {
-                            self.engine.stop();
+                            self.loop_.runtime.stop();
                             event_loop.exit();
                         }
                     }
@@ -1341,10 +1337,10 @@ impl EngineApp {
                         println!("[ochroma] Screenshot: {}", path.display());
                     }
                     KeyCode::KeyT => {
-                        let new_hour = (self.engine.time_of_day() + 1.0) % 24.0;
-                        self.engine.set_time_of_day(new_hour);
+                        let new_hour = (self.loop_.time_of_day() + 1.0) % 24.0;
+                        self.loop_.set_time_of_day(new_hour);
                         self.temporal.reset();
-                        println!("[ochroma] Time: {:.0}:00", self.engine.time_of_day());
+                        println!("[ochroma] Time: {:.0}:00", self.loop_.time_of_day());
                     }
                     KeyCode::Equal => {
                         self.exposure = (self.exposure * 1.2).min(16.0);
@@ -1510,7 +1506,7 @@ impl EngineApp {
                         let path = vox_data::world_save::WorldSave::quick_save_path();
                         match vox_data::world_save::WorldSave::load_from_file(&path) {
                             Ok(ws) => {
-                                self.engine.set_time_of_day(ws.resources.time_of_day);
+                                self.loop_.set_time_of_day(ws.resources.time_of_day);
                                 let cp = ws.resources.camera_position;
                                 let cr = ws.resources.camera_rotation;
                                 self.camera.target = glam::Vec3::new(cp[0], cp[1], cp[2]);
@@ -1764,7 +1760,7 @@ impl EngineApp {
         // Update patrol agents along navmesh with spectral perception
         if let Some(nm) = &self.navmesh {
             let dt = self.frame_dt;
-            let sky_ambient = illuminant_for_time(self.engine.time_of_day()).bands;
+            let sky_ambient = illuminant_for_time(self.loop_.time_of_day()).bands;
             for agent in &mut self.patrol_agents {
                 agent.update(dt, nm);
                 // Update spectral perception from current sky illuminant
@@ -1887,16 +1883,23 @@ impl EngineApp {
         // 3. Tick particles
         self.particles.tick(dt);
 
-        // 4. Tick engine runtime (scripts, time advance)
-        self.engine.tick(dt);
+        // 4. Tick engine runtime (scripts, time advance) on the loop's world —
+        // the single ticked ECS (S4). NOTE: we call runtime.tick directly rather
+        // than loop_.step_scripts here because step_scripts also DRAINS the
+        // RenderBuffer; the shell's animation_system below appends to that same
+        // RenderBuffer *after* the tick, and the render path drains it once
+        // afterward. Draining here would lose the gather_splats output, so the
+        // tick stays drain-free to preserve behavior exactly.
+        self.loop_.runtime.tick(dt);
 
         // 4a. Run procedural animation — appends bobbing splats to RenderBuffer
+        // (operates on the loop's world, where the NPC was spawned).
         {
             use bevy_ecs::system::{IntoSystem, System};
             let mut sys = IntoSystem::into_system(animation_system);
-            sys.initialize(&mut self.engine.world);
-            sys.run((), &mut self.engine.world);
-            sys.apply_deferred(&mut self.engine.world);
+            sys.initialize(self.loop_.world_mut());
+            sys.run((), self.loop_.world_mut());
+            sys.apply_deferred(self.loop_.world_mut());
         }
 
         // 4b. Step Rapier physics and sync dynamic bodies back to ECS
@@ -1954,30 +1957,12 @@ impl EngineApp {
         };
         self.loop_.step_audio(dt, listener_pos, listener_fwd);
 
-        // Process pending script commands for audio playback
-        {
-            use vox_core::script_interface::ScriptCommand;
-            let pending = std::mem::take(
-                &mut self.engine.world.resource_mut::<vox_core::engine_runtime::PendingScriptCommands>().commands,
-            );
-            for (_entity, commands) in &pending {
-                for cmd in commands {
-                    if let ScriptCommand::PlaySound { clip, volume, .. } = cmd {
-                        // Play via spatial audio manager as a procedural tone
-                        // 440Hz for generic, 800Hz for click, 600Hz ascending for collect
-                        let freq = match clip.as_str() {
-                            "click" => 800.0,
-                            "collect" => 600.0,
-                            "jump" => 400.0,
-                            _ => 440.0,
-                        };
-                        self.loop_.spatial_audio.play_tone(freq, 0.2, *volume);
-                    }
-                }
-            }
-            // Put unprocessed commands back (other systems may need them)
-            self.engine.world.resource_mut::<vox_core::engine_runtime::PendingScriptCommands>().commands = pending;
-        }
+        // Process pending script commands for audio playback via EngineLoop (S4).
+        // drain_sound_commands is a byte-for-byte relocation of the old inline
+        // block: it drains PendingScriptCommands from the loop's world, maps each
+        // PlaySound clip to a tone frequency, plays it on the loop's spatial
+        // audio, and restores unprocessed commands.
+        self.loop_.drain_sound_commands();
 
         // 4c-rhai. Per-frame Rhai script update + command dispatch
         {
@@ -2032,8 +2017,9 @@ impl EngineApp {
         //     the corresponding splats move with them.
         {
             use vox_core::ecs::TransformComponent;
-            let mut query = self.engine.world.query::<(bevy_ecs::prelude::Entity, &TransformComponent)>();
-            let entities: Vec<(u32, [f32; 3])> = query.iter(&self.engine.world)
+            let world = self.loop_.world_mut();
+            let mut query = world.query::<(bevy_ecs::prelude::Entity, &TransformComponent)>();
+            let entities: Vec<(u32, [f32; 3])> = query.iter(world)
                 .map(|(e, t)| (e.index(), [t.position.x, t.position.y, t.position.z]))
                 .collect();
             for (eid, pos) in entities {
@@ -2176,7 +2162,7 @@ impl EngineApp {
             // Drain animation splats from RenderBuffer (written by animation_system)
             {
                 let anim_splats = std::mem::take(
-                    &mut self.engine.world.resource_mut::<vox_core::engine_runtime::RenderBuffer>().splats
+                    &mut self.loop_.world_mut().resource_mut::<vox_core::engine_runtime::RenderBuffer>().splats
                 );
                 render_splats.extend(anim_splats);
             }
@@ -2187,7 +2173,7 @@ impl EngineApp {
                 render_splats.extend(animated_splats);
             }
 
-            let illuminant = illuminant_for_time(self.engine.time_of_day());
+            let illuminant = illuminant_for_time(self.loop_.time_of_day());
 
             // Dispatch SDF soft shadow compute pass
             if let Some(sdf_pass) = &self.sdf_shadow {
@@ -2199,7 +2185,7 @@ impl EngineApp {
             }
 
             let gpu_rast = self.gpu_rasteriser.as_ref().expect("gpu_rasteriser checked above");
-            let shadow_vp = self.shadow_mapper.cascades.first().map(|c| c.light_view_proj);
+            let shadow_vp = self.loop_.shadow_mapper.cascades.first().map(|c| c.light_view_proj);
             gpu_rast.render_with_shadow(
                 backend.device(),
                 backend.queue(),
@@ -2360,7 +2346,7 @@ impl EngineApp {
         }
         if self.editor.pending_exit {
             self.editor.pending_exit = false;
-            self.engine.stop();
+            self.loop_.runtime.stop();
             event_loop.exit();
             return;
         }
@@ -2442,10 +2428,10 @@ impl EngineApp {
 impl ApplicationHandler for EngineApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let attrs = Window::default_attributes()
-            .with_title(&self.engine.config.window_title)
+            .with_title(&self.loop_.runtime.config.window_title)
             .with_inner_size(winit::dpi::PhysicalSize::new(
-                self.engine.config.window_width,
-                self.engine.config.window_height,
+                self.loop_.runtime.config.window_width,
+                self.loop_.runtime.config.window_height,
             ));
 
         let window = Arc::new(
@@ -2527,7 +2513,7 @@ impl ApplicationHandler for EngineApp {
         }
 
         // Start the engine runtime (initialises scripts)
-        self.engine.start();
+        self.loop_.runtime.start();
 
         // Auto-load Rhai scripts from the scripts/ directory
         if let Ok(entries) = std::fs::read_dir("scripts") {
@@ -2561,7 +2547,7 @@ impl ApplicationHandler for EngineApp {
         println!("Ochroma Engine v0.1.0");
         println!("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
         println!("  {} entities | {} splats | {} clusters",
-            self.engine.entity_count(),
+            self.loop_.runtime.entity_count(),
             self.scene_splats.len(),
             self.clas_cluster_count);
         println!("  {} point lights | {} particle emitters",
@@ -2587,7 +2573,7 @@ impl ApplicationHandler for EngineApp {
 
         match event {
             WindowEvent::CloseRequested => {
-                self.engine.stop();
+                self.loop_.runtime.stop();
                 event_loop.exit();
             }
             WindowEvent::KeyboardInput { event, .. } => self.handle_keyboard_event(&event, event_loop),
