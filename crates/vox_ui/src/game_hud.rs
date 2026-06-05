@@ -15,7 +15,6 @@ use crate::vello_ctx::VelloCtxCpu;
 /// Composes the full in-game HUD (spectral bars + orb progress) for the CPU
 /// software-renderer path.
 pub struct GameHud {
-    width:  u32,
     height: u32,
     /// Pixel margin from the screen edges for anchored elements.
     margin: f32,
@@ -32,8 +31,8 @@ const ORB_BAR_WIDTH:  f32 = 240.0;
 const ORB_BAR_HEIGHT: f32 = 18.0;
 
 impl GameHud {
-    pub fn new(width: u32, height: u32) -> Self {
-        Self { width, height, margin: 16.0 }
+    pub fn new(_width: u32, height: u32) -> Self {
+        Self { height, margin: 16.0 }
     }
 
     /// Records the full HUD into `ctx`:

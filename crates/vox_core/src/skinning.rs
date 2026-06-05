@@ -281,7 +281,7 @@ impl SkeletonRetargeter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::{Vec3, Vec2, Quat};
+    use glam::{Vec3, Quat};
 
     #[test]
     fn splat_skin_data_single_weight_sums_to_one() {

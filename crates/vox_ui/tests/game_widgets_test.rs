@@ -1,4 +1,4 @@
-use vox_ui::game_widgets::{ResourceRow, WidgetCmd, GameWidgets};
+use vox_ui::game_widgets::{ResourceRow, WidgetCmd};
 
 #[test]
 fn widget_resource_bar_shows_correct_count() {

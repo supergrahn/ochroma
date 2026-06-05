@@ -32,6 +32,9 @@ impl Default for SamplingConfig {
 #[derive(Debug)]
 pub struct LlmInference {
     pub backend: LlmBackend,
+    // Reserved handle for the loaded model; populated by `load_gguf` and read by
+    // the real-inference path documented in the module header (not yet landed).
+    #[allow(dead_code)]
     inner: Option<LoadedModel>,
 }
 

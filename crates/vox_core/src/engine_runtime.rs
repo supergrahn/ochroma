@@ -1180,14 +1180,6 @@ mod tests {
         GaussianSplat::surface(pos, [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.1, 0.1, 255, [0; 16])
     }
 
-    fn identity_transform() -> TransformComponent {
-        TransformComponent {
-            position: Vec3::ZERO,
-            rotation: Quat::IDENTITY,
-            scale: Vec3::ONE,
-        }
-    }
-
     #[test]
     fn transform_splat_translates_position() {
         let splat = zero_splat([1.0, 0.0, 0.0]);

@@ -1,7 +1,7 @@
 //! BiomeNode — classifies terrain cells into biome kinds.
 
 use crate::node_graph::{
-    HeightfieldSpatial, NodeDescriptor, NodeError, NodeInputs, NodeOutputs,
+    NodeDescriptor, NodeError, NodeInputs, NodeOutputs,
     OchromaNode, ParamValue, PortData, PortSpec, PortType,
 };
 
@@ -153,6 +153,7 @@ impl OchromaNode for BiomeNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node_graph::HeightfieldSpatial;
 
     #[test]
     fn test_biome_node_classifies_by_height() {

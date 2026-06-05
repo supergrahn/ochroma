@@ -7,9 +7,7 @@ use crate::node_graph::{
 
 struct UrbanCell {
     traffic_weight: f32,
-    refuse_level:   f32,
     civic_upkeep:   f32,
-    wind_exposure:  f32,
     moisture:       f32,
 }
 
@@ -59,15 +57,10 @@ impl OchromaNode for UrbanSimNode {
 
     fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
         let n = self.grid_w * self.grid_h;
-        let mut cells: Vec<UrbanCell> = (0..n).map(|i| {
-            let x = i % self.grid_w;
-            let y = i / self.grid_w;
-            let edge = x == 0 || x == self.grid_w - 1 || y == 0 || y == self.grid_h - 1;
+        let mut cells: Vec<UrbanCell> = (0..n).map(|_| {
             UrbanCell {
                 traffic_weight: 0.0,
-                refuse_level:   0.0,
                 civic_upkeep:   1.0,
-                wind_exposure:  if edge { 1.0 } else { 0.0 },
                 moisture:       0.0,
             }
         }).collect();

@@ -166,7 +166,6 @@ fn billboard_from_mesh(mesh: &EditorMesh) -> EditorMesh {
     if min[0].is_infinite() { min = [-1.0, 0.0, -1.0]; max = [1.0, 2.0, 1.0]; }
 
     let cx = (min[0] + max[0]) * 0.5;
-    let cy = (min[1] + max[1]) * 0.5;
     let w  = max[0] - min[0];
     let h  = max[1] - min[1];
 

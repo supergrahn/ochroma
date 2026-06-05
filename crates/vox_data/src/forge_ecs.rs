@@ -112,7 +112,7 @@ impl bevy_app::Plugin for ForgePlugin {
 mod tests {
     use super::*;
     use crate::proc_gs::{
-        GeometryConfig, GeometryStrategy, MaterialZoneConfig, RuleHeader, VariationConfig,
+        GeometryConfig, GeometryStrategy, RuleHeader, VariationConfig,
     };
 
     fn minimal_rule() -> SplatRule {

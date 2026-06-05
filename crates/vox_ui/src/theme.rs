@@ -234,7 +234,7 @@ mod tests {
     fn section_header_renders() {
         let ctx = egui::Context::default();
         apply_ochroma_theme(&ctx);
-        ctx.run(egui::RawInput::default(), |ctx| {
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 section_header(ui, "Transform");
             });

@@ -189,7 +189,7 @@ impl NodeEditorPanel {
             painter.rect_filled(rect, 6.0, bg);
             painter.rect_stroke(rect, 6.0, Stroke::new(1.0, Color32::from_rgb(100, 100, 120)), egui::StrokeKind::Middle);
             let header_rect = Rect::from_min_size(top_left, Vec2::new(layout.size.x, 24.0));
-            painter.rect_filled(header_rect, egui::Rounding { nw: 6, ne: 6, sw: 0, se: 0 }, Color32::from_rgb(60, 80, 120));
+            painter.rect_filled(header_rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, Color32::from_rgb(60, 80, 120));
             let out_pos = top_left + Vec2::new(layout.size.x, layout.size.y * 0.5);
             let in_pos  = top_left + Vec2::new(0.0, layout.size.y * 0.5);
             port_positions.insert((id.0, "out".into()), out_pos);

@@ -1,4 +1,4 @@
-use vox_sim::citizen::{CitizenManager, DailyState, LifecycleStage};
+use vox_sim::citizen::{CitizenManager, DailyState};
 use vox_sim::routines::update_routines;
 
 #[test]

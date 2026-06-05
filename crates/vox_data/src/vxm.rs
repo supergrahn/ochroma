@@ -318,7 +318,6 @@ impl VxmFileV3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Quat;
 
     #[test]
     fn header_size_is_64_bytes() {
