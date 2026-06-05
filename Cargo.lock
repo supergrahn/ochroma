@@ -7480,8 +7480,6 @@ name = "vox_ai"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "candle-core",
- "candle-nn",
  "glam 0.29.3",
  "half",
  "serde",
@@ -7544,7 +7542,6 @@ dependencies = [
  "fundsp",
  "glam 0.29.3",
  "half",
- "lewton",
  "rodio",
  "serde",
  "serde_json",
