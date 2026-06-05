@@ -277,9 +277,8 @@ struct EngineApp {
     // Baked GI cache (applied to splats before render)
     gi_cache: Option<vox_render::gi_cache::GiCache>,
 
-    // Live spectral atmosphere + radiance cache (replaces static gi_cache in render loop)
-    spectral_atmosphere: vox_render::spectral_atmosphere::SpectralAtmosphere,
-    spectral_gi: vox_render::spectral_gi::SpectralRadianceCache,
+    // Live spectral atmosphere + radiance cache now live on `self.loop_`
+    // (EngineLoop), driven each frame via `step_gi` (S3).
 
     // Splat particle emitters (KeyE spawns fire emitter)
     particle_emitters: Vec<vox_render::splat_particles::SplatEmitter>,
@@ -511,8 +510,6 @@ impl EngineApp {
             key_bindings: vox_core::input::load_bindings(std::path::Path::new("keybindings.toml")),
             sdf_shadow: None,
             gi_cache: None,
-            spectral_atmosphere: vox_render::spectral_atmosphere::SpectralAtmosphere::earth(),
-            spectral_gi: vox_render::spectral_gi::SpectralRadianceCache::new(0),
             particle_emitters: Vec::new(),
             navmesh: None,
             patrol_agents: Vec::new(),
@@ -958,21 +955,11 @@ impl EngineApp {
             render_splats.extend(anim_splats);
         }
 
-        // Update spectral atmosphere from time of day, then apply live spectral GI
-        {
-            let hour = self.engine.time_of_day();
-            let norm = (hour % 24.0) / 24.0;
-            // Map hour → sun elevation: peaks at noon (0.5), zero at midnight (0.0/1.0)
-            self.spectral_atmosphere.sun_zenith =
-                (std::f32::consts::PI * norm - std::f32::consts::FRAC_PI_2)
-                    .sin()
-                    .max(0.0)
-                    * std::f32::consts::FRAC_PI_2;
-            self.spectral_atmosphere.sun_elevation = self.spectral_atmosphere.sun_zenith;
-            self.spectral_gi.set_sky(&self.spectral_atmosphere);
-        }
-        self.spectral_gi.propagate(&render_splats, 256);
-        let render_splats = self.spectral_gi.apply(&render_splats);
+        // Update spectral atmosphere from time of day, then apply live spectral
+        // GI via EngineLoop (S2/S3). step_gi mutates the loop's atmosphere/GI
+        // cache (sun elevation from `hour`, set_sky) and returns the
+        // GI-modulated splats — byte-for-byte the old inline propagate/apply.
+        let render_splats = self.loop_.step_gi(&render_splats, self.engine.time_of_day());
 
         // Legacy baked GI cache (kept for backward compat with --bake-gi workflow)
         let render_splats = match &self.gi_cache {
