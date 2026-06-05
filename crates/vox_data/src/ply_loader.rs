@@ -283,3 +283,186 @@ pub fn create_test_ply(positions: &[[f32; 3]]) -> Vec<u8> {
 
     data
 }
+
+/// Write Gaussian splats to a standard binary 3DGS `.ply` (little-endian).
+///
+/// Layout matches the de-facto INRIA 3DGS convention so external tools
+/// (SuperSplat, gsplat viewers, etc.) can read the output:
+///   x y z scale_0..2 (log-space) rot_0..3 (w,x,y,z) opacity (logit) f_dc_0..2 (SH DC).
+///
+/// Ochroma carries scales as linear half-axes and a 16-band spectrum, so we
+/// invert the loader's transforms: scales -> ln(scale); opacity -> logit; and
+/// the 16-band spectrum is collapsed to an approximate sRGB (luminance-weighted
+/// band groups: blue 0..5, green 5..11, red 11..16) which is then encoded back
+/// into the SH DC term via the inverse of the loader's `0.5 + C0*f_dc`. This is
+/// a lossy colour round-trip (spectral -> RGB -> SH), but positions, scales,
+/// rotations and opacity round-trip exactly.
+pub fn write_ply(splats: &[GaussianSplat], path: &Path) -> Result<(), PlyError> {
+    let bytes = write_ply_to_bytes(splats);
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+/// Serialise splats to an in-memory standard 3DGS PLY (for testing / piping).
+pub fn write_ply_to_bytes(splats: &[GaussianSplat]) -> Vec<u8> {
+    let sh_c0: f32 = 0.282_094_8; // 1 / (2 * sqrt(pi))
+    let mut data = Vec::new();
+    let header = format!(
+        "ply\nformat binary_little_endian 1.0\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nproperty float opacity\nproperty float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n",
+        splats.len()
+    );
+    data.extend_from_slice(header.as_bytes());
+
+    for s in splats {
+        let pos = s.position();
+        data.extend_from_slice(&pos[0].to_le_bytes());
+        data.extend_from_slice(&pos[1].to_le_bytes());
+        data.extend_from_slice(&pos[2].to_le_bytes());
+
+        // Linear half-axes -> log-space (loader does .exp() on read).
+        let scales = s.scales();
+        for sc in scales {
+            data.extend_from_slice(&sc.max(1e-8).ln().to_le_bytes());
+        }
+
+        // Rotation: Ochroma stores XYZW (i16); PLY convention is rot_0..3 = w,x,y,z.
+        let q = s.decoded_rotation().normalize();
+        data.extend_from_slice(&q.w.to_le_bytes());
+        data.extend_from_slice(&q.x.to_le_bytes());
+        data.extend_from_slice(&q.y.to_le_bytes());
+        data.extend_from_slice(&q.z.to_le_bytes());
+
+        // Opacity u8 in [0,255] -> [0,1] -> logit (loader applies sigmoid).
+        let op = (s.opacity() as f32 / 255.0).clamp(1e-4, 1.0 - 1e-4);
+        let logit = (op / (1.0 - op)).ln();
+        data.extend_from_slice(&logit.to_le_bytes());
+
+        // Spectrum -> approximate linear RGB by summing band groups, then invert
+        // the loader's SH DC decode: f_dc = (rgb - 0.5) / C0.
+        let mut rsum = 0.0f32;
+        let mut gsum = 0.0f32;
+        let mut bsum = 0.0f32;
+        for band in 0..GaussianSplat::BANDS {
+            let v = s.spectral_f32(band);
+            if band < 5 {
+                bsum += v;
+            } else if band < 11 {
+                gsum += v;
+            } else {
+                rsum += v;
+            }
+        }
+        let r = (rsum / 5.0).clamp(0.0, 1.0);
+        let g = (gsum / 6.0).clamp(0.0, 1.0);
+        let b = (bsum / 5.0).clamp(0.0, 1.0);
+        for c in [r, g, b] {
+            let f_dc = (c - 0.5) / sh_c0;
+            data.extend_from_slice(&f_dc.to_le_bytes());
+        }
+    }
+
+    data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spectral_upsampler::SpectralUpsampler;
+    use half::f16;
+    use vox_core::types::GaussianSplat;
+
+    /// Build a splat from an RGB colour (so the test controls the spectrum).
+    fn splat_rgb(pos: [f32; 3], scale: [f32; 3], r: f32, g: f32, b: f32) -> GaussianSplat {
+        let spectral_f32 = SpectralUpsampler::from_rgb(r, g, b);
+        let spectral: [u16; 16] =
+            std::array::from_fn(|i| f16::from_f32(spectral_f32[i]).to_bits());
+        GaussianSplat::volume(pos, scale, glam::Quat::IDENTITY, 200, spectral)
+    }
+
+    #[test]
+    fn write_load_roundtrip_preserves_geometry() {
+        let original = vec![
+            splat_rgb([1.0, 2.0, 3.0], [0.1, 0.2, 0.3], 0.9, 0.1, 0.1),
+            splat_rgb([-4.5, 0.0, 7.25], [0.5, 0.5, 0.5], 0.2, 0.8, 0.3),
+            splat_rgb([10.0, -3.0, -2.0], [0.05, 0.07, 0.09], 0.1, 0.1, 0.9),
+        ];
+
+        let bytes = write_ply_to_bytes(&original);
+        let mut cursor = std::io::Cursor::new(bytes);
+        let loaded = load_ply_from_reader(&mut cursor).expect("load_ply must succeed");
+
+        assert_eq!(loaded.len(), original.len());
+        for (o, l) in original.iter().zip(loaded.iter()) {
+            let op = o.position();
+            let lp = l.position();
+            for k in 0..3 {
+                assert!(
+                    (op[k] - lp[k]).abs() < 1e-4,
+                    "position[{k}] mismatch: {} vs {}",
+                    op[k],
+                    lp[k]
+                );
+            }
+            let os = o.scales();
+            let ls = l.scales();
+            for k in 0..3 {
+                // Scale round-trips through ln()/exp() — allow small float error.
+                assert!(
+                    (os[k] - ls[k]).abs() < 1e-3,
+                    "scale[{k}] mismatch: {} vs {}",
+                    os[k],
+                    ls[k]
+                );
+            }
+            // Opacity 200/255 -> logit -> sigmoid -> u8 should land back on 200 (±1).
+            assert!(
+                (o.opacity() as i32 - l.opacity() as i32).abs() <= 1,
+                "opacity mismatch: {} vs {}",
+                o.opacity(),
+                l.opacity()
+            );
+        }
+    }
+
+    #[test]
+    fn pure_red_rgb_lands_in_red_bands() {
+        // Pure red sRGB -> red-region bands (12..16, 680-755nm) must carry the
+        // dominant energy; blue-region bands (0..5, 380-480nm) stay near zero.
+        let spec = SpectralUpsampler::from_rgb(1.0, 0.0, 0.0);
+
+        let red_energy: f32 = spec[12..16].iter().sum();
+        let blue_energy: f32 = spec[0..5].iter().sum();
+
+        assert!(
+            red_energy > 0.5,
+            "red bands 12..16 should carry energy, got {red_energy}"
+        );
+        assert!(
+            blue_energy < 0.1 * red_energy,
+            "blue bands 0..5 should be ~0 for pure red, got {blue_energy} (red {red_energy})"
+        );
+        // The single hottest band must be in the red region.
+        let argmax = (0..16)
+            .max_by(|&a, &b| spec[a].partial_cmp(&spec[b]).unwrap())
+            .unwrap();
+        assert!(
+            argmax >= 11,
+            "peak band should be in the red region, got band {argmax}"
+        );
+    }
+
+    #[test]
+    fn pure_blue_rgb_lands_in_blue_bands() {
+        let spec = SpectralUpsampler::from_rgb(0.0, 0.0, 1.0);
+        let red_energy: f32 = spec[12..16].iter().sum();
+        let blue_energy: f32 = spec[0..5].iter().sum();
+        assert!(
+            blue_energy > 0.5,
+            "blue bands 0..5 should carry energy, got {blue_energy}"
+        );
+        assert!(
+            red_energy < 0.1 * blue_energy,
+            "red bands should be ~0 for pure blue, got {red_energy} (blue {blue_energy})"
+        );
+    }
+}
