@@ -1,4 +1,5 @@
 pub mod canvas;
+pub mod game_hud;
 pub mod game_widgets;
 pub mod layout;
 pub mod node_graph_widget;
@@ -6,6 +7,7 @@ pub mod spectral_hud;
 pub mod theme;
 pub mod vello_ctx;
 
+pub use game_hud::GameHud;
 pub use game_widgets::{GameWidgets, ResourceRow, WidgetCmd};
 pub use layout::{LayoutTree, LayoutNodeId};
 pub use spectral_hud::{SpectralHUD, SpectralRadianceCache};

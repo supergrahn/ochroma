@@ -23,6 +23,9 @@ use vox_core::character_controller::{CharacterController, character_controller_t
 use vox_core::ecs::TransformComponent;
 use vox_core::engine_runtime::EngineConfig;
 use vox_core::game_ui::{GameState, GameUI, UIElement, UIPosition, UISize};
+use vox_ui::game_hud::GameHud;
+use vox_ui::spectral_hud::SpectralRadianceCache;
+use vox_ui::vello_ctx::VelloCtxCpu;
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
 use vox_render::clas;
@@ -1034,6 +1037,29 @@ impl WalkingSim {
         // 4. Render GameUI HUD (orbs, position, fps, game-over overlay)
         self.game_ui.render_to_pixels(&mut pixels, WIDTH, HEIGHT);
 
+        // 5. Vello-style game HUD: live 16-band spectral GI readout (bottom-left)
+        //    + orb progress bar (top-left), composited over the frame. The band
+        //    energies come straight from the GI step (`latest_gi_bands`), so the
+        //    HUD shows the actual indirect radiance at the player's position.
+        if self.game_ui.game_state == GameState::Playing {
+            let mut hud_ctx = VelloCtxCpu::new(WIDTH, HEIGHT);
+            // latest_gi_bands holds f16 BITS (the splat spectral encoding), not
+            // linear-quantized u16 — decode before feeding the HUD so a radiance
+            // of 1.0 fills a bar exactly.
+            let mut energy = [0.0f32; 16];
+            for (e, bits) in energy.iter_mut().zip(self.latest_gi_bands) {
+                *e = half::f16::from_bits(bits).to_f32().clamp(0.0, 1.0);
+            }
+            let bands = SpectralRadianceCache::from_f32(energy);
+            GameHud::new(WIDTH, HEIGHT).compose(
+                &mut hud_ctx,
+                &bands,
+                self.orbs_collected,
+                self.total_orbs,
+            );
+            hud_ctx.rasterize_into(&mut pixels, WIDTH, HEIGHT);
+        }
+
         pixels
     }
 }
@@ -1447,6 +1473,21 @@ fn run_smoke() {
         "frame has only {} distinct colors — looks like a flat fill, not a real render",
         distinct_colors
     );
+    // Vello HUD composited: sample the center of the orb progress bar's FILL
+    // (>=1 orb collected by now) and require the amber fill to dominate — proves
+    // GameHud::compose + rasterize_into actually wrote into the final frame.
+    if app.orbs_collected > 0 {
+        let fill = GameHud::new(WIDTH, HEIGHT)
+            .orb_bar_fill_rect(app.orbs_collected, app.total_orbs);
+        let cx = (fill[0] + fill[2] / 2.0) as u32;
+        let cy = (fill[1] + fill[3] / 2.0) as u32;
+        let px = last_pixels[(cy * WIDTH + cx) as usize];
+        assert!(
+            px[0] > 120 && px[0] > px[2],
+            "orb-bar fill pixel at ({cx},{cy}) is {:?} — not amber; HUD compositing broken",
+            px
+        );
+    }
     // Sim advanced: the windmill always animates, the player walked, and orbs were
     // collected. Require an evolving quantity to have changed.
     assert!(
