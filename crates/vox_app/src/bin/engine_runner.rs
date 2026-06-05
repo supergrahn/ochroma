@@ -1292,6 +1292,8 @@ impl EngineApp {
             collider: None,
             audio: None,
             light: None,
+            splats: Vec::new(),
+            prefab_ref: None,
         }).collect();
 
         WorldSave::from_entities(entities, cam_pos, cam_rot, self.loop_.time_of_day())
