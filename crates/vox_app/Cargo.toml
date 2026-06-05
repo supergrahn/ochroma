@@ -21,6 +21,7 @@ vox_script = { path = "../vox_script" }
 vox_audio = { path = "../vox_audio" }
 vox_physics = { path = "../vox_physics" }
 vox_terrain = { path = "../vox_terrain" }
+vox_editor = { path = "../vox_editor" }
 vox_ui = { path = "../vox_ui" }
 ochroma_engine = { path = "../ochroma_engine" }
 bevy_ecs = { workspace = true }
@@ -66,6 +67,10 @@ path = "src/bin/demo.rs"
 [[bin]]
 name = "walking_sim"
 path = "src/bin/walking_sim.rs"
+
+[[bin]]
+name = "splat_view"
+path = "src/bin/splat_view.rs"
 
 [[bin]]
 name = "platformer"
