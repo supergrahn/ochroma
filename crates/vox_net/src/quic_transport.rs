@@ -37,7 +37,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::replication_packet::{PacketError, ReplicationPacket};
+use crate::replication_packet::{PacketError, PlayerStatePacket, ReplicationPacket};
 
 /// ALPN protocol identifier negotiated by both client and server. The handshake
 /// fails unless BOTH sides advertise this exact byte string, so the server config
@@ -228,6 +228,40 @@ impl QuicConnection {
             .await
             .map_err(|e| TransportError::Stream(e.to_string()))?;
         let packet = ReplicationPacket::decode(&bytes)?;
+        Ok(packet)
+    }
+
+    /// Send one [`PlayerStatePacket`] (position + full spectral signature) over a
+    /// fresh bidirectional stream. Mirrors [`send_packet`](Self::send_packet) but for
+    /// the fixed-size player-state wire format.
+    pub async fn send_player_state(&self, packet: &PlayerStatePacket) -> Result<(), TransportError> {
+        let (mut send, _recv) = self
+            .inner
+            .open_bi()
+            .await
+            .map_err(|e| TransportError::Stream(e.to_string()))?;
+        let bytes = packet.encode();
+        send.write_all(&bytes)
+            .await
+            .map_err(|e| TransportError::Stream(e.to_string()))?;
+        send.finish()
+            .map_err(|e| TransportError::Stream(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Accept the next inbound bidirectional stream and decode exactly one
+    /// [`PlayerStatePacket`] from it.
+    pub async fn recv_player_state(&self) -> Result<PlayerStatePacket, TransportError> {
+        let (_send, mut recv) = self
+            .inner
+            .accept_bi()
+            .await
+            .map_err(|e| TransportError::Stream(e.to_string()))?;
+        let bytes = recv
+            .read_to_end(MAX_PACKET_BYTES)
+            .await
+            .map_err(|e| TransportError::Stream(e.to_string()))?;
+        let packet = PlayerStatePacket::decode(&bytes)?;
         Ok(packet)
     }
 

@@ -13,11 +13,13 @@ pub mod replication;
 pub mod replication_system;
 pub mod transport;
 pub mod world_hosting;
+pub mod net_walk_demo;
 pub use quic_transport::{
     QuicClient, QuicConnection, QuicServer, QuicTransport, TransportError, TransportRole,
 };
 pub use replication::{EntityDelta, NetMessage, PlayerAction, ReplicationClient, ReplicationServer};
-pub use replication_packet::ReplicationPacket;
+pub use replication_packet::{PlayerStatePacket, ReplicationPacket};
+pub use net_walk_demo::{run_loopback_walk_demo, WalkDemoConfig, WalkDemoReport, WalkDemoError};
 pub use transport::{GameClient, GameServer};
 
 #[derive(Debug, Error)]
