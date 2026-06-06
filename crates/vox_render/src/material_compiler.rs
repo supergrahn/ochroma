@@ -107,6 +107,14 @@ pub enum MaterialCompileError {
     Cycle { node: NodeId },
     /// The graph has no nodes.
     Empty,
+    /// A literal that would be emitted into the WGSL — authored or produced
+    /// by constant folding (e.g. `3e38 * 3e38` folding to `inf`) — is NaN or
+    /// infinite. WGSL has no representable non-finite literal and naga
+    /// REJECTS division work-arounds like `(0.0/0.0)` at const-eval, so the
+    /// only honest behavior is a typed compile error (the CPU evaluator
+    /// would happily produce the non-finite value — failing loudly here
+    /// keeps the CPU/GPU contract).
+    NonFiniteLiteral { value: f32 },
 }
 
 impl std::fmt::Display for MaterialCompileError {
@@ -120,6 +128,11 @@ impl std::fmt::Display for MaterialCompileError {
             }
             Self::Cycle { node } => write!(f, "cycle detected at node {node}"),
             Self::Empty => write!(f, "graph is empty"),
+            Self::NonFiniteLiteral { value } => write!(
+                f,
+                "non-finite literal {value} cannot be emitted as WGSL \
+                 (authored or const-folded NaN/inf; naga rejects all encodings)"
+            ),
         }
     }
 }
@@ -394,20 +407,18 @@ impl MaterialDag {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Format an f32 as a WGSL float literal that always parses (has a decimal/exp).
-fn wgsl_f32(v: f32) -> String {
-    if v.is_nan() {
-        // WGSL has no NaN literal; emit a value that const-evaluates to NaN.
-        return "(0.0 / 0.0)".to_string();
+///
+/// Non-finite values are a typed error: WGSL has no NaN/inf literal, and naga
+/// const-folds then REJECTS division encodings like `(0.0/0.0)` ("Float
+/// literal is NaN") — adversarially verified against the pinned naga 24. The
+/// non-finite can be authored OR produced by our own constant folding of
+/// plausible finite inputs (3e38 * 3e38 folds to inf), so every emission site
+/// must propagate this error.
+fn wgsl_f32(v: f32) -> Result<String, MaterialCompileError> {
+    if !v.is_finite() {
+        return Err(MaterialCompileError::NonFiniteLiteral { value: v });
     }
-    if v.is_infinite() {
-        return if v > 0.0 {
-            "(1.0 / 0.0)".to_string()
-        } else {
-            "(-1.0 / 0.0)".to_string()
-        };
-    }
-    let s = format!("{v:?}"); // Debug for f32 always includes a decimal point.
-    s
+    Ok(format!("{v:?}")) // Debug for f32 always includes a decimal point.
 }
 
 impl MaterialDag {
@@ -454,7 +465,10 @@ impl MaterialDag {
                 continue;
             }
             if let BsdfNode::SpectralConstant { spd } = &self.nodes[id] {
-                let entries: Vec<String> = spd.iter().map(|v| wgsl_f32(*v)).collect();
+                let entries = spd
+                    .iter()
+                    .map(|v| wgsl_f32(*v))
+                    .collect::<Result<Vec<String>, _>>()?;
                 consts.push_str(&format!(
                     "const SPD_{} = array<f32, 16>({});\n",
                     id,
@@ -471,11 +485,11 @@ impl MaterialDag {
                 body.push_str(&format!(
                     "    let {} = {};\n",
                     var(id),
-                    wgsl_f32(const_val[id])
+                    wgsl_f32(const_val[id])?
                 ));
                 continue;
             }
-            let rhs = self.emit_node_rhs(id, &var, &is_const, &const_val);
+            let rhs = self.emit_node_rhs(id, &var, &is_const, &const_val)?;
             body.push_str(&format!("    let {} = {};\n", var(id), rhs));
         }
         body.push_str(&format!("    return {};\n", var(self.output)));
@@ -584,67 +598,73 @@ impl MaterialDag {
         var: &dyn Fn(NodeId) -> String,
         is_const: &[bool],
         const_val: &[f32],
-    ) -> String {
-        // Operand reference: const ref → literal, else its var.
-        let op = |r: NodeId| -> String {
+    ) -> Result<String, MaterialCompileError> {
+        // Operand reference: const ref → literal, else its var. Const-folded
+        // values can be non-finite (overflowed folds), so this is fallible.
+        let op = |r: NodeId| -> Result<String, MaterialCompileError> {
             if is_const[r] {
                 wgsl_f32(const_val[r])
             } else {
-                var(r)
+                Ok(var(r))
             }
         };
-        match &self.nodes[id] {
+        Ok(match &self.nodes[id] {
             BsdfNode::SpectralConstant { .. } => {
                 // Indexes the module-level const array hoisted in compile_to_wgsl.
                 format!("SPD_{id}[band]")
             }
             BsdfNode::RgbUplift { rgb } => format!(
                 "smits_uplift_band(vec3<f32>({}, {}, {}), band)",
-                wgsl_f32(rgb[0]),
-                wgsl_f32(rgb[1]),
-                wgsl_f32(rgb[2])
+                wgsl_f32(rgb[0])?,
+                wgsl_f32(rgb[1])?,
+                wgsl_f32(rgb[2])?
             ),
             BsdfNode::BlackbodyEmitter { kelvin } => {
-                format!("blackbody_band(lambda_nm, {})", wgsl_f32(*kelvin))
+                format!("blackbody_band(lambda_nm, {})", wgsl_f32(*kelvin)?)
             }
             BsdfNode::Wavelength => "lambda_nm".to_string(),
             BsdfNode::CosTheta => "cos_theta".to_string(),
-            BsdfNode::Scalar { value } => wgsl_f32(*value),
-            BsdfNode::Add { a, b } => format!("{} + {}", op(*a), op(*b)),
-            BsdfNode::Multiply { a, b } => format!("{} * {}", op(*a), op(*b)),
+            BsdfNode::Scalar { value } => wgsl_f32(*value)?,
+            BsdfNode::Add { a, b } => format!("{} + {}", op(*a)?, op(*b)?),
+            BsdfNode::Multiply { a, b } => format!("{} * {}", op(*a)?, op(*b)?),
             BsdfNode::Mix { a, b, factor } => format!(
                 "{} * {} + {} * {}",
-                op(*a),
-                wgsl_f32(1.0 - factor),
-                op(*b),
-                wgsl_f32(*factor)
+                op(*a)?,
+                wgsl_f32(1.0 - factor)?,
+                op(*b)?,
+                wgsl_f32(*factor)?
             ),
             BsdfNode::Scale { input, factor } => {
-                format!("{} * {}", op(*input), wgsl_f32(*factor))
+                format!("{} * {}", op(*input)?, wgsl_f32(*factor)?)
             }
-            BsdfNode::Invert { input } => format!("clamp(1.0 - {}, 0.0, 1.0)", op(*input)),
+            BsdfNode::Invert { input } => format!("clamp(1.0 - {}, 0.0, 1.0)", op(*input)?),
             BsdfNode::Clamp { input, min, max } => {
-                format!("clamp({}, {}, {})", op(*input), wgsl_f32(*min), wgsl_f32(*max))
+                format!(
+                    "clamp({}, {}, {})",
+                    op(*input)?,
+                    wgsl_f32(*min)?,
+                    wgsl_f32(*max)?
+                )
             }
             BsdfNode::Fresnel { base, power } => format!(
                 "{base_v} + (1.0 - {base_v}) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), {p})",
-                base_v = op(*base),
-                p = wgsl_f32(*power)
+                base_v = op(*base)?,
+                p = wgsl_f32(*power)?
             ),
             BsdfNode::Layer { coat, base, f0 } => {
                 // w = f0 + (1-f0)*(1-cosθ)^5, result = base*(1-w) + coat*w.
-                let f0s = wgsl_f32(*f0);
+                let f0s = wgsl_f32(*f0)?;
                 let wexpr = format!(
                     "({f0s} + (1.0 - {f0s}) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0))"
                 );
                 format!(
                     "{base} * (1.0 - {w}) + {coat} * {w}",
-                    base = op(*base),
-                    coat = op(*coat),
+                    base = op(*base)?,
+                    coat = op(*coat)?,
                     w = wexpr
                 )
             }
-        }
+        })
     }
 
     /// WGSL implementation of `smits_uplift_band` — must mirror the CPU version.
@@ -925,6 +945,42 @@ mod tests {
     }
 
     /// Empty graph is rejected.
+    /// Non-finite literals — authored OR produced by const-folding finite
+    /// inputs — must be a typed error, not an Ok(wgsl) that naga rejects
+    /// (review finding: naga const-folds and refuses (0.0/0.0) encodings).
+    #[test]
+    fn non_finite_literals_error_instead_of_emitting_invalid_wgsl() {
+        // Authored NaN in an SPD band.
+        let mut spd = [0.5f32; 16];
+        spd[3] = f32::NAN;
+        let g = MaterialDag {
+            nodes: vec![BsdfNode::SpectralConstant { spd }],
+            output: 0,
+        };
+        match g.compile_to_wgsl() {
+            Err(MaterialCompileError::NonFiniteLiteral { value }) => {
+                assert!(value.is_nan(), "error must carry the offending value")
+            }
+            other => panic!("authored NaN must be NonFiniteLiteral, got {other:?}"),
+        }
+
+        // FINITE inputs whose const-fold overflows to inf: 3e38 * 3e38.
+        let g = MaterialDag {
+            nodes: vec![
+                BsdfNode::Scalar { value: 3.0e38 },
+                BsdfNode::Scalar { value: 3.0e38 },
+                BsdfNode::Multiply { a: 0, b: 1 },
+            ],
+            output: 2,
+        };
+        match g.compile_to_wgsl() {
+            Err(MaterialCompileError::NonFiniteLiteral { value }) => {
+                assert!(value.is_infinite(), "folded overflow must surface as inf")
+            }
+            other => panic!("inf-folding multiply must be NonFiniteLiteral, got {other:?}"),
+        }
+    }
+
     #[test]
     fn empty_graph_is_rejected() {
         let dag = MaterialDag {

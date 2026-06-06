@@ -666,12 +666,17 @@ impl VfxGraphInstance {
     }
 
     /// Deterministic LCG in [0, 1) — same recurrence as `vfx.rs::next_random`.
+    ///
+    /// The numerator keeps only 24 bits so every value is exactly
+    /// representable in an f32 mantissa and the maximum (2^24 - 1) / 2^24
+    /// is strictly < 1.0. (The previous 31-bit form rounded its top band to
+    /// exactly 1.0, violating the half-open contract — review finding.)
     fn rand_unit(&mut self) -> f32 {
         self.rng = self
             .rng
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        (self.rng >> 33) as f32 / (1u64 << 31) as f32
+        (self.rng >> 40) as f32 / (1u64 << 24) as f32
     }
 }
 
@@ -983,6 +988,19 @@ mod tests {
             bytes_a == bytes_b
         );
         assert_eq!(bytes_a, bytes_b, "same seed + same dt sequence must be bit-identical");
+    }
+
+    /// rand_unit's documented [0,1) contract must hold for every draw — the
+    /// old 31-bit form rounded its top band to exactly 1.0 (review finding).
+    #[test]
+    fn rand_unit_is_strictly_below_one() {
+        for seed in [0u64, 1, 7, 0xDEAD_BEEF, u64::MAX] {
+            let mut inst = VfxGraphInstance::new(graph_fire(seed), Vec3::ZERO);
+            for i in 0..100_000 {
+                let v = inst.rand_unit();
+                assert!((0.0..1.0).contains(&v), "seed {seed} draw {i}: {v} out of [0,1)");
+            }
+        }
     }
 
     #[test]

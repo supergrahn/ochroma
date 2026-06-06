@@ -178,6 +178,9 @@ pub struct EngineLoop {
     /// Wall-clock duration of the most recent `step_gi` call, in microseconds.
     /// `None` until the first `step_gi`. Surfaced via [`EngineLoop::last_gi_us`].
     last_gi_us: Option<u64>,
+    /// Which implementation the most recent `step_gi` actually ran ("cpu"/
+    /// "gpu") — can differ from the selected backend on over-capacity frames.
+    last_gi_backend_used: Option<&'static str>,
     /// Capacity the GPU backend was sized for. A frame whose splat count
     /// exceeds it routes through the CPU path for that call (the GPU pass
     /// would clamp and leave the tail unlit — a silent CPU/GPU divergence);
@@ -264,6 +267,7 @@ impl EngineLoop {
             blackboard: Blackboard::new(),
             gi_backend,
             last_gi_us: None,
+            last_gi_backend_used: None,
             gpu_gi_capacity: GPU_GI_CAPACITY,
         }
     }
@@ -301,6 +305,16 @@ impl EngineLoop {
     /// microseconds. `None` until `step_gi` has run at least once.
     pub fn last_gi_us(&self) -> Option<u64> {
         self.last_gi_us
+    }
+
+    /// Which implementation the most recent [`step_gi`](Self::step_gi) call
+    /// actually EXECUTED ("cpu"/"gpu") — distinct from [`Self::gi_backend`],
+    /// which reports the SELECTED backend. They differ on an over-capacity
+    /// frame (GPU selected, CPU executed), so telemetry pairing
+    /// `last_gi_us()` with `gi_backend()` alone would mislabel the timing —
+    /// review finding. `None` until `step_gi` has run.
+    pub fn last_gi_backend_used(&self) -> Option<&'static str> {
+        self.last_gi_backend_used
     }
 
     /// Test-only: shrink the GPU capacity so the over-capacity CPU routing is
@@ -450,11 +464,11 @@ impl EngineLoop {
         // later smaller frame uses the GPU again.
         let over_capacity = matches!(self.gi_backend, GiBackend::Gpu(_))
             && splats.len() > self.gpu_gi_capacity as usize;
-        let out = match &self.gi_backend {
-            GiBackend::Cpu => self.step_gi_cpu(splats, hour),
-            GiBackend::Gpu(_) if over_capacity => self.step_gi_cpu(splats, hour),
+        let (out, used) = match &self.gi_backend {
+            GiBackend::Cpu => (self.step_gi_cpu(splats, hour), "cpu"),
+            GiBackend::Gpu(_) if over_capacity => (self.step_gi_cpu(splats, hour), "cpu"),
             GiBackend::Gpu(gpu) => match gpu.step(splats, hour) {
-                Ok(lit) => lit,
+                Ok(lit) => (lit, "gpu"),
                 Err(e) => {
                     // One log line, then permanently fall back to CPU so the rest
                     // of the run never spams per-frame errors. Callers still get
@@ -464,11 +478,12 @@ impl EngineLoop {
                          falling back to CPU spectral GI for the rest of this run."
                     );
                     self.gi_backend = GiBackend::Cpu;
-                    self.step_gi_cpu(splats, hour)
+                    (self.step_gi_cpu(splats, hour), "cpu")
                 }
             },
         };
         self.last_gi_us = Some(t0.elapsed().as_micros() as u64);
+        self.last_gi_backend_used = Some(used);
         out
     }
 

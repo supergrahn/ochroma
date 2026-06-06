@@ -300,4 +300,12 @@ fn over_capacity_frame_routes_to_cpu_and_keeps_gpu_selected() {
         "gpu",
         "over-capacity routing must not permanently demote the backend"
     );
+    // Telemetry honesty (review finding): the SELECTED backend is gpu, but
+    // the EXECUTED path for this over-capacity call was cpu — both must be
+    // visible so timing isn't mislabeled.
+    assert_eq!(
+        gpu_loop.last_gi_backend_used(),
+        Some("cpu"),
+        "over-capacity frame executed the CPU path; telemetry must say so"
+    );
 }
