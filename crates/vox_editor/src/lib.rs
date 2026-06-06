@@ -4,4 +4,5 @@ pub mod gizmo_interaction;
 pub mod node_graph;
 pub mod nodes;
 pub mod registry;
+pub mod templates;
 pub mod editor_panel;

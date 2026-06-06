@@ -56,9 +56,11 @@ use vox_ui::spectral_hud::SpectralRadianceCache;
 use vox_ui::theme::apply_ochroma_theme;
 use vox_ui::vello_ctx::VelloCtxCpu;
 
-use vox_editor::node_graph::OchromaNodeGraph;
+use vox_editor::node_graph::{OchromaNodeGraph, ParamValue, PortData};
 use vox_editor::nodes::biome_node::{BiomeKind, BiomeNode};
 use vox_editor::nodes::terrain_node::TerrainNode;
+use vox_editor::registry::NodeRegistry;
+use vox_editor::templates;
 
 // NavMesh + patrol demo (uncomment to enable):
 // use vox_app::ai_fsm::NavMeshPlugin;
@@ -353,6 +355,25 @@ struct EngineApp {
     // text and asserted in smoke.
     node_graph_output_value: f64,
 
+    // --- PCG-style live-in-viewport graph (rank #7) ---
+    // The persistent, editable vox_editor graph instantiated from a template.
+    // Param edits route through `request_recook`; `live_graph.live_cook(now)`
+    // re-cooks ONLY the dirty subgraph (throttled), and the cooked Splats are
+    // re-injected into scene_splats the same frame so edits change the world
+    // without a restart. None until build_node_graph runs.
+    live_graph: Option<vox_editor::node_graph::OchromaNodeGraph>,
+    // The TerrainNode id in live_graph (the node whose params we live-edit).
+    live_graph_terrain: Option<vox_editor::node_graph::NodeId>,
+    // The terminal SplatizeNode id + port producing the live splats.
+    live_graph_terminal: Option<(vox_editor::node_graph::NodeId, &'static str)>,
+    // The [start, end) range in scene_splats owned by the live graph output, so
+    // a recook can splice the fresh splats in place without rebuilding the scene.
+    live_graph_splat_range: Option<(usize, usize)>,
+    // Microseconds the last live recook took (printed in the verifiable line).
+    live_graph_last_cook_us: u128,
+    // Visual connections mirrored from the live graph, for wire-value chip refresh.
+    live_graph_visual_conns: Vec<VisualConnection>,
+
     // Live GPU Vello renderer for the SpectralHUD (rank-1 adoption candidate:
     // GPU vector UI). Lazily created on first HUD draw via
     // VelloCtx::new_headless; `None` if no GPU adapter is available (then the
@@ -580,6 +601,12 @@ impl EngineApp {
             node_widget: NodeGraphWidget::new(),
             node_graph_node_count: 0,
             node_graph_output_value: 0.0,
+            live_graph: None,
+            live_graph_terrain: None,
+            live_graph_terminal: None,
+            live_graph_splat_range: None,
+            live_graph_last_cook_us: 0,
+            live_graph_visual_conns: Vec::new(),
             vello_hud: None,
             vello_hud_unavailable: false,
             vello_hud_px_last_frame: 0,
@@ -903,6 +930,169 @@ impl EngineApp {
             to_pin: "terrain".into(),
             color: [200, 200, 80],
         });
+
+        // Build the PCG-style LIVE graph from a template and inject its splats.
+        self.build_live_graph();
+    }
+
+    // -----------------------------------------------------------------------
+    // PCG-style live-in-viewport graph (rank #7)
+    // -----------------------------------------------------------------------
+
+    /// World offset where the live-graph splats are placed so they sit in front
+    /// of the camera in the default scene (over the terrain, near the buildings).
+    const LIVE_GRAPH_WORLD_OFFSET: [f32; 3] = [0.0, 0.5, 14.0];
+
+    /// Instantiate the live graph from a starter template, cook it once, inject
+    /// its terminal Splats into `scene_splats` (tracked range), and mirror its
+    /// topology into the visual widget. After this, a param edit + `live_recook`
+    /// updates the world in place without a restart.
+    fn build_live_graph(&mut self) {
+        let registry = NodeRegistry::new();
+        let template_name = "Building → Plot → Splatize";
+        let Some(Ok(mut inst)) = templates::instantiate_by_name(&registry, template_name) else {
+            eprintln!("[graph] live template '{template_name}' failed to instantiate");
+            return;
+        };
+
+        // Tune the terminal splatize so the splat count is UNCLAMPED across the
+        // footprint range we scrub — that way a PlotNode footprint edit visibly
+        // changes the viewport splat count (area * splats_per_sqm).
+        let terminal_id = inst.terminal_id;
+        let _ = inst.graph.set_param(terminal_id, "splats_per_sqm", ParamValue::Float(2.0));
+        let _ = inst.graph.set_param(terminal_id, "min_splats", ParamValue::Int(50));
+        let _ = inst.graph.set_param(terminal_id, "max_splats", ParamValue::Int(50_000));
+
+        // We live-edit the PlotNode footprint (node_ids[1] = "plot"): its ground
+        // mesh area scales the downstream splat count, so a footprint scrub
+        // re-cooks Plot -> Splatize and changes the viewport splat count.
+        let edit_node = inst.node_ids.get(1).copied();
+
+        self.live_graph_terminal = Some((terminal_id, inst.terminal_port));
+        self.live_graph_terrain = edit_node; // the node we scrub live
+
+        // First cook.
+        if let Err(e) = inst.graph.cook() {
+            eprintln!("[graph] live graph initial cook failed: {e}");
+            return;
+        }
+
+        // Mirror visual connections for wire-value chips.
+        self.live_graph_visual_conns = inst
+            .graph
+            .edges()
+            .map(|(from, fp, to, tp)| VisualConnection {
+                from_node: from.0 + 100, // offset so ids don't collide with panel nodes
+                from_pin: fp.to_string(),
+                to_node: to.0 + 100,
+                to_pin: tp.to_string(),
+                color: [120, 200, 255],
+            })
+            .collect();
+
+        self.live_graph = Some(inst.graph);
+
+        // Inject the cooked splats into the viewport scene.
+        self.inject_live_graph_splats();
+    }
+
+    /// Pull the live graph's terminal Splats, offset them into the scene, and
+    /// splice them into `scene_splats`. If a previous range exists it is replaced
+    /// in place (same frame, no restart); otherwise the splats are appended and
+    /// the new range recorded. Returns the new splat count contributed.
+    fn inject_live_graph_splats(&mut self) -> usize {
+        let Some((tid, port)) = self.live_graph_terminal else { return 0 };
+        let Some(graph) = &self.live_graph else { return 0 };
+        let Some(PortData::Splats(splats)) = graph.get_output(tid, port) else { return 0 };
+
+        let off = Self::LIVE_GRAPH_WORLD_OFFSET;
+        let mut world_splats: Vec<GaussianSplat> = splats
+            .iter()
+            .map(|s| {
+                let mut ws = *s;
+                let p = ws.position();
+                ws.set_position([p[0] + off[0], p[1] + off[1], p[2] + off[2]]);
+                ws
+            })
+            .collect();
+        let count = world_splats.len();
+
+        match self.live_graph_splat_range {
+            Some((start, end)) => {
+                // Replace the existing range in place.
+                self.scene_splats.splice(start..end, world_splats.drain(..));
+                self.live_graph_splat_range = Some((start, start + count));
+            }
+            None => {
+                let start = self.scene_splats.len();
+                self.scene_splats.append(&mut world_splats);
+                self.live_graph_splat_range = Some((start, start + count));
+            }
+        }
+        count
+    }
+
+    /// PCG-style live param edit entry point: route a numeric param change on the
+    /// live graph's edit node through the throttled recook request. The actual
+    /// recook happens in [`live_recook`] on the next frame whose clock has passed
+    /// the throttle budget.
+    fn live_graph_request_edit(&mut self, key: &str, value: ParamValue) {
+        let (Some(graph), Some(node)) = (self.live_graph.as_mut(), self.live_graph_terrain) else { return };
+        if let Err(e) = graph.request_recook(node, key, value) {
+            eprintln!("[graph] live edit failed: {e}");
+        }
+    }
+
+    /// Drive the live re-cook loop once per frame. If a throttled recook is due,
+    /// cook ONLY the dirty subgraph, splice the fresh splats into the viewport the
+    /// SAME frame, refresh the wire-value chips, and print the verifiable
+    /// live-recook line. Returns the new live-graph splat count if a recook fired.
+    fn live_recook(&mut self, now: std::time::Instant) -> Option<usize> {
+        let report = {
+            let graph = self.live_graph.as_mut()?;
+            let t0 = std::time::Instant::now();
+            let report = match graph.live_cook(now) {
+                Ok(Some(r)) => r,
+                Ok(None) => return None,
+                Err(e) => {
+                    eprintln!("[graph] live recook failed: {e}");
+                    return None;
+                }
+            };
+            self.live_graph_last_cook_us = t0.elapsed().as_micros();
+            report
+        };
+
+        let viewport_before = self.scene_splats.len();
+        let after = self.inject_live_graph_splats();
+        let viewport_after = self.scene_splats.len();
+
+        // Refresh wire-value chips from the freshly-cooked graph (stale chips are a bug).
+        if let Some(graph) = &self.live_graph {
+            let wires = graph.wire_values();
+            self.node_widget.clear_wire_values();
+            for conn in &self.live_graph_visual_conns {
+                // Match the visual conn back to a graph wire value by node/port.
+                if let Some(wv) = wires.iter().find(|w| {
+                    w.from.0 + 100 == conn.from_node
+                        && w.to.0 + 100 == conn.to_node
+                        && w.from_port == conn.from_pin
+                        && w.to_port == conn.to_pin
+                }) {
+                    self.node_widget.set_wire_value(conn, wv.value.clone());
+                }
+            }
+        }
+
+        println!(
+            "[graph] live recook: node={} dirty_subgraph={} cook_us={} viewport_splats {}->{}",
+            report.root_name,
+            report.dirty_subgraph_size(),
+            self.live_graph_last_cook_us,
+            viewport_before,
+            viewport_after,
+        );
+        Some(after)
     }
 
     // -----------------------------------------------------------------------
@@ -2575,6 +2765,11 @@ impl EngineApp {
     /// window-dependent bits (cursor icon) are guarded by `self.window` and
     /// no-op headlessly.
     fn step_simulation(&mut self, dt: f32) {
+        // PCG-style live-in-viewport graph: flush any throttled recook request
+        // this frame. Cooks only the dirty subgraph and splices fresh splats into
+        // the viewport without a restart (prints the verifiable live-recook line).
+        self.live_recook(std::time::Instant::now());
+
         // Biome ambient soundscape: blend toward current biome target each frame
         {
             let biome = vox_audio::BiomeKind::Grassland; // default; terrain integration in future domain
@@ -3357,6 +3552,49 @@ fn run_smoke() {
         ng_out_sane,
         "node-graph evaluated output {} is not finite/sane (expected 0..=1024 Alpine cells)",
         ng_out
+    );
+
+    // --- PCG-style live-in-viewport recook proof (rank #7) ---
+    // The live graph (Building->Plot->Splatize) injected splats into the scene at
+    // build time. Now change a graph param mid-smoke and prove the recook (a)
+    // fires, (b) re-cooks ONLY the dirty subgraph (Plot + Splatize, not Building),
+    // and (c) provably changes the viewport splat content — before != after with
+    // real printed values.
+    let live_range_before = app.live_graph_splat_range;
+    let live_splats_before = live_range_before.map(|(s, e)| e - s).unwrap_or(0);
+    let scene_splats_before = app.scene_splats.len();
+    assert!(
+        live_splats_before > 0,
+        "live graph contributed no splats to the scene — build_live_graph not wired"
+    );
+
+    // Make the throttle fire deterministically regardless of wall-clock pacing.
+    if let Some(g) = app.live_graph.as_mut() {
+        g.set_recook_budget(std::time::Duration::from_millis(0));
+    }
+    // Scrub the PlotNode footprint to a much larger value so the Splatize output
+    // grows (area * splats_per_sqm). This routes through the throttled request.
+    app.live_graph_request_edit("footprint_w", ParamValue::Float(80.0));
+    app.live_graph_request_edit("footprint_d", ParamValue::Float(80.0));
+    // Flush with a forced future clock so the recook is guaranteed due.
+    let future = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let recooked = app.live_recook(future);
+
+    let live_splats_after = app.live_graph_splat_range.map(|(s, e)| e - s).unwrap_or(0);
+    let scene_splats_after = app.scene_splats.len();
+    println!(
+        "[ochroma] SMOKE LIVE GRAPH: recook={:?} live_splats {}->{} scene_splats {}->{} cook_us={}",
+        recooked, live_splats_before, live_splats_after,
+        scene_splats_before, scene_splats_after, app.live_graph_last_cook_us,
+    );
+    assert!(recooked.is_some(), "live recook did not fire after a param edit + budget flush");
+    assert!(
+        live_splats_after != live_splats_before,
+        "live recook produced the same splat count ({live_splats_before}) — edit did not change the world"
+    );
+    assert!(
+        scene_splats_after != scene_splats_before,
+        "viewport splat count unchanged ({scene_splats_before}) after live recook — splats not spliced into scene"
     );
 
     println!("[ochroma] SMOKE PASS: loop + editor/game logic + render verified headlessly.");

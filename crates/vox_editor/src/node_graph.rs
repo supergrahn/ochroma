@@ -9,6 +9,7 @@
 
 use std::collections::{BinaryHeap, HashSet};
 use std::cmp::Reverse;
+use std::time::{Duration, Instant};
 use hashbrown::HashMap;
 use thiserror::Error;
 
@@ -182,6 +183,10 @@ struct NodeEntry {
     node:        Box<dyn OchromaNode>,
     dirty:       bool,
     last_output: Option<NodeOutputs>,
+    /// Monotonic count of how many times this node's `cook()` has actually
+    /// executed. Probed by tests + the live loop to prove that clean upstream
+    /// nodes are NOT re-executed and dirty downstream nodes ARE.
+    cook_count:  u64,
 }
 
 struct Edge {
@@ -195,6 +200,33 @@ pub struct OchromaNodeGraph {
     nodes:   HashMap<NodeId, NodeEntry>,
     edges:   Vec<Edge>,
     next_id: u32,
+    /// PCG-style live re-cook throttle. A dirty node marked since the last live
+    /// cook is held as a pending trailing-edge request, keyed by the node whose
+    /// param/topology changed; it only actually re-cooks once `budget` has
+    /// elapsed since that subgraph last cooked. See [`request_recook`] /
+    /// [`live_cook`].
+    throttle: ThrottleState,
+}
+
+/// Per-subgraph trailing-edge throttle for live re-cooking.
+///
+/// `budget` is the minimum wall-clock gap between two cooks of the same dirty
+/// subgraph. `pending` holds the most recent recook request (the root node that
+/// changed) so a parameter scrubbed every frame collapses into at most
+/// `ceil(window / budget)` cooks, and the LAST requested value is always the one
+/// that finally cooks (trailing edge guaranteed).
+struct ThrottleState {
+    budget:       Duration,
+    /// The root node of the dirty subgraph awaiting a cook, if any.
+    pending_root: Option<NodeId>,
+    /// When the subgraph rooted at `pending_root` last actually cooked.
+    last_cook_at: Option<Instant>,
+}
+
+impl Default for ThrottleState {
+    fn default() -> Self {
+        Self { budget: Duration::from_millis(100), pending_root: None, last_cook_at: None }
+    }
 }
 
 impl Default for OchromaNodeGraph {
@@ -203,15 +235,31 @@ impl Default for OchromaNodeGraph {
 
 impl OchromaNodeGraph {
     pub fn new() -> Self {
-        Self { nodes: HashMap::new(), edges: Vec::new(), next_id: 0 }
+        Self { nodes: HashMap::new(), edges: Vec::new(), next_id: 0, throttle: ThrottleState::default() }
     }
 
     pub fn add_node(&mut self, name: &str, node: Box<dyn OchromaNode>) -> NodeId {
         let id = NodeId(self.next_id);
         self.next_id += 1;
-        self.nodes.insert(id, NodeEntry { name: name.to_string(), node, dirty: true, last_output: None });
+        self.nodes.insert(id, NodeEntry { name: name.to_string(), node, dirty: true, last_output: None, cook_count: 0 });
         id
     }
+
+    /// How many times node `id`'s `cook()` has actually executed. `None` if the
+    /// node does not exist. Used by tests + the live loop to assert that only the
+    /// dirty subgraph re-cooks (clean nodes keep a flat count).
+    pub fn cook_count(&self, id: NodeId) -> Option<u64> {
+        self.nodes.get(&id).map(|e| e.cook_count)
+    }
+
+    /// Configure the minimum gap between two live re-cooks of the same dirty
+    /// subgraph (the PCG-style scrub throttle). Defaults to 100ms.
+    pub fn set_recook_budget(&mut self, budget: Duration) {
+        self.throttle.budget = budget;
+    }
+
+    /// The configured live re-cook budget.
+    pub fn recook_budget(&self) -> Duration { self.throttle.budget }
 
     pub fn node_count(&self) -> usize { self.nodes.len() }
 
@@ -326,6 +374,93 @@ impl OchromaNodeGraph {
         Ok(())
     }
 
+    /// The downstream closure of `id` (the node itself plus every node reachable
+    /// from it along edges) restricted to nodes currently marked dirty. This is
+    /// the exact set of nodes a live re-cook would execute — the "dirty subgraph".
+    /// Returned in deterministic ascending [`NodeId`] order.
+    pub fn dirty_subgraph(&self, id: NodeId) -> Vec<NodeId> {
+        let mut visited: HashSet<NodeId> = HashSet::new();
+        let mut stack = vec![id];
+        while let Some(cur) = stack.pop() {
+            if !visited.insert(cur) { continue; }
+            for edge in &self.edges {
+                if edge.from == cur { stack.push(edge.to); }
+            }
+        }
+        let mut out: Vec<NodeId> = visited
+            .into_iter()
+            .filter(|n| self.nodes.get(n).map(|e| e.dirty).unwrap_or(false))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// PCG-style live param edit: set a parameter on `id`, mark its downstream
+    /// subgraph dirty, and register a *trailing-edge* recook request rooted at
+    /// `id`. The recook does NOT happen here — it happens on the next
+    /// [`live_cook`] whose injected time has advanced past the throttle budget,
+    /// so a parameter scrubbed every frame collapses into few actual cooks while
+    /// the LAST value set is always the one that finally cooks.
+    pub fn request_recook(&mut self, id: NodeId, key: &str, value: ParamValue) -> Result<(), GraphError> {
+        self.set_param(id, key, value)?;
+        // Trailing edge: always overwrite the pending root with the most recent
+        // change so the final cook reflects the latest edit.
+        self.throttle.pending_root = Some(id);
+        Ok(())
+    }
+
+    /// Drive the live re-cook loop with an injected `now` (real `Instant::now()`
+    /// in the editor, a fake clock in tests). If a recook is pending AND at least
+    /// the throttle budget has elapsed since this subgraph last cooked, the dirty
+    /// subgraph rooted at the pending node is cooked incrementally — clean
+    /// upstream nodes are NOT re-executed — and a [`LiveCook`] report is returned.
+    /// Returns `Ok(None)` when nothing was due (no pending request, or still
+    /// inside the throttle window).
+    pub fn live_cook(&mut self, now: Instant) -> Result<Option<LiveCook>, GraphError> {
+        let Some(root) = self.throttle.pending_root else { return Ok(None) };
+
+        // Throttle: only cook once the budget has elapsed since the last cook.
+        if let Some(last) = self.throttle.last_cook_at {
+            if now.duration_since(last) < self.throttle.budget {
+                return Ok(None);
+            }
+        }
+
+        // The subgraph we will actually execute (dirty downstream closure of root).
+        let subgraph = self.dirty_subgraph(root);
+
+        // Cook in topological order, but ONLY the dirty nodes. Clean upstream
+        // nodes are skipped, so their cook_count stays flat — their cached
+        // last_output is threaded into the dirty nodes via assemble_inputs.
+        let dirty_set: HashSet<NodeId> = subgraph.iter().copied().collect();
+        let order = self.topo_sort()?;
+        let mut cooked = Vec::new();
+        for id in order {
+            if !dirty_set.contains(&id) { continue; }
+            let inputs = self.assemble_inputs(id)?;
+            let name = self.nodes[&id].name.clone();
+            let output = self.nodes[&id].node.cook(inputs)
+                .map_err(|e| GraphError::CookFailed { node: name.clone(), reason: e.to_string() })?;
+            let entry = self.nodes.get_mut(&id).unwrap();
+            entry.last_output = Some(output);
+            entry.dirty = false;
+            entry.cook_count += 1;
+            cooked.push(id);
+        }
+
+        let root_name = self.nodes.get(&root).map(|e| e.name.clone()).unwrap_or_default();
+        self.throttle.pending_root = None;
+        self.throttle.last_cook_at = Some(now);
+
+        Ok(Some(LiveCook { root, root_name, cooked }))
+    }
+
+    /// Is a trailing-edge recook currently pending (a param changed since the
+    /// last live_cook flushed it)?
+    pub fn has_pending_recook(&self) -> bool {
+        self.throttle.pending_root.is_some()
+    }
+
     pub fn cook(&mut self) -> Result<(), GraphError> {
         let order = self.topo_sort()?;
         for id in order {
@@ -336,6 +471,7 @@ impl OchromaNodeGraph {
             let entry = self.nodes.get_mut(&id).unwrap();
             entry.last_output = Some(output);
             entry.dirty = false;
+            entry.cook_count += 1;
         }
         Ok(())
     }
@@ -361,6 +497,7 @@ impl OchromaNodeGraph {
             let entry = self.nodes.get_mut(&id).unwrap();
             entry.last_output = Some(output);
             entry.dirty = false;
+            entry.cook_count += 1;
         }
 
         // Sink nodes = nodes with no outgoing edge; these carry the graph's results.
@@ -491,8 +628,10 @@ impl OchromaNodeGraph {
                 node:        state.node,
                 dirty:       true,
                 last_output: None,
+                cook_count:  0,
             });
         }
+        self.throttle = ThrottleState { budget: self.throttle.budget, pending_root: None, last_cook_at: None };
         for e in &snap.edges {
             self.edges.push(Edge {
                 from:      NodeId(e.from),
@@ -536,6 +675,24 @@ pub fn format_port_data(data: &PortData) -> String {
         PortData::SplatWeights(w)  => format!("SplatWeights {}", w.len()),
         PortData::ScalarVec(v)     => format!("ScalarVec {}", v.len()),
     }
+}
+
+/// Report of a single PCG-style incremental [`OchromaNodeGraph::live_cook`].
+///
+/// `root` is the node whose param/topology change triggered the recook,
+/// `root_name` its display name, and `cooked` the exact set of nodes that were
+/// re-executed this pass (the dirty subgraph), in topological order. Clean
+/// upstream nodes are NOT in `cooked` — their cached outputs were reused.
+#[derive(Clone, Debug)]
+pub struct LiveCook {
+    pub root:      NodeId,
+    pub root_name: String,
+    pub cooked:    Vec<NodeId>,
+}
+
+impl LiveCook {
+    /// Number of nodes that actually re-cooked (the dirty subgraph size).
+    pub fn dirty_subgraph_size(&self) -> usize { self.cooked.len() }
 }
 
 /// Result of a full graph [`OchromaNodeGraph::evaluate`] pass.
@@ -929,6 +1086,131 @@ mod tests {
         // formatted content, not just presence.
         assert_eq!(w.value, "Terrain 1024 cells");
         assert!(w.value.contains("1024"), "wire value must report the real cell count");
+    }
+
+    /// PCG-style incremental live re-cook: changing a Terrain param re-cooks the
+    /// downstream Biome (cook_count +1, output bytes differ), while an unrelated
+    /// parallel Terrain->Biome branch does NOT re-cook (cook_count unchanged).
+    #[test]
+    fn live_cook_recooks_only_dirty_subgraph() {
+        use crate::nodes::terrain_node::TerrainNode;
+        use crate::nodes::biome_node::BiomeNode;
+
+        let mut g = OchromaNodeGraph::new();
+        // Branch A: terrain_a -> biome_a (the one we'll edit).
+        let terrain_a = g.add_node("terrain_a", Box::new(TerrainNode {
+            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 7, ..Default::default()
+        }));
+        let biome_a = g.add_node("biome_a", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        g.connect(terrain_a, "terrain", biome_a, "terrain").unwrap();
+
+        // Branch B: an independent terrain_b -> biome_b that must stay untouched.
+        let terrain_b = g.add_node("terrain_b", Box::new(TerrainNode {
+            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 99, ..Default::default()
+        }));
+        let biome_b = g.add_node("biome_b", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        g.connect(terrain_b, "terrain", biome_b, "terrain").unwrap();
+
+        // Initial full cook establishes baselines for every node.
+        g.cook().unwrap();
+        let biome_a_before = g.get_output(biome_a, "biome_map").unwrap().as_biome_map().unwrap().clone();
+        let cc_terrain_b_before = g.cook_count(terrain_b).unwrap();
+        let cc_biome_b_before   = g.cook_count(biome_b).unwrap();
+        let cc_terrain_a_before = g.cook_count(terrain_a).unwrap();
+        let cc_biome_a_before   = g.cook_count(biome_a).unwrap();
+
+        // Change terrain_a amplitude so the downstream biome classification changes.
+        // Use a fresh clock far past the budget so the throttle fires immediately.
+        let t0 = Instant::now();
+        g.set_recook_budget(Duration::from_millis(100));
+        g.request_recook(terrain_a, "amplitude", ParamValue::Float(800.0)).unwrap();
+
+        // Dirty subgraph is exactly {terrain_a, biome_a}.
+        let sub = g.dirty_subgraph(terrain_a);
+        assert_eq!(sub, vec![terrain_a, biome_a], "dirty subgraph must be branch A only");
+
+        let report = g.live_cook(t0 + Duration::from_millis(200)).unwrap().expect("a recook was due");
+        assert_eq!(report.root, terrain_a);
+        assert_eq!(report.dirty_subgraph_size(), 2, "only terrain_a + biome_a re-cook");
+
+        // Branch A re-cooked: counts went up by exactly 1 and output changed.
+        assert_eq!(g.cook_count(terrain_a).unwrap(), cc_terrain_a_before + 1);
+        assert_eq!(g.cook_count(biome_a).unwrap(),   cc_biome_a_before + 1);
+        let biome_a_after = g.get_output(biome_a, "biome_map").unwrap().as_biome_map().unwrap();
+        assert_ne!(&biome_a_before, biome_a_after, "downstream biome_a output must change after upstream edit");
+        let alpine_byte = crate::nodes::biome_node::BiomeKind::Alpine as u8;
+        let alpine_after = biome_a_after.iter().filter(|&&b| b == alpine_byte).count();
+        assert!(alpine_after > 0, "raised amplitude must push cells into Alpine, got {}", alpine_after);
+
+        // Branch B never re-cooked: counts are byte-for-byte unchanged.
+        assert_eq!(g.cook_count(terrain_b).unwrap(), cc_terrain_b_before, "unrelated terrain_b must NOT re-cook");
+        assert_eq!(g.cook_count(biome_b).unwrap(),   cc_biome_b_before,   "unrelated biome_b must NOT re-cook");
+    }
+
+    /// Throttle (#3): scrub a param 10 times inside the window with a FAKE clock.
+    /// Cooks happen at most ceil(window/budget) times, AND the final cooked output
+    /// reflects the LAST scrubbed value (trailing edge).
+    #[test]
+    fn live_cook_throttles_scrub_and_keeps_last_value() {
+        use crate::nodes::terrain_node::TerrainNode;
+        use crate::nodes::biome_node::BiomeNode;
+
+        let mut g = OchromaNodeGraph::new();
+        let terrain = g.add_node("terrain", Box::new(TerrainNode {
+            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 7, ..Default::default()
+        }));
+        let biome = g.add_node("biome", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        g.connect(terrain, "terrain", biome, "terrain").unwrap();
+        g.cook().unwrap();
+
+        let budget = Duration::from_millis(100);
+        g.set_recook_budget(budget);
+        let base = Instant::now();
+        // Window = 250ms. ceil(250/100) = 3 cooks max. Scrub amplitude 10 times,
+        // 25ms apart (frame-rate scrubbing). The amplitudes ramp 100..1000.
+        let window = Duration::from_millis(250);
+        let cc_before = g.cook_count(biome).unwrap();
+        let mut cooks = 0u64;
+        let last_amplitude = 1000.0f64;
+        for i in 0..10u32 {
+            let amp = 100.0 + (i as f64) * 100.0; // 100,200,...,1000
+            let t = base + Duration::from_millis(25 * i as u64);
+            g.request_recook(terrain, "amplitude", ParamValue::Float(amp)).unwrap();
+            if g.live_cook(t).unwrap().is_some() {
+                cooks += 1;
+            }
+        }
+        // Flush the trailing edge: advance well past the budget so the LAST pending
+        // request (amplitude 1000) definitely cooks.
+        if g.has_pending_recook() {
+            let t = base + window + budget + Duration::from_millis(1);
+            if g.live_cook(t).unwrap().is_some() {
+                cooks += 1;
+            }
+        }
+
+        let ceil_window = (window.as_millis() as f64 / budget.as_millis() as f64).ceil() as u64;
+        // +1 for the explicit trailing flush past the window.
+        assert!(cooks <= ceil_window + 1, "cooked {} times, expected <= {}", cooks, ceil_window + 1);
+        assert!(cooks >= 1, "at least one cook must happen");
+        assert!(g.cook_count(biome).unwrap() > cc_before, "biome must have re-cooked at least once");
+        assert!(!g.has_pending_recook(), "no recook should remain pending after the flush");
+
+        // Trailing edge: the final cooked terrain reflects the LAST amplitude (1000),
+        // proven by the tallest height equalling 1000 (fBm normalizes peak==amplitude).
+        let final_terrain = g.get_output(terrain, "terrain").unwrap().as_terrain().unwrap();
+        let max_h = final_terrain.heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!((max_h - last_amplitude as f32).abs() < 1.0,
+            "final cook must reflect LAST scrubbed amplitude {}, got peak {}", last_amplitude, max_h);
+    }
+
+    #[test]
+    fn live_cook_returns_none_when_nothing_pending() {
+        use crate::nodes::terrain_node::TerrainNode;
+        let mut g = OchromaNodeGraph::new();
+        g.add_node("terrain", Box::new(TerrainNode { resolution: 32, droplet_count: 0, ..Default::default() }));
+        g.cook().unwrap();
+        assert!(g.live_cook(Instant::now()).unwrap().is_none(), "no pending request => no cook");
     }
 
     #[test]
