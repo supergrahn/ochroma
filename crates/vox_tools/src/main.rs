@@ -78,6 +78,25 @@ enum Commands {
         file: PathBuf,
     },
 
+    /// Importance-prune a splat asset (any of .vxm/.ply/.spz) into a smaller
+    /// .vxm by dropping low-importance Gaussians. A render guard backs off if
+    /// pruning visibly hollows the scene. OFFLINE/asset-time optimization.
+    Prune {
+        /// Input splat asset (.vxm, .ply, or .spz).
+        input: PathBuf,
+        /// Output .vxm file.
+        output: PathBuf,
+        /// Target keep-fraction in [0,1] (e.g. 0.5 keeps the most-important half).
+        #[arg(long, default_value_t = 0.5)]
+        keep: f32,
+        /// Render-guard bound: max mean per-pixel abs RGB diff in [0,1].
+        #[arg(long, default_value_t = 0.05)]
+        max_pixel_diff: f32,
+        /// Disable the render guard (apply the requested keep-fraction exactly).
+        #[arg(long, default_value_t = false)]
+        no_guard: bool,
+    },
+
     /// Build the game for a target platform.
     Build {
         #[arg(long, default_value = "linux")]
@@ -249,6 +268,15 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("[usd] import failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Prune { input, output, keep, max_pixel_diff, no_guard } => {
+            match vox_tools::prune::run_prune(&input, &output, keep, max_pixel_diff, no_guard) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Error: {e:#}");
                     std::process::exit(1);
                 }
             }

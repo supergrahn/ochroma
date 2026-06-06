@@ -20,6 +20,7 @@ path = "src/ochroma_main.rs"
 vox_core = { path = "../vox_core" }
 vox_data = { path = "../vox_data" }
 vox_usd  = { path = "../vox_usd" }
+vox_render = { path = "../vox_render" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 uuid = { workspace = true }
