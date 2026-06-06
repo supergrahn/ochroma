@@ -103,7 +103,13 @@ pub fn build_clusters(splats: &[GaussianSplat], target_size: usize) -> Vec<Splat
     let mut clusters = Vec::new();
     let mut cluster_id = 0u32;
 
-    for indices in grid.values() {
+    // HashMap iteration order is random per process — sort cells by grid key
+    // so cluster ids are DETERMINISTIC across runs. Anything keyed off cluster
+    // id (atom-budget selection order, replays, test probes) depends on this.
+    let mut cells: Vec<_> = grid.iter().collect();
+    cells.sort_by_key(|(k, _)| **k);
+
+    for (_, indices) in cells {
         if indices.len() <= target_size * 2 {
             // Small enough — one cluster
             clusters.push(make_cluster(cluster_id, splats, indices));

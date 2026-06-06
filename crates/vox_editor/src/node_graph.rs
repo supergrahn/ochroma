@@ -665,7 +665,16 @@ pub struct WireValue {
 pub fn format_port_data(data: &PortData) -> String {
     match data {
         PortData::Splats(s)        => format!("Splats {}", s.len()),
-        PortData::SpectralField(f) => format!("Spectral [{:.2}..{:.2}]", f[0], f[f.len() - 1]),
+        PortData::SpectralField(f) => {
+            // Range notation means the actual min..max over all 16 bands —
+            // not the first/last samples, which lie for any non-monotonic field.
+            let (mn, mx) = f
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| {
+                    (a.min(v), b.max(v))
+                });
+            format!("Spectral [{mn:.2}..{mx:.2}]")
+        }
         PortData::Terrain(t)       => format!("Terrain {} cells", t.heights.len()),
         PortData::Mesh(m)          => format!("Mesh {} tris", m.indices.len()),
         PortData::LodMesh(l)       => format!("LodMesh {} levels", l.len()),

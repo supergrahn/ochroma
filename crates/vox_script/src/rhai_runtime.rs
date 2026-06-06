@@ -418,17 +418,25 @@ mod hot_reload_tests {
     fn script_reloads_when_file_updated() {
         let dir = std::env::temp_dir();
         let path = dir.join("ochroma_test_script_hot.rhai");
-        std::fs::write(&path, "fn on_update(dt) {}").unwrap();
+        std::fs::write(&path, "fn answer() { 1 }").unwrap();
 
         let mut rt = RhaiRuntime::new();
         rt.load_script_file("test", &path).unwrap();
+        let before: i64 = rt.call_fn(0, "answer", &[]).unwrap().cast();
+        assert_eq!(before, 1);
 
         std::thread::sleep(std::time::Duration::from_millis(50));
-        std::fs::write(&path, "fn on_update(dt) { let x = 1; }").unwrap();
+        std::fs::write(&path, "fn answer() { 2 }").unwrap();
 
         rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
         let reloaded = rt.poll_reload();
-        assert!(reloaded.len() <= 1);
+        assert_eq!(
+            reloaded,
+            vec!["test".to_string()],
+            "the file edit must trigger exactly one reload"
+        );
+        let after: i64 = rt.call_fn(0, "answer", &[]).unwrap().cast();
+        assert_eq!(after, 2, "the reloaded AST must actually run");
 
         let _ = std::fs::remove_file(&path);
     }

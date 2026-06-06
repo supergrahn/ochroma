@@ -254,7 +254,8 @@ fn ply_meta(path: &Path) -> AssetMeta {
             return AssetMeta::default();
         }
         header_text.push(byte[0] as char);
-        if header_text.ends_with("end_header\n") {
+        // PLY headers may be LF or CRLF terminated; accept both.
+        if header_text.ends_with("end_header\n") || header_text.ends_with("end_header\r\n") {
             break;
         }
         if header_text.len() > 64_000 {
@@ -264,11 +265,13 @@ fn ply_meta(path: &Path) -> AssetMeta {
     let mut vertex_count: Option<u32> = None;
     let mut format: Option<String> = None;
     for line in header_text.lines() {
+        // Prefix-tolerant: extra trailing tokens (or a stray \r, which
+        // split_whitespace also strips) must not hide the count.
         let parts: Vec<&str> = line.split_whitespace().collect();
-        match parts.as_slice() {
-            ["element", "vertex", n] => vertex_count = n.parse().ok(),
-            ["format", fmt, ver] => format = Some(format!("{fmt} {ver}")),
-            _ => {}
+        if parts.len() >= 3 && parts[0] == "element" && parts[1] == "vertex" {
+            vertex_count = parts[2].parse().ok();
+        } else if parts.len() >= 3 && parts[0] == "format" {
+            format = Some(format!("{} {}", parts[1], parts[2]));
         }
     }
     AssetMeta { splat_count: vertex_count, version: None, detail: format }
@@ -277,23 +280,49 @@ fn ply_meta(path: &Path) -> AssetMeta {
 /// Extract the glTF `asset.version` string. Handles both raw `.gltf` JSON and
 /// binary `.glb` (12-byte header + JSON chunk) by reading only the JSON chunk.
 fn gltf_meta(path: &Path) -> AssetMeta {
-    let bytes = match fs::read(path) {
-        Ok(b) => b,
+    // Header-peek contract: NEVER read the whole file — a .glb scene can be
+    // hundreds of megabytes and this runs for every browser entry. Bound the
+    // peek; the `asset` block sits at/near the top of well-formed glTF JSON.
+    const MAX_JSON_PEEK: u64 = 256 * 1024;
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
         Err(_) => return AssetMeta::default(),
     };
-    let json_slice: &[u8] = if bytes.len() >= 12 && &bytes[0..4] == b"glTF" {
-        // GLB: header(12) then first chunk = [len(4) type(4) data].
-        if bytes.len() < 20 {
+    let mut head = [0u8; 20];
+    let n = match file.read(&mut head) {
+        Ok(n) => n,
+        Err(_) => return AssetMeta::default(),
+    };
+    let mut json_bytes: Vec<u8>;
+    if n >= 12 && &head[0..4] == b"glTF" {
+        // GLB: header(12) then first chunk = [len(4) type(4) data]. Read only
+        // min(chunk_len, peek cap) bytes of the JSON chunk; a truncated file
+        // yields a short read and we scan whatever arrived.
+        if n < 20 {
             return AssetMeta::default();
         }
-        let chunk_len = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
-        let start: usize = 20;
-        let end = start.saturating_add(chunk_len).min(bytes.len());
-        &bytes[start..end]
+        let chunk_len =
+            u64::from(u32::from_le_bytes([head[12], head[13], head[14], head[15]]));
+        json_bytes = Vec::new();
+        if file
+            .take(chunk_len.min(MAX_JSON_PEEK))
+            .read_to_end(&mut json_bytes)
+            .is_err()
+        {
+            return AssetMeta::default();
+        }
     } else {
-        &bytes
-    };
-    let version = extract_gltf_asset_version(json_slice);
+        // Raw .gltf JSON: scan a bounded prefix only.
+        json_bytes = head[..n].to_vec();
+        if file
+            .take(MAX_JSON_PEEK - n as u64)
+            .read_to_end(&mut json_bytes)
+            .is_err()
+        {
+            return AssetMeta::default();
+        }
+    }
+    let version = extract_gltf_asset_version(&json_bytes);
     AssetMeta {
         splat_count: None,
         version: version.clone(),
@@ -304,7 +333,10 @@ fn gltf_meta(path: &Path) -> AssetMeta {
 /// Pull the `"version"` field out of the glTF JSON `"asset"` block using a tiny
 /// scanner (no JSON dep needed for one field). Returns `None` if absent.
 fn extract_gltf_asset_version(json: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(json).ok()?;
+    // Lossy: a bounded peek may cut a multibyte char at the tail; the asset
+    // block we scan for is pure ASCII either way.
+    let text = String::from_utf8_lossy(json);
+    let text: &str = &text;
     let asset_at = text.find("\"asset\"")?;
     let rest = &text[asset_at..];
     let ver_at = rest.find("\"version\"")?;
@@ -976,6 +1008,43 @@ mod tests {
         assert_eq!(e.kind, AssetKind::Gltf);
         assert_eq!(e.meta.version.as_deref(), Some("2.0"), "glTF asset version must be parsed");
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// CRLF-terminated PLY headers (Windows-authored files) must still yield
+    /// the vertex count — the terminator and line parsing accept both endings.
+    #[test]
+    fn crlf_ply_header_reports_vertex_count() {
+        let dir = temp_dir("plycrlf");
+        let header = "ply\r\nformat binary_little_endian 1.0\r\nelement vertex 42\r\nproperty float x\r\nend_header\r\n";
+        fs::write(dir.join("win.ply"), header.as_bytes()).unwrap();
+
+        let browser = ContentBrowser::new(&dir);
+        let e = browser.entries().iter().find(|e| e.name == "win.ply").expect("ply entry");
+        assert_eq!(e.meta.splat_count, Some(42), "CRLF header must still parse the count");
+        assert_eq!(
+            e.meta.detail.as_deref(),
+            Some("binary_little_endian 1.0"),
+            "CRLF format line must still parse"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// gltf_meta is a bounded header peek: a raw .gltf far larger than the
+    /// 256 KiB peek window still yields the version (asset block is at the
+    /// top), proving the scan does not require — and the parse does not choke
+    /// on — the full file.
+    #[test]
+    fn huge_gltf_version_found_via_bounded_peek() {
+        let dir = temp_dir("gltfbig");
+        let mut json = String::from(r#"{"asset":{"version":"2.0"},"scenes":[{"name":""#);
+        json.push_str(&"x".repeat(600 * 1024)); // body far beyond the peek cap
+        json.push_str(r#""}]}"#);
+        fs::write(dir.join("big.gltf"), json.as_bytes()).unwrap();
+
+        let browser = ContentBrowser::new(&dir);
+        let e = browser.entries().iter().find(|e| e.name == "big.gltf").expect("entry");
+        assert_eq!(e.meta.version.as_deref(), Some("2.0"));
         fs::remove_dir_all(&dir).ok();
     }
 

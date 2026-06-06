@@ -223,14 +223,32 @@ pub struct GpuSplatEntry {
 
 const _: () = assert!(std::mem::size_of::<GpuSplatEntry>() == 144);
 
+/// Emitter-prefix bound shared by the CPU `propagate` (`take(MAX_EMITTERS)`) and
+/// the GPU pass. Both paths sum over the FIRST `MAX_EMITTERS` emitter splats in
+/// buffer order — the same documented selection rule, so they never diverge.
+pub const MAX_EMITTERS: u32 = 256;
+
+/// GI compute-pass uniform. Layout mirrors the WGSL `GiParams` (std140):
+/// 4 × u32 header (16 bytes) followed by 16 sky-ambient bands packed as
+/// 4 × vec4<f32> (64 bytes) = 80 bytes total.
+///
+/// There is no `alpha` field: `GpuGi` is stateless per call (it binds no
+/// previous-frame radiance), so the CPU temporal-EMA `alpha` has no GPU
+/// counterpart. The pass always fully replaces the radiance, exactly matching a
+/// CPU `propagate` on a fresh (zeroed) cache — i.e. alpha = 0.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GiParamsUniform {
     pub splat_count: u32,
     pub max_emitters: u32,
-    pub alpha: f32,
-    pub _pad: f32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+    /// Per-band sky-ambient radiance (mirrors `SpectralRadianceCache::set_sky`
+    /// → `SpectralAtmosphere::solar_irradiance`). 16 bands as 4 × vec4.
+    pub sky_ambient: [[f32; 4]; 4],
 }
+
+const _: () = assert!(std::mem::size_of::<GiParamsUniform>() == 80);
 
 pub struct GpuGiPass {
     pub splat_buffer: wgpu::Buffer,
@@ -262,7 +280,7 @@ impl GpuGiPass {
         });
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("gi_params_buf"),
-            size: 16,
+            size: std::mem::size_of::<GiParamsUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -362,15 +380,21 @@ impl GpuGiPass {
         queue: &wgpu::Queue,
         splats_gpu: &[GpuSplatEntry],
         splat_count: u32,
-        alpha: f32,
+        max_emitters: u32,
+        sky_ambient: [f32; 16],
     ) {
         let count = splat_count.min(self.max_splats);
         queue.write_buffer(&self.splat_buffer, 0, bytemuck::cast_slice(splats_gpu));
+        let mut sky_packed = [[0.0f32; 4]; 4];
+        for b in 0..16 {
+            sky_packed[b / 4][b % 4] = sky_ambient[b];
+        }
         let params = GiParamsUniform {
             splat_count: count,
-            max_emitters: 256,
-            alpha,
-            _pad: 0.0,
+            max_emitters,
+            _pad0: 0,
+            _pad1: 0,
+            sky_ambient: sky_packed,
         };
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
         {
@@ -511,6 +535,22 @@ impl GpuGi {
         }
     }
 
+    /// Compute the per-band sky-ambient radiance for a given hour, bit-for-bit
+    /// mirroring `EngineLoop::step_gi`: map `hour` → sun elevation, then take the
+    /// atmosphere's `solar_irradiance()` (which is what `set_sky` caches as the
+    /// `sky_ambient` term the CPU `propagate` seeds `incoming` with).
+    pub fn sky_ambient_for_hour(hour: f32) -> [f32; 16] {
+        let norm = (hour % 24.0) / 24.0;
+        let sun_zenith = (std::f32::consts::PI * norm - std::f32::consts::FRAC_PI_2)
+            .sin()
+            .max(0.0)
+            * std::f32::consts::FRAC_PI_2;
+        let mut atmo = SpectralAtmosphere::earth();
+        atmo.sun_zenith = sun_zenith;
+        atmo.sun_elevation = sun_zenith;
+        atmo.solar_irradiance()
+    }
+
     /// Drop-in GPU equivalent of `EngineLoop::step_gi`.
     ///
     /// Uploads `splats`, runs the spectral GI compute pass, and returns the
@@ -520,10 +560,12 @@ impl GpuGi {
     /// inverse-square distance, and the result is written into each splat's
     /// spectral as `clamp(spectral + irr * 0.5, 0, 1)`.
     ///
-    /// `hour` is accepted for API parity with the CPU path (drives sky ambient
-    /// on the CPU side); the GPU pass currently uses zero sky ambient, which is
-    /// the dominant term for the emitter/receiver scenes that matter here.
-    pub fn step(&self, splats: &[GaussianSplat], _hour: f32) -> Result<Vec<GaussianSplat>, GpuGiError> {
+    /// `hour` drives the sky-ambient term exactly as the CPU `EngineLoop::step_gi`
+    /// does: `hour` → sun elevation → `SpectralAtmosphere::solar_irradiance`,
+    /// which seeds each receiver's `incoming` before the emitter sum (mirroring
+    /// `SpectralRadianceCache::set_sky` + the `let mut incoming = sky;` line in
+    /// `propagate`).
+    pub fn step(&self, splats: &[GaussianSplat], hour: f32) -> Result<Vec<GaussianSplat>, GpuGiError> {
         if splats.is_empty() {
             return Ok(Vec::new());
         }
@@ -531,15 +573,21 @@ impl GpuGi {
         let n = count as usize;
 
         let gpu_entries: Vec<GpuSplatEntry> = splats[..n].iter().map(Self::pack).collect();
+        let sky_ambient = Self::sky_ambient_for_hour(hour);
 
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("gpu_gi_encoder"),
             });
-        // alpha = 0.0 → no temporal damping, matching step_gi's per-call propagate.
-        self.pass
-            .dispatch(&mut encoder, &self.queue, &gpu_entries, count, 0.0);
+        self.pass.dispatch(
+            &mut encoder,
+            &self.queue,
+            &gpu_entries,
+            count,
+            MAX_EMITTERS,
+            sky_ambient,
+        );
         self.queue.submit(Some(encoder.finish()));
 
         // Map the readback buffer and wait for the GPU.
@@ -781,7 +829,8 @@ mod tests {
 
     #[test]
     fn gi_params_size() {
-        assert_eq!(std::mem::size_of::<GiParamsUniform>(), 16);
+        // 4 × u32 header (16) + 4 × vec4<f32> sky bands (64) = 80 bytes.
+        assert_eq!(std::mem::size_of::<GiParamsUniform>(), 80);
     }
 
     // --- GpuGi end-to-end tests (exercise the real GPU on this box) ---
@@ -907,6 +956,156 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// CPU reference for a single stateless `GpuGi::step`: mirrors
+    /// `EngineLoop::step_gi` (set sky from `hour`, `propagate(splats, 256)`,
+    /// `apply`) on a FRESH cache (alpha = 0 → full replace, no temporal damping),
+    /// then quantizes through f16 exactly as the GPU readback path does. This is
+    /// the semantic contract the GPU pass must reproduce per-band.
+    fn cpu_step_reference(splats: &[GaussianSplat], hour: f32) -> Vec<GaussianSplat> {
+        let mut cache = SpectralRadianceCache::new(splats.len());
+        cache.alpha = 0.0; // stateless: fresh cache, full replace
+        cache.sky_ambient = GpuGi::sky_ambient_for_hour(hour);
+        cache.propagate(splats, MAX_EMITTERS as usize);
+        let lit = cache.apply(splats);
+        // `apply` already writes f16-quantized spectral, matching the GPU's
+        // f16 store on readback. Return as-is.
+        lit
+    }
+
+    /// Equivalence contract: for a scene LARGER than the emitter bound, with
+    /// several emitters — including one whose index the OLD `n/cap` stride would
+    /// have skipped — the GPU pass must agree per-band with the CPU `step_gi`
+    /// reference within a tight f16-quantization-aware epsilon.
+    ///
+    /// Pre-fix this test fails for two independent reasons: (1) the old striding
+    /// summed a strided emitter subset, so the dominant emitter adjacent to the
+    /// probe receiver (placed at a non-stride index) was dropped → GPU radiance
+    /// ≈ 0 there while CPU lights it strongly; (2) the old shader seeded
+    /// `incoming = 0` instead of the sky-ambient term, so EVERY receiver's bands
+    /// diverged from the CPU by the (non-zero, noon) sky contribution.
+    #[test]
+    fn gpu_gi_matches_cpu_step_for_large_strided_scene() {
+        let n: usize = 1200;
+        let Some(gpu) = try_gpu(n as u32) else { return };
+
+        // Build a deterministic line of dark receivers along +X.
+        let mut scene: Vec<GaussianSplat> = (0..n)
+            .map(|i| {
+                GaussianSplat::volume(
+                    [i as f32 * 0.5, 0.0, 0.0],
+                    [0.1, 0.1, 0.1],
+                    glam::Quat::IDENTITY,
+                    10, // dark receiver, opacity <= 128 → not an emitter
+                    [f16::from_f32(0.0).to_bits(); 16],
+                )
+            })
+            .collect();
+
+        // A handful of emitters near the front (all within the first 256
+        // emitters, so the prefix-take keeps them on both paths).
+        let emit_band = 8usize;
+        let put_emitter = |scene: &mut Vec<GaussianSplat>, idx: usize, pos: [f32; 3], v: f32| {
+            let mut spectral = [f16::from_f32(0.0).to_bits(); 16];
+            spectral[emit_band] = f16::from_f32(v).to_bits();
+            scene[idx] = GaussianSplat::volume(
+                pos,
+                [0.1, 0.1, 0.1],
+                glam::Quat::IDENTITY,
+                255, // bright emitter
+                spectral,
+            );
+        };
+        put_emitter(&mut scene, 0, [0.0, 0.0, 0.0], 0.2);
+        put_emitter(&mut scene, 7, [3.5, 0.0, 0.0], 0.2);
+
+        // The dominant emitter for a specific probe receiver, placed at an index
+        // the OLD stride (n/cap = 1200/256 = 4) would skip: 1001 % 4 == 1, so
+        // k=1001 was never visited by the strided loop. It sits 0.2m off the
+        // probe receiver at index 1000 → huge inverse-square contribution.
+        let stride_old = (n as u32 / MAX_EMITTERS).max(1); // = 4
+        assert_eq!(stride_old, 4, "scene sized so the old stride is 4");
+        let dropped_emitter_idx = 1001usize;
+        assert_ne!(
+            dropped_emitter_idx as u32 % stride_old,
+            0,
+            "dominant emitter must sit at a non-stride index the old loop skipped"
+        );
+        let probe_receiver_idx = 1000usize;
+        let probe_pos = [probe_receiver_idx as f32 * 0.5, 0.0, 0.0];
+        put_emitter(
+            &mut scene,
+            dropped_emitter_idx,
+            [probe_pos[0] + 0.2, 0.0, 0.0],
+            0.5,
+        );
+
+        let hour = 12.0; // noon → non-zero sky ambient (exercises finding #2)
+        // Sanity: the sky term is genuinely non-zero at this hour, so a shader
+        // that seeds incoming=0 must diverge.
+        let sky = GpuGi::sky_ambient_for_hour(hour);
+        assert!(
+            sky.iter().any(|&v| v > 1e-3),
+            "noon sky-ambient must be non-trivial, got {sky:?}"
+        );
+
+        let gpu_out = gpu.step(&scene, hour).expect("gpu step");
+        let cpu_out = cpu_step_reference(&scene, hour);
+        assert_eq!(gpu_out.len(), cpu_out.len());
+
+        // f16 has ~3-4 significant decimal digits; values are in [0,1]. A 2e-3
+        // epsilon is tight yet quantization-safe near the top of the range.
+        let eps = 2e-3f32;
+
+        // Receivers to check: the probe (whose dominant emitter the old loop
+        // dropped), its neighbours, an emitter, and a spread of plain receivers.
+        let sample: Vec<usize> = {
+            let mut s = vec![
+                0,
+                7,
+                probe_receiver_idx,
+                probe_receiver_idx + 1,
+                dropped_emitter_idx,
+                500,
+                999,
+                1100,
+                n - 1,
+            ];
+            s.dedup();
+            s
+        };
+
+        let mut max_delta = 0.0f32;
+        for &i in &sample {
+            for b in 0..16 {
+                let g = f16::from_bits(gpu_out[i].spectral()[b]).to_f32();
+                let c = f16::from_bits(cpu_out[i].spectral()[b]).to_f32();
+                let d = (g - c).abs();
+                if d > max_delta {
+                    max_delta = d;
+                }
+                assert!(
+                    d <= eps,
+                    "CPU/GPU divergence at splat {i} band {b}: gpu={g} cpu={c} (|Δ|={d} > {eps})"
+                );
+            }
+        }
+
+        // Prove the probe receiver was actually lit by the would-be-dropped
+        // emitter (not a vacuous pass): its emit-band must be clearly above the
+        // dark floor on BOTH paths.
+        let probe_g = f16::from_bits(gpu_out[probe_receiver_idx].spectral()[emit_band]).to_f32();
+        let probe_c = f16::from_bits(cpu_out[probe_receiver_idx].spectral()[emit_band]).to_f32();
+        assert!(
+            probe_g > 0.05 && probe_c > 0.05,
+            "probe receiver must be strongly lit by its adjacent emitter: gpu={probe_g} cpu={probe_c}"
+        );
+
+        eprintln!(
+            "[gpu_gi equivalence] n={n} sample={} max|Δ|={max_delta:.2e} probe gpu={probe_g:.4} cpu={probe_c:.4}",
+            sample.len()
+        );
     }
 
     #[test]

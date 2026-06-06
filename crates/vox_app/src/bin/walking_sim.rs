@@ -2246,6 +2246,26 @@ fn run_smoke() {
     let bob_amp_broken = measure_bob_amplitude(&mut app);
     let script_errors_observed = app.rhai.script_errors;
 
+    // The amplitude measurement above goes through cached host fields, which
+    // would survive even a dead AST — so additionally prove the LAST-GOOD AST
+    // itself is still alive and runnable by calling into it directly. It must
+    // return the phase-(b) value (1.20), not error and not the shipped 0.30.
+    {
+        let idx = app
+            .game_script_idx
+            .expect("game script must be loaded during the smoke");
+        let live: f64 = app
+            .rhai
+            .call_fn(idx, "bob_amplitude", &[])
+            .expect("last-good AST must still execute after a broken edit")
+            .as_float()
+            .expect("bob_amplitude returns a float");
+        assert!(
+            (live - 1.20).abs() < 1e-6,
+            "last-good AST must serve the phase-(b) value 1.20, got {live}"
+        );
+    }
+
     // --- Phase (d): restore the good script. ---
     std::thread::sleep(std::time::Duration::from_millis(20));
     std::fs::write(&script_path, &original_script).expect("restore script");

@@ -161,6 +161,18 @@ impl NodeGraphWidget {
     pub fn remove_node(&mut self, id: u32) {
         self.nodes.retain(|n| n.id != id);
         self.connections.retain(|c| c.from_node != id && c.to_node != id);
+        // Prune the side-band wire-value chips for every wire that just went
+        // away — orphaned entries would re-attach if a node id is reused.
+        self.wire_values
+            .retain(|k, _| k.from_node != id && k.to_node != id);
+    }
+
+    /// Remove one connection (and its wire-value chip, which would otherwise
+    /// linger as a stale orphan and re-attach if the wire is re-made).
+    pub fn remove_connection(&mut self, conn: &VisualConnection) {
+        let key = WireKey::of(conn);
+        self.connections.retain(|c| WireKey::of(c) != key);
+        self.wire_values.remove(&key);
     }
 
     /// Calculate the screen position of a pin for connection drawing.
