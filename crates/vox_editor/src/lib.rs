@@ -2,6 +2,7 @@
 pub mod content_browser;
 pub mod gizmo_interaction;
 pub mod node_graph;
+pub mod node_thumbnail;
 pub mod nodes;
 pub mod registry;
 pub mod templates;

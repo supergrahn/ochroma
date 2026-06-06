@@ -57,6 +57,7 @@ use vox_ui::theme::apply_ochroma_theme;
 use vox_ui::vello_ctx::VelloCtxCpu;
 
 use vox_editor::node_graph::{OchromaNodeGraph, ParamValue, PortData};
+use vox_editor::node_thumbnail::node_thumbnail;
 use vox_editor::nodes::biome_node::{BiomeKind, BiomeNode};
 use vox_editor::nodes::terrain_node::TerrainNode;
 use vox_editor::registry::NodeRegistry;
@@ -373,6 +374,14 @@ struct EngineApp {
     live_graph_last_cook_us: u128,
     // Visual connections mirrored from the live graph, for wire-value chip refresh.
     live_graph_visual_conns: Vec<VisualConnection>,
+    // --- Live preview thumbnails on graph nodes (rank #10) ---
+    // Monotonic count of how many thumbnails have actually been (re)generated.
+    // A thumbnail is regenerated ONLY when a node's cook generation changes, so
+    // cooking with no change leaves this flat (proven by the smoke test).
+    thumbnail_gen_count: u64,
+    // Per visual-node-id, the graph cook generation the last thumbnail was built
+    // from. Used to gate regeneration: same generation => reuse the cached blit.
+    thumbnail_node_gen: std::collections::HashMap<u32, u64>,
 
     // Live GPU Vello renderer for the SpectralHUD (rank-1 adoption candidate:
     // GPU vector UI). Lazily created on first HUD draw via
@@ -607,6 +616,8 @@ impl EngineApp {
             live_graph_splat_range: None,
             live_graph_last_cook_us: 0,
             live_graph_visual_conns: Vec::new(),
+            thumbnail_gen_count: 0,
+            thumbnail_node_gen: std::collections::HashMap::new(),
             vello_hud: None,
             vello_hud_unavailable: false,
             vello_hud_px_last_frame: 0,
@@ -990,10 +1001,31 @@ impl EngineApp {
             })
             .collect();
 
+        // Mirror the live-graph nodes into the visual widget (ids offset by +100 to
+        // match the wire ids) so their live preview thumbnails (rank #10) blit onto
+        // real node bodies. Laid out as a vertical stack below the terrain/biome row.
+        for (row, nid) in inst.node_ids.iter().enumerate() {
+            let title = inst.graph.node_name(*nid).unwrap_or("node").to_string();
+            self.node_widget.add_node(VisualNode {
+                id: nid.0 + 100,
+                title,
+                position: [10.0, 110.0 + row as f32 * 64.0],
+                size: [110.0, 56.0],
+                color: [70, 110, 150],
+                inputs: vec![],
+                outputs: vec![],
+                selected: false,
+                collapsed: false,
+            });
+        }
+
         self.live_graph = Some(inst.graph);
 
         // Inject the cooked splats into the viewport scene.
         self.inject_live_graph_splats();
+
+        // Build the initial live preview thumbnails (rank #10) for every cooked node.
+        self.refresh_node_thumbnails();
     }
 
     /// Pull the live graph's terminal Splats, offset them into the scene, and
@@ -1092,7 +1124,53 @@ impl EngineApp {
             viewport_before,
             viewport_after,
         );
+
+        // Regenerate live preview thumbnails ONLY for nodes whose cook generation
+        // changed this recook (rank #10). Clean nodes keep their cached blit.
+        self.refresh_node_thumbnails();
         Some(after)
+    }
+
+    /// Live preview thumbnails (rank #10): for every live-graph node, render its
+    /// cooked primary output into a miniature and push it onto the visual widget —
+    /// but ONLY when the node's cook generation (`cook_count`) has advanced since
+    /// the last thumbnail was built for it. Cooking with no change leaves every
+    /// generation flat, so `thumbnail_gen_count` does not move (proven in smoke).
+    /// Returns the number of thumbnails actually (re)generated this call.
+    fn refresh_node_thumbnails(&mut self) -> usize {
+        const TW: usize = 64;
+        const TH: usize = 40;
+        let Some(graph) = &self.live_graph else { return 0 };
+
+        // Collect (visual_id, generation, thumbnail-pixels) for nodes that changed.
+        let mut regenerated: Vec<(u32, u64, Vec<[u8; 4]>)> = Vec::new();
+        for nid in graph.node_ids() {
+            let generation = graph.cook_count(nid).unwrap_or(0);
+            if generation == 0 {
+                continue; // never cooked => no output to preview yet
+            }
+            let visual_id = nid.0 + 100; // same id-space mapping as the wires
+            if self.thumbnail_node_gen.get(&visual_id) == Some(&generation) {
+                continue; // generation unchanged => reuse the cached thumbnail
+            }
+            // Pick the node's primary (first, deterministic) output port's data.
+            let Some(outputs) = graph.node_outputs(nid) else { continue };
+            // Deterministic pick: lowest port name so the same port previews each time.
+            let Some((_, data)) = outputs.iter().min_by(|a, b| a.0.cmp(b.0)) else { continue };
+            let pixels = node_thumbnail(data, TW, TH);
+            regenerated.push((visual_id, generation, pixels));
+        }
+
+        let count = regenerated.len();
+        for (visual_id, generation, pixels) in regenerated {
+            self.node_widget.set_thumbnail(
+                visual_id,
+                vox_ui::node_graph_widget::NodeThumbnail::new(pixels, TW as u16, TH as u16),
+            );
+            self.thumbnail_node_gen.insert(visual_id, generation);
+            self.thumbnail_gen_count += 1;
+        }
+        count
     }
 
     // -----------------------------------------------------------------------
@@ -3572,13 +3650,44 @@ fn run_smoke() {
     if let Some(g) = app.live_graph.as_mut() {
         g.set_recook_budget(std::time::Duration::from_millis(0));
     }
+
+    // --- Live preview thumbnails (rank #10) ---
+    // Baseline thumbnail generation after the initial build (one per cooked node).
+    let thumbs_generated_initial = app.thumbnail_gen_count;
+    let edited_node_name = app
+        .live_graph_terrain
+        .and_then(|n| app.live_graph.as_ref().and_then(|g| g.node_name(n)))
+        .unwrap_or("?")
+        .to_string();
+
+    // Cook again WITHOUT any change: no node's generation advances, so NO
+    // thumbnail is regenerated (the gating counter must stay flat).
+    let gen_before_noop = app.thumbnail_gen_count;
+    app.refresh_node_thumbnails();
+    let gen_after_noop = app.thumbnail_gen_count;
+    assert_eq!(
+        gen_after_noop, gen_before_noop,
+        "thumbnail regenerated with no cook change: {gen_before_noop}->{gen_after_noop}"
+    );
+
     // Scrub the PlotNode footprint to a much larger value so the Splatize output
     // grows (area * splats_per_sqm). This routes through the throttled request.
     app.live_graph_request_edit("footprint_w", ParamValue::Float(80.0));
     app.live_graph_request_edit("footprint_d", ParamValue::Float(80.0));
     // Flush with a forced future clock so the recook is guaranteed due.
     let future = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let gen_before_edit = app.thumbnail_gen_count;
     let recooked = app.live_recook(future);
+    let regen_after_edit = app.thumbnail_gen_count - gen_before_edit;
+
+    println!(
+        "[graph] thumbnails: generated={} regen_after_edit={} node={}",
+        thumbs_generated_initial, regen_after_edit, edited_node_name
+    );
+    assert!(
+        regen_after_edit >= 1,
+        "edited node + downstream must regenerate >=1 thumbnail, got {regen_after_edit}"
+    );
 
     let live_splats_after = app.live_graph_splat_range.map(|(s, e)| e - s).unwrap_or(0);
     let scene_splats_after = app.scene_splats.len();

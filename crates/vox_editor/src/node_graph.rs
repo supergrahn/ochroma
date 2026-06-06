@@ -526,6 +526,18 @@ impl OchromaNodeGraph {
         self.nodes.get(&id)?.last_output.as_ref()?.get(port)
     }
 
+    /// Display name of a node, if it exists.
+    pub fn node_name(&self, id: NodeId) -> Option<&str> {
+        self.nodes.get(&id).map(|e| e.name.as_str())
+    }
+
+    /// The full set of cached outputs for a node after the last cook/evaluate,
+    /// if it has cooked at least once. Used by the live preview thumbnail
+    /// generator to pick a node's primary output without knowing its port names.
+    pub fn node_outputs(&self, id: NodeId) -> Option<&NodeOutputs> {
+        self.nodes.get(&id)?.last_output.as_ref()
+    }
+
     /// Inspect the value that flowed through every wire after the last cook/evaluate.
     ///
     /// For each edge, looks up the upstream node's cached output for the wire's

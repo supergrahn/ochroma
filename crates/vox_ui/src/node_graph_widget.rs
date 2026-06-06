@@ -112,6 +112,30 @@ pub struct NodeGraphWidget {
     /// Formatted snapshot of the value last seen on each wire, keyed by [`WireKey`].
     /// Populated by the editor during `evaluate()` and rendered as a value chip.
     pub wire_values: std::collections::HashMap<WireKey, String>,
+    /// Live preview thumbnails per node id (rank #10). Stored side-band rather
+    /// than as a `VisualNode` field so existing struct-literal construction sites
+    /// (engine_runner, vox_nodes) keep compiling unchanged. The editor renders a
+    /// node's cooked output into a [`NodeThumbnail`] and pushes it here; the body
+    /// of the node grows and blits the thumbnail below its title.
+    pub thumbnails: std::collections::HashMap<u32, NodeThumbnail>,
+}
+
+/// A cached miniature visualization of a node's cooked output, blitted onto the
+/// node body below its title. `pixels` is row-major RGBA, exactly `w*h` long.
+#[derive(Debug, Clone)]
+pub struct NodeThumbnail {
+    pub pixels: Vec<[u8; 4]>,
+    pub w: u16,
+    pub h: u16,
+}
+
+impl NodeThumbnail {
+    /// Build a thumbnail from a pixel buffer. Panics in debug if the buffer length
+    /// does not match `w*h` so a malformed thumbnail is caught at the source.
+    pub fn new(pixels: Vec<[u8; 4]>, w: u16, h: u16) -> Self {
+        debug_assert_eq!(pixels.len(), w as usize * h as usize, "thumbnail pixel count mismatch");
+        Self { pixels, w, h }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -147,7 +171,43 @@ impl NodeGraphWidget {
             grid_size: 20.0,
             comments: Vec::new(),
             wire_values: std::collections::HashMap::new(),
+            thumbnails: std::collections::HashMap::new(),
         }
+    }
+
+    /// Attach (or replace) the live preview thumbnail for a node.
+    pub fn set_thumbnail(&mut self, node_id: u32, thumb: NodeThumbnail) {
+        self.thumbnails.insert(node_id, thumb);
+    }
+
+    /// The thumbnail currently attached to a node, if any.
+    pub fn thumbnail(&self, node_id: u32) -> Option<&NodeThumbnail> {
+        self.thumbnails.get(&node_id)
+    }
+
+    /// Drop all attached thumbnails.
+    pub fn clear_thumbnails(&mut self) {
+        self.thumbnails.clear();
+    }
+
+    /// Padding (px) between a node's title bar and the thumbnail, and the margin
+    /// on each side of the thumbnail inside the node body.
+    const THUMB_PAD: i32 = 4;
+    const TITLE_H: i32 = 24;
+
+    /// Top-left corner + drawn size of a node's thumbnail in node-local
+    /// (unscrolled) coordinates, given the node's screen-space top-left. Returns
+    /// `None` if the node has no thumbnail. The thumbnail is centered horizontally
+    /// within the node body and sits just below the title bar.
+    fn thumb_rect(&self, node: &VisualNode, x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
+        let thumb = self.thumbnails.get(&node.id)?;
+        let nw = node.size[0] as i32;
+        let avail_w = (nw - 2 * Self::THUMB_PAD).max(1);
+        let dw = (thumb.w as i32).min(avail_w);
+        let dh = thumb.h as i32;
+        let tx = x + (nw - dw) / 2;
+        let ty = y + Self::TITLE_H + Self::THUMB_PAD;
+        Some((tx, ty, dw, dh))
     }
 
     pub fn add_node(&mut self, node: VisualNode) {
@@ -260,11 +320,41 @@ impl NodeGraphWidget {
             let x = (node.position[0] + self.scroll_offset[0]) as i32;
             let y = (node.position[1] + self.scroll_offset[1]) as i32;
             let w = node.size[0] as i32;
-            let h = node.size[1] as i32;
+            // Node body grows to fit a live preview thumbnail (rank #10) when one is
+            // attached: title + pad + thumbnail height + pad, but never shorter than
+            // the node's declared size.
+            let h = match self.thumb_rect(node, x, y) {
+                Some((_, _, _, dh)) => {
+                    let needed = Self::TITLE_H + 2 * Self::THUMB_PAD + dh;
+                    needed.max(node.size[1] as i32)
+                }
+                None => node.size[1] as i32,
+            };
 
             // Node background
             let bg = if node.selected { [60, 60, 70, 240] } else { [45, 45, 55, 230] };
             fill_rect(pixels, width, height, x, y, w, h, bg);
+
+            // Live preview thumbnail (rank #10): blit the cached miniature below
+            // the title bar. Every pixel comes from the node's real cooked output.
+            if let (Some((tx, ty, dw, dh)), Some(thumb)) =
+                (self.thumb_rect(node, x, y), self.thumbnails.get(&node.id))
+            {
+                let sw = thumb.w as i32;
+                for ry in 0..dh {
+                    for rx in 0..dw {
+                        // Source is unscaled (dw<=thumb.w). Clamp the source x to
+                        // the thumbnail width so a narrow node crops, not panics.
+                        let sx = rx.min(sw - 1);
+                        let sidx = (ry * sw + sx) as usize;
+                        if sidx < thumb.pixels.len() {
+                            set_pixel(pixels, width, height, tx + rx, ty + ry, thumb.pixels[sidx]);
+                        }
+                    }
+                }
+                // 1px frame around the thumbnail so it reads as a preview cell.
+                draw_rect_outline(pixels, width, height, tx - 1, ty - 1, dw + 2, dh + 2, [90, 95, 110, 255]);
+            }
 
             // Title bar
             let title_color = [node.color[0], node.color[1], node.color[2], 255];
@@ -901,6 +991,79 @@ mod tests {
     }
 
     // --- Wire value chip tests (#9b) ---
+
+    // --- Live preview thumbnail tests (rank #10) ---
+
+    #[test]
+    fn node_with_thumbnail_blits_pixels_thumbnailless_node_does_not() {
+        let mut w = NodeGraphWidget::new();
+        // Two identical nodes far apart so their rects don't overlap.
+        w.add_node(make_test_node(1, 20.0, 20.0));
+        w.add_node(make_test_node(2, 260.0, 20.0));
+
+        // A solid magenta thumbnail (distinct from any node/background color).
+        let tw = 64u16;
+        let th = 40u16;
+        let magenta = [240u8, 30, 200, 255];
+        let pixels = vec![magenta; tw as usize * th as usize];
+        w.set_thumbnail(1, NodeThumbnail::new(pixels, tw, th));
+
+        let (width, height) = (512u32, 160u32);
+        let mut px = vec![[30u8, 30, 35, 255]; (width * height) as usize];
+        w.render_to_pixels(&mut px, width, height);
+
+        // Count magenta pixels inside each node's body rect.
+        let count_in = |node_x: i32, node_y: i32, node_w: i32, node_h: i32| -> usize {
+            let mut c = 0;
+            for y in node_y..(node_y + node_h) {
+                for x in node_x..(node_x + node_w) {
+                    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+                        continue;
+                    }
+                    let p = px[(y * width as i32 + x) as usize];
+                    if p == magenta {
+                        c += 1;
+                    }
+                }
+            }
+            c
+        };
+
+        // Node positions include the default scroll offset of [0,0].
+        let n1 = count_in(20, 20, 160, 120);
+        let n2 = count_in(260, 20, 160, 120);
+        assert!(n1 > 1000, "node 1 should blit a big thumbnail, got {n1} magenta px");
+        assert_eq!(n2, 0, "node 2 (no thumbnail) must have 0 thumbnail px, got {n2}");
+    }
+
+    #[test]
+    fn node_body_grows_to_fit_thumbnail() {
+        let mut w = NodeGraphWidget::new();
+        // A node with a SMALL declared size — body must grow to fit a tall thumbnail.
+        let mut node = make_test_node(1, 10.0, 10.0);
+        node.size = [120.0, 30.0]; // declared shorter than title+thumb
+        w.add_node(node);
+        let tw = 64u16;
+        let th = 40u16;
+        w.set_thumbnail(1, NodeThumbnail::new(vec![[200, 50, 50, 255]; tw as usize * th as usize], tw, th));
+
+        let (width, height) = (256u32, 200u32);
+        let mut px = vec![[30u8, 30, 35, 255]; (width * height) as usize];
+        w.render_to_pixels(&mut px, width, height);
+
+        // The thumbnail bottom (title 24 + pad 4 + 40 = row 68) must contain the
+        // thumbnail color, proving the body extended past the declared 30px height.
+        let row = 10 + 60; // node y + ~deep into thumbnail
+        let mut found = false;
+        for x in 10..130 {
+            let p = px[(row * width + x) as usize];
+            if p == [200, 50, 50, 255] {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "node body must grow to render the full thumbnail below its title");
+    }
 
     #[test]
     fn set_and_get_wire_value_round_trips() {
