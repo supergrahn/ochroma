@@ -1,0 +1,428 @@
+{
+  "_meta": {
+    "title": "Ochroma engine competitive research: Unreal / Unity / Gaussian-splatting SOTA vs Ochroma",
+    "date": "2026-06-06",
+    "researcher": "competitive-analysis agent",
+    "method": "WebSearch + WebFetch across UE 5.6/5.7, Unity 6.1-6.4, GS SOTA papers/tooling 2025-2026, node-graph & UI-framework UX. Grounded in 2026-06-05 Ochroma 18-domain audit + git log of the blitz branch.",
+    "ochroma_state_summary": "Spectral Gaussian-splatting engine in Rust. REAL+WIRED today: true-anisotropic 3DGS CPU rasteriser + Vulkan spectra path (spectra-native renders on RADV iGPU w/ CUDA fallback), 16-band spectral GI (CPU SpectralRadianceCache mutating splat bands per-frame in engine_runner), spectral atmosphere (Rayleigh+Mie), CPU cascaded shadow maps, day/night cycle, Vello CPU HUD + main/pause/win menus, interactive egui node-graph widget (TerrainNode->BiomeNode) behind an editor toggle, Rhai+Lua hot-reload (per-frame hooks live but I/O stores recently made populatable), QUIC predict-rollback-resimulate netcode (2-player loopback walk demo), animation blend trees + splat skinning bridge, gltf2splat converter, PLY round-trip, splat_view 3DGS viewer, editor entity inspector. WEAK/UNWIRED per audit: GPU GI path, Substrate-like material model, LOD, compression, in-game spectral HUD wiring, most audio/physics soft-body layers. Crates: vox_core, vox_data, vox_render, vox_ui, vox_script, vox_net, vox_physics, vox_audio, vox_terrain, vox_nodes, vox_app (game layer)."
+  },
+
+  "unreal": {
+    "version_state": "UE 5.7 shipped Nov 2025 (current as of Jun 2026); 5.6 shipped Jun 2025. Cadence ~2 releases/yr. 5.7 is the reference point: PCG and Substrate both went PRODUCTION-READY, Substrate enabled by default. MegaLights is Beta (added directional/Niagara-particle/translucency/hair support). Nanite Foliage + a node-graph Procedural Vegetation Editor are Experimental. An in-Editor generative AI Assistant (plain-language -> step-by-step + C++ codegen) is Experimental. Verse is still maturing as the UEFN/eventual-cross-engine scripting language (intended to supersede Blueprint/C++ long-term) but is not the default game-script path in standalone UE yet.",
+    "features": [
+      {
+        "name": "Nanite (virtualized micro-poly geometry) + Nanite Foliage (5.7) + first-person Nanite (prod-ready 5.7)",
+        "what_it_is": "GPU-driven cluster LOD that streams and renders pixel-sized triangles from massive meshes; 5.7 extends it to instanced foliage (forests from modular parts, distant leaves -> sub-pixel voxel cubes, GPU wind/skeletal anim) and to first-person geometry.",
+        "why_it_matters": "Removes the artist LOD budget entirely for mesh geometry; the headline reason studios pick UE for open worlds.",
+        "ochroma_gap": "UNBEATABLE short-term for triangle meshes. BUT Ochroma's native primitive is the Gaussian splat, not the triangle — the analogous problem is splat LOD/streaming, where UE has NO native answer (only 3rd-party plugins). This is a differentiation lane, not a catch-up lane."
+      },
+      {
+        "name": "Lumen (dynamic global illumination + reflections)",
+        "what_it_is": "Software+hardware-RT hybrid real-time GI with infinite bounces and reflections; 5.6/5.7 work focused on perf (120Hz mode, low-end prototype, HWRT speedups).",
+        "why_it_matters": "Console-grade dynamic GI with no lightmap bake; the lighting baseline players now expect.",
+        "ochroma_gap": "Ochroma has a REAL spectral GI (16-band SpectralRadianceCache + atmosphere) that is genuinely physically richer than Lumen's RGB model — but it is CPU-only, O(N_splats x 256)/frame, clones the splat buffer each frame, and the GPU compute path (GpuGiPass) is dead code. Gap is performance + GPU wiring, not concept. Lands in vox_render/spectral_gi.rs."
+      },
+      {
+        "name": "Substrate (production-ready, default in 5.7)",
+        "what_it_is": "Modular principled-BSDF material framework: compose slabs/layers (metal+coat+sheen+thin-film) instead of a fixed Übershader; ray-traced translucency demo.",
+        "why_it_matters": "Standardizes physically-based material authoring with layered real-world surfaces (car paint, skin, frosted glass) in one graph.",
+        "ochroma_gap": "Ochroma has NO layered material model. But Ochroma's spectral splats carry 16 wavelength bands — a spectral-BSDF / spectral-reflectance material model would be physically MORE grounded than Substrate's RGB BSDF (true metamerism, Rayleigh tint, thin-film by wavelength). Greenfield differentiation. Lands in a new vox_render material module + vox_nodes editor."
+      },
+      {
+        "name": "PCG Framework + PCG Editor Mode (production-ready 5.7)",
+        "what_it_is": "Node-graph procedural generation (biomes->whole worlds): points generated/filtered/transformed/spawned, live viewport update. 5.7 added PCG Editor Mode (draw splines, paint points, create volumes bound to graph params), Polygon2D data, spline ops, GPU compute (~2x faster than 5.5), and a graph-based Procedural Vegetation Editor.",
+        "why_it_matters": "Artists build worlds with reusable, parameterized node graphs instead of hand-placement; the modern world-building workflow.",
+        "ochroma_gap": "Ochroma's node graph today is a tiny TerrainNode->BiomeNode demo behind an editor toggle. The interaction substrate (vox_ui node_graph_widget, 601 LOC: pan/zoom/drag/bezier) is solid and reusable. Gap is breadth of node library + live-in-viewport execution + spline/scatter tooling. Lands in vox_nodes + vox_terrain. User priority: graphs+flow."
+      },
+      {
+        "name": "Niagara VFX (new VM in 5.6, CPU+GPU shared math)",
+        "what_it_is": "Node/stack VFX system; 5.6 added a new Niagara VM letting the same math run on CPU and GPU; data-channel-driven cross-system events.",
+        "why_it_matters": "Author once, run on either processor; data-driven particle reactions to gameplay.",
+        "ochroma_gap": "Ochroma has wired CPU SplatEmitter (fire on KeyE) but its 'GPU' particle system does no GPU work and the GPU blend path has no setter. No node-based VFX authoring. Splats-as-particles is a natural spectral-VFX fit. Lands in vox_render particle modules + a VFX node graph."
+      },
+      {
+        "name": "MegaLights (Beta, 5.5->5.7)",
+        "what_it_is": "'Nanite of lights' — thousands of dynamic shadow-casting lights at near-constant cost via stochastic sampling+denoise; 5.7 added directional, Niagara-particle, translucency, hair-strand support.",
+        "why_it_matters": "Removes the dynamic-light-count budget; many-light scenes that were impossible become cheap.",
+        "ochroma_gap": "Ochroma's lighting is sun+ambient GI; no many-light system. A spectral many-light sampler would compound with spectral GI. Medium-term, not a launch blocker. Lands in vox_render."
+      },
+      {
+        "name": "Motion Matching + Spatially-Aware Animation Retargeting (Experimental 5.7)",
+        "what_it_is": "Data-driven locomotion (pick best pose from a motion DB) + retargeting that avoids self-collision and handles extreme scale differences (giant->dwarf), crotch-height/floor constraints.",
+        "why_it_matters": "Responsive, natural locomotion without hand-built state machines; reuse one anim set across many rigs.",
+        "ochroma_gap": "Ochroma HAS motion_matching.rs (MotionDatabase) + skinning.rs + blend trees implemented and tested, but with ZERO live callsites and no in-game avatar. Gap is pure wiring + a shipped character. Lands in vox_render animation + vox_app. User priority: flow (secondary)."
+      },
+      {
+        "name": "MetaHuman (out of Early Access in 5.6; 5.7 Linux/macOS Creator, Python/BP API, FBX round-trip)",
+        "what_it_is": "Full digital-human pipeline: create/rig/animate photoreal humans, now batch-automatable and cross-platform.",
+        "why_it_matters": "Eliminates the most expensive content (believable humans) as a first-class engine feature.",
+        "ochroma_gap": "Out of scope to match. A spectral engine's differentiation is captured/relightable REAL humans via Gaussian splatting (skin subsurface by wavelength), not synthesized rigs. Don't chase MetaHuman."
+      },
+      {
+        "name": "In-Editor AI Assistant (Experimental 5.7) + Epic Developer Assistant (Verse codegen)",
+        "what_it_is": "Slide-out generative panel answering plain-language questions in editor context, generating C++ and step-by-step guidance; a separate beta assistant writes Verse for UEFN.",
+        "why_it_matters": "Lowers the engine's steep learning curve directly inside the tool.",
+        "ochroma_gap": "Ochroma has Rhai+Lua hot-reload and a (fake) eval console but no AI assist. A small assistant that emits Rhai/Lua or node-graph snippets from natural language is cheap given an LLM API. Lands in vox_app editor. User priority: flow."
+      },
+      {
+        "name": "World Partition + open-world streaming",
+        "what_it_is": "Automatic grid-based world streaming, data layers, HLODs, one-file-per-actor for large-team collaboration.",
+        "why_it_matters": "Makes giant seamless worlds editable by many people without merge hell.",
+        "ochroma_gap": "Ochroma has chunk/world replication primitives (vox_net) but no streaming world partition. Large-scope; pair with splat LOD/streaming when it lands. Lands in vox_data + vox_terrain."
+      }
+    ]
+  },
+
+  "unity": {
+    "version_state": "Unity 6 era. 6.1 (early 2025) made ECS/DOTS production-ready (millions of entities) and added SDF/custom-GPU-events to Shader+VFX Graph. 6.2 (Aug 2025) launched 'Unity AI' suite (supersedes Muse+Sentis; uses 3rd-party models too) + Shader Graph Append node + dynamic-branch keywords + experimental ECS Vehicles. 6.3 LTS (Dec 2025): URP+HDRP now share ONE compiler/API (renderer-unification step), UI Toolkit native SVG + a UI target in Shader Graph (custom UI shaders), VFX Graph GPU-event instancing, Shader-Graph terrain materials for non-coders. 6.4 (beta, 2026): DirectStorage, ECS becomes a CORE engine package, XR updates; roadmap promises unified ECS/GameObject transforms and CoreCLR runtime. Direction: converge URP/HDRP via shared Render Graph backend + cross-pipeline upscaling.",
+    "features": [
+      {
+        "name": "ECS / DOTS (production-ready 6.1; core package 6.4)",
+        "what_it_is": "Data-oriented entity-component-system for cache-friendly simulation of millions of entities; moving toward attaching ECS components directly to GameObjects without re-architecting.",
+        "why_it_matters": "Massive-scale simulation (MMO, crowds, digital twins) the OO scene graph can't reach.",
+        "ochroma_gap": "Ochroma ALREADY uses bevy_ecs in EngineRuntime — architecturally ahead of Unity here (Rust + ECS native from day one). Strength to lean on, not a gap. Lands in vox_core/engine_runtime.rs."
+      },
+      {
+        "name": "Shader Graph (6.1-6.3: SDF nodes, Append, dynamic-branch keywords, terrain materials, UI target)",
+        "what_it_is": "Node-based shader authoring; recent adds: SDF support, vector Append, keyword-driven dynamic branching set in-graph, no-code terrain shaders, custom UI shaders.",
+        "why_it_matters": "Artists author production shaders without HLSL; the most-used creator graph after Blueprint.",
+        "ochroma_gap": "Ochroma has material/anim/vfx editor UIs (egui) wired only behind an editor toggle, no real shader-graph compiling to the spectral pipeline. A spectral Shader/Material Graph compiling to WGSL/Slang is a core opportunity. Lands in vox_nodes + vox_render. User priority: graphs+rendering."
+      },
+      {
+        "name": "VFX Graph (GPU events, instancing 6.3, SDF)",
+        "what_it_is": "GPU-simulated millions-of-particles node graph; 6.3 added GPU-event instancing + new samples/templates across URP/HDRP.",
+        "why_it_matters": "Film-grade GPU VFX authored visually; runs on both pipelines.",
+        "ochroma_gap": "Same as Niagara gap: Ochroma lacks node-based GPU VFX. Splat-particle VFX is the spectral-native version. Lands in vox_render."
+      },
+      {
+        "name": "UI Toolkit (retained-mode, USS/UXML, SVG 6.3, Shader-Graph UI target)",
+        "what_it_is": "Retained-mode UI with CSS-like USS styling + UXML markup + a visual UI Builder; web-dev-familiar; 6.3 added native SVG + custom UI shaders.",
+        "why_it_matters": "Performant data-driven UI with designer/dev separation; Unity's strategic default over legacy uGUI/IMGUI.",
+        "ochroma_gap": "Ochroma's UI story is split: vox_core CPU bitmap-font HUD (walking_sim), inline egui (engine_runner), Vello menus, and an UNWIRED SpectralHUD. No retained styleable tree wired to the GPU. Big convergence opportunity. Lands in vox_ui. User priority: UI (top)."
+      },
+      {
+        "name": "Unity AI suite (6.2; supersedes Muse)",
+        "what_it_is": "Generative tools (texture/sprite/animation/behaviour assist) using Unity + third-party models, flexible pricing.",
+        "why_it_matters": "Content generation inside the editor; competitive pressure to have SOME AI assist.",
+        "ochroma_gap": "None wired. Lowest-priority parity item; a scripting/node AI assist (see UE) is the cheaper, higher-leverage version. Lands in vox_app editor."
+      },
+      {
+        "name": "Render-pipeline unification (URP+HDRP shared compiler 6.3; shared Render Graph + cross-pipeline upscaling 2026)",
+        "what_it_is": "Collapsing two divergent render pipelines onto one compiler/API/Render-Graph backend so features and upscalers work across both.",
+        "why_it_matters": "Unity's decade of two-pipeline fragmentation was a top creator pain point; unification is the 2026 strategic bet.",
+        "ochroma_gap": "Ochroma has ONE spectral pipeline (CPU raster + Vulkan spectra) — no fragmentation to fix. Structural advantage; a clean render-graph abstraction in vox_render would future-proof it. Lands in vox_render."
+      }
+    ]
+  },
+
+  "gaussian_splatting_sota": [
+    {
+      "name": "KHR_gaussian_splatting glTF 2.0 extension (Khronos)",
+      "year": "2026 (RC Feb 2026, ratification targeted Q2 2026)",
+      "capability": "Standard storage of GS attributes (position, orientation, scale, SH color, opacity) as glTF mesh primitives; a companion extension targets SPZ progressive streaming. OpenUSD Particle-Fields schema + OGC 3D Tiles 2.0 also add GS as a first-class type.",
+      "relevance": "HIGH/strategic. Ochroma already does gltf2splat + PLY round-trip; adding KHR_gaussian_splatting import/export (vox_data) makes Ochroma interoperable with the whole emerging ecosystem at low cost. Beats engines that only do proprietary/PLY."
+    },
+    {
+      "name": "SPZ compression format (Niantic Spatial, now Khronos-track)",
+      "year": "2024-2026 (v2.0 added quaternion rotation accuracy)",
+      "capability": "~90% size reduction vs PLY via quantization + gzip; royalty-free, becoming a standard.",
+      "relevance": "HIGH. Ochroma has no splat compression. SPZ read/write in vox_data is a small, standards-aligned win that also helps netcode bandwidth. Catches-up to plugin ecosystem, cheaply."
+    },
+    {
+      "name": "LODGE + Cesium hierarchical LOD for splats (3D Tiles / Cesium for Unreal)",
+      "year": "2025 (LODGE NeurIPS 2025; Cesium LOD Apr 2026)",
+      "capability": "Camera-distance-driven hierarchical LOD: partition scene into spatial chunks, load only relevant Gaussians, opacity-blend across chunk boundaries to hide pops; streams large scenes on memory-constrained devices.",
+      "relevance": "HIGH. Ochroma has NO splat LOD/streaming. This is the 'Nanite for splats' that even UE lacks natively — a genuine differentiation + scalability lane. Lands in vox_render + vox_data. Beats UE/Unity (plugin-only)."
+    },
+    {
+      "name": "HGSC / HPC hierarchical & dynamic GS compression (octree + KD-tree, importance pruning)",
+      "year": "2024-2026",
+      "capability": "Prune low-importance Gaussians by score; octree-compress positions; KD-tree block attribute compression; HPC streams dynamic (4D) GS via hierarchical point latents.",
+      "relevance": "MEDIUM. Importance-pruning is a cheap quality/perf lever Ochroma could adopt in the rasteriser/exporter. Complements SPZ. Lands in vox_render/vox_data."
+    },
+    {
+      "name": "Relightable 3D Gaussians / RTR-GS / Reflective-GS / GOGS (BRDF inverse rendering)",
+      "year": "ECCV 2024 -> ICLR 2025 -> 2026",
+      "capability": "Decompose captured splats into normals + BRDF + environment lighting (split-sum, deferred PBR) so a captured scene can be RE-LIT and reflect new environments; surfel variants get high-fidelity geometry on glossy objects.",
+      "relevance": "VERY HIGH / core differentiation. This is exactly where a SPECTRAL splat engine wins: Ochroma already mutates per-band splat spectra under GI. A relightable spectral-BRDF capture path (capture -> per-band reflectance -> relight under spectral atmosphere) would be physically beyond RGB relighting (Volinga's UE relight plugin is RGB). Lands in vox_render + a capture/import tool. Beats the field."
+    },
+    {
+      "name": "NVIDIA 3DGRT (Gaussian Ray Tracing) + 3DGUT (Unscented Transform) + hybrid mesh/splat",
+      "year": "GTC 2025 (open-sourced); Vulkan vk_gaussian_splatting added RT+hybrid Aug-Sep 2025",
+      "capability": "3DGRT ray-traces Gaussian particles for secondary effects (refraction, shadows, DoF, mirrors); 3DGUT supports nonlinear/distorted cameras + secondary rays while staying real-time via Unscented Transform instead of rasterization; hybrid pipelines composite splats WITH meshes and save/load scenes.",
+      "relevance": "HIGH. Ochroma is rasterise-only (CPU + Vulkan spectra). A spectral splat ray-tracing path would give true shadows/reflections/refraction per-wavelength — the long-term moat. Hybrid mesh+splat compositing is also needed for real games. Lands in vox_render (Vulkan/Slang). Beats long-term; large effort."
+    },
+    {
+      "name": "4D / dynamic Gaussian splatting + GS-SLAM for dynamic scenes (LVD-GS, DG-SLAM)",
+      "year": "2024-2026 (early commercial ~2027-2028 per forecasts)",
+      "capability": "Time-varying splats for moving/deforming captured scenes; SLAM reconstructions of dynamic environments.",
+      "relevance": "MEDIUM/future. Ochroma has rigid-clip + blend-tree animation but no deforming-splat (4D) capture playback. A 4D splat clip type is a forward bet, not a launch item. Lands in vox_render animation + vox_data."
+    },
+    {
+      "name": "Engine GS plugins as the competitive baseline (XScene-UE, Volinga Pro relight, NanoGS 'Nanite-style', UnityGaussianSplatting, Babylon.js v8, OctaneRender 2026 path-traced splats, Postshot/SuperSplat tooling)",
+      "year": "2025-2026",
+      "capability": "UE/Unity get 3DGS only via 3rd-party plugins: hybrid rasterization (XScene), RGB relighting+shadows (Volinga Pro), Nanite-style splat LOD (NanoGS), GPU-sorted PLY import (Unity). Authoring tools (Postshot, SuperSplat) handle capture/cleanup/export.",
+      "relevance": "CRITICAL framing. Neither UE nor Unity has NATIVE GS — it's bolted on. Ochroma is splat-NATIVE and spectral-native. The bar to beat is plugin-quality GS in a non-GS engine; Ochroma's job is to be the engine where GS is the first-class citizen with spectral physics the plugins can't replicate."
+    }
+  ],
+
+  "node_graph_ux_patterns": [
+    {
+      "pattern": "Live preview thumbnails on nodes (Live Nodes / Live Update)",
+      "seen_in": "UE Material Editor (per-node thumbnail updates in real time), Unity Shader Graph (per-node preview)",
+      "adoption_cost_estimate": "M — vox_ui node_graph_widget already draws node bodies; needs a per-node mini-render of the spectral pipeline result into a thumbnail cache. Highest perceived-polish win for graphs."
+    },
+    {
+      "pattern": "Double-click-a-wire to insert a Reroute node; wire splitting to fan out one output",
+      "seen_in": "UE Material/Blueprint graphs",
+      "adoption_cost_estimate": "S — pure interaction logic in node_graph_widget; hit-test the bezier, insert passthrough node. Cheap, big readability gain."
+    },
+    {
+      "pattern": "Comment boxes (press C to wrap selection; colored grouping)",
+      "seen_in": "UE Blueprint/Material, ComfyUI",
+      "adoption_cost_estimate": "S — a comment rect entity behind nodes that moves children with it. Cheap; major large-graph navigability win."
+    },
+    {
+      "pattern": "Search-driven contextual node insertion (drag from a pin -> filtered palette of pin-compatible nodes)",
+      "seen_in": "UE Blueprint context menu, Unity Shader Graph create-node search",
+      "adoption_cost_estimate": "M — needs a node registry with typed pins + fuzzy search popup. The single biggest authoring-speed multiplier; depends on a real node library existing."
+    },
+    {
+      "pattern": "Subgraphs / graph functions (collapse selection into a reusable named node with exposed I/O)",
+      "seen_in": "UE PCG subgraphs + Material Functions, Unity Sub Graph, ComfyUI subgraph",
+      "adoption_cost_estimate": "M/L — requires nested graph evaluation + I/O nodes. Essential for non-toy graphs; do after the base library."
+    },
+    {
+      "pattern": "Data inspection on wires / hover-to-see values flowing through edges",
+      "seen_in": "PCG (point counts on edges), Niagara/VFX debug, Blueprint watch values",
+      "adoption_cost_estimate": "M — execute graph in a debug mode and annotate each edge with its tensor/point summary. High debuggability value; needs an evaluator that retains intermediates."
+    },
+    {
+      "pattern": "Live-in-viewport execution (graph edits update the world immediately) + graph templates",
+      "seen_in": "UE PCG (live viewport, PCG Editor Mode draw/paint), Niagara templates, Unity terrain Shader Graph",
+      "adoption_cost_estimate": "L — wire graph output to the live render/terrain each edit. The defining 'flow' feature; the payoff for users prioritizing flow+graphs."
+    },
+    {
+      "pattern": "Dynamic-branch keywords / in-graph permutation control",
+      "seen_in": "Unity Shader Graph 6.2 keyword dynamic branching",
+      "adoption_cost_estimate": "M — relevant only once a real shader/material graph compiles to WGSL/Slang. Defer until that exists."
+    },
+    {
+      "pattern": "Reroute auto-layout / graph auto-organize",
+      "seen_in": "UE (Blueprint Assist community plugin), general node editors",
+      "adoption_cost_estimate": "S/M — a tidy-graph command. Nice-to-have polish."
+    }
+  ],
+
+  "ui_framework_lessons": [
+    "Retained-mode + styleable tree is the industry direction. Unity bet UI Toolkit (UXML markup + USS CSS-like styling + visual UI Builder, retained) over legacy immediate uGUI/IMGUI; UE's UMG (retained widget tree) is what game UI ships on, with Slate (the underlying C++ framework) reserved for editor tools and when UMG can't expose something. Lesson for Ochroma: pick ONE retained, styleable, serializable UI tree as the game-UI path and converge on it. Ochroma's vox_ui::canvas.rs (JSON-serializable retained tree) is the right shape but is unwired — wire it instead of leaving 3 parallel HUD systems (vox_core bitmap font, inline egui, Vello menus, unused SpectralHUD).",
+    "Separate styling from structure. USS/UXML and UMG's designer/Blueprint split let non-programmers theme UI. Ochroma should give canvas.rs a style layer (a small USS-like sheet or Rust theme struct already started in vox_ui/theme.rs) so HUD look is data, not code.",
+    "Immediate-mode (egui/IMGUI) is the right tool for EDITOR/debug panels, not shipped game UI. UE uses Slate-ish/IMGUI internally for tools; Unity keeps IMGUI for inspectors. Ochroma's egui usage (inspector, node graph, material editor) is correctly placed in the editor; do NOT ship the game HUD on egui. Keep egui for tools, Vello/canvas for game UI.",
+    "GPU vector UI is the modern renderer. UI Toolkit added native SVG + a Shader-Graph UI target (custom UI shaders); UE UMG composites on the GPU. Ochroma's Vello (GPU vector) path is exactly aligned — but it's gated behind a `game-ui` cargo feature that NO crate enables, so only CPU stubs compile. Enabling and wiring the Vello path is the single highest-leverage UI action.",
+    "Ship the namesake widget. Ochroma's headline SpectralHUD (16-band energy bars) is fully unwired with its mandated per-frame debug print missing. A new engine's identity UI must be live in the default binary. This is a wiring task, not a build task.",
+    "Data-driven, hot-reloadable UI wins iteration. UI Toolkit reloads UXML/USS live. Ochroma's canvas is JSON-serializable — add file-watch hot-reload (reuse vox_script ScriptWatcher) so HUD layout iterates without recompiles. Directly serves the user's 'flow' priority."
+  ],
+
+  "adoption_candidates_ranked": [
+    {
+      "rank": 1,
+      "feature": "Enable + wire the Vello GPU UI path and ship the live SpectralHUD in the default binary",
+      "inspired_by": "Unity UI Toolkit (retained GPU vector UI) + UE UMG; Ochroma's own dead `game-ui` feature",
+      "ochroma_fit": "Enable `game-ui` in vox_app/Cargo.toml; drive vox_ui::vello_ctx + spectral_hud from the live loop; feed real GI band energy (already made populatable per git log) into the 16 bars; emit the mandated per-frame debug print. Converge HUD onto vox_ui, retire the inline-egui/bitmap-font duplicates.",
+      "user_priority_alignment": "UI",
+      "effort": "M",
+      "beats_or_matches": "matches",
+      "rationale": "The namesake deliverable is built-but-dead. Highest UI impact for modest effort; turns a false 'done' into a real one and gives the engine its visual identity."
+    },
+    {
+      "rank": 2,
+      "feature": "Spectral-relightable splat capture/material path (per-band reflectance + BRDF decomposition, relit under spectral atmosphere)",
+      "inspired_by": "Relightable 3D Gaussians / RTR-GS / Reflective-GS (2024-2026); Volinga Pro UE relight (RGB-only)",
+      "ochroma_fit": "vox_render: extend GaussianSplat's 16 bands into a spectral-reflectance term separable from emission; relight per-band using the existing SpectralRadianceCache + SpectralAtmosphere. Add an import/bake step in a capture tool. This is the spectral moat made real.",
+      "user_priority_alignment": "rendering",
+      "effort": "L",
+      "beats_or_matches": "beats",
+      "rationale": "The one area where a spectral-GS engine is physically AHEAD of UE/Unity/plugins (which relight in RGB). Directly leverages assets Ochroma already has wired. Defining differentiator."
+    },
+    {
+      "rank": 3,
+      "feature": "Move spectral GI onto the GPU (dispatch the dead GpuGiPass; kill the per-frame full-splat clone)",
+      "inspired_by": "UE Lumen perf direction (GPU GI, 120Hz mode)",
+      "ochroma_fit": "vox_render/spectral_gi.rs: instantiate + dispatch GpuGiPass in engine_runner's render loop with a device; remove the legacy baked GiCache double-application; render the spectral sky via the uncalled SpectralAtmosphere::sky_radiance.",
+      "user_priority_alignment": "rendering",
+      "effort": "M",
+      "beats_or_matches": "matches",
+      "rationale": "GI is real but CPU-bound and clones the splat buffer every frame; the GPU path exists as dead code. Unblocks production-scale scenes and makes the spectral GI a genuine Lumen alternative."
+    },
+    {
+      "rank": 4,
+      "feature": "Hierarchical splat LOD + streaming ('Nanite for splats')",
+      "inspired_by": "LODGE (NeurIPS 2025), Cesium hierarchical-LOD-for-splats (2026), NanoGS UE plugin",
+      "ochroma_fit": "vox_render + vox_data: spatial-chunk hierarchy, camera-distance Gaussian subset selection, opacity-blend across chunk boundaries; stream chunks from disk. Pairs with importance pruning.",
+      "user_priority_alignment": "rendering",
+      "effort": "L",
+      "beats_or_matches": "beats",
+      "rationale": "Even UE lacks NATIVE splat LOD (plugin-only). Splat-native Ochroma owning this is both scalability AND differentiation. High impact; large effort, so ranked below the cheaper rendering wins."
+    },
+    {
+      "rank": 5,
+      "feature": "Real material/shader node graph compiling to the spectral pipeline (WGSL/Slang), with a spectral-BSDF model",
+      "inspired_by": "Unity Shader Graph + UE Substrate (layered principled BSDF)",
+      "ochroma_fit": "vox_nodes (graph) + vox_render (codegen): node graph that compiles to WGSL/Slang shaders for the Vulkan spectra path; nodes operate on 16-band spectra (spectral reflectance, thin-film, metamerism). Reuse vox_ui node_graph_widget for the editor.",
+      "user_priority_alignment": "graphs",
+      "effort": "L",
+      "beats_or_matches": "beats",
+      "rationale": "Hits two top priorities (graphs + rendering). A spectral material graph is physically richer than Substrate's RGB BSDF. Large, but the node-editor substrate already exists."
+    },
+    {
+      "rank": 6,
+      "feature": "Search-driven contextual node insertion (drag-from-pin -> typed fuzzy palette) + a real node registry",
+      "inspired_by": "UE Blueprint context menu, Unity Shader Graph node search",
+      "ochroma_fit": "vox_nodes: typed-pin node registry + a fuzzy-search popup in vox_ui node_graph_widget; populate with terrain/biome/material/VFX nodes.",
+      "user_priority_alignment": "graphs",
+      "effort": "M",
+      "beats_or_matches": "matches",
+      "rationale": "The single biggest authoring-speed multiplier for graphs. Cheap once a node library exists; prerequisite for graphs feeling pro."
+    },
+    {
+      "rank": 7,
+      "feature": "Live-in-viewport graph execution + graph templates (PCG-style)",
+      "inspired_by": "UE PCG live viewport + PCG Editor Mode; Niagara templates",
+      "ochroma_fit": "vox_terrain + vox_nodes: edits to the Terrain->Biome graph re-run and update the live splat world immediately; ship starter graph templates.",
+      "user_priority_alignment": "flow",
+      "effort": "M",
+      "beats_or_matches": "matches",
+      "rationale": "The defining 'flow' feature. Turns the toy node panel into a real procedural workflow; directly serves the user's flow priority."
+    },
+    {
+      "rank": 8,
+      "feature": "KHR_gaussian_splatting glTF import/export + SPZ compression",
+      "inspired_by": "Khronos KHR_gaussian_splatting (2026) + Niantic SPZ",
+      "ochroma_fit": "vox_data: add KHR_gaussian_splatting read/write alongside existing gltf2splat + PLY; add SPZ (~90% smaller) codec. Reuse SPZ quantization to shrink netcode splat replication too.",
+      "user_priority_alignment": "flow",
+      "effort": "M",
+      "beats_or_matches": "catches-up",
+      "rationale": "Standards interop is table stakes for adoption and cheap given existing PLY/glTF code. Unlocks the whole captured-splat ecosystem (Postshot/SuperSplat) as Ochroma content."
+    },
+    {
+      "rank": 9,
+      "feature": "Comment boxes + wire-reroute + wire-data inspection (node-graph readability/debug bundle)",
+      "inspired_by": "UE Blueprint/Material (comments, reroute, watch values), PCG edge point-counts",
+      "ochroma_fit": "vox_ui node_graph_widget: press-C comment rects, double-click-wire reroute, hover-edge value summary (needs the evaluator to retain intermediates).",
+      "user_priority_alignment": "graphs",
+      "effort": "S",
+      "beats_or_matches": "matches",
+      "rationale": "Cheap, high perceived-polish, big large-graph navigability/debuggability gain. The interaction widget already exists."
+    },
+    {
+      "rank": 10,
+      "feature": "Live preview thumbnails on graph nodes",
+      "inspired_by": "UE Material Editor Live Nodes, Unity Shader Graph node previews",
+      "ochroma_fit": "vox_ui node_graph_widget + vox_render: render each material/biome node's spectral result into a cached mini-thumbnail drawn on the node body.",
+      "user_priority_alignment": "graphs",
+      "effort": "M",
+      "beats_or_matches": "matches",
+      "rationale": "The signature 'pro graph editor' feel. Compounds with the material graph (#5); pure polish that strongly shapes first impressions."
+    },
+    {
+      "rank": 11,
+      "feature": "Converge the game-UI stack onto one retained, styleable, hot-reloadable tree (wire canvas.rs)",
+      "inspired_by": "Unity UI Toolkit (UXML/USS retained tree + hot reload) vs UE UMG",
+      "ochroma_fit": "vox_ui: wire the unused JSON-serializable canvas.rs as THE game-UI tree; add a USS-like style layer over theme.rs; hot-reload layout via vox_script ScriptWatcher. Retire duplicate HUDs.",
+      "user_priority_alignment": "UI",
+      "effort": "M",
+      "beats_or_matches": "matches",
+      "rationale": "Eliminates 3-4 parallel HUD systems and gives designers data-driven, hot-reloadable UI. Foundational for the UI priority; pairs with #1."
+    },
+    {
+      "rank": 12,
+      "feature": "Subgraphs / graph functions (collapse selection into reusable node)",
+      "inspired_by": "UE PCG subgraphs + Material Functions, Unity Sub Graph",
+      "ochroma_fit": "vox_nodes: nested graph evaluation with exposed I/O nodes; collapse-selection command in the editor.",
+      "user_priority_alignment": "graphs",
+      "effort": "M",
+      "beats_or_matches": "matches",
+      "rationale": "Essential for non-toy graphs and reuse. Do after the base node library + search (#5/#6)."
+    },
+    {
+      "rank": 13,
+      "feature": "Node-based splat-particle VFX (spectral VFX graph)",
+      "inspired_by": "UE Niagara (new CPU+GPU VM), Unity VFX Graph (GPU events, instancing)",
+      "ochroma_fit": "vox_render: make GPU particles actually GPU (wire BlendSkinningCompute-style dispatch, add the missing blend setter); author emitters in a VFX node graph; emit spectral splats.",
+      "user_priority_alignment": "graphs",
+      "effort": "M",
+      "beats_or_matches": "matches",
+      "rationale": "Spectral splat particles are the native VFX primitive; the CPU SplatEmitter is already wired, the GPU path needs un-deadening. Graphs + rendering overlap."
+    },
+    {
+      "rank": 14,
+      "feature": "Hybrid mesh + splat compositing in one pass",
+      "inspired_by": "NVIDIA 3DGRT/3DGUT hybrid pipelines, XScene-UE hybrid rasterization, vk_gaussian_splatting mesh compositing",
+      "ochroma_fit": "vox_render: depth-correct compositing of triangle meshes with the spectral splat raster (shared depth, sorted blend) so real games mix splats and meshes.",
+      "user_priority_alignment": "rendering",
+      "effort": "M",
+      "beats_or_matches": "matches",
+      "rationale": "Pure splat scenes are limiting; every shipping plugin needs hybrid. Practical necessity for real game content."
+    },
+    {
+      "rank": 15,
+      "feature": "Importance-pruning + quantized splat optimization in the rasteriser/exporter",
+      "inspired_by": "HGSC / HPC hierarchical GS compression (octree/KD-tree, importance scores)",
+      "ochroma_fit": "vox_render + vox_data: score Gaussians by visual contribution, prune low-importance ones, quantize attributes; feeds LOD (#4) and SPZ export (#8).",
+      "user_priority_alignment": "rendering",
+      "effort": "S",
+      "beats_or_matches": "catches-up",
+      "rationale": "Cheap perf/quality/size lever that compounds with LOD and compression. Low risk, broad benefit."
+    },
+    {
+      "rank": 16,
+      "feature": "In-editor AI assistant emitting Rhai/Lua or node-graph snippets from natural language",
+      "inspired_by": "UE 5.7 in-editor AI Assistant + Epic Developer Assistant (Verse codegen), Unity AI",
+      "ochroma_fit": "vox_app editor: a slide-out panel that calls an LLM API and inserts generated Rhai/Lua or node-graph JSON; reuse the existing hot-reload + (fix the fake) eval console.",
+      "user_priority_alignment": "flow",
+      "effort": "M",
+      "beats_or_matches": "matches",
+      "rationale": "Cheap given an LLM API; meaningfully lowers the learning curve. Both majors now ship this, so it's becoming expected."
+    },
+    {
+      "rank": 17,
+      "feature": "Wire motion matching + blend trees to a shipped in-game avatar (idle<->walk)",
+      "inspired_by": "UE Motion Matching + spatially-aware retargeting",
+      "ochroma_fit": "vox_render animation + vox_app: ship a character splat/GLTF, populate AnimationDriver's blend_gpu (currently no setter), and drive motion_matching.rs/skinning.rs live; add the missing blend_tree_interpolates test.",
+      "user_priority_alignment": "flow",
+      "effort": "M",
+      "beats_or_matches": "catches-up",
+      "rationale": "Animation modules are built+tested but have zero live callsites and no avatar. Pure wiring; makes the engine demo a believable character instead of a capsule."
+    },
+    {
+      "rank": 18,
+      "feature": "Clean render-graph abstraction over the spectral pipeline",
+      "inspired_by": "Unity 6.x shared Render Graph backend + URP/HDRP unification",
+      "ochroma_fit": "vox_render: a small pass-graph layer over the CPU raster + Vulkan spectra paths so GI/shadow/tonemap/particle passes compose declaratively and a GPU path can be slotted per pass.",
+      "user_priority_alignment": "rendering",
+      "effort": "M",
+      "beats_or_matches": "matches",
+      "rationale": "Ochroma already avoids Unity's two-pipeline mess; a render-graph keeps it clean as passes multiply (GI GPU, LOD, hybrid). Architectural insurance."
+    },
+    {
+      "rank": 19,
+      "feature": "Many-light spectral sampler (MegaLights analogue)",
+      "inspired_by": "UE MegaLights (Beta)",
+      "ochroma_fit": "vox_render: stochastic many-light sampling feeding per-band radiance into the spectral framebuffer; reuse shadow mapper + GI cache.",
+      "user_priority_alignment": "rendering",
+      "effort": "L",
+      "beats_or_matches": "catches-up",
+      "rationale": "Removes the dynamic-light budget and compounds with spectral GI, but large and not a launch blocker. Medium-term."
+    },
+    {
+      "rank": 20,
+      "feature": "Spectral splat ray tracing for true secondary effects (shadows/reflection/refraction per wavelength)",
+      "inspired_by": "NVIDIA 3DGRT, RaySplats, OctaneRender 2026 path-traced splats",
+      "ochroma_fit": "vox_render (Vulkan/Slang): a ray-traced spectral splat path for secondary rays; the long-term physical moat beyond rasterisation.",
+      "user_priority_alignment": "rendering",
+      "effort": "L",
+      "beats_or_matches": "beats",
+      "rationale": "Per-wavelength ray-traced GS is the ultimate differentiation, but the largest effort and depends on GPU GI (#3) + hybrid (#14) landing first. Strategic, not near-term."
+    }
+  ]
+}
