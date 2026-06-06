@@ -149,6 +149,13 @@ pub trait OchromaNode: Send + Sync {
     /// Used by [`OchromaNodeGraph::snapshot`] / [`OchromaNodeGraph::restore`] so a
     /// graph can be saved and restored to an identical state (nodes + params + edges).
     fn clone_box(&self) -> Box<dyn OchromaNode>;
+    /// Optional downcast hook. A node that carries inspectable state (e.g. a
+    /// `SubgraphNode` wrapping a reusable inner graph) overrides this to return
+    /// `Some(self)`, letting the graph recover the concrete type without a global
+    /// node-type enum. Defaults to `None`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -568,6 +575,36 @@ impl OchromaNodeGraph {
     /// Display name of a node, if it exists.
     pub fn node_name(&self, id: NodeId) -> Option<&str> {
         self.nodes.get(&id).map(|e| e.name.as_str())
+    }
+
+    /// Deep-clone a node's boxed implementation (via its `clone_box`), if it exists.
+    /// Used by the subgraph collapse/expand machinery to move node implementations
+    /// between an outer graph and an extracted inner graph without re-constructing
+    /// them from the registry.
+    pub fn clone_node(&self, id: NodeId) -> Option<Box<dyn OchromaNode>> {
+        self.nodes.get(&id).map(|e| e.node.clone_box())
+    }
+
+    /// The declared type of an input `port` on node `id`, read from its real
+    /// descriptor. `None` if the node or port does not exist.
+    pub fn input_port_type(&self, id: NodeId, port: &str) -> Option<PortType> {
+        self.nodes.get(&id)?.node.descriptor().input_type(port)
+    }
+
+    /// The declared type of an output `port` on node `id`, read from its real
+    /// descriptor. `None` if the node or port does not exist.
+    pub fn output_port_type(&self, id: NodeId, port: &str) -> Option<PortType> {
+        self.nodes.get(&id)?.node.descriptor().output_type(port)
+    }
+
+    /// If node `id` is a [`crate::subgraph::SubgraphNode`], borrow its inner
+    /// [`crate::subgraph::SubgraphDef`]. `None` for any other node type (or a
+    /// missing id). Used by [`crate::subgraph::expand_subgraph`] to re-inline.
+    pub fn subgraph_def(&self, id: NodeId) -> Option<&crate::subgraph::SubgraphDef> {
+        let node = &self.nodes.get(&id)?.node;
+        node.as_any()?
+            .downcast_ref::<crate::subgraph::SubgraphNode>()
+            .map(|sn| sn.def())
     }
 
     /// The full set of cached outputs for a node after the last cook/evaluate,

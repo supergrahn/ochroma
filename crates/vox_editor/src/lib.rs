@@ -5,5 +5,6 @@ pub mod node_graph;
 pub mod node_thumbnail;
 pub mod nodes;
 pub mod registry;
+pub mod subgraph;
 pub mod templates;
 pub mod editor_panel;

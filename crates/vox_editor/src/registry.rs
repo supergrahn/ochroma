@@ -32,6 +32,10 @@ pub struct RegistryPort {
     pub port_type: PortType,
 }
 
+/// Boxed constructor for a node kind. A closure (rather than a bare `fn` pointer)
+/// so dynamically-registered kinds — notably subgraphs — can capture their def.
+pub type NodeConstructor = Box<dyn Fn() -> Box<dyn OchromaNode> + Send + Sync>;
+
 /// One entry in the [`NodeRegistry`]: everything the UI needs to list, filter,
 /// and instantiate a node type.
 pub struct NodeKind {
@@ -39,7 +43,7 @@ pub struct NodeKind {
     pub category: &'static str,
     pub inputs: Vec<RegistryPort>,
     pub outputs: Vec<RegistryPort>,
-    constructor: fn() -> Box<dyn OchromaNode>,
+    constructor: NodeConstructor,
 }
 
 impl NodeKind {
@@ -96,6 +100,24 @@ impl Default for NodeRegistry {
 fn kind_of(category: &'static str, constructor: fn() -> Box<dyn OchromaNode>) -> NodeKind {
     let probe = constructor();
     let desc = probe.descriptor();
+    let type_name = desc.type_name;
+    let inputs = desc
+        .inputs
+        .iter()
+        .map(|p| RegistryPort { name: p.name.to_string(), port_type: p.port_type })
+        .collect();
+    let outputs = desc
+        .outputs
+        .iter()
+        .map(|p| RegistryPort { name: p.name.to_string(), port_type: p.port_type })
+        .collect();
+    NodeKind { name: type_name, category, inputs, outputs, constructor: Box::new(constructor) }
+}
+
+/// Build a [`NodeKind`] from any boxed closure constructor (used for subgraphs).
+fn kind_of_boxed(category: &'static str, constructor: NodeConstructor) -> NodeKind {
+    let probe = constructor();
+    let desc = probe.descriptor();
     let inputs = desc
         .inputs
         .iter()
@@ -126,6 +148,31 @@ impl NodeRegistry {
             kind_of("Urban", || Box::new(PropPlacementNode::default())),
         ];
         Self { kinds }
+    }
+
+    /// Register a [`SubgraphDef`] as a creatable node kind. After this call the
+    /// subgraph appears in [`search`](Self::search), [`get`](Self::get) and
+    /// [`create`](Self::create) exactly like a built-in node: its `name` becomes the
+    /// kind name and its interface becomes the kind's typed ports, and `create`
+    /// yields a fresh [`crate::subgraph::SubgraphNode`] wrapping a deep clone of the
+    /// def.
+    ///
+    /// Returns the `&'static str` kind name under which it was registered (the def's
+    /// name, leaked to `'static`).
+    pub fn register_subgraph(&mut self, def: crate::subgraph::SubgraphDef) -> &'static str {
+        let name: &'static str = Box::leak(def.name.clone().into_boxed_str());
+        // The constructor owns the def and hands out deep clones, so every created
+        // instance is independent and the registry copy is never mutated.
+        let ctor: NodeConstructor = Box::new(move || {
+            Box::new(crate::subgraph::SubgraphNode::new(def.deep_clone()))
+        });
+        self.kinds.push(kind_of_boxed("Subgraph", ctor));
+        // Patch the freshly-pushed kind's name to the stable leaked name (kind_of_boxed
+        // copied it from the descriptor's already-leaked type_name, which is identical
+        // content; we keep `name` as the canonical leaked handle).
+        let last = self.kinds.last_mut().expect("just pushed");
+        last.name = name;
+        name
     }
 
     /// Number of registered node kinds.
