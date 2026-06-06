@@ -19,7 +19,10 @@ pub use quic_transport::{
 };
 pub use replication::{EntityDelta, NetMessage, PlayerAction, ReplicationClient, ReplicationServer};
 pub use replication_packet::{PlayerStatePacket, ReplicationPacket};
-pub use net_walk_demo::{run_loopback_walk_demo, WalkDemoConfig, WalkDemoReport, WalkDemoError};
+pub use net_walk_demo::{
+    run_loopback_walk_demo, run_rollback_quic_demo, RollbackQuicConfig, RollbackQuicReport,
+    WalkDemoConfig, WalkDemoError, WalkDemoReport,
+};
 pub use transport::{GameClient, GameServer};
 
 #[derive(Debug, Error)]
