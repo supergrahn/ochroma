@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use vox_tools::turnaround::run_turnaround;
 use vox_tools::build::{BuildTarget, BuildConfig, BuildManifest};
+use vox_tools::gltf2splat::{gltf2splat, Gltf2SplatConfig};
 
 #[derive(Parser)]
 #[command(name = "vox_tools", about = "Ochroma engine asset pipeline tools")]
@@ -35,6 +36,19 @@ enum Commands {
         /// Path to the output .vxm file
         #[arg(long)]
         output: String,
+    },
+
+    /// Convert a GLB/GLTF mesh into surfel-style 2DGS splats (.vxm) by
+    /// area-weighted surface sampling. Color from material base-color factor
+    /// and vertex colors (textures skipped); RGB→16-band spectral via Smits.
+    Gltf2splat {
+        /// Input .glb / .gltf file.
+        input: PathBuf,
+        /// Output .vxm file.
+        output: PathBuf,
+        /// Target splat density in splats per square unit (m^-2).
+        #[arg(long, default_value_t = 256.0)]
+        density: f32,
     },
 
     /// Build the game for a target platform.
@@ -89,6 +103,22 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("Import failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Gltf2splat { input, output, density } => {
+            let config = Gltf2SplatConfig { density, ..Gltf2SplatConfig::default() };
+            match gltf2splat(&input, &output, config) {
+                Ok(count) => {
+                    println!(
+                        "gltf2splat: wrote {} splats to {}",
+                        count,
+                        output.display()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
                     std::process::exit(1);
                 }
             }

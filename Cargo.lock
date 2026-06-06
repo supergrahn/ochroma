@@ -4471,6 +4471,7 @@ dependencies = [
  "anyhow",
  "clap",
  "glam 0.29.3",
+ "gltf",
  "half",
  "serde",
  "serde_json",
@@ -7630,6 +7631,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "vox_core",
+ "vox_render",
 ]
 
 [[package]]
