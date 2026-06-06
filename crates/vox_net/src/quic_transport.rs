@@ -93,6 +93,32 @@ fn ensure_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+/// Bounded idle timeout (ms) after which a connection with no traffic is dropped.
+///
+/// In the original in-process loopback proof the host and client shared one tokio
+/// runtime, so a dropped endpoint was observed almost immediately. Across two real
+/// OS processes there is no such shared signal: if a peer is hard-killed (SIGKILL)
+/// it sends no CONNECTION_CLOSE, and the survivor would otherwise block until
+/// QUIC's multi-second default idle timeout. Setting an explicit short idle timeout
+/// (paired with a keep-alive so an *active* session never trips it) bounds
+/// dead-peer detection to a few seconds — required for the "host killed mid-session"
+/// robustness probe to error cleanly instead of hanging.
+const IDLE_TIMEOUT_MS: u32 = 5_000;
+/// Keep-alive interval (ms): well under the idle timeout, so a live but momentarily
+/// quiet connection is never mistaken for a dead one.
+const KEEP_ALIVE_MS: u64 = 1_000;
+
+/// Shared transport tuning applied to both server and client configs: a bounded
+/// idle timeout plus a keep-alive. Returns a ready-to-install `TransportConfig`.
+fn tuned_transport_config() -> Arc<quinn::TransportConfig> {
+    let mut tc = quinn::TransportConfig::default();
+    let idle = quinn::IdleTimeout::try_from(std::time::Duration::from_millis(IDLE_TIMEOUT_MS as u64))
+        .expect("idle timeout within QUIC varint range");
+    tc.max_idle_timeout(Some(idle));
+    tc.keep_alive_interval(Some(std::time::Duration::from_millis(KEEP_ALIVE_MS)));
+    Arc::new(tc)
+}
+
 /// Build the server-side `quinn::ServerConfig` from a freshly generated self-signed cert.
 /// Crucially advertises [`ALPN_PROTOCOL`] so the TLS handshake can negotiate with the client.
 fn server_config() -> Result<quinn::ServerConfig, TransportError> {
@@ -110,10 +136,11 @@ fn server_config() -> Result<quinn::ServerConfig, TransportError> {
     // and the handshake aborts with NO_APPLICATION_PROTOCOL.
     tls_config.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
 
-    let server_config = quinn::ServerConfig::with_crypto(Arc::new(
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
             .map_err(|e| TransportError::CertGen(e.to_string()))?,
     ));
+    server_config.transport_config(tuned_transport_config());
     Ok(server_config)
 }
 
@@ -126,10 +153,11 @@ fn client_config() -> Result<quinn::ClientConfig, TransportError> {
         .with_no_client_auth();
     tls_config.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
 
-    let client_config = quinn::ClientConfig::new(Arc::new(
+    let mut client_config = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)
             .map_err(|e| TransportError::Connection(e.to_string()))?,
     ));
+    client_config.transport_config(tuned_transport_config());
     Ok(client_config)
 }
 
