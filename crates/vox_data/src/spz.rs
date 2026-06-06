@@ -68,6 +68,9 @@ pub enum SpzError {
     BadMagic(u32),
     UnsupportedVersion(u32),
     Truncated { expected: usize, got: usize },
+    /// A header field holds a value no conforming encoder produces
+    /// (e.g. `fractionalBits` ≥ 25, or attribute sizes that overflow).
+    Malformed(String),
 }
 
 impl From<std::io::Error> for SpzError {
@@ -87,6 +90,7 @@ impl std::fmt::Display for SpzError {
             Self::Truncated { expected, got } => {
                 write!(f, "truncated SPZ payload: expected {expected} bytes, got {got}")
             }
+            Self::Malformed(why) => write!(f, "malformed SPZ header: {why}"),
         }
     }
 }
@@ -97,7 +101,9 @@ impl std::error::Error for SpzError {}
 /// `fractionalBits` setting, i.e. the size of one quantization step in world
 /// units. Round-trip position error is bounded by half this value.
 pub fn position_quant_step(fractional_bits: u8) -> f32 {
-    1.0 / (1u32 << fractional_bits) as f32
+    // Clamp: `1u32 << n` is a shift overflow for n >= 32. The decoder rejects
+    // headers above 24; this pub helper stays total for any input.
+    1.0 / (1u32 << fractional_bits.min(24)) as f32
 }
 
 /// Load an SPZ file from disk into Ochroma [`GaussianSplat`]s.
@@ -106,12 +112,22 @@ pub fn load_spz(path: &Path) -> Result<Vec<GaussianSplat>, SpzError> {
     load_spz_from_reader(std::io::BufReader::new(file))
 }
 
+/// Hard ceiling on the decompressed payload (2 GiB ≈ 70M splats with degree-3
+/// SH). A gzip bomb otherwise inflates into memory before any header check.
+const MAX_PAYLOAD_BYTES: u64 = 2 << 30;
+
 /// Load SPZ from any reader (gzip stream). Useful for in-memory round-trips.
 pub fn load_spz_from_reader(reader: impl Read) -> Result<Vec<GaussianSplat>, SpzError> {
-    // The whole file is one gzip stream.
-    let mut gz = flate2::read::GzDecoder::new(reader);
+    // The whole file is one gzip stream. Cap the inflation so a hostile
+    // gzip bomb cannot OOM the process before validation sees the header.
+    let gz = flate2::read::GzDecoder::new(reader);
     let mut payload = Vec::new();
-    gz.read_to_end(&mut payload)?;
+    gz.take(MAX_PAYLOAD_BYTES + 1).read_to_end(&mut payload)?;
+    if payload.len() as u64 > MAX_PAYLOAD_BYTES {
+        return Err(SpzError::Malformed(format!(
+            "decompressed payload exceeds the {MAX_PAYLOAD_BYTES}-byte ceiling"
+        )));
+    }
     decode_payload(&payload)
 }
 
@@ -133,6 +149,15 @@ fn decode_payload(payload: &[u8]) -> Result<Vec<GaussianSplat>, SpzError> {
     let fractional_bits = payload[13];
     // payload[14] = flags (antialiased), payload[15] = reserved — not needed here.
 
+    // A 24-bit fixed-point value cannot meaningfully carry more than 24
+    // fractional bits, and `1u32 << n` is a shift overflow (debug panic,
+    // silently-masked garbage in release) for n >= 32. Reject early.
+    if fractional_bits > 24 {
+        return Err(SpzError::Malformed(format!(
+            "fractionalBits = {fractional_bits} (max 24 for 24-bit positions)"
+        )));
+    }
+
     // SH coefficients per point per color channel: degree 0→0, 1→3, 2→8, 3→15.
     let sh_per_channel = match sh_degree {
         0 => 0,
@@ -142,17 +167,24 @@ fn decode_payload(payload: &[u8]) -> Result<Vec<GaussianSplat>, SpzError> {
     };
 
     // Tight attribute arrays in order: positions(9) alphas(1) colors(3) scales(3)
-    // rotations(3) sh(sh_per_channel*3).
+    // rotations(3) sh(sh_per_channel*3). All sizes derive from the untrusted
+    // numPoints, so use checked arithmetic — on 32-bit targets a hostile count
+    // would otherwise wrap `expected` and pass the length check.
+    let per_point = 9usize + 1 + 3 + 3 + 3 + sh_per_channel * 3;
+    let expected = num_points
+        .checked_mul(per_point)
+        .and_then(|b| b.checked_add(16))
+        .ok_or_else(|| {
+            SpzError::Malformed(format!("attribute sizes overflow for numPoints = {num_points}"))
+        })?;
+    if payload.len() < expected {
+        return Err(SpzError::Truncated { expected, got: payload.len() });
+    }
     let pos_bytes = num_points * 9;
     let alpha_bytes = num_points;
     let color_bytes = num_points * 3;
     let scale_bytes = num_points * 3;
     let rot_bytes = num_points * 3;
-    let sh_bytes = num_points * sh_per_channel * 3;
-    let expected = 16 + pos_bytes + alpha_bytes + color_bytes + scale_bytes + rot_bytes + sh_bytes;
-    if payload.len() < expected {
-        return Err(SpzError::Truncated { expected, got: payload.len() });
-    }
 
     let mut off = 16;
     let pos = &payload[off..off + pos_bytes];
@@ -508,6 +540,29 @@ mod tests {
         match load_spz_from_reader(&gz3[..]) {
             Err(SpzError::Truncated { .. }) => {}
             other => panic!("expected Truncated, got {other:?}"),
+        }
+
+        // Hostile fractionalBits (255): `1u32 << 255` would be a shift
+        // overflow — must reject as Malformed, never panic. Header is
+        // otherwise valid and carries one complete point (19 bytes).
+        let mut hostile = vec![0u8; 16 + 19];
+        hostile[0..4].copy_from_slice(&SPZ_MAGIC.to_le_bytes());
+        hostile[4..8].copy_from_slice(&SPZ_VERSION_LEGACY.to_le_bytes());
+        hostile[8..12].copy_from_slice(&1u32.to_le_bytes()); // 1 point
+        hostile[12] = 0; // sh_degree
+        hostile[13] = 255; // fractionalBits — hostile
+        let mut enc4 =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc4.write_all(&hostile).unwrap();
+        let gz4 = enc4.finish().unwrap();
+        match load_spz_from_reader(&gz4[..]) {
+            Err(SpzError::Malformed(why)) => {
+                assert!(
+                    why.contains("fractionalBits = 255"),
+                    "error should name the bad field: {why}"
+                );
+            }
+            other => panic!("expected Malformed for fractionalBits=255, got {other:?}"),
         }
     }
 

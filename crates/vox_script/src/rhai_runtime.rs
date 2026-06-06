@@ -11,6 +11,12 @@ pub struct RhaiScript {
     pub source_path: Option<String>,
     ast: AST,
     pub last_mtime: std::time::SystemTime,
+    /// File length recorded together with `last_mtime`. On filesystems with
+    /// coarse (e.g. 1 s) mtime granularity, a fix written in the same second
+    /// as a failed edit keeps the same mtime — the length change still
+    /// triggers the reload. (A same-second, same-length edit remains
+    /// undetectable without hashing; accepted gap.)
+    pub last_len: u64,
 }
 
 /// The Rhai scripting runtime — hot-reloadable game logic.
@@ -28,6 +34,10 @@ pub struct RhaiRuntime {
     /// Human-readable text of the most recent reload error, for surfacing in a
     /// HUD/notification. `None` until the first compile failure.
     pub last_error: Option<String>,
+    /// Name of the script that produced `last_error`. A successful reload
+    /// clears the error only when THIS script recovers — a different script
+    /// reloading cleanly must not mask a still-broken one.
+    pub last_error_script: Option<String>,
     /// Live spectral field the host populates each frame; Rhai scripts read it
     /// via the registered `field_energy` / `get_band` functions.
     spectral: Arc<Mutex<SpectralState>>,
@@ -140,6 +150,7 @@ impl RhaiRuntime {
             script_reloads: 0,
             script_errors: 0,
             last_error: None,
+            last_error_script: None,
             spectral,
         }
     }
@@ -153,6 +164,7 @@ impl RhaiRuntime {
             source_path: None,
             ast,
             last_mtime: std::time::UNIX_EPOCH,
+            last_len: 0,
         });
         Ok(idx)
     }
@@ -162,14 +174,15 @@ impl RhaiRuntime {
         let source = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let ast = self.engine.compile(&source).map_err(|e| format!("Compile error in {}: {}", path.display(), e))?;
         let idx = self.scripts.len();
-        let mtime = std::fs::metadata(path)
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::UNIX_EPOCH);
+        let (mtime, len) = std::fs::metadata(path)
+            .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()))
+            .unwrap_or((std::time::UNIX_EPOCH, 0));
         self.scripts.push(RhaiScript {
             name: name.to_string(),
             source_path: Some(path.to_string_lossy().to_string()),
             ast,
             last_mtime: mtime,
+            last_len: len,
         });
         Ok(idx)
     }
@@ -186,17 +199,43 @@ impl RhaiRuntime {
         Ok(())
     }
 
-    /// Reload all file-based scripts.
+    /// Reload all file-based scripts. Flows through the same reload accounting
+    /// as `poll_reload` (counters, `last_error`, HUD surfacing) — a manual
+    /// reload-all must not bypass the telemetry the HUD displays.
     pub fn reload_all(&mut self) -> Vec<String> {
         let mut errors = Vec::new();
         for i in 0..self.scripts.len() {
-            if self.scripts[i].source_path.is_some()
-                && let Err(e) = self.reload(i)
-            {
-                errors.push(format!("{}: {}", self.scripts[i].name, e));
+            if self.scripts[i].source_path.is_none() {
+                continue;
+            }
+            let name = self.scripts[i].name.clone();
+            match self.reload(i) {
+                Ok(()) => self.record_reload_ok(&name),
+                Err(e) => {
+                    errors.push(format!("{}: {}", name, e));
+                    self.record_reload_err(&name, &e);
+                }
             }
         }
         errors
+    }
+
+    /// Shared success-side accounting for any reload path.
+    fn record_reload_ok(&mut self, name: &str) {
+        self.script_reloads += 1;
+        // Only the recovery of the script that ERRORED clears the banner — a
+        // different script reloading cleanly must not mask a still-broken one.
+        if self.last_error_script.as_deref() == Some(name) {
+            self.last_error = None;
+            self.last_error_script = None;
+        }
+    }
+
+    /// Shared failure-side accounting for any reload path.
+    fn record_reload_err(&mut self, name: &str, err: &str) {
+        self.script_errors += 1;
+        self.last_error = Some(format!("{}: {}", name, err));
+        self.last_error_script = Some(name.to_string());
     }
 
     /// Poll for changed script files and hot-reload them if the interval has elapsed.
@@ -207,39 +246,42 @@ impl RhaiRuntime {
         }
         self.last_reload_check = std::time::Instant::now();
 
-        let mut to_reload: Vec<(usize, String, std::time::SystemTime)> = Vec::new();
+        let mut to_reload: Vec<(usize, String, std::time::SystemTime, u64)> = Vec::new();
         for (i, script) in self.scripts.iter().enumerate() {
             let path = match &script.source_path {
                 Some(p) => p.clone(),
                 None => continue,
             };
+            // Change detection is the (mtime, len) fingerprint, not mtime
+            // ordering: on coarse-mtime filesystems a fix written in the same
+            // second as a failed edit keeps the same mtime, and a checkout can
+            // even move mtime backwards — both still reload when the length
+            // moves. (Same-second AND same-length edits stay invisible.)
             if let Ok(meta) = std::fs::metadata(&path)
                 && let Ok(mtime) = meta.modified()
-                && mtime > script.last_mtime
+                && (mtime != script.last_mtime || meta.len() != script.last_len)
             {
-                to_reload.push((i, script.name.clone(), mtime));
+                to_reload.push((i, script.name.clone(), mtime, meta.len()));
             }
         }
 
         let mut result = Vec::new();
-        for (i, name, mtime) in to_reload {
-            // Advance the recorded mtime regardless of outcome so a file that
-            // fails to compile is not retried on every poll — it will only be
-            // retried once it is edited again (its mtime moves forward), which is
-            // exactly when a fix would land.
+        for (i, name, mtime, len) in to_reload {
+            // Record the fingerprint regardless of outcome so a file that fails
+            // to compile is not recompiled on every poll — it is retried exactly
+            // when its content changes again, which is when a fix would land.
             self.scripts[i].last_mtime = mtime;
+            self.scripts[i].last_len = len;
             match self.reload(i) {
                 Ok(()) => {
-                    self.script_reloads += 1;
-                    self.last_error = None;
+                    self.record_reload_ok(&name);
                     println!("[ochroma] Hot-reloaded script: {}", name);
                     result.push(name);
                 }
                 Err(e) => {
                     // Last-good AST is untouched (reload() returns before swapping
                     // on a compile error), so the game keeps running. Count + surface.
-                    self.script_errors += 1;
-                    self.last_error = Some(format!("{}: {}", name, e));
+                    self.record_reload_err(&name, &e);
                     eprintln!("[ochroma] Script reload error {}: {}", name, e);
                 }
             }
@@ -453,5 +495,86 @@ mod hot_reload_tests {
         assert_eq!(rt.script_errors, 1, "same broken file must not re-count");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A fix written in the SAME mtime second as the failed edit (coarse-mtime
+    /// filesystem) must still reload: the (mtime, len) fingerprint catches the
+    /// length change even when the mtime is identical.
+    #[test]
+    fn same_second_fix_after_failure_still_reloads() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ochroma_test_same_second_fix.rhai");
+        std::fs::write(&path, "fn amp() { 3 }").unwrap();
+
+        let mut rt = RhaiRuntime::new();
+        rt.load_script_file("s", &path).unwrap();
+
+        // Broken edit, polled → error recorded, fingerprint advanced.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(&path, "fn amp() { 3 ").unwrap();
+        rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let _ = rt.poll_reload();
+        assert_eq!(rt.script_errors, 1);
+
+        // Fix with a DIFFERENT length, then simulate a coarse-mtime fs by
+        // pinning the recorded mtime to the file's current mtime (identical
+        // mtimes; only the recorded length still reflects the broken write).
+        std::fs::write(&path, "fn amp() { 11 }").unwrap();
+        let real_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        rt.scripts[0].last_mtime = real_mtime; // mtime says "unchanged"
+        rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let reloaded = rt.poll_reload();
+
+        assert_eq!(reloaded.len(), 1, "same-mtime fix must reload via length change");
+        let v: i64 = rt.call_fn(0, "amp", &[]).unwrap().cast();
+        assert_eq!(v, 11, "the fixed AST must actually run");
+        assert!(rt.last_error.is_none(), "recovery must clear the error banner");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A clean reload of script B must NOT clear the error banner raised by a
+    /// still-broken script A; only A's own recovery clears it.
+    #[test]
+    fn other_script_reload_does_not_mask_error() {
+        let dir = std::env::temp_dir();
+        let pa = dir.join("ochroma_test_mask_a.rhai");
+        let pb = dir.join("ochroma_test_mask_b.rhai");
+        std::fs::write(&pa, "fn a() { 1 }").unwrap();
+        std::fs::write(&pb, "fn b() { 2 }").unwrap();
+
+        let mut rt = RhaiRuntime::new();
+        rt.load_script_file("a", &pa).unwrap();
+        rt.load_script_file("b", &pb).unwrap();
+
+        // Break A.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(&pa, "fn a() { 1 ").unwrap();
+        rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let _ = rt.poll_reload();
+        assert!(rt.last_error.is_some(), "A's break must surface");
+
+        // Cleanly edit B — banner must survive (A is still broken).
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(&pb, "fn b() { 22 }").unwrap();
+        rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let reloaded = rt.poll_reload();
+        assert_eq!(reloaded, vec!["b".to_string()], "B reloads cleanly");
+        assert!(
+            rt.last_error.is_some(),
+            "B's clean reload must not mask A's standing error"
+        );
+
+        // Fix A — now the banner clears.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(&pa, "fn a() { 10 }").unwrap();
+        rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let _ = rt.poll_reload();
+        assert!(rt.last_error.is_none(), "A's own recovery clears the banner");
+        let va: i64 = rt.call_fn(0, "a", &[]).unwrap().cast();
+        assert_eq!(va, 10);
+
+        let _ = std::fs::remove_file(&pa);
+        let _ = std::fs::remove_file(&pb);
     }
 }

@@ -256,7 +256,7 @@ pub fn import_splat_gltf(
                 if !has_ext {
                     continue;
                 }
-                return read_splat_primitive(document, prim, buffers);
+                return read_splat_primitive(document, raw_json, prim, buffers);
             }
         }
     }
@@ -265,10 +265,74 @@ pub fn import_splat_gltf(
     ))
 }
 
+/// Pre-validate accessor `idx` in the RAW JSON before any typed-API call.
+///
+/// The document was loaded without the gltf validator, and the typed API
+/// panics internally on what the validator normally guarantees:
+/// `Accessor::view()` is `views().nth(i).unwrap()` (out-of-range bufferView),
+/// and `data_type()`/`dimensions()` unwrap a missing or out-of-enum
+/// `componentType`/`type`. Everything checked here makes those calls total.
+fn validate_accessor_raw(
+    raw_json: &serde_json::Value,
+    idx: usize,
+    buffers_len: usize,
+) -> Result<(), Splats2GltfError> {
+    let acc = raw_json
+        .get("accessors")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.get(idx))
+        .ok_or_else(|| Splats2GltfError::Malformed(format!("accessor {idx} out of range")))?;
+
+    let ct = acc
+        .get("componentType")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| {
+            Splats2GltfError::Malformed(format!("accessor {idx} missing componentType"))
+        })?;
+    // We require float attributes anyway; rejecting here keeps the typed
+    // `data_type()` from ever seeing an invalid enum value.
+    if ct != 5126 {
+        return Err(Splats2GltfError::Malformed(format!(
+            "accessor {idx} componentType {ct} unsupported (need F32 / 5126)"
+        )));
+    }
+    let ty = acc
+        .get("type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Splats2GltfError::Malformed(format!("accessor {idx} missing type")))?;
+    if !matches!(ty, "SCALAR" | "VEC3" | "VEC4") {
+        return Err(Splats2GltfError::Malformed(format!(
+            "accessor {idx} type '{ty}' unsupported (need SCALAR/VEC3/VEC4)"
+        )));
+    }
+    if let Some(bv) = acc.get("bufferView") {
+        let bvi = bv.as_u64().ok_or_else(|| {
+            Splats2GltfError::Malformed(format!("accessor {idx} bufferView is not an integer"))
+        })? as usize;
+        let views = raw_json
+            .get("bufferViews")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| Splats2GltfError::Malformed("missing bufferViews array".into()))?;
+        let view = views.get(bvi).ok_or_else(|| {
+            Splats2GltfError::Malformed(format!("bufferView {bvi} out of range"))
+        })?;
+        let bi = view.get("buffer").and_then(|v| v.as_u64()).ok_or_else(|| {
+            Splats2GltfError::Malformed(format!("bufferView {bvi} missing buffer index"))
+        })? as usize;
+        if bi >= buffers_len {
+            return Err(Splats2GltfError::Malformed(format!(
+                "bufferView {bvi} references buffer {bi} but only {buffers_len} loaded"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Read the splat attributes from a single primitive, using its raw JSON
 /// `attributes` map (name → accessor index) and the document's typed accessors.
 fn read_splat_primitive(
     document: &gltf::Document,
+    raw_json: &serde_json::Value,
     prim: &serde_json::Value,
     buffers: &[gltf::buffer::Data],
 ) -> Result<Vec<GaussianSplat>, Splats2GltfError> {
@@ -277,18 +341,26 @@ fn read_splat_primitive(
         .and_then(|a| a.as_object())
         .ok_or_else(|| Splats2GltfError::Malformed("primitive has no attributes".into()))?;
 
-    // Resolve an attribute semantic name to a typed accessor via its index.
-    let get_accessor = |name: &str| -> Option<gltf::Accessor> {
-        let idx = attributes.get(name)?.as_u64()? as usize;
-        document.accessors().nth(idx)
+    // Resolve an attribute semantic name to a typed accessor via its index —
+    // but only after `validate_accessor_raw` has proven the typed API's
+    // internal unwraps cannot fire for this accessor.
+    let get_accessor = |name: &str| -> Result<Option<gltf::Accessor>, Splats2GltfError> {
+        let Some(v) = attributes.get(name) else {
+            return Ok(None);
+        };
+        let idx = v.as_u64().ok_or_else(|| {
+            Splats2GltfError::Malformed(format!("attribute {name} index is not an integer"))
+        })? as usize;
+        validate_accessor_raw(raw_json, idx, buffers.len())?;
+        Ok(document.accessors().nth(idx))
     };
 
-    let pos_acc = get_accessor("POSITION")
+    let pos_acc = get_accessor("POSITION")?
         .ok_or_else(|| Splats2GltfError::Malformed("missing POSITION".into()))?;
-    let rot_acc = get_accessor(ATTR_ROTATION);
-    let scale_acc = get_accessor(ATTR_SCALE);
-    let op_acc = get_accessor(ATTR_OPACITY);
-    let sh_acc = get_accessor(ATTR_SH0);
+    let rot_acc = get_accessor(ATTR_ROTATION)?;
+    let scale_acc = get_accessor(ATTR_SCALE)?;
+    let op_acc = get_accessor(ATTR_OPACITY)?;
+    let sh_acc = get_accessor(ATTR_SH0)?;
 
     let positions = read_vec3(&pos_acc, buffers)?;
     let n = positions.len();
@@ -297,13 +369,38 @@ fn read_splat_primitive(
     let opacities = op_acc.map(|a| read_scalar(&a, buffers)).transpose()?;
     let sh0 = sh_acc.map(|a| read_vec3(&a, buffers)).transpose()?;
 
+    // The assembly loop below indexes every present attribute by the POSITION
+    // count, so a shorter attribute array (legal to declare in an unvalidated
+    // document) would panic. Reject the mismatch instead.
+    let expect_n = |name: &str, len: Option<usize>| -> Result<(), Splats2GltfError> {
+        match len {
+            Some(l) if l != n => Err(Splats2GltfError::Malformed(format!(
+                "{name} count {l} != POSITION count {n}"
+            ))),
+            _ => Ok(()),
+        }
+    };
+    expect_n(ATTR_ROTATION, rotations.as_ref().map(Vec::len))?;
+    expect_n(ATTR_SCALE, scales.as_ref().map(Vec::len))?;
+    expect_n(ATTR_OPACITY, opacities.as_ref().map(Vec::len))?;
+    expect_n(ATTR_SH0, sh0.as_ref().map(Vec::len))?;
+
     let mut splats = Vec::with_capacity(n);
     for i in 0..n {
         let p = positions[i];
         let s = scales.as_ref().map(|v| v[i]).unwrap_or([0.01, 0.01, 0.01]);
         let q = rotations
             .as_ref()
-            .map(|v| glam::Quat::from_xyzw(v[i][0], v[i][1], v[i][2], v[i][3]).normalize())
+            .map(|v| {
+                let raw = glam::Quat::from_xyzw(v[i][0], v[i][1], v[i][2], v[i][3]);
+                // A zero / non-finite quaternion (e.g. an all-zero buffer)
+                // would normalize to NaN; fall back to identity instead.
+                if raw.length_squared() > 1e-12 && raw.is_finite() {
+                    raw.normalize()
+                } else {
+                    glam::Quat::IDENTITY
+                }
+            })
             .unwrap_or(glam::Quat::IDENTITY);
         let opacity = opacities
             .as_ref()
@@ -329,22 +426,52 @@ fn read_splat_primitive(
     Ok(splats)
 }
 
-// --- accessor readers (tightly-packed float buffer views) -------------------
+// --- accessor readers --------------------------------------------------------
+//
+// The document is loaded WITHOUT the gltf validator (the KHR splat semantics
+// are rejected by it), so nothing here may trust declared indices, types, or
+// sizes: every read validates component type, dimensions, buffer index, and
+// byte ranges itself, and honors bufferView.byteStride (interleaved layouts).
 
-fn accessor_slice<'a>(
+/// Resolve an accessor to its raw bytes + element stride, validating that it
+/// is f32 of the expected dimensionality and entirely in-bounds.
+fn accessor_data<'a>(
     acc: &gltf::Accessor,
     buffers: &'a [gltf::buffer::Data],
-) -> Result<&'a [u8], Splats2GltfError> {
+    dims: gltf::accessor::Dimensions,
+    elem_size: usize,
+) -> Result<(&'a [u8], usize), Splats2GltfError> {
+    if acc.data_type() != gltf::accessor::DataType::F32 || acc.dimensions() != dims {
+        return Err(Splats2GltfError::Malformed(format!(
+            "accessor must be F32 {dims:?}, got {:?} {:?}",
+            acc.data_type(),
+            acc.dimensions()
+        )));
+    }
     let view = acc
         .view()
         .ok_or_else(|| Splats2GltfError::Malformed("accessor has no bufferView".into()))?;
-    let buf = &buffers[view.buffer().index()];
+    // The document bypassed validation, so the buffer index is untrusted.
+    let buf = buffers.get(view.buffer().index()).ok_or_else(|| {
+        Splats2GltfError::Malformed(format!(
+            "bufferView references buffer {} but only {} buffer(s) loaded",
+            view.buffer().index(),
+            buffers.len()
+        ))
+    })?;
+    let stride = view.stride().unwrap_or(elem_size);
+    if stride < elem_size {
+        return Err(Splats2GltfError::Malformed(format!(
+            "byteStride {stride} smaller than element size {elem_size}"
+        )));
+    }
     let start = view.offset() + acc.offset();
-    let len = acc.count() * acc.size();
+    let n = acc.count();
+    let len = if n == 0 { 0 } else { stride * (n - 1) + elem_size };
     if start + len > buf.0.len() {
         return Err(Splats2GltfError::Malformed("accessor out of range".into()));
     }
-    Ok(&buf.0[start..start + len])
+    Ok((&buf.0[start..start + len], stride))
 }
 
 fn read_f32_at(data: &[u8], i: usize) -> f32 {
@@ -355,11 +482,10 @@ fn read_vec3(
     acc: &gltf::Accessor,
     buffers: &[gltf::buffer::Data],
 ) -> Result<Vec<[f32; 3]>, Splats2GltfError> {
-    let data = accessor_slice(acc, buffers)?;
-    let n = acc.count();
-    Ok((0..n)
+    let (data, stride) = accessor_data(acc, buffers, gltf::accessor::Dimensions::Vec3, 12)?;
+    Ok((0..acc.count())
         .map(|i| {
-            let b = i * 12;
+            let b = i * stride;
             [read_f32_at(data, b), read_f32_at(data, b + 4), read_f32_at(data, b + 8)]
         })
         .collect())
@@ -369,11 +495,10 @@ fn read_vec4(
     acc: &gltf::Accessor,
     buffers: &[gltf::buffer::Data],
 ) -> Result<Vec<[f32; 4]>, Splats2GltfError> {
-    let data = accessor_slice(acc, buffers)?;
-    let n = acc.count();
-    Ok((0..n)
+    let (data, stride) = accessor_data(acc, buffers, gltf::accessor::Dimensions::Vec4, 16)?;
+    Ok((0..acc.count())
         .map(|i| {
-            let b = i * 16;
+            let b = i * stride;
             [
                 read_f32_at(data, b),
                 read_f32_at(data, b + 4),
@@ -388,9 +513,8 @@ fn read_scalar(
     acc: &gltf::Accessor,
     buffers: &[gltf::buffer::Data],
 ) -> Result<Vec<f32>, Splats2GltfError> {
-    let data = accessor_slice(acc, buffers)?;
-    let n = acc.count();
-    Ok((0..n).map(|i| read_f32_at(data, i * 4)).collect())
+    let (data, stride) = accessor_data(acc, buffers, gltf::accessor::Dimensions::Scalar, 4)?;
+    Ok((0..acc.count()).map(|i| read_f32_at(data, i * stride)).collect())
 }
 
 // --- minimal base64 (standard alphabet, padded) -----------------------------
@@ -585,5 +709,137 @@ mod tests {
         assert_eq!(base64_encode(b"Man"), "TWFu");
         assert_eq!(base64_encode(b"Ma"), "TWE=");
         assert_eq!(base64_encode(b"M"), "TQ==");
+    }
+
+    /// Build a minimal hostile-but-parseable splat glTF whose accessor JSON is
+    /// mutated by `patch`, and import it. Used to prove hostile files ERROR
+    /// (Malformed) instead of panicking through the unvalidated typed API.
+    fn import_with_accessor_patch(
+        patch: impl Fn(&mut serde_json::Value),
+    ) -> Result<Vec<GaussianSplat>, Splats2GltfError> {
+        let original = vec![splat_rgb([1.0, 2.0, 3.0], [0.1, 0.1, 0.1], 0.5, 0.5, 0.5, 200)];
+        let json = splats_to_gltf_json(&original);
+        let mut raw: serde_json::Value = serde_json::from_str(&json).unwrap();
+        patch(&mut raw);
+        let mutated = serde_json::to_string(&raw).unwrap();
+        let gltf = gltf::Gltf::from_slice_without_validation(mutated.as_bytes())
+            .expect("hostile file must still parse structurally");
+        let buffers = gltf::import_buffers(&gltf.document, None, gltf.blob.clone())
+            .expect("buffers must decode");
+        import_splat_gltf(&gltf.document, &raw, &buffers)
+    }
+
+    /// Out-of-range bufferView / missing componentType / bad componentType in a
+    /// hand-crafted file must surface as Malformed — never panic (the typed
+    /// gltf API unwraps internally on all three when validation is bypassed).
+    #[test]
+    fn hostile_accessor_json_errors_instead_of_panicking() {
+        // bufferView index out of range.
+        let r = import_with_accessor_patch(|raw| {
+            raw["accessors"][0]["bufferView"] = serde_json::json!(999);
+        });
+        match r {
+            Err(Splats2GltfError::Malformed(why)) => {
+                assert!(why.contains("bufferView 999"), "names the bad index: {why}")
+            }
+            other => panic!("expected Malformed for OOB bufferView, got {other:?}"),
+        }
+
+        // componentType present but not a valid glTF enum (parses to the gltf
+        // crate's Checked::Invalid, whose typed unwrap would panic). A MISSING
+        // componentType is rejected at serde-parse time (required field), so
+        // the invalid-enum value is the vector that actually reaches our code.
+        let r = import_with_accessor_patch(|raw| {
+            raw["accessors"][0]["componentType"] = serde_json::json!(9999);
+        });
+        match r {
+            Err(Splats2GltfError::Malformed(why)) => {
+                assert!(why.contains("9999"), "names the bad enum value: {why}")
+            }
+            other => panic!("expected Malformed for invalid componentType, got {other:?}"),
+        }
+
+        // componentType present but not F32 (u8 = 5121).
+        let r = import_with_accessor_patch(|raw| {
+            raw["accessors"][0]["componentType"] = serde_json::json!(5121);
+        });
+        match r {
+            Err(Splats2GltfError::Malformed(why)) => {
+                assert!(why.contains("5121"), "names the bad enum value: {why}")
+            }
+            other => panic!("expected Malformed for u8 componentType, got {other:?}"),
+        }
+
+        // Buffer index (via bufferView) out of range.
+        let r = import_with_accessor_patch(|raw| {
+            raw["bufferViews"][0]["buffer"] = serde_json::json!(7);
+        });
+        match r {
+            Err(Splats2GltfError::Malformed(why)) => {
+                assert!(why.contains("buffer 7"), "names the bad buffer: {why}")
+            }
+            other => panic!("expected Malformed for OOB buffer, got {other:?}"),
+        }
+    }
+
+    /// An interleaved (byteStride) POSITION bufferView must be read at the
+    /// stride offsets, not assumed tightly packed: two positions interleaved
+    /// with 12 junk bytes round-trip exactly.
+    #[test]
+    fn interleaved_byte_stride_positions_are_read_correctly() {
+        // Buffer: [pos0 (12B) | junk (12B) | pos1 (12B) | junk (12B)]
+        let p0 = [1.5f32, -2.0, 3.25];
+        let p1 = [-7.0f32, 0.5, 9.0];
+        let mut buf = Vec::new();
+        for c in p0 {
+            buf.extend_from_slice(&c.to_le_bytes());
+        }
+        buf.extend_from_slice(&[0xAB; 12]); // junk the tight-packing read would hit
+        for c in p1 {
+            buf.extend_from_slice(&c.to_le_bytes());
+        }
+        buf.extend_from_slice(&[0xCD; 12]);
+
+        let gltf_json = serde_json::json!({
+            "asset": { "version": "2.0" },
+            "extensionsUsed": [EXT_NAME],
+            "buffers": [{
+                "byteLength": buf.len(),
+                "uri": format!("data:application/octet-stream;base64,{}", base64_encode(&buf)),
+            }],
+            "bufferViews": [{
+                "buffer": 0, "byteOffset": 0, "byteLength": buf.len(), "byteStride": 24,
+            }],
+            "accessors": [{
+                "bufferView": 0, "byteOffset": 0, "componentType": 5126,
+                "count": 2, "type": "VEC3",
+            }],
+            "meshes": [{
+                "primitives": [{
+                    "mode": 0,
+                    "attributes": { "POSITION": 0 },
+                    "extensions": { EXT_NAME: {} },
+                }],
+            }],
+        });
+        let text = serde_json::to_string(&gltf_json).unwrap();
+        let gltf = gltf::Gltf::from_slice_without_validation(text.as_bytes()).expect("parse");
+        let buffers =
+            gltf::import_buffers(&gltf.document, None, gltf.blob.clone()).expect("buffers");
+        let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+        let splats = import_splat_gltf(&gltf.document, &raw, &buffers).expect("import");
+        assert_eq!(splats.len(), 2);
+        for (want, got) in [p0, p1].iter().zip(splats.iter()) {
+            let gp = got.position();
+            for k in 0..3 {
+                assert!(
+                    (want[k] - gp[k]).abs() < 1e-6,
+                    "strided pos[{k}]: want {} got {}",
+                    want[k],
+                    gp[k]
+                );
+            }
+        }
     }
 }
