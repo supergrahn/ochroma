@@ -8,17 +8,17 @@ At our pace, that's the roadmap.
 | # | System | UE5 MVP Cost | Ochroma Status | Gap | Priority |
 |---|--------|-------------|----------------|-----|----------|
 | 1 | **Rendering** | 12-18 EM | Spectral pipeline + GPU rasteriser + Spectra (25fps). Unique advantage. | Compositing splats with rasterized geometry | HIGH — our differentiator |
-| 2 | **Lighting** | 4-6 EM | SunModel + point lights + spectral illuminants. Working. | No shadow maps, no irradiance probes | MEDIUM |
+| 2 | **Lighting** | 4-6 EM | SunModel + point lights + spectral illuminants. Working. CPU spectral GI now wired live via `EngineLoop::step_gi`. | No shadow maps, no irradiance probes. **2026-06-06: GPU spectral-GI compute (`GpuGi`) landed and proven on-device (commit 0e7bdb7), but EngineLoop wiring of the GPU path is still pending** — live frame uses the CPU cache. | MEDIUM |
 | 3 | **Materials** | 3-5 EM | MaterialNode graph + 11 spectral materials. Working. | No visual editor, no texture maps | LOW (spectral is better) |
 | 4 | **Post-Processing** | 2-3 EM | ACES/Reinhard/Filmic tone mapping + bloom + denoiser. **Done.** | No LUTs, no auto-exposure | LOW |
 | 5 | **Physics** | 3-5 EM | Rapier3D integrated + AABB collision in runtime. | Character controller needs work | MEDIUM |
 | 6 | **Audio** | 2-3 EM | Rodio backend plays sounds. Synth generates tones. | No 3D spatialization wired in, no file loading (.wav/.ogg) | HIGH |
-| 7 | **Animation** | 6-8 EM | Bone/clip/blend types exist. Not used in any game. | No GPU skinning, no state machines, no blend trees running | HIGH |
-| 8 | **Networking** | 6-10 EM | TCP transport + CRDT + lobbies. Types only. | Never tested between two machines | LOW (skip for v1) |
+| 7 | **Animation** | 6-8 EM | Bone/clip/blend types exist. Not used in any game. | No GPU skinning, no state machines, no blend trees running. **2026-06-06: blend trees now run** — `BlendTree`+`apply_pose` + splat-skinning bridge (commit c4fefce). | HIGH |
+| 8 | **Networking** | 6-10 EM | TCP transport + CRDT + lobbies. Types only. | Never tested between two machines. **2026-06-06: predict-rollback-resimulate proven over real QUIC loopback** (commits bfed1c2, 1382429). | LOW (skip for v1) |
 | 9 | **UI** | 4-6 EM | egui overlay in editor. Walking sim has bitmap font HUD. | No retained-mode game UI, no layout engine | MEDIUM |
-| 10 | **Editor** | 8-12 EM | Scene hierarchy + inspector + 3D picking + save/load. | No visual gizmos in viewport, no content browser | HIGH |
-| 11 | **Asset Pipeline** | 6-8 EM | PLY loader works (308k splats loaded). VXM format. | No GLTF/FBX import, no texture compression, no hot-reload working | HIGH |
-| 12 | **Scripting** | 3-5 EM | Rhai runtime + GameScript trait. Working. | Not wired into game loop in engine_runner | MEDIUM |
+| 10 | **Editor** | 8-12 EM | Scene hierarchy + inspector + 3D picking + save/load. | No content browser. **2026-06-06: canonical gizmo-drag→transform pipeline shipped** (commit a54f6f7); node-graph registry + search insertion + comment boxes + wire inspection (commit cf9ee64). | HIGH |
+| 11 | **Asset Pipeline** | 6-8 EM | PLY loader works (308k splats loaded). VXM format. | No texture compression. **2026-06-06: GLTF→splat import shipped** (gltf2splat, commit 6a8b497) + SPZ format + KHR_gaussian_splatting glTF interop (commit 4163750); **script hot-reload working** (commit c446d18). | HIGH |
+| 12 | **Scripting** | 3-5 EM | Rhai runtime + GameScript trait. Working. | Not wired into game loop in engine_runner. **2026-06-06: wired live with hot-reload + last-good keep-alive in walking_sim via EngineLoop** (commit c446d18). | MEDIUM |
 | 13 | **AI/Navigation** | 4-6 EM | NavMesh with A* pathfinding. Working. | Not used by any game entity | LOW |
 | 14 | **Platform** | 2-4 EM | Windows + Linux via winit/wgpu. | Never tested on native Windows | MEDIUM |
 | 15 | **Build System** | 1-2 EM | Cargo workspace. **Done.** | Need shipping/release profiles | LOW |

@@ -35,7 +35,7 @@ The 18-domain ground-truth audit (`docs/superpowers/specs/2026-06-05-ochroma-aud
 - **GameScript already exists** — `crates/vox_core/src/script_interface.rs` and `crates/vox_core/src/engine_runtime.rs`. Audit and extend; do **not** re-author a new trait.
 - **The dogfood game already exists** — `crates/vox_app/src/bin/walking_sim.rs` (988 LOC). It already wires `CharacterController`, `RapierPhysicsWorld`, `RhaiRuntime`, `SpatialAudioManager`, `ShadowMapper`, `SpectralFramebuffer`, `GameUI`. Extend it; do not rewrite from scratch.
 - **The game UI today is egui** (`vox_core::game_ui::{GameState, GameUI, UIElement, UIPosition, UISize}`, `crates/vox_ui` on egui 0.31). Vello/Taffy are present as **optional cargo features** in `vox_ui` (`vello`, `parley`, `taffy`) — the migration turns these on and ports screens, it does not start from zero.
-- **Spectral GI primitives exist but are not wired** — `SpectralRadianceCache`, `GpuGiPass`, `SpectralAtmosphere` in `vox_render`. Confirm exact module paths with `grep -rn "SpectralRadianceCache" crates/vox_render/src` before wiring.
+- **Spectral GI primitives exist but are not wired** — `SpectralRadianceCache`, `GpuGiPass`, `SpectralAtmosphere` in `vox_render`. Confirm exact module paths with `grep -rn "SpectralRadianceCache" crates/vox_render/src` before wiring. **2026-06-06 status:** the CPU `SpectralRadianceCache` path is now wired live via `EngineLoop::step_gi` (`crates/ochroma_engine/src/engine_loop.rs:334`). The GPU compute path landed as `GpuGi` (not `GpuGiPass`) in `vox_render::spectral_gi` (commit 0e7bdb7) and is proven on-device, but **EngineLoop/walking_sim wiring is still pending** — `GpuGi` is only exercised by its own tests; the live frame still uses the CPU cache.
 - `todo!()` / `unimplemented!()` / empty function bodies are **forbidden** — they fail the task. (Baseline is currently clean: `grep -rn "todo!\|unimplemented!"` returns 0.)
 - **Crate boundary rule (from CLAUDE.md):** engine crates (`vox_core`, `vox_data`, `vox_render`, and the other `vox_*` engine crates) must NEVER contain game-specific concepts. Game logic lives in `vox_app`.
 - Baseline truth as of 2026-06-05: 13 non-audio crates build; **1762 tests pass, 0 fail**. Any drop below 1762 passing without an intentional, documented reason is a regression.
@@ -99,6 +99,8 @@ The 18-domain ground-truth audit (`docs/superpowers/specs/2026-06-05-ochroma-aud
 - [ ] **Step 5: Launch** — `cargo run --bin walking_sim` opens a window (screenshot it)
 - [ ] **Step 6: Commit** — `git commit -m "fix(build): repoint spectra dep, restore full-workspace green build"`
 
+> **2026-06-06 status:** spectra dep repoint landed; `walking_sim` is fully wired to the unified `EngineLoop` (`crates/vox_app/src/bin/walking_sim.rs:21`). The 13-commit overnight wave all claim green build+tests. Build-green / window-launch steps left unchecked here because cargo was not run during this doc pass — confirm against the running integration gate.
+
 ### Task 1.2: Fix CI matrix — it EXISTS but has never been green
 
 > **BLOCKER (2026-06-05): the engine is not self-contained.** The DEFAULT build depends on `crucible-core`/`crucible-types` via out-of-repo local path deps (`crates/vox_nodes/Cargo.toml` → `../../../aetherspectra/crucible/rust/crates/`), pulled by `vox_render`'s `default = ["crucible"]`. No git submodule, nothing vendored. A fresh `git clone` (CI runner or any other dev) CANNOT load the manifest, let alone build — this is why the old CI used `--no-default-features` (it dodges crucible AND ALSA). CI cannot test the real config until crucible is reachable on a clean checkout. **Options:** (a) vendor crucible-core/types into the repo like Track S did for shader-slang; (b) git-submodule `aetherspectra`; (c) publish crucible to crates.io; (d) make `crucible` non-default if the game doesn't need it. **Decision gated on the audit** (is crucible load-bearing for walking_sim?). The same applies to `spectra-*` (optional) for the spectra-native path. This is a Domain-1 (Build/Platform) foundational issue, not a yaml fix.
@@ -117,10 +119,12 @@ The 18-domain ground-truth audit (`docs/superpowers/specs/2026-06-05-ochroma-aud
 **Wiring requirement:** Runs on push + PR to `master`. Must test the REAL default-feature config, not `--no-default-features`. Empty/always-pass job = task failure.
 
 - [ ] Step 1: Add `libasound2-dev pkg-config` apt step (ubuntu only); switch test/clippy to default features
-- [ ] Step 2: Fix the `vox_physics` warning so `-D warnings` passes
+- [x] Step 2: Fix the `vox_physics` warning so `-D warnings` passes
 - [ ] Step 3: Mark `build-web` `continue-on-error` (flip in Day-3 web task)
 - [ ] Step 4: Push branch, observe run, capture the green check URL
 - [ ] Step 5: Commit
+
+> **2026-06-06 status:** `.github/workflows/ci.yml` exists and the `vox_physics` warning is fixed (`crates/vox_physics/src/wetness.rs:33` now `let lcg`, no `mut`). Green-CI-run capture (Steps 1/3/4) not verified here — left unchecked pending an observed green run.
 
 ### Task 1.3: Wire Spectral GI (Domain 12a) — live radiance at runtime — via crucible/CPU path
 
@@ -135,11 +139,13 @@ The 18-domain ground-truth audit (`docs/superpowers/specs/2026-06-05-ochroma-aud
 
 **Wiring requirement:** `SpectralRadianceCache` must be updated each frame inside the engine's render/update tick (name the exact function once located) and read by at least the render pass. Constants/stubs downstream = task failure. Backend abstraction must not leak `spectra-*` types into the caller.
 
-- [ ] Step 1: `grep -rn "SpectralRadianceCache\|GpuGiPass\|SpectralAtmosphere" crates/vox_render/src` — map real signatures
-- [ ] Step 2: Failing test asserting non-constant, per-band, per-position radiance
-- [ ] Step 3: Wire cache update into the frame tick (crucible/CPU backend); feed render pass
-- [ ] Step 4: Run test → PASS with real differing values
-- [ ] Step 5: Commit — `feat(render): wire SpectralRadianceCache into live frame via crucible path (Domain 12a)`
+- [x] Step 1: `grep -rn "SpectralRadianceCache\|GpuGiPass\|SpectralAtmosphere" crates/vox_render/src` — map real signatures
+- [x] Step 2: Failing test asserting non-constant, per-band, per-position radiance
+- [x] Step 3: Wire cache update into the frame tick (crucible/CPU backend); feed render pass
+- [x] Step 4: Run test → PASS with real differing values
+- [x] Step 5: Commit — `feat(render): wire SpectralRadianceCache into live frame via crucible path (Domain 12a)`
+
+> **2026-06-06 status:** CPU/crucible GI path is wired live in `EngineLoop::step_gi` (`crates/ochroma_engine/src/engine_loop.rs:334`, test `step_gi_brightens_receiver_band_near_emitter`). The GPU compute upgrade (`GpuGi`, commit 0e7bdb7) is proven on-device but **EngineLoop wiring of the GPU path is still pending** — see the GI status note under IMPORTANT NOTES.
 
 ---
 
@@ -175,8 +181,12 @@ The 18-domain ground-truth audit (`docs/superpowers/specs/2026-06-05-ochroma-aud
 **Acceptance:** `cargo test -p vox_audio cpal_device_opens` enumerates ≥1 device; `cargo test -p vox_audio spectral_strike_centroid` → glass-profile strike spectral centroid > stone-profile centroid (real ordered values printed). In `walking_sim`, dropping an object plays a synthesized impact with **no WAV file loaded**.
 **Wiring requirement:** Called from the walking_sim collision callback; rodio path becomes optional, CPAL default.
 
+> **2026-06-06 status: SHIPPED.** `crates/vox_audio/src/cpal_backend.rs` (test `cpal_device_opens`) and `spectral_synth2.rs` (test `spectral_strike_centroid_glass_brighter_than_stone`) are present and green.
+
 ### Task 2.2: Spectral reverb from GI cache + Rhai per-frame hooks
 **Acceptance:** `cargo test -p vox_audio reverb_from_geometry` → a high-uniform-reflectance room yields a longer reverb tail (samples) than a mid-absorption room (printed tail lengths, real ordering). A Rhai script attached in `walking_sim` mutates entity state each frame (orb pulse visible).
+
+> **2026-06-06 status: SHIPPED.** Spectral reverb from GI in `crates/vox_audio/src/spectral_reverb.rs` (`reverb_for_room_from_gi`); reverb-tail tests in `sdf_reverb.rs`/`fundsp_graph.rs`. Rhai per-frame hooks shipped with live **hot-reload** (commit c446d18): `assets/scripts/walking_sim.rhai` drives orb bob/pulse + windmill spin; `EngineLoop::step_scripts` + `walking_sim::tick_script`/`poll_reload` wire it end to end with last-good keep-alive.
 
 ---
 
@@ -185,6 +195,8 @@ The 18-domain ground-truth audit (`docs/superpowers/specs/2026-06-05-ochroma-aud
 ### Task 3.1: GLTF→Splat converter in vox_tools (the real greenfield gap — 439 LOC today)
 **Acceptance:** `cargo run --bin ochroma-tools -- gltf2splat assets/cube.glb /tmp/cube.vxm` writes a `.vxm`; `cargo test -p vox_tools gltf2splat_cube` asserts `splat_count > 0` and round-trips load in `vox_data`. The converted asset loads and renders in `walking_sim`.
 **Wiring requirement:** Output consumable by `vox_data`'s loader; no placeholder splats.
+
+> **2026-06-06 status: SHIPPED (and extended).** `crates/vox_tools/src/gltf2splat.rs` (`convert_file`, tests `gltf2splat_cube` + `gltf2splat_cube_roundtrip_vxm`). Beyond plan scope, commit 4163750 added **SPZ format** (`crates/vox_data/src/spz.rs`, Niantic read/write, <35% of PLY) and **KHR_gaussian_splatting glTF interop** (`crates/vox_tools/src/splats2gltf.rs`: `splats2gltf` export + `gltf2splats` import).
 
 ### Task 3.2: Rendering domain polish on live GI (shadows/tonemap consistency)
 **Acceptance:** named visible improvement with a before/after screenshot + a numeric test (e.g. tonemapped luminance within target range).
@@ -196,8 +208,12 @@ The 18-domain ground-truth audit (`docs/superpowers/specs/2026-06-05-ochroma-aud
 ### Task 4.1: vox_net CRDT/rollback hardening + 2-player walking_sim
 **Acceptance:** Two `walking_sim` clients connect; `cargo test -p vox_net rollback_converges` shows divergent-then-reconciled state; manually, client B sees A's avatar move within 1 frame.
 
+> **2026-06-06 status: SHIPPED.** Predict-rollback-resimulate loop in `crates/vox_net/src/rollback.rs` (test `rollback_converges`) + QUIC-loopback proof `net_walk_demo.rs::rollback_over_quic_reconciles_to_ground_truth` (commit 1382429).
+
 ### Task 4.2: Character animation blend trees
 **Acceptance:** `cargo test -p vox_render blend_tree_interpolates` → blended pose between walk/idle at t=0.5 differs from both endpoints (real joint values); avatar in walking_sim transitions smoothly idle↔walk.
+
+> **2026-06-06 status: SHIPPED.** `crates/vox_render/src/animation/blend_tree.rs` (`BlendTree`, `apply_pose`) + test `animation_driver.rs::blend_tree_interpolates` (commit c4fefce).
 
 ---
 
@@ -206,6 +222,8 @@ The 18-domain ground-truth audit (`docs/superpowers/specs/2026-06-05-ochroma-aud
 ### Task 5.1: Vello-based transform gizmo + property inspector
 **Acceptance:** In the editor, selecting an entity shows its real component values; dragging the X gizmo changes `transform.translation.x` by the drag delta (`cargo test -p vox_editor gizmo_drag_updates_translation` asserts the delta).
 **Wiring requirement:** Rendered via the Vello path (Track A), not egui fallback.
+
+> **2026-06-06 status: gizmo→transform pipeline SHIPPED.** `crates/vox_editor/src/gizmo_interaction.rs` (test `gizmo_drag_updates_translation`, commit a54f6f7). The canonical gizmo-drag→transform pipeline is proven headlessly; verify the Vello-path render wiring of the property inspector before marking the full task done.
 
 ### Task 5.2: Spectral-aware physics pass
 **Acceptance:** named physics behavior driven by spectral material (e.g. restitution/wetness) with a real numeric test.
@@ -219,8 +237,12 @@ The 18-domain ground-truth audit (`docs/superpowers/specs/2026-06-05-ochroma-aud
 ### Task 6.1: AI/LLM domain wiring (vox_ai / vox_nn)
 **Acceptance:** an NPC in walking_sim makes a spectral-perception-driven decision with a real test asserting the decision changes when the spectral input changes. **Commit body lists what is stubbed.**
 
+> **2026-06-06 status: SHIPPED + WIRED.** `crates/vox_ai/src/perception.rs` (test `different_inputs_yield_different_decisions`: distinct spectral inputs yield distinct decisions). The walking_sim `Npc` (`walking_sim.rs:298`) consumes this live — `SpectralPerceptionAgent::sense()` drives a `Flee`/wander `BehaviorState` decision from local radiance.
+
 ### Task 6.2: Spectral frontier demo (one frontier capability live)
 **Acceptance:** one frontier feature (capture pipeline OR infinite-detail OR spectral-audio frontier) runs end-to-end on a toy input with a real numeric assertion; remaining frontier domains explicitly logged as not-started.
+
+> **2026-06-06 status: SHIPPED.** Multi-illuminant spectral material capture `capture_material(observations)` (commit b32b6d9): 3-illuminant capture error 0.1196 vs single-image 0.4917. Remaining frontier domains remain not-started.
 
 ---
 

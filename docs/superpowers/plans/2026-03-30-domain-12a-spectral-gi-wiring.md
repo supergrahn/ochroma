@@ -398,6 +398,8 @@ git commit -m "feat(app): wire SpectralAtmosphere + SpectralRadianceCache into r
 
 ## Task 4: GPU GI Pass — wgpu compute for production performance AND wire into dispatch
 
+> **2026-06-06 status:** a GPU spectral-GI compute path landed in `crates/vox_render/src/spectral_gi.rs` as `GpuGi` (commit 0e7bdb7) — not the `GpuGiPass` named here; it owns a headless wgpu device and `step(&[GaussianSplat], hour)`, proven on the RADV 780M (monotonic falloff, bit-identical reruns, 50k splats @ 67.75 ms/step). **EngineLoop / render-loop wiring is explicitly DEFERRED** — `GpuGi` is exercised only by its own tests; the live frame still runs the CPU `SpectralRadianceCache` path. Treat this task as "compute landed, dispatch-into-frame pending."
+
 **Files:**
 - Modify: `crates/vox_render/src/gpu/spectral_gi_pass.wgsl` (created by Domain 12; update struct layout to match corrected `GpuSplatEntry`)
 - Modify: `crates/vox_render/src/spectral_gi.rs` (add `GpuGiPass` with corrected `GpuSplatEntry`)
