@@ -67,6 +67,7 @@ pub mod anim_editor_ui;
 pub mod material_editor_ui;
 pub mod sequencer;
 pub mod vfx_editor;
+pub mod vfx_graph;
 #[cfg(feature = "crucible")]
 pub mod vfx_editor_ui;
 pub mod frame_debugger;
