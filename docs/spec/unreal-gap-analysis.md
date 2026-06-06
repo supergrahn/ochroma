@@ -8,7 +8,7 @@ At our pace, that's the roadmap.
 | # | System | UE5 MVP Cost | Ochroma Status | Gap | Priority |
 |---|--------|-------------|----------------|-----|----------|
 | 1 | **Rendering** | 12-18 EM | Spectral pipeline + GPU rasteriser + Spectra (25fps). Unique advantage. | Compositing splats with rasterized geometry | HIGH — our differentiator |
-| 2 | **Lighting** | 4-6 EM | SunModel + point lights + spectral illuminants. Working. CPU spectral GI now wired live via `EngineLoop::step_gi`. | No shadow maps, no irradiance probes. **2026-06-06: GPU spectral-GI compute (`GpuGi`) landed and proven on-device (commit 0e7bdb7), but EngineLoop wiring of the GPU path is still pending** — live frame uses the CPU cache. | MEDIUM |
+| 2 | **Lighting** | 4-6 EM | SunModel + point lights + spectral illuminants. Working. CPU spectral GI now wired live via `EngineLoop::step_gi`. | No shadow maps, no irradiance probes. **2026-06-06: GPU spectral-GI WIRED into the live frame (9175c71)** — `GiBackend {Cpu,Gpu}` on EngineLoop (`OCHROMA_GI=gpu` / `use_gpu_gi()`), per-band exact vs the CPU mirror, graceful permanent fallback; default remains CPU. | MEDIUM |
 | 3 | **Materials** | 3-5 EM | MaterialNode graph + 11 spectral materials. Working. | No visual editor, no texture maps | LOW (spectral is better) |
 | 4 | **Post-Processing** | 2-3 EM | ACES/Reinhard/Filmic tone mapping + bloom + denoiser. **Done.** | No LUTs, no auto-exposure | LOW |
 | 5 | **Physics** | 3-5 EM | Rapier3D integrated + AABB collision in runtime. | Character controller needs work | MEDIUM |
