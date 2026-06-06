@@ -5,6 +5,7 @@ version.workspace = true
 
 [dependencies]
 vox_core    = { path = "../vox_core" }
+vox_render  = { path = "../vox_render" }
 glam        = { workspace = true }
 half        = { workspace = true }
 serde       = { workspace = true }
