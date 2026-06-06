@@ -546,6 +546,62 @@ mod tests {
         );
     }
 
+    /// SOTA item 15 (Motion): a button's fill differs between a hover frame and a
+    /// non-hover frame. The shell theme wires `style.animation_time = motion("fast")`
+    /// and distinct `inactive.bg_fill` (surface.bg.3) vs `hovered.bg_fill`
+    /// (surface.hover); a frame with the pointer over the button must paint a
+    /// measurably different interior fill than a frame with the pointer away.
+    #[test]
+    fn hover_changes_button_fill() {
+        let tokens = Tokens::default();
+        let bg = tokens.color("surface.bg.0");
+        let (w, h) = (200usize, 80usize);
+
+        // A fixed-rect button so we know exactly where to sample its interior.
+        let btn_rect = egui::Rect::from_min_size(egui::pos2(40.0, 20.0), egui::vec2(120.0, 40.0));
+        let ui_fn = |ctx: &egui::Context| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.put(btn_rect, egui::Button::new("HOVER ME"));
+            });
+        };
+
+        // Pointer parked far outside the button (no hover).
+        let away = egui::RawInput {
+            events: vec![egui::Event::PointerMoved(egui::pos2(2.0, 2.0))],
+            ..Default::default()
+        };
+        // Pointer over the button centre (hovered).
+        let over = egui::RawInput {
+            events: vec![egui::Event::PointerMoved(btn_rect.center())],
+            ..Default::default()
+        };
+
+        let render = |raw: egui::RawInput| {
+            let ctx = egui::Context::default();
+            vox_ui::design::icons::install(&ctx);
+            vox_ui::egui_theme::apply(&ctx, &tokens);
+            // Advance several frames so the hover animation (animation_time) settles.
+            super::cpu_render::render_ui_with_input(&ctx, [w, h], bg, raw, 30, ui_fn)
+        };
+
+        let away_px = render(away);
+        let over_px = render(over);
+
+        // Sample the button interior centre (avoid the centred glyphs by sampling
+        // a few px in from the left edge, vertically centred).
+        let sx = (btn_rect.min.x as usize) + 8;
+        let sy = (btn_rect.center().y as usize);
+        let i = (sy * w + sx) * 4;
+        let a = [away_px[i], away_px[i + 1], away_px[i + 2]];
+        let o = [over_px[i], over_px[i + 1], over_px[i + 2]];
+        let delta: i32 = (0..3).map(|c| (a[c] as i32 - o[c] as i32).abs()).sum();
+        println!("[hover_changes_button_fill] non-hover fill={a:?} hover fill={o:?} delta={delta}");
+        assert!(
+            delta > 10,
+            "button fill must differ hover vs non-hover (non-hover {a:?} vs hover {o:?}, delta {delta})"
+        );
+    }
+
     #[test]
     fn moving_a_tab_changes_its_rect() {
         // Render once to populate leaf rects, capture Inspector's rect, move it

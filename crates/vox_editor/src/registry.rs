@@ -159,6 +159,13 @@ impl NodeRegistry {
     ///
     /// Returns the `&'static str` kind name under which it was registered (the def's
     /// name, leaked to `'static`).
+    ///
+    /// **Same-name registration REPLACES the existing kind in place** (it does not
+    /// append a shadowed duplicate). Re-registering an edited subgraph under a name
+    /// that already exists swaps the constructor and ports to the new def, so
+    /// [`create`](Self::create) builds the new version and [`search`](Self::search)
+    /// returns exactly one hit. The old kind's leaked name is dropped on the floor
+    /// (an unavoidable, bounded one-time leak); the canonical handle stays stable.
     pub fn register_subgraph(&mut self, def: crate::subgraph::SubgraphDef) -> &'static str {
         let name: &'static str = Box::leak(def.name.clone().into_boxed_str());
         // The constructor owns the def and hands out deep clones, so every created
@@ -166,12 +173,18 @@ impl NodeRegistry {
         let ctor: NodeConstructor = Box::new(move || {
             Box::new(crate::subgraph::SubgraphNode::new(def.deep_clone()))
         });
-        self.kinds.push(kind_of_boxed("Subgraph", ctor));
-        // Patch the freshly-pushed kind's name to the stable leaked name (kind_of_boxed
-        // copied it from the descriptor's already-leaked type_name, which is identical
-        // content; we keep `name` as the canonical leaked handle).
-        let last = self.kinds.last_mut().expect("just pushed");
-        last.name = name;
+        let mut kind = kind_of_boxed("Subgraph", ctor);
+        // Keep `name` as the canonical leaked handle (kind_of_boxed copied it from the
+        // descriptor's already-leaked type_name, identical content).
+        kind.name = name;
+        // Replace in place if a kind with this exact name already exists, so a
+        // re-registration of an edited subgraph supersedes the stale version rather
+        // than being shadowed behind it by `get`/`create`/`search`.
+        if let Some(existing) = self.kinds.iter_mut().find(|k| k.name == name) {
+            *existing = kind;
+        } else {
+            self.kinds.push(kind);
+        }
         name
     }
 
@@ -439,5 +452,60 @@ mod tests {
         let reg = NodeRegistry::new();
         assert!(reg.create("NoSuchNode").is_none());
         assert!(reg.search("zzzqqq").is_empty());
+    }
+
+    /// Registering two distinct subgraph defs under the SAME name replaces the first:
+    /// create() builds v2, and search() returns exactly one hit (no shadow).
+    #[test]
+    fn register_subgraph_same_name_replaces_and_searches_once() {
+        use crate::nodes::terrain_node::TerrainNode;
+        use crate::subgraph::{ExposedPort, SubgraphDef, SubgraphNode};
+        use crate::node_graph::NodeInputs;
+
+        // Build a def named "Same" exposing its inner terrain's "terrain" output,
+        // parameterised by amplitude so v1 and v2 cook to different heights.
+        fn terrain_def(name: &str, amplitude: f32) -> SubgraphDef {
+            let mut inner = OchromaNodeGraph::new();
+            let id = inner.add_node(
+                "terrain",
+                Box::new(TerrainNode { resolution: 16, amplitude, droplet_count: 0, seed: 5, ..Default::default() }),
+            );
+            SubgraphDef {
+                name: name.to_string(),
+                inner,
+                inputs: vec![],
+                outputs: vec![ExposedPort {
+                    outer_name: "out".into(),
+                    inner_node: id,
+                    inner_port: "terrain".into(),
+                    port_type: PortType::Terrain,
+                }],
+            }
+        }
+
+        // Reference height for v2 (amplitude 999) by cooking the def directly.
+        let v2_ref = {
+            let node = SubgraphNode::new(terrain_def("Same", 999.0));
+            let out = node.cook(NodeInputs::new()).unwrap();
+            out["out"].as_terrain().unwrap().heights[100]
+        };
+
+        let mut reg = NodeRegistry::new();
+        let base_len = reg.len();
+        reg.register_subgraph(terrain_def("Same", 100.0)); // v1
+        assert_eq!(reg.len(), base_len + 1, "first registration adds one kind");
+        reg.register_subgraph(terrain_def("Same", 999.0)); // v2, same name
+        assert_eq!(reg.len(), base_len + 1, "same-name re-registration must NOT add a second kind");
+
+        // search returns exactly one "Same".
+        let search = reg.search("Same");
+        let hits: Vec<&str> = search.iter().map(|h| h.name()).collect();
+        assert_eq!(hits.iter().filter(|n| **n == "Same").count(), 1, "exactly one Same hit, got {hits:?}");
+
+        // create("Same") builds v2 (amplitude 999), not the stale v1.
+        let inst = reg.create("Same").expect("creatable");
+        let produced = inst.cook(NodeInputs::new()).unwrap();
+        let h = produced["out"].as_terrain().unwrap().heights[100];
+        assert_eq!(h, v2_ref, "create() must build the replacement (v2), not the stale v1");
     }
 }

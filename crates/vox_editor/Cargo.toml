@@ -19,3 +19,9 @@ serde_json  = "1"
 noise       = "0.9"
 rand        = "0.8"
 rand_pcg    = "0.3"
+
+[dev-dependencies]
+# Test-only: pins the vox_ui::tokens::PortType mirror against the canonical
+# node_graph::PortType via an exhaustive match (engine rule: this dep is dev-only,
+# vox_ui never depends on vox_editor).
+vox_ui      = { path = "../vox_ui" }

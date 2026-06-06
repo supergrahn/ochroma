@@ -903,6 +903,42 @@ mod tests {
 
     fn pass() -> Box<dyn OchromaNode> { pass_node() }
 
+    /// Pins the `vox_ui::tokens::PortType` mirror against the canonical
+    /// `node_graph::PortType`. The exhaustive `match` means adding or renaming a
+    /// variant of THIS enum fails to compile until the mapping is updated, and the
+    /// asserts prove each editor variant maps to the same-named UI mirror variant
+    /// (catching silent drift like the historical `ScalarVec`/`Flow` divergence).
+    #[test]
+    fn tokens_portype_mirror_is_exhaustive() {
+        use vox_ui::PortType as Ui;
+        fn mirror(p: PortType) -> Ui {
+            match p {
+                PortType::Splats => Ui::Splats,
+                PortType::SpectralField => Ui::SpectralField,
+                PortType::Terrain => Ui::Terrain,
+                PortType::Mesh => Ui::Mesh,
+                PortType::LodMesh => Ui::LodMesh,
+                PortType::Instances => Ui::Instances,
+                PortType::Scalar => Ui::Scalar,
+                PortType::BiomeMap => Ui::BiomeMap,
+                PortType::SplatWeights => Ui::SplatWeights,
+                PortType::ScalarVec => Ui::ScalarVec,
+            }
+        }
+        // Every editor variant maps; each maps to a DISTINCT UI variant, and the
+        // `ScalarVec` port (used by real moisture/inhabitation/splat-weight nodes)
+        // has its own mirror — the variant whose absence was the original drift.
+        let all = [
+            PortType::Splats, PortType::SpectralField, PortType::Terrain, PortType::Mesh,
+            PortType::LodMesh, PortType::Instances, PortType::Scalar, PortType::BiomeMap,
+            PortType::SplatWeights, PortType::ScalarVec,
+        ];
+        let mapped: Vec<Ui> = all.iter().map(|&p| mirror(p)).collect();
+        let unique: std::collections::HashSet<Ui> = mapped.iter().copied().collect();
+        assert_eq!(unique.len(), all.len(), "mirror must be injective (no two editor variants share a UI variant)");
+        assert_eq!(mirror(PortType::ScalarVec), Ui::ScalarVec, "ScalarVec port must mirror to ScalarVec");
+    }
+
     #[test]
     fn add_node_returns_unique_ids() {
         let mut g = OchromaNodeGraph::new();

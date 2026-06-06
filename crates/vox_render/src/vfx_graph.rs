@@ -712,14 +712,32 @@ fn turbulence_accel(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
 // Blackbody spectral emission
 // ===========================================================================
 
+/// Lowest blackbody temperature [`blackbody_spd`] evaluates (Kelvin). Below this
+/// the visible SPD is effectively zero anyway; clamping keeps the Planck eval well
+/// away from underflow.
+pub const BLACKBODY_MIN_K: f32 = 50.0;
+/// Highest blackbody temperature [`blackbody_spd`] evaluates (Kelvin). Hotter than
+/// any physical emitter we model; clamping here is what prevents `lambda*t` from
+/// overflowing to a degenerate all-equal / NaN SPD for author-controlled huge or
+/// infinite `kelvin`.
+pub const BLACKBODY_MAX_K: f32 = 50_000.0;
+
 /// Planckian blackbody spectral radiance over the 16 USGS bands, normalised so
 /// the peak band == 1.0. Uses Planck's law with the band centre wavelengths
 /// from [`BAND_WAVELENGTHS`].
+///
+/// `kelvin` is author-controlled VFX-graph data, so it is sanitised before the
+/// Planck evaluation: non-finite (`NaN`/`±inf`) maps to [`BLACKBODY_MAX_K`], then
+/// the value is clamped to `[BLACKBODY_MIN_K, BLACKBODY_MAX_K]`. This guarantees
+/// the returned SPD is always finite and peak-normalised in `[0, 1]` — a NaN band
+/// would otherwise poison every emitted splat's f16 spectral bits.
 pub fn blackbody_spd(kelvin: f32) -> [f32; 16] {
     // Planck's law constants (SI), wavelength form:
     //   B(λ,T) = (2hc²/λ⁵) / (exp(hc/(λ k T)) - 1)
     const HC_OVER_K: f64 = 0.0143877688; // h*c/k_B  (m·K)
-    let t = kelvin.max(1.0) as f64;
+    // Sanitise author-controlled kelvin: non-finite -> max, then clamp to range.
+    let kelvin = if kelvin.is_finite() { kelvin } else { BLACKBODY_MAX_K };
+    let t = kelvin.clamp(BLACKBODY_MIN_K, BLACKBODY_MAX_K) as f64;
     let mut spd = [0.0f64; 16];
     let mut max = 0.0f64;
     for (i, wl_nm) in BAND_WAVELENGTHS.iter().enumerate() {
@@ -727,13 +745,19 @@ pub fn blackbody_spd(kelvin: f32) -> [f32; 16] {
         let l5 = lambda.powi(5);
         let expo = (HC_OVER_K / (lambda * t)).exp() - 1.0;
         let radiance = 1.0 / (l5 * expo);
-        spd[i] = radiance;
-        if radiance > max {
-            max = radiance;
+        // Defensive: skip any non-finite band so it can never become the max.
+        if radiance.is_finite() {
+            spd[i] = radiance;
+            if radiance > max {
+                max = radiance;
+            }
         }
     }
     let inv = if max > 0.0 { 1.0 / max } else { 0.0 };
-    std::array::from_fn(|i| (spd[i] * inv) as f32)
+    std::array::from_fn(|i| {
+        let v = (spd[i] * inv) as f32;
+        if v.is_finite() { v } else { 0.0 }
+    })
 }
 
 // ===========================================================================
@@ -861,6 +885,27 @@ mod tests {
             argmax,
             BAND_WAVELENGTHS[argmax]
         );
+    }
+
+    /// Extreme/infinite kelvin must produce a FINITE, peak-normalised SPD — never
+    /// NaN (which would poison every emitted splat's spectral bits).
+    #[test]
+    fn blackbody_extreme_kelvin_is_finite_and_normalised() {
+        for k in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1e30, 1e9] {
+            let spd = blackbody_spd(k);
+            assert!(spd.iter().all(|v| v.is_finite()), "kelvin={k} produced a non-finite band: {spd:?}");
+            assert!(
+                spd.iter().all(|&v| (0.0..=1.0).contains(&v)),
+                "kelvin={k} bands out of [0,1]: {spd:?}"
+            );
+            let peak = spd.iter().copied().fold(0.0f32, f32::max);
+            assert!((peak - 1.0).abs() < 1e-5, "kelvin={k} peak band must be 1.0, got {peak}");
+        }
+        // Clamping is observable: anything >= BLACKBODY_MAX_K maps to the same SPD.
+        let at_max = blackbody_spd(BLACKBODY_MAX_K);
+        let over_max = blackbody_spd(1e30);
+        assert_eq!(at_max, over_max, "huge kelvin must clamp to BLACKBODY_MAX_K's SPD");
+        println!("[blackbody_extreme] inf/1e30 -> finite peak-normalised SPD, clamped @ {BLACKBODY_MAX_K}K");
     }
 
     #[test]

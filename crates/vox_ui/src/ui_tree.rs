@@ -96,6 +96,11 @@ pub struct Style {
     /// `ProgressBar`/`Slider` paint their value portion with this exact colour;
     /// when `None` the fill is derived by brightening `color` (the old default).
     /// Lets a dark track carry a distinct bright fill (e.g. dark + amber).
+    ///
+    /// **Only `ProgressBar` and `Slider` read this.** It is accepted (and resolved)
+    /// on every node so class blocks can carry it, but `Panel`, `Label`, `Button`
+    /// and `Image` IGNORE it at render time — use `color`/`text_color` there. Setting
+    /// `fill_color` on those kinds is a harmless no-op, not an error.
     pub fill_color: Option<[f32; 4]>,
     /// Text colour, RGB `0..=255` (matches `burn_text`).
     pub text_color: Option<[u8; 3]>,
@@ -302,21 +307,53 @@ impl UiDoc {
         let doc: Self = serde_json::from_str(s).map_err(|e| e.to_string())?;
         // Duplicate node ids silently collapse in the id-keyed layout map —
         // a node renders at the wrong rect and hit-testing misroutes (review
-        // finding). An id collision is an authoring error: reject it loudly.
-        let mut seen = std::collections::HashSet::new();
-        let mut stack = vec![&doc.root];
-        while let Some(n) = stack.pop() {
-            if !seen.insert(n.id.as_str()) {
-                return Err(format!("duplicate node id '{}' in UI doc", n.id));
-            }
-            stack.extend(n.children.iter());
-        }
+        // finding). On the JSON parse path an id collision is an authoring error:
+        // reject it loudly so it never reaches layout.
+        validate_unique_ids(&doc.root)?;
         Ok(doc)
     }
 
     pub fn to_json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
     }
+}
+
+/// Walk the tree (pre-order) and return `Err` naming the first duplicate id, or
+/// `Ok` if every id is unique. Shared by [`UiDoc::from_json`] and the dedupe path
+/// so every UiDoc ingest enforces the same id-uniqueness invariant.
+fn validate_unique_ids(root: &UiNode) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n.id.as_str()) {
+            return Err(format!("duplicate node id '{}' in UI doc", n.id));
+        }
+        stack.extend(n.children.iter());
+    }
+    Ok(())
+}
+
+/// Deterministically remove duplicate-id nodes from `root`, keeping the FIRST
+/// occurrence (pre-order, children left-to-right) and dropping any later subtree
+/// whose id was already seen. Used by the programmatic / hot-reload ingest paths
+/// (`from_doc`, `reload`) so the id-keyed layout map can never misroute even when
+/// a doc isn't author-validated — `from_json` still hard-rejects instead.
+fn dedupe_ids(root: &mut UiNode) {
+    fn rec(node: &mut UiNode, seen: &mut std::collections::HashSet<String>) {
+        // The caller guarantees `node.id` was already inserted into `seen`.
+        node.children.retain_mut(|child| {
+            if seen.insert(child.id.clone()) {
+                rec(child, seen);
+                true
+            } else {
+                // Duplicate id: drop this whole subtree (keep the first occurrence).
+                false
+            }
+        });
+    }
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(root.id.clone());
+    rec(root, &mut seen);
 }
 
 // ---------------------------------------------------------------------------
@@ -486,7 +523,12 @@ impl UiTree {
     }
 
     pub fn from_doc(doc: UiDoc) -> Self {
-        Self { root: doc.root, sheet: doc.stylesheet, focused: None, events: Vec::new() }
+        // Deterministically drop duplicate-id subtrees (keep first) so the id-keyed
+        // layout map can never misroute, even though this constructor isn't the
+        // author-validated JSON path.
+        let mut root = doc.root;
+        dedupe_ids(&mut root);
+        Self { root, sheet: doc.stylesheet, focused: None, events: Vec::new() }
     }
 
     pub fn with_sheet(mut self, sheet: StyleSheet) -> Self {
@@ -568,6 +610,10 @@ impl UiTree {
         collect_state(&self.root, &mut live_sliders, &mut live_progress);
 
         let mut new_root = doc.root.clone();
+        // Hot-reload ingests author-controlled docs that bypass `from_json`'s hard
+        // check; dedupe duplicate-id subtrees deterministically (keep first) BEFORE
+        // they reach layout, so a reloaded doc can never silently misroute rects.
+        dedupe_ids(&mut new_root);
         merge_state(&mut new_root, &live_sliders, &live_progress);
 
         self.root = new_root;
@@ -1009,6 +1055,74 @@ mod tests {
             Err(e) => assert!(e.contains("duplicate node id 'x'"), "names the id: {e}"),
             Ok(_) => panic!("duplicate ids must be rejected"),
         }
+    }
+
+    /// from_doc with duplicate ids dedupes deterministically: the FIRST node's
+    /// rect/content survives; the later duplicate subtree is dropped (so the layout
+    /// map can never misroute). Signature unchanged (returns UiTree, not Result).
+    #[test]
+    fn from_doc_dedupes_keeping_first() {
+        // Two sibling labels share id "x". First has text "FIRST" + fixed height 30;
+        // second has text "SECOND" + fixed height 90. Row layout would otherwise
+        // collapse both into one rect.
+        let mut a = UiNode::new("x", UiKind::Label { text: "FIRST".into() });
+        a.style.height = Some(30.0);
+        let mut b = UiNode::new("x", UiKind::Label { text: "SECOND".into() });
+        b.style.height = Some(90.0);
+        let mut c = UiNode::new("y", UiKind::Label { text: "C".into() });
+        c.style.height = Some(30.0);
+        let root = UiNode::new("root", UiKind::Panel).with_children(vec![a, b, c]);
+        let doc = UiDoc { stylesheet: StyleSheet::default(), root };
+
+        let tree = UiTree::from_doc(doc);
+        // The duplicate "x" subtree is dropped: only the first "x" plus "y" remain
+        // under root -> 3 nodes total (root + first x + y).
+        assert_eq!(tree.node_count(), 3, "duplicate-id subtree dropped");
+        // The surviving "x" is the FIRST node (text "FIRST", height 30).
+        let x = tree.find("x").expect("first x kept");
+        match &x.kind {
+            UiKind::Label { text } => assert_eq!(text, "FIRST", "kept the first occurrence's content"),
+            _ => panic!("x is not a label"),
+        }
+        // Its rect uses the first node's fixed height (30), not the second's (90).
+        let layout = compute_layout(&tree, [200.0, 200.0]);
+        let rx = layout.rect("x").expect("x has a rect");
+        assert_eq!(rx[3], 30.0, "kept rect is the FIRST node's height, got {rx:?}");
+        // And there's exactly one rect for "x" (no overwrite collision).
+        assert!(layout.rect("y").is_some(), "sibling y still laid out");
+    }
+
+    /// reload with duplicate ids in the new doc dedupes (keep first) instead of
+    /// corrupting the layout map — and still preserves preserved-state by id.
+    #[test]
+    fn reload_with_duplicate_ids_keeps_first_and_does_not_corrupt() {
+        // Start from a clean single-slider tree.
+        let v1 = UiNode::new("root", UiKind::Panel).with_children(vec![
+            UiNode::new("vol", UiKind::Slider { value: 0.3, min: 0.0, max: 1.0, on_change: "v".into() }),
+        ]);
+        let mut tree = UiTree::from_doc(UiDoc { stylesheet: StyleSheet::default(), root: v1 });
+        assert!(tree.set_slider_value("vol", 0.8));
+
+        // New doc has a duplicated "dup" id across two panels with different heights.
+        let mut p1 = UiNode::new("dup", UiKind::Panel);
+        p1.style.height = Some(20.0);
+        let mut p2 = UiNode::new("dup", UiKind::Panel);
+        p2.style.height = Some(70.0);
+        let v2 = UiNode::new("root", UiKind::Panel).with_children(vec![
+            UiNode::new("vol", UiKind::Slider { value: 0.1, min: 0.0, max: 1.0, on_change: "v".into() }),
+            p1,
+            p2,
+        ]);
+        tree.reload(&UiDoc { stylesheet: StyleSheet::default(), root: v2 });
+
+        // Duplicate dropped: root + vol + first dup = 3 nodes.
+        assert_eq!(tree.node_count(), 3, "reload dropped the duplicate-id subtree");
+        // Preserved slider value survived the reload (state merge still works).
+        assert_eq!(tree.slider_value("vol"), Some(0.8), "slider value preserved across reload");
+        // Layout: the surviving "dup" uses the FIRST occurrence's height (20).
+        let layout = compute_layout(&tree, [200.0, 200.0]);
+        let rd = layout.rect("dup").expect("dup laid out");
+        assert_eq!(rd[3], 20.0, "kept the first dup's height, got {rd:?}");
     }
 
     #[test]

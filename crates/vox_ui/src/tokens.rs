@@ -8,9 +8,18 @@
 //! `wire_color(&self, t: vox_editor::node_graph::PortType)`. `vox_ui` is an
 //! ENGINE-agnostic crate (CLAUDE.md) and must not pull `vox_editor`
 //! (+vox_render/vox_data/vox_usd) into every UI build. We therefore mirror the
-//! port-type set as a local [`PortType`] enum with identical variants; the
-//! NodeCanvas wave maps `vox_editor::node_graph::PortType -> tokens::PortType`
-//! at the single call site in `vox_app`.
+//! port-type set as a local [`PortType`] enum.
+//!
+//! ## Keeping the mirror in sync
+//!
+//! This enum carries every variant of `vox_editor::node_graph::PortType` (so each
+//! real port has a wire colour) PLUS one UI-only extra (`Flow`, a control-flow
+//! wire with no node-graph data counterpart). The sync is PINNED by
+//! `vox_editor::node_graph::tokens_portype_mirror_is_exhaustive`, an exhaustive
+//! `match` over the editor enum that maps each variant to this mirror by name — so
+//! adding/renaming an editor variant breaks that test's compilation until the
+//! mirror is updated. `vox_ui` must never gain a `vox_editor` dependency (engine
+//! rule), which is why the pin lives in `vox_editor`, not here.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,6 +27,10 @@ use std::path::Path;
 
 /// Node-graph port types, mirroring `vox_editor::node_graph::PortType`.
 /// Drives the type-colored socket/wire palette.
+///
+/// Every `vox_editor::node_graph::PortType` variant is present here by the same
+/// name (pinned by an exhaustive-match test in `vox_editor`), plus `Flow` — a
+/// UI-only control-flow wire that has no node-graph data counterpart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortType {
     Splats,
@@ -29,7 +42,11 @@ pub enum PortType {
     Scalar,
     BiomeMap,
     SplatWeights,
-    /// Exec / control-flow wire (drawn white, L->R arrowhead).
+    /// Vector-of-scalar field (moisture/drip/urban/points), mirrors
+    /// `vox_editor::node_graph::PortType::ScalarVec`.
+    ScalarVec,
+    /// Exec / control-flow wire (drawn white, L->R arrowhead). UI-only: no
+    /// node-graph `PortType` counterpart.
     Flow,
 }
 
@@ -106,6 +123,7 @@ impl Default for Tokens {
             ("port.scalar", [176, 182, 200, 255]),
             ("port.biome_map", [90, 200, 160, 255]),
             ("port.split_weights", [200, 150, 255, 255]),
+            ("port.scalar_vec", [150, 170, 210, 255]),
             ("port.flow", [255, 255, 255, 255]),
             ("category.generator", [108, 90, 60, 255]),
             ("category.spatial", [60, 130, 80, 255]),
@@ -168,6 +186,7 @@ impl Tokens {
             PortType::Scalar => "port.scalar",
             PortType::BiomeMap => "port.biome_map",
             PortType::SplatWeights => "port.split_weights",
+            PortType::ScalarVec => "port.scalar_vec",
             PortType::Flow => "port.flow",
         };
         self.color(key)
@@ -249,6 +268,7 @@ mod tests {
     fn wire_and_category_colors_resolve() {
         let t = Tokens::default();
         assert_eq!(t.wire_color(PortType::Splats), [76, 194, 255, 255]);
+        assert_eq!(t.wire_color(PortType::ScalarVec), [150, 170, 210, 255]);
         assert_eq!(t.wire_color(PortType::Flow), [255, 255, 255, 255]);
         assert_eq!(t.category_header(NodeCategory::Spatial), [60, 130, 80, 255]);
         // Unknown key is loud magenta, not silent transparent.

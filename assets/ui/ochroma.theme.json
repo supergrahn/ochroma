@@ -35,6 +35,7 @@
     "port.scalar": [176, 182, 200, 255],
     "port.biome_map": [90, 200, 160, 255],
     "port.split_weights": [200, 150, 255, 255],
+    "port.scalar_vec": [150, 170, 210, 255],
     "port.flow": [255, 255, 255, 255],
 
     "category.generator": [108, 90, 60, 255],

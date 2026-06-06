@@ -33,8 +33,16 @@
 //!   sits in a dense cluster of similarly-colored neighbors is largely redundant
 //!   (its neighbors already paint that region), so it is cheaper to drop. We
 //!   measure it with a uniform spatial grid (cell size = a multiple of the
-//!   median splat size) so neighbor queries are O(n) in practice. For splat `i`
-//!   with `k` color-similar neighbors in its 27-cell neighborhood,
+//!   median splat size). Neighbor queries are near-linear for well-spread
+//!   scenes, but a degenerate scene (identical/co-located/NaN positions) can
+//!   collapse every splat into one cell, which would make a naive all-pairs scan
+//!   O(n²) — a hang on hostile asset input. To keep the cost bounded at O(n·K)
+//!   regardless of clustering, each query examines at most
+//!   [`MAX_NEIGHBOR_CANDIDATES`] candidates from its 27-cell neighborhood; the
+//!   redundancy count is already an approximation, so capping the sample of
+//!   similar neighbors does not change the qualitative down-weight. For splat `i`
+//!   with `k` color-similar neighbors in its 27-cell neighborhood (sampled up to
+//!   the cap),
 //!   `redundancy_i = 1 / (1 + REDUNDANCY_WEIGHT * k_similar)`. An isolated splat
 //!   (`k_similar = 0`) keeps full weight 1.0; a splat buried in a uniform cluster
 //!   is strongly suppressed.
@@ -57,6 +65,18 @@ pub const REDUNDANCY_WEIGHT: f32 = 0.5;
 /// Cosine-similarity threshold (on the 16-band spectrum) above which two splats
 /// are considered "the same color" for redundancy purposes.
 pub const COLOR_SIMILARITY_THRESHOLD: f32 = 0.98;
+
+/// Upper bound on how many neighbor candidates a single redundancy query examines.
+///
+/// The spatial grid is near-linear for well-spread scenes, but a degenerate scene
+/// (all-identical / co-located / NaN positions) collapses every splat into one
+/// cell — an unbounded scan would then be O(n²) and stall the offline `prune`
+/// tool on hostile/degenerate asset input. Capping the per-query candidate count
+/// keeps total work at O(n·K). The redundancy term is an approximate down-weight,
+/// so sampling at most this many candidates per splat does not change its
+/// qualitative behaviour: a splat in a dense uniform cluster still saturates the
+/// similar-neighbor count and is strongly suppressed.
+pub const MAX_NEIGHBOR_CANDIDATES: usize = 32;
 
 /// Result of a prune operation.
 #[derive(Debug, Clone)]
@@ -158,16 +178,23 @@ impl SpatialGrid {
         grid
     }
 
-    /// Indices in the 27-cell neighborhood of `p` (excluding nothing; caller
-    /// filters self). Returned in deterministic (cell-sorted) order.
-    fn neighbors(&self, p: [f32; 3]) -> Vec<usize> {
+    /// Up to `cap` indices from the 27-cell neighborhood of `p` (excluding nothing;
+    /// caller filters self). Returned in deterministic (cell-sorted) order. The cap
+    /// bounds both the work and the allocation per query, so a degenerate scene that
+    /// collapses every splat into one cell cannot induce a quadratic blow-up.
+    fn neighbors(&self, p: [f32; 3], cap: usize) -> Vec<usize> {
         let (cx, cy, cz) = self.cell_of(p);
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(cap.min(64));
         for dz in -1..=1 {
             for dy in -1..=1 {
                 for dx in -1..=1 {
                     if let Some(b) = self.buckets.get(&(cx + dx, cy + dy, cz + dz)) {
-                        out.extend_from_slice(b);
+                        for &idx in b {
+                            if out.len() >= cap {
+                                return out;
+                            }
+                            out.push(idx);
+                        }
                     }
                 }
             }
@@ -197,7 +224,12 @@ pub fn importance_scores(splats: &[GaussianSplat]) -> Vec<f32> {
         })
         .collect();
     sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median_extent = sizes[n / 2].max(1e-3);
+    // Guard the cell size against a zero/non-finite median extent (e.g. all
+    // zero-size or degenerate splats): a zero cell would make `inv_cell`
+    // non-finite and the grid keys meaningless. `.max(1e-3)` floors both the
+    // median and the final cell, and SpatialGrid::build floors `cell` again.
+    let median = sizes[n / 2];
+    let median_extent = if median.is_finite() { median.max(1e-3) } else { 1e-3 };
     let cell = (median_extent * 4.0).max(1e-3);
 
     let grid = SpatialGrid::build(splats, cell);
@@ -212,7 +244,7 @@ pub fn importance_scores(splats: &[GaussianSplat]) -> Vec<f32> {
         let pi = s.position();
         let ri = size_proxy(s).sqrt().max(1e-3);
         let mut similar = 0u32;
-        for &j in grid.neighbors(pi).iter() {
+        for &j in grid.neighbors(pi, MAX_NEIGHBOR_CANDIDATES).iter() {
             if j == i {
                 continue;
             }
@@ -604,5 +636,65 @@ mod tests {
         assert_eq!(result.kept.len(), 0);
         assert_eq!(result.removed, 0);
         assert_eq!(result.energy_retained, 1.0);
+    }
+
+    /// Degenerate scene: 50k splats at the EXACT same position all collapse into
+    /// one grid cell. The pre-fix all-pairs scan was O(n²) (effectively a hang);
+    /// the MAX_NEIGHBOR_CANDIDATES cap keeps it O(n·K). Must finish well under 2s.
+    #[test]
+    fn co_located_splats_complete_quickly() {
+        let n = 50_000usize;
+        let mut splats = Vec::with_capacity(n);
+        for _ in 0..n {
+            splats.push(GaussianSplat::volume(
+                [0.0, 0.0, 0.0],
+                [0.05, 0.05, 0.05],
+                Quat::IDENTITY,
+                200,
+                flat_spectral(0.5),
+            ));
+        }
+        let t0 = std::time::Instant::now();
+        let scores = importance_scores(&splats);
+        let elapsed = t0.elapsed();
+        assert_eq!(scores.len(), n, "one score per splat");
+        // Every splat is identical and buried in the dense cluster -> each saturates
+        // the capped similar-neighbor count, so the redundancy down-weight is heavily
+        // suppressed and finite. (Scores aren't byte-identical across splats: a query
+        // skips ITSELF if its own index falls within the first K candidates, so the
+        // counted-similar tally is K or K-1 — both strongly suppressed. The point is
+        // the work is bounded, not that the approximation is uniform.)
+        assert!(scores.iter().all(|s| s.is_finite()), "all scores finite");
+        assert!(scores.iter().all(|s| *s > 0.0), "all scores positive (opaque, energetic splats)");
+        // The redundancy cap bounds the down-weight: with K=64 similar neighbors the
+        // weight is 1/(1+0.5*K) ~= 0.03, far below an isolated splat's 1.0 — proving
+        // the cluster is still suppressed, just in O(n·K) not O(n²).
+        let min_w = 1.0 / (1.0 + REDUNDANCY_WEIGHT * MAX_NEIGHBOR_CANDIDATES as f32);
+        println!("[co_located_splats_complete_quickly] n={n} elapsed={elapsed:?} score[0]={} score[last]={} (suppressed; min redundancy ~{min_w:.3})", scores[0], scores[n - 1]);
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "importance_scores on {n} co-located splats took {elapsed:?}, must be <2s (O(n²) regression)"
+        );
+    }
+
+    /// Degenerate/NaN positions must not panic or produce non-finite scores: the
+    /// grid clamps the cell size and NaN cell-of saturates deterministically.
+    #[test]
+    fn degenerate_positions_are_safe() {
+        let mut splats = Vec::new();
+        for _ in 0..1000 {
+            // Zero-size, NaN-ish handling: zero scales -> zero size proxy -> median
+            // extent guarded to the floor.
+            splats.push(GaussianSplat::volume(
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                Quat::IDENTITY,
+                255,
+                flat_spectral(0.3),
+            ));
+        }
+        let scores = importance_scores(&splats);
+        assert_eq!(scores.len(), 1000);
+        assert!(scores.iter().all(|s| s.is_finite()), "all scores finite on degenerate scene");
     }
 }

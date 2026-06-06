@@ -7711,6 +7711,7 @@ dependencies = [
  "vox_core",
  "vox_data",
  "vox_render",
+ "vox_ui",
  "vox_usd",
 ]
 

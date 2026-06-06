@@ -67,6 +67,16 @@ pub enum SubgraphError {
     Node(#[from] NodeError),
     #[error("node {0:?} is not a SubgraphNode and cannot be expanded")]
     NotASubgraph(NodeId),
+    #[error(
+        "selection contains two nodes sharing the display label {label:?}; namespaced \
+         params ('label.param') would be ambiguous — rename one before collapsing"
+    )]
+    DuplicateLabel { label: String },
+    #[error(
+        "selected node {node:?} has a '.' in its label {label:?}; namespaced params \
+         split on the first '.', making it unaddressable — rename before collapsing"
+    )]
+    DottedLabel { node: NodeId, label: String },
 }
 
 /// One promoted port on a subgraph's interface: an outer-facing name + its type,
@@ -134,13 +144,30 @@ pub struct SubgraphNode {
     def: SubgraphDef,
     /// Stable static type name (the def's name, leaked once at construction).
     type_name: &'static str,
+    /// Leaked `&'static` input port names, computed ONCE at construction (one per
+    /// exposed input) and reused by every `descriptor()` call. `descriptor()` is
+    /// invoked repeatedly (every `connect`, every type query, every cook), so
+    /// leaking fresh strings there would grow memory without bound under normal
+    /// live editing — these caches make the leak a one-time, bounded cost.
+    input_names: Vec<&'static str>,
+    /// Leaked `&'static` output port names, computed ONCE at construction.
+    output_names: Vec<&'static str>,
+    /// Leaked `&'static` inner-port names for each exposed input, computed ONCE at
+    /// construction. `cook` injects a [`ConstSource`] per exposed input on EVERY
+    /// cook; without this cache each cook would leak a fresh `&'static str` for the
+    /// source's port name (unbounded growth during live param scrubbing). The names
+    /// are stable across cooks (they come from the def), so we pre-leak them here.
+    inner_port_names: Vec<&'static str>,
 }
 
 impl SubgraphNode {
     /// Wrap a [`SubgraphDef`] as a cookable node.
     pub fn new(def: SubgraphDef) -> Self {
         let type_name = def.static_type_name();
-        SubgraphNode { def, type_name }
+        let input_names = def.inputs.iter().map(|e| leak_str(&e.outer_name)).collect();
+        let output_names = def.outputs.iter().map(|e| leak_str(&e.outer_name)).collect();
+        let inner_port_names = def.inputs.iter().map(|e| leak_str(&e.inner_port)).collect();
+        SubgraphNode { def, type_name, input_names, output_names, inner_port_names }
     }
 
     /// The inner def (read-only). Used by [`expand_subgraph`] to re-inline.
@@ -151,12 +178,14 @@ impl SubgraphNode {
 
 impl OchromaNode for SubgraphNode {
     fn descriptor(&self) -> NodeDescriptor {
+        // Reuse the port names leaked once in `new` — no per-call allocation.
         let inputs = self
             .def
             .inputs
             .iter()
-            .map(|e| PortSpec {
-                name: leak_str(&e.outer_name),
+            .zip(self.input_names.iter())
+            .map(|(e, &name)| PortSpec {
+                name,
                 port_type: e.port_type,
                 optional: false,
             })
@@ -165,8 +194,9 @@ impl OchromaNode for SubgraphNode {
             .def
             .outputs
             .iter()
-            .map(|e| PortSpec {
-                name: leak_str(&e.outer_name),
+            .zip(self.output_names.iter())
+            .map(|(e, &name)| PortSpec {
+                name,
                 port_type: e.port_type,
                 optional: false,
             })
@@ -181,15 +211,25 @@ impl OchromaNode for SubgraphNode {
     fn set_param(&mut self, key: &str, value: ParamValue) -> Result<(), NodeError> {
         // Namespaced "inner_node_label.param" routes the param to an inner node by
         // its display label. Unqualified keys are rejected so a typo never silently
-        // no-ops.
+        // no-ops. If two inner nodes share `label` the routing would be ambiguous
+        // (node iteration order is unspecified), so we error out instead of mutating
+        // an arbitrary one.
         let (label, inner_key) = key
             .split_once('.')
             .ok_or_else(|| NodeError::UnknownParam(key.into()))?;
-        let target = self
+        let mut matches = self
             .def
             .inner
             .node_ids()
-            .find(|&id| self.def.inner.node_name(id) == Some(label));
+            .filter(|&id| self.def.inner.node_name(id) == Some(label));
+        let target = matches.next();
+        let ambiguous = matches.next().is_some();
+        drop(matches);
+        if ambiguous {
+            return Err(NodeError::CookFailed(format!(
+                "ambiguous subgraph param '{key}': inner label '{label}' matches multiple nodes"
+            )));
+        }
         match target {
             Some(id) => self
                 .def
@@ -225,19 +265,17 @@ impl OchromaNode for SubgraphNode {
         // supplied PortData on the inner port the input is bound to, then wire it
         // onto that inner port. This feeds outer inputs into the inner DAG without
         // mutating the bound node's logic.
-        for exposed in &self.def.inputs {
+        for (exposed, &inner_port_name) in self.def.inputs.iter().zip(self.inner_port_names.iter()) {
             let data = inputs.get(&exposed.outer_name).ok_or_else(|| {
                 NodeError::MissingInput(exposed.outer_name.clone())
             })?;
             if data.port_type() != exposed.port_type {
                 return Err(NodeError::TypeMismatch(exposed.outer_name.clone()));
             }
+            // Reuse the inner-port name leaked once in `new` — no per-cook leak.
             let src = inner.add_node(
                 &format!("__in_{}", exposed.outer_name),
-                Box::new(ConstSource {
-                    port: exposed.inner_port.clone(),
-                    value: data.clone(),
-                }),
+                Box::new(ConstSource::new(inner_port_name, data.clone())),
             );
             inner
                 .connect(src, &exposed.inner_port, exposed.inner_node, &exposed.inner_port)
@@ -287,8 +325,19 @@ impl Drop for DepthGuard {
 /// Used to feed a [`SubgraphNode`]'s exposed inputs into the inner graph.
 #[derive(Clone)]
 struct ConstSource {
-    port: String,
+    /// The output port name. Stored as a leaked `&'static str` (NOT freshly leaked
+    /// here): the caller passes in a name that was leaked ONCE in
+    /// [`SubgraphNode::new`], so injecting a `ConstSource` on every cook does not
+    /// leak — it reuses the cached name. `descriptor()` needs `&'static`, and `cook`
+    /// keys its output map by the same `&str`.
+    port: &'static str,
     value: PortData,
+}
+
+impl ConstSource {
+    fn new(port: &'static str, value: PortData) -> Self {
+        ConstSource { port, value }
+    }
 }
 
 impl OchromaNode for ConstSource {
@@ -297,7 +346,7 @@ impl OchromaNode for ConstSource {
             type_name: "__SubgraphInput",
             inputs: vec![],
             outputs: vec![PortSpec {
-                name: leak_str(&self.port),
+                name: self.port,
                 port_type: self.value.port_type(),
                 optional: false,
             }],
@@ -308,7 +357,7 @@ impl OchromaNode for ConstSource {
     }
     fn cook(&self, _: NodeInputs) -> Result<NodeOutputs, NodeError> {
         let mut out = NodeOutputs::new();
-        out.insert(self.port.clone(), self.value.clone());
+        out.insert(self.port.to_string(), self.value.clone());
         Ok(out)
     }
     fn clone_box(&self) -> Box<dyn OchromaNode> {
@@ -316,10 +365,27 @@ impl OchromaNode for ConstSource {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many `&'static str`s [`leak_str`] has leaked ON THIS THREAD. Thread-local
+    /// (not a global atomic) so the regression test's before/after delta is not
+    /// polluted by other tests leaking concurrently on the test harness's other
+    /// threads. The count is bounded by the number of [`SubgraphNode`]/[`ConstSource`]
+    /// constructions, NOT by the number of descriptor/connect/cook calls.
+    pub(crate) static LEAK_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
 /// Leak a `String` into a `&'static str`. Used for descriptor port names, which the
-/// [`NodeDescriptor`] type requires to be `'static`. Bounded by the number of
-/// distinct subgraph ports authored in a session.
+/// [`NodeDescriptor`] type requires to be `'static`.
+///
+/// This is called ONLY from [`SubgraphNode::new`], [`ConstSource::new`] and
+/// [`SubgraphDef::static_type_name`] — i.e. once per constructed node — never from
+/// `descriptor()` / `connect` / `cook`. The total leaked bytes are therefore
+/// bounded by the number of distinct subgraph nodes constructed in a session, and
+/// do NOT grow with live wiring, type queries, or repeated cooks.
 fn leak_str(s: &str) -> &'static str {
+    #[cfg(test)]
+    LEAK_COUNT.with(|c| c.set(c.get() + 1));
     Box::leak(s.to_string().into_boxed_str())
 }
 
@@ -361,6 +427,22 @@ pub fn collapse_to_subgraph(
         }
         if !sel.insert(id) {
             return Err(SubgraphError::DuplicateSelection(id));
+        }
+    }
+
+    // Reject selections whose labels would break namespaced `set_param` routing,
+    // BEFORE mutating anything (the graph must be unchanged on rejection):
+    //   - a '.' in a label is unaddressable (split_once('.') splits on the first
+    //     dot, so "my.node"+"amp" -> label "my", which doesn't exist), and
+    //   - two nodes sharing a label make "label.param" route nondeterministically.
+    let mut seen_labels: HashSet<String> = HashSet::new();
+    for &id in selection {
+        let label = graph.node_name(id).expect("validated above").to_string();
+        if label.contains('.') {
+            return Err(SubgraphError::DottedLabel { node: id, label });
+        }
+        if !seen_labels.insert(label.clone()) {
+            return Err(SubgraphError::DuplicateLabel { label });
         }
     }
 
@@ -953,6 +1035,96 @@ mod tests {
         );
     }
 
+    /// leak_str is called only at construction, NOT on every descriptor()/connect()/
+    /// cook(). Build one SubgraphNode, snapshot the (thread-local) leak count, then
+    /// hammer descriptor() and cook() N times each: the leak count MUST NOT grow.
+    #[test]
+    fn descriptor_and_cook_do_not_leak_per_call() {
+        let load = || LEAK_COUNT.with(|c| c.get());
+
+        // Build a TerrainFn subgraph (one inner node, one exposed output).
+        let (mut g, _t, biome, _w) = build_pipeline();
+        let collapsed = collapse_to_subgraph(&mut g, &[biome], "BiomeFn").unwrap();
+        let def = g.subgraph_def(collapsed.node_id).unwrap().deep_clone();
+        let node = SubgraphNode::new(def.deep_clone());
+
+        // Prepare a real Terrain input for cook().
+        let mut terrain_g = OchromaNodeGraph::new();
+        let t = terrain_g.add_node(
+            "t",
+            Box::new(TerrainNode { resolution: 16, amplitude: 250.0, droplet_count: 0, seed: 3, ..Default::default() }),
+        );
+        let tr = terrain_g.evaluate().unwrap();
+        let terrain_data = tr.get(t, "terrain").unwrap().clone();
+
+        // Snapshot AFTER all construction is done.
+        let before = load();
+
+        // 50 descriptor() calls + 50 cook() calls (each cook injects+connects a
+        // ConstSource per exposed input — was a per-cook leak before the fix).
+        for _ in 0..50 {
+            let _d = node.descriptor();
+            let mut inputs = NodeInputs::new();
+            inputs.insert(def.inputs[0].outer_name.clone(), terrain_data.clone());
+            let _ = node.cook(inputs).unwrap();
+        }
+
+        let after = load();
+        assert_eq!(
+            after, before,
+            "descriptor()/cook() leaked {} new &'static strs over 50 iterations — must be 0",
+            after - before
+        );
+    }
+
+    /// collapse_to_subgraph REJECTS a selection with two same-labelled nodes (a typed
+    /// DuplicateLabel error) and leaves the graph fully unchanged.
+    #[test]
+    fn collapse_rejects_duplicate_labels_graph_unchanged() {
+        let mut g = OchromaNodeGraph::new();
+        let a = g.add_node("dup", Box::new(TerrainNode { resolution: 16, droplet_count: 0, seed: 1, ..Default::default() }));
+        let b = g.add_node("dup", Box::new(TerrainNode { resolution: 16, droplet_count: 0, seed: 2, ..Default::default() }));
+        let nodes_before = g.node_count();
+        let edges_before = g.edge_count();
+
+        let err = collapse_to_subgraph(&mut g, &[a, b], "Bad").unwrap_err();
+        assert!(matches!(err, SubgraphError::DuplicateLabel { ref label } if label == "dup"), "got {err:?}");
+        assert_eq!(g.node_count(), nodes_before, "node count unchanged on rejection");
+        assert_eq!(g.edge_count(), edges_before, "edge count unchanged on rejection");
+    }
+
+    /// collapse_to_subgraph REJECTS a selection containing a dotted label (typed
+    /// DottedLabel error) and leaves the graph unchanged.
+    #[test]
+    fn collapse_rejects_dotted_label_graph_unchanged() {
+        let mut g = OchromaNodeGraph::new();
+        let a = g.add_node("my.node", Box::new(TerrainNode { resolution: 16, droplet_count: 0, seed: 1, ..Default::default() }));
+        let nodes_before = g.node_count();
+
+        let err = collapse_to_subgraph(&mut g, &[a], "Bad").unwrap_err();
+        assert!(matches!(err, SubgraphError::DottedLabel { ref label, .. } if label == "my.node"), "got {err:?}");
+        assert_eq!(g.node_count(), nodes_before, "node count unchanged on rejection");
+    }
+
+    /// set_param errors (does not silently mutate one) when the inner label is
+    /// ambiguous. We construct such a def directly (collapse would reject it).
+    #[test]
+    fn set_param_errors_on_ambiguous_inner_label() {
+        let mut inner = OchromaNodeGraph::new();
+        inner.add_node("amp", Box::new(TerrainNode { resolution: 16, droplet_count: 0, seed: 1, ..Default::default() }));
+        inner.add_node("amp", Box::new(TerrainNode { resolution: 16, droplet_count: 0, seed: 2, ..Default::default() }));
+        let def = SubgraphDef { name: "Ambig".into(), inner, inputs: vec![], outputs: vec![] };
+        let mut node = SubgraphNode::new(def);
+        let err = node.set_param("amp.amplitude", ParamValue::Float(500.0)).unwrap_err();
+        match err {
+            NodeError::CookFailed(msg) => assert!(
+                msg.contains("ambiguous"),
+                "ambiguous label must error, got: {msg}"
+            ),
+            other => panic!("expected CookFailed(ambiguous), got {other:?}"),
+        }
+    }
+
     /// Empty selection and unknown ids are typed errors.
     #[test]
     fn invalid_selections_error_typed() {
@@ -976,3 +1148,4 @@ mod tests {
         out
     }
 }
+

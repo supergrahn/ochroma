@@ -66,6 +66,58 @@ pub fn render_ui(
     out
 }
 
+/// Like [`render_ui`] but the caller supplies the [`RawInput`] for the FINAL
+/// painted frame (e.g. to position the pointer for a hover test). A warm-up frame
+/// with the same input runs first to settle layout / build the font atlas, then a
+/// configurable number of additional frames advance egui animations (each frame
+/// carries `predicted_dt` so `animation_time`-driven transitions progress). The
+/// last frame is the one tessellated and rasterised.
+pub fn render_ui_with_input(
+    ctx: &Context,
+    size_px: [usize; 2],
+    bg: [u8; 4],
+    raw: RawInput,
+    extra_anim_frames: u32,
+    mut run_ui: impl FnMut(&Context),
+) -> Vec<u8> {
+    let [w, h] = size_px;
+    let mut textures: HashMap<TextureId, Texture> = HashMap::new();
+
+    let mk_raw = || RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w as f32, h as f32),
+        )),
+        predicted_dt: 1.0 / 60.0,
+        ..raw.clone()
+    };
+
+    // Warm-up frame (font atlas + layout).
+    let first = ctx.run(mk_raw(), &mut run_ui);
+    apply_texture_deltas(&mut textures, &first.textures_delta);
+    // Advance animations.
+    for _ in 0..extra_anim_frames {
+        let out = ctx.run(mk_raw(), &mut run_ui);
+        apply_texture_deltas(&mut textures, &out.textures_delta);
+    }
+    // Final painted frame.
+    let output = ctx.run(mk_raw(), &mut run_ui);
+    apply_texture_deltas(&mut textures, &output.textures_delta);
+
+    let primitives = ctx.tessellate(output.shapes, 1.0);
+    let mut fb = vec![bg; w * h];
+    for prim in &primitives {
+        if let egui::epaint::Primitive::Mesh(mesh) = &prim.primitive {
+            draw_mesh(&mut fb, w, h, mesh, textures.get(&mesh.texture_id), prim.clip_rect);
+        }
+    }
+    let mut out = Vec::with_capacity(w * h * 4);
+    for p in fb {
+        out.extend_from_slice(&p);
+    }
+    out
+}
+
 fn apply_texture_deltas(
     textures: &mut HashMap<TextureId, Texture>,
     delta: &egui::epaint::textures::TexturesDelta,
