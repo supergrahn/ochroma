@@ -1,5 +1,10 @@
 use glam::{Mat4, Quat, Vec3};
 
+pub mod blend_tree;
+pub use blend_tree::{
+    apply_pose, AnimClip, BlendNode, BlendTree, JointPose, Pose, ANIM_JOINT_COUNT,
+};
+
 /// A single bone in a skeleton hierarchy.
 #[derive(Debug, Clone)]
 pub struct Bone {
