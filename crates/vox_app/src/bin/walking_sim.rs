@@ -1571,10 +1571,10 @@ impl WalkingSim {
         if let Some(selector) = self.selector.as_mut() {
             let mut selection = std::mem::take(&mut self.selection);
             selector.select(&camera, ATOM_BUDGET, &mut selection);
-            all.reserve(selection.indices.len());
-            for (k, &idx) in selection.indices.iter().enumerate() {
+            all.reserve(selection.len());
+            for (k, &idx) in selection.indices().iter().enumerate() {
                 let mut s = self.static_splats[idx as usize];
-                let scale = selection.opacity_scale[k].clamp(0.0, 1.0);
+                let scale = selection.opacity_scale()[k].clamp(0.0, 1.0);
                 if scale < 1.0 {
                     s.set_opacity((s.opacity() as f32 * scale).round() as u8);
                 }

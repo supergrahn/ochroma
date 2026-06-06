@@ -160,16 +160,38 @@ pub struct SelectionStats {
 
 /// Selected splat indices + per-splat crossfade opacity multiplier.
 /// Emitted as parallel arrays to stay GPU-upload friendly.
+///
+/// Fields are crate-internal: `select()` is the only writer and maintains the
+/// `indices.len() == opacity_scale.len()` invariant; cross-crate consumers
+/// read through the accessors and cannot desynchronize the arrays.
 #[derive(Debug, Clone, Default)]
 pub struct Selection {
-    pub indices: Vec<u32>,
+    pub(crate) indices: Vec<u32>,
     /// Same length as `indices`; `1.0` except in LOD transition bands.
-    pub opacity_scale: Vec<f32>,
+    pub(crate) opacity_scale: Vec<f32>,
 }
 
 impl Selection {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Selected indices into the static splat array.
+    pub fn indices(&self) -> &[u32] {
+        &self.indices
+    }
+
+    /// Per-selected-splat opacity multiplier, parallel to [`indices`](Self::indices).
+    pub fn opacity_scale(&self) -> &[f32] {
+        &self.opacity_scale
+    }
+
+    pub fn len(&self) -> usize {
+        self.indices.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.indices.is_empty()
     }
 
     fn clear(&mut self) {
@@ -297,6 +319,30 @@ impl AtomBudgetSelector {
                     });
                 }
             }
+            // Every cluster floors at its 1-splat L3 billboard, so when MORE
+            // CLUSTERS are visible than the budget allows, demotion alone
+            // cannot honor the documented `selected <= budget` bound. Shed
+            // whole clusters lowest-score-first (deterministic: score then
+            // cluster id) until the bound holds. A shed cluster emits nothing
+            // this frame and is excluded from the LOD histogram.
+            if total > budget {
+                let mut by_score: Vec<usize> = (0..work.len()).collect();
+                by_score.sort_by(|&a, &b| {
+                    work[a]
+                        .score
+                        .partial_cmp(&work[b].score)
+                        .unwrap_or(Ordering::Equal)
+                        .then_with(|| work[a].cluster_id.cmp(&work[b].cluster_id))
+                });
+                for idx in by_score {
+                    if total <= budget {
+                        break;
+                    }
+                    let w = &mut work[idx];
+                    total -= w.count;
+                    w.count = 0; // shed: emit loop skips zero-count clusters
+                }
+            }
         } else if total < budget {
             // Slack: promote highest-score clusters toward (never above) their
             // distance LOD to spend the budget.
@@ -341,6 +387,11 @@ impl AtomBudgetSelector {
         out.opacity_scale.reserve(total);
         let mut histogram = [0usize; LOD_LEVEL_COUNT];
         for w in work.iter() {
+            if w.count == 0 {
+                // Shed under extreme budget pressure (or genuinely empty) —
+                // contributes nothing and is not a rendered LOD.
+                continue;
+            }
             histogram[w.lod as usize] += 1;
             let level = &self.lods[w.cluster_id as usize].levels[w.lod as usize];
             // Crossfade only meaningful when rendering at the distance-driven
@@ -676,6 +727,41 @@ mod tests {
             faded < full && faded > 0,
             "faded opacity {faded} must be strictly between 0 and full ({full})"
         );
+    }
+
+    /// The documented `selected <= budget` bound must hold even when MORE
+    /// CLUSTERS are visible than the budget — the L3 1-splat floor cannot be
+    /// allowed to overshoot; whole low-score clusters are shed instead.
+    #[test]
+    fn budget_holds_when_visible_clusters_exceed_it() {
+        let scene = grid_scene();
+        let mut sel = AtomBudgetSelector::build(&scene, 128); // several hundred clusters
+        let cam = camera_at(Vec3::new(0.0, 10.0, -25.0), Vec3::new(0.0, 10.0, 25.0));
+        let mut out = Selection::new();
+
+        let stats = sel.select(&cam, 100, &mut out); // far below cluster count
+        assert!(
+            stats.clusters_visible > 100,
+            "precondition: more visible clusters ({}) than budget",
+            stats.clusters_visible
+        );
+        assert!(
+            out.indices.len() <= 100,
+            "hard bound violated: selected {} > budget 100",
+            out.indices.len()
+        );
+        assert!(out.indices.len() > 0, "shedding must not empty the selection");
+        // Histogram counts only EMITTING clusters — it must sum to <= budget
+        // (every survivor is at L3 = 1 splat under this much pressure).
+        let emitting: usize = stats.lod_histogram.iter().sum();
+        assert!(
+            emitting <= 100,
+            "histogram counts shed clusters: {emitting} emitting > 100"
+        );
+        // Deterministic shedding: same call yields the exact same survivors.
+        let mut again = Selection::new();
+        sel.select(&cam, 100, &mut again);
+        assert_eq!(out.indices, again.indices, "shedding must be deterministic");
     }
 
     #[test]

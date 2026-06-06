@@ -465,13 +465,29 @@ fn accessor_data<'a>(
             "byteStride {stride} smaller than element size {elem_size}"
         )));
     }
-    let start = view.offset() + acc.offset();
+    // Untrusted count/offset/stride: unchecked arithmetic here could wrap in
+    // release, slip past the bounds check, and panic in the readers. Every
+    // step is checked; any overflow is a Malformed file by definition.
+    let overflow =
+        || Splats2GltfError::Malformed("accessor extent overflows usize".into());
+    let start = view
+        .offset()
+        .checked_add(acc.offset())
+        .ok_or_else(overflow)?;
     let n = acc.count();
-    let len = if n == 0 { 0 } else { stride * (n - 1) + elem_size };
-    if start + len > buf.0.len() {
+    let len = if n == 0 {
+        0
+    } else {
+        stride
+            .checked_mul(n - 1)
+            .and_then(|b| b.checked_add(elem_size))
+            .ok_or_else(overflow)?
+    };
+    let end = start.checked_add(len).ok_or_else(overflow)?;
+    if end > buf.0.len() {
         return Err(Splats2GltfError::Malformed("accessor out of range".into()));
     }
-    Ok((&buf.0[start..start + len], stride))
+    Ok((&buf.0[start..end], stride))
 }
 
 fn read_f32_at(data: &[u8], i: usize) -> f32 {
@@ -780,6 +796,18 @@ mod tests {
             }
             other => panic!("expected Malformed for OOB buffer, got {other:?}"),
         }
+
+        // Extent-overflow class: a near-usize::MAX count whose stride*(n-1)
+        // arithmetic would wrap in release and slip past the bounds check.
+        // Must ERROR (at parse or at the checked extent math) — never panic.
+        let r = import_with_accessor_patch(|raw| {
+            raw["accessors"][0]["count"] = serde_json::json!(9_223_372_036_854_775_807u64);
+        });
+        assert!(
+            r.is_err(),
+            "huge accessor count must be rejected, got {} splats",
+            r.map(|s| s.len()).unwrap_or(0)
+        );
     }
 
     /// An interleaved (byteStride) POSITION bufferView must be read at the

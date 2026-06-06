@@ -341,7 +341,10 @@ impl EngineLoop {
                 * std::f32::consts::FRAC_PI_2;
         self.spectral_atmosphere.sun_elevation = self.spectral_atmosphere.sun_zenith;
         self.spectral_gi.set_sky(&self.spectral_atmosphere);
-        self.spectral_gi.propagate(splats, 256);
+        // The emitter bound is the SHARED constant the GPU pass also uses —
+        // a literal here would silently diverge the CPU/GPU GI mirror.
+        self.spectral_gi
+            .propagate(splats, vox_render::spectral_gi::MAX_EMITTERS as usize);
         self.spectral_gi.apply(splats)
     }
 
