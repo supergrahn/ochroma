@@ -28,6 +28,29 @@ This is a STRATEGIC differentiator, not a nice-to-have: Unreal is expert-hostile
   "All systems healthy", details on hover/click.
 - Mockup v2 (committed alongside) is the calibrated reference for this principle.
 
+## UX Principle 2 — AI-native interaction (user direction, 2026-06-06)
+
+> "With AI heavily involved in both generation, creation, assembly, game play, development of code and
+> everything, that probably changes how users use the software as well."
+
+The editor is designed AI-NATIVE, not AI-decorated. Binding consequences:
+- **One command surface**: every editor action (host or plugin) is a registered `Command` — the palette,
+  keyboard, menus, AND the AI assistant all invoke the same registry. The plugin contract's command
+  registration IS the AI tool-call surface; nothing is operable by hand that an agent can't drive, and
+  vice versa.
+- **Intent-first creation**: "Ask Ochroma" (Ctrl+K) generates, not just navigates — scene edits, cook
+  graphs (Crucible), vegetation (FloraPrime), environments (Forge), spectral materials, Rhai scripts.
+  Existing substrate: vox_nn text_to_city/nl_commands/llm_client (library-only today), the deterministic
+  LLM stub, the tip-chip pattern from mockup v2. Manual tools are the refinement layer.
+- **Provenance + reversibility**: AI-generated content enters through the same undo stack, diffable like
+  any edit (the node graphs make this natural: a generated cook graph IS inspectable structure, not a
+  black-box blob).
+- **Agent-operable by construction**: the headless pixel-provable surfaces (smokes, shell_snapshot) are
+  the same affordances that let agents run, verify, and iterate the editor autonomously — the development
+  model that built this engine becomes a product feature.
+Phase 1 (tokens/dock/icons) is unaffected; the Command registry lands with the plugin contract phase and
+"Ask Ochroma" upgrades from palette to generative assistant in the assistant phase (#16).
+
 ## Problem
 
 - The user's verdict on the shipped editor frames, verbatim: **"not what you expect from a 2026 SOTA game engine editor."** They are right.
