@@ -12,6 +12,22 @@
 **Author:** Synthesis (egui-pro spine + Hybrid token-spine/Crucible-adapter grafts)
 **Date:** 2026-06-06
 
+## UX Principle (user feedback on mockup v1, 2026-06-06)
+
+> "Maybe a bit more modernized, more informative, comprehensive and easy to use for a **non-game developer**."
+
+This is a STRATEGIC differentiator, not a nice-to-have: Unreal is expert-hostile; nobody owns
+"approachable pro engine." Binding consequences for every editor surface:
+- **Plain language first**: "World", "Properties", "Material & Light — how it looks under real light",
+  "View: Real light", "Detail budget" — jargon lives in tooltips, not labels.
+- **Labeled primary actions**: the Canva rule — "＋ Add to world" is a big labeled button, not a bare icon.
+- **Guided, not empty**: contextual assistant suggestions in the viewport (tip chips with one-click "Do it"),
+  wired to the in-editor AI assistant candidate (#16). "Ask Ochroma" (Ctrl+K) is the universal entry point —
+  command palette and assistant are ONE surface.
+- **Progressive disclosure**: friendly defaults on top, expert depth one foldout down. Status bar reads
+  "All systems healthy", details on hover/click.
+- Mockup v2 (committed alongside) is the calibrated reference for this principle.
+
 ## Problem
 
 - The user's verdict on the shipped editor frames, verbatim: **"not what you expect from a 2026 SOTA game engine editor."** They are right.
