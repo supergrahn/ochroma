@@ -49,6 +49,7 @@ pub mod clas;
 pub mod atom_budget;
 pub mod mega_geometry;
 pub mod spectral_framebuffer;
+pub mod hybrid_compose;
 pub mod spectral_tonemapper;
 pub mod temporal;
 pub mod dlss;

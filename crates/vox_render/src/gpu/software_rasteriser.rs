@@ -431,7 +431,11 @@ impl SoftwareRasteriser {
 /// view-space axes — turning the glam camera basis into the spectra one. Focal
 /// lengths come straight from the perspective matrix diagonal:
 /// `fx = proj[0][0] * width/2`, `fy = proj[1][1] * height/2`.
-fn build_gaussian_camera(camera: &RenderCamera, width: usize, height: usize) -> GaussianCamera {
+pub(crate) fn build_gaussian_camera(
+    camera: &RenderCamera,
+    width: usize,
+    height: usize,
+) -> GaussianCamera {
     // glam Mat4 is column-major; `to_cols_array_2d()[c][r]` indexes col c row r.
     let v = camera.view.to_cols_array_2d();
     // Element accessor: view[row][col].
