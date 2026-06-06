@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use vox_tools::turnaround::run_turnaround;
 use vox_tools::build::{BuildTarget, BuildConfig, BuildManifest};
 use vox_tools::gltf2splat::{gltf2splat, Gltf2SplatConfig};
+use vox_tools::splats2gltf::{splats2gltf, gltf2splats_import};
 
 #[derive(Parser)]
 #[command(name = "vox_tools", about = "Ochroma engine asset pipeline tools")]
@@ -49,6 +50,24 @@ enum Commands {
         /// Target splat density in splats per square unit (m^-2).
         #[arg(long, default_value_t = 256.0)]
         density: f32,
+    },
+
+    /// Export a .vxm or .ply to a glTF carrying the KHR_gaussian_splatting
+    /// extension (splat attributes on a POINTS primitive).
+    Splats2gltf {
+        /// Input .vxm or .ply file.
+        input: PathBuf,
+        /// Output .gltf file.
+        output: PathBuf,
+    },
+
+    /// Import a glTF carrying the KHR_gaussian_splatting extension (POINTS
+    /// primitive) back into a .vxm splat asset.
+    Gltf2splats {
+        /// Input .gltf / .glb file carrying KHR_gaussian_splatting.
+        input: PathBuf,
+        /// Output .vxm file.
+        output: PathBuf,
     },
 
     /// Build the game for a target platform.
@@ -113,6 +132,36 @@ fn main() {
                 Ok(count) => {
                     println!(
                         "gltf2splat: wrote {} splats to {}",
+                        count,
+                        output.display()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Splats2gltf { input, output } => {
+            match splats2gltf(&input, &output) {
+                Ok(count) => {
+                    println!(
+                        "splats2gltf: wrote {} splats (KHR_gaussian_splatting) to {}",
+                        count,
+                        output.display()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Gltf2splats { input, output } => {
+            match gltf2splats_import(&input, &output) {
+                Ok(count) => {
+                    println!(
+                        "gltf2splats: imported {} splats (KHR_gaussian_splatting) to {}",
                         count,
                         output.display()
                     );

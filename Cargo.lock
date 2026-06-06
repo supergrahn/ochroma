@@ -7601,6 +7601,7 @@ dependencies = [
  "bevy_ecs",
  "bytemuck",
  "dirs-next",
+ "flate2",
  "glam 0.29.3",
  "gltf",
  "half",

@@ -72,6 +72,8 @@ pub enum Gltf2SplatError {
     Vxm(#[from] vox_data::vxm::VxmError),
     #[error("primitive {0} is missing required POSITION attribute")]
     MissingPositions(usize),
+    #[error("KHR_gaussian_splatting import error: {0}")]
+    SplatExtension(String),
 }
 
 /// A small deterministic xorshift RNG so sampling is reproducible (tests rely
@@ -105,10 +107,29 @@ fn rgb_to_spectral(r: f32, g: f32, b: f32) -> [u16; 16] {
 }
 
 /// Convert a GLB/GLTF file on disk into Gaussian splats.
+///
+/// If the file carries the `KHR_gaussian_splatting` extension, the splats are
+/// loaded DIRECTLY from the extension's POINTS primitive (no surface sampling).
+/// Otherwise we fall back to area-weighted mesh surface sampling.
 pub fn convert_file(
     path: &Path,
     config: Gltf2SplatConfig,
 ) -> Result<ConversionResult, Gltf2SplatError> {
+    // Native Gaussian-splat glTF? Its colon-prefixed KHR attribute semantics
+    // make `gltf::import` (which validates) reject the file, so detect and load
+    // splats directly from the raw bytes without validation.
+    let bytes = std::fs::read(path)?;
+    let probe = gltf::Gltf::from_slice_without_validation(&bytes)?;
+    if crate::splats2gltf::document_has_splat_extension(&probe.document) {
+        let splats = crate::splats2gltf::import_splat_gltf_bytes(&bytes)
+            .map_err(|e| Gltf2SplatError::SplatExtension(e.to_string()))?;
+        return Ok(ConversionResult {
+            splats,
+            mesh_primitive_count: 0,
+            triangle_count: 0,
+        });
+    }
+
     let (document, buffers, _images) = gltf::import(path)?;
     convert_document(&document, &buffers, config)
 }

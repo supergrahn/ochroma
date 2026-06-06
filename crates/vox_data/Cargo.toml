@@ -19,6 +19,7 @@ bevy_ecs = { workspace = true }
 bevy_app = { workspace = true }
 gltf = "1"
 dirs-next = "2"
+flate2 = "1"
 
 [dev-dependencies]
 vox_render = { path = "../vox_render" }

@@ -16,6 +16,7 @@ pub mod templates;
 pub mod creator_tools;
 pub mod osm_import;
 pub mod ply_loader;
+pub mod spz;
 pub mod map_file;
 pub mod gi_export;
 pub mod gltf_animation;
