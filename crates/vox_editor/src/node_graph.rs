@@ -389,6 +389,35 @@ impl OchromaNodeGraph {
         self.nodes.get(&id)?.last_output.as_ref()?.get(port)
     }
 
+    /// Inspect the value that flowed through every wire after the last cook/evaluate.
+    ///
+    /// For each edge, looks up the upstream node's cached output for the wire's
+    /// `from_port` and produces a short formatted snapshot of it (see
+    /// [`format_port_data`]). Wires whose upstream output has not been computed
+    /// yet are skipped. The result is the honest "data inspection" feed the UI
+    /// renders as value chips: one entry per wire that actually carried data,
+    /// keyed by `(from, from_port, to, to_port)`.
+    pub fn wire_values(&self) -> Vec<WireValue> {
+        let mut out = Vec::new();
+        for e in &self.edges {
+            let data = self
+                .nodes
+                .get(&e.from)
+                .and_then(|entry| entry.last_output.as_ref())
+                .and_then(|o| o.get(&e.from_port));
+            if let Some(d) = data {
+                out.push(WireValue {
+                    from: e.from,
+                    from_port: e.from_port.clone(),
+                    to: e.to,
+                    to_port: e.to_port.clone(),
+                    value: format_port_data(d),
+                });
+            }
+        }
+        out
+    }
+
     fn assemble_inputs(&self, id: NodeId) -> Result<NodeInputs, GraphError> {
         let mut inputs = NodeInputs::new();
         for e in &self.edges {
@@ -476,6 +505,36 @@ impl OchromaNodeGraph {
             self.nodes.keys().map(|id| id.0 + 1).max().unwrap_or(0),
         );
         Ok(())
+    }
+}
+
+/// The formatted snapshot of the value carried by one wire, produced by
+/// [`OchromaNodeGraph::wire_values`]. `value` is a short human-readable string
+/// (e.g. `"Terrain 1024 cells"`, `"Scalar 3.50"`) suitable for a UI value chip.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WireValue {
+    pub from: NodeId,
+    pub from_port: String,
+    pub to: NodeId,
+    pub to_port: String,
+    pub value: String,
+}
+
+/// Format a [`PortData`] as a compact, human-readable snapshot for wire inspection.
+/// Always contains the data's kind plus a real magnitude/size cue (a count or a
+/// number), so the UI chip conveys what actually flowed through the wire.
+pub fn format_port_data(data: &PortData) -> String {
+    match data {
+        PortData::Splats(s)        => format!("Splats {}", s.len()),
+        PortData::SpectralField(f) => format!("Spectral [{:.2}..{:.2}]", f[0], f[f.len() - 1]),
+        PortData::Terrain(t)       => format!("Terrain {} cells", t.heights.len()),
+        PortData::Mesh(m)          => format!("Mesh {} tris", m.indices.len()),
+        PortData::LodMesh(l)       => format!("LodMesh {} levels", l.len()),
+        PortData::Instances(i)     => format!("Instances {}", i.len()),
+        PortData::Scalar(v)        => format!("Scalar {:.2}", v),
+        PortData::BiomeMap(b)      => format!("BiomeMap {} cells", b.len()),
+        PortData::SplatWeights(w)  => format!("SplatWeights {}", w.len()),
+        PortData::ScalarVec(v)     => format!("ScalarVec {}", v.len()),
     }
 }
 
@@ -839,5 +898,44 @@ mod tests {
         // The downstream result is genuinely a different computed value after the
         // upstream change — not merely a re-run of the same bytes.
         assert_ne!(biome_map_low, biome_map_hi, "downstream biome map must change when upstream param changes");
+    }
+
+    /// Wire data inspection (#9b): after evaluate(), the terrain->biome wire must
+    /// carry a formatted snapshot of the Terrain value that flowed through it.
+    #[test]
+    fn wire_values_populate_terrain_into_biome_edge() {
+        use crate::nodes::terrain_node::TerrainNode;
+        use crate::nodes::biome_node::BiomeNode;
+
+        let mut graph = OchromaNodeGraph::new();
+        let terrain = graph.add_node("terrain", Box::new(TerrainNode {
+            resolution: 32, droplet_count: 0, ..Default::default()
+        }));
+        let biome = graph.add_node("biome", Box::new(BiomeNode::default()));
+        graph.connect(terrain, "terrain", biome, "terrain").unwrap();
+
+        // Before evaluate, nothing has flowed.
+        assert!(graph.wire_values().is_empty(), "no wire values before evaluate");
+
+        graph.evaluate().unwrap();
+        let wires = graph.wire_values();
+        assert_eq!(wires.len(), 1, "exactly one wire carried data");
+        let w = &wires[0];
+        assert_eq!(w.from, terrain);
+        assert_eq!(w.to, biome);
+        assert_eq!(w.from_port, "terrain");
+        assert_eq!(w.to_port, "terrain");
+        // The Terrain value that flowed is 32*32 = 1024 cells; assert the real
+        // formatted content, not just presence.
+        assert_eq!(w.value, "Terrain 1024 cells");
+        assert!(w.value.contains("1024"), "wire value must report the real cell count");
+    }
+
+    #[test]
+    fn format_port_data_is_descriptive() {
+        assert_eq!(format_port_data(&PortData::Scalar(3.5)), "Scalar 3.50");
+        assert_eq!(format_port_data(&PortData::BiomeMap(vec![0u8; 9])), "BiomeMap 9 cells");
+        let hf = HeightfieldSpatial { heights: vec![0.0; 16], resolution: 4, world_size: 1.0 };
+        assert_eq!(format_port_data(&PortData::Terrain(hf)), "Terrain 16 cells");
     }
 }

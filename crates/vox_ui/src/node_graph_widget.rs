@@ -48,6 +48,12 @@ impl VisualPinType {
 }
 
 /// A visual connection between two pins.
+///
+/// Note: `last_value` is intentionally NOT a field here so existing struct-literal
+/// construction sites (e.g. engine_runner) keep compiling unchanged. The formatted
+/// snapshot of the value that flowed through a wire during the last `evaluate()` is
+/// stored side-band in [`NodeGraphWidget::wire_values`] and threaded via
+/// [`NodeGraphWidget::set_wire_value`] / [`NodeGraphWidget::wire_value`].
 #[derive(Debug, Clone)]
 pub struct VisualConnection {
     pub from_node: u32,
@@ -55,6 +61,40 @@ pub struct VisualConnection {
     pub to_node: u32,
     pub to_pin: String,
     pub color: [u8; 3],
+}
+
+/// Identity of a wire (connection) for value-inspection lookups.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WireKey {
+    pub from_node: u32,
+    pub from_pin: String,
+    pub to_node: u32,
+    pub to_pin: String,
+}
+
+impl WireKey {
+    pub fn of(conn: &VisualConnection) -> Self {
+        Self {
+            from_node: conn.from_node,
+            from_pin: conn.from_pin.clone(),
+            to_node: conn.to_node,
+            to_pin: conn.to_pin.clone(),
+        }
+    }
+}
+
+/// A comment box: a translucent tinted rectangle with a title strip that groups
+/// member nodes. Moving the box moves all member nodes by the same delta — the
+/// classic UE "comment" / Unity group-box authoring affordance.
+#[derive(Debug, Clone)]
+pub struct CommentBox {
+    pub id: u32,
+    pub title: String,
+    pub position: [f32; 2],
+    pub size: [f32; 2],
+    /// RGBA tint; the alpha controls how translucent the body fill is.
+    pub tint: [u8; 4],
+    pub members: Vec<u32>,
 }
 
 /// The node graph widget state.
@@ -67,6 +107,11 @@ pub struct NodeGraphWidget {
     pub dragging_connection: Option<DragConnection>,
     pub selected_nodes: Vec<u32>,
     pub grid_size: f32,
+    /// Comment boxes, drawn behind nodes.
+    pub comments: Vec<CommentBox>,
+    /// Formatted snapshot of the value last seen on each wire, keyed by [`WireKey`].
+    /// Populated by the editor during `evaluate()` and rendered as a value chip.
+    pub wire_values: std::collections::HashMap<WireKey, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +145,8 @@ impl NodeGraphWidget {
             dragging_connection: None,
             selected_nodes: Vec::new(),
             grid_size: 20.0,
+            comments: Vec::new(),
+            wire_values: std::collections::HashMap::new(),
         }
     }
 
@@ -153,6 +200,34 @@ impl NodeGraphWidget {
             }
         }
 
+        // Comment boxes — drawn behind nodes/wires: translucent tinted body + a
+        // brighter title strip along the top edge (#9a).
+        for comment in &self.comments {
+            let cx = (comment.position[0] + self.scroll_offset[0]) as i32;
+            let cy = (comment.position[1] + self.scroll_offset[1]) as i32;
+            let cw = comment.size[0] as i32;
+            let ch = comment.size[1] as i32;
+            // Translucent body fill.
+            fill_rect(pixels, width, height, cx, cy, cw, ch, comment.tint);
+            // Title strip: same hue but fully opaque + brightened so it reads as a header.
+            let strip = [
+                comment.tint[0].saturating_add(60),
+                comment.tint[1].saturating_add(60),
+                comment.tint[2].saturating_add(60),
+                255,
+            ];
+            fill_rect(pixels, width, height, cx, cy, cw, 16, strip);
+            // Title text inside the strip.
+            draw_text(pixels, width, height, cx + 3, cy + 5, &comment.title, [240, 240, 245, 255]);
+            // Border so the group is visually bounded.
+            draw_rect_outline(pixels, width, height, cx, cy, cw, ch, [
+                comment.tint[0].saturating_add(90),
+                comment.tint[1].saturating_add(90),
+                comment.tint[2].saturating_add(90),
+                255,
+            ]);
+        }
+
         // Draw connections as straight lines (Bezier curves in future)
         for conn in &self.connections {
             if let (Some(from_pos), Some(to_pos)) = (
@@ -200,6 +275,30 @@ impl NodeGraphWidget {
                 draw_rect_outline(pixels, width, height, x - 1, y - 1, w + 2, h + 2, [255, 180, 50, 255]);
             }
         }
+
+        // Wire value chips (#9b) — drawn on top, near each wire's midpoint, only for
+        // wires that carried a value during the last evaluate().
+        for conn in &self.connections {
+            let Some(value) = self.wire_value(conn) else { continue };
+            if let (Some(from_pos), Some(to_pos)) = (
+                self.pin_position(conn.from_node, &conn.from_pin, true),
+                self.pin_position(conn.to_node, &conn.to_pin, false),
+            ) {
+                let mid_x = ((from_pos[0] + to_pos[0]) * 0.5) as i32;
+                let mid_y = ((from_pos[1] + to_pos[1]) * 0.5) as i32;
+                let text_w = (value.len() as i32) * (CHAR_W + 1);
+                let chip_w = text_w + 6;
+                let chip_h = CHAR_H + 6;
+                let cx = mid_x - chip_w / 2;
+                let cy = mid_y - chip_h / 2;
+                // Chip background (opaque dark) + accent border in the wire's color.
+                fill_rect(pixels, width, height, cx, cy, chip_w, chip_h, [20, 22, 30, 255]);
+                draw_rect_outline(pixels, width, height, cx, cy, chip_w, chip_h, [
+                    conn.color[0], conn.color[1], conn.color[2], 255,
+                ]);
+                draw_text(pixels, width, height, cx + 3, cy + 3, value, [225, 230, 240, 255]);
+            }
+        }
     }
 
     pub fn node_count(&self) -> usize {
@@ -208,6 +307,56 @@ impl NodeGraphWidget {
 
     pub fn connection_count(&self) -> usize {
         self.connections.len()
+    }
+
+    // --- Comment boxes (#9a) ---
+
+    /// Add a comment box. Drawn behind nodes with a translucent tint + title strip.
+    pub fn add_comment(&mut self, comment: CommentBox) {
+        self.comments.push(comment);
+    }
+
+    pub fn comment_count(&self) -> usize {
+        self.comments.len()
+    }
+
+    /// Move a comment box by `delta`, dragging every member node along with it by the
+    /// same delta — the standard "move the group, move its contents" behavior.
+    /// Returns `false` if no comment with `comment_id` exists.
+    pub fn move_comment(&mut self, comment_id: u32, delta: [f32; 2]) -> bool {
+        let members = match self.comments.iter_mut().find(|c| c.id == comment_id) {
+            Some(c) => {
+                c.position[0] += delta[0];
+                c.position[1] += delta[1];
+                c.members.clone()
+            }
+            None => return false,
+        };
+        for node in &mut self.nodes {
+            if members.contains(&node.id) {
+                node.position[0] += delta[0];
+                node.position[1] += delta[1];
+            }
+        }
+        true
+    }
+
+    // --- Wire value inspection (#9b) ---
+
+    /// Record the formatted snapshot of the value that flowed through a wire during
+    /// the last evaluate(). The editor calls this; the widget renders it as a chip.
+    pub fn set_wire_value(&mut self, conn: &VisualConnection, value: impl Into<String>) {
+        self.wire_values.insert(WireKey::of(conn), value.into());
+    }
+
+    /// Fetch the last recorded value snapshot for a wire, if any.
+    pub fn wire_value(&self, conn: &VisualConnection) -> Option<&str> {
+        self.wire_values.get(&WireKey::of(conn)).map(|s| s.as_str())
+    }
+
+    /// Clear all recorded wire value snapshots (e.g. before a fresh evaluate()).
+    pub fn clear_wire_values(&mut self) {
+        self.wire_values.clear();
     }
 
     /// Render the node graph interactively using egui.
@@ -464,6 +613,81 @@ fn draw_rect_outline(pixels: &mut [[u8; 4]], w: u32, h: u32, x: i32, y: i32, rw:
     }
 }
 
+// --- Minimal 3x5 bitmap font for value chips & comment titles ---
+
+const CHAR_W: i32 = 3;
+const CHAR_H: i32 = 5;
+
+/// Return the 5-row (top→bottom) 3-bit-wide glyph for a character. Unknown chars
+/// render as a small dot. Covers 0-9, A-Z, and a handful of punctuation used in
+/// formatted port values (., -, :, space, [, ], ,).
+fn glyph(c: char) -> [u8; 5] {
+    match c.to_ascii_uppercase() {
+        '0' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        '1' => [0b010, 0b110, 0b010, 0b010, 0b111],
+        '2' => [0b111, 0b001, 0b111, 0b100, 0b111],
+        '3' => [0b111, 0b001, 0b111, 0b001, 0b111],
+        '4' => [0b101, 0b101, 0b111, 0b001, 0b001],
+        '5' => [0b111, 0b100, 0b111, 0b001, 0b111],
+        '6' => [0b111, 0b100, 0b111, 0b101, 0b111],
+        '7' => [0b111, 0b001, 0b010, 0b010, 0b010],
+        '8' => [0b111, 0b101, 0b111, 0b101, 0b111],
+        '9' => [0b111, 0b101, 0b111, 0b001, 0b111],
+        'A' => [0b111, 0b101, 0b111, 0b101, 0b101],
+        'B' => [0b110, 0b101, 0b110, 0b101, 0b110],
+        'C' => [0b111, 0b100, 0b100, 0b100, 0b111],
+        'D' => [0b110, 0b101, 0b101, 0b101, 0b110],
+        'E' => [0b111, 0b100, 0b111, 0b100, 0b111],
+        'F' => [0b111, 0b100, 0b111, 0b100, 0b100],
+        'G' => [0b111, 0b100, 0b101, 0b101, 0b111],
+        'H' => [0b101, 0b101, 0b111, 0b101, 0b101],
+        'I' => [0b111, 0b010, 0b010, 0b010, 0b111],
+        'J' => [0b001, 0b001, 0b001, 0b101, 0b111],
+        'K' => [0b101, 0b101, 0b110, 0b101, 0b101],
+        'L' => [0b100, 0b100, 0b100, 0b100, 0b111],
+        'M' => [0b101, 0b111, 0b111, 0b101, 0b101],
+        'N' => [0b101, 0b111, 0b111, 0b111, 0b101],
+        'O' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        'P' => [0b111, 0b101, 0b111, 0b100, 0b100],
+        'Q' => [0b111, 0b101, 0b101, 0b111, 0b011],
+        'R' => [0b111, 0b101, 0b110, 0b101, 0b101],
+        'S' => [0b111, 0b100, 0b111, 0b001, 0b111],
+        'T' => [0b111, 0b010, 0b010, 0b010, 0b010],
+        'U' => [0b101, 0b101, 0b101, 0b101, 0b111],
+        'V' => [0b101, 0b101, 0b101, 0b101, 0b010],
+        'W' => [0b101, 0b101, 0b111, 0b111, 0b101],
+        'X' => [0b101, 0b101, 0b010, 0b101, 0b101],
+        'Y' => [0b101, 0b101, 0b010, 0b010, 0b010],
+        'Z' => [0b111, 0b001, 0b010, 0b100, 0b111],
+        '.' => [0b000, 0b000, 0b000, 0b000, 0b010],
+        ',' => [0b000, 0b000, 0b000, 0b010, 0b100],
+        '-' => [0b000, 0b000, 0b111, 0b000, 0b000],
+        ':' => [0b000, 0b010, 0b000, 0b010, 0b000],
+        '[' => [0b011, 0b010, 0b010, 0b010, 0b011],
+        ']' => [0b110, 0b010, 0b010, 0b010, 0b110],
+        '=' => [0b000, 0b111, 0b000, 0b111, 0b000],
+        ' ' => [0b000, 0b000, 0b000, 0b000, 0b000],
+        _   => [0b000, 0b000, 0b010, 0b000, 0b000],
+    }
+}
+
+/// Draw a left-aligned text string using the 3x5 bitmap font, top-left at (x, y).
+fn draw_text(pixels: &mut [[u8; 4]], w: u32, h: u32, x: i32, y: i32, text: &str, color: [u8; 4]) {
+    let mut cursor = x;
+    for ch in text.chars() {
+        let g = glyph(ch);
+        for (row, bits) in g.iter().enumerate() {
+            for col in 0..CHAR_W {
+                // Bit (CHAR_W-1-col) is the leftmost column.
+                if bits & (1 << (CHAR_W - 1 - col)) != 0 {
+                    set_pixel(pixels, w, h, cursor + col, y + row as i32, color);
+                }
+            }
+        }
+        cursor += CHAR_W + 1;
+    }
+}
+
 fn set_pixel(pixels: &mut [[u8; 4]], w: u32, h: u32, x: i32, y: i32, color: [u8; 4]) {
     if x >= 0 && y >= 0 && x < w as i32 && y < h as i32 {
         pixels[(y * w as i32 + x) as usize] = color;
@@ -597,5 +821,116 @@ mod tests {
         let w = NodeGraphWidget::new();
         assert_eq!(w.node_count(), 0);
         assert_eq!(w.connection_count(), 0);
+        assert_eq!(w.comment_count(), 0);
+    }
+
+    // --- Comment box tests (#9a) ---
+
+    #[test]
+    fn move_comment_shifts_member_nodes_by_same_delta() {
+        let mut w = NodeGraphWidget::new();
+        w.add_node(make_test_node(1, 100.0, 100.0));
+        w.add_node(make_test_node(2, 300.0, 100.0));
+        w.add_node(make_test_node(3, 500.0, 500.0)); // NOT a member
+        w.add_comment(CommentBox {
+            id: 10,
+            title: "Terrain".into(),
+            position: [50.0, 50.0],
+            size: [400.0, 200.0],
+            tint: [60, 90, 140, 90],
+            members: vec![1, 2],
+        });
+
+        let moved = w.move_comment(10, [40.0, -25.0]);
+        assert!(moved, "move_comment should report success for an existing comment");
+
+        // Member nodes shifted by exactly the delta.
+        let n1 = w.nodes.iter().find(|n| n.id == 1).unwrap();
+        let n2 = w.nodes.iter().find(|n| n.id == 2).unwrap();
+        assert_eq!(n1.position, [140.0, 75.0]);
+        assert_eq!(n2.position, [340.0, 75.0]);
+        // Non-member untouched.
+        let n3 = w.nodes.iter().find(|n| n.id == 3).unwrap();
+        assert_eq!(n3.position, [500.0, 500.0]);
+        // Comment itself moved.
+        assert_eq!(w.comments[0].position, [90.0, 25.0]);
+        // Unknown id is a no-op returning false.
+        assert!(!w.move_comment(999, [1.0, 1.0]));
+    }
+
+    #[test]
+    fn comment_box_renders_distinct_body_and_brighter_title_strip() {
+        let mut w = NodeGraphWidget::new();
+        // Big comment box, no nodes, so the comment fully owns its region.
+        w.add_comment(CommentBox {
+            id: 1,
+            title: "X".into(),
+            position: [10.0, 10.0],
+            size: [40.0, 40.0],
+            tint: [60, 90, 140, 200],
+            members: vec![],
+        });
+        let (width, height) = (64u32, 64u32);
+        let mut pixels = vec![[30u8, 30, 35, 255]; (width * height) as usize];
+        // Capture a known background sample far from the comment.
+        w.render_to_pixels(&mut pixels, width, height);
+        let bg = pixels[(60 * width + 60) as usize];
+
+        // A pixel inside the comment body (well below the title strip).
+        let body = pixels[(35 * width + 30) as usize];
+        // A pixel inside the title strip (top rows of the comment).
+        let strip = pixels[(15 * width + 30) as usize];
+
+        assert_ne!(body, bg, "comment body should differ from background");
+        // The title strip is brighter than the body fill (it's strip = tint + 60).
+        let body_lum = body[0] as u32 + body[1] as u32 + body[2] as u32;
+        let strip_lum = strip[0] as u32 + strip[1] as u32 + strip[2] as u32;
+        assert!(strip_lum > body_lum, "title strip ({strip_lum}) should be brighter than body ({body_lum})");
+    }
+
+    // --- Wire value chip tests (#9b) ---
+
+    #[test]
+    fn set_and_get_wire_value_round_trips() {
+        let mut w = NodeGraphWidget::new();
+        let conn = VisualConnection {
+            from_node: 1, from_pin: "Out".into(), to_node: 2, to_pin: "In".into(), color: [200, 200, 80],
+        };
+        assert_eq!(w.wire_value(&conn), None);
+        w.set_wire_value(&conn, "Terrain 1024 cells");
+        assert_eq!(w.wire_value(&conn), Some("Terrain 1024 cells"));
+    }
+
+    #[test]
+    fn wire_value_chip_renders_pixels_near_midpoint() {
+        let mut w = NodeGraphWidget::new();
+        // Two nodes on the same baseline so the wire (and its midpoint) is well
+        // inside the buffer.
+        w.add_node(make_test_node(1, 10.0, 20.0));
+        w.add_node(make_test_node(2, 230.0, 20.0));
+        let conn = VisualConnection {
+            from_node: 1, from_pin: "Out".into(), to_node: 2, to_pin: "In".into(), color: [200, 80, 80],
+        };
+        w.add_connection(conn.clone());
+
+        let (width, height) = (512u32, 96u32);
+        let render = |w: &NodeGraphWidget| {
+            let mut px = vec![[30u8, 30, 35, 255]; (width * height) as usize];
+            w.render_to_pixels(&mut px, width, height);
+            px
+        };
+
+        let without_chip = render(&w);
+        w.set_wire_value(&conn, "42");
+        let with_chip = render(&w);
+
+        // The chip introduces new pixels not present without a value.
+        let diff = without_chip.iter().zip(with_chip.iter()).filter(|(a, b)| a != b).count();
+        assert!(diff > 10, "wire value chip should change a region of pixels, diff={diff}");
+
+        // The chip background color [20,22,30] must appear somewhere (it is not a
+        // color the grid/wire/background uses).
+        let has_chip_bg = with_chip.iter().any(|p| p[0] == 20 && p[1] == 22 && p[2] == 30);
+        assert!(has_chip_bg, "chip background fill should be present in the rendered buffer");
     }
 }
