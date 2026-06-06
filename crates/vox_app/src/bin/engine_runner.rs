@@ -1606,32 +1606,10 @@ impl EngineApp {
             );
         }
 
-        // Editor overlay
-        if self.editor_visible {
-            burn_text(&mut final_pixels, display_w, 10, 40,
-                &format!("EDITOR  {} entities", self.editor.entity_count()),
-                [255, 255, 100], 1);
-
-            for (i, entity) in self.editor.entities.iter().enumerate() {
-                let is_sel = self.editor.selected == Some(entity.id);
-                let prefix = if is_sel { ">" } else { " " };
-                let label = format!("{} #{} {}", prefix, entity.id, entity.name);
-                let color = if is_sel { [0, 255, 0] } else { [200, 200, 200] };
-                burn_text(&mut final_pixels, display_w, 10, 54 + i as u32 * 10, &label, color, 1);
-            }
-
-            if let Some(entity) = self.editor.selected_entity() {
-                let rx = display_w.saturating_sub(240);
-                burn_text(&mut final_pixels, display_w, rx, 40,
-                    &format!("SELECTED: {}", entity.name), [0, 255, 0], 1);
-                burn_text(&mut final_pixels, display_w, rx, 54,
-                    &format!("POS: {:.1},{:.1},{:.1}", entity.position.x, entity.position.y, entity.position.z),
-                    [180, 180, 180], 1);
-                burn_text(&mut final_pixels, display_w, rx, 64,
-                    &format!("ASSET: {}", entity.asset_path),
-                    [180, 180, 180], 1);
-            }
-        }
+        // NOTE: the bitmap-font EDITOR overlay (entity list + SELECTED panel via
+        // `burn_text`) was DELETED as part of the editor face-lift. The editor
+        // face is now `vox_app::shell` (egui_dock + tokens + Phosphor icons).
+        // Only the gizmo overlay above and the engine HUD stats remain here.
 
         // Viewport mode post-process (editor only)
         if self.editor_visible {
@@ -1734,9 +1712,12 @@ impl EngineApp {
             hud_ctx.rasterize_into(&mut final_pixels, display_w, display_h);
         }
 
-        // Editor panels: entity inspector (right) + node-graph (bottom-right).
-        // Drawn in the shared render path so the windowed editor gets them too.
-        self.compose_editor_panels(&mut final_pixels, display_w, display_h);
+        // NOTE: the old `burn_text`/`VelloCtxCpu` software editor panels (entity
+        // inspector + node-graph blit) were DELETED here as part of the editor
+        // face-lift (2026-06-06). The editor SHELL is now `vox_app::shell`
+        // (egui_dock + tokens + Phosphor icons), proven headlessly by the
+        // `shell_snapshot` bin. `engine_runner` keeps only its in-frame engine
+        // HUD/gizmo smoke; it no longer composites a bitmap-font editor face.
 
         final_pixels
     }
@@ -1831,129 +1812,6 @@ impl EngineApp {
         blended
     }
 
-    /// Composite the editor panels into the final frame:
-    ///   - Entity inspector (right side): translucent panel listing up to 8
-    ///     live editor entities (name + position), the selected one highlighted.
-    ///     State comes from `self.editor.entities` / `self.editor.selected`,
-    ///     which mirror the ECS world each frame.
-    ///   - Node-graph panel (bottom-right, toggled by `node_panel_visible`):
-    ///     the real terrain->biome graph drawn via node_graph_widget, plus the
-    ///     evaluated node count + Alpine-cell output value as bitmap text.
-    fn compose_editor_panels(&self, final_pixels: &mut [[u8; 4]], display_w: u32, display_h: u32) {
-        // ---- Entity inspector panel (right) ----
-        let panel_w: u32 = 220;
-        let panel_x = display_w.saturating_sub(panel_w + 8);
-        let panel_y: u32 = 90;
-        let row_h: u32 = 12;
-        let max_rows: usize = 8;
-        let rows = self.editor.entities.len().min(max_rows);
-        // header + rows + padding
-        let panel_h = 22 + (rows as u32) * row_h + 8;
-
-        {
-            let mut ctx = VelloCtxCpu::new(display_w, display_h);
-            // Translucent dark panel backdrop.
-            ctx.fill_rect(
-                [panel_x as f32, panel_y as f32, panel_w as f32, panel_h as f32],
-                [0.05, 0.06, 0.09, 0.78],
-            );
-            // Title accent bar.
-            ctx.fill_rect(
-                [panel_x as f32, panel_y as f32, panel_w as f32, 18.0],
-                [0.16, 0.22, 0.34, 0.95],
-            );
-            // Selection highlight row.
-            if let Some(sel) = self.editor.selected
-                && let Some(idx) = self
-                    .editor
-                    .entities
-                    .iter()
-                    .take(max_rows)
-                    .position(|e| e.id == sel)
-            {
-                let hy = panel_y + 22 + idx as u32 * row_h;
-                ctx.fill_rect(
-                    [panel_x as f32, hy as f32, panel_w as f32, row_h as f32],
-                    [0.20, 0.42, 0.24, 0.85],
-                );
-            }
-            ctx.rasterize_into(final_pixels, display_w, display_h);
-        }
-
-        // Inspector labels (bitmap text — reuse burn_text, the existing mechanism).
-        burn_text(
-            final_pixels,
-            display_w,
-            panel_x + 6,
-            panel_y + 5,
-            &format!("INSPECTOR ({} entities)", self.editor.entity_count()),
-            [210, 220, 240],
-            1,
-        );
-        for (i, e) in self.editor.entities.iter().take(max_rows).enumerate() {
-            let is_sel = self.editor.selected == Some(e.id);
-            let ty = panel_y + 24 + i as u32 * row_h;
-            let prefix = if is_sel { ">" } else { " " };
-            let color = if is_sel { [120, 255, 140] } else { [195, 200, 210] };
-            // Trim the name so position stays visible inside the panel.
-            let name: String = e.name.chars().take(10).collect();
-            burn_text(
-                final_pixels,
-                display_w,
-                panel_x + 6,
-                ty,
-                &format!("{}{} {:.0},{:.0},{:.0}", prefix, name, e.position.x, e.position.y, e.position.z),
-                color,
-                1,
-            );
-        }
-
-        // ---- Node-graph panel (bottom-right) ----
-        if !self.node_panel_visible {
-            return;
-        }
-        let ng_w: u32 = 320;
-        let ng_h: u32 = 150;
-        let ng_x = display_w.saturating_sub(ng_w + 8);
-        let ng_y = display_h.saturating_sub(ng_h + 8);
-
-        // Render the node graph into its own small RGBA buffer, then blit it
-        // into the frame sub-rect (node_graph_widget draws opaque content).
-        let mut ng_pixels = vec![[0u8; 4]; (ng_w * ng_h) as usize];
-        self.node_widget.render_to_pixels(&mut ng_pixels, ng_w, ng_h);
-        for ry in 0..ng_h {
-            for rx in 0..ng_w {
-                let dx = ng_x + rx;
-                let dy = ng_y + ry;
-                if dx < display_w && dy < display_h {
-                    final_pixels[(dy * display_w + dx) as usize] =
-                        ng_pixels[(ry * ng_w + rx) as usize];
-                }
-            }
-        }
-        // Header + evaluated readout text over the graph panel.
-        burn_text(
-            final_pixels,
-            display_w,
-            ng_x + 6,
-            ng_y + 4,
-            "NODE GRAPH  [B]",
-            [180, 210, 255],
-            1,
-        );
-        burn_text(
-            final_pixels,
-            display_w,
-            ng_x + 6,
-            ng_y + ng_h - 12,
-            &format!(
-                "nodes={} alpine_cells={:.0}",
-                self.node_graph_node_count, self.node_graph_output_value
-            ),
-            [200, 230, 200],
-            1,
-        );
-    }
 
     fn place_object_at_cursor(&mut self) {
         let forward = self.camera_forward();
@@ -3542,86 +3400,26 @@ fn run_smoke() {
         patrol_moved
     );
 
-    // --- Editor panel proofs ---
-    // The inspector panel (right side) and node-graph panel (bottom-right) are
-    // composited in render_frame via compose_editor_panels. Re-derive their
-    // rects exactly as the renderer does and assert real content landed there.
-    let px_at = |x: u32, y: u32| -> [u8; 4] { last_pixels[(y * dw + x) as usize] };
-
-    // (a) Inspector panel: translucent dark backdrop on the right. Sample the
-    //     panel BODY near its right edge, below the title bar and away from the
-    //     left-aligned label text — the backdrop [0.05,0.06,0.09,0.78] there is
-    //     dark and blue-dominant.
-    let insp_panel_w = 220u32;
-    let insp_panel_x = dw.saturating_sub(insp_panel_w + 8);
-    let insp_panel_y = 90u32;
-    let insp_sx = insp_panel_x + insp_panel_w - 8;
-    let insp_sy = insp_panel_y + 30;
-    let insp_px = px_at(insp_sx, insp_sy);
-    let insp_lum = (insp_px[0] as f32 + insp_px[1] as f32 + insp_px[2] as f32) / 3.0;
-    // The backdrop is blue-dominant (B >= R) — a signature the panel composited
-    // rather than the scene showing through.
-    let insp_blueish = insp_px[2] as i32 >= insp_px[0] as i32;
-
-    // (b) Entity-label text: count non-background (bright) pixels in the label
-    //     column of the inspector body. The bitmap font burns near-white glyphs;
-    //     a blank/no-text panel region would have ~0 such pixels.
-    let mut insp_text_px = 0u32;
-    let label_x0 = insp_panel_x + 6;
-    let label_x1 = (insp_panel_x + insp_panel_w).min(dw);
-    let label_y0 = insp_panel_y + 22;
-    let label_y1 = (insp_panel_y + 22 + 8 * 12).min(dh);
-    for y in label_y0..label_y1 {
-        for x in label_x0..label_x1 {
-            let p = px_at(x, y);
-            // burn_text glyphs are >=195 in every channel (light gray/green/white).
-            if p[0] >= 150 && p[1] >= 150 && p[2] >= 140 {
-                insp_text_px += 1;
-            }
-        }
-    }
-
-    // (c) Node-graph panel: the widget fills a distinctly-colored sub-rect
-    //     (dark blue-gray grid + colored node title bars + yellow wire). Count
-    //     distinct colors inside the panel rect — a real widget render has many.
-    let ng_w = 320u32;
-    let ng_h = 150u32;
-    let ng_x = dw.saturating_sub(ng_w + 8);
-    let ng_y = dh.saturating_sub(ng_h + 8);
-    let mut ng_colors: std::collections::HashSet<(u8, u8, u8)> = std::collections::HashSet::new();
-    for y in ng_y..(ng_y + ng_h).min(dh) {
-        for x in ng_x..(ng_x + ng_w).min(dw) {
-            let p = px_at(x, y);
-            ng_colors.insert((p[0], p[1], p[2]));
-        }
-    }
-    let ng_distinct = ng_colors.len();
-
-    // (d) Evaluated node-graph output must be finite + sane (>= 0 cells, and not
-    //     exceeding the 32x32 terrain grid the graph evaluated).
+    // --- Editor STATE proofs ---
+    // The bitmap-font software editor panels (inspector / node-graph blit) were
+    // DELETED in the editor face-lift — the editor face is now the egui_dock
+    // `vox_app::shell` (proven separately by the `shell_snapshot` bin + the
+    // `vox_app::shell` tests). What remains real and worth guarding here is the
+    // editor/graph LOGIC the panels used to display: it must still be live,
+    // populated, and produce a sane cook result. These assert computed outcomes,
+    // not pixels of a deleted panel.
+    let editor_entities = app.editor.entity_count();
     let ng_out = app.node_graph_output_value;
     let ng_out_sane = ng_out.is_finite() && (0.0..=(32.0 * 32.0)).contains(&ng_out);
 
     println!(
-        "[ochroma] SMOKE SUMMARY: inspector_px=({},{})={:?} insp_lum={:.1} insp_text_px={} node_graph_nodes={} node_graph_distinct_colors={} node_graph_output={:.0}",
-        insp_sx, insp_sy, insp_px, insp_lum, insp_text_px,
-        app.node_graph_node_count, ng_distinct, ng_out,
+        "[ochroma] SMOKE SUMMARY: editor_entities={} node_graph_nodes={} node_graph_output={:.0}",
+        editor_entities, app.node_graph_node_count, ng_out,
     );
 
     assert!(
-        insp_lum < mean_lum && insp_blueish,
-        "inspector panel backdrop not composited: lum {:.1} vs mean {:.1}, px {:?}",
-        insp_lum, mean_lum, insp_px
-    );
-    assert!(
-        insp_text_px >= 20,
-        "inspector entity-label text missing: only {} bright px in label area (entities={})",
-        insp_text_px, app.editor.entity_count()
-    );
-    assert!(
-        ng_distinct >= 6,
-        "node-graph panel looks empty: only {} distinct colors in its rect — widget render missing",
-        ng_distinct
+        editor_entities >= 1,
+        "editor world is empty ({editor_entities} entities) — editor state not populated from the ECS"
     );
     assert!(
         app.node_graph_node_count >= 2,

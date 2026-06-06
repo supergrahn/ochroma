@@ -1,0 +1,68 @@
+//! Headless snapshot of the Ochroma editor SHELL.
+//!
+//! Renders the full docked shell (menu bar + Phosphor icon toolbar + tabbed
+//! dock panels + status bar) at 1920x1080 to a PNG, with NO GPU and NO window —
+//! the egui frame is tessellated and rasterized on the CPU (see
+//! `shell::cpu_render`). The output is dark, tokenized, icon-led, and contains
+//! ZERO bitmap glyphs (all text is egui's AA vector atlas).
+//!
+//! Usage:
+//!   cargo run -p vox_app --bin shell_snapshot -- --shot /tmp/shell.png
+
+use vox_app::shell::{cpu_render, EditorShell};
+use vox_ui::Tokens;
+
+fn main() {
+    let mut shot_path = "/tmp/shell.png".to_string();
+    let mut theme = "dark".to_string();
+    let args: Vec<String> = std::env::args().collect();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--shot" => {
+                i += 1;
+                if i < args.len() {
+                    shot_path = args[i].clone();
+                }
+            }
+            "--theme" => {
+                i += 1;
+                if i < args.len() {
+                    theme = args[i].clone();
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let tokens = match theme.as_str() {
+        "light" => Tokens::load("assets/ui/ochroma_light.theme.json")
+            .unwrap_or_else(|_| Tokens::default()),
+        _ => Tokens::load("assets/ui/ochroma.theme.json").unwrap_or_default(),
+    };
+
+    let w = 1920usize;
+    let h = 1080usize;
+    let bg = tokens.color("surface.bg.0");
+
+    let mut shell = EditorShell::new(tokens.clone());
+    let ctx = egui::Context::default();
+    vox_ui::design::icons::install(&ctx);
+    vox_ui::egui_theme::apply(&ctx, &tokens);
+
+    let rgba = cpu_render::render_ui(&ctx, [w, h], bg, |ctx| shell.ui(ctx));
+
+    cpu_render::write_png(&shot_path, &rgba, w as u32, h as u32)
+        .unwrap_or_else(|e| panic!("failed to write {shot_path}: {e}"));
+
+    let bytes = std::fs::metadata(&shot_path).map(|m| m.len()).unwrap_or(0);
+    let nonbg = cpu_render::non_background_fraction(&rgba, bg, 6) * 100.0;
+    println!(
+        "[shell_snapshot] wrote {shot_path} ({} bytes), {nonbg:.1}% non-background pixels, theme={theme}, 1920x1080",
+        bytes
+    );
+    println!(
+        "[shell_snapshot] dock layout: left=World | center-top=Viewport center-bottom=Node Graph | right=Properties | bottom=Content+Output Log; menu bar + Phosphor icon toolbar + status bar 'All systems healthy'"
+    );
+}

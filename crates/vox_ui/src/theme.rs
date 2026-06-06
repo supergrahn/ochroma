@@ -1,125 +1,14 @@
-use egui::{Color32, CornerRadius, FontFamily, FontId, Shadow, Stroke, TextStyle, Visuals};
+use crate::tokens::Tokens;
+use egui::Color32;
 
 /// Apply the Ochroma 2026 dark theme to an egui context.
+///
+/// This is now a thin SHIM over the token design system: it applies the default
+/// (dark) [`Tokens`] via [`crate::egui_theme::apply`]. Call sites in
+/// `editor.rs`/`main.rs` build unchanged through the migration. For a custom
+/// theme (e.g. light, or a hot-reloaded JSON), call `egui_theme::apply` directly.
 pub fn apply_ochroma_theme(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
-    let mut visuals = Visuals::dark();
-
-    // === COLORS ===
-    // Background: very dark blue-grey, not pure black
-    let bg_darkest = Color32::from_rgb(18, 18, 24);
-    let bg_dark = Color32::from_rgb(24, 24, 32);
-    let bg_panel = Color32::from_rgb(30, 30, 40);
-    let bg_widget = Color32::from_rgb(38, 38, 50);
-    let bg_hover = Color32::from_rgb(48, 48, 65);
-    let bg_active = Color32::from_rgb(55, 55, 75);
-
-    // Accent: electric blue (Ochroma brand)
-    let accent = Color32::from_rgb(60, 130, 255);
-    let accent_hover = Color32::from_rgb(80, 150, 255);
-    let accent_dim = Color32::from_rgb(40, 90, 180);
-
-    // Text
-    let text_primary = Color32::from_rgb(220, 222, 230);
-    let text_secondary = Color32::from_rgb(140, 145, 160);
-    let _text_disabled = Color32::from_rgb(80, 85, 95);
-
-    // Borders: subtle, sharp
-    let border = Color32::from_rgb(45, 45, 60);
-
-    // Status colors
-    let warning = Color32::from_rgb(255, 180, 50);
-    let error = Color32::from_rgb(255, 70, 70);
-
-    // === VISUALS ===
-    visuals.window_fill = bg_dark;
-    visuals.panel_fill = bg_dark;
-    visuals.faint_bg_color = bg_panel;
-    visuals.extreme_bg_color = bg_darkest;
-
-    // Widgets
-    visuals.widgets.noninteractive.bg_fill = bg_panel;
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, text_secondary);
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(0.5, border);
-    visuals.widgets.noninteractive.corner_radius = CornerRadius::same(3);
-
-    visuals.widgets.inactive.bg_fill = bg_widget;
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, text_primary);
-    visuals.widgets.inactive.bg_stroke = Stroke::new(0.5, border);
-    visuals.widgets.inactive.corner_radius = CornerRadius::same(3);
-
-    visuals.widgets.hovered.bg_fill = bg_hover;
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, text_primary);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, accent);
-    visuals.widgets.hovered.corner_radius = CornerRadius::same(3);
-
-    visuals.widgets.active.bg_fill = accent;
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, accent_hover);
-    visuals.widgets.active.corner_radius = CornerRadius::same(3);
-
-    visuals.widgets.open.bg_fill = bg_active;
-    visuals.widgets.open.fg_stroke = Stroke::new(1.0, text_primary);
-    visuals.widgets.open.bg_stroke = Stroke::new(1.0, accent_dim);
-    visuals.widgets.open.corner_radius = CornerRadius::same(3);
-
-    // Selection
-    visuals.selection.bg_fill = accent_dim;
-    visuals.selection.stroke = Stroke::new(1.0, accent);
-
-    // Window shadow (subtle, not Windows XP drop shadow)
-    visuals.window_shadow = Shadow {
-        offset: [0, 2],
-        blur: 8,
-        spread: 0,
-        color: Color32::from_black_alpha(80),
-    };
-
-    // Window corner radius: sharp but not completely square
-    visuals.window_corner_radius = CornerRadius::same(4);
-
-    // Resize handle
-    visuals.resize_corner_size = 8.0;
-
-    // Scrollbar: thin, subtle
-    visuals.handle_shape = egui::style::HandleShape::Rect { aspect_ratio: 0.5 };
-
-    // Hyperlinks
-    visuals.hyperlink_color = accent;
-
-    // Warn/error
-    visuals.warn_fg_color = warning;
-    visuals.error_fg_color = error;
-
-    // === SPACING ===
-    style.spacing.item_spacing = egui::vec2(6.0, 4.0);
-    style.spacing.window_margin = egui::Margin::same(8);
-    style.spacing.button_padding = egui::vec2(8.0, 4.0);
-    style.spacing.indent = 16.0;
-    style.spacing.interact_size = egui::vec2(32.0, 20.0);
-    style.spacing.slider_width = 120.0;
-    style.spacing.text_edit_width = 200.0;
-    style.spacing.scroll = egui::style::ScrollStyle {
-        bar_width: 6.0,
-        ..Default::default()
-    };
-
-    // === TEXT ===
-    style.text_styles = [
-        (TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
-        (TextStyle::Body, FontId::new(13.0, FontFamily::Proportional)),
-        (TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace)),
-        (TextStyle::Button, FontId::new(13.0, FontFamily::Proportional)),
-        (TextStyle::Heading, FontId::new(16.0, FontFamily::Proportional)),
-    ]
-    .into();
-
-    // === ANIMATION ===
-    style.animation_time = 0.1;
-
-    // Apply
-    style.visuals = visuals;
-    ctx.set_style(style);
+    crate::egui_theme::apply(ctx, &Tokens::default());
 }
 
 /// Branded colors for use throughout the editor UI.

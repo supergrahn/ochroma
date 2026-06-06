@@ -6,6 +6,7 @@ pub mod autosave;
 pub mod debug_console;
 pub mod content_browser;
 pub mod editor;
+pub mod shell;
 pub mod render_to_file;
 pub mod screenshot;
 pub mod shortcut_help;

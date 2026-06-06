@@ -1,0 +1,61 @@
+{
+  "name": "Ochroma Light",
+  "color": {
+    "surface.bg.0": [238, 239, 243, 255],
+    "surface.bg.1": [246, 247, 250, 255],
+    "surface.bg.2": [255, 255, 255, 255],
+    "surface.bg.3": [232, 234, 240, 255],
+    "surface.hover": [222, 226, 236, 255],
+    "surface.active": [206, 214, 232, 255],
+    "surface.border": [205, 208, 218, 255],
+    "border.strong": [180, 184, 196, 255],
+
+    "accent.base": [40, 110, 235, 255],
+    "accent.hover": [60, 130, 255, 255],
+    "accent.dim": [150, 180, 240, 255],
+
+    "text.primary": [28, 30, 38, 255],
+    "text.secondary": [96, 102, 116, 255],
+    "text.disabled": [170, 174, 184, 255],
+
+    "status.success": [30, 160, 90, 255],
+    "status.warning": [210, 140, 20, 255],
+    "status.error": [210, 50, 50, 255],
+
+    "axis.x": [200, 40, 40, 255],
+    "axis.y": [40, 160, 40, 255],
+    "axis.z": [40, 80, 200, 255],
+
+    "port.splats": [40, 150, 220, 255],
+    "port.spectral_field": [140, 90, 220, 255],
+    "port.terrain": [110, 170, 60, 255],
+    "port.mesh": [220, 150, 60, 255],
+    "port.lod_mesh": [220, 110, 60, 255],
+    "port.instances": [220, 190, 70, 255],
+    "port.scalar": [120, 126, 144, 255],
+    "port.biome_map": [60, 170, 130, 255],
+    "port.split_weights": [170, 120, 220, 255],
+    "port.flow": [60, 60, 60, 255],
+
+    "category.generator": [180, 160, 120, 255],
+    "category.spatial": [120, 190, 140, 255],
+    "category.field": [170, 150, 210, 255],
+    "category.sink": [120, 150, 190, 255],
+    "category.math": [150, 160, 180, 255]
+  },
+  "space": [0.0, 4.0, 8.0, 12.0, 16.0, 24.0, 32.0],
+  "radius": [4.0, 6.0, 8.0],
+  "type_ramp": {
+    "caption": 11.0,
+    "body": 13.0,
+    "body_strong": 13.0,
+    "heading": 16.0,
+    "title": 20.0,
+    "mono": 12.0
+  },
+  "motion_ms": {
+    "fast": 0.12,
+    "foldout": 0.15
+  },
+  "rem": 14.0
+}

@@ -1,4 +1,6 @@
 pub mod canvas;
+pub mod design;
+pub mod egui_theme;
 pub mod game_hud;
 pub mod game_menu;
 pub mod game_widgets;
@@ -7,8 +9,12 @@ pub mod node_graph_widget;
 pub mod spectral_hud;
 pub mod text;
 pub mod theme;
+pub mod tokens;
 pub mod ui_tree;
 pub mod vello_ctx;
+pub mod widgets;
+
+pub use tokens::{NodeCategory, PortType, Tokens};
 
 pub use game_hud::GameHud;
 pub use game_menu::GameMenu;
