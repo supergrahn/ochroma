@@ -29,7 +29,7 @@ use vox_physics::rapier::RapierPhysicsWorld;
 use vox_render::lighting::SunModel;
 use vox_render::shadows::ShadowMapper;
 use vox_render::spectral_atmosphere::SpectralAtmosphere;
-use vox_render::spectral_gi::SpectralRadianceCache;
+use vox_render::spectral_gi::{GpuGi, SpectralRadianceCache};
 
 /// Per-phase ordering vocabulary. The loop runs enabled phases in this fixed
 /// order; these are stable names so call sites and tests can describe *when*
@@ -140,6 +140,19 @@ pub struct FrameOutput {
     pub fixed_steps: u32,
 }
 
+/// Which spectral-GI implementation `step_gi` routes through.
+///
+/// The CPU path ([`SpectralRadianceCache`]) is the proven default and is always
+/// present (the `spectral_gi` field on [`EngineLoop`]); it also serves as the
+/// permanent fallback if the GPU path fails mid-run. When `Gpu` is active,
+/// `step_gi` uploads the splats to the headless [`GpuGi`] device and reads back
+/// the GI-lit result — proven bit-equivalent to the CPU reference by
+/// `vox_render`'s `gpu_gi_matches_cpu_step_for_large_strided_scene` test.
+enum GiBackend {
+    Cpu,
+    Gpu(Box<GpuGi>),
+}
+
 /// Unified per-frame simulation driver. Composes [`EngineRuntime`] (untouched)
 /// and owns the CPU-side subsystems engine_runner already wired.
 pub struct EngineLoop {
@@ -157,7 +170,23 @@ pub struct EngineLoop {
     pub entity_rapier_bodies: HashMap<u32, vox_physics::RigidBodyHandle>,
     pub mask: SystemMask,
     pub blackboard: Blackboard,
+    /// Active GI backend. Private: callers select it via [`EngineLoop::use_gpu_gi`]
+    /// or the `OCHROMA_GI` env override, and read which one is live via
+    /// [`EngineLoop::gi_backend`]. `step_gi`'s signature/semantics are unchanged
+    /// regardless of which backend is active.
+    gi_backend: GiBackend,
+    /// Wall-clock duration of the most recent `step_gi` call, in microseconds.
+    /// `None` until the first `step_gi`. Surfaced via [`EngineLoop::last_gi_us`].
+    last_gi_us: Option<u64>,
+    /// Capacity the GPU backend was sized for. The GPU pass clamps to this; the
+    /// CPU fallback handles any overflow splats unchanged.
+    gpu_gi_capacity: u32,
 }
+
+/// Sizing for the headless GPU GI device. Large enough for the smoke scenes and
+/// typical editor views; scenes beyond this clamp on the GPU (the tail keeps its
+/// input spectral, matching the documented `min(count, capacity)` behavior).
+const GPU_GI_CAPACITY: u32 = 200_000;
 
 impl EngineLoop {
     /// Build the loop. Mirrors `EngineApp::new` (engine_runner.rs:425-516):
@@ -183,6 +212,26 @@ impl EngineLoop {
         // Spatial audio manager (engine_runner:512-515).
         let spatial_audio = SpatialAudioManager::new();
 
+        // GI backend selection. Precedence (read once, at construction):
+        //   1. OCHROMA_GI=gpu  → try the GPU path; on adapter/device failure log
+        //      one eprintln and fall back to Cpu (never panics).
+        //   2. OCHROMA_GI=cpu  → force the proven CPU path.
+        //   3. unset / other   → default Cpu (the proven path).
+        // A later `use_gpu_gi()` call can still upgrade an env-default-Cpu loop.
+        let gi_backend = match std::env::var("OCHROMA_GI").ok().as_deref() {
+            Some("gpu") | Some("GPU") => match GpuGi::new(GPU_GI_CAPACITY) {
+                Ok(g) => GiBackend::Gpu(Box::new(g)),
+                Err(e) => {
+                    eprintln!(
+                        "[ochroma_engine] OCHROMA_GI=gpu requested but GPU GI init failed \
+                         ({e}); falling back to CPU spectral GI."
+                    );
+                    GiBackend::Cpu
+                }
+            },
+            _ => GiBackend::Cpu,
+        };
+
         Self {
             runtime,
             physics,
@@ -199,7 +248,45 @@ impl EngineLoop {
             entity_rapier_bodies: HashMap::new(),
             mask,
             blackboard: Blackboard::new(),
+            gi_backend,
+            last_gi_us: None,
+            gpu_gi_capacity: GPU_GI_CAPACITY,
         }
+    }
+
+    /// Switch `step_gi` to the headless GPU spectral-GI backend.
+    ///
+    /// Returns `Err` (and leaves the loop on whatever backend it had) if no wgpu
+    /// adapter is available or device creation fails — never panics. If the env
+    /// override `OCHROMA_GI=gpu` already activated the GPU path at construction,
+    /// this is idempotent (a fresh device is created and swapped in).
+    ///
+    /// Precedence note: an explicit `use_gpu_gi()` call wins over the
+    /// construction-time env default, because it runs later. `OCHROMA_GI=cpu`
+    /// only sets the *default*; it does not forbid a later explicit upgrade.
+    pub fn use_gpu_gi(&mut self) -> Result<(), String> {
+        match GpuGi::new(self.gpu_gi_capacity) {
+            Ok(g) => {
+                self.gi_backend = GiBackend::Gpu(Box::new(g));
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Name of the currently active GI backend: `"cpu"` or `"gpu"`. Shells can
+    /// surface this in a HUD without owning the selection logic.
+    pub fn gi_backend(&self) -> &'static str {
+        match self.gi_backend {
+            GiBackend::Cpu => "cpu",
+            GiBackend::Gpu(_) => "gpu",
+        }
+    }
+
+    /// Wall-clock time of the most recent [`step_gi`](Self::step_gi) call, in
+    /// microseconds. `None` until `step_gi` has run at least once.
+    pub fn last_gi_us(&self) -> Option<u64> {
+        self.last_gi_us
     }
 
     /// Builder-style mask override.
@@ -332,13 +419,36 @@ impl EngineLoop {
     /// propagate + apply live spectral GI to `splats`. Returns the GI-modulated
     /// splat list. Relocated from engine_runner.rs:980-993.
     pub fn step_gi(&mut self, splats: &[GaussianSplat], hour: f32) -> Vec<GaussianSplat> {
-        let norm = (hour % 24.0) / 24.0;
-        // Map hour -> sun elevation: peaks at noon (0.5), zero at midnight.
+        let t0 = std::time::Instant::now();
+        let out = match &self.gi_backend {
+            GiBackend::Cpu => self.step_gi_cpu(splats, hour),
+            GiBackend::Gpu(gpu) => match gpu.step(splats, hour) {
+                Ok(lit) => lit,
+                Err(e) => {
+                    // One log line, then permanently fall back to CPU so the rest
+                    // of the run never spams per-frame errors. Callers still get
+                    // valid splats THIS frame: we run the CPU path below.
+                    eprintln!(
+                        "[ochroma_engine] GPU spectral GI failed ({e}); permanently \
+                         falling back to CPU spectral GI for the rest of this run."
+                    );
+                    self.gi_backend = GiBackend::Cpu;
+                    self.step_gi_cpu(splats, hour)
+                }
+            },
+        };
+        self.last_gi_us = Some(t0.elapsed().as_micros() as u64);
+        out
+    }
+
+    /// CPU spectral-GI path — the proven reference and permanent fallback.
+    /// Update the spectral atmosphere from `hour`, set the GI sky, then run
+    /// propagate and apply. The hour → sun-zenith mapping is the SHARED
+    /// [`vox_render::spectral_gi::sun_zenith_for_hour`] so it can never drift from
+    /// the GPU path's `sky_ambient_for_hour`.
+    fn step_gi_cpu(&mut self, splats: &[GaussianSplat], hour: f32) -> Vec<GaussianSplat> {
         self.spectral_atmosphere.sun_zenith =
-            (std::f32::consts::PI * norm - std::f32::consts::FRAC_PI_2)
-                .sin()
-                .max(0.0)
-                * std::f32::consts::FRAC_PI_2;
+            vox_render::spectral_gi::sun_zenith_for_hour(hour);
         self.spectral_atmosphere.sun_elevation = self.spectral_atmosphere.sun_zenith;
         self.spectral_gi.set_sky(&self.spectral_atmosphere);
         // The emitter bound is the SHARED constant the GPU pass also uses —

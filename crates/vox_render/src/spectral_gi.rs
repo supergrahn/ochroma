@@ -21,6 +21,21 @@ pub struct GiProbe {
     pub bands: [f32; 16],
 }
 
+/// Shared hour → sun-zenith mapping. The SINGLE source of truth used by BOTH
+/// the CPU `EngineLoop::step_gi` (to set `SpectralAtmosphere::sun_zenith`) and
+/// the GPU `GpuGi::sky_ambient_for_hour`. Keeping the formula here means the two
+/// GI backends can never silently drift apart in their sky-ambient term.
+///
+/// Maps `hour` (0..24) to a sun elevation that peaks at noon (`FRAC_PI_2 * 1.0`)
+/// and is zero from dusk through dawn.
+pub fn sun_zenith_for_hour(hour: f32) -> f32 {
+    let norm = (hour % 24.0) / 24.0;
+    (std::f32::consts::PI * norm - std::f32::consts::FRAC_PI_2)
+        .sin()
+        .max(0.0)
+        * std::f32::consts::FRAC_PI_2
+}
+
 pub fn gather_radiance(
     receiver_pos: [f32; 3],
     emitters: &[SplatGiEntry],
@@ -480,6 +495,23 @@ impl GpuGi {
         pollster::block_on(Self::new_async(max_splats, required_limits))
     }
 
+    /// Construct with deliberately impossible device limits so device creation
+    /// fails (or no adapter is found). Used by downstream fallback tests that
+    /// cannot depend on `wgpu` directly to assert the no-panic `Err` contract.
+    /// Always returns `Err` on real hardware.
+    pub fn new_failing_for_test() -> Result<Self, GpuGiError> {
+        Self::new_with_limits(
+            64,
+            wgpu::Limits {
+                max_storage_buffers_per_shader_stage: u32::MAX,
+                max_buffer_size: u64::MAX,
+                max_storage_buffer_binding_size: u32::MAX,
+                max_compute_workgroups_per_dimension: u32::MAX,
+                ..wgpu::Limits::default()
+            },
+        )
+    }
+
     async fn new_async(
         max_splats: u32,
         required_limits: wgpu::Limits,
@@ -540,11 +572,7 @@ impl GpuGi {
     /// atmosphere's `solar_irradiance()` (which is what `set_sky` caches as the
     /// `sky_ambient` term the CPU `propagate` seeds `incoming` with).
     pub fn sky_ambient_for_hour(hour: f32) -> [f32; 16] {
-        let norm = (hour % 24.0) / 24.0;
-        let sun_zenith = (std::f32::consts::PI * norm - std::f32::consts::FRAC_PI_2)
-            .sin()
-            .max(0.0)
-            * std::f32::consts::FRAC_PI_2;
+        let sun_zenith = sun_zenith_for_hour(hour);
         let mut atmo = SpectralAtmosphere::earth();
         atmo.sun_zenith = sun_zenith;
         atmo.sun_elevation = sun_zenith;
