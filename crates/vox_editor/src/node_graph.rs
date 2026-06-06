@@ -216,16 +216,24 @@ pub struct OchromaNodeGraph {
 /// `ceil(window / budget)` cooks, and the LAST requested value is always the one
 /// that finally cooks (trailing edge guaranteed).
 struct ThrottleState {
-    budget:       Duration,
-    /// The root node of the dirty subgraph awaiting a cook, if any.
-    pending_root: Option<NodeId>,
-    /// When the subgraph rooted at `pending_root` last actually cooked.
-    last_cook_at: Option<Instant>,
+    budget:        Duration,
+    /// Roots of dirty subgraphs awaiting a cook, in request order with the
+    /// most recent request last (a re-request moves its root to the back).
+    /// Multiple edited nodes are ALL remembered — a second node's edit must
+    /// never abandon the first node's pending recook.
+    pending_roots: Vec<NodeId>,
+    /// When each root's subgraph last actually cooked. The throttle is
+    /// PER SUBGRAPH: a recent cook of A does not gap an unrelated B.
+    last_cook_at:  HashMap<NodeId, Instant>,
 }
 
 impl Default for ThrottleState {
     fn default() -> Self {
-        Self { budget: Duration::from_millis(100), pending_root: None, last_cook_at: None }
+        Self {
+            budget: Duration::from_millis(100),
+            pending_roots: Vec::new(),
+            last_cook_at: HashMap::new(),
+        }
     }
 }
 
@@ -403,9 +411,12 @@ impl OchromaNodeGraph {
     /// the LAST value set is always the one that finally cooks.
     pub fn request_recook(&mut self, id: NodeId, key: &str, value: ParamValue) -> Result<(), GraphError> {
         self.set_param(id, key, value)?;
-        // Trailing edge: always overwrite the pending root with the most recent
-        // change so the final cook reflects the latest edit.
-        self.throttle.pending_root = Some(id);
+        // Remember EVERY edited root (a second node's edit must not abandon
+        // the first's pending recook); a re-request moves its root to the back
+        // so the most recent edit is the reported root. Trailing edge per
+        // root: the param value cooked is always the last one set.
+        self.throttle.pending_roots.retain(|&r| r != id);
+        self.throttle.pending_roots.push(id);
         Ok(())
     }
 
@@ -417,22 +428,40 @@ impl OchromaNodeGraph {
     /// Returns `Ok(None)` when nothing was due (no pending request, or still
     /// inside the throttle window).
     pub fn live_cook(&mut self, now: Instant) -> Result<Option<LiveCook>, GraphError> {
-        let Some(root) = self.throttle.pending_root else { return Ok(None) };
-
-        // Throttle: only cook once the budget has elapsed since the last cook.
-        if let Some(last) = self.throttle.last_cook_at {
-            if now.duration_since(last) < self.throttle.budget {
-                return Ok(None);
-            }
+        if self.throttle.pending_roots.is_empty() {
+            return Ok(None);
         }
 
-        // The subgraph we will actually execute (dirty downstream closure of root).
-        let subgraph = self.dirty_subgraph(root);
+        // Per-subgraph throttle: a root is due once ITS budget has elapsed
+        // (or it never cooked). A recent cook of subgraph A does not gap an
+        // unrelated subgraph B. Not-yet-due roots STAY pending (trailing edge).
+        let budget = self.throttle.budget;
+        let due: Vec<NodeId> = self
+            .throttle
+            .pending_roots
+            .iter()
+            .copied()
+            .filter(|r| {
+                self.throttle
+                    .last_cook_at
+                    .get(r)
+                    .is_none_or(|&t| now.duration_since(t) >= budget)
+            })
+            .collect();
+        if due.is_empty() {
+            return Ok(None);
+        }
+
+        // Union of the due roots' dirty downstream closures — EVERY due edit's
+        // subgraph cooks this pass; none is abandoned.
+        let mut dirty_set: HashSet<NodeId> = HashSet::new();
+        for r in &due {
+            dirty_set.extend(self.dirty_subgraph(*r));
+        }
 
         // Cook in topological order, but ONLY the dirty nodes. Clean upstream
         // nodes are skipped, so their cook_count stays flat — their cached
         // last_output is threaded into the dirty nodes via assemble_inputs.
-        let dirty_set: HashSet<NodeId> = subgraph.iter().copied().collect();
         let order = self.topo_sort()?;
         let mut cooked = Vec::new();
         for id in order {
@@ -448,9 +477,14 @@ impl OchromaNodeGraph {
             cooked.push(id);
         }
 
+        // The reported root is the most recently requested due root; pending
+        // roots that were not yet due remain queued for a later pass.
+        let root = *due.last().expect("due is non-empty");
         let root_name = self.nodes.get(&root).map(|e| e.name.clone()).unwrap_or_default();
-        self.throttle.pending_root = None;
-        self.throttle.last_cook_at = Some(now);
+        self.throttle.pending_roots.retain(|r| !due.contains(r));
+        for r in &due {
+            self.throttle.last_cook_at.insert(*r, now);
+        }
 
         Ok(Some(LiveCook { root, root_name, cooked }))
     }
@@ -458,7 +492,7 @@ impl OchromaNodeGraph {
     /// Is a trailing-edge recook currently pending (a param changed since the
     /// last live_cook flushed it)?
     pub fn has_pending_recook(&self) -> bool {
-        self.throttle.pending_root.is_some()
+        !self.throttle.pending_roots.is_empty()
     }
 
     pub fn cook(&mut self) -> Result<(), GraphError> {
@@ -643,7 +677,11 @@ impl OchromaNodeGraph {
                 cook_count:  0,
             });
         }
-        self.throttle = ThrottleState { budget: self.throttle.budget, pending_root: None, last_cook_at: None };
+        self.throttle = ThrottleState {
+            budget: self.throttle.budget,
+            pending_roots: Vec::new(),
+            last_cook_at: HashMap::new(),
+        };
         for e in &snap.edges {
             self.edges.push(Edge {
                 from:      NodeId(e.from),
@@ -1232,6 +1270,99 @@ mod tests {
         g.add_node("terrain", Box::new(TerrainNode { resolution: 32, droplet_count: 0, ..Default::default() }));
         g.cook().unwrap();
         assert!(g.live_cook(Instant::now()).unwrap().is_none(), "no pending request => no cook");
+    }
+
+    /// Editing TWO different nodes before a flush must cook BOTH dirty
+    /// subgraphs — the second request must not abandon the first (the wave-2
+    /// review's pending_root-overwrite defect).
+    #[test]
+    fn live_cook_unions_multiple_pending_edits() {
+        use crate::nodes::terrain_node::TerrainNode;
+        use crate::nodes::biome_node::BiomeNode;
+
+        let mut g = OchromaNodeGraph::new();
+        let terrain_a = g.add_node("terrain_a", Box::new(TerrainNode {
+            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 7, ..Default::default()
+        }));
+        let biome_a = g.add_node("biome_a", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        g.connect(terrain_a, "terrain", biome_a, "terrain").unwrap();
+        let terrain_b = g.add_node("terrain_b", Box::new(TerrainNode {
+            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 99, ..Default::default()
+        }));
+        let biome_b = g.add_node("biome_b", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        g.connect(terrain_b, "terrain", biome_b, "terrain").unwrap();
+        g.cook().unwrap();
+
+        let cc_a = g.cook_count(biome_a).unwrap();
+        let cc_b = g.cook_count(biome_b).unwrap();
+
+        // Two edits on DIFFERENT roots before any flush.
+        let t0 = Instant::now();
+        g.request_recook(terrain_a, "amplitude", ParamValue::Float(800.0)).unwrap();
+        g.request_recook(terrain_b, "amplitude", ParamValue::Float(900.0)).unwrap();
+
+        let report = g
+            .live_cook(t0 + Duration::from_millis(200))
+            .unwrap()
+            .expect("a recook was due");
+        // BOTH subgraphs cooked in the one pass: 4 nodes, both biomes +1.
+        assert_eq!(report.dirty_subgraph_size(), 4, "both edited subgraphs must cook");
+        assert_eq!(g.cook_count(biome_a).unwrap(), cc_a + 1, "branch A must not be abandoned");
+        assert_eq!(g.cook_count(biome_b).unwrap(), cc_b + 1, "branch B must cook too");
+        // Nothing left dangling: no pending roots, no dirty nodes.
+        assert!(!g.has_pending_recook(), "no orphaned pending roots");
+        for id in [terrain_a, biome_a, terrain_b, biome_b] {
+            let sub = g.dirty_subgraph(id);
+            assert!(sub.is_empty(), "no node may stay dirty after the union cook: {id:?} -> {sub:?}");
+        }
+    }
+
+    /// The throttle is PER SUBGRAPH: a just-cooked subgraph A must not gap an
+    /// unrelated subgraph B's first cook (the wave-2 review's global-gap
+    /// defect), while A itself stays throttled within its own budget window.
+    #[test]
+    fn throttle_is_per_subgraph_not_global() {
+        use crate::nodes::terrain_node::TerrainNode;
+
+        let mut g = OchromaNodeGraph::new();
+        let a = g.add_node("a", Box::new(TerrainNode {
+            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 1, ..Default::default()
+        }));
+        let b = g.add_node("b", Box::new(TerrainNode {
+            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 2, ..Default::default()
+        }));
+        g.cook().unwrap();
+        g.set_recook_budget(Duration::from_millis(100));
+
+        // Cook A at t=200ms.
+        let t0 = Instant::now();
+        g.request_recook(a, "amplitude", ParamValue::Float(500.0)).unwrap();
+        let r1 = g.live_cook(t0 + Duration::from_millis(200)).unwrap().expect("A due");
+        assert_eq!(r1.root, a);
+
+        // 10ms later (well inside A's window) edit B: B must cook NOW — A's
+        // recent cook is not B's problem.
+        g.request_recook(b, "amplitude", ParamValue::Float(700.0)).unwrap();
+        let cc_b = g.cook_count(b).unwrap();
+        let r2 = g
+            .live_cook(t0 + Duration::from_millis(210))
+            .unwrap()
+            .expect("B must not be gapped by A's cook");
+        assert_eq!(r2.root, b);
+        assert_eq!(g.cook_count(b).unwrap(), cc_b + 1, "B cooked immediately");
+
+        // But A itself IS still throttled: another A edit inside A's window
+        // stays pending (trailing edge), then fires once the window passes.
+        g.request_recook(a, "amplitude", ParamValue::Float(650.0)).unwrap();
+        assert!(
+            g.live_cook(t0 + Duration::from_millis(250)).unwrap().is_none(),
+            "A inside its own budget window must wait"
+        );
+        let r3 = g
+            .live_cook(t0 + Duration::from_millis(320))
+            .unwrap()
+            .expect("A due after its window");
+        assert_eq!(r3.root, a);
     }
 
     #[test]

@@ -1802,9 +1802,11 @@ impl EngineApp {
         for ry in 0..region_h {
             for rx in 0..region_w {
                 let src = rgba[(ry * region_w + rx) as usize];
-                // Vello renders on a black base; treat near-black as transparent
-                // background so the scene shows through outside the bars/panel.
-                if src[0] <= 8 && src[1] <= 8 && src[2] <= 8 {
+                // The Vello readback renders on a TRANSPARENT base, so the
+                // alpha channel is authoritative: zero-alpha = background.
+                // (The old near-black color-key dropped low-coverage AA edge
+                // pixels and any genuinely dark HUD content.)
+                if src[3] == 0 {
                     continue;
                 }
                 let dx = ox + rx as i64;

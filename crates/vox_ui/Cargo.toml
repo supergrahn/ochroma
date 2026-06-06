@@ -15,9 +15,11 @@ taffy    = { version = "0.7", optional = true }
 pollster = { version = "0.4", optional = true }
 
 [features]
-# ON by default: the Vello GPU vector-UI path is the engine's primary game-UI
-# renderer (rank-1 adoption candidate). The headless render + pixel-readback
-# helpers live behind this feature; the CPU `VelloCtxCpu` fallback is always
-# compiled so software-only builds still work.
-default  = ["game-ui"]
+# OPT-IN: the Vello GPU vector-UI path (rank-1 adoption candidate). vox_app
+# enables it explicitly; non-UI dependents (vox_render, ochroma_engine,
+# vox_nodes) must not drag vello + parley + taffy + a second wgpu into every
+# build. The CPU `VelloCtxCpu` fallback is always compiled. NOTE: an isolated
+# `cargo test -p vox_ui` skips the GPU tests — run with `--features game-ui`
+# (workspace-wide test runs get it via vox_app's dependency edge).
+default  = []
 game-ui  = ["dep:vello", "dep:parley", "dep:taffy", "dep:pollster"]

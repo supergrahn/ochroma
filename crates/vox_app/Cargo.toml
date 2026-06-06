@@ -22,7 +22,7 @@ vox_audio = { path = "../vox_audio" }
 vox_physics = { path = "../vox_physics" }
 vox_terrain = { path = "../vox_terrain" }
 vox_editor = { path = "../vox_editor" }
-vox_ui = { path = "../vox_ui" }
+vox_ui = { path = "../vox_ui", features = ["game-ui"] }  # the GPU vector-UI path is enabled HERE, not by default
 ochroma_engine = { path = "../ochroma_engine" }
 bevy_ecs = { workspace = true }
 bevy_app = { workspace = true }

@@ -309,7 +309,11 @@ impl VelloCtx {
                 &self.scene,
                 &view,
                 &vello::RenderParams {
-                    base_color:          vello::peniko::color::palette::css::BLACK,
+                    // TRANSPARENT base: unrendered pixels read back with
+                    // alpha 0, so compositors key on the real alpha channel
+                    // instead of heuristically color-keying near-black (which
+                    // dropped AA edge coverage and dark content).
+                    base_color:          vello::peniko::color::palette::css::TRANSPARENT,
                     width:               w,
                     height:              h,
                     antialiasing_method: vello::AaConfig::Area,
