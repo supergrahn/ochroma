@@ -64,6 +64,18 @@ codegen-units = 1
 strip = "symbols"
 panic = "abort"
 
+# Dev-profile debuginfo diet: full debuginfo made target/debug regrow ~60G in
+# hours of agent churn (cargo never garbage-collects old artifacts). Workspace
+# code keeps line tables (file:line backtraces still work); dependencies get
+# none (we don't step through deps). Net effect: artifacts shrink ~2-3x and
+# accumulation slows accordingly. Flip `debug = 2` locally if you need to
+# single-step engine code in a debugger.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # ---------------------------------------------------------------------------
 # Track S — spectra-native (Vulkan + Slang) bring-up.
 #
