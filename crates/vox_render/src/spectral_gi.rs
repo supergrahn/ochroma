@@ -236,6 +236,8 @@ pub struct GpuGiPass {
     pub splat_buffer: wgpu::Buffer,
     pub radiance_buffer: wgpu::Buffer,
     pub params_buffer: wgpu::Buffer,
+    /// CPU-mappable staging buffer for reading the radiance back.
+    pub readback_buffer: wgpu::Buffer,
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
     pub max_splats: u32,
@@ -262,6 +264,12 @@ impl GpuGiPass {
             label: Some("gi_params_buf"),
             size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gi_readback_buf"),
+            size: radiance_bytes.max(64),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -338,12 +346,16 @@ impl GpuGiPass {
             splat_buffer,
             radiance_buffer,
             params_buffer,
+            readback_buffer,
             pipeline,
             bind_group,
             max_splats,
         }
     }
 
+    /// Encode the GI compute pass into `encoder` plus a copy of the radiance
+    /// storage buffer into the CPU-mappable readback buffer. Caller submits the
+    /// encoder and maps `readback_buffer` to retrieve results.
     pub fn dispatch(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -361,13 +373,216 @@ impl GpuGiPass {
             _pad: 0.0,
         };
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("gi_pass"),
-            timestamp_writes: None,
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gi_pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
+        }
+        let copy_bytes = count as u64 * 16 * 4;
+        if copy_bytes > 0 {
+            encoder.copy_buffer_to_buffer(
+                &self.radiance_buffer,
+                0,
+                &self.readback_buffer,
+                0,
+                copy_bytes,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GpuGi — high-level, headless, drop-in GPU global illumination
+// ---------------------------------------------------------------------------
+
+/// Error returned when the GPU GI engine cannot be created or run. The caller
+/// can use this to fall back to the CPU path — `GpuGi` never panics on a missing
+/// or inadequate GPU.
+#[derive(Debug, Clone)]
+pub enum GpuGiError {
+    /// No wgpu adapter (no GPU / no driver) could be found.
+    NoAdapter,
+    /// An adapter was found but device creation failed (e.g. limits too high).
+    DeviceCreation(String),
+    /// Mapping the readback buffer failed.
+    Readback(String),
+}
+
+impl std::fmt::Display for GpuGiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GpuGiError::NoAdapter => write!(f, "no GPU adapter available"),
+            GpuGiError::DeviceCreation(e) => write!(f, "GPU device creation failed: {e}"),
+            GpuGiError::Readback(e) => write!(f, "GPU readback failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for GpuGiError {}
+
+/// Headless GPU spectral global illumination engine.
+///
+/// Owns its own wgpu device/queue (no window/surface needed) and exposes
+/// [`GpuGi::step`], a drop-in replacement for the CPU `EngineLoop::step_gi`:
+/// upload splats, run the GI compute pass, read back GI-lit splats.
+pub struct GpuGi {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pass: GpuGiPass,
+    capacity: u32,
+    /// Adapter human name, for diagnostics / benches.
+    pub adapter_name: String,
+}
+
+impl GpuGi {
+    /// Create a headless GPU GI engine sized for up to `max_splats` splats.
+    ///
+    /// Returns [`GpuGiError`] (never panics) if no adapter is found or device
+    /// creation fails, so the caller can stay on the CPU path.
+    pub fn new(max_splats: u32) -> Result<Self, GpuGiError> {
+        Self::new_with_limits(max_splats, wgpu::Limits::default())
+    }
+
+    /// Like [`GpuGi::new`] but with caller-chosen device limits. Used by the
+    /// fallback test to force device creation to fail with impossible limits.
+    pub fn new_with_limits(
+        max_splats: u32,
+        required_limits: wgpu::Limits,
+    ) -> Result<Self, GpuGiError> {
+        pollster::block_on(Self::new_async(max_splats, required_limits))
+    }
+
+    async fn new_async(
+        max_splats: u32,
+        required_limits: wgpu::Limits,
+    ) -> Result<Self, GpuGiError> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
         });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .ok_or(GpuGiError::NoAdapter)?;
+        let adapter_name = adapter.get_info().name;
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("gpu_gi_device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits,
+                    memory_hints: wgpu::MemoryHints::default(),
+                },
+                None,
+            )
+            .await
+            .map_err(|e| GpuGiError::DeviceCreation(e.to_string()))?;
+
+        let capacity = max_splats.max(1);
+        let pass = GpuGiPass::new(&device, capacity);
+        Ok(Self {
+            device,
+            queue,
+            pass,
+            capacity,
+            adapter_name,
+        })
+    }
+
+    /// Pack a `GaussianSplat` into a `GpuSplatEntry`. `radiance` carries the
+    /// decoded spectral; `reflectance[0]` is the emitter flag (opacity > 128).
+    fn pack(splat: &GaussianSplat) -> GpuSplatEntry {
+        let spectral = decode_spectral(splat.spectral());
+        let mut reflectance = [0.0f32; 16];
+        reflectance[0] = if splat.opacity() > 128 { 1.0 } else { 0.0 };
+        GpuSplatEntry {
+            position: splat.position(),
+            _pad0: 0.0,
+            radiance: spectral,
+            reflectance,
+        }
+    }
+
+    /// Drop-in GPU equivalent of `EngineLoop::step_gi`.
+    ///
+    /// Uploads `splats`, runs the spectral GI compute pass, and returns the
+    /// GI-lit splats (positions/geometry preserved, per-band spectral lifted by
+    /// indirect radiance). Mirrors the CPU semantics: bright opaque emitters
+    /// (opacity > 128) cast spectral radiance onto receivers, weighted by
+    /// inverse-square distance, and the result is written into each splat's
+    /// spectral as `clamp(spectral + irr * 0.5, 0, 1)`.
+    ///
+    /// `hour` is accepted for API parity with the CPU path (drives sky ambient
+    /// on the CPU side); the GPU pass currently uses zero sky ambient, which is
+    /// the dominant term for the emitter/receiver scenes that matter here.
+    pub fn step(&self, splats: &[GaussianSplat], _hour: f32) -> Result<Vec<GaussianSplat>, GpuGiError> {
+        if splats.is_empty() {
+            return Ok(Vec::new());
+        }
+        let count = (splats.len() as u32).min(self.capacity);
+        let n = count as usize;
+
+        let gpu_entries: Vec<GpuSplatEntry> = splats[..n].iter().map(Self::pack).collect();
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gpu_gi_encoder"),
+            });
+        // alpha = 0.0 → no temporal damping, matching step_gi's per-call propagate.
+        self.pass
+            .dispatch(&mut encoder, &self.queue, &gpu_entries, count, 0.0);
+        self.queue.submit(Some(encoder.finish()));
+
+        // Map the readback buffer and wait for the GPU.
+        let slice = self.pass.readback_buffer.slice(..(n as u64 * 16 * 4));
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        match rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(GpuGiError::Readback(e.to_string())),
+            Err(e) => return Err(GpuGiError::Readback(e.to_string())),
+        }
+
+        let lit: Vec<[f32; 16]> = {
+            let data = slice.get_mapped_range();
+            let floats: &[f32] = bytemuck::cast_slice(&data);
+            (0..n)
+                .map(|i| {
+                    let mut bands = [0.0f32; 16];
+                    bands.copy_from_slice(&floats[i * 16..i * 16 + 16]);
+                    bands
+                })
+                .collect()
+        };
+        self.pass.readback_buffer.unmap();
+
+        // Write the GI-lit spectral back into copies of the input splats.
+        let out: Vec<GaussianSplat> = splats
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mut o = *s;
+                if i < n {
+                    for (b, &v) in lit[i].iter().enumerate() {
+                        o.spectral_mut()[b] = f16::from_f32(v).to_bits();
+                    }
+                }
+                o
+            })
+            .collect();
+        Ok(out)
     }
 }
 
@@ -567,6 +782,185 @@ mod tests {
     #[test]
     fn gi_params_size() {
         assert_eq!(std::mem::size_of::<GiParamsUniform>(), 16);
+    }
+
+    // --- GpuGi end-to-end tests (exercise the real GPU on this box) ---
+
+    /// Bright opaque emitter at origin, dark receiver `d` metres away on +X.
+    /// `emit` is the emitter's per-band spectral value.
+    fn emitter_receiver_scene_emit(d: f32, emit: f32) -> Vec<GaussianSplat> {
+        let emitter = GaussianSplat::volume(
+            [0.0, 0.0, 0.0],
+            [0.2, 0.2, 0.2],
+            glam::Quat::IDENTITY,
+            255,
+            [f16::from_f32(emit).to_bits(); 16],
+        );
+        let receiver = GaussianSplat::volume(
+            [d, 0.0, 0.0],
+            [0.2, 0.2, 0.2],
+            glam::Quat::IDENTITY,
+            10,
+            [f16::from_f32(0.0).to_bits(); 16],
+        );
+        vec![emitter, receiver]
+    }
+
+    fn emitter_receiver_scene(d: f32) -> Vec<GaussianSplat> {
+        emitter_receiver_scene_emit(d, 1.0)
+    }
+
+    fn receiver_band(out: &[GaussianSplat], band: usize) -> f32 {
+        f16::from_bits(out[1].spectral()[band]).to_f32()
+    }
+
+    /// Skip a GPU test gracefully if this box truly has no GPU (CI without one).
+    /// On the target box (AMD 780M) this returns `Some` and the test runs.
+    fn try_gpu(max_splats: u32) -> Option<GpuGi> {
+        match GpuGi::new(max_splats) {
+            Ok(g) => Some(g),
+            Err(GpuGiError::NoAdapter) => {
+                eprintln!("[gpu_gi test] no adapter — skipping GPU test");
+                None
+            }
+            Err(e) => panic!("unexpected GPU init error on a box with a GPU: {e}"),
+        }
+    }
+
+    #[test]
+    fn gpu_gi_lifts_dark_receiver_off_zero() {
+        let Some(gpu) = try_gpu(64) else { return };
+        let scene = emitter_receiver_scene(0.5);
+        // Receiver starts fully dark.
+        assert_eq!(receiver_band(&scene, 8), 0.0);
+
+        let out = gpu.step(&scene, 12.0).expect("gpu step");
+        // Receiver band energies must be lifted off zero (DIRECTION matches CPU).
+        let any_lit = (0..16).any(|b| receiver_band(&out, b) > 1e-3);
+        assert!(any_lit, "receiver must be lit by the emitter, got {:?}",
+            (0..16).map(|b| receiver_band(&out, b)).collect::<Vec<_>>());
+
+        // Emitter stays bright (unchanged-or-similar): it was already saturated.
+        let emitter_b8 = f16::from_bits(out[0].spectral()[8]).to_f32();
+        assert!(emitter_b8 > 0.9, "emitter should stay bright, got {emitter_b8}");
+    }
+
+    #[test]
+    fn gpu_gi_radiance_falls_off_with_distance() {
+        let Some(gpu) = try_gpu(64) else { return };
+        // Dim emitter (emit=0.2) so incoming stays below the normalization knee
+        // (1.0) at all three distances and the inverse-square falloff is visible
+        // rather than clamped — matches the CPU propagate normalization.
+        let r05 = gpu.step(&emitter_receiver_scene_emit(0.5, 0.2), 12.0).expect("step");
+        let r10 = gpu.step(&emitter_receiver_scene_emit(1.0, 0.2), 12.0).expect("step");
+        let r20 = gpu.step(&emitter_receiver_scene_emit(2.0, 0.2), 12.0).expect("step");
+
+        // Use a band that is not saturated at all three distances; band 8.
+        let v05 = receiver_band(&r05, 8);
+        let v10 = receiver_band(&r10, 8);
+        let v20 = receiver_band(&r20, 8);
+        assert!(v05 > 1e-3, "0.5m receiver must be lit, got {v05}");
+        assert!(
+            v05 > v10 && v10 > v20,
+            "radiance must decrease monotonically with distance: 0.5m={v05} 1.0m={v10} 2.0m={v20}"
+        );
+    }
+
+    #[test]
+    fn gpu_gi_is_non_constant_and_position_dependent() {
+        let Some(gpu) = try_gpu(64) else { return };
+        // Two receivers at different distances in one scene.
+        let emitter = GaussianSplat::volume(
+            [0.0, 0.0, 0.0], [0.2, 0.2, 0.2], glam::Quat::IDENTITY, 255,
+            [f16::from_f32(1.0).to_bits(); 16],
+        );
+        let near = GaussianSplat::volume(
+            [0.4, 0.0, 0.0], [0.2, 0.2, 0.2], glam::Quat::IDENTITY, 10,
+            [f16::from_f32(0.0).to_bits(); 16],
+        );
+        let far = GaussianSplat::volume(
+            [3.0, 0.0, 0.0], [0.2, 0.2, 0.2], glam::Quat::IDENTITY, 10,
+            [f16::from_f32(0.0).to_bits(); 16],
+        );
+        let out = gpu.step(&[emitter, near, far], 12.0).expect("step");
+        let near_b = f16::from_bits(out[1].spectral()[8]).to_f32();
+        let far_b = f16::from_bits(out[2].spectral()[8]).to_f32();
+        assert!(
+            near_b > far_b,
+            "result must be position-dependent: near={near_b} far={far_b}"
+        );
+    }
+
+    #[test]
+    fn gpu_gi_is_deterministic() {
+        let Some(gpu) = try_gpu(64) else { return };
+        let scene = emitter_receiver_scene(0.5);
+        let a = gpu.step(&scene, 12.0).expect("step a");
+        let b = gpu.step(&scene, 12.0).expect("step b");
+        for i in 0..scene.len() {
+            for band in 0..16 {
+                let va = f16::from_bits(a[i].spectral()[band]).to_f32();
+                let vb = f16::from_bits(b[i].spectral()[band]).to_f32();
+                assert!(
+                    (va - vb).abs() < 1e-6,
+                    "GPU GI must be deterministic: splat {i} band {band}: {va} vs {vb}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gpu_gi_falls_back_on_impossible_limits() {
+        // Force device creation to fail with impossible limits → Err, never panic.
+        let bad = wgpu::Limits {
+            max_storage_buffers_per_shader_stage: u32::MAX,
+            max_buffer_size: u64::MAX,
+            max_storage_buffer_binding_size: u32::MAX,
+            max_compute_workgroups_per_dimension: u32::MAX,
+            ..wgpu::Limits::default()
+        };
+        let res = GpuGi::new_with_limits(64, bad);
+        match res {
+            Err(GpuGiError::DeviceCreation(_)) | Err(GpuGiError::NoAdapter) => {}
+            Err(other) => panic!("expected device-creation/no-adapter error, got {other}"),
+            Ok(_) => panic!("impossible limits must not yield a working device"),
+        }
+    }
+
+    #[test]
+    #[ignore = "perf bench — run explicitly with --ignored --nocapture"]
+    fn gpu_gi_50k_timing() {
+        let Some(gpu) = try_gpu(60_000) else {
+            eprintln!("no GPU — cannot bench");
+            return;
+        };
+        // 50k splats: a grid of receivers with a few bright emitters seeded in.
+        let mut scene = Vec::with_capacity(50_000);
+        for i in 0..50_000u32 {
+            let x = (i % 100) as f32 * 0.1;
+            let y = ((i / 100) % 100) as f32 * 0.1;
+            let z = (i / 10_000) as f32 * 0.1;
+            let emitter = i % 500 == 0;
+            scene.push(GaussianSplat::volume(
+                [x, y, z],
+                [0.05, 0.05, 0.05],
+                glam::Quat::IDENTITY,
+                if emitter { 255 } else { 10 },
+                [f16::from_f32(if emitter { 1.0 } else { 0.0 }).to_bits(); 16],
+            ));
+        }
+        // Warm up (shader compile, allocation).
+        let _ = gpu.step(&scene, 12.0).expect("warmup");
+        let runs = 5;
+        let t0 = std::time::Instant::now();
+        for _ in 0..runs {
+            let _ = gpu.step(&scene, 12.0).expect("bench step");
+        }
+        let ms = t0.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+        eprintln!(
+            "GPU GI 50k splats on {}: {:.2} ms/step (avg of {runs})",
+            gpu.adapter_name, ms
+        );
     }
 
     #[test]
