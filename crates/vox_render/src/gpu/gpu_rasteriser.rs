@@ -5,6 +5,7 @@ use wgpu::util::DeviceExt;
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
 
+use crate::atom_budget::Selection;
 use crate::spectral::RenderCamera;
 
 fn create_depth_texture(
@@ -90,6 +91,24 @@ pub fn splats_to_gpu(splats: &[GaussianSplat]) -> Vec<GpuSplatData> {
             }
         })
         .collect()
+}
+
+/// Convert a single [`GaussianSplat`] to [`GpuSplatData`], multiplying its
+/// opacity by `opacity_scale` (1.0 = unchanged; used for LOD crossfade).
+fn gpu_splat_scaled(s: &GaussianSplat, opacity_scale: f32) -> GpuSplatData {
+    let mut spectral = [0.0f32; 8];
+    for (b, val) in spectral.iter_mut().enumerate() {
+        *val = f16::from_bits(s.spectral()[b]).to_f32();
+    }
+    GpuSplatData {
+        position: s.position(),
+        scale_x: s.scale_u(),
+        scale_y: s.scale_v(),
+        scale_z: s.scale_w(),
+        opacity: (s.opacity() as f32 / 255.0) * opacity_scale.clamp(0.0, 1.0),
+        _pad: 0.0,
+        spectral,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -441,6 +460,10 @@ impl GpuRasteriser {
     /// Render the given splats to `target_view`.
     ///
     /// Splats are depth-sorted on the CPU (back-to-front) and uploaded each frame.
+    ///
+    /// Thin wrapper over [`render_indexed`](Self::render_indexed): the full splat
+    /// slice is taken as the selection (every index, opacity scale 1.0) with no
+    /// extra dynamic splats.
     pub fn render(
         &self,
         device: &wgpu::Device,
@@ -448,9 +471,46 @@ impl GpuRasteriser {
         target_view: &wgpu::TextureView,
         splats: &[GaussianSplat],
         camera: &RenderCamera,
+        illuminant: &Illuminant,
+    ) {
+        let selection = Selection {
+            indices: (0..splats.len() as u32).collect(),
+            opacity_scale: vec![1.0; splats.len()],
+        };
+        self.render_indexed(
+            device,
+            queue,
+            target_view,
+            splats,
+            &selection,
+            &[],
+            camera,
+            illuminant,
+        );
+    }
+
+    /// Render a budgeted selection of `static_splats` plus appended
+    /// `dynamic_splats` to `target_view`.
+    ///
+    /// Semantically identical to [`render`](Self::render) called on the
+    /// materialised concatenation of the selected static splats (with their
+    /// per-splat `opacity_scale` applied) and the dynamic splats. Avoids cloning
+    /// the whole static scene each frame: only the selected indices are
+    /// materialised.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_indexed(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_view: &wgpu::TextureView,
+        static_splats: &[GaussianSplat],
+        selection: &Selection,
+        dynamic_splats: &[GaussianSplat],
+        camera: &RenderCamera,
         _illuminant: &Illuminant,
     ) {
-        if splats.is_empty() {
+        let total = selection.indices.len() + dynamic_splats.len();
+        if total == 0 {
             return;
         }
 
@@ -469,41 +529,32 @@ impl GpuRasteriser {
 
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
 
-        // --- 2. CPU depth sort (back-to-front) ---
-        // Compute view-space Z for each splat and sort most negative first (farthest).
-        let mut indexed: Vec<(usize, f32)> = splats
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
+        // --- 2. Build the working entry list (selected static + dynamic) ---
+        // Each entry carries the GPU splat data (with crossfade-scaled opacity)
+        // and its view-space Z for back-to-front sorting.
+        let mut entries: Vec<(GpuSplatData, f32)> = Vec::with_capacity(total);
+        for (k, &idx) in selection.indices.iter().enumerate() {
+            let s = &static_splats[idx as usize];
+            let scale = selection.opacity_scale.get(k).copied().unwrap_or(1.0);
+            let view_z = {
                 let pos = glam::Vec4::new(s.position()[0], s.position()[1], s.position()[2], 1.0);
-                let view_pos = view * pos;
-                (i, view_pos.z)
-            })
-            .collect();
+                (view * pos).z
+            };
+            entries.push((gpu_splat_scaled(s, scale), view_z));
+        }
+        for s in dynamic_splats {
+            let view_z = {
+                let pos = glam::Vec4::new(s.position()[0], s.position()[1], s.position()[2], 1.0);
+                (view * pos).z
+            };
+            entries.push((gpu_splat_scaled(s, 1.0), view_z));
+        }
 
         // Sort by view-space Z ascending (most negative = farthest first for RH)
-        indexed.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        entries.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // --- 3. Convert sorted splats to GpuSplatData ---
-        let gpu_splats: Vec<GpuSplatData> = indexed
-            .iter()
-            .map(|&(i, _)| {
-                let s = &splats[i];
-                let mut spectral = [0.0f32; 8];
-                for (b, val) in spectral.iter_mut().enumerate() {
-                    *val = f16::from_bits(s.spectral()[b]).to_f32();
-                }
-                GpuSplatData {
-                    position: s.position(),
-                    scale_x: s.scale_u(),
-                    scale_y: s.scale_v(),
-                    scale_z: s.scale_w(),
-                    opacity: s.opacity() as f32 / 255.0,
-                    _pad: 0.0,
-                    spectral,
-                }
-            })
-            .collect();
+        // --- 3. Sorted GpuSplatData ---
+        let gpu_splats: Vec<GpuSplatData> = entries.into_iter().map(|(g, _)| g).collect();
 
         // --- 4. Create storage buffer with splat data ---
         let splat_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

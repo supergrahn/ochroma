@@ -44,6 +44,7 @@ pub mod perf_inspector;
 pub mod comparison;
 pub mod spectra_render;
 pub mod clas;
+pub mod atom_budget;
 pub mod mega_geometry;
 pub mod spectral_framebuffer;
 pub mod spectral_tonemapper;

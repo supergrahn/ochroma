@@ -34,6 +34,7 @@ use vox_ui::spectral_hud::SpectralRadianceCache;
 use vox_ui::vello_ctx::VelloCtxCpu;
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
+use vox_render::atom_budget::{AtomBudgetSelector, Selection};
 use vox_render::clas;
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::gpu::wgpu_backend::WgpuBackend;
@@ -134,6 +135,13 @@ const GI_CADENCE: u32 = 10;
 // budget, so we run GI on the nearest-K subset around the player each time. This
 // is an honest performance limit — distant indirect light is not recomputed.
 const GI_NEAREST_K: usize = 2000;
+
+// Per-frame atom budget for static-scene splat selection. The static scene
+// holds ~65k splats; the AtomBudgetSelector caps the rendered static set to
+// this many per frame (≈ ⅓ of the scene) — a visible win with no visible loss
+// at the demo's draw distances. Game (vox_app) owns this constant; the engine
+// selector is budget-agnostic.
+const ATOM_BUDGET: usize = 24_000;
 
 // ---------------------------------------------------------------------------
 // AABB collision
@@ -510,6 +518,16 @@ struct WalkingSim {
     clas_cluster_count: usize,
     clas_bvh_depth: u32,
 
+    // ---- Atom-budget splat selection ----
+    // The static scene (terrain + buildings + trees) concatenated once into one
+    // Vec, with an AtomBudgetSelector built over it. Per frame, the selector
+    // yields ≤ ATOM_BUDGET indices into `static_splats`; dynamic splats are
+    // appended unbudgeted. Replaces the per-frame full-scene clone.
+    static_splats: Vec<GaussianSplat>,
+    selector: Option<AtomBudgetSelector>,
+    /// Reused per-frame selection output (indices + crossfade opacity scale).
+    selection: Selection,
+
     // Scripting
     rhai: RhaiRuntime,
     /// Path to the live, hot-reloadable game script (assets/scripts/walking_sim.rhai).
@@ -665,6 +683,9 @@ impl WalkingSim {
             tonemap_settings: ToneMapSettings::default(),
             clas_cluster_count: 0,
             clas_bvh_depth: 0,
+            static_splats: Vec::new(),
+            selector: None,
+            selection: Selection::new(),
             rhai: RhaiRuntime::new(),
             script_path: resolve_script_path(),
             game_script_idx: None,
@@ -832,7 +853,10 @@ impl WalkingSim {
             self.terrain_splats.len() + self.building_splats.len() + self.tree_splats.len();
         println!("[walking_sim] Scene: {} splats total", total);
 
-        // CLAS clustering
+        // CLAS clustering + atom-budget selector. The concatenated static scene
+        // (terrain + buildings + trees) is kept in `static_splats` for the life
+        // of the run; the selector indexes into it per frame. The CLAS stats log
+        // is preserved (same clusters, now load-bearing via the selector).
         let mut all_splats = self.terrain_splats.clone();
         all_splats.extend_from_slice(&self.building_splats);
         all_splats.extend_from_slice(&self.tree_splats);
@@ -845,6 +869,11 @@ impl WalkingSim {
             "[walking_sim] CLAS: {} clusters, BVH depth {}, avg {:.0} splats/cluster",
             stats.cluster_count, stats.bvh_depth, stats.avg_splats_per_cluster,
         );
+
+        // Build the atom-budget selector over the static scene (same 128-splat
+        // target cluster size as the CLAS log above).
+        self.selector = Some(AtomBudgetSelector::build(&all_splats, 128));
+        self.static_splats = all_splats;
 
         // Prime the loop's shadow mapper with the initial camera state.
         // walking_sim drives the mapper directly (not via step_shadows) so the
@@ -943,15 +972,29 @@ impl WalkingSim {
     fn recompute_gi(&mut self) {
         let player = self.player_pos();
 
-        // Gather scene splats (terrain + buildings + trees + orbs + windmill).
-        let mut scene = self.terrain_splats.clone();
-        scene.extend_from_slice(&self.building_splats);
-        scene.extend_from_slice(&self.tree_splats);
+        // Nearest-K static subset around the player via the cluster BVH
+        // (perf budget — see GI_NEAREST_K). Replaces the old full-scene distance
+        // sort: nearest_clusters returns the cluster ids covering ≥ GI_NEAREST_K
+        // static splats, and we gather just those clusters' splats. O(k + log V)
+        // instead of O(scene · log scene) per GI step.
+        let mut scene: Vec<GaussianSplat> = Vec::new();
+        if let Some(selector) = self.selector.as_ref() {
+            for cid in selector.nearest_clusters(player, GI_NEAREST_K) {
+                for &idx in selector.cluster_indices(cid) {
+                    scene.push(self.static_splats[idx as usize]);
+                }
+            }
+        } else {
+            scene.extend_from_slice(&self.static_splats);
+        }
+
+        // Dynamic splats (orbs + windmill) are appended unbudgeted as before.
         scene.extend(self.generate_orb_splats());
         scene.extend_from_slice(&self.windmill.base_splats);
         scene.extend_from_slice(&self.windmill.blade_splats_world);
 
-        // Nearest-K subset around the player (perf budget — see GI_NEAREST_K).
+        // Keep the GI_NEAREST_K budget: trim the gathered subset (now ordered by
+        // cluster proximity) by exact distance to the player.
         if scene.len() > GI_NEAREST_K {
             scene.sort_by(|a, b| {
                 let da = (Vec3::from(a.position()) - player).length_squared();
@@ -1519,10 +1562,28 @@ impl WalkingSim {
             ),
         };
 
-        // Combine all scene splats
-        let mut all = self.terrain_splats.clone();
-        all.extend_from_slice(&self.building_splats);
-        all.extend_from_slice(&self.tree_splats);
+        // Atom-budget selection of the STATIC scene (terrain + buildings +
+        // trees). The selector frustum-culls + LOD-degrades into ≤ ATOM_BUDGET
+        // indices, replacing the old per-frame full-scene clone. Dynamic splats
+        // are appended unbudgeted below. (Falls back to the raw static set only
+        // if the selector was never built, e.g. an empty scene.)
+        let mut all: Vec<GaussianSplat> = Vec::new();
+        if let Some(selector) = self.selector.as_mut() {
+            let mut selection = std::mem::take(&mut self.selection);
+            selector.select(&camera, ATOM_BUDGET, &mut selection);
+            all.reserve(selection.indices.len());
+            for (k, &idx) in selection.indices.iter().enumerate() {
+                let mut s = self.static_splats[idx as usize];
+                let scale = selection.opacity_scale[k].clamp(0.0, 1.0);
+                if scale < 1.0 {
+                    s.set_opacity((s.opacity() as f32 * scale).round() as u8);
+                }
+                all.push(s);
+            }
+            self.selection = selection;
+        } else {
+            all.extend_from_slice(&self.static_splats);
+        }
         all.extend(self.generate_orb_splats());
         // Windmill base + animated blades
         all.extend_from_slice(&self.windmill.base_splats);
@@ -1685,11 +1746,11 @@ impl WalkingSim {
         //    recompile, the game keeps running on the last-good version and this
         //    red banner surfaces the error + the running error count so the
         //    designer sees exactly what broke without the game crashing.
-        if self.game_ui.game_state == GameState::Playing {
-            if let Some(note) = &self.script_notification {
-                let banner = format!("{}  [errors={}]", note, self.rhai.script_errors);
-                burn_text(&mut pixels, WIDTH, 20, HEIGHT - 60, &banner, [255, 80, 80], 2);
-            }
+        if self.game_ui.game_state == GameState::Playing
+            && let Some(note) = &self.script_notification
+        {
+            let banner = format!("{}  [errors={}]", note, self.rhai.script_errors);
+            burn_text(&mut pixels, WIDTH, 20, HEIGHT - 60, &banner, [255, 80, 80], 2);
         }
 
         pixels
@@ -1994,6 +2055,92 @@ fn run_smoke() {
         // Render every frame to exercise the full compositor path with evolving
         // state; the frame checked below is re-captured after the script phases.
         app.render();
+    }
+
+    // ===================================================================
+    // ATOM BUDGET SMOKE
+    // -------------------------------------------------------------------
+    // Exercise the AtomBudgetSelector on the live static scene from the
+    // player's current camera. Prints the two "Done When" lines (budget 24000
+    // then 2000) and asserts: selected ≤ budget, frustum culling did real work,
+    // ≥ 2 non-zero LOD histogram buckets, and select_us < 2000.
+    // ===================================================================
+    {
+        // Probe camera: inside the scene at eye height, looking across it. The
+        // forward half of the static scene falls in the frustum (the rest is
+        // culled, so C > 0), near clusters render at L0 and far ones degrade —
+        // and the summed L0 count exceeds the budget, so budget=2000 must
+        // degrade LOD globally vs budget=24000.
+        let eye = Vec3::new(0.0, 6.0, -30.0);
+        let target = Vec3::new(0.0, 4.0, 40.0);
+        let camera = RenderCamera {
+            view: Mat4::look_at_rh(eye, target, Vec3::Y),
+            proj: Mat4::perspective_rh(
+                std::f32::consts::FRAC_PI_4,
+                WIDTH as f32 / HEIGHT as f32,
+                0.1,
+                500.0,
+            ),
+        };
+        let selector = app
+            .selector
+            .as_mut()
+            .expect("selector must be built by build_scene");
+        let total_clusters = selector.cluster_count();
+        let total_static = app.static_splats.len();
+
+        // Warm-up: prime the selector's internal scratch vecs + CPU caches for
+        // this camera's working-set size (the per-frame loop above selected from
+        // the player's near-empty view). The design's < 2 ms budget is a
+        // steady-state figure; the measured selects below reflect that.
+        let mut warm = Selection::new();
+        selector.select(&camera, 24_000, &mut warm);
+
+        for &budget in &[24_000usize, 2_000usize] {
+            let mut sel = Selection::new();
+            let stats = selector.select(&camera, budget, &mut sel);
+            println!(
+                "[walking_sim] ATOM BUDGET: budget={} selected={} of {} clusters_visible={}/{} clusters_culled={} lod_histogram=[L0:{} L1:{} L2:{} L3:{}] select_us={}",
+                stats.budget,
+                stats.selected,
+                total_static,
+                stats.clusters_visible,
+                total_clusters,
+                stats.clusters_culled,
+                stats.lod_histogram[0],
+                stats.lod_histogram[1],
+                stats.lod_histogram[2],
+                stats.lod_histogram[3],
+                stats.select_us,
+            );
+
+            assert!(
+                stats.selected <= budget,
+                "selected {} exceeds budget {}",
+                stats.selected,
+                budget
+            );
+            assert!(
+                stats.clusters_culled > 0 || stats.clusters_visible < total_clusters,
+                "frustum culling did no work: visible={}/{} culled={}",
+                stats.clusters_visible,
+                total_clusters,
+                stats.clusters_culled
+            );
+            let nonzero_lod_buckets =
+                stats.lod_histogram.iter().filter(|&&c| c > 0).count();
+            assert!(
+                nonzero_lod_buckets >= 2,
+                "LOD histogram has {} non-zero buckets (< 2): {:?} — distance-LOD not driving selection",
+                nonzero_lod_buckets,
+                stats.lod_histogram
+            );
+            assert!(
+                stats.select_us < 2000,
+                "select took {} us (>= 2000 us / 2 ms budget)",
+                stats.select_us
+            );
+        }
     }
 
     // ===================================================================
