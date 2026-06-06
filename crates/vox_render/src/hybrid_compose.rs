@@ -12,10 +12,12 @@
 //!    convention used by the splat rasteriser (spectra OpenCV-style: +X right,
 //!    +Y down, looking down +Z; `screen = f·cam_xy/cam_z + size/2`,
 //!    `depth = cam_z`). Triangles are rasterised with barycentric coverage,
-//!    perspective-correct-enough depth (linear in camera space is sufficient for
-//!    occlusion ordering here — we interpolate cam_z linearly across the
-//!    triangle, which is monotonic in screen space for a planar triangle), and
-//!    flat/Lambertian shading: per-mesh spectral reflectance scaled by
+//!    perspective-correct depth (we interpolate INVERSE depth `1/cam_z`, which is
+//!    exactly linear in screen space, then invert to recover the true
+//!    perspective `cam_z` stored in the depth buffer — so the mesh's stored depth
+//!    matches the splats' true `proj.depth` and inter-surface occlusion ordering
+//!    is correct, including on steep/grazing triangles spanning a large depth
+//!    range), and flat/Lambertian shading: per-mesh spectral reflectance scaled by
 //!    `max(0, dot(n, sun_dir))` plus a small ambient term. The shaded spectrum,
 //!    `cam_z` depth, and world normal are written to the framebuffer with a
 //!    standard z-test (nearest wins).
@@ -176,9 +178,9 @@ fn normalised(d: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// Camera-space projection of one world vertex through the spectra convention.
-/// Returns `(screen_x, screen_y, cam_z)` or `None` if behind the near plane.
-fn project_vertex(p: [f32; 3], gcam: &GaussianCamera) -> Option<(f32, f32, f32)> {
+/// Transform a world vertex into camera space (spectra convention). Returns
+/// `(cam_x, cam_y, cam_z)` or `None` if any component is non-finite.
+fn to_camera_space(p: [f32; 3], gcam: &GaussianCamera) -> Option<[f32; 3]> {
     let v = &gcam.view_matrix;
     let cam_x = v[0] * p[0] + v[1] * p[1] + v[2] * p[2] + v[3];
     let cam_y = v[4] * p[0] + v[5] * p[1] + v[6] * p[2] + v[7];
@@ -186,13 +188,55 @@ fn project_vertex(p: [f32; 3], gcam: &GaussianCamera) -> Option<(f32, f32, f32)>
     if !(cam_x.is_finite() && cam_y.is_finite() && cam_z.is_finite()) {
         return None;
     }
+    Some([cam_x, cam_y, cam_z])
+}
+
+/// Project a camera-space vertex to screen. Returns `(screen_x, screen_y, cam_z)`
+/// or `None` if behind the near plane or beyond the far plane.
+fn project_cam(cam: [f32; 3], gcam: &GaussianCamera) -> Option<(f32, f32, f32)> {
+    let cam_z = cam[2];
     if cam_z < gcam.near || cam_z > gcam.far {
         return None;
     }
     let inv_z = 1.0 / cam_z;
-    let sx = gcam.fx * cam_x * inv_z + gcam.width as f32 * 0.5;
-    let sy = gcam.fy * cam_y * inv_z + gcam.height as f32 * 0.5;
+    let sx = gcam.fx * cam[0] * inv_z + gcam.width as f32 * 0.5;
+    let sy = gcam.fy * cam[1] * inv_z + gcam.height as f32 * 0.5;
     Some((sx, sy, cam_z))
+}
+
+/// Sutherland–Hodgman clip of a camera-space triangle against the near plane
+/// (`cam_z >= near`). Returns the in-front polygon's vertices (0, 3, or 4 of
+/// them), fanned by the caller into 1 or 2 sub-triangles. Vertices on a clipped
+/// edge are linearly interpolated to the exact `cam_z == near` crossing, which
+/// preserves the planar surface (the interpolation is in camera space, so the
+/// recovered screen positions and perspective depth are exact at the boundary).
+fn clip_triangle_near(tri: [[f32; 3]; 3], near: f32) -> Vec<[f32; 3]> {
+    let inside = |v: &[f32; 3]| v[2] >= near;
+    let intersect = |a: &[f32; 3], b: &[f32; 3]| -> [f32; 3] {
+        // Parametric crossing of the near plane along a->b in cam_z.
+        let t = (near - a[2]) / (b[2] - a[2]);
+        [
+            a[0] + t * (b[0] - a[0]),
+            a[1] + t * (b[1] - a[1]),
+            near,
+        ]
+    };
+    let mut out: Vec<[f32; 3]> = Vec::with_capacity(4);
+    for i in 0..3 {
+        let cur = tri[i];
+        let prev = tri[(i + 2) % 3];
+        let cur_in = inside(&cur);
+        let prev_in = inside(&prev);
+        if cur_in {
+            if !prev_in {
+                out.push(intersect(&prev, &cur));
+            }
+            out.push(cur);
+        } else if prev_in {
+            out.push(intersect(&prev, &cur));
+        }
+    }
+    out
 }
 
 /// Edge function (signed area ×2) for the triangle (a, b) and point p in 2D.
@@ -252,26 +296,6 @@ fn rasterise_meshes(
             }
             let world_n = [nrm[0] / nlen, nrm[1] / nlen, nrm[2] / nlen];
 
-            // Project all three vertices.
-            let (Some(a), Some(b), Some(c)) = (
-                project_vertex(p0, gcam),
-                project_vertex(p1, gcam),
-                project_vertex(p2, gcam),
-            ) else {
-                // At least one vertex behind near / non-finite after transform.
-                stats.skipped_degenerate += 1;
-                continue;
-            };
-
-            let (sa, sb, sc) = ((a.0, a.1), (b.0, b.1), (c.0, c.1));
-            let area2 = edge(sa, sb, sc.0, sc.1);
-            if area2.abs() < 1e-6 {
-                // Zero screen-space area (edge-on / degenerate after projection).
-                stats.skipped_degenerate += 1;
-                continue;
-            }
-            let inv_area2 = 1.0 / area2;
-
             // Two-sided lighting: light whichever face we see.
             let ndl = sun_dir[0] * world_n[0] + sun_dir[1] * world_n[1] + sun_dir[2] * world_n[2];
             let diffuse = ndl.abs().clamp(0.0, 1.0);
@@ -284,45 +308,112 @@ fn rasterise_meshes(
                 [-world_n[0], -world_n[1], -world_n[2]]
             };
 
-            // Screen-space bounding box, clamped to the framebuffer.
-            let min_x = (sa.0.min(sb.0).min(sc.0).floor() as i32).max(0);
-            let max_x = (sa.0.max(sb.0).max(sc.0).ceil() as i32).min(width - 1);
-            let min_y = (sa.1.min(sb.1).min(sc.1).floor() as i32).max(0);
-            let max_y = (sa.1.max(sb.1).max(sc.1).ceil() as i32).min(height - 1);
-            if min_x > max_x || min_y > max_y {
+            // Transform to camera space, then clip against the near plane BEFORE
+            // projection. A triangle straddling the near plane is split into the
+            // in-front polygon (3 or 4 verts) instead of being dropped whole, so
+            // its visible portion still rasterises and still occludes splats.
+            let (Some(ca), Some(cb), Some(cc)) = (
+                to_camera_space(p0, gcam),
+                to_camera_space(p1, gcam),
+                to_camera_space(p2, gcam),
+            ) else {
+                // Non-finite after transform.
+                stats.skipped_degenerate += 1;
+                continue;
+            };
+            let clipped = clip_triangle_near([ca, cb, cc], gcam.near);
+            if clipped.len() < 3 {
+                // Entirely behind the near plane.
                 stats.skipped_degenerate += 1;
                 continue;
             }
 
-            stats.triangles_drawn += 1;
-
-            for py in min_y..=max_y {
-                let pyf = py as f32 + 0.5;
-                for px in min_x..=max_x {
-                    let pxf = px as f32 + 0.5;
-                    // Barycentric coordinates via edge functions.
-                    let w0 = edge(sb, sc, pxf, pyf) * inv_area2;
-                    let w1 = edge(sc, sa, pxf, pyf) * inv_area2;
-                    let w2 = edge(sa, sb, pxf, pyf) * inv_area2;
-                    // Inside test: all weights same sign as area (>= 0 here since
-                    // we normalised by signed area).
-                    if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
-                        continue;
+            // Project the clipped polygon's vertices; fan it into triangles.
+            let mut proj: Vec<(f32, f32, f32)> = Vec::with_capacity(clipped.len());
+            let mut all_projected = true;
+            for cv in &clipped {
+                match project_cam(*cv, gcam) {
+                    Some(s) => proj.push(s),
+                    None => {
+                        all_projected = false;
+                        break;
                     }
-                    // Interpolate camera-space depth (linear in cam space).
-                    let depth = w0 * a.2 + w1 * b.2 + w2 * c.2;
-                    let idx = (py as u32 * fb.width + px as u32) as usize;
-                    // Z-test against the shared depth buffer (nearest wins).
-                    if depth >= fb.depth[idx] {
-                        continue;
-                    }
-                    fb.depth[idx] = depth;
-                    fb.spectral[idx] = shaded;
-                    fb.albedo[idx] = mesh.reflectance;
-                    fb.normals[idx] = stored_n;
-                    fb.object_id[idx] = mesh.object_id;
-                    fb.sample_count[idx] = 1;
                 }
+            }
+            if !all_projected {
+                // A clipped vertex fell beyond the far plane (or otherwise
+                // unprojectable); drop this triangle conservatively.
+                stats.skipped_degenerate += 1;
+                continue;
+            }
+
+            let mut any_drawn = false;
+            // Fan: (0, i, i+1) for i in 1..len-1 — 1 sub-tri for a triangle, 2 for
+            // a quad produced by the near clip.
+            for i in 1..proj.len() - 1 {
+                let a = proj[0];
+                let b = proj[i];
+                let c = proj[i + 1];
+                let (sa, sb, sc) = ((a.0, a.1), (b.0, b.1), (c.0, c.1));
+                let area2 = edge(sa, sb, sc.0, sc.1);
+                if area2.abs() < 1e-6 {
+                    // Zero screen-space area (edge-on / degenerate sub-triangle).
+                    continue;
+                }
+                let inv_area2 = 1.0 / area2;
+
+                // Screen-space bounding box, clamped to the framebuffer.
+                let min_x = (sa.0.min(sb.0).min(sc.0).floor() as i32).max(0);
+                let max_x = (sa.0.max(sb.0).max(sc.0).ceil() as i32).min(width - 1);
+                let min_y = (sa.1.min(sb.1).min(sc.1).floor() as i32).max(0);
+                let max_y = (sa.1.max(sb.1).max(sc.1).ceil() as i32).min(height - 1);
+                if min_x > max_x || min_y > max_y {
+                    continue;
+                }
+                any_drawn = true;
+
+                for py in min_y..=max_y {
+                    let pyf = py as f32 + 0.5;
+                    for px in min_x..=max_x {
+                        let pxf = px as f32 + 0.5;
+                        // Barycentric coordinates via edge functions.
+                        let w0 = edge(sb, sc, pxf, pyf) * inv_area2;
+                        let w1 = edge(sc, sa, pxf, pyf) * inv_area2;
+                        let w2 = edge(sa, sb, pxf, pyf) * inv_area2;
+                        // Inside test: all weights same sign as area (>= 0 here
+                        // since we normalised by signed area).
+                        if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                            continue;
+                        }
+                        // Perspective-correct depth: interpolate INVERSE depth
+                        // (1/cam_z is exactly linear in screen space), then invert
+                        // to recover the true perspective cam_z. This matches the
+                        // splats' true `proj.depth`, so occlusion ordering is
+                        // correct even on triangles spanning a large depth range.
+                        let inv_z = w0 / a.2 + w1 / b.2 + w2 / c.2;
+                        if inv_z <= 0.0 {
+                            continue;
+                        }
+                        let depth = 1.0 / inv_z;
+                        let idx = (py as u32 * fb.width + px as u32) as usize;
+                        // Z-test against the shared depth buffer (nearest wins).
+                        if depth >= fb.depth[idx] {
+                            continue;
+                        }
+                        fb.depth[idx] = depth;
+                        fb.spectral[idx] = shaded;
+                        fb.albedo[idx] = mesh.reflectance;
+                        fb.normals[idx] = stored_n;
+                        fb.object_id[idx] = mesh.object_id;
+                        fb.sample_count[idx] = 1;
+                    }
+                }
+            }
+
+            if any_drawn {
+                stats.triangles_drawn += 1;
+            } else {
+                stats.skipped_degenerate += 1;
             }
         }
     }
@@ -935,4 +1026,232 @@ mod tests {
             object_id,
         }
     }
+
+    /// A steep triangle slanting from a near apex (cam_z ~1) to a far base
+    /// (cam_z ~100). Eye at z=20 looking at origin, so cam_z = 20 - world_z.
+    fn steep_tri(refl: [f32; 16], object_id: u32) -> HybridMesh {
+        HybridMesh {
+            positions: vec![
+                [0.0, 0.0, 19.0],     // cam_z = 1   (near apex)
+                [-30.0, 20.0, -80.0], // cam_z = 100 (far base)
+                [30.0, 20.0, -80.0],  // cam_z = 100 (far base)
+            ],
+            indices: vec![0, 1, 2],
+            reflectance: refl,
+            object_id,
+        }
+    }
+
+    /// Regression for the perspective-correct depth fix (wave-6). On a steep
+    /// triangle spanning cam_z {1..100}, the visible surface's TRUE perspective
+    /// depth in the apex region is ~1.7 (probe: depth values 1.0–1.9), while the
+    /// OLD linear interpolation stored ~40 there. A splat at true cam_z 21.1 is
+    /// GENUINELY BEHIND that surface (21.1 > 1.7) and MUST be rejected — but under
+    /// the old linear depth (40.6 > 21.1) it wrongly composited over the mesh.
+    /// A splat genuinely in FRONT (cam_z 0.8 < 1.7) must still composite.
+    #[test]
+    fn perspective_depth_rejects_splat_behind_steep_surface() {
+        let cam = head_on_camera();
+        let il = illum();
+
+        // Mesh: band 11 ("red"). Splat: band 3 ("blue").
+        let tri = steep_tri(single_band_f32(11, 1.0), 1);
+
+        // Render the mesh alone first to find exactly which pixels the visible
+        // surface covers (so we measure splat leakage ONLY over true mesh pixels,
+        // never over empty background the big splat also overlaps).
+        let mut fb_m = SpectralFramebuffer::new(W, H);
+        render_hybrid(
+            &HybridScene { meshes: vec![tri.clone()], splats: &[] },
+            &cam,
+            &il,
+            &mut fb_m,
+        );
+        let mesh_px: Vec<(u32, u32)> = (0..H)
+            .flat_map(|y| (0..W).map(move |x| (x, y)))
+            .filter(|&(x, y)| fb_m.spectral[fb_m.idx(x, y)][11] > 1e-3)
+            .collect();
+        assert!(!mesh_px.is_empty(), "mesh must cover some pixels");
+
+        let band_sums_over = |fb: &SpectralFramebuffer| -> [f32; 16] {
+            let mut s = [0.0f32; 16];
+            for &(x, y) in &mesh_px {
+                let px = fb.spectral[fb.idx(x, y)];
+                for k in 0..16 {
+                    s[k] += px[k];
+                }
+            }
+            s
+        };
+
+        // --- Splat BEHIND the true surface: true cam_z = 21.1 (world_z = -1.1),
+        // big enough to cover the apex region. Old linear depth (~40) would have
+        // wrongly let it through; correct perspective depth (~1.7) rejects it.
+        let behind = GaussianSplat::volume(
+            [0.0, -3.0, -1.1], // cam_z = 20 - (-1.1) = 21.1
+            [6.0, 6.0, 6.0],
+            Quat::IDENTITY,
+            255,
+            single_band(3, 1.0),
+        );
+        let mut fb_b = SpectralFramebuffer::new(W, H);
+        render_hybrid(
+            &HybridScene {
+                meshes: vec![tri.clone()],
+                splats: std::slice::from_ref(&behind),
+            },
+            &cam,
+            &il,
+            &mut fb_b,
+        );
+        let b = band_sums_over(&fb_b);
+
+        // --- Splat IN FRONT of the surface: true cam_z = 0.8 (world_z = 19.2),
+        // nearer than the apex's ~1.0–1.9; must composite.
+        let front = GaussianSplat::volume(
+            [0.0, -3.0, 19.2], // cam_z = 20 - 19.2 = 0.8
+            [6.0, 6.0, 6.0],
+            Quat::IDENTITY,
+            255,
+            single_band(3, 1.0),
+        );
+        let mut fb_f = SpectralFramebuffer::new(W, H);
+        render_hybrid(
+            &HybridScene {
+                meshes: vec![tri],
+                splats: std::slice::from_ref(&front),
+            },
+            &cam,
+            &il,
+            &mut fb_f,
+        );
+        let f = band_sums_over(&fb_f);
+
+        eprintln!(
+            "perspective_depth: BEHIND mesh11={:.4} splat3={:.6} | FRONT mesh11={:.6} splat3={:.4}",
+            b[11], b[3], f[11], f[3]
+        );
+
+        // BEHIND: the splat is correctly REJECTED — its band 3 is ~zero in the
+        // mesh region and the mesh band 11 dominates. (Under the old linear depth
+        // this band 3 would be large and composite over the mesh.)
+        assert!(
+            b[11] > 1.0,
+            "mesh surface must be present in apex region: band11={}",
+            b[11]
+        );
+        assert!(
+            b[3] < 1e-3,
+            "splat at cam_z 21.1 is behind true surface ~1.7 and MUST be rejected, got band3={}",
+            b[3]
+        );
+        assert!(
+            b[11] > 100.0 * b[3].max(1e-9),
+            "rejected splat must not show through mesh: band11={} band3={}",
+            b[11],
+            b[3]
+        );
+
+        // FRONT: a genuinely nearer splat still composites (band 3 present).
+        assert!(
+            f[3] > 1.0,
+            "splat at cam_z 0.8 is in front of the surface and MUST composite, got band3={}",
+            f[3]
+        );
+        assert!(
+            f[3] > f[11],
+            "front splat band 3 must dominate the mesh in this region: band3={} band11={}",
+            f[3],
+            f[11]
+        );
+    }
+
+    /// Regression for the near-plane clipping fix (wave-6). A large ground quad
+    /// extends from well in front of the camera to behind it (one edge straddles
+    /// the near plane). The OLD code dropped any triangle with a vertex behind
+    /// near entirely, so the quad rendered NOTHING; the clip path rasterises the
+    /// in-front portion and still occludes a splat behind it.
+    #[test]
+    fn near_plane_clip_renders_visible_portion_and_occludes() {
+        // Camera above the ground looking forward-and-down so the ground plane
+        // recedes from in-front to behind the eye.
+        let cam = RenderCamera {
+            view: Mat4::look_at_rh(
+                Vec3::new(0.0, 4.0, 0.0),
+                Vec3::new(0.0, 0.0, -10.0),
+                Vec3::Y,
+            ),
+            proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, W as f32 / H as f32, 0.1, 500.0),
+        };
+        let il = illum();
+
+        // A big ground quad on the y=0 plane, spanning z from +20 (behind the
+        // eye, which sits at z=0 looking toward -z) to -60 (far in front). Two
+        // triangles; each straddles the near plane (part behind the camera).
+        let ground = HybridMesh {
+            positions: vec![
+                [-40.0, 0.0, 20.0],  // behind the eye
+                [40.0, 0.0, 20.0],   // behind the eye
+                [40.0, 0.0, -60.0],  // far in front
+                [-40.0, 0.0, -60.0], // far in front
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            reflectance: single_band_f32(11, 1.0),
+            object_id: 1,
+        };
+
+        // Splat behind a chunk of the ground (below the plane, far out), band 3.
+        let splat = GaussianSplat::volume(
+            [0.0, -2.0, -30.0],
+            [8.0, 2.0, 8.0],
+            Quat::IDENTITY,
+            255,
+            single_band(3, 1.0),
+        );
+
+        let mut fb = SpectralFramebuffer::new(W, H);
+        let stats = render_hybrid(
+            &HybridScene {
+                meshes: vec![ground],
+                splats: std::slice::from_ref(&splat),
+            },
+            &cam,
+            &il,
+            &mut fb,
+        );
+
+        // Count lit mesh pixels (band 11 present). The old whole-triangle-drop
+        // path produced ZERO here.
+        let mut lit_mesh = 0usize;
+        for y in 0..H {
+            for x in 0..W {
+                if fb.spectral[fb.idx(x, y)][11] > 1e-3 {
+                    lit_mesh += 1;
+                }
+            }
+        }
+        eprintln!(
+            "near_plane_clip: lit_mesh_px={lit_mesh} (old path=0) triangles_drawn={}",
+            stats.triangles_drawn
+        );
+        assert!(
+            lit_mesh > 50,
+            "near-clipped ground must render its visible portion (old path rendered 0), got {lit_mesh}"
+        );
+        assert!(
+            stats.triangles_drawn >= 1,
+            "at least one ground sub-triangle must rasterise: {stats:?}"
+        );
+
+        // The ground still occludes the splat where it covers it: in the lower
+        // frame (ground in front), band 11 (mesh) dominates band 3 (splat).
+        let lower = region_band_sums(&fb, 0, H * 3 / 4, W, H);
+        assert!(
+            lower[11] > lower[3],
+            "ground must occlude the splat behind it: mesh11={} splat3={}",
+            lower[11],
+            lower[3]
+        );
+    }
+
 }

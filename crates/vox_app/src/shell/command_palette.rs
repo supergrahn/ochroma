@@ -56,8 +56,19 @@ impl CommandRegistry {
         CommandRegistry { commands: Vec::new() }
     }
 
+    /// Register a command. **Same-id registration REPLACES the existing command
+    /// in place** (it does not append a shadowed duplicate), mirroring the
+    /// subgraph registry's `register_subgraph`. Re-registering under an id that
+    /// already exists swaps the title/category/shortcut/callback to the new
+    /// command, so [`run`](Self::run) dispatches the new version and
+    /// [`search`](Self::search) returns exactly one hit for that id. This keeps
+    /// menus, palette Enter, and `run(id)` from ever diverging under a collision.
     pub fn add(&mut self, cmd: Command) -> &mut Self {
-        self.commands.push(cmd);
+        if let Some(existing) = self.commands.iter_mut().find(|c| c.id == cmd.id) {
+            *existing = cmd;
+        } else {
+            self.commands.push(cmd);
+        }
         self
     }
 
@@ -404,5 +415,53 @@ mod tests {
         let hits = reg.search("");
         assert_eq!(hits.len(), 4);
         assert_eq!(hits[0].id, "world.add");
+    }
+
+    #[test]
+    fn duplicate_id_registration_replaces_in_place() {
+        // Registering a v2 command under an id already taken by v1 must REPLACE
+        // v1 (not append a shadowed duplicate): run(id) fires v2's callback, and
+        // search shows exactly one hit for that id.
+        let which = Rc::new(RefCell::new(0u32));
+        let mut reg = CommandRegistry::new();
+        let w1 = which.clone();
+        reg.add(Command::new(
+            "tool.run",
+            "Run Tool v1",
+            "Tools",
+            "",
+            move || *w1.borrow_mut() = 1,
+        ));
+        let w2 = which.clone();
+        reg.add(Command::new(
+            "tool.run",
+            "Run Tool v2",
+            "Tools",
+            "",
+            move || *w2.borrow_mut() = 2,
+        ));
+
+        // Exactly one command carries this id (no shadowed duplicate).
+        assert_eq!(
+            reg.commands.iter().filter(|c| c.id == "tool.run").count(),
+            1,
+            "duplicate id must collapse to a single entry"
+        );
+        // The surviving entry is v2 (title swapped in place).
+        let entry = reg.commands.iter().find(|c| c.id == "tool.run").unwrap();
+        assert_eq!(entry.title, "Run Tool v2", "v2 must replace v1's metadata");
+
+        // run(id) fires v2's callback, not v1's.
+        assert!(reg.run("tool.run"));
+        assert_eq!(*which.borrow(), 2, "run(id) must dispatch v2, got {}", *which.borrow());
+
+        // search("Run Tool") returns exactly one hit (no duplicate row).
+        let hits = reg.search("Run Tool");
+        assert_eq!(
+            hits.iter().filter(|c| c.id == "tool.run").count(),
+            1,
+            "search must show one hit for the replaced id"
+        );
+        assert_eq!(hits[0].title, "Run Tool v2");
     }
 }

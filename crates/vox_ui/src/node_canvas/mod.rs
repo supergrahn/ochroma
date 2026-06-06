@@ -196,6 +196,10 @@ pub struct NodeCanvas {
     drag_node: Option<u64>,
     /// Pointer offset within the node body at grab time (world units).
     drag_grab: Vec2,
+    /// True while the in-progress drag began inside the minimap inset — used to
+    /// suppress world panning so the minimap doesn't act as a transparent pan
+    /// surface (a drag there is minimap interaction, not a canvas pan).
+    drag_in_minimap: bool,
     /// Last computed content bounds (world space) — used by the minimap.
     content_bounds: Rect,
 }
@@ -217,6 +221,7 @@ impl NodeCanvas {
             show_minimap: true,
             drag_node: None,
             drag_grab: Vec2::ZERO,
+            drag_in_minimap: false,
             content_bounds: Rect::from_min_size(Pos2::ZERO, Vec2::splat(1.0)),
         }
     }
@@ -338,9 +343,22 @@ impl NodeCanvas {
         // --- Interaction: node drag / selection ---
         self.handle_interaction(origin, rect, graph, &response, pointer, &mut out);
 
+        // On drag-start, record whether the gesture began inside the minimap
+        // inset so we can keep the minimap from acting as a transparent pan
+        // surface for the whole drag.
+        if response.drag_started() {
+            self.drag_in_minimap = self.show_minimap
+                && response
+                    .interact_pointer_pos()
+                    .is_some_and(|p| self.minimap_rect(rect).contains(p));
+        }
+        if response.drag_stopped() {
+            self.drag_in_minimap = false;
+        }
+
         // --- Pan when dragging empty canvas ---
-        if response.dragged() && self.drag_node.is_none() {
-            // Only pan if the drag did not start on a node.
+        if response.dragged() && self.drag_node.is_none() && !self.drag_in_minimap {
+            // Only pan if the drag did not start on a node or in the minimap.
             self.pan += response.drag_delta();
         }
 
@@ -402,6 +420,31 @@ impl NodeCanvas {
         Color32::from_rgba_unmultiplied(r, g, b, a)
     }
 
+    /// The two endpoint socket colors a typed data wire gradients between: the
+    /// source output port's type color and the destination input port's type
+    /// color (this is the exact resolution `draw_wire` uses to color the noodle).
+    fn wire_endpoint_colors(
+        &self,
+        from_n: &NodeView,
+        to_n: &NodeView,
+        w: &WireView,
+        t: &Tokens,
+    ) -> (Color32, Color32) {
+        let src_ty = from_n
+            .outputs
+            .iter()
+            .find(|p| p.name == w.from_port)
+            .map(|p| p.ty)
+            .unwrap_or(PortType::Scalar);
+        let dst_ty = to_n
+            .inputs
+            .iter()
+            .find(|p| p.name == w.to_port)
+            .map(|p| p.ty)
+            .unwrap_or(src_ty);
+        (self.socket_color(t, src_ty), self.socket_color(t, dst_ty))
+    }
+
     fn draw_wire(
         &self,
         painter: &egui::Painter,
@@ -434,21 +477,8 @@ impl NodeCanvas {
             self.stroke_bezier(painter, p0, p1, p2, p3, thickness, |_| white);
             self.draw_arrowhead(painter, p2, p3, thickness, white);
         } else {
-            // Typed data wire: gradient between the two socket colors.
-            let src_ty = from_n
-                .outputs
-                .iter()
-                .find(|p| p.name == w.from_port)
-                .map(|p| p.ty)
-                .unwrap_or(PortType::Scalar);
-            let dst_ty = to_n
-                .inputs
-                .iter()
-                .find(|p| p.name == w.to_port)
-                .map(|p| p.ty)
-                .unwrap_or(src_ty);
-            let cs = self.socket_color(t, src_ty);
-            let cd = self.socket_color(t, dst_ty);
+            // Typed data wire: gradient between the two endpoint socket colors.
+            let (cs, cd) = self.wire_endpoint_colors(from_n, to_n, w, t);
             self.stroke_bezier(painter, p0, p1, p2, p3, thickness, |frac| lerp_col(cs, cd, frac));
         }
 
@@ -774,6 +804,32 @@ impl NodeCanvas {
         Some(pts)
     }
 
+    /// The color the renderer emits along a typed data wire at parameter
+    /// `frac` in [0,1] — exactly the per-segment color `draw_wire` strokes
+    /// (`lerp_col` between the two endpoint socket colors). For exec wires the
+    /// flat flow color is returned. `None` if either endpoint node is missing.
+    ///
+    /// This is the production color path (it calls the same
+    /// [`Self::wire_endpoint_colors`] + `lerp_col` the renderer uses), so a test
+    /// asserting on it proves the gradient the canvas actually paints.
+    pub fn wire_segment_color(
+        &self,
+        graph: &CanvasGraph,
+        w: &WireView,
+        t: &Tokens,
+        frac: f32,
+    ) -> Option<[u8; 4]> {
+        let from_n = graph.node(w.from_node)?;
+        let to_n = graph.node(w.to_node)?;
+        let c = if w.exec {
+            self.socket_color(t, PortType::Flow)
+        } else {
+            let (cs, cd) = self.wire_endpoint_colors(from_n, to_n, w, t);
+            lerp_col(cs, cd, frac)
+        };
+        Some([c.r(), c.g(), c.b(), c.a()])
+    }
+
     /// The minimap rect for the given canvas (for tests).
     pub fn minimap_rect_for(&self, canvas: Rect) -> Rect {
         self.minimap_rect(canvas)
@@ -862,17 +918,219 @@ mod tests {
         g
     }
 
+    /// Run one `canvas.ui` frame inside an egui context with the given pointer
+    /// events, returning nothing (mutations land in `graph`/`canvas`). This drives
+    /// the REAL interaction path (`handle_interaction`), not a reimplementation.
+    fn run_canvas_frame(
+        canvas: &mut NodeCanvas,
+        graph: &mut CanvasGraph,
+        t: &Tokens,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        pointer_pos: Pos2,
+    ) {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    // Keep the canvas pointer where the drag is, frame to frame.
+                    let _ = pointer_pos;
+                    canvas.ui(ui, t, graph);
+                });
+        });
+    }
+
     #[test]
     fn snap_to_grid_lands_on_grid() {
-        // Dragging a node so its target world pos is (103,97) with snap 8 must
-        // land it at (104,96) (rounded to the nearest multiple of 8).
-        let snap = 8.0f32;
-        let target = Pos2::new(103.0, 97.0);
-        let snapped = Pos2::new(
-            (target.x / snap).round() * snap,
-            (target.y / snap).round() * snap,
+        // Drive the REAL drag path: press on the node, drag so its grabbed origin
+        // would land at world (103,97), and assert the node's resulting `pos`
+        // field is snapped to the nearest multiple of 8 -> (104,96). This goes
+        // through `handle_interaction`'s snap code, not a re-derived formula.
+        let t = Tokens::default();
+        let ctx = egui::Context::default();
+        let mut canvas = NodeCanvas::new();
+        canvas.show_minimap = false; // keep the drag clear of the minimap inset
+        canvas.set_snap(8.0);
+        // pan/zoom identity so world == screen and the math is transparent.
+        canvas.pan = Vec2::ZERO;
+        canvas.zoom = 1.0;
+
+        let mut graph = CanvasGraph::default();
+        // Node body top-left at world (40,40); grab at its top-left corner so the
+        // grab offset is ~(0,0) and the target pos equals the pointer's world pos.
+        graph.nodes.push({
+            let mut n = NodeView::new(7, "Drag Me", NodeCategory::Spatial, Pos2::new(40.0, 40.0));
+            n.size.x = 150.0;
+            n
+        });
+
+        // egui needs a pointer press + a move past the drag threshold across
+        // frames. Grab point: just inside the node body top-left at (41,41).
+        let grab = Pos2::new(41.0, 41.0);
+        // Frame 0: establish pointer position + allocate the canvas rect so the
+        // following press lands on an interactable widget.
+        run_canvas_frame(
+            &mut canvas, &mut graph, &t, &ctx,
+            vec![egui::Event::PointerMoved(grab)],
+            grab,
         );
-        assert_eq!(snapped, Pos2::new(104.0, 96.0), "snap-8 of (103,97)");
+        // Frame 1: primary button DOWN at the grab point.
+        run_canvas_frame(
+            &mut canvas, &mut graph, &t, &ctx,
+            vec![egui::Event::PointerButton {
+                pos: grab,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }],
+            grab,
+        );
+
+        // Frame 2: a small move past egui's ~6px click threshold but still over
+        // the node body, so `drag_started` fires while the pointer is on the node
+        // and the canvas grabs it (drag_node set). Grab offset becomes (1,1).
+        let nudge = Pos2::new(51.0, 51.0);
+        run_canvas_frame(
+            &mut canvas, &mut graph, &t, &ctx,
+            vec![egui::Event::PointerMoved(nudge)],
+            nudge,
+        );
+
+        // Frame 3..N: drag to the final target. `drag_started` fired at pointer
+        // (51,51) while node.pos was (40,40), so the grab offset is (11,11). To
+        // land the node's top-left at pre-snap world (104,97) the pointer must be
+        // at (115,108). Pre-snap np = (104,97); snap-8 -> (104,96).
+        let drag_to = Pos2::new(115.0, 108.0);
+        for _ in 0..3 {
+            run_canvas_frame(
+                &mut canvas, &mut graph, &t, &ctx,
+                vec![egui::Event::PointerMoved(drag_to)],
+                drag_to,
+            );
+        }
+
+        let pos = graph.node(7).unwrap().pos;
+        assert_eq!(
+            pos,
+            Pos2::new(104.0, 96.0),
+            "drag through the real snap path must land the node at the 8-grid (104,96), got {pos:?}"
+        );
+    }
+
+    /// Run a full press->nudge->drag->release gesture (empty-canvas drag) starting
+    /// at `start`, dragging by `delta`, and return the canvas pan afterward. Drives
+    /// the real `ui` interaction path.
+    fn drag_gesture(
+        canvas: &mut NodeCanvas,
+        graph: &mut CanvasGraph,
+        t: &Tokens,
+        ctx: &egui::Context,
+        start: Pos2,
+        delta: Vec2,
+    ) {
+        run_canvas_frame(canvas, graph, t, ctx, vec![egui::Event::PointerMoved(start)], start);
+        run_canvas_frame(
+            canvas, graph, t, ctx,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }],
+            start,
+        );
+        // Past the click threshold to commit the drag, then to the final point.
+        let nudge = start + Vec2::new(10.0, 0.0);
+        run_canvas_frame(canvas, graph, t, ctx, vec![egui::Event::PointerMoved(nudge)], nudge);
+        let end = start + delta;
+        run_canvas_frame(canvas, graph, t, ctx, vec![egui::Event::PointerMoved(end)], end);
+        run_canvas_frame(
+            canvas, graph, t, ctx,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            end,
+        );
+    }
+
+    #[test]
+    fn minimap_drag_does_not_pan_world() {
+        // Screen 800x600 -> minimap inset is bottom-right at (548,428)-(788,588).
+        // A drag that BEGINS inside the minimap must NOT pan the world; the same
+        // gesture begun on empty canvas MUST pan. A click in the minimap still
+        // jump-navigates (sets pan to re-centre).
+        let t = Tokens::default();
+        let empty = CanvasGraph::default();
+        let canvas_rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+
+        // --- Drag originating INSIDE the minimap: pan unchanged. ---
+        let ctx1 = egui::Context::default();
+        let mut c_inside = NodeCanvas::new();
+        let mm = c_inside.minimap_rect_for(canvas_rect);
+        let inside_start = mm.center();
+        assert!(mm.contains(inside_start), "test start must be in the minimap");
+        let mut g1 = empty.clone();
+        let pan_before_inside = c_inside.pan;
+        drag_gesture(&mut c_inside, &mut g1, &t, &ctx1, inside_start, Vec2::new(120.0, 80.0));
+        assert_eq!(
+            c_inside.pan, pan_before_inside,
+            "a drag starting inside the minimap must not pan the world (pan {:?} -> {:?})",
+            pan_before_inside, c_inside.pan
+        );
+
+        // --- Same gesture begun on empty canvas (outside minimap): pan moves. ---
+        let ctx2 = egui::Context::default();
+        let mut c_outside = NodeCanvas::new();
+        let outside_start = Pos2::new(120.0, 200.0); // clear of minimap + any node
+        assert!(
+            !c_outside.minimap_rect_for(canvas_rect).contains(outside_start),
+            "control start must be outside the minimap"
+        );
+        let mut g2 = empty.clone();
+        let pan_before_outside = c_outside.pan;
+        drag_gesture(&mut c_outside, &mut g2, &t, &ctx2, outside_start, Vec2::new(120.0, 80.0));
+        assert_ne!(
+            c_outside.pan, pan_before_outside,
+            "a drag on empty canvas must pan the world, but pan stayed {:?}",
+            c_outside.pan
+        );
+
+        // --- Click-to-jump still works: a click (no drag) inside the minimap
+        // re-centres (pan changes). ---
+        let ctx3 = egui::Context::default();
+        let mut c_click = NodeCanvas::new();
+        // Give it content so content_bounds is meaningful for the jump math.
+        let mut g3 = demo_graph();
+        let jump_at = c_click.minimap_rect_for(canvas_rect).center() + Vec2::new(40.0, 20.0);
+        let pan_before_click = c_click.pan;
+        // First frame establishes content_bounds; click on the second.
+        run_canvas_frame(&mut c_click, &mut g3, &t, &ctx3, vec![egui::Event::PointerMoved(jump_at)], jump_at);
+        run_canvas_frame(
+            &mut c_click, &mut g3, &t, &ctx3,
+            vec![
+                egui::Event::PointerButton {
+                    pos: jump_at, button: egui::PointerButton::Primary,
+                    pressed: true, modifiers: egui::Modifiers::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: jump_at, button: egui::PointerButton::Primary,
+                    pressed: false, modifiers: egui::Modifiers::default(),
+                },
+            ],
+            jump_at,
+        );
+        assert_ne!(
+            c_click.pan, pan_before_click,
+            "a click inside the minimap must still jump-navigate (re-centre the pan)"
+        );
     }
 
     #[test]
@@ -960,13 +1218,12 @@ mod tests {
 
     #[test]
     fn wire_gradient_matches_endpoint_socket_colors() {
-        // The wire color near the source equals the source port-type token color
-        // and near the target equals the target port-type color; they differ.
-        // Terrain(out: Terrain) -> Biome(in: terrain==Terrain) is same-type, so
-        // use Biome(out: BiomeMap) -> SplatWeight(in: BiomeMap)... still same.
-        // The visibly two-colored wire is SplatWeight(weights: SplatWeights) ->
-        // Splatize(in: SplatWeights) — also same type. So assert against the
-        // documented gradient endpoints directly on a synthetic two-type wire.
+        // Drive the production color path: `wire_segment_color` is the exact
+        // per-segment color `draw_wire` strokes onto the canvas (it resolves the
+        // two endpoint port types and `lerp_col`s between their token colors).
+        // Assert the emitted colors near each endpoint equal the two token colors
+        // and DIFFER from each other — proving the renderer applies the gradient,
+        // not re-asserting lerp_col's definitional endpoints.
         let t = Tokens::default();
         let mut g = CanvasGraph::default();
         g.nodes.push(
@@ -977,27 +1234,52 @@ mod tests {
             NodeView::new(2, "B", NodeCategory::Sink, Pos2::new(300.0, 0.0))
                 .with_input("in", PortType::Splats),
         );
-        for n in &mut g.nodes { n.size.x = 150.0; }
-        let _w = WireView {
+        for n in &mut g.nodes {
+            n.size.x = 150.0;
+        }
+        g.wires.push(WireView {
             from_node: 1, from_port: "out".into(),
             to_node: 2, to_port: "in".into(),
             exec: false, label: None,
+        });
+        let canvas = NodeCanvas::new();
+        let wire = &g.wires[0];
+
+        // Tokens the renderer should land on at each endpoint.
+        let src_tok = t.wire_color(PortType::Terrain);
+        let dst_tok = t.wire_color(PortType::Splats);
+        assert_ne!(src_tok, dst_tok, "Terrain and Splats socket colors must differ");
+
+        // The first/last drawn segment midpoints are at frac 0.5/SEGS and
+        // (SEGS-0.5)/SEGS (see `stroke_bezier`); sample slightly in from the
+        // ends so we read the gradient the canvas actually emits there.
+        let near_src = canvas.wire_segment_color(&g, wire, &t, 1.0 / 64.0).unwrap();
+        let near_dst = canvas.wire_segment_color(&g, wire, &t, 63.0 / 64.0).unwrap();
+
+        // Near the source, the emitted color is within a couple of LSBs of the
+        // source token (the gradient has barely departed it); same near the dst.
+        let close = |a: [u8; 4], b: [u8; 4]| -> bool {
+            (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= 6)
         };
-        let src = t.wire_color(PortType::Terrain);
-        let dst = t.wire_color(PortType::Splats);
-        // The renderer colors segment frac~0 ~ src, frac~1 ~ dst (lerp_col).
-        let near_src = lerp_col(
-            Color32::from_rgba_unmultiplied(src[0], src[1], src[2], src[3]),
-            Color32::from_rgba_unmultiplied(dst[0], dst[1], dst[2], dst[3]),
-            0.0,
+        assert!(
+            close(near_src, src_tok),
+            "wire near source emits {near_src:?}, expected ~Terrain token {src_tok:?}"
         );
-        let near_dst = lerp_col(
-            Color32::from_rgba_unmultiplied(src[0], src[1], src[2], src[3]),
-            Color32::from_rgba_unmultiplied(dst[0], dst[1], dst[2], dst[3]),
-            1.0,
+        assert!(
+            close(near_dst, dst_tok),
+            "wire near target emits {near_dst:?}, expected ~Splats token {dst_tok:?}"
         );
-        assert_eq!([near_src.r(), near_src.g(), near_src.b()], [src[0], src[1], src[2]]);
-        assert_eq!([near_dst.r(), near_dst.g(), near_dst.b()], [dst[0], dst[1], dst[2]]);
-        assert_ne!(src, dst, "Terrain and Splats socket colors must differ");
+        // And the two emitted endpoint colors must genuinely differ (real gradient).
+        assert!(
+            (0..3).any(|i| (near_src[i] as i32 - near_dst[i] as i32).abs() > 20),
+            "emitted endpoint colors must differ: src={near_src:?} dst={near_dst:?}"
+        );
+
+        // The midpoint is a true blend of both — not equal to either endpoint.
+        let mid = canvas.wire_segment_color(&g, wire, &t, 0.5).unwrap();
+        assert!(
+            !close(mid, src_tok) && !close(mid, dst_tok),
+            "wire midpoint {mid:?} should be a blend, not an endpoint color"
+        );
     }
 }
