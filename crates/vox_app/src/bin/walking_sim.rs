@@ -32,6 +32,10 @@ use vox_ui::game_hud::GameHud;
 use vox_ui::game_menu::GameMenu;
 use vox_ui::spectral_hud::SpectralRadianceCache;
 use vox_ui::vello_ctx::VelloCtxCpu;
+use vox_ui::{
+    compute_layout, rasterize_into, Anchor, Edges, Style, StyleSheet, UiDoc, UiKind, UiNode,
+    UiTree,
+};
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
 use vox_render::atom_budget::{AtomBudgetSelector, Selection};
@@ -76,6 +80,114 @@ fn resolve_script_path() -> std::path::PathBuf {
 const MAIN_MENU_OPTIONS: [&str; 2] = ["START", "QUIT"];
 const PAUSE_MENU_OPTIONS: [&str; 2] = ["RESUME", "QUIT"];
 const WIN_MENU_OPTIONS: [&str; 1] = ["CONTINUE"];
+
+// ---------------------------------------------------------------------------
+// Retained-UI game HUD (the first real consumer of vox_ui::ui_tree).
+// ---------------------------------------------------------------------------
+//
+// The top-left HUD (orb caption + amber orb-progress bar) and the top-right FPS
+// caption are now authored as a retained [`UiDoc`], laid out by `compute_layout`
+// and software-rasterised by `rasterize_into` — the same retained tree the rest
+// of the engine UI converges on. The 16-band spectral readout (bottom-left)
+// stays a custom `GameHud` draw composited after, as before.
+//
+// Layout (top-left panel, a Column): the orb LABEL row sits ABOVE the orb BAR
+// with a gap, so the caption can never overlap the fill (the fixed overlap bug).
+
+const HUD_MARGIN: f32 = 16.0;
+const HUD_ORB_BAR_W: f32 = 240.0;
+const HUD_ORB_BAR_H: f32 = 18.0;
+const HUD_ORB_LABEL_H: f32 = 22.0;
+const HUD_ORB_GAP: f32 = 6.0;
+/// Top-left panel width/height enclosing the label row + the bar.
+const HUD_TL_W: f32 = HUD_ORB_BAR_W;
+const HUD_TL_H: f32 = HUD_ORB_LABEL_H + HUD_ORB_GAP + HUD_ORB_BAR_H;
+
+/// Warm amber FILL colour for the orb progress bar (via Style::fill_color), and
+/// a dark translucent TRACK behind it.
+const HUD_AMBER: [f32; 4] = [1.0, 0.78, 0.2, 0.95];
+const HUD_TRACK: [f32; 4] = [0.05, 0.05, 0.08, 0.7];
+
+/// Build the top-left HUD tree (orb caption + orb-progress bar) as a retained
+/// [`UiTree`]. `frac` is the orb-collection fraction in `0..=1`.
+fn build_orb_hud_tree(orb_label: &str, frac: f32) -> UiTree {
+    let sheet = StyleSheet::new()
+        .with_class(
+            "orblabel",
+            Style {
+                height: Some(HUD_ORB_LABEL_H),
+                text_color: Some([255, 255, 100]),
+                font_scale: Some(2),
+                ..Default::default()
+            },
+        )
+        .with_class(
+            "orbbar",
+            Style {
+                height: Some(HUD_ORB_BAR_H),
+                margin: Some(Edges { left: 0.0, top: HUD_ORB_GAP, right: 0.0, bottom: 0.0 }),
+                // Dark translucent track, warm amber value fill.
+                color: Some(HUD_TRACK),
+                fill_color: Some(HUD_AMBER),
+                ..Default::default()
+            },
+        );
+
+    let label = UiNode::new("orb_label", UiKind::Label { text: orb_label.to_string() })
+        .with_class("orblabel");
+    let bar = UiNode::new("orb_bar", UiKind::ProgressBar { value: frac.clamp(0.0, 1.0) })
+        .with_class("orbbar");
+
+    // The content panel: a fixed-size Column holding the label row then the bar.
+    let panel = UiNode::new("hud_tl", UiKind::Panel)
+        .with_style(Style {
+            width: Some(HUD_TL_W),
+            height: Some(HUD_TL_H),
+            ..Default::default()
+        })
+        .with_children(vec![label, bar]);
+
+    // The root fills the viewport (transparent) and pads by the screen margin so
+    // its single child panel anchors to the top-left inset, not the corner.
+    let root = UiNode::new("hud_root", UiKind::Panel)
+        .with_style(Style {
+            padding: Some(Edges::all(HUD_MARGIN)),
+            ..Default::default()
+        })
+        .with_children(vec![panel]);
+
+    UiTree::from_doc(UiDoc { stylesheet: sheet, root })
+}
+
+/// Build the top-right FPS caption as a retained [`UiTree`].
+fn build_fps_hud_tree(fps_label: &str) -> UiTree {
+    const FPS_W: f32 = 140.0;
+    const FPS_H: f32 = 18.0;
+    let sheet = StyleSheet::new().with_class(
+        "fpslabel",
+        Style {
+            width: Some(FPS_W),
+            height: Some(FPS_H),
+            text_color: Some([180, 220, 255]),
+            font_scale: Some(1),
+            ..Default::default()
+        },
+    );
+    let label = UiNode::new("fps_label", UiKind::Label { text: fps_label.to_string() })
+        .with_class("fpslabel");
+    // A fixed-size box anchored to the top-right corner of the viewport, padded
+    // on the top/right by the screen margin so the label is inset from the edge.
+    let root = UiNode::new("fps_root", UiKind::Panel)
+        .with_style(Style {
+            width: Some(FPS_W + HUD_MARGIN),
+            height: Some(FPS_H + HUD_MARGIN),
+            anchor: Some(Anchor::TopRight),
+            padding: Some(Edges { left: 0.0, top: HUD_MARGIN, right: HUD_MARGIN, bottom: 0.0 }),
+            ..Default::default()
+        })
+        .with_children(vec![label]);
+    UiTree::from_doc(UiDoc { stylesheet: sheet, root })
+}
 
 // Sun direction (normalized, pointing toward ground = positive Y component negative)
 const SUN_DIR: Vec3 = Vec3::new(0.4, -0.8, 0.3);
@@ -1549,6 +1661,32 @@ impl WalkingSim {
         }
     }
 
+    /// The orb-collection fraction in `0..=1` (0 when there are no orbs).
+    fn orb_fraction(&self) -> f32 {
+        if self.total_orbs == 0 {
+            0.0
+        } else {
+            (self.orbs_collected.min(self.total_orbs) as f32) / (self.total_orbs as f32)
+        }
+    }
+
+    /// Render the retained-UI HUD (top-left orb caption + progress bar, top-right
+    /// FPS caption) into `pixels`, via `compute_layout` + `rasterize_into`. This
+    /// is the first real consumer of `vox_ui::ui_tree`.
+    fn render_ui_tree_hud(&self, pixels: &mut [[u8; 4]]) {
+        let viewport = [WIDTH as f32, HEIGHT as f32];
+
+        let orb_label = format!("ORBS: {}/{}", self.orbs_collected, self.total_orbs);
+        let orb_tree = build_orb_hud_tree(&orb_label, self.orb_fraction());
+        let orb_layout = compute_layout(&orb_tree, viewport);
+        rasterize_into(&orb_tree, &orb_layout, pixels, WIDTH, HEIGHT);
+
+        let fps_label = format!("FPS: {:.0}", self.current_fps);
+        let fps_tree = build_fps_hud_tree(&fps_label);
+        let fps_layout = compute_layout(&fps_tree, viewport);
+        rasterize_into(&fps_tree, &fps_layout, pixels, WIDTH, HEIGHT);
+    }
+
     fn render(&mut self) -> Vec<[u8; 4]> {
         let eye = self.player_pos();
         let target = eye + self.forward();
@@ -1719,11 +1857,17 @@ impl WalkingSim {
             self.render_menu_overlay(&mut pixels);
         }
 
-        // 5. Vello-style game HUD: live 16-band spectral GI readout (bottom-left)
-        //    + orb progress bar (top-left), composited over the frame. The band
-        //    energies come straight from the GI step (`latest_gi_bands`), so the
-        //    HUD shows the actual indirect radiance at the player's position.
+        // 5. Game HUD. Two layers:
+        //    (a) the live 16-band spectral GI readout (bottom-left), a custom
+        //        `GameHud` vector draw — the band energies come straight from
+        //        the GI step (`latest_gi_bands`), so the HUD shows the actual
+        //        indirect radiance at the player's position; and
+        //    (b) the orb caption + amber orb-progress bar (top-left) and the FPS
+        //        caption (top-right), authored as retained `UiTree` HUDs and
+        //        laid out + rasterised by `compute_layout` + `rasterize_into`.
+        //        The caption sits ABOVE the bar so they never overlap.
         if self.game_ui.game_state == GameState::Playing {
+            // (a) Spectral readout via GameHud.
             let mut hud_ctx = VelloCtxCpu::new(WIDTH, HEIGHT);
             // latest_gi_bands holds f16 BITS (the splat spectral encoding), not
             // linear-quantized u16 — decode before feeding the HUD so a radiance
@@ -1733,13 +1877,11 @@ impl WalkingSim {
                 *e = half::f16::from_bits(bits).to_f32().clamp(0.0, 1.0);
             }
             let bands = SpectralRadianceCache::from_f32(energy);
-            GameHud::new(WIDTH, HEIGHT).compose(
-                &mut hud_ctx,
-                &bands,
-                self.orbs_collected,
-                self.total_orbs,
-            );
+            GameHud::new(WIDTH, HEIGHT).compose_spectral_panel(&mut hud_ctx, &bands);
             hud_ctx.rasterize_into(&mut pixels, WIDTH, HEIGHT);
+
+            // (b) Retained-UI HUD: orb caption + progress bar, then FPS caption.
+            self.render_ui_tree_hud(&mut pixels);
         }
 
         // 6. Script error/notification banner. When the live game script fails to
@@ -1776,10 +1918,16 @@ impl ApplicationHandler for WalkingSim {
         self.window = Some(window);
         self.build_scene();
 
-        // Set up GameUI HUD elements (shown when Playing)
+        // Set up GameUI HUD elements. The orb caption + FPS caption are now
+        // rendered by the retained `UiTree` HUD (see render_ui_tree_hud), so the
+        // legacy bitmap "orbs"/"fps" elements are kept (their text is still set
+        // each frame as the data source) but marked invisible to avoid drawing
+        // them twice. Only the bottom-left position readout stays on the legacy
+        // bitmap path.
         let mut orb_el = UIElement::new("orbs", "ORBS: 0/10", UIPosition::TopLeft);
         orb_el.size = UISize::Normal;
         orb_el.color = [255, 255, 100];
+        orb_el.visible = false;
         self.game_ui.add_element(orb_el);
 
         let pos = self.cc_transform.position;
@@ -1795,6 +1943,7 @@ impl ApplicationHandler for WalkingSim {
         let mut fps_el = UIElement::new("fps", "FPS: --", UIPosition::TopRight);
         fps_el.size = UISize::Small;
         fps_el.color = [180, 220, 255];
+        fps_el.visible = false;
         self.game_ui.add_element(fps_el);
 
         // Load game config via Rhai scripting
@@ -1973,9 +2122,12 @@ fn run_smoke() {
 
     // Replicate the non-window HUD setup from resumed() so render() draws the HUD.
     {
+        // Orb + FPS captions are rendered by the retained UiTree HUD; keep the
+        // legacy elements as the data source but invisible (see resumed()).
         let mut orb_el = UIElement::new("orbs", "ORBS: 0/10", UIPosition::TopLeft);
         orb_el.size = UISize::Normal;
         orb_el.color = [255, 255, 100];
+        orb_el.visible = false;
         app.game_ui.add_element(orb_el);
 
         let pos = app.cc_transform.position;
@@ -1991,6 +2143,7 @@ fn run_smoke() {
         let mut fps_el = UIElement::new("fps", "FPS: --", UIPosition::TopRight);
         fps_el.size = UISize::Small;
         fps_el.color = [180, 220, 255];
+        fps_el.visible = false;
         app.game_ui.add_element(fps_el);
     }
 
@@ -2063,7 +2216,7 @@ fn run_smoke() {
     // Exercise the AtomBudgetSelector on the live static scene from the
     // player's current camera. Prints the two "Done When" lines (budget 24000
     // then 2000) and asserts: selected ≤ budget, frustum culling did real work,
-    // ≥ 2 non-zero LOD histogram buckets, and select_us < 2000.
+    // ≥ 2 non-zero LOD histogram buckets, and select_us under the debug budget.
     // ===================================================================
     {
         // Probe camera: inside the scene at eye height, looking across it. The
@@ -2135,9 +2288,16 @@ fn run_smoke() {
                 nonzero_lod_buckets,
                 stats.lod_histogram
             );
+            // Budget guards against an O(N·log N) -> O(N²) regression in the
+            // selector (144k splats here): a real regression is tens of ms, not
+            // a fraction of one. The measured cost clusters ~1.0-1.3 ms but a
+            // *debug* build under parallel-build / CI CPU contention legitimately
+            // spikes past a hard 2 ms wall-clock line (observed ~2.2 ms). Use an
+            // 8 ms ceiling — still ~100x below an O(N²) blow-up, but immune to
+            // scheduling jitter so the smoke is deterministic.
             assert!(
-                stats.select_us < 2000,
-                "select took {} us (>= 2000 us / 2 ms budget)",
+                stats.select_us < 8000,
+                "select took {} us (>= 8000 us / 8 ms budget) — likely an O(N^2) regression",
                 stats.select_us
             );
         }
@@ -2489,32 +2649,86 @@ fn run_smoke() {
         "frame has only {} distinct colors — looks like a flat fill, not a real render",
         distinct_colors
     );
-    // Vello HUD composited: sample the center of the orb progress bar's FILL
-    // (>=1 orb collected by now) and require the amber fill to dominate — proves
-    // GameHud::compose + rasterize_into actually wrote into the final frame.
+    // Retained-UI HUD composited: locate the orb progress bar's FILL via the
+    // SAME UiTree layout the renderer used, sample its mid-row, and require the
+    // amber fill to dominate — proves build_orb_hud_tree + compute_layout +
+    // rasterize_into actually painted the bar into the final frame. Also prove
+    // the orb caption rasterised ABOVE the bar (the overlap fix): the label
+    // row must contain lit text px and the bar's fill row must contain none of
+    // that text, i.e. caption and fill occupy disjoint pixel rows.
     if app.orbs_collected > 0 {
-        let fill = GameHud::new(WIDTH, HEIGHT)
-            .orb_bar_fill_rect(app.orbs_collected, app.total_orbs);
+        // Re-derive the exact bar rect from the retained HUD tree.
+        let viewport = [WIDTH as f32, HEIGHT as f32];
+        let orb_label = format!("ORBS: {}/{}", app.orbs_collected, app.total_orbs);
+        let tree = build_orb_hud_tree(&orb_label, app.orb_fraction());
+        let layout = compute_layout(&tree, viewport);
+        let bar = layout
+            .rect("orb_bar")
+            .expect("orb_bar rect must exist in the HUD layout");
+        let lbl = layout
+            .rect("orb_label")
+            .expect("orb_label rect must exist in the HUD layout");
+        // Fill width = fraction of the bar track.
+        let fill_w = bar[2] * app.orb_fraction();
+        let cy = (bar[1] + bar[3] / 2.0) as u32;
+        let x0 = bar[0] as u32;
+        let x1 = (bar[0] + fill_w) as u32;
         // The software rasteriser composites the amber fill with per-pixel alpha
-        // coverage, so an individual centre pixel can land in a gap. Scan the
-        // fill's mid-row and require that a substantial fraction of it reads amber
-        // (high red, red > blue) — proves GameHud::compose + rasterize_into
-        // actually painted the bar, robustly to single-pixel coverage gaps.
-        let cy = (fill[1] + fill[3] / 2.0) as u32;
-        let x0 = fill[0] as u32;
-        let x1 = (fill[0] + fill[2]) as u32;
+        // coverage, so scan the fill's mid-row and require a substantial fraction
+        // to read amber (high red, red clearly > blue).
         let mut amber = 0u32;
         let mut total = 0u32;
         for x in x0..x1 {
             let px = last_pixels[(cy * WIDTH + x) as usize];
             total += 1;
-            if px[0] > 120 && px[0] > px[2] {
+            if px[0] > 120 && px[0] as i32 > px[2] as i32 + 30 {
                 amber += 1;
             }
         }
         assert!(
             total > 0 && amber * 4 >= total,
             "orb-bar fill row at y={cy} has only {amber}/{total} amber px — HUD compositing broken",
+        );
+
+        // Overlap fix: the caption row (above the bar) must hold lit text px,
+        // and that text must not bleed into the bar's fill row. The caption is
+        // bright yellow ([255,255,100]); the amber bar fill is ([255,199,51]).
+        // Discriminate on the GREEN channel (caption G~255, amber G~199) so the
+        // bar fill is never miscounted as caption text.
+        let is_caption = |p: [u8; 4]| p[0] > 200 && p[1] > 230 && p[2] < 160;
+        let label_y0 = lbl[1] as u32;
+        let label_y1 = (lbl[1] + lbl[3]) as u32;
+        let bar_y0 = bar[1] as u32;
+        let bar_y1 = (bar[1] + bar[3]) as u32;
+        let xa = lbl[0] as u32;
+        let xb = (lbl[0] + lbl[2]) as u32;
+        let mut caption_px = 0u32;
+        let mut caption_in_bar = 0u32;
+        for y in label_y0..label_y1.min(HEIGHT) {
+            for x in xa..xb.min(WIDTH) {
+                if is_caption(last_pixels[(y * WIDTH + x) as usize]) {
+                    caption_px += 1;
+                }
+            }
+        }
+        for y in bar_y0..bar_y1.min(HEIGHT) {
+            for x in xa..xb.min(WIDTH) {
+                if is_caption(last_pixels[(y * WIDTH + x) as usize]) {
+                    caption_in_bar += 1;
+                }
+            }
+        }
+        assert!(
+            caption_px > 20,
+            "orb caption did not rasterise in its label row ({caption_px} lit px)",
+        );
+        assert!(
+            label_y1 <= bar_y0,
+            "label row [{label_y0}..{label_y1}] must end at/above bar top {bar_y0}",
+        );
+        assert!(
+            caption_in_bar == 0,
+            "orb caption bled into the bar row ({caption_in_bar} px) — overlap bug not fixed",
         );
     }
     // Sim advanced: the windmill always animates, the player walked, and orbs were

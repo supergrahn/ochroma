@@ -11,6 +11,7 @@ serde_json = "1"
 egui = { workspace = true }
 vello    = { version = "0.4", optional = true }
 parley   = { version = "0.3", optional = true }
+swash    = { version = "0.2", optional = true }
 taffy    = { version = "0.7", optional = true }
 pollster = { version = "0.4", optional = true }
 
@@ -22,4 +23,4 @@ pollster = { version = "0.4", optional = true }
 # `cargo test -p vox_ui` skips the GPU tests — run with `--features game-ui`
 # (workspace-wide test runs get it via vox_app's dependency edge).
 default  = []
-game-ui  = ["dep:vello", "dep:parley", "dep:taffy", "dep:pollster"]
+game-ui  = ["dep:vello", "dep:parley", "dep:swash", "dep:taffy", "dep:pollster"]

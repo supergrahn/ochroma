@@ -22,7 +22,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use vox_core::game_ui::{burn_text, CHAR_H, CHAR_STRIDE};
+use vox_core::game_ui::{CHAR_H, CHAR_STRIDE};
+
+use crate::text;
+
+/// Upper bound on a resolved `font_scale`. `font_scale` is author-controlled
+/// (an unbounded `u32` straight out of `UiDoc` JSON); without a ceiling, a
+/// hostile/typo'd value multiplied by a long label's character count overflows
+/// `u32` text-width math (debug panic / release garbage). 64x the 5x7 base font
+/// is already absurdly large for any real UI, so we clamp there at resolution.
+pub const MAX_FONT_SCALE: u32 = 64;
 
 // ---------------------------------------------------------------------------
 // Style — the resolvable visual properties (the USS-property analogue).
@@ -83,6 +92,11 @@ pub struct Style {
     pub anchor: Option<Anchor>,
     /// Background / fill colour, straight-alpha RGBA in `0..=1`.
     pub color: Option<[f32; 4]>,
+    /// Progress/slider FILL colour, straight-alpha RGBA in `0..=1`. When set,
+    /// `ProgressBar`/`Slider` paint their value portion with this exact colour;
+    /// when `None` the fill is derived by brightening `color` (the old default).
+    /// Lets a dark track carry a distinct bright fill (e.g. dark + amber).
+    pub fill_color: Option<[f32; 4]>,
     /// Text colour, RGB `0..=255` (matches `burn_text`).
     pub text_color: Option<[u8; 3]>,
     /// Text scale multiplier over the 5x7 base font (1 = native).
@@ -100,6 +114,8 @@ pub struct ResolvedStyle {
     pub flex_dir: FlexDir,
     pub anchor: Anchor,
     pub color: [f32; 4],
+    /// `None` means "derive the fill from `color`"; `Some` is an explicit fill.
+    pub fill_color: Option<[f32; 4]>,
     pub text_color: [u8; 3],
     pub font_scale: u32,
 }
@@ -115,6 +131,7 @@ impl Default for ResolvedStyle {
             flex_dir: FlexDir::Column,
             anchor: Anchor::TopLeft,
             color: [0.0, 0.0, 0.0, 0.0],
+            fill_color: None,
             text_color: [220, 222, 230],
             font_scale: 1,
         }
@@ -147,11 +164,16 @@ impl ResolvedStyle {
         if let Some(v) = s.color {
             self.color = v;
         }
+        if let Some(v) = s.fill_color {
+            self.fill_color = Some(v);
+        }
         if let Some(v) = s.text_color {
             self.text_color = v;
         }
         if let Some(v) = s.font_scale {
-            self.font_scale = v;
+            // Clamp author-controlled scale to a sane ceiling (>=1) so downstream
+            // text-width math cannot overflow on hostile inputs.
+            self.font_scale = v.clamp(1, MAX_FONT_SCALE);
         }
     }
 }
@@ -277,7 +299,19 @@ pub struct UiDoc {
 
 impl UiDoc {
     pub fn from_json(s: &str) -> Result<Self, String> {
-        serde_json::from_str(s).map_err(|e| e.to_string())
+        let doc: Self = serde_json::from_str(s).map_err(|e| e.to_string())?;
+        // Duplicate node ids silently collapse in the id-keyed layout map —
+        // a node renders at the wrong rect and hit-testing misroutes (review
+        // finding). An id collision is an authoring error: reject it loudly.
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![&doc.root];
+        while let Some(n) = stack.pop() {
+            if !seen.insert(n.id.as_str()) {
+                return Err(format!("duplicate node id '{}' in UI doc", n.id));
+            }
+            stack.extend(n.children.iter());
+        }
+        Ok(doc)
     }
 
     pub fn to_json(&self) -> Result<String, String> {
@@ -685,18 +719,48 @@ fn brighten4(c: [f32; 4], t: f32) -> [f32; 4] {
     [c[0] + (1.0 - c[0]) * t, c[1] + (1.0 - c[1]) * t, c[2] + (1.0 - c[2]) * t, c[3]]
 }
 
-/// Centre a string within `rect` and burn it at the resolved scale.
-fn draw_text_centered(pixels: &mut [[u8; 4]], w: u32, rect: Rect, text: &str, color: [u8; 3], scale: u32) {
+/// Centre a string within `rect` and render it at the resolved scale via the
+/// [`crate::text`] module (real parley/swash text under `game-ui`, 5x7 bitmap
+/// fallback otherwise). `scale` is the 5x7 multiplier; the text module maps it
+/// to a pixel font height (`CHAR_H * scale`) so both paths size the same box.
+fn draw_text_centered(
+    pixels: &mut [[u8; 4]],
+    w: u32,
+    h: u32,
+    rect: Rect,
+    label: &str,
+    color: [u8; 3],
+    scale: u32,
+) {
     let scale = scale.max(1);
-    let tw = if text.is_empty() {
+    // Author-controlled text is capped before any shaping/rasterization: a
+    // megabyte label would stall the UI for minutes (parley shapes the whole
+    // string) while nothing beyond a few thousand chars can ever be visible.
+    const MAX_DRAW_CHARS: usize = 4096;
+    let label = if label.chars().count() > MAX_DRAW_CHARS {
+        &label[..label.char_indices().nth(MAX_DRAW_CHARS).map(|(i, _)| i).unwrap_or(label.len())]
+    } else {
+        label
+    };
+    // Approximate text extent for centring. The bitmap font's metrics
+    // (stride/CHAR_H) are exact for the fallback path and a close-enough box for
+    // the proportional parley path (centring need not be sub-pixel).
+    // Saturating u64 math: label length and font_scale are author-controlled
+    // (a hostile doc with a megabyte label must not overflow — review finding;
+    // the MAX_FONT_SCALE clamp alone still wrapped at ~11M chars).
+    let tw = if label.is_empty() {
         0
     } else {
-        text.chars().count() as u32 * CHAR_STRIDE * scale - scale
+        (label.chars().count() as u64)
+            .saturating_mul(CHAR_STRIDE as u64)
+            .saturating_mul(scale as u64)
+            .saturating_sub(scale as u64)
+            .min(u32::MAX as u64) as u32
     };
     let th = CHAR_H * scale;
-    let tx = (rect[0] + (rect[2] - tw as f32) / 2.0).max(0.0) as u32;
-    let ty = (rect[1] + (rect[3] - th as f32) / 2.0).max(0.0) as u32;
-    burn_text(pixels, w, tx, ty, text, color, scale);
+    let tx = (rect[0] + (rect[2] - tw as f32) / 2.0).max(0.0);
+    let ty = (rect[1] + (rect[3] - th as f32) / 2.0).max(0.0);
+    text::draw_text(pixels, w, h, [tx, ty], label, color, th as f32);
 }
 
 /// Software-rasterise the whole tree into an RGBA8 buffer (row-major,
@@ -737,27 +801,29 @@ pub fn rasterize_into(tree: &UiTree, layout: &Layout, pixels: &mut [[u8; 4]], w:
                     blend_rect(pixels, w, h, rect, style.color);
                 }
                 let tc = if focused { brighten(style.text_color, 0.5) } else { style.text_color };
-                draw_text_centered(pixels, w, rect, text, tc, style.font_scale);
+                draw_text_centered(pixels, w, h, rect, text, tc, style.font_scale);
             }
             UiKind::Button { label, .. } => {
                 let bg = if focused { brighten4(style.color, 0.4) } else { style.color };
                 blend_rect(pixels, w, h, rect, bg);
                 let tc = if focused { brighten(style.text_color, 0.4) } else { style.text_color };
-                draw_text_centered(pixels, w, rect, label, tc, style.font_scale);
+                draw_text_centered(pixels, w, h, rect, label, tc, style.font_scale);
             }
             UiKind::Slider { value, min, max, .. } => {
                 // Track, then a fill proportional to value, then a knob.
                 blend_rect(pixels, w, h, rect, style.color);
                 let t = ((value - min) / (max - min)).clamp(0.0, 1.0);
                 let fill = [rect[0], rect[1], rect[2] * t, rect[3]];
-                let fill_color = brighten4(style.color, 0.5);
+                // Explicit fill colour if set, else brighten the track colour.
+                let fill_color = style.fill_color.unwrap_or_else(|| brighten4(style.color, 0.5));
                 blend_rect(pixels, w, h, fill, fill_color);
             }
             UiKind::ProgressBar { value } => {
                 blend_rect(pixels, w, h, rect, style.color);
                 let t = value.clamp(0.0, 1.0);
                 let fill = [rect[0], rect[1], rect[2] * t, rect[3]];
-                blend_rect(pixels, w, h, fill, brighten4(style.color, 0.6));
+                let fill_color = style.fill_color.unwrap_or_else(|| brighten4(style.color, 0.6));
+                blend_rect(pixels, w, h, fill, fill_color);
             }
         }
 
@@ -909,6 +975,43 @@ mod tests {
 
     /// Hot-reload preserves slider value while picking up a changed label.
     #[test]
+    /// A hostile doc (megabyte label x clamped-max font_scale) must render
+    /// without arithmetic overflow — saturating width math (review finding;
+    /// the font_scale clamp alone still wrapped at ~11M chars).
+    #[test]
+    fn hostile_label_length_does_not_overflow() {
+        let huge = "x".repeat(12_000_000);
+        let doc = UiDoc {
+            stylesheet: StyleSheet::default(),
+            root: UiNode {
+                id: "root".into(),
+                kind: UiKind::Label { text: huge },
+                classes: vec![],
+                style: Style { font_scale: Some(999_999), ..Default::default() },
+                visible: true,
+                children: vec![],
+            },
+        };
+        let tree = UiTree::from_doc(doc);
+        let layout = compute_layout(&tree, [320.0, 200.0]);
+        let mut px = vec![[0u8; 4]; 320 * 200];
+        rasterize_into(&tree, &layout, &mut px, 320, 200); // must not panic
+    }
+
+    /// Duplicate ids are an authoring error: from_json rejects them loudly
+    /// instead of letting the layout map silently collapse them.
+    #[test]
+    fn duplicate_ids_are_rejected_at_parse() {
+        let json = r#"{"root":{"id":"r","kind":{"Panel":null},"children":[
+            {"id":"x","kind":{"Label":{"text":"a"}}},
+            {"id":"x","kind":{"Label":{"text":"b"}}}]}}"#;
+        match UiDoc::from_json(json) {
+            Err(e) => assert!(e.contains("duplicate node id 'x'"), "names the id: {e}"),
+            Ok(_) => panic!("duplicate ids must be rejected"),
+        }
+    }
+
+    #[test]
     fn reload_preserves_slider_value_and_picks_up_label() {
         let doc_v1 = r#"{
             "stylesheet": { "classes": {} },
@@ -961,7 +1064,14 @@ mod tests {
         let layout = compute_layout(&tree, [w as f32, h as f32]);
         let mut px = vec![[0u8; 4]; (w * h) as usize];
         rasterize_into(&tree, &layout, &mut px, w, h);
-        let lit = px.iter().filter(|p| p[0] > 200 && p[1] > 200 && p[2] > 200).count();
+        // Count lit text pixels. The text path may be the blocky 5x7 bitmap
+        // (fully-opaque white) OR real anti-aliased parley glyphs (partial
+        // coverage at edges), so we count any pixel with meaningful ink rather
+        // than requiring full saturation — both paths must light real glyphs.
+        let lit = px
+            .iter()
+            .filter(|p| p[0] > 60 && p[1] > 60 && p[2] > 60)
+            .count();
         println!("NEW label lit text pixels = {lit}");
         assert!(lit > 30, "expected the NEW label glyphs to rasterise, got {lit} lit px");
     }

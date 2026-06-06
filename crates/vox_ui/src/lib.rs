@@ -5,6 +5,7 @@ pub mod game_widgets;
 pub mod layout;
 pub mod node_graph_widget;
 pub mod spectral_hud;
+pub mod text;
 pub mod theme;
 pub mod ui_tree;
 pub mod vello_ctx;

@@ -10,7 +10,10 @@
 //! this CPU path so the software renderer has no extra feature dependency.
 
 use crate::spectral_hud::{SpectralHUD, SpectralRadianceCache};
+use crate::text;
 use crate::vello_ctx::VelloCtxCpu;
+
+use vox_core::game_ui::CHAR_H;
 
 /// Composes the full in-game HUD (spectral bars + orb progress) for the CPU
 /// software-renderer path.
@@ -30,6 +33,18 @@ const PANEL_PAD: f32 = 8.0;
 const ORB_BAR_WIDTH:  f32 = 240.0;
 const ORB_BAR_HEIGHT: f32 = 18.0;
 
+// --- Orb LABEL row geometry (ABOVE the bar) --------------------------------
+// The "ORBS: n/m" caption used to be stamped at the same top-left margin as the
+// bar, so the lit glyph rows overlapped the amber fill rect (the visual bug).
+// We now reserve a dedicated label row ABOVE the bar: the label occupies
+// `ORB_LABEL_H` px starting at the top margin, then a small gap, then the bar.
+// This guarantees the label glyphs and the bar fill rect are vertically
+// disjoint (proven by `compose_label_and_bar_are_disjoint`).
+const ORB_LABEL_SCALE: u32 = 2; // 5x7 bitmap scale -> CHAR_H*2 = 14px tall glyphs
+const ORB_LABEL_H: f32 = (CHAR_H * ORB_LABEL_SCALE) as f32; // 14px
+/// Vertical gap between the label row and the bar track.
+const ORB_LABEL_GAP: f32 = 6.0;
+
 impl GameHud {
     pub fn new(_width: u32, height: u32) -> Self {
         Self { height, margin: 16.0 }
@@ -38,7 +53,9 @@ impl GameHud {
     /// Records the full HUD into `ctx`:
     /// - a translucent backdrop panel bottom-left,
     /// - the 16-band spectral bars (bottom-left, inside the panel),
-    /// - an orb-progress bar top-left (background track + proportional fill).
+    /// - an orb-progress bar top-left (background track + proportional fill),
+    ///   sitting BELOW a reserved label row (the caption is stamped separately
+    ///   via [`GameHud::draw_orb_label`], so it can never overlap the fill).
     ///
     /// `orbs_collected` is clamped to `orbs_total`; if `orbs_total == 0` the
     /// fill fraction is treated as 0.
@@ -51,6 +68,36 @@ impl GameHud {
     ) {
         self.compose_spectral_bars(ctx, bands);
         self.compose_orb_bar(ctx, orbs_collected, orbs_total);
+    }
+
+    /// Stamp the "ORBS: n/m" caption into `pixels`, left-aligned in its reserved
+    /// row ABOVE the bar. Kept separate from [`GameHud::compose`] (which records
+    /// vector rects into a `VelloCtxCpu`) because text rasterises directly into
+    /// the final RGBA buffer. The label row and the bar are disjoint by
+    /// construction — see [`GameHud::orb_label_rect`] /
+    /// [`GameHud::orb_bar_track_rect`].
+    pub fn draw_orb_label(
+        &self,
+        pixels: &mut [[u8; 4]],
+        w: u32,
+        h: u32,
+        collected: u32,
+        total: u32,
+        color: [u8; 3],
+    ) {
+        let r = self.orb_label_rect();
+        let label = format!("ORBS: {collected}/{total}");
+        // Left-aligned within the row, vertically centred.
+        let font_px = ORB_LABEL_H;
+        let ty = r[1] + (r[3] - font_px) * 0.5;
+        text::draw_text(pixels, w, h, [r[0], ty.max(0.0)], &label, color, font_px);
+    }
+
+    /// Records ONLY the bottom-left spectral-bars panel into `ctx` (no orb bar).
+    /// Used by hosts that render the orb caption + progress bar via the retained
+    /// [`crate::ui_tree`] HUD and want `GameHud` for just the 16-band readout.
+    pub fn compose_spectral_panel(&self, ctx: &mut VelloCtxCpu, bands: &SpectralRadianceCache) {
+        self.compose_spectral_bars(ctx, bands);
     }
 
     /// Bottom-left translucent panel + 16-band spectral bars.
@@ -69,30 +116,36 @@ impl GameHud {
         SpectralHUD::render_cpu(ctx, bands, bars_pos);
     }
 
-    /// Top-left orb-progress bar: a background track and a proportional fill.
+    /// Top-left orb-progress bar (BELOW the label row): a background track and a
+    /// proportional fill.
     fn compose_orb_bar(&self, ctx: &mut VelloCtxCpu, collected: u32, total: u32) {
-        let x = self.margin;
-        let y = self.margin;
+        let track = self.orb_bar_track_rect();
 
         // Background track (dark translucent).
-        ctx.fill_rect([x, y, ORB_BAR_WIDTH, ORB_BAR_HEIGHT], [0.05, 0.05, 0.08, 0.7]);
+        ctx.fill_rect(track, [0.05, 0.05, 0.08, 0.7]);
 
-        let frac = if total == 0 {
-            0.0
-        } else {
-            (collected.min(total) as f32) / (total as f32)
-        };
-        let fill_w = (ORB_BAR_WIDTH * frac).max(0.0);
-        if fill_w > 0.0 {
+        let fill = self.orb_bar_fill_rect(collected, total);
+        if fill[2] > 0.0 {
             // Warm amber fill so it reads against the dark track.
-            ctx.fill_rect([x, y, fill_w, ORB_BAR_HEIGHT], [1.0, 0.78, 0.2, 0.95]);
+            ctx.fill_rect(fill, [1.0, 0.78, 0.2, 0.95]);
         }
+    }
+
+    /// Y-coordinate of the bar's top edge: below the label row + gap.
+    fn bar_y(&self) -> f32 {
+        self.margin + ORB_LABEL_H + ORB_LABEL_GAP
+    }
+
+    /// The reserved label row rect `[x, y, w, h]` (ABOVE the bar). Disjoint from
+    /// [`GameHud::orb_bar_track_rect`] by construction.
+    pub fn orb_label_rect(&self) -> [f32; 4] {
+        [self.margin, self.margin, ORB_BAR_WIDTH, ORB_LABEL_H]
     }
 
     /// The orb-bar track rect `[x, y, w, h]` (background), useful for tests and
     /// for callers wanting hit-test geometry.
     pub fn orb_bar_track_rect(&self) -> [f32; 4] {
-        [self.margin, self.margin, ORB_BAR_WIDTH, ORB_BAR_HEIGHT]
+        [self.margin, self.bar_y(), ORB_BAR_WIDTH, ORB_BAR_HEIGHT]
     }
 
     /// The filled portion rect `[x, y, w, h]` for the given orb counts.
@@ -102,7 +155,7 @@ impl GameHud {
         } else {
             (collected.min(total) as f32) / (total as f32)
         };
-        [self.margin, self.margin, (ORB_BAR_WIDTH * frac).max(0.0), ORB_BAR_HEIGHT]
+        [self.margin, self.bar_y(), (ORB_BAR_WIDTH * frac).max(0.0), ORB_BAR_HEIGHT]
     }
 }
 
@@ -170,13 +223,15 @@ mod tests {
         let mut ctx = VelloCtxCpu::new(W, H);
         hud.compose(&mut ctx, &bands, 5, 10);
 
-        // The orb fill command should be a FillRect at the top-left margin with
-        // width ~= half the track width.
-        let track_w = hud.orb_bar_track_rect()[2];
+        // The orb fill command should be a FillRect at the bar's top-left (left
+        // margin, below the reserved label row) with width ~= half the track.
+        let track = hud.orb_bar_track_rect();
+        let track_w = track[2];
+        let bar_y = track[1];
         let found = ctx.commands().iter().any(|c| match c {
             DrawCmd::FillRect { rect, .. } => {
                 (rect[0] - 16.0).abs() < 1e-3
-                    && (rect[1] - 16.0).abs() < 1e-3
+                    && (rect[1] - bar_y).abs() < 1e-3
                     && (rect[2] - track_w * 0.5).abs() < 1e-3
             }
         });
@@ -215,6 +270,75 @@ mod tests {
             (bright_run as i64 - half as i64).abs() <= 3,
             "bright fill run {} should be ~half the track {} px",
             bright_run, track_px,
+        );
+    }
+
+    /// REGRESSION (the shipped overlap bug): the "ORBS: n/m" label's lit glyph
+    /// pixels and the amber bar-fill rect must occupy DISJOINT pixel regions.
+    /// Previously both were stamped at the same top-left margin so the label sat
+    /// on top of the fill. We render the label and the bar into one buffer and
+    /// require zero overlap between the set of label-coloured glyph pixels and
+    /// the set of amber fill pixels.
+    #[test]
+    fn compose_label_and_bar_are_disjoint() {
+        let hud = GameHud::new(W, H);
+        let bands = SpectralRadianceCache::from_f32([0.0; 16]);
+        let mut ctx = VelloCtxCpu::new(W, H);
+        hud.compose(&mut ctx, &bands, 5, 10);
+
+        let mut pixels = vec![[0u8, 0, 0, 255]; (W * H) as usize];
+        ctx.rasterize_into(&mut pixels, W, H);
+        // Stamp the caption exactly as the game does (amber-ish label colour).
+        let label_color = [255u8, 255, 100];
+        hud.draw_orb_label(&mut pixels, W, H, 5, 10, label_color);
+
+        // Classify each pixel in the top-left HUD region:
+        // - "amber fill": the bar's warm fill (high red, red clearly > blue,
+        //   and NOT the exact label colour).
+        // - "label glyph": pixels matching the label colour we drew.
+        // Require the two sets to be disjoint (no pixel is both).
+        let label = hud.orb_label_rect();
+        let bar = hud.orb_bar_track_rect();
+        let y0 = label[1] as u32;
+        let y1 = (bar[1] + bar[3]) as u32 + 2;
+        let x0 = label[0] as u32;
+        let x1 = (label[0] + label[2]) as u32;
+
+        let mut label_px = 0u32;
+        let mut fill_px = 0u32;
+        let mut both = 0u32;
+        for y in y0..y1.min(H) {
+            for x in x0..x1.min(W) {
+                let p = pixels[(y * W + x) as usize];
+                let is_label = p[0] == label_color[0]
+                    && p[1] == label_color[1]
+                    && p[2] == label_color[2];
+                // Amber fill: warm, red dominant over blue, but not the label.
+                let is_fill = !is_label && p[0] > 150 && p[0] as i32 > p[2] as i32 + 40;
+                if is_label {
+                    label_px += 1;
+                }
+                if is_fill {
+                    fill_px += 1;
+                }
+                if is_label && is_fill {
+                    both += 1;
+                }
+            }
+        }
+        println!("label_px={label_px} fill_px={fill_px} overlap={both}");
+        // Both regions must actually exist (label drew, bar drew)...
+        assert!(label_px > 20, "label glyphs did not render ({label_px} px)");
+        assert!(fill_px > 100, "bar fill did not render ({fill_px} px)");
+        // ...and they must not overlap.
+        assert_eq!(both, 0, "label glyphs overlap the bar fill ({both} shared px)");
+
+        // Stronger structural guarantee: the label row's max y is strictly above
+        // the bar's min y (vertical disjointness of the reserved rects).
+        assert!(
+            label[1] + label[3] <= bar[1],
+            "label row [{}..{}] must end above bar top {}",
+            label[1], label[1] + label[3], bar[1],
         );
     }
 }
