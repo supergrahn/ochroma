@@ -136,12 +136,25 @@ impl VelloCtxCpu {
 
 // --- GPU VelloCtx (feature-gated) ----------------------------------------
 
+/// A real GPU-backed Vello renderer.
+///
+/// Unlike [`VelloCtxCpu`] (which records `DrawCmd`s and software-rasterises),
+/// `VelloCtx` drives an actual `vello::Renderer` over a `wgpu` device, the same
+/// GPU vector path the windowed editor presents through. The same `fill_rect`
+/// API records into a `vello::Scene`; the scene is flushed either to a caller's
+/// surface texture ([`end_frame`](Self::end_frame)) or, for headless tests and
+/// CLI verification, to an offscreen `Rgba8Unorm` texture that is read back to
+/// CPU pixels by [`render_to_rgba`](Self::render_to_rgba).
 #[cfg(feature = "game-ui")]
 pub struct VelloCtx {
     renderer: vello::Renderer,
     scene:    vello::Scene,
     width:    u32,
     height:   u32,
+    /// Device/queue owned only by the headless constructor. When the caller
+    /// supplies their own device/queue (windowed path via [`new`](Self::new)),
+    /// this is `None` and the caller passes device/queue to `end_frame`.
+    owned: Option<(vello::wgpu::Device, vello::wgpu::Queue)>,
 }
 
 #[cfg(feature = "game-ui")]
@@ -162,7 +175,58 @@ impl VelloCtx {
                 num_init_threads: std::num::NonZeroUsize::new(1),
             },
         )?;
-        Ok(Self { renderer, scene: vello::Scene::new(), width, height })
+        Ok(Self { renderer, scene: vello::Scene::new(), width, height, owned: None })
+    }
+
+    /// Build a fully self-contained headless `VelloCtx`: it requests its own
+    /// `wgpu` instance/adapter/device/queue (no window, no surface) and a Vello
+    /// renderer configured for offscreen `render_to_texture`. Returns `None` if
+    /// no GPU adapter is available (e.g. CI with no Vulkan/GL) — callers should
+    /// treat that as "skip GPU path", not a failure.
+    pub fn new_headless(width: u32, height: u32) -> Option<Self> {
+        use vello::wgpu;
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(
+            &wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+            },
+        ))?;
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("vello-headless"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+            },
+            None,
+        ))
+        .ok()?;
+
+        let renderer = vello::Renderer::new(
+            &device,
+            vello::RendererOptions {
+                // No surface — we only ever render_to_texture offscreen.
+                surface_format: None,
+                use_cpu:        false,
+                antialiasing_support: vello::AaSupport::area_only(),
+                num_init_threads: std::num::NonZeroUsize::new(1),
+            },
+        )
+        .ok()?;
+
+        Some(Self {
+            renderer,
+            scene: vello::Scene::new(),
+            width,
+            height,
+            owned: Some((device, queue)),
+        })
     }
 
     pub fn begin_frame(&mut self) {
@@ -206,6 +270,115 @@ impl VelloCtx {
             },
         )
     }
+
+    /// Render the currently-recorded scene to an offscreen `Rgba8Unorm` texture
+    /// and read it back to a row-major `Vec<[u8; 4]>` (length `width*height`).
+    ///
+    /// Only available on a headless context (built via [`new_headless`]). Uses
+    /// the owned device/queue. This is the path the pixel-level tests and the
+    /// `--vello-hud-selftest` CLI flag assert against: it proves the real Vello
+    /// GPU pipeline executed and produced the expected pixels, not a CPU stub.
+    pub fn render_to_rgba(&mut self) -> Result<Vec<[u8; 4]>, String> {
+        use vello::wgpu;
+
+        let (device, queue) = self
+            .owned
+            .as_ref()
+            .ok_or_else(|| "render_to_rgba requires a headless VelloCtx (use new_headless)".to_string())?;
+
+        let w = self.width;
+        let h = self.height;
+
+        // Vello's render_to_texture requires an Rgba8Unorm STORAGE_BINDING target.
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vello-headless-target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+
+        self.renderer
+            .render_to_texture(
+                device,
+                queue,
+                &self.scene,
+                &view,
+                &vello::RenderParams {
+                    base_color:          vello::peniko::color::palette::css::BLACK,
+                    width:               w,
+                    height:              h,
+                    antialiasing_method: vello::AaConfig::Area,
+                },
+            )
+            .map_err(|e| format!("vello render_to_texture failed: {e:?}"))?;
+
+        // Copy texture -> buffer. Rows must be padded to COPY_BYTES_PER_ROW_ALIGNMENT.
+        let unpadded_bpr = w * 4;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bpr = unpadded_bpr.div_ceil(align) * align;
+        let buffer_size = (padded_bpr * h) as wgpu::BufferAddress;
+
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vello-headless-readback"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("vello-readback") });
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &readback,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bpr),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        // Map the readback buffer and block until ready.
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+        device.poll(wgpu::Maintain::Wait);
+        rx.recv()
+            .map_err(|_| "map_async sender dropped".to_string())?
+            .map_err(|e| format!("buffer map failed: {e:?}"))?;
+
+        let data = slice.get_mapped_range();
+        let mut pixels = vec![[0u8; 4]; (w * h) as usize];
+        for y in 0..h {
+            let row_off = (y * padded_bpr) as usize;
+            for x in 0..w {
+                let px = row_off + (x * 4) as usize;
+                pixels[(y * w + x) as usize] = [data[px], data[px + 1], data[px + 2], data[px + 3]];
+            }
+        }
+        drop(data);
+        readback.unmap();
+
+        Ok(pixels)
+    }
+
+    pub fn width(&self)  -> u32 { self.width }
+    pub fn height(&self) -> u32 { self.height }
 
     pub fn resize(&mut self, width: u32, height: u32) {
         self.width  = width;
@@ -346,5 +519,47 @@ mod tests {
         println!("width={} height={}", ctx.width(), ctx.height());
         assert_eq!(ctx.width(), 1920);
         assert_eq!(ctx.height(), 1080);
+    }
+
+    // --- Real GPU (Vello) headless pixel tests ---------------------------
+    //
+    // These exercise the *actual* vello::Renderer over a wgpu device and read
+    // the rendered texture back to CPU. They self-skip (return) when no GPU
+    // adapter is present so headless CI without a GPU stays green; on a machine
+    // with Vulkan/Metal/GL they assert real computed pixel values produced by
+    // the GPU compute pipeline, not by the CPU `VelloCtxCpu` stub.
+    #[cfg(feature = "game-ui")]
+    #[test]
+    fn vello_gpu_fill_rect_produces_red_pixels_on_gpu() {
+        let Some(mut ctx) = VelloCtx::new_headless(64, 64) else {
+            eprintln!("[vello] no GPU adapter — skipping GPU fill_rect test");
+            return;
+        };
+        ctx.begin_frame();
+        // Opaque red rect covering the centre.
+        ctx.fill_rect([16.0, 16.0, 32.0, 32.0], [1.0, 0.0, 0.0, 1.0]);
+        let pixels = ctx.render_to_rgba().expect("gpu render");
+        assert_eq!(pixels.len(), 64 * 64, "pixel count must match width*height");
+
+        // Centre pixel must be (near) opaque red — the GPU rasterised it.
+        let centre = pixels[(32 * 64 + 32) as usize];
+        println!("[vello] gpu centre pixel = {:?}", centre);
+        assert!(centre[0] > 200, "centre R should be high (red), got {}", centre[0]);
+        assert!(centre[1] < 64, "centre G should be low, got {}", centre[1]);
+        assert!(centre[2] < 64, "centre B should be low, got {}", centre[2]);
+
+        // A corner outside the rect must be black background.
+        let corner = pixels[0];
+        println!("[vello] gpu corner pixel = {:?}", corner);
+        assert!(corner[0] < 32 && corner[1] < 32 && corner[2] < 32,
+            "corner should be black background, got {:?}", corner);
+
+        // The red region must actually cover a meaningful number of pixels.
+        let red_px = pixels.iter()
+            .filter(|p| p[0] > 200 && p[1] < 64 && p[2] < 64)
+            .count();
+        println!("[vello] gpu red_px = {}", red_px);
+        // 32x32 rect = 1024 px; allow AA slack on the border.
+        assert!(red_px > 900, "expected >900 red px, got {}", red_px);
     }
 }

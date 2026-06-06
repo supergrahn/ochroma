@@ -228,4 +228,78 @@ mod tests {
                 "band {} height mismatch: u16 path={} f32 path={}", b, via_u16[b][3], via_f32[b][3]);
         }
     }
+
+    // --- Real GPU (Vello) SpectralHUD pixel test -------------------------
+    //
+    // Renders the live SpectralHUD through the actual vello::Renderer on a GPU
+    // and reads pixels back. Self-skips when no adapter is present. Asserts
+    // computed pixel outcomes: band 0 (violet, high blue) and band 15 (red,
+    // high red) land in their bar columns with the expected dominant channel,
+    // and the HUD region contains many distinct colours (the spectral gradient
+    // actually rendered, not a flat fill).
+    #[cfg(feature = "game-ui")]
+    #[test]
+    fn vello_gpu_spectral_hud_renders_band_hues_and_many_colors() {
+        use crate::vello_ctx::VelloCtx;
+
+        let w = 256u32;
+        let h = 128u32;
+        let Some(mut ctx) = VelloCtx::new_headless(w, h) else {
+            eprintln!("[vello] no GPU adapter — skipping SpectralHUD GPU test");
+            return;
+        };
+
+        // Full energy so every bar reaches max height.
+        let cache = SpectralRadianceCache::from_f32([1.0; 16]);
+        let pos = [8.0f32, 8.0f32];
+        ctx.begin_frame();
+        SpectralHUD::render(&mut ctx, &cache, pos);
+        let pixels = ctx.render_to_rgba().expect("gpu hud render");
+        assert_eq!(pixels.len(), (w * h) as usize);
+
+        // Geometry of the bars (must match render()'s internal constants).
+        let total_width = 160.0f32;
+        let max_height  = 60.0f32;
+        let bars = SpectralHUD::bar_rects([1.0; 16], pos, total_width, max_height);
+
+        // Sample the centre of band 0's bar (violet: blue >> red) and band 15's
+        // bar (red: red >> blue). Sample near the bottom where the bar is solid.
+        let sample = |rect: [f32; 4]| -> [u8; 4] {
+            let sx = (rect[0] + rect[2] * 0.5).round() as u32;
+            let sy = (rect[1] + rect[3] - 4.0).round() as u32;
+            pixels[(sy.min(h - 1) * w + sx.min(w - 1)) as usize]
+        };
+        let b0 = sample(bars[0]);   // violet
+        let b15 = sample(bars[15]); // red
+        println!("[vello] hud band0={:?} band15={:?}", b0, b15);
+        assert!(b0[2] > b0[0] + 40, "band 0 should be violet (blue>>red), got {:?}", b0);
+        assert!(b15[0] > b15[2] + 40, "band 15 should be red (red>>blue), got {:?}", b15);
+
+        // Count distinct colours inside the HUD region — the 16-band gradient
+        // plus the dark backdrop must yield many unique colours.
+        let mut seen = std::collections::HashSet::new();
+        let x0 = pos[0] as u32;
+        let x1 = (pos[0] + total_width) as u32;
+        let y0 = pos[1] as u32;
+        let y1 = (pos[1] + max_height) as u32;
+        let mut non_background = 0usize;
+        for y in y0..y1.min(h) {
+            for x in x0..x1.min(w) {
+                let p = pixels[(y * w + x) as usize];
+                if p[0] > 16 || p[1] > 16 || p[2] > 16 {
+                    non_background += 1;
+                }
+                // Quantise to 5 bits/channel so AA dithering doesn't inflate the count.
+                seen.insert((p[0] >> 3, p[1] >> 3, p[2] >> 3));
+            }
+        }
+        let distinct = seen.len();
+        println!(
+            "[vello] HUD {}x{} non_background_px={} distinct_colors={}",
+            w, h, non_background, distinct,
+        );
+        assert!(non_background > 2000, "HUD region should be mostly painted, got {non_background}");
+        // 16 bars of distinct hues -> comfortably more than 8 quantised colours.
+        assert!(distinct >= 12, "expected >=12 distinct colours, got {distinct}");
+    }
 }

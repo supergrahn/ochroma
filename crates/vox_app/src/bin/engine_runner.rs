@@ -352,6 +352,20 @@ struct EngineApp {
     // biome cells produced by the biome sink node. Finite + sane; shown as
     // text and asserted in smoke.
     node_graph_output_value: f64,
+
+    // Live GPU Vello renderer for the SpectralHUD (rank-1 adoption candidate:
+    // GPU vector UI). Lazily created on first HUD draw via
+    // VelloCtx::new_headless; `None` if no GPU adapter is available (then the
+    // HUD falls back to the CPU VelloCtxCpu software path). The HUD is rendered
+    // to an offscreen Rgba8Unorm texture by Vello, read back, and alpha-blended
+    // over the final frame — so the windowed editor's HUD pixels are produced
+    // by the real Vello GPU pipeline, not the CPU stub.
+    vello_hud: Option<vox_ui::vello_ctx::VelloCtx>,
+    // Set once we've decided GPU is unavailable, so we don't retry every frame.
+    vello_hud_unavailable: bool,
+    // Per-frame counter of HUD pixels actually composited from the Vello GPU
+    // render (asserted by the smoke test to prove the GPU path ran live).
+    vello_hud_px_last_frame: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +580,9 @@ impl EngineApp {
             node_widget: NodeGraphWidget::new(),
             node_graph_node_count: 0,
             node_graph_output_value: 0.0,
+            vello_hud: None,
+            vello_hud_unavailable: false,
+            vello_hud_px_last_frame: 0,
             game_widgets: vox_ui::GameWidgets::new(),
             widget_cmds: vec![
                 vox_ui::WidgetCmd::Panel {
@@ -1387,12 +1404,13 @@ impl EngineApp {
             }
         }
 
-        // Vello-style game HUD: live 16-band spectral GI readout (bottom-left
+        // Vello GPU game HUD: live 16-band spectral GI readout (bottom-left
         // translucent panel) + a top-left progress bar, composited over the
-        // final frame. Drawn in the shared render path so the windowed editor
-        // gets it too, not just smoke.
+        // final frame. The SpectralHUD bars are rendered by the REAL Vello GPU
+        // pipeline (rank-1 adoption candidate) when an adapter is available;
+        // otherwise the CPU VelloCtxCpu software path is used. Drawn in the
+        // shared render path so the windowed editor gets it too, not just smoke.
         {
-            let mut hud_ctx = VelloCtxCpu::new(display_w, display_h);
             // latest_gi_bands holds f16 BITS (the splat spectral encoding), NOT
             // linear-quantized u16 — decode before feeding the HUD so a radiance
             // of 1.0 fills a bar exactly. (from_u16 would misread the bits.)
@@ -1401,6 +1419,16 @@ impl EngineApp {
                 *e = half::f16::from_bits(bits).to_f32().clamp(0.0, 1.0);
             }
             let bands = SpectralRadianceCache::from_f32(energy);
+
+            // SpectralHUD geometry must match GameHud's bottom-left placement.
+            let panel_pad = 8.0f32;
+            let margin = 16.0f32;
+            let panel_h = 60.0 + panel_pad * 2.0; // BARS_MAX_HEIGHT + pad*2 = 76
+            let panel_w = 160.0 + panel_pad * 2.0; // BARS_TOTAL_WIDTH + pad*2
+            let panel_x = margin;
+            let panel_y = display_h as f32 - margin - panel_h;
+            let bars_pos = [panel_x + panel_pad, panel_y + panel_pad];
+
             // The editor has no orbs: repurpose the progress bar as a
             // selected-entity-of-total indicator (selection index / entity count).
             let entity_count = self.editor.entity_count() as u32;
@@ -1410,12 +1438,31 @@ impl EngineApp {
                 .and_then(|sel| self.editor.entities.iter().position(|e| e.id == sel))
                 .map(|i| i as u32 + 1)
                 .unwrap_or(0);
-            GameHud::new(display_w, display_h).compose(
-                &mut hud_ctx,
-                &bands,
-                selected_idx,   // "collected" = selected entity ordinal (1-based)
-                entity_count,   // "total"     = scene entity count
-            );
+
+            // 1. Translucent backdrop panel (CPU) — drawn first so the GPU bars
+            //    composite on top of it. Matches GameHud's [0,0,0,0.55] panel.
+            let mut back_ctx = VelloCtxCpu::new(display_w, display_h);
+            back_ctx.fill_rect([panel_x, panel_y, panel_w, panel_h], [0.0, 0.0, 0.0, 0.55]);
+            back_ctx.rasterize_into(&mut final_pixels, display_w, display_h);
+
+            // 2. Track A: render the 16-band spectral bars via the live Vello GPU
+            //    pipeline, composited over the backdrop.
+            self.vello_hud_px_last_frame =
+                self.compose_spectral_hud_vello(&mut final_pixels, display_w, display_h, &bands, bars_pos);
+
+            // 3. Orb/progress bar (CPU) + CPU bars fallback if no GPU adapter.
+            let mut hud_ctx = VelloCtxCpu::new(display_w, display_h);
+            let hud = GameHud::new(display_w, display_h);
+            if self.vello_hud_px_last_frame == 0 {
+                // No GPU: draw the spectral bars on the CPU so the HUD isn't blank.
+                vox_ui::spectral_hud::SpectralHUD::render_cpu(&mut hud_ctx, &bands, bars_pos);
+            }
+            let track = hud.orb_bar_track_rect();
+            let fill = hud.orb_bar_fill_rect(selected_idx, entity_count);
+            hud_ctx.fill_rect(track, [0.05, 0.05, 0.08, 0.7]);
+            if fill[2] > 0.0 {
+                hud_ctx.fill_rect(fill, [1.0, 0.78, 0.2, 0.95]);
+            }
             hud_ctx.rasterize_into(&mut final_pixels, display_w, display_h);
         }
 
@@ -1424,6 +1471,94 @@ impl EngineApp {
         self.compose_editor_panels(&mut final_pixels, display_w, display_h);
 
         final_pixels
+    }
+
+    /// Render the live SpectralHUD bars through the real Vello GPU pipeline and
+    /// composite them over `final_pixels`. Returns the number of HUD pixels
+    /// actually blended in from the GPU render (0 if no GPU adapter, signalling
+    /// the caller to fall back to the CPU software HUD).
+    ///
+    /// The HUD is rendered into a tight offscreen Rgba8Unorm texture (sized to
+    /// the bar region), read back to CPU, and alpha-blended at `bars_pos`. This
+    /// keeps the GPU work small while ensuring the composited HUD pixels are
+    /// produced by Vello, not the CPU stub.
+    fn compose_spectral_hud_vello(
+        &mut self,
+        final_pixels: &mut [[u8; 4]],
+        display_w: u32,
+        display_h: u32,
+        bands: &SpectralRadianceCache,
+        bars_pos: [f32; 2],
+    ) -> usize {
+        use vox_ui::spectral_hud::SpectralHUD;
+        use vox_ui::vello_ctx::VelloCtx;
+
+        // The bar block is 160x60 at bars_pos. Render into a slightly padded
+        // offscreen texture so AA edges aren't clipped.
+        let region_w: u32 = 176;
+        let region_h: u32 = 72;
+
+        // Lazily create the headless GPU Vello context once.
+        if self.vello_hud.is_none() && !self.vello_hud_unavailable {
+            match VelloCtx::new_headless(region_w, region_h) {
+                Some(ctx) => {
+                    self.vello_hud = Some(ctx);
+                    println!("[vello] SpectralHUD GPU path initialised ({region_w}x{region_h})");
+                }
+                None => {
+                    self.vello_hud_unavailable = true;
+                    eprintln!("[vello] no GPU adapter — SpectralHUD falls back to CPU software path");
+                }
+            }
+        }
+
+        let Some(ctx) = self.vello_hud.as_mut() else {
+            return 0;
+        };
+
+        ctx.begin_frame();
+        // Render the bars at local origin within the region.
+        SpectralHUD::render(ctx, bands, [0.0, 0.0]);
+        let rgba = match ctx.render_to_rgba() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[vello] SpectralHUD GPU render failed: {e}");
+                return 0;
+            }
+        };
+
+        // Alpha-blend the rendered region over the frame at bars_pos.
+        let ox = bars_pos[0].round() as i64;
+        let oy = bars_pos[1].round() as i64;
+        let mut blended = 0usize;
+        for ry in 0..region_h {
+            for rx in 0..region_w {
+                let src = rgba[(ry * region_w + rx) as usize];
+                // Vello renders on a black base; treat near-black as transparent
+                // background so the scene shows through outside the bars/panel.
+                if src[0] <= 8 && src[1] <= 8 && src[2] <= 8 {
+                    continue;
+                }
+                let dx = ox + rx as i64;
+                let dy = oy + ry as i64;
+                if dx < 0 || dy < 0 || dx >= display_w as i64 || dy >= display_h as i64 {
+                    continue;
+                }
+                let idx = (dy as u32 * display_w + dx as u32) as usize;
+                // Source alpha-over (straight alpha from the readback).
+                let a = src[3] as f32 / 255.0;
+                let inv = 1.0 - a;
+                let dst = final_pixels[idx];
+                final_pixels[idx] = [
+                    (src[0] as f32 * a + dst[0] as f32 * inv) as u8,
+                    (src[1] as f32 * a + dst[1] as f32 * inv) as u8,
+                    (src[2] as f32 * a + dst[2] as f32 * inv) as u8,
+                    255,
+                ];
+                blended += 1;
+            }
+        }
+        blended
     }
 
     /// Composite the editor panels into the final frame:
@@ -3076,6 +3211,25 @@ fn run_smoke() {
         mean_lum
     );
 
+    // (c) The live Vello GPU path actually rendered the SpectralHUD bars into
+    //     the frame. compose_spectral_hud_vello records how many HUD pixels were
+    //     blended from the real Vello render on the last frame. On a GPU-capable
+    //     host this is > 0 (the bars + panel painted); on a headless host with
+    //     no adapter it is 0 and the CPU GameHud path drew the bars instead, so
+    //     this is only asserted when a Vello context was created.
+    println!(
+        "[ochroma] SMOKE VELLO: vello_hud_available={} vello_hud_px_last_frame={}",
+        app.vello_hud.is_some(),
+        app.vello_hud_px_last_frame,
+    );
+    if app.vello_hud.is_some() {
+        assert!(
+            app.vello_hud_px_last_frame > 500,
+            "Vello GPU SpectralHUD composited only {} px (expected > 500) — GPU UI path not live",
+            app.vello_hud_px_last_frame
+        );
+    }
+
     // --- Assertions: real frame + advanced sim (panic => non-zero exit). ---
     let total_px = (dw * dh) as usize;
     assert_eq!(
@@ -3208,8 +3362,81 @@ fn run_smoke() {
     println!("[ochroma] SMOKE PASS: loop + editor/game logic + render verified headlessly.");
 }
 
+/// Headless Vello self-test: render the live SpectralHUD through the *real*
+/// vello::Renderer (GPU) into an offscreen texture, read the pixels back, and
+/// print the mandated per-frame-style verification line. Exits non-zero if no
+/// GPU adapter is available or the rendered HUD fails its pixel checks.
+///
+/// This is the default-binary proof that the Vello GPU UI path is live: the
+/// same `vox_ui::SpectralHUD::render` call the windowed editor will use, driven
+/// here with a synthetic 16-band spectral ramp so the output is deterministic.
+fn run_vello_hud_selftest() -> i32 {
+    use vox_ui::spectral_hud::SpectralHUD;
+    use vox_ui::vello_ctx::VelloCtx;
+
+    let w = 1280u32;
+    let h = 720u32;
+
+    let Some(mut ctx) = VelloCtx::new_headless(w, h) else {
+        eprintln!("[vello] no GPU adapter available — cannot run HUD self-test");
+        return 1;
+    };
+
+    // Synthetic but representative spectral GI input: a smooth ramp across the
+    // 16 bands so every bar has a distinct height. (Game-specific HUD *content*
+    // lives here in the app layer; vox_ui stays game-agnostic.)
+    let mut energy = [0.0f32; 16];
+    for (b, e) in energy.iter_mut().enumerate() {
+        *e = 0.2 + 0.8 * (b as f32 / 15.0);
+    }
+    let cache = SpectralRadianceCache::from_f32(energy);
+
+    ctx.begin_frame();
+    // Bottom-left anchored, matching the windowed HUD placement.
+    SpectralHUD::render(&mut ctx, &cache, [24.0, h as f32 - 100.0]);
+    let pixels = match ctx.render_to_rgba() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[vello] HUD render failed: {e}");
+            return 1;
+        }
+    };
+
+    // Compute verifiable stats over the whole frame.
+    let mut non_background = 0usize;
+    let mut seen = std::collections::HashSet::new();
+    for p in &pixels {
+        if p[0] > 16 || p[1] > 16 || p[2] > 16 {
+            non_background += 1;
+            seen.insert((p[0] >> 3, p[1] >> 3, p[2] >> 3));
+        }
+    }
+    let distinct = seen.len();
+    println!(
+        "[vello] HUD {}x{} non_background_px={} distinct_colors={}",
+        w, h, non_background, distinct,
+    );
+
+    // Real pixel assertions: the HUD must have painted content with the full
+    // spectral gradient. A flat/empty render fails here.
+    if non_background < 1000 {
+        eprintln!("[vello] FAIL: HUD region too empty (non_background_px={non_background})");
+        return 1;
+    }
+    if distinct < 12 {
+        eprintln!("[vello] FAIL: too few distinct colours ({distinct}) — gradient did not render");
+        return 1;
+    }
+    println!("[vello] HUD self-test PASSED (real Vello GPU render)");
+    0
+}
+
 fn main() {
     println!("Ochroma Engine v0.1.0 -- Spectral Gaussian Splatting");
+
+    if std::env::args().any(|a| a == "--vello-hud-selftest") {
+        std::process::exit(run_vello_hud_selftest());
+    }
 
     if std::env::args().any(|a| a == "--smoke") {
         run_smoke();

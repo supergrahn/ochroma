@@ -9,9 +9,15 @@ glam = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
 egui = { workspace = true }
-vello  = { version = "0.4", optional = true }
-parley = { version = "0.3", optional = true }
-taffy  = { version = "0.7", optional = true }
+vello    = { version = "0.4", optional = true }
+parley   = { version = "0.3", optional = true }
+taffy    = { version = "0.7", optional = true }
+pollster = { version = "0.4", optional = true }
 
 [features]
-game-ui = ["dep:vello", "dep:parley", "dep:taffy"]
+# ON by default: the Vello GPU vector-UI path is the engine's primary game-UI
+# renderer (rank-1 adoption candidate). The headless render + pixel-readback
+# helpers live behind this feature; the CPU `VelloCtxCpu` fallback is always
+# compiled so software-only builds still work.
+default  = ["game-ui"]
+game-ui  = ["dep:vello", "dep:parley", "dep:taffy", "dep:pollster"]
