@@ -114,10 +114,10 @@ pub struct NodeGraphWidget {
     pub wire_values: std::collections::HashMap<WireKey, String>,
     /// Live preview thumbnails per node id (rank #10). Stored side-band rather
     /// than as a `VisualNode` field so existing struct-literal construction sites
-    /// (engine_runner, vox_nodes) keep compiling unchanged. The editor renders a
-    /// node's cooked output into a [`NodeThumbnail`] and pushes it here; the body
-    /// of the node grows and blits the thumbnail below its title.
-    pub thumbnails: std::collections::HashMap<u32, NodeThumbnail>,
+    /// (engine_runner, vox_nodes) keep compiling unchanged. Private: cross-crate
+    /// access goes through [`Self::set_thumbnail`] / [`Self::thumbnail`] /
+    /// [`Self::clear_thumbnails`].
+    thumbnails: std::collections::HashMap<u32, NodeThumbnail>,
 }
 
 /// A cached miniature visualization of a node's cooked output, blitted onto the

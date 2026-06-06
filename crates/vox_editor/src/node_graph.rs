@@ -288,6 +288,11 @@ impl OchromaNodeGraph {
         if !self.nodes.contains_key(&id) { return Err(GraphError::NodeNotFound(id)); }
         self.nodes.remove(&id);
         self.edges.retain(|e| e.from != id && e.to != id);
+        // Throttle bookkeeping: a removed node must not linger as a pending
+        // recook root (a later live_cook would chase a ghost) nor pin an entry
+        // in the per-subgraph cook-time map forever.
+        self.throttle.pending_roots.retain(|&r| r != id);
+        self.throttle.last_cook_at.remove(&id);
         Ok(())
     }
 

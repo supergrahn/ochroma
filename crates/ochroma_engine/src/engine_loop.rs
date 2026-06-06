@@ -178,14 +178,16 @@ pub struct EngineLoop {
     /// Wall-clock duration of the most recent `step_gi` call, in microseconds.
     /// `None` until the first `step_gi`. Surfaced via [`EngineLoop::last_gi_us`].
     last_gi_us: Option<u64>,
-    /// Capacity the GPU backend was sized for. The GPU pass clamps to this; the
-    /// CPU fallback handles any overflow splats unchanged.
+    /// Capacity the GPU backend was sized for. A frame whose splat count
+    /// exceeds it routes through the CPU path for that call (the GPU pass
+    /// would clamp and leave the tail unlit — a silent CPU/GPU divergence);
+    /// the GPU backend stays selected for subsequent smaller frames.
     gpu_gi_capacity: u32,
 }
 
 /// Sizing for the headless GPU GI device. Large enough for the smoke scenes and
-/// typical editor views; scenes beyond this clamp on the GPU (the tail keeps its
-/// input spectral, matching the documented `min(count, capacity)` behavior).
+/// typical editor views; a frame beyond this runs the (unlimited) CPU path for
+/// that call rather than letting the GPU clamp diverge from the CPU mirror.
 const GPU_GI_CAPACITY: u32 = 200_000;
 
 impl EngineLoop {
@@ -218,8 +220,10 @@ impl EngineLoop {
         //   2. OCHROMA_GI=cpu  → force the proven CPU path.
         //   3. unset / other   → default Cpu (the proven path).
         // A later `use_gpu_gi()` call can still upgrade an env-default-Cpu loop.
-        let gi_backend = match std::env::var("OCHROMA_GI").ok().as_deref() {
-            Some("gpu") | Some("GPU") => match GpuGi::new(GPU_GI_CAPACITY) {
+        let gi_env = std::env::var("OCHROMA_GI").ok();
+        let gi_backend = match gi_env.as_deref() {
+            // Case-insensitive: "gpu"/"GPU"/"Gpu" all select the GPU path.
+            Some(v) if v.eq_ignore_ascii_case("gpu") => match GpuGi::new(GPU_GI_CAPACITY) {
                 Ok(g) => GiBackend::Gpu(Box::new(g)),
                 Err(e) => {
                     eprintln!(
@@ -229,7 +233,17 @@ impl EngineLoop {
                     GiBackend::Cpu
                 }
             },
-            _ => GiBackend::Cpu,
+            Some(v) if v.eq_ignore_ascii_case("cpu") => GiBackend::Cpu,
+            // An unrecognized value silently defaulting would hide typos
+            // (OCHROMA_GI=Gpu used to mean "cpu" without a word) — warn once.
+            Some(other) => {
+                eprintln!(
+                    "[ochroma_engine] unrecognized OCHROMA_GI value '{other}' \
+                     (expected gpu|cpu); using the CPU path."
+                );
+                GiBackend::Cpu
+            }
+            None => GiBackend::Cpu,
         };
 
         Self {
@@ -287,6 +301,14 @@ impl EngineLoop {
     /// microseconds. `None` until `step_gi` has run at least once.
     pub fn last_gi_us(&self) -> Option<u64> {
         self.last_gi_us
+    }
+
+    /// Test-only: shrink the GPU capacity so the over-capacity CPU routing is
+    /// exercisable without building a 200k-splat scene. Not for production —
+    /// the real capacity is fixed at construction.
+    #[doc(hidden)]
+    pub fn set_gpu_gi_capacity_for_test(&mut self, capacity: u32) {
+        self.gpu_gi_capacity = capacity;
     }
 
     /// Builder-style mask override.
@@ -420,8 +442,17 @@ impl EngineLoop {
     /// splat list. Relocated from engine_runner.rs:980-993.
     pub fn step_gi(&mut self, splats: &[GaussianSplat], hour: f32) -> Vec<GaussianSplat> {
         let t0 = std::time::Instant::now();
+        // The GPU device is sized for `gpu_gi_capacity` splats and CLAMPS past
+        // it — the tail would silently stay unlit while the CPU path lights
+        // everything (exactly the divergence class the equivalence work
+        // killed). An over-capacity frame therefore routes to the CPU path,
+        // which has no size limit; the backend selection is untouched so a
+        // later smaller frame uses the GPU again.
+        let over_capacity = matches!(self.gi_backend, GiBackend::Gpu(_))
+            && splats.len() > self.gpu_gi_capacity as usize;
         let out = match &self.gi_backend {
             GiBackend::Cpu => self.step_gi_cpu(splats, hour),
+            GiBackend::Gpu(_) if over_capacity => self.step_gi_cpu(splats, hour),
             GiBackend::Gpu(gpu) => match gpu.step(splats, hour) {
                 Ok(lit) => lit,
                 Err(e) => {

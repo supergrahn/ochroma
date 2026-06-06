@@ -20,6 +20,8 @@ Maintained as features land. Last updated: 2026-06-06.
 | GPU rasteriser (wgpu) | live | Depth-sorted splat upload + tile-based EWA compute path; indexed rendering from LOD selections |
 | Spectra Vulkan path | library | `spectra-native` feature: path-traced spectral rendering via the sibling Spectra renderer (renders on RADV iGPU) |
 | Atom-budget LOD selector | live | "Nanite for splats": cluster-BVH frustum cull → solid-angle scoring → per-cluster LOD with a hard per-frame splat budget (144k scene → ≤24k selected in ~1.5 ms) |
+| Scale-proven LOD pipeline | live | Measured at **2.05M splats**: selector build 138 ms, select median 216 µs / p99 1.1 ms across a 100-frame camera flight, zero budget violations (`scale_trial` bin, hard-asserted) |
+| Spectral material compiler | live | Node-graph BSDF (Substrate-style layering, Fresnel, blackbody emitters, per-wavelength math) **compiling to naga-validated WGSL** — GPU output matches the CPU reference to 2.8e-6 per band on real hardware |
 | Cluster acceleration (CLAS) | live | Deterministic spatial clustering + median-split BVH over splats (culling, LOD, GI subset queries) |
 | Hierarchical LOD + crossfade | live | 4-level per-cluster LOD chains (full → billboard) with opacity crossfade bands |
 | HLOD baker | library | K-means++ multi-level merged-splat representations for far hierarchies |

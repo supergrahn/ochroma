@@ -259,3 +259,45 @@ fn gpu_gi_init_failure_falls_back_to_cpu_without_panicking() {
     assert!(probe.is_finite(), "CPU fallback must return finite spectral, got {probe}");
     assert!(lp.last_gi_us().is_some(), "step_gi must record timing on the CPU path too");
 }
+
+/// A frame whose splat count exceeds the GPU device capacity must route to
+/// the (unlimited) CPU path for that call — the GPU pass would clamp and
+/// silently leave the tail unlit — while the GPU backend stays selected for
+/// subsequent smaller frames. (Wave-3 review: the old field doc claimed this
+/// fallback existed; now it does.)
+#[test]
+fn over_capacity_frame_routes_to_cpu_and_keeps_gpu_selected() {
+    let mut gpu_loop = EngineLoop::new(EngineConfig::default(), SystemMask::all());
+    if gpu_loop.use_gpu_gi().is_err() {
+        eprintln!("no GPU adapter — skipping over-capacity routing test");
+        return;
+    }
+    assert_eq!(gpu_loop.gi_backend(), "gpu");
+    gpu_loop.set_gpu_gi_capacity_for_test(64); // far below the 256-splat scene
+
+    let scene = gi_scene(256);
+
+    // Reference: a pure-CPU loop on the identical scene.
+    let mut cpu_loop = EngineLoop::new(EngineConfig::default(), SystemMask::all());
+    let cpu_out = cpu_loop.step_gi(&scene, 12.0);
+
+    // Over-capacity frame on the gpu-selected loop: must match CPU exactly
+    // (it routed to CPU), including the tail beyond the GPU capacity.
+    let routed_out = gpu_loop.step_gi(&scene, 12.0);
+    assert_eq!(routed_out.len(), cpu_out.len());
+    for (i, (a, b)) in routed_out.iter().zip(cpu_out.iter()).enumerate() {
+        for band in 0..16 {
+            assert_eq!(
+                a.spectral()[band],
+                b.spectral()[band],
+                "splat {i} band {band}: over-capacity frame diverged from CPU"
+            );
+        }
+    }
+    // The backend selection survives — a later smaller frame would use the GPU.
+    assert_eq!(
+        gpu_loop.gi_backend(),
+        "gpu",
+        "over-capacity routing must not permanently demote the backend"
+    );
+}

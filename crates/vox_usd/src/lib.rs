@@ -28,7 +28,7 @@
 
 use glam::{DMat4, DVec3, Quat, Vec3};
 use half::f16;
-use openusd_rs::{gf, tf, usd, usd_geom, usd_shade, vt};
+use openusd_rs::{gf, sdf, tf, usd, usd_geom, usd_shade, vt};
 use std::path::Path;
 use vox_core::types::GaussianSplat;
 use vox_data::SpectralUpsampler;
@@ -146,6 +146,23 @@ pub struct UsdImportSettings {
     pub mesh_splats_per_sqm: f32,
     /// Hard splat ceiling; overflow stops sampling and emits a warning. Default `5_000_000`.
     pub max_splats: usize,
+    /// Traversal-depth ceiling. Exceeding it skips the subtree + warns, never
+    /// aborts (the walk is an explicit work-stack; a recursive walk
+    /// stack-overflowed — an abort `catch_unwind` cannot catch — at ~60k).
+    ///
+    /// Default `16`, and the LOW default is load-bearing: openusd-rs prim
+    /// composition is EXPONENTIAL in nesting depth (~2x per level, measured:
+    /// depth 14 = 0.07s, 18 = 1.05s, 22 = 16.9s, 26 = >30s), so the cap is
+    /// the CPU defense against hostile nesting — and unfortunately also
+    /// bounds legitimate deep scenes until the upstream composition is
+    /// memoized (~/src/openusd-rs, fix candidate: cache per-prim composed
+    /// state instead of re-resolving ancestors per query). Raise it only
+    /// knowing the cost doubles per level.
+    pub max_depth: u32,
+    /// Total-prim ceiling across the whole traversal — bounds hostile breadth
+    /// (a million siblings) the same way `max_depth` bounds nesting. Exceeding
+    /// it stops the walk with a warning. Default `1_000_000`.
+    pub max_prims: usize,
 }
 
 impl Default for UsdImportSettings {
@@ -155,6 +172,8 @@ impl Default for UsdImportSettings {
             default_opacity: 240,
             mesh_splats_per_sqm: 200.0,
             max_splats: 5_000_000,
+            max_depth: 16,
+            max_prims: 1_000_000,
         }
     }
 }
@@ -173,7 +192,38 @@ pub fn import_usd_with(path: &Path, settings: &UsdImportSettings) -> Result<UsdI
     if !path.exists() {
         return Err(UsdError::Open(path.display().to_string()));
     }
+    // openusd-rs's parser/composer PANICS (unwrap/expect/panic!) on malformed,
+    // truncated, or mistyped input instead of returning errors — reproduced by
+    // review on six distinct hostile inputs. Contain it: a hostile file must
+    // surface as UsdError, never abort the editor that opened it. (The default
+    // panic hook still prints one line to stderr — acceptable noise; we do NOT
+    // swap the global hook from a library. Stack overflow from pathological
+    // nesting is prevented separately by the iterative depth-capped walk —
+    // catch_unwind cannot contain a stack overflow.)
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        import_usd_unguarded(path, settings)
+    })) {
+        Ok(result) => result,
+        Err(payload) => {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "USD parser panicked".to_string());
+            Err(UsdError::Open(format!(
+                "{}: malformed USD ({msg})",
+                path.display()
+            )))
+        }
+    }
+}
 
+/// The actual open+compose+traverse, with openusd-rs's panics NOT yet contained.
+/// Only ever called through `import_usd_with`'s catch_unwind.
+fn import_usd_unguarded(
+    path: &Path,
+    settings: &UsdImportSettings,
+) -> Result<UsdImport, UsdError> {
     let is_text = matches!(
         path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
         Some("usda"),
@@ -214,6 +264,7 @@ pub fn import_usd_with(path: &Path, settings: &UsdImportSettings) -> Result<UsdI
         },
         is_text,
         text_array_geometry_seen: false,
+        prim_cap_warned: false,
     };
 
     for child in root.children() {
@@ -292,59 +343,103 @@ struct Walk<'s> {
     is_text: bool,
     /// A `.usda` prim that carries array/tuple geometry the text parser drops.
     text_array_geometry_seen: bool,
+    /// The `max_prims` warning fired (visit is called once per root child;
+    /// warn once for the whole import, not once per remaining root).
+    prim_cap_warned: bool,
 }
 
 impl Walk<'_> {
+    /// Visit `prim` and its subtree iteratively (explicit work-stack of prim
+    /// PATHS — never recursion on attacker-controlled nesting depth, bounded
+    /// by `settings.max_depth` / `settings.max_prims`). Children are pushed in
+    /// reverse so pop order preserves the authored prim order (entities,
+    /// geom_log, and the CLI per-prim lines stay stable).
     fn visit(&mut self, prim: &usd::Prim, parent_world: DMat4) {
-        if !prim.is_valid() {
-            // Skip the prim itself but still descend (its subtree may be valid).
-            for child in prim.children() {
-                self.visit(&child, parent_world);
+        let mut stack: Vec<(sdf::Path, DMat4, u32)> =
+            vec![(prim.path().clone(), parent_world, 0)];
+        let mut depth_warned = false;
+
+        while let Some((path, parent_world, depth)) = stack.pop() {
+            let prim = self.stage.prim_at_path(path);
+            if depth >= self.settings.max_depth {
+                if !depth_warned {
+                    self.out.warnings.push(format!(
+                        "scenegraph deeper than {} levels at {} — subtree skipped",
+                        self.settings.max_depth,
+                        prim.path()
+                    ));
+                    depth_warned = true;
+                }
+                continue;
             }
-            return;
-        }
-
-        self.out.stats.prims += 1;
-
-        let local = self.read_local(prim);
-        let world = parent_world * local;
-
-        let type_name = prim.type_name();
-        let before = self.out.splats.len();
-        match type_name.as_str() {
-            "Mesh" => {
-                self.out.stats.meshes += 1;
-                let color = self.bound_diffuse_rgb(prim);
-                self.mesh_to_splats(prim, world, color);
-                self.log_geom(prim, &type_name, before);
-            }
-            "PointInstancer" => {
-                self.out.stats.instancers += 1;
-                self.instancer_to_splats(prim, world);
-                self.log_geom(prim, &type_name, before);
-                // A PointInstancer's children are *prototypes* — templates that
-                // are instanced via `positions`, never rendered as standalone
-                // geometry. Do not descend into them.
+            // Total-prim guard: stats.prims accumulates across ALL root
+            // children (visit is called once per root child), so hostile
+            // breadth at any level — including 10^6 roots — is bounded.
+            if self.out.stats.prims >= self.settings.max_prims {
+                if !self.prim_cap_warned {
+                    self.out.warnings.push(format!(
+                        "scene exceeds {} prims — traversal stopped at {}",
+                        self.settings.max_prims,
+                        prim.path()
+                    ));
+                    self.prim_cap_warned = true;
+                }
                 return;
             }
-            "Points" => {
-                self.out.stats.points += 1;
-                self.points_to_splats(prim, world);
-                self.log_geom(prim, &type_name, before);
-            }
-            "SphereLight" | "RectLight" | "DiskLight" | "DistantLight" | "DomeLight" => {
-                self.read_light(prim, world);
-            }
-            "Camera" => {
-                self.read_camera(prim, world);
-            }
-            _ => {
-                self.push_entity(prim, world);
-            }
-        }
 
-        for child in prim.children() {
-            self.visit(&child, world);
+            if !prim.is_valid() {
+                // Skip the prim itself but still descend (its subtree may be valid).
+                let children: Vec<sdf::Path> =
+                    prim.children().map(|c| c.path().clone()).collect();
+                for child in children.into_iter().rev() {
+                    stack.push((child, parent_world, depth + 1));
+                }
+                continue;
+            }
+
+            self.out.stats.prims += 1;
+
+            let local = self.read_local(&prim);
+            let world = parent_world * local;
+
+            let type_name = prim.type_name();
+            let before = self.out.splats.len();
+            match type_name.as_str() {
+                "Mesh" => {
+                    self.out.stats.meshes += 1;
+                    let color = self.bound_diffuse_rgb(&prim);
+                    self.mesh_to_splats(&prim, world, color);
+                    self.log_geom(&prim, &type_name, before);
+                }
+                "PointInstancer" => {
+                    self.out.stats.instancers += 1;
+                    self.instancer_to_splats(&prim, world);
+                    self.log_geom(&prim, &type_name, before);
+                    // A PointInstancer's children are *prototypes* — templates
+                    // instanced via `positions`, never rendered standalone. Do
+                    // not descend into them.
+                    continue;
+                }
+                "Points" => {
+                    self.out.stats.points += 1;
+                    self.points_to_splats(&prim, world);
+                    self.log_geom(&prim, &type_name, before);
+                }
+                "SphereLight" | "RectLight" | "DiskLight" | "DistantLight" | "DomeLight" => {
+                    self.read_light(&prim, world);
+                }
+                "Camera" => {
+                    self.read_camera(&prim, world);
+                }
+                _ => {
+                    self.push_entity(&prim, world);
+                }
+            }
+
+            let children: Vec<sdf::Path> = prim.children().map(|c| c.path().clone()).collect();
+            for child in children.into_iter().rev() {
+                stack.push((child, world, depth + 1));
+            }
         }
     }
 
@@ -428,6 +523,7 @@ impl Walk<'_> {
         let spm = self.settings.mesh_splats_per_sqm;
         let opacity = self.settings.default_opacity;
 
+        let mut nonfinite_skipped = 0usize;
         for tri in tris.chunks(3) {
             if tri.len() < 3 {
                 continue;
@@ -439,6 +535,14 @@ impl Walk<'_> {
             let v0 = verts[i0];
             let v1 = verts[i1];
             let v2 = verts[i2];
+
+            // Hostile/broken geometry: a NaN/inf vertex would poison every
+            // splat sampled from this triangle (and ceil(NaN) silently maps to
+            // 0 in Rust). Skip the triangle and warn once per mesh.
+            if !(v0.is_finite() && v1.is_finite() && v2.is_finite()) {
+                nonfinite_skipped += 1;
+                continue;
+            }
 
             let edge1 = v1 - v0;
             let edge2 = v2 - v0;
@@ -485,6 +589,12 @@ impl Walk<'_> {
                 ));
             }
         }
+        if nonfinite_skipped > 0 {
+            self.out.warnings.push(format!(
+                "{}: skipped {nonfinite_skipped} triangle(s) with non-finite vertices",
+                prim.path()
+            ));
+        }
     }
 
     // -- PointInstancer → 3DGS volume splats --------------------------------
@@ -513,6 +623,9 @@ impl Walk<'_> {
         for (i, p) in positions.iter().enumerate() {
             if self.at_capacity() {
                 return;
+            }
+            if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+                continue; // hostile/broken instance position — skip
             }
             let w = world.transform_point3(DVec3::new(p.x as f64, p.y as f64, p.z as f64));
             let pos = [w.x as f32, w.y as f32, w.z as f32];
@@ -560,6 +673,9 @@ impl Walk<'_> {
         for (i, p) in points.iter().enumerate() {
             if self.at_capacity() {
                 return;
+            }
+            if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+                continue; // hostile/broken point — skip
             }
             let w = world.transform_point3(DVec3::new(p.x as f64, p.y as f64, p.z as f64));
             let pos = [w.x as f32, w.y as f32, w.z as f32];
@@ -610,12 +726,27 @@ impl Walk<'_> {
         let dir = world.transform_vector3(DVec3::NEG_Z);
         let direction = Vec3::new(dir.x as f32, dir.y as f32, dir.z as f32).normalize_or_zero();
 
+        // An authored inf/NaN intensity or exposure must not poison the light
+        // list silently (downstream GI multiplies by it). Clamp to a generous
+        // physical ceiling and warn.
+        let raw_intensity = intensity * 2.0_f32.powf(exposure);
+        const MAX_LIGHT_INTENSITY: f32 = 1.0e9;
+        let intensity = if raw_intensity.is_finite() {
+            raw_intensity.clamp(0.0, MAX_LIGHT_INTENSITY)
+        } else {
+            self.out.warnings.push(format!(
+                "{}: non-finite light intensity ({raw_intensity}) clamped to 0",
+                prim.path()
+            ));
+            0.0
+        };
+
         self.out.lights.push(UsdLight {
             name: prim.name().as_str().to_string(),
             position,
             direction,
             color,
-            intensity: intensity * 2.0_f32.powf(exposure),
+            intensity,
             kind,
         });
     }

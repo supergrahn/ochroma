@@ -212,3 +212,109 @@ fn open_succeeds_with_stats_for_cube_lit() {
     assert!(imp.camera.is_some());
     assert_eq!(imp.warnings.len(), 0, "no warnings for the clean fixture");
 }
+
+// --- Hostile inputs: error, never abort (wave-3 review criticals) ----------
+
+/// Six hostile-input classes that previously PANICKED through openusd-rs's
+/// unwrap/expect wall (reproduced by adversarial review aborting the CLI).
+/// All must now surface as Err — the editor must survive opening any file.
+/// (Each case prints one panic line to stderr via the default hook; that
+/// noise is expected — the contract is "no abort, an Err comes back".)
+#[test]
+fn hostile_inputs_error_instead_of_aborting() {
+    let dir = std::env::temp_dir().join("vox_usd_hostile");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // (a) truncated PXR-USDC magic only
+    let p = dir.join("truncated.usdc");
+    std::fs::write(&p, b"PXR-USDC").unwrap();
+    assert!(import_usd(&p).is_err(), "truncated magic must Err");
+
+    // (b) garbage bytes with .usdc extension
+    let p = dir.join("garbage.usdc");
+    std::fs::write(&p, b"definitely not a usd file at all 1234567890").unwrap();
+    assert!(import_usd(&p).is_err(), "garbage .usdc must Err");
+
+    // (c) empty file
+    let p = dir.join("empty.usdc");
+    std::fs::write(&p, b"").unwrap();
+    assert!(import_usd(&p).is_err(), "empty .usdc must Err");
+
+    // (d) garbage .usda text
+    let p = dir.join("garbage.usda");
+    std::fs::write(&p, b"{{{{ not usda ]]]]").unwrap();
+    assert!(import_usd(&p).is_err(), "garbage .usda must Err");
+
+    // (e) a DIRECTORY named like a usd file (passes the exists() precheck)
+    let p = dir.join("dir.usdc");
+    std::fs::create_dir_all(&p).unwrap();
+    assert!(import_usd(&p).is_err(), "directory.usdc must Err");
+
+    // (f) extensionless file
+    let p = dir.join("noext");
+    std::fs::write(&p, b"PXR-USDC").unwrap();
+    assert!(import_usd(&p).is_err(), "extensionless must Err");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A pathologically nested scenegraph must not abort the process (the old
+/// recursive walk stack-overflowed at depth ~60k — uncatchable). The walk is
+/// now an explicit work-stack honoring `settings.max_depth` (default 16):
+/// openusd-rs composition is EXPONENTIAL in nesting depth (measured 2x/level;
+/// a 20k-deep variant of this test never finished), so the LOW default cap
+/// IS the CPU defense and this test proves it on a 200-deep hostile file.
+#[test]
+fn deep_nesting_is_capped_not_stack_overflow() {
+    const DEPTH: usize = 200;
+    let mut text = String::with_capacity(DEPTH * 24);
+    text.push_str("#usda 1.0\n");
+    for i in 0..DEPTH {
+        text.push_str(&format!("def Xform \"n{i}\" {{\n"));
+    }
+    text.push_str(&"}\n".repeat(DEPTH));
+
+    let p = std::env::temp_dir().join("vox_usd_deep.usda");
+    std::fs::write(&p, text).unwrap();
+
+    // DEFAULT settings on purpose: the default max_depth (16) is the shipped
+    // CPU defense — openusd-rs composition is EXPONENTIAL in nesting depth
+    // (~2x/level), so querying past ~22 levels takes tens of seconds. The
+    // default must keep this 200-deep hostile file fast AND surfaced.
+    let imp = import_usd(&p).expect("deep nesting must import, capped");
+    assert!(
+        imp.warnings.iter().any(|w| w.contains("deeper than 16")),
+        "depth cap must be surfaced as a warning: {:?}",
+        imp.warnings
+    );
+    assert_eq!(
+        imp.entities.len(),
+        16,
+        "exactly the prims above the cap import (one Xform entity per level)"
+    );
+
+    let _ = std::fs::remove_file(&p);
+}
+
+/// Hostile BREADTH is bounded the same way: more prims than `max_prims`
+/// stops the walk with a warning instead of unbounded work.
+#[test]
+fn prim_count_cap_stops_hostile_breadth() {
+    let mut text = String::from("#usda 1.0\n");
+    for i in 0..500 {
+        text.push_str(&format!("def Xform \"w{i}\" {{}}\n"));
+    }
+    let p = std::env::temp_dir().join("vox_usd_wide.usda");
+    std::fs::write(&p, text).unwrap();
+
+    let settings = UsdImportSettings { max_prims: 100, ..Default::default() };
+    let imp = import_usd_with(&p, &settings).expect("wide scene must import, capped");
+    assert!(
+        imp.warnings.iter().any(|w| w.contains("exceeds 100 prims")),
+        "prim cap must be surfaced as a warning: {:?}",
+        imp.warnings
+    );
+    assert_eq!(imp.entities.len(), 100, "exactly max_prims prims imported");
+
+    let _ = std::fs::remove_file(&p);
+}
