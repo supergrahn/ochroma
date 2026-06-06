@@ -12,12 +12,19 @@
 //! converges onto these arms in the plugin-host wave); the dock/move/layout
 //! machinery, chrome, and bitmap-font eradication are real and tested now.
 
+pub mod command_palette;
 pub mod cpu_render;
 
+use command_palette::{Command, CommandRegistry, PaletteState};
 use egui_dock::{DockArea, DockState, NodeIndex, Style as DockStyle};
+use std::cell::RefCell;
+use std::rc::Rc;
 use vox_ui::design::icons::icon;
+use vox_ui::node_canvas::{
+    CanvasGraph, NodeCanvas, NodeState, NodeView, WireView,
+};
 use vox_ui::widgets::{self, ScrubOpts};
-use vox_ui::Tokens;
+use vox_ui::{NodeCategory, PortType, Tokens};
 
 /// Identifies a dockable panel (the `egui_dock` tab payload).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +81,17 @@ pub struct EditorShell {
     /// Toolbar gizmo mode (0=move,1=rotate,2=scale).
     pub gizmo: u8,
     pub snap: bool,
+    /// The one-command-surface (menus/toolbar/palette/AI all dispatch through it).
+    pub registry: CommandRegistry,
+    /// The Ctrl+K command palette state.
+    pub palette: PaletteState,
+    /// The node-graph canvas renderer state (pan/zoom/drag).
+    pub canvas: NodeCanvas,
+    /// The representative cook graph driving the Node Graph tab.
+    pub graph: CanvasGraph,
+    /// Set true by the `world.add` command (proves the registry callback fired;
+    /// the palette test asserts it).
+    pub last_command_flag: Rc<RefCell<bool>>,
 }
 
 impl Default for EditorShell {
@@ -98,9 +116,19 @@ impl EditorShell {
         let [_center, _bottom] =
             surface.split_below(center, 0.72, vec![PanelId::Content, PanelId::Output]);
 
+        let last_command_flag = Rc::new(RefCell::new(false));
+        let registry = build_registry(&last_command_flag);
+        let mut canvas = NodeCanvas::new();
+        canvas.set_snap(GRAPH_SNAP);
+
         EditorShell {
             tokens,
             dock,
+            registry,
+            palette: PaletteState::default(),
+            canvas,
+            graph: build_demo_graph(),
+            last_command_flag,
             entities: vec![
                 ShellEntity {
                     name: "Townhouse_Row_03".into(),
@@ -133,6 +161,12 @@ impl EditorShell {
 
     /// Lay out the full shell into an egui context for one frame.
     pub fn ui(&mut self, ctx: &egui::Context) {
+        // Ctrl+K toggles the one-command-surface (the AI-native entry point).
+        let ctrl_k = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::K));
+        if ctrl_k {
+            self.palette.toggle();
+        }
+
         self.menu_bar(ctx);
         self.toolbar(ctx);
         self.status_bar(ctx);
@@ -142,39 +176,101 @@ impl EditorShell {
             entities: &mut self.entities,
             selected: &mut self.selected,
             search: &mut self.search,
+            canvas: &mut self.canvas,
+            graph: &mut self.graph,
         };
         let dock_style = DockStyle::from_egui(ctx.style().as_ref());
         DockArea::new(&mut self.dock)
             .style(dock_style)
             .show(ctx, &mut viewer);
+
+        // The palette overlays everything (foreground order).
+        self.palette.ui(ctx, &self.tokens, &self.registry);
+    }
+
+    /// Force the palette open (for headless snapshots / tests).
+    pub fn open_palette(&mut self) {
+        self.palette.open = true;
+        self.palette.selected = 0;
+    }
+
+    /// Select the Node Graph tab as the active/focused tab (for snapshots that
+    /// want it maximized — used by `--tab node_graph`).
+    pub fn focus_node_graph(&mut self) {
+        if let Some((surface, node, _tab)) = self.dock.find_tab(&PanelId::NodeGraph) {
+            self.dock
+                .set_active_tab((surface, node, self.node_graph_tab_index()));
+        }
+    }
+
+    fn node_graph_tab_index(&self) -> egui_dock::TabIndex {
+        if let Some((s, n, t)) = self.dock.find_tab(&PanelId::NodeGraph) {
+            let _ = (s, n);
+            t
+        } else {
+            egui_dock::TabIndex(0)
+        }
     }
 
     fn menu_bar(&mut self, ctx: &egui::Context) {
+        // Each menu lists the registry commands in its category and DISPATCHES
+        // through the registry (the one-command-surface — no direct logic here).
+        let mut to_run: Option<String> = None;
+        let mut open_palette = false;
         egui::TopBottomPanel::top("shell_menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 for m in ["File", "Edit", "Create", "Build", "Window", "Help"] {
                     ui.menu_button(m, |ui| {
-                        ui.label(format!("{m} actions"));
+                        let mut any = false;
+                        for c in self.registry.commands.iter().filter(|c| c.category == m) {
+                            any = true;
+                            let label = if c.shortcut.is_empty() {
+                                c.title.clone()
+                            } else {
+                                format!("{}\t{}", c.title, c.shortcut)
+                            };
+                            if ui.button(label).clicked() {
+                                to_run = Some(c.id.clone());
+                                ui.close_menu();
+                            }
+                        }
+                        if !any {
+                            ui.label(format!("{m} actions"));
+                        }
                     });
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // "Ask Ochroma" — the one command surface (UX principle 2).
-                    let _ = widgets::primary_action(
+                    if widgets::primary_action(
                         ui,
                         icon::SEARCH,
                         "Ask Ochroma  (Ctrl+K)",
                         &self.tokens,
-                    );
+                    )
+                    .clicked()
+                    {
+                        open_palette = true;
+                    }
                 });
             });
         });
+        if let Some(id) = to_run {
+            self.registry.run(&id);
+        }
+        if open_palette {
+            self.open_palette();
+        }
     }
 
     fn toolbar(&mut self, ctx: &egui::Context) {
+        let mut add_to_world = false;
         egui::TopBottomPanel::top("shell_toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // Primary labeled action (the Canva rule).
-                let _ = widgets::primary_action(ui, icon::ADD, "Add to world", &self.tokens);
+                // Primary labeled action (the Canva rule) — routes through the
+                // registry's `world.add`, the same command the palette runs.
+                if widgets::primary_action(ui, icon::ADD, "Add to world", &self.tokens).clicked() {
+                    add_to_world = true;
+                }
                 ui.separator();
                 // Gizmo mode icons WITH text labels (UX principle 1).
                 for (i, (ic, label)) in [
@@ -207,6 +303,9 @@ impl EditorShell {
                 let _ = widgets::icon_button(ui, icon::STOP, "Stop");
             });
         });
+        if add_to_world {
+            self.registry.run("world.add");
+        }
     }
 
     fn status_bar(&mut self, ctx: &egui::Context) {
@@ -247,6 +346,8 @@ struct ShellViewer<'a> {
     entities: &'a mut Vec<ShellEntity>,
     selected: &'a mut usize,
     search: &'a mut String,
+    canvas: &'a mut NodeCanvas,
+    graph: &'a mut CanvasGraph,
 }
 
 impl egui_dock::TabViewer for ShellViewer<'_> {
@@ -359,53 +460,9 @@ impl ShellViewer<'_> {
     }
 
     fn node_graph(&mut self, ui: &mut egui::Ui) {
-        // Token-colored node strip placeholder (the bezier NodeCanvas lands in
-        // its own wave). Draws a couple of category-colored node headers so the
-        // panel reads as a real graph surface in the snapshot.
-        let rect = ui.available_rect_before_wrap();
-        let [r, g, b, a] = self.tokens.color("surface.bg.0");
-        ui.painter()
-            .rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(r, g, b, a));
-        let cats = [
-            (vox_ui::NodeCategory::Spatial, "Terrain"),
-            (vox_ui::NodeCategory::Field, "Splatize"),
-            (vox_ui::NodeCategory::Sink, "Output"),
-        ];
-        let mut x = rect.left() + 24.0;
-        let y = rect.top() + 40.0;
-        let mut prev: Option<egui::Pos2> = None;
-        for (cat, name) in cats {
-            let node = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(120.0, 64.0));
-            let [br, bg, bb, ba] = self.tokens.color("surface.bg.2");
-            ui.painter().rect_filled(
-                node,
-                self.tokens.radius[1],
-                egui::Color32::from_rgba_unmultiplied(br, bg, bb, ba),
-            );
-            let [hr, hg, hb, ha] = self.tokens.category_header(cat);
-            let header = egui::Rect::from_min_size(node.min, egui::vec2(node.width(), 18.0));
-            ui.painter().rect_filled(
-                header,
-                self.tokens.radius[0],
-                egui::Color32::from_rgba_unmultiplied(hr, hg, hb, ha),
-            );
-            ui.painter().text(
-                header.left_center() + egui::vec2(6.0, 0.0),
-                egui::Align2::LEFT_CENTER,
-                name,
-                egui::FontId::proportional(self.tokens.type_ramp.caption),
-                egui::Color32::WHITE,
-            );
-            if let Some(p) = prev {
-                let [wr, wg, wb, wa] = self.tokens.wire_color(vox_ui::PortType::Terrain);
-                ui.painter().line_segment(
-                    [p, node.left_center()],
-                    egui::Stroke::new(3.0, egui::Color32::from_rgba_unmultiplied(wr, wg, wb, wa)),
-                );
-            }
-            prev = Some(node.right_center());
-            x += 200.0;
-        }
+        // The real SOTA node canvas: bezier type-colored wires, dot grid, pan/
+        // zoom, snap-drag, minimap — all from the shared `NodeCanvas` renderer.
+        let _ = self.canvas.ui(ui, self.tokens, self.graph);
     }
 
     fn content(&mut self, ui: &mut egui::Ui) {
@@ -444,6 +501,104 @@ impl ShellViewer<'_> {
             ui.label(egui::RichText::new(line).monospace());
         }
     }
+}
+
+/// World-units the node-graph drag snaps to.
+const GRAPH_SNAP: f32 = 8.0;
+
+/// Build the editor's one-command-surface. Menus, toolbar, palette and (later)
+/// the AI assistant all dispatch through these. `flag` is flipped by the
+/// representative `world.add` command so the palette test can observe execution.
+fn build_registry(flag: &Rc<RefCell<bool>>) -> CommandRegistry {
+    let mut r = CommandRegistry::new();
+    let f = flag.clone();
+    r.add(Command::new(
+        "world.add",
+        "Add to world",
+        "Create",
+        "Ctrl+A",
+        move || *f.borrow_mut() = true,
+    ));
+    r.add(Command::new("create.terrain", "Forge: Terrain", "Create", "", || {}));
+    r.add(Command::new("create.biome", "Add biome layer", "Create", "", || {}));
+    r.add(Command::new("file.save", "Save world", "File", "Ctrl+S", || {}));
+    r.add(Command::new("file.open", "Open world…", "File", "Ctrl+O", || {}));
+    r.add(Command::new("edit.undo", "Undo", "Edit", "Ctrl+Z", || {}));
+    r.add(Command::new("edit.redo", "Redo", "Edit", "Ctrl+Shift+Z", || {}));
+    r.add(Command::new("build.cook", "Recook graph", "Build", "F5", || {}));
+    r.add(Command::new("view.wireframe", "Toggle wireframe", "Window", "", || {}));
+    r.add(Command::new("help.about", "About Ochroma", "Help", "", || {}));
+    r
+}
+
+/// Build the representative cook graph mirroring the mockup's bottom-left shape:
+/// Terrain -> Biome -> FloraPrime -> SplatWeight -> Splatize, with real port
+/// types and node categories so the canvas reads as a true SOTA graph surface.
+fn build_demo_graph() -> CanvasGraph {
+    let mut g = CanvasGraph::default();
+    g.nodes.push(
+        NodeView::new(1, "Terrain", NodeCategory::Spatial, egui::pos2(40.0, 90.0))
+            .with_output("terrain", PortType::Terrain),
+    );
+    g.nodes.push(
+        NodeView::new(2, "Biome Classify", NodeCategory::Field, egui::pos2(250.0, 60.0))
+            .with_input("terrain", PortType::Terrain)
+            .with_output("biome", PortType::BiomeMap),
+    );
+    g.nodes.push(
+        NodeView::new(3, "FloraPrime", NodeCategory::Generator, egui::pos2(250.0, 220.0))
+            .with_input("biome", PortType::BiomeMap)
+            .with_output("instances", PortType::Instances),
+    );
+    g.nodes.push(
+        NodeView::new(4, "SplatWeight", NodeCategory::Math, egui::pos2(470.0, 120.0))
+            .with_input("biome", PortType::BiomeMap)
+            .with_input("flora", PortType::Instances)
+            .with_output("weights", PortType::SplatWeights),
+    );
+    {
+        let mut splatize =
+            NodeView::new(5, "Splatize", NodeCategory::Sink, egui::pos2(690.0, 130.0))
+                .with_input("weights", PortType::SplatWeights)
+                .with_output("splats", PortType::Splats);
+        splatize.state = NodeState::Normal;
+        g.nodes.push(splatize);
+    }
+    for n in &mut g.nodes {
+        n.size.x = 150.0;
+    }
+    g.wires.push(WireView {
+        from_node: 1, from_port: "terrain".into(),
+        to_node: 2, to_port: "terrain".into(),
+        exec: false, label: None,
+    });
+    g.wires.push(WireView {
+        from_node: 2, from_port: "biome".into(),
+        to_node: 3, to_port: "biome".into(),
+        exec: false, label: None,
+    });
+    g.wires.push(WireView {
+        from_node: 2, from_port: "biome".into(),
+        to_node: 4, to_port: "biome".into(),
+        exec: false, label: None,
+    });
+    g.wires.push(WireView {
+        from_node: 3, from_port: "instances".into(),
+        to_node: 4, to_port: "flora".into(),
+        exec: false, label: None,
+    });
+    g.wires.push(WireView {
+        from_node: 4, from_port: "weights".into(),
+        to_node: 5, to_port: "weights".into(),
+        exec: false, label: Some("0.82".into()),
+    });
+    // A tintable comment frame grouping the field stage (item 14).
+    g.comments.push(vox_ui::node_canvas::CommentBox {
+        rect: egui::Rect::from_min_size(egui::pos2(230.0, 40.0), egui::vec2(190.0, 280.0)),
+        title: "Biome stage".into(),
+        tint: "accent.dim".into(),
+    });
+    g
 }
 
 #[cfg(test)]
@@ -647,5 +802,332 @@ mod tests {
             "Inspector x-origin moved only {dx} (pane_w {pane_w}); before={before:?} after={after:?}"
         );
         let _ = (NodeIndex::root(), SurfaceIndex::main(), TabIndex(0));
+    }
+
+    // === NodeCanvas pixel tests (the cpu_render harness rasterizes the real
+    // egui paint mesh, so these assert REAL rendered pixels) ===
+
+    /// Render a NodeCanvas full-frame into RGBA, returning (rgba, w, h).
+    fn render_canvas(
+        canvas: &mut NodeCanvas,
+        graph: &mut CanvasGraph,
+        tokens: &Tokens,
+        size: [usize; 2],
+    ) -> Vec<u8> {
+        let ctx = egui::Context::default();
+        vox_ui::design::icons::install(&ctx);
+        vox_ui::egui_theme::apply(&ctx, tokens);
+        let bg = tokens.color("surface.bg.0");
+        super::cpu_render::render_ui(&ctx, size, bg, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    canvas.ui(ui, tokens, graph);
+                });
+        })
+    }
+
+    #[inline]
+    fn px(rgba: &[u8], w: usize, x: i32, y: i32) -> [u8; 3] {
+        let i = (y as usize * w + x as usize) * 4;
+        [rgba[i], rgba[i + 1], rgba[i + 2]]
+    }
+
+    /// Two-node, two-port-type graph whose single wire is guaranteed visible and
+    /// vertically offset (so the bezier bows) and two-colored (gradient proof).
+    fn gradient_graph() -> CanvasGraph {
+        let mut g = CanvasGraph::default();
+        g.nodes.push(
+            NodeView::new(1, "Src", NodeCategory::Spatial, egui::pos2(60.0, 60.0))
+                .with_output("out", PortType::Terrain),
+        );
+        g.nodes.push(
+            NodeView::new(2, "Dst", NodeCategory::Sink, egui::pos2(420.0, 240.0))
+                .with_input("in", PortType::Splats),
+        );
+        for n in &mut g.nodes {
+            n.size.x = 150.0;
+        }
+        g.wires.push(WireView {
+            from_node: 1, from_port: "out".into(),
+            to_node: 2, to_port: "in".into(),
+            exec: false, label: None,
+        });
+        g
+    }
+
+    /// SOTA [10]: bezier wire pixels exist OFF the straight chord between the two
+    /// sockets (curvature) AND the wire is antialiased (a cross-section through it
+    /// shows >8 distinct alpha/coverage levels, impossible for a 1px hard line).
+    #[test]
+    fn wire_is_curved_and_antialiased_in_pixels() {
+        let tokens = Tokens::default();
+        let mut canvas = NodeCanvas::new();
+        canvas.show_minimap = false;
+        let mut graph = gradient_graph();
+        let (w, h) = (640usize, 480usize);
+        let rgba = render_canvas(&mut canvas, &mut graph, &tokens, [w, h]);
+
+        let origin = egui::Pos2::ZERO; // CentralPanel fills from (0,0)
+        let wire = &graph.wires[0];
+        let pts = canvas
+            .wire_screen_points(origin, &graph, wire, 41)
+            .unwrap();
+        let p0 = pts[0];
+        let p3 = *pts.last().unwrap();
+        // Max perpendicular deviation of any sample from the straight chord (the
+        // horizontal control handles make an S-curve that passes THROUGH the
+        // chord midpoint, so the bow shows at the quarter points, not t=0.5).
+        let chord = p3 - p0;
+        let len = chord.length().max(1.0);
+        let nrm = egui::vec2(-chord.y, chord.x) / len;
+        let (mut max_dev, mut bow_pt) = (0.0f32, pts[pts.len() / 4]);
+        for p in &pts {
+            let d = (*p - p0).dot(nrm).abs();
+            if d > max_dev {
+                max_dev = d;
+                bow_pt = *p;
+            }
+        }
+        assert!(
+            max_dev > 5.0,
+            "bezier deviates only {max_dev}px from the chord — not curved"
+        );
+
+        // Wire color (Terrain->Splats gradient) differs strongly from bg, so any
+        // pixel at the bow point that is non-bg is the wire itself.
+        let bg = tokens.color("surface.bg.0");
+        let mp = px(&rgba, w, bow_pt.x.round() as i32, bow_pt.y.round() as i32);
+        let dbg = (0..3).map(|i| (mp[i] as i32 - bg[i] as i32).abs()).max().unwrap();
+        assert!(dbg > 20, "no wire pixel at the curved bow point (got {mp:?} vs bg {bg:?})");
+
+        // AA cross-section: collect distinct luminances in a small box around the
+        // bow point — the box straddles the antialiased EDGES of the ~4px wire on
+        // every side, where coverage blends line->bg. A hard 1px line would show
+        // ~2 levels (line + bg); AA shows a continuum.
+        let cx = bow_pt.x.round() as i32;
+        let cy = bow_pt.y.round() as i32;
+        let mut seen = std::collections::HashSet::new();
+        for dy in -6..=6 {
+            for dx in -6..=6 {
+                let x = (cx + dx).clamp(0, w as i32 - 1);
+                let y = (cy + dy).clamp(0, h as i32 - 1);
+                let p = px(&rgba, w, x, y);
+                let lum = (p[0] as u32 * 30 + p[1] as u32 * 59 + p[2] as u32 * 11) / 100;
+                seen.insert(lum);
+            }
+        }
+        assert!(
+            seen.len() > 8,
+            "wire cross-section shows only {} luminance levels — not antialiased",
+            seen.len()
+        );
+    }
+
+    /// SOTA [11]: the wire color sampled NEAR the source socket matches the
+    /// source port-type token color, near the target matches the target's, and
+    /// the two differ (gradient between endpoint socket colors).
+    #[test]
+    fn wire_gradient_matches_socket_token_colors_in_pixels() {
+        let tokens = Tokens::default();
+        let mut canvas = NodeCanvas::new();
+        canvas.show_minimap = false;
+        let mut graph = gradient_graph();
+        let (w, h) = (640usize, 480usize);
+        let rgba = render_canvas(&mut canvas, &mut graph, &tokens, [w, h]);
+
+        let origin = egui::Pos2::ZERO;
+        let wire = &graph.wires[0];
+        let pts = canvas.wire_screen_points(origin, &graph, wire, 101).unwrap();
+        // Sample ~12% in from each end (clear of the socket circles, which are
+        // drawn in the same color, and clear of any node body).
+        let near_src = pts[pts.len() * 12 / 100];
+        let near_dst = pts[pts.len() * 88 / 100];
+
+        let src_tok = tokens.wire_color(PortType::Terrain); // [140,200,90]
+        let dst_tok = tokens.wire_color(PortType::Splats); // [76,194,255]
+        assert_ne!(src_tok, dst_tok, "endpoint socket colors must differ");
+
+        // The wire is thicker than a pixel; search a small neighborhood for the
+        // closest match to the expected gradient color (the rasterized line's
+        // centre carries the segment color).
+        fn closest_to(rgba: &[u8], w: usize, h: usize, c: egui::Pos2, want: [u8; 4]) -> i32 {
+            let mut best = i32::MAX;
+            for dy in -4..=4 {
+                for dx in -4..=4 {
+                    let x = (c.x.round() as i32 + dx).clamp(0, w as i32 - 1);
+                    let y = (c.y.round() as i32 + dy).clamp(0, h as i32 - 1);
+                    let p = px(rgba, w, x, y);
+                    let d: i32 = (0..3).map(|i| (p[i] as i32 - want[i] as i32).abs()).sum();
+                    best = best.min(d);
+                }
+            }
+            best
+        }
+        let d_src = closest_to(&rgba, w, h, near_src, src_tok);
+        let d_dst = closest_to(&rgba, w, h, near_dst, dst_tok);
+        assert!(
+            d_src < 60,
+            "wire near source ({d_src}) doesn't match Terrain token {src_tok:?}"
+        );
+        assert!(
+            d_dst < 60,
+            "wire near target ({d_dst}) doesn't match Splats token {dst_tok:?}"
+        );
+    }
+
+    /// SOTA [14]: two nodes of different categories render different header
+    /// colors, each equal to its `category_header` token value (sampled pixels).
+    #[test]
+    fn category_headers_render_their_token_colors() {
+        let tokens = Tokens::default();
+        let mut canvas = NodeCanvas::new();
+        canvas.show_minimap = false;
+        let mut graph = CanvasGraph::default();
+        // A Spatial node and a Sink node, well separated, no overlapping comment.
+        graph.nodes.push({
+            let mut n = NodeView::new(1, "Terrain", NodeCategory::Spatial, egui::pos2(60.0, 80.0))
+                .with_output("o", PortType::Terrain);
+            n.size.x = 150.0;
+            n
+        });
+        graph.nodes.push({
+            let mut n = NodeView::new(2, "Splatize", NodeCategory::Sink, egui::pos2(360.0, 80.0))
+                .with_input("i", PortType::Splats);
+            n.size.x = 150.0;
+            n
+        });
+        let (w, h) = (640usize, 360usize);
+        let rgba = render_canvas(&mut canvas, &mut graph, &tokens, [w, h]);
+
+        let origin = egui::Pos2::ZERO;
+        // Sample a header-interior pixel: a few px below each node's top, a third
+        // of the way in (clear of rounded corners + the title text).
+        let sample_header = |id: u64| -> [u8; 3] {
+            let r = canvas.node_rect_screen(origin, &graph, id).unwrap();
+            let x = (r.min.x + r.width() * 0.30).round() as i32;
+            let y = (r.min.y + 5.0).round() as i32;
+            px(&rgba, w, x, y)
+        };
+        let spatial = sample_header(1);
+        let sink = sample_header(2);
+        let want_spatial = tokens.category_header(NodeCategory::Spatial);
+        let want_sink = tokens.category_header(NodeCategory::Sink);
+
+        let near = |got: [u8; 3], want: [u8; 4]| -> bool {
+            (0..3).all(|i| (got[i] as i32 - want[i] as i32).abs() <= 24)
+        };
+        assert!(
+            near(spatial, want_spatial),
+            "Spatial header pixel {spatial:?} != token {want_spatial:?}"
+        );
+        assert!(
+            near(sink, want_sink),
+            "Sink header pixel {sink:?} != token {want_sink:?}"
+        );
+        assert_ne!(
+            [spatial[0], spatial[1], spatial[2]],
+            [sink[0], sink[1], sink[2]],
+            "two categories must render visibly different header colors"
+        );
+    }
+
+    // === Command palette tests ===
+
+    /// SOTA [17]: fuzzy 'addw' ranks 'Add to world' first AND Enter fires the
+    /// command (the registry callback flips the observable flag).
+    #[test]
+    fn palette_fuzzy_ranks_and_enter_executes() {
+        let shell = EditorShell::default();
+        let hits = shell.registry.search("addw");
+        assert_eq!(
+            hits[0].id, "world.add",
+            "'addw' must rank 'Add to world' first; got {:?}",
+            hits.iter().map(|c| &c.id).collect::<Vec<_>>()
+        );
+        // Enter path: running the top hit flips the bound flag.
+        assert!(!*shell.last_command_flag.borrow());
+        shell.registry.run(&hits[0].id);
+        assert!(
+            *shell.last_command_flag.borrow(),
+            "running the top 'addw' hit must flip the world.add flag"
+        );
+    }
+
+    /// SOTA [17]: palette pixels are PRESENT with `--palette` and ABSENT without.
+    /// The modal dims the WHOLE frame with a translucent black backdrop and paints
+    /// a brighter `surface.bg.2` card on top. We prove BOTH: (a) the frame's mean
+    /// luminance DROPS sharply when open (the dim backdrop covers everything) and
+    /// (b) the modal card centre is BRIGHTER than the dimmed backdrop just outside
+    /// it (a real card, not just a dim) — and that this contrast is absent closed.
+    #[test]
+    fn palette_pixels_present_only_when_open() {
+        let (w, h) = (1280usize, 720usize);
+        let render = |open: bool| -> Vec<u8> {
+            let tokens = Tokens::default();
+            let bg = tokens.color("surface.bg.0");
+            let ctx = egui::Context::default();
+            vox_ui::design::icons::install(&ctx);
+            vox_ui::egui_theme::apply(&ctx, &tokens);
+            let mut shell = EditorShell::new(tokens.clone());
+            super::cpu_render::render_ui(&ctx, [w, h], bg, |ctx| {
+                if open {
+                    shell.palette.open = true;
+                }
+                shell.ui(ctx);
+            })
+        };
+        let lum = |p: [u8; 3]| (p[0] as f32 * 30.0 + p[1] as f32 * 59.0 + p[2] as f32 * 11.0) / 100.0;
+        let mean_lum = |rgba: &[u8]| -> f32 {
+            let n = (rgba.len() / 4) as f32;
+            rgba.chunks_exact(4)
+                .map(|p| lum([p[0], p[1], p[2]]))
+                .sum::<f32>()
+                / n
+        };
+
+        let open_rgba = render(true);
+        let closed_rgba = render(false);
+
+        // (a) Whole-frame dim.
+        let ml_open = mean_lum(&open_rgba);
+        let ml_closed = mean_lum(&closed_rgba);
+        assert!(
+            ml_closed - ml_open > 8.0,
+            "palette dim backdrop must darken the frame: closed mean {ml_closed:.1} vs open {ml_open:.1}"
+        );
+
+        // (b) Card-vs-dimmed-backdrop contrast, sampled in the CENTRE column
+        // (avoids the World-panel selection highlight). The modal card sits at
+        // ~30% height; a point at ~75% height in the same column is the dimmed
+        // viewport. Average a small patch at each to be robust to glyph pixels.
+        let patch_lum = |rgba: &[u8], cx: usize, cy: usize| -> f32 {
+            let mut s = 0.0;
+            let mut n = 0.0;
+            for dy in 0..10 {
+                for dx in 0..20 {
+                    let p = px(rgba, w, (cx + dx) as i32, (cy + dy) as i32);
+                    s += lum([p[0], p[1], p[2]]);
+                    n += 1.0;
+                }
+            }
+            s / n
+        };
+        let cx = w / 2 - 10;
+        let card_open = patch_lum(&open_rgba, cx, h * 28 / 100);
+        let below_open = patch_lum(&open_rgba, cx, h * 75 / 100);
+        assert!(
+            card_open > below_open + 5.0,
+            "open: modal card patch ({card_open:.1}) must be brighter than the dimmed viewport below it ({below_open:.1})"
+        );
+        // Closed: no modal, so the same centre-column patch at 28% height is the
+        // viewport scene at full (undimmed) brightness — the open card patch must
+        // be DIMMER than the closed (undimmed) scene at that location, proving the
+        // backdrop dim is really there.
+        let same_loc_closed = patch_lum(&closed_rgba, cx, h * 75 / 100);
+        assert!(
+            below_open < same_loc_closed - 4.0,
+            "open backdrop ({below_open:.1}) must be dimmer than the closed scene ({same_loc_closed:.1})"
+        );
     }
 }

@@ -15,6 +15,8 @@ use vox_ui::Tokens;
 fn main() {
     let mut shot_path = "/tmp/shell.png".to_string();
     let mut theme = "dark".to_string();
+    let mut tab = String::new();
+    let mut palette = false;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -31,6 +33,13 @@ fn main() {
                     theme = args[i].clone();
                 }
             }
+            "--tab" => {
+                i += 1;
+                if i < args.len() {
+                    tab = args[i].clone();
+                }
+            }
+            "--palette" => palette = true,
             _ => {}
         }
         i += 1;
@@ -47,19 +56,33 @@ fn main() {
     let bg = tokens.color("surface.bg.0");
 
     let mut shell = EditorShell::new(tokens.clone());
+    if tab == "node_graph" {
+        shell.focus_node_graph();
+    }
+    if palette {
+        shell.open_palette();
+    }
     let ctx = egui::Context::default();
     vox_ui::design::icons::install(&ctx);
     vox_ui::egui_theme::apply(&ctx, &tokens);
 
-    let rgba = cpu_render::render_ui(&ctx, [w, h], bg, |ctx| shell.ui(ctx));
+    let rgba = cpu_render::render_ui(&ctx, [w, h], bg, |ctx| {
+        // Re-open the palette each frame (the snapshot harness runs >1 frame and
+        // the modal would otherwise consume/close on a synthetic Enter).
+        if palette {
+            shell.palette.open = true;
+        }
+        shell.ui(ctx);
+    });
 
     cpu_render::write_png(&shot_path, &rgba, w as u32, h as u32)
         .unwrap_or_else(|e| panic!("failed to write {shot_path}: {e}"));
 
     let bytes = std::fs::metadata(&shot_path).map(|m| m.len()).unwrap_or(0);
     let nonbg = cpu_render::non_background_fraction(&rgba, bg, 6) * 100.0;
+    let tab_note = if tab.is_empty() { "default".to_string() } else { tab.clone() };
     println!(
-        "[shell_snapshot] wrote {shot_path} ({} bytes), {nonbg:.1}% non-background pixels, theme={theme}, 1920x1080",
+        "[shell_snapshot] wrote {shot_path} ({} bytes), {nonbg:.1}% non-background pixels, theme={theme}, tab={tab_note}, palette={palette}, 1920x1080",
         bytes
     );
     println!(
