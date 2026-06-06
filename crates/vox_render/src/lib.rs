@@ -13,6 +13,8 @@ pub mod vfx;
 pub mod animation;
 pub mod postprocess;
 pub mod material_graph;
+pub mod material_compiler;
+pub mod material_gpu_eval;
 pub mod naga_builder;
 pub mod spectral_caustics;
 pub mod species_view;
