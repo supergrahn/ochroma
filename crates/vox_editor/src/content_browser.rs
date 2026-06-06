@@ -44,6 +44,8 @@ pub enum AssetKind {
     Ply,
     /// glTF / GLB scene (`.gltf`, `.glb`).
     Gltf,
+    /// USD scene (`.usd`, `.usdc`, `.usda`) — meshes/instancers/lights/camera.
+    Usd,
     /// Rhai gameplay script (`.rhai`).
     Rhai,
     /// WGSL shader (`.wgsl`).
@@ -60,6 +62,7 @@ impl AssetKind {
             "spz" => Self::Spz,
             "ply" => Self::Ply,
             "gltf" | "glb" => Self::Gltf,
+            "usd" | "usdc" | "usda" => Self::Usd,
             "rhai" => Self::Rhai,
             "wgsl" => Self::Wgsl,
             _ => return None,
@@ -73,6 +76,7 @@ impl AssetKind {
             Self::Spz => "SPZ",
             Self::Ply => "PLY",
             Self::Gltf => "glTF",
+            Self::Usd => "USD",
             Self::Rhai => "Rhai",
             Self::Wgsl => "WGSL",
         }
@@ -85,8 +89,8 @@ impl AssetKind {
     }
 
     /// All asset kinds, in stable display order (used to build filter chips).
-    pub fn all() -> [AssetKind; 6] {
-        [Self::Vxm, Self::Spz, Self::Ply, Self::Gltf, Self::Rhai, Self::Wgsl]
+    pub fn all() -> [AssetKind; 7] {
+        [Self::Vxm, Self::Spz, Self::Ply, Self::Gltf, Self::Usd, Self::Rhai, Self::Wgsl]
     }
 }
 
@@ -162,6 +166,8 @@ pub enum BrowserError {
     Spz(SpzError),
     /// A `.ply` failed to decode.
     Ply(PlyError),
+    /// A USD scene failed to import.
+    Usd(vox_usd::UsdError),
 }
 
 impl std::fmt::Display for BrowserError {
@@ -172,6 +178,7 @@ impl std::fmt::Display for BrowserError {
             Self::Vxm(e) => write!(f, "vxm error: {e}"),
             Self::Spz(e) => write!(f, "spz error: {e}"),
             Self::Ply(e) => write!(f, "ply error: {e}"),
+            Self::Usd(e) => write!(f, "usd error: {e}"),
         }
     }
 }
@@ -349,6 +356,25 @@ fn extract_gltf_asset_version(json: &[u8]) -> Option<String> {
     Some(tail[..q2].to_string())
 }
 
+/// Cheap USD metadata peek: read the leading magic to distinguish a binary
+/// crate file (`PXR-USDC`) from text, without composing the (potentially huge)
+/// stage. A full import only happens on explicit load.
+fn usd_meta(path: &Path) -> AssetMeta {
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return AssetMeta::default(),
+    };
+    let mut magic = [0u8; 8];
+    let n = file.read(&mut magic).unwrap_or(0);
+    let detail = if n >= 8 && &magic[0..8] == b"PXR-USDC" {
+        Some("USD crate (binary)".to_string())
+    } else {
+        // Text .usda (or anything else): geometry arrays are unreadable.
+        Some("USD text".to_string())
+    };
+    AssetMeta { splat_count: None, version: None, detail }
+}
+
 /// Dispatch metadata extraction by asset kind. Scripts/shaders have no header
 /// metadata, so they get an empty [`AssetMeta`].
 fn extract_meta(kind: AssetKind, path: &Path) -> AssetMeta {
@@ -357,6 +383,7 @@ fn extract_meta(kind: AssetKind, path: &Path) -> AssetMeta {
         AssetKind::Spz => spz_meta(path),
         AssetKind::Ply => ply_meta(path),
         AssetKind::Gltf => gltf_meta(path),
+        AssetKind::Usd => usd_meta(path),
         AssetKind::Rhai | AssetKind::Wgsl => AssetMeta::default(),
     }
 }
@@ -588,6 +615,13 @@ pub fn load_asset(path: &Path, kind: AssetKind) -> Result<LoadedAsset, BrowserEr
             Ok(LoadedAsset::Splats(splats))
         }
         AssetKind::Gltf => Ok(LoadedAsset::Scene(path.to_path_buf())),
+        AssetKind::Usd => {
+            // USD imports synchronously like vxm/spz/ply, so the browser hands
+            // the editor decoded splats directly (lights/camera/entities flow to
+            // the runtime via the shell's own `import_usd` consumption path).
+            let import = vox_usd::import_usd(path).map_err(BrowserError::Usd)?;
+            Ok(LoadedAsset::Splats(import.splats))
+        }
         AssetKind::Rhai => Ok(LoadedAsset::Script(path.to_path_buf())),
         AssetKind::Wgsl => Ok(LoadedAsset::Shader(path.to_path_buf())),
     }
@@ -1072,5 +1106,41 @@ mod tests {
                 f.write_all(&c.to_le_bytes()).unwrap();
             }
         }
+    }
+
+    /// `load_asset(_, AssetKind::Usd)` must return the SAME splats a direct
+    /// `vox_usd::import_usd` does — the editor arm is real wiring, not a stub.
+    #[test]
+    fn load_asset_usd_matches_direct_import() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../vox_usd/tests/data/cube_lit.usdc");
+        assert!(fixture.exists(), "committed usdc fixture must exist: {fixture:?}");
+
+        let direct = vox_usd::import_usd(&fixture).expect("direct import");
+
+        match load_asset(&fixture, AssetKind::Usd).expect("browser load") {
+            LoadedAsset::Splats(splats) => {
+                assert_eq!(
+                    splats.len(),
+                    direct.splats.len(),
+                    "browser splat count must equal direct import splat count",
+                );
+                assert_eq!(splats.len(), 600, "fixture sampler yields exactly 600 splats");
+            }
+            other => panic!("expected Splats, got {other:?}"),
+        }
+    }
+
+    /// The `.usda` array-geometry limitation must surface as an error through
+    /// the browser dispatch, not a silent empty load.
+    #[test]
+    fn load_asset_usda_array_geometry_errors() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../vox_usd/tests/data/points_text.usda");
+        let err = load_asset(&fixture, AssetKind::Usd).unwrap_err();
+        assert!(
+            matches!(err, BrowserError::Usd(vox_usd::UsdError::UnsupportedTextArray)),
+            "expected UnsupportedTextArray, got {err:?}",
+        );
     }
 }

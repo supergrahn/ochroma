@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/vox_core",
     "crates/vox_data",
+    "crates/vox_usd",
     "crates/vox_render",
     "crates/vox_app",
     "crates/vox_nn",

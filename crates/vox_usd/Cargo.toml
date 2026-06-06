@@ -1,0 +1,16 @@
+[package]
+name = "vox_usd"
+edition = "2021"
+version.workspace = true
+
+# Game-agnostic ENGINE crate: reads composed USD scenes (.usdc/.usd) into
+# GaussianSplats + lights + camera + entities via the openusd-rs sibling repo.
+# This is the ONLY engine crate that takes the openusd-rs dependency; vox_core /
+# vox_render / vox_app never do (enforced by the cargo-tree isolation gate).
+
+[dependencies]
+openusd-rs = { path = "../../../openusd-rs" }
+vox_core   = { path = "../vox_core" }
+vox_data   = { path = "../vox_data" }
+glam       = { workspace = true }
+half       = { workspace = true }

@@ -1,0 +1,12 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Points "Points"
+{
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    float[] widths = [0.1, 0.1, 0.1]
+}
+

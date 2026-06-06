@@ -2716,6 +2716,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glam"
+version = "0.30.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
+
+[[package]]
 name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3525,6 +3531,15 @@ name = "lz4_flex"
 version = "0.11.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
+
+[[package]]
+name = "lz4_flex"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90071f8077f8e40adfc4b7fe9cd495ce316263f19e75c2211eeff3fdf475a3d9"
+dependencies = [
+ "twox-hash",
+]
 
 [[package]]
 name = "mach2"
@@ -4479,6 +4494,7 @@ dependencies = [
  "uuid",
  "vox_core",
  "vox_data",
+ "vox_usd",
 ]
 
 [[package]]
@@ -4537,6 +4553,15 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "openusd-rs"
+version = "0.1.0"
+dependencies = [
+ "glam 0.30.10",
+ "half",
+ "lz4_flex 0.12.2",
+]
 
 [[package]]
 name = "option-ext"
@@ -4959,7 +4984,7 @@ dependencies = [
  "byteorder",
  "cfg-if",
  "itertools 0.10.5",
- "lz4_flex",
+ "lz4_flex 0.11.6",
  "once_cell",
  "parking_lot",
  "serde",
@@ -7277,6 +7302,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
+name = "twox-hash"
+version = "2.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
+
+[[package]]
 name = "type-map"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7635,6 +7666,7 @@ dependencies = [
  "vox_core",
  "vox_data",
  "vox_render",
+ "vox_usd",
 ]
 
 [[package]]
@@ -7788,6 +7820,17 @@ dependencies = [
  "taffy",
  "vello",
  "vox_core",
+]
+
+[[package]]
+name = "vox_usd"
+version = "0.1.0"
+dependencies = [
+ "glam 0.29.3",
+ "half",
+ "openusd-rs",
+ "vox_core",
+ "vox_data",
 ]
 
 [[package]]

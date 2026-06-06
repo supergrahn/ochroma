@@ -70,6 +70,14 @@ enum Commands {
         output: PathBuf,
     },
 
+    /// Import a composed USD scene (.usdc/.usd) and print its stats:
+    /// meshes→2DGS splats, PointInstancer→3DGS splats, lights, camera.
+    #[command(name = "usd-import")]
+    UsdImport {
+        /// Path to the input .usdc / .usd (binary) or .usda (text) file.
+        file: PathBuf,
+    },
+
     /// Build the game for a target platform.
     Build {
         #[arg(long, default_value = "linux")]
@@ -79,6 +87,16 @@ enum Commands {
         #[arg(long, default_value = "OchromaCity")]
         name: String,
     },
+}
+
+fn light_kind_name(kind: vox_usd::UsdLightKind) -> &'static str {
+    match kind {
+        vox_usd::UsdLightKind::Sphere => "SphereLight",
+        vox_usd::UsdLightKind::Rect => "RectLight",
+        vox_usd::UsdLightKind::Disk => "DiskLight",
+        vox_usd::UsdLightKind::Distant => "DistantLight",
+        vox_usd::UsdLightKind::Dome => "DomeLight",
+    }
 }
 
 fn main() {
@@ -168,6 +186,69 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::UsdImport { file } => {
+            match vox_usd::import_usd(&file) {
+                Ok(imp) => {
+                    let fname = file
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("?");
+                    // metersPerUnit printed without trailing zeros when integral.
+                    let mpu = imp.meters_per_unit;
+                    let mpu_str = if (mpu.fract()).abs() < 1e-9 {
+                        format!("{}", mpu as i64)
+                    } else {
+                        format!("{mpu}")
+                    };
+                    println!(
+                        "[usd] opened stage: {fname} (upAxis={}, metersPerUnit={mpu_str})",
+                        imp.up_axis,
+                    );
+                    for g in &imp.geom_log {
+                        println!(
+                            "[usd] {:<8} {:<12} -> {} splats",
+                            g.path, g.type_name, g.splats,
+                        );
+                    }
+                    for l in &imp.lights {
+                        let intensity = if l.intensity.fract().abs() < 1e-6 {
+                            format!("{}", l.intensity as i64)
+                        } else {
+                            format!("{}", l.intensity)
+                        };
+                        println!(
+                            "[usd] /{:<7} {:<12} color=({:.2},{:.2},{:.2}) intensity={intensity}",
+                            l.name,
+                            light_kind_name(l.kind),
+                            l.color[0],
+                            l.color[1],
+                            l.color[2],
+                        );
+                    }
+                    if let Some(c) = &imp.camera {
+                        println!(
+                            "[usd] /{:<7} {:<12} fovY={:.1}deg pos=({:.1},{:.1},{:.1})",
+                            c.name, "Camera", c.fov_y_deg, c.position.x, c.position.y, c.position.z,
+                        );
+                    }
+                    println!(
+                        "[usd] import OK: {} mesh, {} light, {} camera, {} splats, {} warnings",
+                        imp.stats.meshes,
+                        imp.lights.len(),
+                        imp.camera.is_some() as usize,
+                        imp.splats.len(),
+                        imp.warnings.len(),
+                    );
+                    for w in &imp.warnings {
+                        eprintln!("[usd] warning: {w}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[usd] import failed: {e}");
                     std::process::exit(1);
                 }
             }
