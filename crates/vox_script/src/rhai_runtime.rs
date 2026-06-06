@@ -19,6 +19,15 @@ pub struct RhaiRuntime {
     scripts: Vec<RhaiScript>,
     pub last_reload_check: std::time::Instant,
     pub reload_interval: std::time::Duration,
+    /// Total number of successful hot-reloads (a changed file recompiled and the
+    /// AST swapped in). Monotonic for the lifetime of the runtime.
+    pub script_reloads: u32,
+    /// Total number of hot-reload attempts that FAILED to compile. The previous
+    /// (last-good) AST is kept on failure, so the game keeps running. Monotonic.
+    pub script_errors: u32,
+    /// Human-readable text of the most recent reload error, for surfacing in a
+    /// HUD/notification. `None` until the first compile failure.
+    pub last_error: Option<String>,
     /// Live spectral field the host populates each frame; Rhai scripts read it
     /// via the registered `field_energy` / `get_band` functions.
     spectral: Arc<Mutex<SpectralState>>,
@@ -128,6 +137,9 @@ impl RhaiRuntime {
             scripts: Vec::new(),
             last_reload_check: std::time::Instant::now(),
             reload_interval: std::time::Duration::from_secs(1),
+            script_reloads: 0,
+            script_errors: 0,
+            last_error: None,
             spectral,
         }
     }
@@ -211,13 +223,25 @@ impl RhaiRuntime {
 
         let mut result = Vec::new();
         for (i, name, mtime) in to_reload {
+            // Advance the recorded mtime regardless of outcome so a file that
+            // fails to compile is not retried on every poll — it will only be
+            // retried once it is edited again (its mtime moves forward), which is
+            // exactly when a fix would land.
+            self.scripts[i].last_mtime = mtime;
             match self.reload(i) {
                 Ok(()) => {
-                    self.scripts[i].last_mtime = mtime;
+                    self.script_reloads += 1;
+                    self.last_error = None;
                     println!("[ochroma] Hot-reloaded script: {}", name);
                     result.push(name);
                 }
-                Err(e) => eprintln!("[ochroma] Script reload error {}: {}", name, e),
+                Err(e) => {
+                    // Last-good AST is untouched (reload() returns before swapping
+                    // on a compile error), so the game keeps running. Count + surface.
+                    self.script_errors += 1;
+                    self.last_error = Some(format!("{}: {}", name, e));
+                    eprintln!("[ochroma] Script reload error {}: {}", name, e);
+                }
             }
         }
         result
@@ -363,6 +387,70 @@ mod hot_reload_tests {
         rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
         let reloaded = rt.poll_reload();
         assert!(reloaded.len() <= 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A good edit increments `script_reloads` and the recompiled AST is the one
+    /// that runs afterwards (the returned value changes).
+    #[test]
+    fn good_edit_counts_reload_and_swaps_behaviour() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ochroma_test_good_edit.rhai");
+        std::fs::write(&path, "fn amp() { 5 }").unwrap();
+
+        let mut rt = RhaiRuntime::new();
+        rt.load_script_file("g", &path).unwrap();
+        let before: i64 = rt.call_fn(0, "amp", &[]).unwrap().cast();
+        assert_eq!(before, 5);
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&path, "fn amp() { 9 }").unwrap();
+        rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let reloaded = rt.poll_reload();
+
+        assert_eq!(reloaded.len(), 1, "expected exactly one reload");
+        assert_eq!(rt.script_reloads, 1, "script_reloads should be 1");
+        assert_eq!(rt.script_errors, 0, "no errors on a clean edit");
+        let after: i64 = rt.call_fn(0, "amp", &[]).unwrap().cast();
+        assert_eq!(after, 9, "recompiled AST must drive the new value");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A broken edit increments `script_errors`, surfaces `last_error`, and keeps
+    /// the LAST-GOOD AST runnable (the previous value still computes). It must NOT
+    /// increment `script_reloads`, and the game must keep running.
+    #[test]
+    fn broken_edit_counts_error_and_keeps_last_good() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ochroma_test_broken_edit.rhai");
+        std::fs::write(&path, "fn amp() { 7 }").unwrap();
+
+        let mut rt = RhaiRuntime::new();
+        rt.load_script_file("b", &path).unwrap();
+        let before: i64 = rt.call_fn(0, "amp", &[]).unwrap().cast();
+        assert_eq!(before, 7);
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Syntax error: unbalanced brace.
+        std::fs::write(&path, "fn amp() { 7 ").unwrap();
+        rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let reloaded = rt.poll_reload();
+
+        assert!(reloaded.is_empty(), "broken edit must not report a reload");
+        assert_eq!(rt.script_errors, 1, "script_errors should be 1");
+        assert_eq!(rt.script_reloads, 0, "broken edit must not count as reload");
+        assert!(rt.last_error.is_some(), "last_error must be surfaced");
+        // Last-good AST still drives the same value — the game did not crash.
+        let after: i64 = rt.call_fn(0, "amp", &[]).unwrap().cast();
+        assert_eq!(after, 7, "last-good behaviour must persist through a bad edit");
+
+        // Polling again without a new edit must NOT re-count the same error
+        // (mtime was advanced), so the error counter stays at 1.
+        rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let _ = rt.poll_reload();
+        assert_eq!(rt.script_errors, 1, "same broken file must not re-count");
 
         let _ = std::fs::remove_file(&path);
     }

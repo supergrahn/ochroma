@@ -47,6 +47,28 @@ use vox_script::rhai_runtime::RhaiRuntime;
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
 
+/// Resolve the path to the live game script `assets/scripts/walking_sim.rhai`.
+/// Tries (in order): the current working directory (workspace root when run via
+/// `cargo run`), then the workspace root derived from this crate's
+/// `CARGO_MANIFEST_DIR` (`crates/vox_app` -> two levels up). Returns the first
+/// path that exists, else the cwd-relative path (so the error message is sane).
+fn resolve_script_path() -> std::path::PathBuf {
+    const REL: &str = "assets/scripts/walking_sim.rhai";
+    let cwd_rel = std::path::PathBuf::from(REL);
+    if cwd_rel.exists() {
+        return cwd_rel;
+    }
+    // crates/vox_app -> workspace root is two parents up.
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if let Some(ws_root) = manifest.parent().and_then(|p| p.parent()) {
+        let p = ws_root.join(REL);
+        if p.exists() {
+            return p;
+        }
+    }
+    cwd_rel
+}
+
 // ---------------------------------------------------------------------------
 // Game-menu option labels (selectable rows the shell draws over GameMenu rects)
 // ---------------------------------------------------------------------------
@@ -490,6 +512,21 @@ struct WalkingSim {
 
     // Scripting
     rhai: RhaiRuntime,
+    /// Path to the live, hot-reloadable game script (assets/scripts/walking_sim.rhai).
+    script_path: std::path::PathBuf,
+    /// Index of the loaded game script in `rhai`, if it loaded successfully.
+    game_script_idx: Option<usize>,
+    /// Last good orb bob amplitude (metres) read from the script. Cached so a
+    /// transient script call failure keeps the last value instead of snapping to 0.
+    orb_bob_amplitude: f32,
+    /// Last good orb bob speed (rad/s) read from the script.
+    orb_bob_speed: f32,
+    /// Last good orb pulse depth (fraction of base size) read from the script.
+    orb_pulse_depth: f32,
+    /// Last good windmill spin multiplier read from the script (1.0 = base rate).
+    windmill_speed_mult: f32,
+    /// Notification text surfaced when the script fails to recompile (last error).
+    script_notification: Option<String>,
 
     // Unified per-frame simulation driver (EngineLoop). Owns the shared
     // physics world, audio backends (legacy + spatial), and shadow mapper.
@@ -629,7 +666,91 @@ impl WalkingSim {
             clas_cluster_count: 0,
             clas_bvh_depth: 0,
             rhai: RhaiRuntime::new(),
+            script_path: resolve_script_path(),
+            game_script_idx: None,
+            // Defaults mirror the script's shipped constants so behaviour is
+            // sane even if the script file is missing on disk.
+            orb_bob_amplitude: 0.30,
+            orb_bob_speed: 2.0,
+            orb_pulse_depth: 0.20,
+            windmill_speed_mult: 1.0,
+            script_notification: None,
             loop_,
+        }
+    }
+
+    /// Load (or reload from scratch) the live game script and prime the cached
+    /// script-driven values from it. Idempotent-ish: pushes a new script into the
+    /// runtime; intended to be called once during setup. Poll-driven hot reload
+    /// thereafter swaps the AST in place (see `tick_script`).
+    fn load_game_script(&mut self) {
+        // Poll for changes ~2x/second (cheap mtime check, not per-frame hashing).
+        self.rhai.reload_interval = std::time::Duration::from_millis(500);
+        match self.rhai.load_script_file("walking_sim", &self.script_path) {
+            Ok(idx) => {
+                self.game_script_idx = Some(idx);
+                println!(
+                    "[walking_sim] Loaded game script: {}",
+                    self.script_path.display()
+                );
+                self.tick_script(); // prime cached values from the freshly loaded script
+            }
+            Err(e) => {
+                self.game_script_idx = None;
+                self.script_notification = Some(format!("script load failed: {e}"));
+                eprintln!("[walking_sim] {e}");
+            }
+        }
+    }
+
+    /// Hot-reload poll + read script-driven values. Called every frame from
+    /// update(). The mtime poll is internally rate-limited (reload_interval), so
+    /// this is cheap. On a compile error the runtime keeps the last-good AST and
+    /// increments `script_errors`; we surface its message as a notification. On a
+    /// per-call failure we keep the last cached value (never snap to 0).
+    fn tick_script(&mut self) {
+        let reloaded = self.rhai.poll_reload();
+        if !reloaded.is_empty() {
+            // A successful swap clears any prior error notification.
+            self.script_notification = None;
+            println!(
+                "[walking_sim] Hot-reloaded script (reloads={})",
+                self.rhai.script_reloads
+            );
+        }
+        if let Some(err) = &self.rhai.last_error {
+            self.script_notification = Some(format!("SCRIPT ERROR (last-good kept): {err}"));
+        }
+
+        let Some(idx) = self.game_script_idx else {
+            return;
+        };
+        // Read each tunable via its direct accessor. Keep the last cached value if
+        // a call fails (missing/renamed fn) so a partially-broken-but-compiling
+        // script can never blank the behaviour.
+        if let Some(v) = self.call_script_number(idx, "bob_amplitude") {
+            self.orb_bob_amplitude = v;
+        }
+        if let Some(v) = self.call_script_number(idx, "bob_speed") {
+            self.orb_bob_speed = v;
+        }
+        if let Some(v) = self.call_script_number(idx, "pulse_depth") {
+            self.orb_pulse_depth = v;
+        }
+        if let Some(v) = self.call_script_number(idx, "windmill_speed") {
+            self.windmill_speed_mult = v;
+        }
+    }
+
+    /// Call a zero-arg script function and coerce its return to f32, accepting
+    /// either a Rhai float or integer. Returns None on any error (missing fn,
+    /// wrong type), so the caller can keep its last-good cached value.
+    fn call_script_number(&mut self, idx: usize, fn_name: &str) -> Option<f32> {
+        let v = self.rhai.call_fn(idx, fn_name, &[]).ok()?;
+        if let Ok(f) = v.as_float() {
+            Some(f as f32)
+        } else {
+            v.as_int().ok().map(|i| i as f32)
         }
     }
 
@@ -748,6 +869,11 @@ impl WalkingSim {
         self.loop_.shadow_mapper
             .render_shadow_map(&occluder_positions, &occluder_radii);
         println!("[walking_sim] Shadow mapper primed.");
+
+        // Load the live, hot-reloadable game script. Drives orb bob/pulse +
+        // windmill speed; editing the file mid-run changes the game (see
+        // tick_script / update). Both the windowed flow and the smoke reach this.
+        self.load_game_script();
     }
 
     fn player_pos(&self) -> Vec3 {
@@ -775,14 +901,17 @@ impl WalkingSim {
                 continue;
             }
 
-            let bob_y = (self.game_time * 2.0 + orb.bob_phase).sin() * 0.3;
+            // Bob amplitude + speed come from the live game script (hot-reloadable).
+            let bob_y = (self.game_time * self.orb_bob_speed + orb.bob_phase).sin()
+                * self.orb_bob_amplitude;
             let pos = orb.position + Vec3::new(0.0, bob_y, 0.0);
 
             let rotation_angle = self.game_time * 1.5 + orb.bob_phase;
             let cos_a = rotation_angle.cos();
             let sin_a = rotation_angle.sin();
 
-            let pulse = 1.0 + (self.game_time * 3.0 + orb.bob_phase).sin() * 0.2;
+            let pulse =
+                1.0 + (self.game_time * 3.0 + orb.bob_phase).sin() * self.orb_pulse_depth;
             let scale = 0.1 * pulse;
 
             for dx in -2..=2 {
@@ -1033,6 +1162,15 @@ impl WalkingSim {
         self.game_time += dt;
 
         // ---------------------------------------------------------------
+        // 0a. Live game script: cheap mtime-poll hot-reload (~2x/sec) + read the
+        //     script-driven tunables (orb bob amplitude/speed, pulse depth,
+        //     windmill speed) into cached host fields. A compile error keeps the
+        //     last-good script running and surfaces a notification; it never
+        //     crashes the game.
+        // ---------------------------------------------------------------
+        self.tick_script();
+
+        // ---------------------------------------------------------------
         // 0. Day/night cycle: advance the EngineLoop's time-of-day clock
         //    continuously. `time_accel` is game-hours per real second (1/30 in
         //    windowed play; the smoke bumps it for a visible swing). Wrap at 24h.
@@ -1110,9 +1248,10 @@ impl WalkingSim {
             .update(self.cc_transform.position, cam_fwd, sun_dir);
 
         // ---------------------------------------------------------------
-        // 3. Windmill animation tick
-        // ---------------------------------------------------------------
-        self.windmill.tick(dt);
+        // 3. Windmill animation tick. The script-driven speed multiplier scales
+        //    the advance rate so editing WINDMILL_SPEED in the .rhai file changes
+        //    how fast the blades spin without a restart.
+        self.windmill.tick(dt * self.windmill_speed_mult);
 
         // ---------------------------------------------------------------
         // 3b. AI NPC: perception -> decision -> kinematic steering. The NPC
@@ -1542,6 +1681,17 @@ impl WalkingSim {
             hud_ctx.rasterize_into(&mut pixels, WIDTH, HEIGHT);
         }
 
+        // 6. Script error/notification banner. When the live game script fails to
+        //    recompile, the game keeps running on the last-good version and this
+        //    red banner surfaces the error + the running error count so the
+        //    designer sees exactly what broke without the game crashing.
+        if self.game_ui.game_state == GameState::Playing {
+            if let Some(note) = &self.script_notification {
+                let banner = format!("{}  [errors={}]", note, self.rhai.script_errors);
+                burn_text(&mut pixels, WIDTH, 20, HEIGHT - 60, &banner, [255, 80, 80], 2);
+            }
+        }
+
         pixels
     }
 }
@@ -1804,7 +1954,6 @@ fn run_smoke() {
     // GI-lit splats differ from the raw scene input.
 
     let mut box_spawn_y = 0.0f32;
-    let mut last_pixels: Vec<[u8; 4]> = Vec::new();
     for frame in 0..total_frames {
         // Drop a physics box early so it has time to fall + fracture before the
         // run ends. The windowed path triggers this from the KeyQ handler; the
@@ -1842,8 +1991,125 @@ fn run_smoke() {
         }
 
         app.update(dt);
-        last_pixels = app.render();
+        // Render every frame to exercise the full compositor path with evolving
+        // state; the frame checked below is re-captured after the script phases.
+        app.render();
     }
+
+    // ===================================================================
+    // SCRIPT HOT-RELOAD SMOKE
+    // -------------------------------------------------------------------
+    // Prove that editing assets/scripts/walking_sim.rhai mid-run changes the
+    // game without restart, that a broken script never crashes the game (it
+    // keeps the last-good behaviour + counts the error), and measure the REAL
+    // script-driven quantity (orb bob amplitude) before/after.
+    // ===================================================================
+
+    // In the smoke, frames are instant (no 60Hz wall-clock), so the 500ms mtime
+    // poll gate would never fire. Drop the interval to 0 so every tick_script
+    // polls. (Windowed play keeps the cheap 500ms cadence.)
+    app.rhai.reload_interval = std::time::Duration::from_millis(0);
+
+    // Back up the real script so the smoke can rewrite it in place (the runtime
+    // watches this exact path) and restore it afterwards — we never leave the
+    // repo's shipped script clobbered.
+    let script_path = app.script_path.clone();
+    let original_script =
+        std::fs::read_to_string(&script_path).expect("game script must exist for hot-reload smoke");
+
+    // Guarantee orb #0 is present (uncollected) so the amplitude measurement
+    // always has a splat cluster to read — the main 160-frame walk may have
+    // already collected it.
+    app.orbs[0].collected = false;
+    app.orbs[0].bob_phase = 0.0; // crest is reachable within the sweep window
+
+    // Measure the script-driven orb bob amplitude from the REAL rendered orb
+    // splats: isolate orb #0 (mark every other orb collected for the duration of
+    // the sweep), sweep game_time over a full bob period, and take the peak
+    // excursion of orb #0's splat-cluster CENTROID from its rest height. The
+    // cluster's local dy offsets are symmetric, so the centroid Y tracks the pure
+    // bob — no contamination from the cluster shape. This is the on-screen motion
+    // the script drives, not the cached constant.
+    let measure_bob_amplitude = |app: &mut WalkingSim| -> f32 {
+        // Snapshot + isolate orb #0.
+        let saved_collected: Vec<bool> = app.orbs.iter().map(|o| o.collected).collect();
+        for (i, o) in app.orbs.iter_mut().enumerate() {
+            o.collected = i != 0;
+        }
+        let rest_y = app.orbs[0].position.y;
+        let saved_t = app.game_time;
+        let mut peak = 0.0f32;
+        let mut t = 0.0f32;
+        while t < 4.0 {
+            app.game_time = t;
+            let splats = app.generate_orb_splats(); // only orb #0 emits now
+            if !splats.is_empty() {
+                let sum_y: f32 = splats.iter().map(|s| s.position()[1]).sum();
+                let centroid_y = sum_y / splats.len() as f32;
+                peak = peak.max((centroid_y - rest_y).abs());
+            }
+            t += 1.0 / 120.0;
+        }
+        // Restore.
+        app.game_time = saved_t;
+        for (o, &c) in app.orbs.iter_mut().zip(saved_collected.iter()) {
+            o.collected = c;
+        }
+        app.orbs[0].collected = false; // keep orb #0 alive for later phases
+        peak
+    };
+
+    // --- Phase (a): shipped script. Run ~40 frames, then measure amplitude. ---
+    for _ in 0..40 {
+        app.update(dt);
+    }
+    let bob_amp_before = measure_bob_amplitude(&mut app);
+    let reloads_before = app.rhai.script_reloads;
+
+    // --- Phase (b): rewrite the script with a CHANGED amplitude, run ~40 more
+    //     frames, then re-measure. The measured behaviour must change accordingly.
+    // Rewrite the literal returned by `bob_amplitude()` (the single source of
+    // truth the host reads): 0.30 -> 1.20.
+    let changed_script = original_script.replace("    0.30\n", "    1.20\n");
+    assert_ne!(
+        changed_script, original_script,
+        "smoke could not find the bob_amplitude literal (0.30) to rewrite"
+    );
+    // Sleep before the write so the new mtime is strictly greater than the one
+    // recorded at load time (some filesystems have coarse mtime resolution).
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&script_path, &changed_script).expect("rewrite script");
+    for _ in 0..40 {
+        app.update(dt);
+    }
+    let bob_amp_after = measure_bob_amplitude(&mut app);
+    let reloads_after = app.rhai.script_reloads;
+    let script_reloads_observed = reloads_after.saturating_sub(reloads_before);
+
+    // --- Phase (c): write a deliberately BROKEN script. The game must keep
+    //     running on the last-good (amplitude 1.20) behaviour and script_errors
+    //     must rise.
+    let _errors_before = app.rhai.script_errors;
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&script_path, "fn bob_amplitude() { 1.20 ") // unbalanced brace
+        .expect("write broken script");
+    for _ in 0..40 {
+        app.update(dt); // must NOT panic
+    }
+    let bob_amp_broken = measure_bob_amplitude(&mut app);
+    let script_errors_observed = app.rhai.script_errors;
+
+    // --- Phase (d): restore the good script. ---
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&script_path, &original_script).expect("restore script");
+    app.update(dt);
+    let bob_amp_restored = measure_bob_amplitude(&mut app);
+
+    // The script phases above ran ~120 extra updates — the player kept walking
+    // and may have collected more orbs since `last_pixels` was captured, so the
+    // HUD orb-bar check below would compare a CURRENT fill rect against a STALE
+    // frame. Re-render so the checked frame matches the current counters.
+    let last_pixels = app.render();
 
     let final_pos = app.cc_transform.position;
     let moved = (final_pos - spawn_pos).length();
@@ -1988,7 +2254,7 @@ fn run_smoke() {
     }
 
     println!(
-        "[walking_sim] SMOKE SUMMARY: frames={} final_pos=({:.2},{:.2},{:.2}) orbs={}/{} non_black_px={}/{} distinct_colors={} windmill_dt={:.2} moved={:.2} gi_nonzero_bands={} gi_max_band={} gi_changed={} drops={} box_fell={:.2}m fracture_events={} audio_events={} noon_luma={:.2} midnight_luma={:.2} day_night_ratio={:.2}x biome={} soundscape_events={} npc_moved={:.2} npc_distance={:.2} npc_state_changes={} npc_state={} menu_playing_luma={:.2} menu_mainmenu_luma={:.2} menu_paused_luma={:.2} menu_accent_sat={} menu_sel_luma={:.2} menu_unsel_luma={:.2} ppm={}",
+        "[walking_sim] SMOKE SUMMARY: frames={} final_pos=({:.2},{:.2},{:.2}) orbs={}/{} non_black_px={}/{} distinct_colors={} windmill_dt={:.2} moved={:.2} gi_nonzero_bands={} gi_max_band={} gi_changed={} drops={} box_fell={:.2}m fracture_events={} audio_events={} noon_luma={:.2} midnight_luma={:.2} day_night_ratio={:.2}x biome={} soundscape_events={} npc_moved={:.2} npc_distance={:.2} npc_state_changes={} npc_state={} menu_playing_luma={:.2} menu_mainmenu_luma={:.2} menu_paused_luma={:.2} menu_accent_sat={} menu_sel_luma={:.2} menu_unsel_luma={:.2} script_reloads={} script_errors={} bob_amp_before={:.3} bob_amp_after={:.3} bob_amp_broken={:.3} bob_amp_restored={:.3} ppm={}",
         total_frames,
         final_pos.x,
         final_pos.y,
@@ -2022,6 +2288,12 @@ fn run_smoke() {
         menu_accent_sat,
         menu_sel_luma,
         menu_unsel_luma,
+        script_reloads_observed,
+        script_errors_observed,
+        bob_amp_before,
+        bob_amp_after,
+        bob_amp_broken,
+        bob_amp_restored,
         ppm_path,
     );
 
@@ -2056,13 +2328,26 @@ fn run_smoke() {
     if app.orbs_collected > 0 {
         let fill = GameHud::new(WIDTH, HEIGHT)
             .orb_bar_fill_rect(app.orbs_collected, app.total_orbs);
-        let cx = (fill[0] + fill[2] / 2.0) as u32;
+        // The software rasteriser composites the amber fill with per-pixel alpha
+        // coverage, so an individual centre pixel can land in a gap. Scan the
+        // fill's mid-row and require that a substantial fraction of it reads amber
+        // (high red, red > blue) — proves GameHud::compose + rasterize_into
+        // actually painted the bar, robustly to single-pixel coverage gaps.
         let cy = (fill[1] + fill[3] / 2.0) as u32;
-        let px = last_pixels[(cy * WIDTH + cx) as usize];
+        let x0 = fill[0] as u32;
+        let x1 = (fill[0] + fill[2]) as u32;
+        let mut amber = 0u32;
+        let mut total = 0u32;
+        for x in x0..x1 {
+            let px = last_pixels[(cy * WIDTH + x) as usize];
+            total += 1;
+            if px[0] > 120 && px[0] > px[2] {
+                amber += 1;
+            }
+        }
         assert!(
-            px[0] > 120 && px[0] > px[2],
-            "orb-bar fill pixel at ({cx},{cy}) is {:?} — not amber; HUD compositing broken",
-            px
+            total > 0 && amber * 4 >= total,
+            "orb-bar fill row at y={cy} has only {amber}/{total} amber px — HUD compositing broken",
         );
     }
     // Sim advanced: the windmill always animates, the player walked, and orbs were
@@ -2171,6 +2456,55 @@ fn run_smoke() {
     assert!(
         menu_sel_luma > menu_unsel_luma + 20.0,
         "selected option ({menu_sel_luma:.2}) not clearly brighter than unselected ({menu_unsel_luma:.2}) — selection highlight broken",
+    );
+
+    // --- Script hot-reload: editing the .rhai file mid-run changed the measured
+    //     orb bob amplitude (0.30 -> 1.20 in the file) via a real reload, a broken
+    //     edit kept the last-good behaviour (game did not crash, error counted),
+    //     and the restore brought the original amplitude back.
+    assert!(
+        bob_amp_before > 0.0,
+        "shipped-script orb bob amplitude measured as 0 — script not driving orbs"
+    );
+    assert!(
+        (bob_amp_before - 0.30).abs() < 0.05,
+        "shipped amplitude {:.3} != ~0.30 — script constant not applied",
+        bob_amp_before
+    );
+    assert!(
+        script_reloads_observed >= 1,
+        "no hot-reload observed ({script_reloads_observed}) — file edit did not reload"
+    );
+    // The CHANGED file (0.30 -> 1.20) must roughly quadruple the measured bob.
+    assert!(
+        bob_amp_after > bob_amp_before * 2.0,
+        "edited amplitude {:.3} not clearly larger than original {:.3} — hot-reload had no effect",
+        bob_amp_after,
+        bob_amp_before
+    );
+    assert!(
+        (bob_amp_after - 1.20).abs() < 0.1,
+        "edited amplitude {:.3} != ~1.20 — reloaded script not applied",
+        bob_amp_after
+    );
+    // The BROKEN edit must NOT change behaviour (last-good 1.20 retained) and
+    // must have incremented the error counter — the game kept running.
+    assert!(
+        script_errors_observed >= 1,
+        "broken script did not raise script_errors ({script_errors_observed}) — error path inert"
+    );
+    assert!(
+        (bob_amp_broken - bob_amp_after).abs() < 0.05,
+        "broken script changed behaviour ({:.3} vs last-good {:.3}) — last-good not preserved",
+        bob_amp_broken,
+        bob_amp_after
+    );
+    // Restoring the good script returns the original amplitude.
+    assert!(
+        (bob_amp_restored - bob_amp_before).abs() < 0.05,
+        "restored amplitude {:.3} != original {:.3} — restore reload failed",
+        bob_amp_restored,
+        bob_amp_before
     );
 
     println!("[walking_sim] SMOKE PASS: loop + game logic + render verified headlessly.");
