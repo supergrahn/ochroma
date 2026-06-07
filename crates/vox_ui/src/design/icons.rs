@@ -48,6 +48,7 @@ pub mod icon {
     pub const FILE: &str = r::FILE;
     pub const IMAGE: &str = r::IMAGE;
     pub const CONSOLE: &str = r::TERMINAL_WINDOW;
+    pub const WARNING: &str = r::WARNING;
 }
 
 /// Resolve an entity-type string to its (icon codepoint, dotted color token

@@ -56,15 +56,24 @@ fn main() {
     let bg = tokens.color("surface.bg.0");
 
     let mut shell = EditorShell::new(tokens.clone());
-    // Install the worked-example plugin so its tab + commands are in the shell.
+    // Install BOTH real plugins so their tabs + command categories coexist
+    // (Crucible + Forge) — the two-plugin proof.
     shell.install_plugin(Box::new(vox_app::shell::plugins::CruciblePlugin::new()));
+    shell.install_plugin(Box::new(vox_app::shell::plugins::ForgePlugin::new()));
     match tab.as_str() {
         "node_graph" => shell.focus_node_graph(),
         "crucible" => shell.focus_plugin_tab(vox_app::shell::plugins::CRUCIBLE_TAB),
+        "forge" => shell.focus_plugin_tab(vox_app::shell::plugins::FORGE_TAB),
         // Default: the central tab is the REAL rendered viewport.
         _ => shell.focus_viewport(),
     }
     if palette {
+        // Drive a scripted intent so the assistant receipt strip is LIT in the
+        // snapshot pixels (proves the generative loop end-to-end, not just the
+        // empty palette). The receipt renders as e.g. "Set terrain.resolution 64 -> 128".
+        let receipt = shell.run_intent("set terrain resolution to 128");
+        eprintln!("[shell_snapshot] scripted intent receipt: {receipt}");
+        shell.palette.mode = vox_app::shell::command_palette::PaletteMode::Intent;
         shell.open_palette();
     }
     let ctx = egui::Context::default();

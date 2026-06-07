@@ -189,12 +189,41 @@ fn subsequence_score(title: &str, q: &str) -> Option<i32> {
     }
 }
 
-/// Live UI state of the open palette (query text + highlighted row).
+/// Which half of the dual-mode "Ask Ochroma" surface is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaletteMode {
+    /// Fuzzy command search over the registry (the classic palette).
+    #[default]
+    Command,
+    /// Natural-language intent: the typed sentence is parsed into actions and
+    /// executed through the same registry + graph. "Ask Ochroma generates."
+    Intent,
+}
+
+/// What the palette produced this frame, handed back to the shell to act on.
+/// Command execution happens inside the palette (it has the registry); an intent
+/// submission is returned as text because executing it needs `&mut EditorShell`.
+#[derive(Debug, Clone, Default)]
+pub enum PaletteOutcome {
+    /// Nothing actionable this frame.
+    #[default]
+    None,
+    /// A command was executed by Enter; carries its id (for tests/telemetry).
+    CommandRun(String),
+    /// An intent sentence was submitted (Enter in intent mode). The shell parses
+    /// + executes it and appends the receipt to the assistant log.
+    IntentSubmitted(String),
+}
+
+/// Live UI state of the open palette (query text + highlighted row + mode).
 #[derive(Default)]
 pub struct PaletteState {
     pub open: bool,
     pub query: String,
     pub selected: usize,
+    /// Command vs intent mode (Tab toggles; a query that isn't a command prefix
+    /// match also hints intent mode in the UI).
+    pub mode: PaletteMode,
 }
 
 impl PaletteState {
@@ -203,50 +232,84 @@ impl PaletteState {
         if self.open {
             self.query.clear();
             self.selected = 0;
+            self.mode = PaletteMode::Command;
         }
     }
 
-    /// Render the centered modal palette over `ctx`. Handles arrow selection +
-    /// Enter (which runs the highlighted command and closes). Returns the id of
-    /// a command that was executed this frame, if any.
-    pub fn ui(&mut self, ctx: &egui::Context, t: &Tokens, registry: &CommandRegistry) -> Option<String> {
+    /// Render the centered dual-mode "Ask Ochroma" modal over `ctx`. Tab toggles
+    /// command/intent mode. In command mode, Up/Down + Enter run the highlighted
+    /// command (in place). In intent mode, Enter SUBMITS the typed sentence as a
+    /// [`PaletteOutcome::IntentSubmitted`] for the shell to parse+execute. The
+    /// `assistant_log` (newest last) renders as a receipt strip at the bottom in
+    /// both modes — every executed intent leaves a human-readable line there.
+    pub fn ui(
+        &mut self,
+        ctx: &egui::Context,
+        t: &Tokens,
+        registry: &CommandRegistry,
+        assistant_log: &[String],
+    ) -> PaletteOutcome {
         if !self.open {
-            return None;
+            return PaletteOutcome::None;
         }
 
-        // Keyboard: Esc closes; Up/Down move; Enter executes.
-        let (up, down, enter, esc) = ctx.input(|i| {
+        // Keyboard: Esc closes; Tab toggles mode; Up/Down move; Enter executes.
+        let (up, down, enter, esc, tab) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::ArrowUp),
                 i.key_pressed(egui::Key::ArrowDown),
                 i.key_pressed(egui::Key::Enter),
                 i.key_pressed(egui::Key::Escape),
+                i.key_pressed(egui::Key::Tab),
             )
         });
+        if tab {
+            self.mode = match self.mode {
+                PaletteMode::Command => PaletteMode::Intent,
+                PaletteMode::Intent => PaletteMode::Command,
+            };
+            self.selected = 0;
+        }
 
         let results = registry.search(&self.query);
         let n = results.len();
-        if down && n > 0 {
-            self.selected = (self.selected + 1).min(n - 1);
-        }
-        if up {
-            self.selected = self.selected.saturating_sub(1);
-        }
-        if self.selected >= n {
-            self.selected = n.saturating_sub(1);
+        if self.mode == PaletteMode::Command {
+            if down && n > 0 {
+                self.selected = (self.selected + 1).min(n - 1);
+            }
+            if up {
+                self.selected = self.selected.saturating_sub(1);
+            }
+            if self.selected >= n {
+                self.selected = n.saturating_sub(1);
+            }
         }
 
-        let mut executed = None;
         if esc {
             self.open = false;
-            return None;
+            return PaletteOutcome::None;
         }
+
+        let mut outcome = PaletteOutcome::None;
         if enter {
-            if let Some(c) = results.get(self.selected) {
-                (c.run)();
-                executed = Some(c.id.clone());
+            match self.mode {
+                PaletteMode::Command => {
+                    if let Some(c) = results.get(self.selected) {
+                        (c.run)();
+                        outcome = PaletteOutcome::CommandRun(c.id.clone());
+                    }
+                    self.open = false;
+                }
+                PaletteMode::Intent => {
+                    let text = self.query.trim().to_string();
+                    if !text.is_empty() {
+                        outcome = PaletteOutcome::IntentSubmitted(text);
+                    }
+                    // Stay open in intent mode (a conversation) but clear the line.
+                    self.query.clear();
+                    self.selected = 0;
+                }
             }
-            self.open = false;
         }
 
         // Dim backdrop.
@@ -263,8 +326,9 @@ impl PaletteState {
         let modal_w = 560.0;
         let modal = egui::Rect::from_center_size(
             egui::pos2(screen.center().x, screen.top() + screen.height() * 0.30),
-            egui::vec2(modal_w, 360.0),
+            egui::vec2(modal_w, 420.0),
         );
+        let intent_mode = self.mode == PaletteMode::Intent;
         egui::Area::new(egui::Id::new("palette_modal"))
             .order(egui::Order::Foreground)
             .fixed_pos(modal.min)
@@ -277,75 +341,139 @@ impl PaletteState {
                     .inner_margin(egui::Margin::same(12))
                     .show(ui, |ui| {
                         ui.set_width(modal_w - 24.0);
-                        // Query line with a search icon.
+                        // Mode header + a hint that Tab toggles.
                         ui.horizontal(|ui| {
+                            let title = if intent_mode {
+                                "Ask Ochroma — Intent"
+                            } else {
+                                "Ask Ochroma — Command"
+                            };
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "{}  Ask Ochroma",
+                                    "{}  {title}",
                                     vox_ui::design::icons::icon::SEARCH
                                 ))
-                                .color(c32(t, "text.secondary")),
+                                .color(c32(t, if intent_mode { "accent.base" } else { "text.secondary" }))
+                                .strong(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new("Tab: switch mode")
+                                            .small()
+                                            .color(c32(t, "text.secondary")),
+                                    );
+                                },
                             );
                         });
+                        let hint = if intent_mode {
+                            "Describe what you want… e.g. set terrain resolution to 128"
+                        } else {
+                            "Type a command…"
+                        };
                         let edit = egui::TextEdit::singleline(&mut self.query)
-                            .hint_text("Type a command…")
+                            .hint_text(hint)
                             .desired_width(modal_w - 24.0)
                             .font(egui::FontId::proportional(t.type_ramp.heading));
                         let resp = ui.add(edit);
                         resp.request_focus();
                         ui.separator();
 
-                        // Result rows.
-                        for (i, c) in results.iter().enumerate() {
-                            let sel = i == self.selected;
-                            let row = egui::Rect::from_min_size(
-                                ui.cursor().min,
-                                egui::vec2(modal_w - 24.0, 26.0),
+                        if intent_mode {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Press Enter — I'll generate the edit, not just navigate.",
+                                )
+                                .color(c32(t, "text.secondary")),
                             );
-                            if sel {
-                                ui.painter().rect_filled(
-                                    row,
-                                    t.radius[0],
-                                    c32(t, "accent.dim"),
+                        } else {
+                            // Command-mode result rows.
+                            for (i, c) in results.iter().enumerate() {
+                                let sel = i == self.selected;
+                                let row = egui::Rect::from_min_size(
+                                    ui.cursor().min,
+                                    egui::vec2(modal_w - 24.0, 26.0),
                                 );
-                            }
-                            ui.horizontal(|ui| {
-                                ui.add_space(6.0);
-                                ui.label(
-                                    egui::RichText::new(&c.title)
-                                        .color(c32(t, "text.primary"))
-                                        .strong(),
-                                );
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if !c.shortcut.is_empty() {
+                                if sel {
+                                    ui.painter().rect_filled(row, t.radius[0], c32(t, "accent.dim"));
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.add_space(6.0);
+                                    ui.label(
+                                        egui::RichText::new(&c.title)
+                                            .color(c32(t, "text.primary"))
+                                            .strong(),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if !c.shortcut.is_empty() {
+                                                ui.label(
+                                                    egui::RichText::new(&c.shortcut)
+                                                        .monospace()
+                                                        .color(c32(t, "text.secondary")),
+                                                );
+                                            }
                                             ui.label(
-                                                egui::RichText::new(&c.shortcut)
-                                                    .monospace()
+                                                egui::RichText::new(&c.category)
+                                                    .small()
                                                     .color(c32(t, "text.secondary")),
                                             );
-                                        }
-                                        ui.label(
-                                            egui::RichText::new(&c.category)
-                                                .small()
-                                                .color(c32(t, "text.secondary")),
-                                        );
-                                    },
+                                        },
+                                    );
+                                });
+                                ui.add_space(2.0);
+                            }
+                            if results.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("No matching command")
+                                        .color(c32(t, "text.disabled")),
                                 );
-                            });
-                            ui.add_space(2.0);
+                            }
                         }
-                        if results.is_empty() {
+
+                        // === Assistant history strip (receipts) — both modes ===
+                        if !assistant_log.is_empty() {
+                            ui.add_space(6.0);
+                            ui.separator();
                             ui.label(
-                                egui::RichText::new("No matching command")
-                                    .color(c32(t, "text.disabled")),
+                                egui::RichText::new(format!(
+                                    "{}  Assistant",
+                                    vox_ui::design::icons::icon::SEARCH
+                                ))
+                                .small()
+                                .color(c32(t, "text.secondary")),
                             );
+                            // Newest receipts last; show up to the last 4 on a raised
+                            // chip so the receipt text region is clearly lit.
+                            let start = assistant_log.len().saturating_sub(4);
+                            for line in &assistant_log[start..] {
+                                let chip = egui::Rect::from_min_size(
+                                    ui.cursor().min,
+                                    egui::vec2(modal_w - 24.0, 22.0),
+                                );
+                                let [cr, cg, cb, _] = t.color("surface.bg.3");
+                                ui.painter().rect_filled(
+                                    chip,
+                                    t.radius[0],
+                                    egui::Color32::from_rgb(cr, cg, cb),
+                                );
+                                ui.horizontal(|ui| {
+                                    ui.add_space(6.0);
+                                    ui.label(
+                                        egui::RichText::new(line)
+                                            .color(c32(t, "status.success"))
+                                            .monospace(),
+                                    );
+                                });
+                                ui.add_space(2.0);
+                            }
                         }
                     });
             });
 
-        executed
+        outcome
     }
 }
 

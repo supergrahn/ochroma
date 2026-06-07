@@ -16,6 +16,7 @@ pub mod command_palette;
 pub mod cpu_render;
 pub mod graph_bridge;
 pub mod host;
+pub mod intent;
 pub mod plugins;
 pub mod viewport;
 
@@ -81,6 +82,38 @@ pub struct ShellEntity {
     pub pos: [f32; 3],
 }
 
+/// One reversible edit on the shell's undo stack (design UX Principle 2,
+/// "Provenance + reversibility"). Currently every intent/inspector param edit is
+/// a `ParamSet`: re-applying `prev` through the SAME `GraphBridge::apply_param`
+/// path reverts it (the bridge already supports re-applying a param + re-cooking).
+#[derive(Debug, Clone)]
+pub enum UndoEntry {
+    /// A param edit on the first node of `node_kind`: `key` went `prev -> next`.
+    ParamSet {
+        node_kind: &'static str,
+        key: &'static str,
+        target: String,
+        prev: f32,
+        next: f32,
+    },
+}
+
+/// A side-effecting request a registry command pushes for the shell to drain on
+/// the next frame. Registry commands are `Fn()` (no `&mut self`), so a command
+/// that must mutate shell state (swap the theme, focus a tab) records its intent
+/// here; `EditorShell::drain_requests` applies it. This keeps theme/focus on the
+/// SAME one-command-surface (the intent executor and a menu click both route
+/// through `registry.run`, which fires the closure that queues the request).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShellRequest {
+    ThemeLight,
+    ThemeDark,
+    FocusViewport,
+    FocusNodeGraph,
+    FocusPlugin(String),
+    Undo,
+}
+
 /// The editor shell — owns the dock layout, panel state, and tokens.
 pub struct EditorShell {
     pub tokens: Tokens,
@@ -110,6 +143,15 @@ pub struct EditorShell {
     /// Set true by the `world.add` command (proves the registry callback fired;
     /// the palette test asserts it).
     pub last_command_flag: Rc<RefCell<bool>>,
+    /// The undo stack of reversible assistant/inspector edits (Ctrl+Z reverts the
+    /// last one). Provenance + reversibility for AI-driven edits (UX Principle 2).
+    pub undo_stack: Vec<UndoEntry>,
+    /// Side-effecting requests queued by registry commands (theme/focus), drained
+    /// each frame. Shared so a `Fn()` command closure can push onto it.
+    pub requests: Rc<RefCell<Vec<ShellRequest>>>,
+    /// The assistant history strip shown in the palette: a human-readable receipt
+    /// line per executed (or rejected) intent, newest last.
+    pub assistant_log: Vec<String>,
 }
 
 impl Default for EditorShell {
@@ -136,7 +178,8 @@ impl EditorShell {
             surface.split_below(center, 0.72, vec![B(PanelId::Content), B(PanelId::Output)]);
 
         let last_command_flag = Rc::new(RefCell::new(false));
-        let registry = build_registry(&last_command_flag);
+        let requests: Rc<RefCell<Vec<ShellRequest>>> = Rc::new(RefCell::new(Vec::new()));
+        let registry = build_registry(&last_command_flag, &requests);
         let mut canvas = NodeCanvas::new();
         canvas.set_snap(GRAPH_SNAP);
 
@@ -151,6 +194,9 @@ impl EditorShell {
             viewport_tex: None,
             plugins: Vec::new(),
             last_command_flag,
+            undo_stack: Vec::new(),
+            requests,
+            assistant_log: Vec::new(),
             entities: vec![
                 ShellEntity {
                     name: "Townhouse_Row_03".into(),
@@ -253,10 +299,21 @@ impl EditorShell {
 
     /// Lay out the full shell into an egui context for one frame.
     pub fn ui(&mut self, ctx: &egui::Context) {
+        // Apply any side-effecting requests queued by registry commands last frame
+        // (theme swap, tab focus, undo) before laying anything out.
+        self.drain_requests();
+
         // Ctrl+K toggles the one-command-surface (the AI-native entry point).
         let ctrl_k = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::K));
         if ctrl_k {
             self.palette.toggle();
+        }
+        // Ctrl+Z reverts the last assistant/inspector edit through the registry.
+        let ctrl_z = ctx.input(|i| {
+            i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Z)
+        });
+        if ctrl_z {
+            self.registry.run("edit.undo");
         }
 
         self.menu_bar(ctx);
@@ -282,14 +339,151 @@ impl EditorShell {
             .style(dock_style)
             .show(ctx, &mut viewer);
 
-        // The palette overlays everything (foreground order).
-        self.palette.ui(ctx, &self.tokens, &self.registry);
+        // The palette overlays everything (foreground order). It runs commands in
+        // place (it has the registry) and returns an intent submission for the
+        // shell to execute (executing an intent needs `&mut self`).
+        let outcome = self.palette.ui(ctx, &self.tokens, &self.registry, &self.assistant_log);
+        if let command_palette::PaletteOutcome::IntentSubmitted(text) = outcome {
+            self.run_intent(&text);
+        }
     }
 
     /// Force the palette open (for headless snapshots / tests).
     pub fn open_palette(&mut self) {
         self.palette.open = true;
         self.palette.selected = 0;
+    }
+
+    /// Execute a natural-language intent end-to-end: parse it against the REAL
+    /// registry + graph, run the resulting action through the SAME
+    /// `CommandRegistry` + `GraphBridge` the manual surface uses, push any
+    /// reversible edit onto the undo stack, and append a human-readable receipt to
+    /// the assistant log. Returns the receipt line.
+    ///
+    /// This is the whole "Ask Ochroma generates, not just navigates" loop: a
+    /// sentence in, a real graph/registry mutation out, with provenance.
+    pub fn run_intent(&mut self, text: &str) -> String {
+        use intent::IntentAction;
+        let action = intent::parse_intent(text, &self.registry);
+        let receipt = match action {
+            IntentAction::SetParam { node_kind, key, target, value } => {
+                self.apply_param_intent(node_kind, key, &target, value)
+            }
+            IntentAction::AdjustParam { node_kind, key, target, delta } => {
+                // Resolve the relative nudge to an absolute value from the current
+                // cooked param, then flow through the same apply path.
+                let cur = self
+                    .bridge
+                    .param_value_of_kind(node_kind, key)
+                    .unwrap_or(0.0);
+                self.apply_param_intent(node_kind, key, &target, cur + delta)
+            }
+            IntentAction::AddNode { kind, friendly } => {
+                match self.bridge.add_node_by_kind(kind) {
+                    Some((_id, connected)) => {
+                        if connected {
+                            format!("Added a {friendly} node ({kind}) and connected it")
+                        } else {
+                            format!("Added a {friendly} node ({kind})")
+                        }
+                    }
+                    None => format!("Couldn't add a {friendly} node — unknown kind {kind}"),
+                }
+            }
+            IntentAction::RunCommand { id, receipt } => {
+                if self.registry.run(id) {
+                    receipt
+                } else {
+                    format!("Command {id} is not available")
+                }
+            }
+            IntentAction::Unknown { suggestions } => {
+                format!(
+                    "I don't know how to do that yet — try: {}",
+                    suggestions.join(", ")
+                )
+            }
+        };
+        self.assistant_log.push(receipt.clone());
+        receipt
+    }
+
+    /// Apply an absolute param edit through `GraphBridge::apply_param_by_kind`,
+    /// recording the pre-edit value on the undo stack and producing the exact
+    /// receipt line "Set <target> <prev> -> <next>". On a rejected edit the
+    /// receipt reports the cook failure and nothing is pushed onto the undo stack.
+    fn apply_param_intent(&mut self, node_kind: &'static str, key: &'static str, target: &str, value: f32) -> String {
+        let prev = self.bridge.param_value_of_kind(node_kind, key);
+        let Some(prev) = prev else {
+            return format!("There is no {target} to set");
+        };
+        if self.bridge.apply_param_by_kind(node_kind, key, value).is_none() {
+            return format!("There is no {target} to set");
+        }
+        // The bridge rounds integer params + may reject; read back what cooked.
+        let applied = self.bridge.param_value_of_kind(node_kind, key).unwrap_or(value);
+        if let Some(err) = self.bridge.last_cook_error.clone() {
+            return format!("Couldn't set {target}: {err}");
+        }
+        self.undo_stack.push(UndoEntry::ParamSet {
+            node_kind,
+            key,
+            target: target.to_string(),
+            prev,
+            next: applied,
+        });
+        format!("Set {target} {} -> {}", fmt_num(prev), fmt_num(applied))
+    }
+
+    /// Revert the last reversible edit (the `edit.undo` command). Re-applies the
+    /// inverse through the SAME `GraphBridge` path and returns a receipt. An empty
+    /// stack is a no-op with an honest receipt.
+    pub fn undo(&mut self) -> String {
+        let receipt = match self.undo_stack.pop() {
+            Some(UndoEntry::ParamSet { node_kind, key, target, prev, next }) => {
+                self.bridge.apply_param_by_kind(node_kind, key, prev);
+                format!("Undid: {target} {} -> {} (back to {})", fmt_num(next), fmt_num(prev), fmt_num(prev))
+            }
+            None => "Nothing to undo".to_string(),
+        };
+        self.assistant_log.push(receipt.clone());
+        receipt
+    }
+
+    /// Drain queued [`ShellRequest`]s (theme swap, tab focus, undo) — the effects
+    /// of registry commands that need `&mut self`. Called once per frame at the
+    /// top of `ui`.
+    pub fn drain_requests(&mut self) {
+        let reqs: Vec<ShellRequest> = self.requests.borrow_mut().drain(..).collect();
+        for req in reqs {
+            match req {
+                ShellRequest::ThemeLight => self.set_theme(true),
+                ShellRequest::ThemeDark => self.set_theme(false),
+                ShellRequest::FocusViewport => self.focus_viewport(),
+                ShellRequest::FocusNodeGraph => self.focus_node_graph(),
+                ShellRequest::FocusPlugin(id) => self.focus_plugin_tab(&id),
+                ShellRequest::Undo => {
+                    self.undo();
+                }
+            }
+        }
+    }
+
+    /// Swap the active token theme (the design's "theme swap is a file edit").
+    /// Light loads `assets/ui/ochroma_light.theme.json`; dark is `Tokens::default`.
+    /// The widget kit is rebuilt so plugin-facing controls re-skin in lockstep.
+    pub fn set_theme(&mut self, light: bool) {
+        let tokens = if light {
+            Tokens::load(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../assets/ui/ochroma_light.theme.json"),
+            )
+            .unwrap_or_default()
+        } else {
+            Tokens::default()
+        };
+        self.tokens = tokens.clone();
+        self.widget_kit = WidgetKit::new(tokens);
     }
 
     /// Select the Node Graph tab as the active/focused tab (for snapshots that
@@ -719,10 +913,23 @@ impl ShellViewer<'_> {
 /// World-units the node-graph drag snaps to.
 const GRAPH_SNAP: f32 = 8.0;
 
+/// Format a param value for a receipt: integers print without a decimal point
+/// (so "64 -> 128", not "64.0 -> 128.0"), fractionals keep two places.
+fn fmt_num(v: f32) -> String {
+    if (v.fract()).abs() < f32::EPSILON {
+        format!("{}", v as i64)
+    } else {
+        format!("{v:.2}")
+    }
+}
+
 /// Build the editor's one-command-surface. Menus, toolbar, palette and (later)
 /// the AI assistant all dispatch through these. `flag` is flipped by the
 /// representative `world.add` command so the palette test can observe execution.
-fn build_registry(flag: &Rc<RefCell<bool>>) -> CommandRegistry {
+fn build_registry(
+    flag: &Rc<RefCell<bool>>,
+    requests: &Rc<RefCell<Vec<ShellRequest>>>,
+) -> CommandRegistry {
     let mut r = CommandRegistry::new();
     let f = flag.clone();
     r.add(Command::new(
@@ -736,11 +943,40 @@ fn build_registry(flag: &Rc<RefCell<bool>>) -> CommandRegistry {
     r.add(Command::new("create.biome", "Add biome layer", "Create", "", || {}));
     r.add(Command::new("file.save", "Save world", "File", "Ctrl+S", || {}));
     r.add(Command::new("file.open", "Open world…", "File", "Ctrl+O", || {}));
-    r.add(Command::new("edit.undo", "Undo", "Edit", "Ctrl+Z", || {}));
+    // Undo routes through the registry too (same one-command-surface) — its
+    // closure queues a request the shell drains, since undo needs `&mut self`.
+    let q = requests.clone();
+    r.add(Command::new("edit.undo", "Undo", "Edit", "Ctrl+Z", move || {
+        q.borrow_mut().push(ShellRequest::Undo)
+    }));
     r.add(Command::new("edit.redo", "Redo", "Edit", "Ctrl+Shift+Z", || {}));
     r.add(Command::new("build.cook", "Recook graph", "Build", "F5", || {}));
     r.add(Command::new("view.wireframe", "Toggle wireframe", "Window", "", || {}));
     r.add(Command::new("help.about", "About Ochroma", "Help", "", || {}));
+
+    // The theme + tab-focus commands the intent assistant (and menus) dispatch.
+    // Each queues a `ShellRequest` drained next frame — the intent executor and a
+    // manual menu click both reach the same effect through `registry.run`.
+    let q = requests.clone();
+    r.add(Command::new("view.theme_light", "Switch to light theme", "Window", "", move || {
+        q.borrow_mut().push(ShellRequest::ThemeLight)
+    }));
+    let q = requests.clone();
+    r.add(Command::new("view.theme_dark", "Switch to dark theme", "Window", "", move || {
+        q.borrow_mut().push(ShellRequest::ThemeDark)
+    }));
+    let q = requests.clone();
+    r.add(Command::new("view.focus_viewport", "Show the Viewport", "Window", "", move || {
+        q.borrow_mut().push(ShellRequest::FocusViewport)
+    }));
+    let q = requests.clone();
+    r.add(Command::new("view.focus_node_graph", "Show the Node Graph", "Window", "", move || {
+        q.borrow_mut().push(ShellRequest::FocusNodeGraph)
+    }));
+    let q = requests.clone();
+    r.add(Command::new("view.focus_crucible", "Show the Crucible graph", "Window", "", move || {
+        q.borrow_mut().push(ShellRequest::FocusPlugin(plugins::CRUCIBLE_TAB.to_string()))
+    }));
     r
 }
 
@@ -1614,5 +1850,222 @@ mod tests {
             found,
             "Crucible Spatial node header pixel must equal host category_header(Spatial)={want:?} — inherited styling"
         );
+    }
+
+    // === Phase 3a: Ask Ochroma intent loop / undo / Forge plugin ===
+
+    /// INTENT (set param): "set terrain resolution to 128" routes through the REAL
+    /// GraphBridge — the cooked terrain resolution becomes 128 and the receipt text
+    /// is exact.
+    #[test]
+    fn intent_set_param() {
+        let mut shell = EditorShell::default();
+        // Pre-edit cooked value of terrain.resolution (template default 64).
+        let before = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
+        assert_eq!(before, 64.0, "template terrain resolution starts at 64");
+
+        let receipt = shell.run_intent("set terrain resolution to 128");
+        // Cooked value (read back from the REAL graph's param cache) is 128.
+        let after = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
+        assert_eq!(after, 128.0, "intent must cook terrain resolution to 128, got {after}");
+        // Receipt text is exact.
+        assert_eq!(receipt, "Set terrain.resolution 64 -> 128");
+        // And it surfaced in the assistant history strip.
+        assert_eq!(shell.assistant_log.last().unwrap(), "Set terrain.resolution 64 -> 128");
+    }
+
+    /// INTENT (add node): "add vegetation" grows the live graph by one node whose
+    /// real registry type_name is VegetationNode.
+    #[test]
+    fn intent_add_node() {
+        let mut shell = EditorShell::default();
+        let before = shell.bridge.node_count();
+        let receipt = shell.run_intent("add vegetation");
+        let after = shell.bridge.node_count();
+        assert_eq!(after, before + 1, "add intent must grow the graph by one node");
+        // The new node exists and is a real VegetationNode kind.
+        let veg = shell
+            .bridge
+            .first_node_of_kind("VegetationNode")
+            .expect("a VegetationNode must now exist");
+        assert_eq!(shell.bridge.graph.node_name(veg), Some("vegetation"));
+        assert!(receipt.contains("VegetationNode"), "receipt must name the real kind, got {receipt:?}");
+    }
+
+    /// INTENT (unknown): gibberish answers honestly and lists 3 REAL registry
+    /// command titles as suggestions.
+    #[test]
+    fn intent_unknown_lists_suggestions() {
+        let mut shell = EditorShell::default();
+        let receipt = shell.run_intent("flibbertigibbet wuzzle xyzzy");
+        assert!(
+            receipt.starts_with("I don't know how to do that yet — try: "),
+            "unknown intent must answer honestly, got {receipt:?}"
+        );
+        // Every suggested title must be a real registered command title.
+        let real_titles: Vec<String> =
+            shell.registry.commands.iter().map(|c| c.title.clone()).collect();
+        let listed = receipt
+            .trim_start_matches("I don't know how to do that yet — try: ")
+            .split(", ")
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(listed.len(), 3, "must list exactly 3 suggestions, got {listed:?}");
+        for s in &listed {
+            assert!(real_titles.contains(s), "suggestion {s:?} must be a real command title");
+        }
+    }
+
+    /// UNDO: an intent param edit then `edit.undo` reverts the cooked value to the
+    /// pre-edit number; undo with an empty stack is an honest no-op receipt.
+    #[test]
+    fn undo_reverts_intent_param_edit_and_empty_is_noop() {
+        let mut shell = EditorShell::default();
+        let before = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
+        assert_eq!(before, 64.0);
+
+        shell.run_intent("set terrain resolution to 128");
+        assert_eq!(shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap(), 128.0);
+
+        // Undo via the same one-command-surface (edit.undo queues a request the
+        // shell drains): run the command, then drain.
+        assert!(shell.registry.run("edit.undo"));
+        shell.drain_requests();
+        let reverted = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
+        assert_eq!(reverted, 64.0, "undo must restore the pre-edit cooked value 64, got {reverted}");
+
+        // The undo stack is now empty: a further undo is a no-op receipt.
+        let receipt = shell.undo();
+        assert_eq!(receipt, "Nothing to undo");
+        // Value unchanged by the no-op undo.
+        assert_eq!(shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap(), 64.0);
+    }
+
+    /// FORGE PLUGIN: both Crucible AND Forge tabs are present, both command
+    /// categories ("Crucible" + "Forge") are in the palette, and the Forge canvas
+    /// renders a Spatial header in the HOST token color (pixel == token).
+    #[test]
+    fn forge_plugin_coexists_and_canvas_uses_host_tokens() {
+        let mut shell = EditorShell::default();
+        shell.install_plugin(Box::new(super::plugins::CruciblePlugin::new()));
+        shell.install_plugin(Box::new(super::plugins::ForgePlugin::new()));
+
+        // BOTH plugin tabs are docked.
+        let tab_ids: Vec<String> = shell
+            .dock
+            .iter_all_tabs()
+            .filter_map(|(_, t)| match t {
+                TabKind::Plugin(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(tab_ids.contains(&super::plugins::CRUCIBLE_TAB.to_string()), "Crucible tab missing");
+        assert!(tab_ids.contains(&super::plugins::FORGE_TAB.to_string()), "Forge tab missing");
+
+        // BOTH command categories present in the palette registry, with REAL Forge
+        // generator names.
+        let cats: std::collections::HashSet<&str> =
+            shell.registry.commands.iter().map(|c| c.category.as_str()).collect();
+        assert!(cats.contains("Crucible"), "Crucible category missing from palette");
+        assert!(cats.contains("Forge"), "Forge category missing from palette");
+        for real in ["terrain", "building", "scatter", "road", "vegetation", "water"] {
+            let id = format!("forge.generate_{real}");
+            assert!(
+                shell.registry.commands.iter().any(|c| c.id == id && c.category == "Forge"),
+                "Forge command {id} missing under category Forge"
+            );
+        }
+
+        // PIXEL: render with the Forge tab focused and assert a Forge node header
+        // is drawn in the host's category_header token color (the plugin set none).
+        let (rgba, w, _h, shell2) = render_full_shell_both("forge");
+        let rect = shell2
+            .dock
+            .iter_all_nodes()
+            .find_map(|(_, node)| {
+                let has = node.tabs().is_some_and(|ts| {
+                    ts.iter().any(|t| matches!(t, TabKind::Plugin(id) if id == super::plugins::FORGE_TAB))
+                });
+                if has { node.rect() } else { None }
+            })
+            .expect("Forge tab must have a leaf rect");
+        let want = Tokens::default().category_header(NodeCategory::Spatial);
+        let mut found = false;
+        'outer: for y in (rect.min.y as usize + 30)..(rect.min.y as usize + 220) {
+            for x in (rect.min.x as usize + 20)..(rect.min.x as usize + 360) {
+                let p = px(&rgba, w, x as i32, y as i32);
+                if (0..3).all(|i| (p[i] as i32 - want[i] as i32).abs() <= 16) {
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(
+            found,
+            "Forge Spatial node header pixel must equal host category_header(Spatial)={want:?}"
+        );
+    }
+
+    /// PALETTE SNAPSHOT PIXELS: with a scripted intent executed, the assistant
+    /// receipt strip text region is LIT (status.success-colored monospace on a
+    /// surface.bg.3 chip) inside the open palette modal.
+    #[test]
+    fn palette_receipt_strip_is_lit_after_intent() {
+        let (w, h) = (1280usize, 720usize);
+        let tokens = Tokens::default();
+        let bg = tokens.color("surface.bg.0");
+        let ctx = egui::Context::default();
+        vox_ui::design::icons::install(&ctx);
+        vox_ui::egui_theme::apply(&ctx, &tokens);
+        let mut shell = EditorShell::new(tokens.clone());
+        // Script the generative loop, then open the palette in intent mode.
+        let receipt = shell.run_intent("set terrain resolution to 128");
+        assert_eq!(receipt, "Set terrain.resolution 64 -> 128");
+        shell.palette.mode = command_palette::PaletteMode::Intent;
+        let rgba = super::cpu_render::render_ui(&ctx, [w, h], bg, |ctx| {
+            shell.palette.open = true;
+            shell.ui(ctx);
+        });
+
+        // The receipt strip renders status.success (green) monospace text on a
+        // raised chip inside the centered modal body. Count green-dominant text
+        // pixels in the modal region (center column, upper-modal band) — green
+        // clearly dominating red+blue is the success-colored receipt text, and it
+        // is absent everywhere the modal isn't (the strict region excludes the
+        // bottom status bar's own success text).
+        let mut lit = 0usize;
+        for y in (h * 15 / 100)..(h * 45 / 100) {
+            for x in (w * 35 / 100)..(w * 65 / 100) {
+                let p = px(&rgba, w, x as i32, y as i32);
+                let (r, g, b) = (p[0] as i32, p[1] as i32, p[2] as i32);
+                if g > 90 && g - r > 30 && g - b > 20 {
+                    lit += 1;
+                }
+            }
+        }
+        assert!(
+            lit > 80,
+            "the assistant receipt strip must light status.success text pixels in the modal (got {lit})"
+        );
+    }
+
+    /// Render the full shell with BOTH plugins installed and `focus` tab active.
+    fn render_full_shell_both(focus: &str) -> (Vec<u8>, usize, usize, EditorShell) {
+        let (w, h) = (1920usize, 1080usize);
+        let tokens = Tokens::default();
+        let bg = tokens.color("surface.bg.0");
+        let ctx = egui::Context::default();
+        vox_ui::design::icons::install(&ctx);
+        vox_ui::egui_theme::apply(&ctx, &tokens);
+        let mut shell = EditorShell::new(tokens);
+        shell.install_plugin(Box::new(super::plugins::CruciblePlugin::new()));
+        shell.install_plugin(Box::new(super::plugins::ForgePlugin::new()));
+        match focus {
+            "forge" => shell.focus_plugin_tab(super::plugins::FORGE_TAB),
+            "crucible" => shell.focus_plugin_tab(super::plugins::CRUCIBLE_TAB),
+            _ => {}
+        }
+        let rgba = super::cpu_render::render_ui(&ctx, [w, h], bg, |ctx| shell.ui(ctx));
+        (rgba, w, h, shell)
     }
 }

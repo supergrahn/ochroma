@@ -78,6 +78,43 @@ pub fn category_for_kind(type_name: &str) -> NodeCategory {
     }
 }
 
+/// A short lowercase label for a node kind (the live graph's `node_name`, which
+/// `title_of` title-cases for display). Keeps the canvas/inspector mapping stable
+/// for nodes added at runtime by an intent.
+fn friendly_label(type_name: &str) -> &'static str {
+    match type_name {
+        "TerrainNode" => "terrain",
+        "BiomeNode" => "biome",
+        "MoistureNode" => "moisture",
+        "VegetationNode" => "vegetation",
+        "BuildingNode" => "building",
+        "PlotNode" => "plot",
+        "SplatizeNode" => "splatize",
+        _ => "node",
+    }
+}
+
+/// Echo a registry `type_name` back as a `'static` str (the registry's
+/// canonical `type_name`s are already `'static`, but `add_node_by_kind` receives
+/// a borrowed `&str`; this canonicalizes it to the matching literal so the
+/// `kinds` vector keeps its `&'static str` invariant).
+fn registry_kind_static(type_name: &str) -> &'static str {
+    match type_name {
+        "TerrainNode" => "TerrainNode",
+        "BiomeNode" => "BiomeNode",
+        "MoistureNode" => "MoistureNode",
+        "VegetationNode" => "VegetationNode",
+        "BuildingNode" => "BuildingNode",
+        "PlotNode" => "PlotNode",
+        "SplatizeNode" => "SplatizeNode",
+        "SplatWeightNode" => "SplatWeightNode",
+        "UrbanSimNode" => "UrbanSimNode",
+        "CatenaryNode" => "CatenaryNode",
+        "PropPlacementNode" => "PropPlacementNode",
+        _ => "TerrainNode",
+    }
+}
+
 /// The editable param schema for a node kind (real `set_param` keys + sane
 /// ranges). Empty for kinds with no scrubbable scalar params.
 fn param_schema(type_name: &str) -> Vec<ParamField> {
@@ -371,6 +408,151 @@ impl GraphBridge {
             Ok(_) => self.last_cook_error = None,
             Err(e) => revert(self, e.to_string()),
         }
+    }
+
+    /// The number of nodes currently in the live graph (used by the intent
+    /// executor to prove an `add` actually grew the graph).
+    pub fn node_count(&self) -> usize {
+        self.graph.node_count()
+    }
+
+    /// The cached display value of param `key` on the FIRST node of kind
+    /// `type_name` (the value the inspector scrub field is bound to, and the
+    /// value an intent `set`/`adjust` reads as its baseline). `None` if no node of
+    /// that kind exists or it has no such param.
+    pub fn param_value_of_kind(&self, type_name: &str, key: &str) -> Option<f32> {
+        let id = self.first_node_of_kind(type_name)?;
+        self.params
+            .iter()
+            .find(|(n, _)| *n == id)
+            .and_then(|(_, fields)| fields.iter().find(|f| f.key == key))
+            .map(|f| f.value)
+    }
+
+    /// The id of the first node of the given registry `type_name`, in template
+    /// order. The intent executor targets this node for `set`/`adjust`.
+    pub fn first_node_of_kind(&self, type_name: &str) -> Option<NodeId> {
+        self.node_ids
+            .iter()
+            .copied()
+            .find(|&id| self.kind_of(id) == type_name)
+    }
+
+    /// Apply a param edit addressed by node KIND (not id) — the path the intent
+    /// executor uses ("set terrain resolution to 128"). Targets the first node of
+    /// that kind. Returns the id edited (so the undo stack can record it), or
+    /// `None` if no such node/param exists.
+    pub fn apply_param_by_kind(&mut self, type_name: &str, key: &str, value: f32) -> Option<NodeId> {
+        let id = self.first_node_of_kind(type_name)?;
+        // Guard: the kind must actually expose this param key.
+        let has = self
+            .params
+            .iter()
+            .find(|(n, _)| *n == id)
+            .is_some_and(|(_, fields)| fields.iter().any(|f| f.key == key));
+        if !has {
+            return None;
+        }
+        self.apply_param(id, key, value);
+        Some(id)
+    }
+
+    /// Instantiate a fresh node of registry `type_name` via the REAL
+    /// `vox_editor::registry::NodeRegistry`, add it to the live graph, and connect
+    /// it into the pipeline IF the connection is unambiguous (exactly one existing
+    /// node produces a single output type this node's single typed input accepts,
+    /// OR this node's single typed output feeds exactly one waiting input). The
+    /// node always enters the graph even when no unambiguous wire exists (it then
+    /// sits unconnected, exactly like a manual drag-from-palette). Returns the new
+    /// node's id and whether it was auto-connected.
+    pub fn add_node_by_kind(&mut self, type_name: &str) -> Option<(NodeId, bool)> {
+        let registry = NodeRegistry::new();
+        let node = registry.create(type_name)?;
+        // A stable lowercase label so node_name/title mapping stays sensible.
+        let label = friendly_label(type_name);
+        let new_id = self.graph.add_node(label, node);
+
+        // Track the new node's kind + params so the inspector + later intents see
+        // it (mirrors how `new()` builds these vectors).
+        let kind: &'static str = registry_kind_static(type_name);
+        self.kinds.push((new_id, kind));
+        self.params.push((new_id, param_schema(kind)));
+        self.node_ids.push(new_id);
+        // Lay it out below the existing pipeline so it is visible on the canvas.
+        let y = 360.0 + 90.0 * (self.positions.len().saturating_sub(4)) as f32;
+        self.positions.push(egui::pos2(40.0, y));
+
+        // Connect-if-unambiguous: try to feed this node from a single compatible
+        // producer already in the graph.
+        let connected = self.try_auto_connect(new_id);
+        // Re-cook so the new node (and any auto-wire) carries real outputs.
+        let now = Instant::now() + self.graph.recook_budget() * 2;
+        let _ = self.graph.live_cook(now);
+        Some((new_id, connected))
+    }
+
+    /// Attempt the single unambiguous connection for a freshly added node:
+    /// if the node has exactly one typed input and exactly one already-present
+    /// node produces a matching output type, wire them. Returns whether a wire was
+    /// made. Type-checking + cycle rejection are enforced by `graph.connect`.
+    fn try_auto_connect(&mut self, new_id: NodeId) -> bool {
+        // The new node's single input port (name, type), if it has exactly one.
+        let new_kind = self.kind_of(new_id);
+        let inputs = self.descriptor_inputs(new_id);
+        if inputs.len() != 1 {
+            return false;
+        }
+        let (in_name, in_ty) = inputs[0].clone();
+
+        // Candidate producers: existing nodes (not the new one) whose single
+        // matching output is `in_ty`. Collect unambiguous matches.
+        let mut matches: Vec<(NodeId, String)> = Vec::new();
+        for &id in &self.node_ids {
+            if id == new_id {
+                continue;
+            }
+            for (out_name, out_ty) in self.descriptor_outputs(id) {
+                if out_ty == in_ty {
+                    matches.push((id, out_name));
+                }
+            }
+        }
+        let _ = new_kind;
+        if matches.len() == 1 {
+            let (from, from_port) = matches[0].clone();
+            return self.graph.connect(from, &from_port, new_id, &in_name).is_ok();
+        }
+        false
+    }
+
+    /// All descriptor input ports (name, type) of a node, via the live graph's
+    /// typed port lookups. Unlike `input_ports`, this covers arbitrary kinds (used
+    /// by auto-connect for freshly added nodes).
+    fn descriptor_inputs(&self, id: NodeId) -> Vec<(String, EdPortType)> {
+        let names: &[&str] = match self.kind_of(id) {
+            "BiomeNode" => &["terrain"],
+            "MoistureNode" => &["terrain"],
+            "VegetationNode" => &["biome_map"],
+            "SplatizeNode" => &["mesh"],
+            "BuildingNode" => &["plot"],
+            _ => &[],
+        };
+        self.lookup_inputs(id, names)
+    }
+
+    /// All descriptor output ports (name, type) of a node, via the live graph.
+    fn descriptor_outputs(&self, id: NodeId) -> Vec<(String, EdPortType)> {
+        let names: &[&str] = match self.kind_of(id) {
+            "TerrainNode" => &["terrain"],
+            "BiomeNode" => &["biome_map"],
+            "MoistureNode" => &["moisture"],
+            "VegetationNode" => &["mesh"],
+            "BuildingNode" => &["mesh"],
+            "PlotNode" => &["plot"],
+            "SplatizeNode" => &["splats"],
+            _ => &[],
+        };
+        self.lookup_outputs(id, names)
     }
 
     /// The cooked sink (Splatize) splat count — proves a recook changed output.
