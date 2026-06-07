@@ -13,6 +13,7 @@
 //! machinery, chrome, and bitmap-font eradication are real and tested now.
 
 pub mod command_palette;
+pub mod content_panel;
 pub mod cpu_render;
 pub mod graph_bridge;
 pub mod host;
@@ -21,11 +22,13 @@ pub mod plugins;
 pub mod viewport;
 
 use command_palette::{Command, CommandRegistry, PaletteState};
+use content_panel::{ContentAction, ContentPanel};
 use egui_dock::{DockArea, DockState, NodeIndex, Style as DockStyle};
 use graph_bridge::GraphBridge;
 use host::{InstalledPlugin, PluginCtx, TabDecl};
 use vox_editor::node_graph::NodeId;
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use vox_ui::design::icons::icon;
 use vox_ui::node_canvas::NodeCanvas;
@@ -117,6 +120,10 @@ pub enum ShellRequest {
     FocusNodeGraph,
     FocusPlugin(String),
     Undo,
+    /// The Content tab asked to load an asset into the scene (a double-click).
+    /// The shell decodes it (or honestly reports what loading does today) and
+    /// appends a receipt line to the Output Log.
+    LoadAsset(PathBuf),
 }
 
 /// The editor shell — owns the dock layout, panel state, and tokens.
@@ -157,6 +164,11 @@ pub struct EditorShell {
     /// The assistant history strip shown in the palette: a human-readable receipt
     /// line per executed (or rejected) intent, newest last.
     pub assistant_log: Vec<String>,
+    /// The Content tab's live content browser (lazily scans `assets/`).
+    pub content: ContentPanel,
+    /// Output Log lines appended at runtime (e.g. a content-browser asset load),
+    /// shown beneath the static engine banner in the Output Log tab.
+    pub output_log: Vec<String>,
     /// Monotonic UI frame counter, bumped once per `ui()`. Used to coalesce a
     /// continuous inspector drag (many per-frame value changes) into ONE undo
     /// entry: see [`EditorShell::record_inspector_edit`].
@@ -216,6 +228,8 @@ impl EditorShell {
             undo_stack: Vec::new(),
             requests,
             assistant_log: Vec::new(),
+            content: ContentPanel::new(ContentPanel::default_root()),
+            output_log: Vec::new(),
             frame: 0,
             last_inspector_edit: None,
             entities: vec![
@@ -348,6 +362,7 @@ impl EditorShell {
         let viewport_tex = viewport::scene_texture(ctx, &mut self.viewport_tex);
 
         let mut inspector_undo_edits: Vec<(NodeId, &'static str, String, f32)> = Vec::new();
+        let mut content_action: Option<ContentAction> = None;
         let mut viewer = ShellViewer {
             tokens: &self.tokens,
             widget_kit: &self.widget_kit,
@@ -359,11 +374,19 @@ impl EditorShell {
             viewport_tex,
             plugins: &mut self.plugins,
             undo_edits: &mut inspector_undo_edits,
+            content: &mut self.content,
+            output_log: &self.output_log,
+            content_action: &mut content_action,
         };
         let dock_style = DockStyle::from_egui(ctx.style().as_ref());
         DockArea::new(&mut self.dock)
             .style(dock_style)
             .show(ctx, &mut viewer);
+        // A Content-tab double-click queues a LoadAsset request the shell drains
+        // next frame (loading needs `&mut self` the viewer can't hold).
+        if let Some(ContentAction::Load(path)) = content_action {
+            self.requests.borrow_mut().push(ShellRequest::LoadAsset(path));
+        }
         // Route any manual inspector param edits onto the SAME undo stack the AI
         // intents use, so a Properties scrub is Ctrl+Z-reversible (UndoEntry doc
         // invariant).
@@ -595,7 +618,41 @@ impl EditorShell {
                 ShellRequest::Undo => {
                     self.undo();
                 }
+                ShellRequest::LoadAsset(path) => self.load_content_asset(&path),
             }
+        }
+    }
+
+    /// Handle a Content-tab load request: decode the asset through the SAME
+    /// engine-agnostic `vox_editor::content_browser::load_asset` path the
+    /// browser exposes, and append an honest receipt to the Output Log. Splat
+    /// assets report their decoded splat count; scene/script/shader assets
+    /// report that their path was handed to the import pipeline (which is the
+    /// truth today — the shell does not yet drop them into the live scene).
+    pub fn load_content_asset(&mut self, path: &std::path::Path) {
+        use vox_editor::content_browser::{load_asset, AssetKind, LoadedAsset};
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let line = match AssetKind::from_path(path) {
+            None => format!("[content] {name}: unrecognized asset type — not loaded"),
+            Some(kind) => match load_asset(path, kind) {
+                Ok(LoadedAsset::Splats(splats)) => {
+                    format!("[content] Loaded {name}: {} splats", splats.len())
+                }
+                Ok(LoadedAsset::Scene(_)) => {
+                    format!("[content] Loaded {name}: scene handed to the import pipeline")
+                }
+                Ok(LoadedAsset::Script(_)) => format!("[content] Opened script {name}"),
+                Ok(LoadedAsset::Shader(_)) => format!("[content] Opened shader {name}"),
+                Err(e) => format!("[content] Failed to load {name}: {e}"),
+            },
+        };
+        self.output_log.push(line);
+        let overflow = self.output_log.len().saturating_sub(HISTORY_CAP);
+        if overflow > 0 {
+            self.output_log.drain(0..overflow);
         }
     }
 
@@ -625,6 +682,11 @@ impl EditorShell {
     /// Select the Viewport tab as the active/focused tab (the default snapshot).
     pub fn focus_viewport(&mut self) {
         self.focus_tab(&TabKind::Builtin(PanelId::Viewport));
+    }
+
+    /// Select the Content tab as the active/focused tab (used by `--tab content`).
+    pub fn focus_content(&mut self) {
+        self.focus_tab(&TabKind::Builtin(PanelId::Content));
     }
 
     /// Select a plugin tab as the active/focused tab by its id (`--tab crucible`).
@@ -786,6 +848,13 @@ struct ShellViewer<'a> {
     /// `undo_stack`, so it stages here and the shell drains via
     /// [`EditorShell::record_inspector_edit`].
     undo_edits: &'a mut Vec<(NodeId, &'static str, String, f32)>,
+    /// The live content browser the Content tab renders.
+    content: &'a mut ContentPanel,
+    /// Runtime Output Log lines (read-only here) shown in the Output Log tab.
+    output_log: &'a [String],
+    /// A content-browser activation (double-click) staged this frame for the
+    /// shell to drain into a `ShellRequest::LoadAsset` after the dock lays out.
+    content_action: &'a mut Option<ContentAction>,
 }
 
 impl egui_dock::TabViewer for ShellViewer<'_> {
@@ -995,29 +1064,11 @@ impl ShellViewer<'_> {
     }
 
     fn content(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(format!("{}  Assets", icon::FOLDER_OPEN));
-            ui.separator();
-            for f in ["All", "Meshes", "Materials", "Splats"] {
-                let _ = ui.selectable_label(f == "All", f);
-            }
-        });
-        ui.separator();
-        // Thumbnail grid.
-        egui::Grid::new("content_grid").spacing([8.0, 8.0]).show(ui, |ui| {
-            for i in 0..8 {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
-                let shade = 40 + (i * 12) as u8;
-                ui.painter().rect_filled(
-                    rect,
-                    self.tokens.radius[0],
-                    egui::Color32::from_rgb(shade, shade + 6, shade + 14),
-                );
-                if (i + 1) % 4 == 0 {
-                    ui.end_row();
-                }
-            }
-        });
+        // Delegate to the REAL content browser panel; stage any double-click
+        // load for the shell to drain into a ShellRequest::LoadAsset.
+        if let Some(action) = self.content.ui(ui, self.tokens) {
+            *self.content_action = Some(action);
+        }
     }
 
     fn output(&mut self, ui: &mut egui::Ui) {
@@ -1027,6 +1078,10 @@ impl ShellViewer<'_> {
             "[render] Atom budget: 2.4M splats",
             "[ok] All systems healthy",
         ] {
+            ui.label(egui::RichText::new(line).monospace());
+        }
+        // Runtime log lines appended at runtime (e.g. content-browser loads).
+        for line in self.output_log {
             ui.label(egui::RichText::new(line).monospace());
         }
     }
