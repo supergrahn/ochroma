@@ -64,6 +64,17 @@ pub enum IntentAction {
         /// Friendly receipt phrase (e.g. "Switched to light theme").
         receipt: String,
     },
+    /// Generate a real Rhai script from a vetted template (AI-creates-code v1) and
+    /// write it into `assets/scripts/generated/`. `template`/`params` are already
+    /// clamped to documented ranges (see [`crate::shell::script_gen`]); `name` is
+    /// the desired file stem (sanitized + collision-numbered at write time). The
+    /// executor compiles + writes the script, records a file-deleting undo entry,
+    /// and the Content browser picks it up on its next refresh.
+    GenerateScript {
+        params: super::script_gen::Params,
+        /// The desired file-name stem in domain language (e.g. "windmill_spin").
+        name: String,
+    },
     /// The parser could not map the sentence to any action. Carries the three
     /// nearest real command titles (fuzzy) so the assistant can suggest honestly.
     Unknown { suggestions: Vec<String> },
@@ -110,6 +121,14 @@ pub fn parse_intent(text: &str, registry: &CommandRegistry) -> IntentAction {
     // --- 2. Absolute param edit: "set <param> to <value>" ----------------------
     // e.g. "set terrain resolution to 128".
     if let Some(action) = try_set_param(&lower) {
+        return action;
+    }
+
+    // --- 3a. Generate a script from a vetted template (AI-creates-code v1). -----
+    // "make the windmill spin faster" / "add a spin script" / "make X bob up and
+    // down" / "make the light pulse". Placed BEFORE add-node and theme so the
+    // verb phrasings ("spin", "bob", "pulse") win over a bare noun match.
+    if let Some(action) = try_generate_script(&lower) {
         return action;
     }
 
@@ -515,6 +534,8 @@ enum LlmIntent {
     AddNode(LlmAddNode),
     #[serde(rename = "RunCommand")]
     RunCommand(LlmRunCommand),
+    #[serde(rename = "GenerateScript")]
+    GenerateScript(LlmGenerateScript),
     #[serde(rename = "Unknown")]
     Unknown,
 }
@@ -545,6 +566,22 @@ struct LlmAddNode {
 #[serde(deny_unknown_fields)]
 struct LlmRunCommand {
     id: String,
+}
+
+/// The LLM's GenerateScript shape: a template id + a free-form numeric param map +
+/// a desired name. Every numeric param is run through the matching
+/// [`super::script_gen::Params`] constructor (which CLAMPS to documented ranges),
+/// so a hostile or missing value can never produce a pathological script — the
+/// model only ever *requests* a template; the clamps remain the authority.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LlmGenerateScript {
+    template: String,
+    name: String,
+    /// Optional named params; absent ones fall back to the template's documented
+    /// default. Unknown keys are ignored (only the recognized ones are read).
+    #[serde(default)]
+    params: std::collections::HashMap<String, f32>,
 }
 
 /// Parse the LLM's raw text as STRICT JSON for exactly one [`LlmIntent`] variant,
@@ -592,6 +629,29 @@ fn parse_llm_intent(raw: &str, schema: &SchemaContext) -> Option<IntentAction> {
                 id,
                 receipt: format!("Ran {id}"),
             })
+        }
+        LlmIntent::GenerateScript(p) => {
+            use super::script_gen::{ranges, Params, ScriptTemplate};
+            // Reject a phantom template id up front, then build CLAMPED params from
+            // the model's map (missing keys → documented defaults).
+            let template = ScriptTemplate::from_id(&p.template.to_lowercase())?;
+            let get = |k: &str, d: f32| p.params.get(k).copied().unwrap_or(d);
+            let params = match template {
+                ScriptTemplate::Spin => Params::spin(
+                    get("speed", ranges::SPIN_SPEED.default),
+                    get("axis", ranges::SPIN_AXIS.default),
+                ),
+                ScriptTemplate::Bob => Params::bob(
+                    get("amplitude", ranges::BOB_AMPLITUDE.default),
+                    get("period", ranges::BOB_PERIOD.default),
+                ),
+                ScriptTemplate::PulseLight => Params::pulse_light(
+                    get("min", ranges::PULSE_MIN.default),
+                    get("max", ranges::PULSE_MAX.default),
+                    get("period", ranges::PULSE_PERIOD.default),
+                ),
+            };
+            Some(IntentAction::GenerateScript { params, name: p.name })
         }
         LlmIntent::Unknown => Some(IntentAction::Unknown {
             suggestions: Vec::new(),
@@ -686,6 +746,7 @@ fn describe_intent_variants() -> &'static str {
   {"AdjustParam":{"node_kind":"<kind>","key":"<param>","delta":<number>}}
   {"AddNode":{"kind":"<noun, e.g. tree/building/biome>"}}
   {"RunCommand":{"id":"view.theme_light|view.theme_dark|view.focus_crucible|view.focus_node_graph|view.focus_viewport"}}
+  {"GenerateScript":{"template":"spin|bob|pulse_light","name":"<file stem, e.g. windmill_spin>","params":{"<slot>":<number>}}}
   {"Unknown":null}"#
 }
 
@@ -759,6 +820,105 @@ fn resolve_param(subject: &str) -> Option<(&'static str, &'static str, String)> 
         return Some(("TerrainNode", "resolution", "terrain.resolution".into()));
     }
     None
+}
+
+/// Map a natural-language sentence to a [`IntentAction::GenerateScript`] over a
+/// vetted template (AI-creates-code v1). Recognizes the domain phrasings:
+///   - spin:  "make the windmill spin faster", "add a spin script", "rotate the …"
+///   - bob:   "make X bob up and down", "add a bob script"
+///   - pulse: "make the light pulse", "add a pulse_light script"
+///
+/// Adjectives are mapped to clamped params (faster → a higher speed; slower → a
+/// lower one), and the leading subject noun ("windmill", "light") seeds the file
+/// name as "<subject>_<template>". All params flow through [`script_gen::Params`]
+/// constructors, so the values are clamped to documented ranges here too — the
+/// parser can never request an out-of-range script.
+fn try_generate_script(lower: &str) -> Option<IntentAction> {
+    use super::script_gen::{ranges, Params, ScriptTemplate};
+
+    // The action verb must be present — a bare noun is NOT a script request.
+    let is_spin = lower.contains("spin") || lower.contains("rotat");
+    let is_bob = lower.contains("bob")
+        || (lower.contains("oscillat") && !lower.contains("light") && !lower.contains("pulse"))
+        || lower.contains("up and down");
+    let is_pulse = lower.contains("pulse")
+        || (lower.contains("light") && (lower.contains("flicker") || lower.contains("throb")));
+    if !(is_spin || is_bob || is_pulse) {
+        return None;
+    }
+
+    // Map intensity adjectives onto the speed/amplitude axis. "faster"/"more" →
+    // toward the documented max; "slower"/"gentle"/"calm" → toward the min.
+    let stronger = lower.contains("faster") || lower.contains("quick")
+        || lower.contains("more") || lower.contains("strong") || lower.contains("bigger")
+        || lower.contains("bounc");
+    let weaker = lower.contains("slower") || lower.contains("slow")
+        || lower.contains("gentle") || lower.contains("calm") || lower.contains("less")
+        || lower.contains("subtle") || lower.contains("smaller");
+
+    let subject = generate_subject(lower);
+
+    // Spin wins over pulse wins over bob when more than one verb is present, so a
+    // sentence like "make the windmill spin" is unambiguously a spin.
+    let (params, template_id): (Params, &str) = if is_spin {
+        // Documented spin speeds: base 0.4, "faster" 4.0, "slower" 1.0.
+        let speed = if stronger {
+            4.0
+        } else if weaker {
+            1.0
+        } else {
+            ranges::SPIN_SPEED.default
+        };
+        (Params::spin(speed, ranges::SPIN_AXIS.default), "spin")
+    } else if is_pulse {
+        // Documented pulse: dim 0.2 → bright 1.0 (brighter when "stronger").
+        let max = if stronger { 4.0 } else { ranges::PULSE_MAX.default };
+        let period = if weaker { 4.0 } else { ranges::PULSE_PERIOD.default };
+        (Params::pulse_light(ranges::PULSE_MIN.default, max, period), "pulse_light")
+    } else {
+        // bob
+        let amp = if stronger {
+            2.0
+        } else if weaker {
+            0.15
+        } else {
+            ranges::BOB_AMPLITUDE.default
+        };
+        (Params::bob(amp, ranges::BOB_PERIOD.default), "bob")
+    };
+    debug_assert_eq!(params.template(), ScriptTemplate::from_id(template_id).unwrap());
+
+    let name = format!("{subject}_{template_id}");
+    Some(IntentAction::GenerateScript { params, name })
+}
+
+/// Extract a subject noun from a script-request sentence to seed the file name
+/// (e.g. "windmill" from "make the windmill spin faster"). Falls back to "scene"
+/// when no clear subject noun is present, so the name is always meaningful.
+fn generate_subject(lower: &str) -> &'static str {
+    // A small vocabulary of common scene nouns; first hit wins.
+    for (needle, noun) in [
+        ("windmill", "windmill"),
+        ("turbine", "turbine"),
+        ("fan", "fan"),
+        ("wheel", "wheel"),
+        ("rotor", "rotor"),
+        ("light", "light"),
+        ("lamp", "lamp"),
+        ("torch", "torch"),
+        ("lantern", "lantern"),
+        ("orb", "orb"),
+        ("crystal", "crystal"),
+        ("gem", "gem"),
+        ("door", "door"),
+        ("platform", "platform"),
+        ("coin", "coin"),
+    ] {
+        if lower.contains(needle) {
+            return noun;
+        }
+    }
+    "scene"
 }
 
 /// "add a building node" / "add vegetation" / "create a tree". Maps the friendly
@@ -1001,12 +1161,13 @@ mod tests {
             IntentAction::AdjustParam { .. } => "AdjustParam",
             IntentAction::AddNode { .. } => "AddNode",
             IntentAction::RunCommand { .. } => "RunCommand",
+            IntentAction::GenerateScript { .. } => "GenerateScript",
             IntentAction::Unknown { .. } => "Unknown",
         };
         // Every arm's name MUST appear in the prompt description, or the model is
         // told about a variant set that no longer matches the enum.
         let desc = describe_intent_variants();
-        for name in ["SetParam", "AdjustParam", "AddNode", "RunCommand", "Unknown"] {
+        for name in ["SetParam", "AdjustParam", "AddNode", "RunCommand", "GenerateScript", "Unknown"] {
             assert!(desc.contains(name), "prompt description must mention variant {name}");
         }
         assert!(desc.contains(mentioned));
@@ -1126,6 +1287,103 @@ mod tests {
         let res2 = resolve_intent(&mut backend, "more detail", &schema, &r);
         assert_eq!(res2.provenance, Provenance::Llm { model: "canned".into() });
         assert_eq!(calls.load(Ordering::SeqCst), 2, "a working backend re-invokes the model each time");
+    }
+
+    // === AI-creates-code v1: GenerateScript parser tests ===
+
+    #[test]
+    fn make_windmill_spin_faster_generates_fast_spin_named_windmill() {
+        use super::super::script_gen::{ranges, Params};
+        match parse_intent("make the windmill spin faster", &registry()) {
+            IntentAction::GenerateScript { params, name } => {
+                assert!(name.contains("windmill"), "name must mention windmill: {name}");
+                assert_eq!(name, "windmill_spin");
+                match params {
+                    Params::Spin { speed, .. } => {
+                        // "faster" → the documented faster value, 4.0 (within clamp).
+                        assert_eq!(speed, 4.0, "faster must map to the documented fast speed");
+                        assert!(speed <= ranges::SPIN_SPEED.max);
+                    }
+                    other => panic!("expected Spin params, got {other:?}"),
+                }
+            }
+            other => panic!("expected GenerateScript, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn make_orb_bob_up_and_down_generates_bob() {
+        use super::super::script_gen::Params;
+        match parse_intent("make the orb bob up and down", &registry()) {
+            IntentAction::GenerateScript { params, name } => {
+                assert_eq!(name, "orb_bob");
+                assert!(matches!(params, Params::Bob { .. }), "expected Bob params, got {params:?}");
+            }
+            other => panic!("expected GenerateScript, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn make_the_light_pulse_generates_pulse_light() {
+        use super::super::script_gen::Params;
+        match parse_intent("make the light pulse", &registry()) {
+            IntentAction::GenerateScript { params, name } => {
+                assert_eq!(name, "light_pulse_light");
+                assert!(matches!(params, Params::PulseLight { .. }), "expected PulseLight, got {params:?}");
+            }
+            other => panic!("expected GenerateScript, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_a_spin_script_generates_default_spin() {
+        use super::super::script_gen::{ranges, Params};
+        match parse_intent("add a spin script", &registry()) {
+            IntentAction::GenerateScript { params: Params::Spin { speed, .. }, name } => {
+                assert_eq!(name, "scene_spin", "no subject noun → 'scene'");
+                assert_eq!(speed, ranges::SPIN_SPEED.default, "no adjective → default speed");
+            }
+            other => panic!("expected default Spin GenerateScript, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_script_phrase_falls_through_to_existing_behavior() {
+        // A sentence with no script verb must NOT become a GenerateScript; it
+        // falls through to the existing Unknown behavior.
+        match parse_intent("teleport the dragon", &registry()) {
+            IntentAction::Unknown { .. } => {}
+            other => panic!("non-script phrase must fall through to existing behavior, got {other:?}"),
+        }
+        // And a real existing intent still resolves as before (not hijacked).
+        assert!(matches!(
+            parse_intent("set terrain resolution to 128", &registry()),
+            IntentAction::SetParam { key: "resolution", .. }
+        ));
+    }
+
+    #[test]
+    fn llm_generate_script_validates_and_clamps() {
+        // The LLM seam: a GenerateScript JSON with a hostile speed resolves to a
+        // GenerateScript whose params are already clamped (the constructor clamps).
+        use super::super::script_gen::Params;
+        let mut backend = canned(
+            r#"{"GenerateScript":{"template":"spin","name":"windmill_spin","params":{"speed":1000000000.0}}}"#,
+        );
+        let res = resolve_intent(
+            &mut backend,
+            "make the windmill spin",
+            &SchemaContext::default_editable(),
+            &registry(),
+        );
+        assert_eq!(res.provenance, Provenance::Llm { model: "canned".into() });
+        match res.action {
+            Some(IntentAction::GenerateScript { params: Params::Spin { speed, .. }, name }) => {
+                assert_eq!(name, "windmill_spin");
+                assert_eq!(speed, 16.0, "hostile speed must clamp to the documented max at the seam");
+            }
+            other => panic!("expected clamped Spin GenerateScript, got {other:?}"),
+        }
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub mod graph_bridge;
 pub mod host;
 pub mod intent;
 pub mod plugins;
+pub mod script_gen;
 pub mod viewport;
 
 use command_palette::{Command, CommandRegistry, PaletteState};
@@ -115,6 +116,20 @@ pub enum UndoEntry {
     /// so two interleaved asset types undo independently without corrupting each
     /// other's splats.
     PlacedAsset { name: String, start: usize, len: usize },
+    /// An AI-generated Rhai script (AI-creates-code v1) was written to `path`.
+    /// Undo DELETES exactly that file — and ONLY if it is byte-for-byte the
+    /// content we wrote (`bytes`). If the user edited it after generation, undo
+    /// REFUSES to delete and explains why (the wave lesson: never destroy what you
+    /// didn't create / what the user has since changed).
+    GeneratedScript {
+        /// Domain label for the receipt (e.g. "spin script for the windmill").
+        label: String,
+        /// The exact file written. Undo deletes only this path.
+        path: PathBuf,
+        /// The exact bytes we wrote; undo compares the current file against these
+        /// before deleting, so a since-modified file is preserved.
+        bytes: Vec<u8>,
+    },
 }
 
 /// A side-effecting request a registry command pushes for the shell to drain on
@@ -236,6 +251,10 @@ pub struct EditorShell {
     /// `apply_param` remains the authority on ranges; this is prompt + key
     /// validation only.
     intent_schema: intent::SchemaContext,
+    /// The directory AI-generated scripts (AI-creates-code v1) are written into.
+    /// Defaults to the real [`Self::default_script_root`] (`assets/scripts/generated`);
+    /// tests override it to a temp dir so they never leave files under `assets/`.
+    script_root: PathBuf,
 }
 
 impl Default for EditorShell {
@@ -297,6 +316,7 @@ impl EditorShell {
             last_inspector_edit: None,
             intent_backend: intent::IntentBackend::from_env(),
             intent_schema: intent::SchemaContext::default_editable(),
+            script_root: Self::default_script_root(),
             entities: vec![
                 ShellEntity {
                     name: "Townhouse_Row_03".into(),
@@ -593,6 +613,9 @@ impl EditorShell {
                     format!("Command {id} is not available")
                 }
             }
+            IntentAction::GenerateScript { params, name } => {
+                self.generate_script_intent(params, &name)
+            }
             IntentAction::Unknown { suggestions } => {
                 // Teach by example: a domain person should see sentences they could
                 // actually type, then the nearest real commands as a fallback.
@@ -672,6 +695,103 @@ impl EditorShell {
             next: applied,
         });
         format!("Set {target} {} -> {}", fmt_num(prev), fmt_num(applied))
+    }
+
+    /// The real, default directory AI-generated scripts land in: the repo's
+    /// `assets/scripts/generated/`, anchored to the crate manifest (NOT the CWD) so
+    /// it resolves the same regardless of where the binary runs — mirroring how
+    /// `set_theme` anchors the theme file. The Content browser scans `assets/` and
+    /// knows `.rhai`, so a script written here appears in the Content panel on its
+    /// next refresh with no extra wiring.
+    pub fn default_script_root() -> PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/scripts/generated")
+    }
+
+    /// Override where generated scripts are written (tests point this at a temp dir
+    /// so they never leave files under the real `assets/`). The real default is
+    /// [`Self::default_script_root`].
+    pub fn set_script_root(&mut self, root: impl Into<PathBuf>) {
+        self.script_root = root.into();
+    }
+
+    /// AI-creates-code v1 executor: generate a compile-verified Rhai script from a
+    /// vetted template, write it into [`Self::script_root`] (creating the dir;
+    /// collisions get a numbered suffix `_01`/`_02` like asset naming), push a
+    /// file-deleting undo entry, append a domain-language receipt + Output Log
+    /// line, and tell the user it's in their Content panel. On a generation or I/O
+    /// failure nothing is written and the receipt explains honestly.
+    fn generate_script_intent(&mut self, params: script_gen::Params, name: &str) -> String {
+        let template = params.template();
+        // Generation compiles the source in a real rhai engine before returning —
+        // a template that produced uncompilable source is a caught bug, not a file.
+        let generated = match script_gen::generate(template, name, params) {
+            Ok(g) => g,
+            Err(e) => return format!("Couldn't write a {template} script: {e}"),
+        };
+
+        if let Err(e) = std::fs::create_dir_all(&self.script_root) {
+            return format!(
+                "Couldn't write a {template} script: failed to create {}: {e}",
+                self.script_root.display()
+            );
+        }
+
+        // Collision → numbered suffix, exactly like the asset naming discipline.
+        let path = self.unique_script_path(&generated.name);
+        let bytes = generated.source.clone().into_bytes();
+        if let Err(e) = std::fs::write(&path, &bytes) {
+            return format!("Couldn't write a {template} script: {e}");
+        }
+
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| generated.name.clone());
+        // Domain language for the receipt: "spin script for the windmill".
+        let label = script_label(template, &generated.name);
+        self.push_undo(UndoEntry::GeneratedScript {
+            label: label.clone(),
+            path: path.clone(),
+            bytes,
+        });
+        let receipt = format!(
+            "Wrote a {label} ({}) — it's in your Content panel; undo with Ctrl+Z",
+            self.display_script_path(&path)
+        );
+        self.log_receipt(receipt.clone());
+        self.push_output_log(format!("[script] Generated {file_name}"));
+        receipt
+    }
+
+    /// A non-colliding path under [`Self::script_root`] for stem `<stem>.rhai`:
+    /// `<stem>.rhai` if free, else `<stem>_01.rhai`, `<stem>_02.rhai`, … (the asset
+    /// naming discipline). Bounded so a pathological directory can't loop forever.
+    fn unique_script_path(&self, stem: &str) -> PathBuf {
+        let direct = self.script_root.join(format!("{stem}.rhai"));
+        if !direct.exists() {
+            return direct;
+        }
+        for n in 1..1000 {
+            let candidate = self.script_root.join(format!("{stem}_{n:02}.rhai"));
+            if !candidate.exists() {
+                return candidate;
+            }
+        }
+        // Pathological fallback — extremely unlikely; keeps the type total.
+        self.script_root
+            .join(format!("{stem}_{}.rhai", std::process::id()))
+    }
+
+    /// Render a generated-script path for the receipt: a path relative to the
+    /// script root prefixed with the conventional `assets/scripts/generated/`, so
+    /// the receipt reads in domain terms even when the root is a temp dir in tests.
+    fn display_script_path(&self, path: &std::path::Path) -> String {
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        format!("assets/scripts/generated/{file}")
     }
 
     /// Record a manual inspector param edit (already applied to the bridge by the
@@ -783,6 +903,33 @@ impl EditorShell {
                 self.viewport_tex = None;
                 self.last_inspector_edit = None;
                 format!("Removed {name} ({removed} points) from the world")
+            }
+            Some(UndoEntry::GeneratedScript { label, path, bytes }) => {
+                self.last_inspector_edit = None;
+                // Never destroy what the user has since changed: only delete the
+                // file if it is byte-for-byte the content we wrote. A missing file,
+                // an edited file, or a read error all PRESERVE the file and say why.
+                match std::fs::read(&path) {
+                    Ok(current) if current == bytes => match std::fs::remove_file(&path) {
+                        Ok(()) => format!(
+                            "Removed the {label} ({})",
+                            self.display_script_path(&path)
+                        ),
+                        Err(e) => format!(
+                            "Kept the {label} ({}) — couldn't delete it: {e}",
+                            self.display_script_path(&path)
+                        ),
+                    },
+                    Ok(_) => format!(
+                        "Kept the {label} ({}) — you've edited it since it was \
+                         generated, so undo left it alone",
+                        self.display_script_path(&path)
+                    ),
+                    Err(_) => format!(
+                        "The {label} ({}) is already gone — nothing to undo",
+                        self.display_script_path(&path)
+                    ),
+                }
             }
             None => "Nothing to undo".to_string(),
         };
@@ -1414,6 +1561,26 @@ const GRAPH_SNAP: f32 = 8.0;
 
 /// Format a param value for a receipt: integers print without a decimal point
 /// (so "64 -> 128", not "64.0 -> 128.0"), fractionals keep two places.
+/// Domain-language label for a generated script, used in receipts: e.g. a
+/// `Spin` script with stem `windmill_spin` reads "spin script for the windmill".
+/// Falls back to "<template> script" when no subject can be recovered from the
+/// stem (the stem is "<subject>_<template_id>"; we strip the trailing template id).
+fn script_label(template: script_gen::ScriptTemplate, stem: &str) -> String {
+    let kind = match template {
+        script_gen::ScriptTemplate::Spin => "spin",
+        script_gen::ScriptTemplate::Bob => "bob",
+        script_gen::ScriptTemplate::PulseLight => "pulse",
+    };
+    // The stem is conventionally "<subject>_<template_id>"; recover the subject.
+    let subject = stem
+        .strip_suffix(&format!("_{}", template.id()))
+        .filter(|s| !s.is_empty() && *s != "scene");
+    match subject {
+        Some(s) => format!("{kind} script for the {}", s.replace('_', " ")),
+        None => format!("{kind} script"),
+    }
+}
+
 fn fmt_num(v: f32) -> String {
     if (v.fract()).abs() < f32::EPSILON {
         format!("{}", v as i64)
@@ -2491,6 +2658,135 @@ mod tests {
         for s in &listed {
             assert!(real_titles.contains(s), "suggestion {s:?} must be a real command title");
         }
+    }
+
+    // === AI-creates-code v1: GenerateScript end-to-end tests ===
+    //
+    // Every test overrides `script_root` to a UNIQUE temp dir (so nothing is left
+    // under the real `assets/`) and removes it on the way out.
+
+    /// A throwaway temp script root, removed when dropped, so no test leaves files
+    /// under `assets/` and parallel tests never collide.
+    struct TempRoot(PathBuf);
+    impl TempRoot {
+        fn new(tag: &str) -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "ochroma_scriptgen_{tag}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            TempRoot(p)
+        }
+    }
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The real default script root is the repo's generated-scripts dir, anchored
+    /// to the crate manifest (NOT the CWD) — asserted separately from the temp
+    /// override the other tests use.
+    #[test]
+    fn default_script_root_is_the_real_generated_dir() {
+        let root = EditorShell::default_script_root();
+        assert!(
+            root.ends_with("assets/scripts/generated"),
+            "default root must be assets/scripts/generated, got {}",
+            root.display()
+        );
+    }
+
+    /// END-TO-END: "make the windmill spin faster" writes a compile-verified file
+    /// into the (temp) root, the receipt is exact domain language, and the file
+    /// content equals generate()'s output byte-for-byte.
+    #[test]
+    fn generate_script_writes_file_with_exact_receipt_and_content() {
+        let tmp = TempRoot::new("e2e");
+        let mut shell = EditorShell::default();
+        shell.set_script_root(&tmp.0);
+
+        let receipt = shell.run_intent("make the windmill spin faster");
+        // Exactly one file landed, named windmill_spin.rhai.
+        let path = tmp.0.join("windmill_spin.rhai");
+        assert!(path.exists(), "the script file must be written, dir: {:?}", std::fs::read_dir(&tmp.0).map(|d| d.count()));
+
+        // Receipt: domain language, the conventional path, Content-panel note, undo hint.
+        assert!(receipt.starts_with("Wrote a spin script for the windmill (assets/scripts/generated/windmill_spin.rhai)"),
+            "receipt must read in domain language, got {receipt:?}");
+        assert!(receipt.contains("it's in your Content panel"), "receipt must mention the Content panel: {receipt:?}");
+        assert!(receipt.contains("undo with Ctrl+Z"), "receipt must mention undo: {receipt:?}");
+
+        // File content == generate()'s output for the SAME clamped params.
+        let expected = script_gen::generate(
+            script_gen::ScriptTemplate::Spin,
+            "windmill_spin",
+            script_gen::Params::spin(4.0, script_gen::ranges::SPIN_AXIS.default),
+        )
+        .unwrap();
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, expected.source, "file content must equal generate()'s output");
+        // And it really compiles (the file is a valid rhai script).
+        rhai::Engine::new().compile(&on_disk).expect("written script must compile");
+    }
+
+    /// UNDO deletes exactly the generated file (and only it).
+    #[test]
+    fn undo_deletes_the_generated_script() {
+        let tmp = TempRoot::new("undo_del");
+        let mut shell = EditorShell::default();
+        shell.set_script_root(&tmp.0);
+        shell.run_intent("make the light pulse");
+        let path = tmp.0.join("light_pulse_light.rhai");
+        assert!(path.exists(), "script must be written first");
+
+        let undo_receipt = shell.undo();
+        assert!(!path.exists(), "undo must delete the generated file");
+        assert!(undo_receipt.starts_with("Removed the pulse script for the light"),
+            "undo receipt must name what was removed, got {undo_receipt:?}");
+    }
+
+    /// UNDO after an EXTERNAL modification must NOT delete the file — it survives,
+    /// and the receipt explains why (never destroy what the user has changed).
+    #[test]
+    fn undo_after_external_modification_preserves_file() {
+        let tmp = TempRoot::new("undo_keep");
+        let mut shell = EditorShell::default();
+        shell.set_script_root(&tmp.0);
+        shell.run_intent("make the windmill spin");
+        let path = tmp.0.join("windmill_spin.rhai");
+        assert!(path.exists());
+
+        // The user edits the file after generation.
+        std::fs::write(&path, "// my own tweaks\nfn spin_speed() { 9.0 }\n").unwrap();
+
+        let undo_receipt = shell.undo();
+        assert!(path.exists(), "an externally-modified file must SURVIVE undo");
+        assert!(
+            undo_receipt.contains("you've edited it since"),
+            "undo receipt must explain why it kept the file, got {undo_receipt:?}"
+        );
+        // The user's content is intact.
+        let kept = std::fs::read_to_string(&path).unwrap();
+        assert!(kept.contains("my own tweaks"), "user's edit must be preserved");
+    }
+
+    /// COLLISION: two generations of the same name produce _01 then _02 suffixes,
+    /// and all three files coexist.
+    #[test]
+    fn collision_numbers_generated_scripts() {
+        let tmp = TempRoot::new("collide");
+        let mut shell = EditorShell::default();
+        shell.set_script_root(&tmp.0);
+        shell.run_intent("make the windmill spin");
+        shell.run_intent("make the windmill spin");
+        shell.run_intent("make the windmill spin");
+        assert!(tmp.0.join("windmill_spin.rhai").exists(), "first is the bare name");
+        assert!(tmp.0.join("windmill_spin_01.rhai").exists(), "second is _01");
+        assert!(tmp.0.join("windmill_spin_02.rhai").exists(), "third is _02");
     }
 
     /// UNDO: an intent param edit then `edit.undo` reverts the cooked value to the
