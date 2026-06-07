@@ -66,6 +66,10 @@ name = "shell_snapshot"
 path = "src/bin/shell_snapshot.rs"
 
 [[bin]]
+name = "ochroma_editor"
+path = "src/bin/ochroma_editor.rs"
+
+[[bin]]
 name = "demo"
 path = "src/bin/demo.rs"
 
