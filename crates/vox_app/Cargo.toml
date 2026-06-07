@@ -24,6 +24,13 @@ forge-native = ["dep:forge-building", "dep:forge-mesh"]
 # PREVIEW cluster; with it on, the SAME button drives the real
 # `graph_builder::build(...).cook()` → USD on disk → `vox_usd` import → splats.
 crucible-native = ["dep:cook", "dep:crucible-core", "dep:crucible-types"]
+# local-llm: Ask Ochroma's LLM backend runs real inference on THIS box's GPU via
+# an OpenAI-compatible server on loopback (llama.cpp `llama-server` / Ollama).
+# OFF BY DEFAULT so default/CI builds stay hermetic (zero network); the backend
+# falls back to the labelled deterministic stub without it. Enable AND set
+# `OCHROMA_ASK_LLM=1` to route Ask Ochroma at the local GPU. Same native-optional
+# shape as forge-native / crucible-native.
+local-llm = ["vox_nn/local-llm"]
 
 [dependencies]
 vox_core = { path = "../vox_core" }

@@ -556,7 +556,9 @@ impl GpuGi {
             })
             .await
             .ok_or(GpuGiError::NoAdapter)?;
-        let adapter_name = adapter.get_info().name;
+        let info = adapter.get_info();
+        crate::gpu::adapter::ensure_hardware(&info).map_err(|_| GpuGiError::NoAdapter)?;
+        let adapter_name = info.name;
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
@@ -1186,6 +1188,12 @@ mod tests {
             }
         };
         let info = adapter.get_info();
+        // Use local GPU: skip on the llvmpipe software rasteriser too, not just
+        // on a missing adapter — the shared-device proof must run on real hardware.
+        if crate::gpu::adapter::ensure_hardware(&info).is_err() {
+            eprintln!("[{label}] software adapter ({}) — skipping GPU test", info.name);
+            return None;
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("gpu_context_test_device"),

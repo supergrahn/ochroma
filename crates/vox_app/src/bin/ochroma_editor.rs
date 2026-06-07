@@ -648,7 +648,15 @@ fn resolve_present_adapter_info() -> wgpu::AdapterInfo {
                 force_fallback_adapter: false,
             }))
         {
-            return adapter.get_info();
+            let info = adapter.get_info();
+            // Use local GPU: prefer a real hardware adapter. If this backend only
+            // offers llvmpipe, skip to the next backend rather than labelling the
+            // shared device with the software rasteriser. (WgpuBackend itself
+            // refuses software, so this only resolves the name of the real GPU.)
+            if vox_render::gpu::adapter::ensure_hardware(&info).is_err() {
+                continue;
+            }
+            return info;
         }
     }
     // Backend creation already succeeded, so an adapter exists; this is unreachable

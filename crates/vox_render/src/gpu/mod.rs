@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod blend_skinning_compute;
 pub mod radix_sort_pass;
 pub mod compute_sort;

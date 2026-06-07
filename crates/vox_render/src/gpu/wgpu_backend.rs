@@ -61,6 +61,21 @@ impl WgpuBackend {
                 }
             };
 
+            // Use local GPU: refuse the llvmpipe CPU software rasteriser so the
+            // live viewport never silently renders on the CPU. Skips to the next
+            // backend (so e.g. a GL backend offering only llvmpipe is passed over
+            // in favour of failing loud). Override: OCHROMA_ALLOW_SOFTWARE_GPU=1.
+            let info = adapter.get_info();
+            if let Err(e) = crate::gpu::adapter::ensure_hardware(&info) {
+                last_error = format!("{name} backend: {e}");
+                eprintln!("[wgpu] {last_error}");
+                continue;
+            }
+            eprintln!(
+                "[wgpu] using adapter: {} ({:?}, {:?})",
+                info.name, info.device_type, info.backend
+            );
+
             let (device, queue) = match adapter
                 .request_device(
                     &wgpu::DeviceDescriptor {

@@ -280,11 +280,12 @@ impl std::fmt::Debug for IntentBackend {
 
 impl IntentBackend {
     /// Select the backend ONCE, at shell construction. Default `Deterministic`;
-    /// `OCHROMA_ASK_LLM` set to a non-falsey value opts into the LLM path with
-    /// the default provider (`LlmProvider::default()`, a local Ollama config that
-    /// itself falls back to a deterministic stub if unreachable — so even the LLM
-    /// path never hard-requires the network). Reading the env here, not per
-    /// keystroke, keeps a long typing session from re-querying the environment.
+    /// `OCHROMA_ASK_LLM` set to a non-falsey value opts into the LLM path with the
+    /// local-GPU provider (`LlmProvider::local_gpu()`, an OpenAI-compatible server
+    /// on loopback that runs on THIS box's GPU under the `local-llm` feature, and
+    /// itself falls back to a deterministic stub if unreachable/feature-off — so
+    /// even the LLM path never hard-requires the network). Reading the env here,
+    /// not per keystroke, keeps a long typing session from re-querying the env.
     ///
     /// The pure decision lives in [`backend_for`] so it can be tested with
     /// explicit inputs WITHOUT mutating the process environment (finding [0]).
@@ -314,8 +315,13 @@ pub fn backend_for(var: Option<&str>) -> IntentBackend {
         ),
     };
     if enabled {
+        // "Use local GPU": Ask Ochroma's LLM backend targets the local-GPU
+        // server on loopback (`LlmProvider::local_gpu()`), NOT a remote box.
+        // Real inference runs under the `local-llm` feature; without it the
+        // provider's own path falls back to the labelled deterministic stub, so
+        // the LLM backend never hard-requires the network.
         IntentBackend::Llm {
-            provider: LlmProvider::default(),
+            provider: LlmProvider::local_gpu(),
             unavailable: false,
         }
     } else {

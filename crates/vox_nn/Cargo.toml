@@ -3,6 +3,14 @@ name = "vox_nn"
 edition.workspace = true
 version.workspace = true
 
+[features]
+# Real local-GPU LLM inference through an OpenAI-compatible server (llama.cpp's
+# `llama-server`, or Ollama's `/v1` API) on localhost — the model runs on THIS
+# box's GPU. OFF by default so the default build and CI stay hermetic and make
+# ZERO network calls (the deterministic stub is the only path). Same
+# native-but-optional shape as forge-native / crucible-native.
+local-llm = ["dep:ureq"]
+
 [dependencies]
 vox_core = { path = "../vox_core" }
 vox_data = { path = "../vox_data" }
@@ -13,3 +21,7 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 rand = "0.9"
 half = { workspace = true }
+# Loopback-only HTTP for the local-GPU LLM server. No TLS (http on 127.0.0.1);
+# `json` brings the serde_json request/response helpers. Optional → pulled in
+# only under the `local-llm` feature.
+ureq = { version = "2", default-features = false, features = ["json"], optional = true }

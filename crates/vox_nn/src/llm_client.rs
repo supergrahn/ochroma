@@ -36,6 +36,13 @@ impl XorShift64 {
 pub enum LlmProvider {
     /// Local Ollama server.
     Ollama { url: String, model: String },
+    /// OpenAI-compatible server running on THIS box's GPU — llama.cpp's
+    /// `llama-server` (default :8080) or Ollama's `/v1` API. "Use local GPU":
+    /// inference runs on the local hardware GPU, never a remote box. The `model`
+    /// field is for provenance/labelling; `llama-server` serves whatever model
+    /// it has loaded. Real HTTP is implemented under the `local-llm` feature; the
+    /// default build falls back to the labelled deterministic stub (no network).
+    LocalServer { url: String, model: String },
     /// Mock provider for testing (returns deterministic output).
     Mock,
 }
@@ -46,6 +53,18 @@ impl Default for LlmProvider {
             url: "http://localhost:11434".to_string(),
             model: "llama3.2".to_string(),
         }
+    }
+}
+
+impl LlmProvider {
+    /// The local-GPU LLM: an OpenAI-compatible server on loopback. Defaults to
+    /// the `llama-server` port (8080) and a provenance label; override the
+    /// endpoint/model with `OCHROMA_LLM_URL` / `OCHROMA_LLM_MODEL`.
+    pub fn local_gpu() -> Self {
+        let url = std::env::var("OCHROMA_LLM_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+        let model = std::env::var("OCHROMA_LLM_MODEL").unwrap_or_else(|_| "local-gpu".to_string());
+        Self::LocalServer { url, model }
     }
 }
 
@@ -115,7 +134,112 @@ impl LlmClient {
                 );
                 self.deterministic_complete(prompt)
             }
+            LlmProvider::LocalServer { url, model } => {
+                self.local_server_complete(url, model, prompt)
+            }
         }
+    }
+
+    /// Real local-GPU inference path (feature `local-llm`): POST the prompt to
+    /// an OpenAI-compatible server on loopback and return its completion. On any
+    /// failure (server down, bad response, timeout) it falls back to the labelled
+    /// deterministic stub — never silent fake inference, never a UI hang beyond
+    /// the timeout. The schema-validated `IntentAction` seam downstream means an
+    /// unreachable/garbage model output can never reach the scene graph.
+    #[cfg(feature = "local-llm")]
+    fn local_server_complete(
+        &self,
+        url: &str,
+        model: &str,
+        prompt: &LlmPrompt,
+    ) -> Result<LlmResponse, String> {
+        match self.try_local_server(url, model, prompt) {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                eprintln!(
+                    "[ochroma-llm] local GPU server at {url} failed ({e}); \
+                     falling back to deterministic stub (NOT real inference)"
+                );
+                self.deterministic_complete(prompt)
+            }
+        }
+    }
+
+    /// When the `local-llm` feature is OFF, the local server is never contacted —
+    /// the default build is hermetic. Clearly labelled so callers know inference
+    /// did not run on the GPU.
+    #[cfg(not(feature = "local-llm"))]
+    fn local_server_complete(
+        &self,
+        url: &str,
+        _model: &str,
+        prompt: &LlmPrompt,
+    ) -> Result<LlmResponse, String> {
+        eprintln!(
+            "[ochroma-llm] local-llm feature OFF; {url} not called — using deterministic \
+             stub. Rebuild with `--features local-llm` to run inference on the local GPU."
+        );
+        self.deterministic_complete(prompt)
+    }
+
+    /// The actual HTTP round-trip against the OpenAI `/v1/chat/completions` API.
+    /// Short connect + overall timeouts so a wedged server can never freeze the
+    /// UI thread for more than ~30s; on loopback a real reply lands in well under
+    /// a second.
+    #[cfg(feature = "local-llm")]
+    fn try_local_server(
+        &self,
+        url: &str,
+        model: &str,
+        prompt: &LlmPrompt,
+    ) -> Result<LlmResponse, String> {
+        use std::time::Duration;
+
+        let endpoint = format!("{}/v1/chat/completions", url.trim_end_matches('/'));
+        let mut user = prompt.user.clone();
+        if let Some(hint) = &prompt.format_hint {
+            user.push_str(&format!("\n\nRespond with valid {hint} only. No prose, no code fences."));
+        }
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "system", "content": prompt.system },
+                { "role": "user", "content": user },
+            ],
+            "temperature": prompt.temperature,
+            "max_tokens": prompt.max_tokens,
+            "stream": false,
+        });
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(2))
+            .timeout(Duration::from_secs(30))
+            .build();
+
+        let resp = agent
+            .post(&endpoint)
+            .send_json(body)
+            .map_err(|e| format!("request to {endpoint} failed: {e}"))?;
+        let v: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("could not parse response json: {e}"))?;
+
+        let text = v["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| "response missing choices[0].message.content".to_string())?
+            .trim()
+            .to_string();
+        if text.is_empty() {
+            return Err("model returned an empty completion".to_string());
+        }
+        let tokens_used = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as u32;
+        let model_name = v["model"].as_str().unwrap_or(model).to_string();
+
+        Ok(LlmResponse {
+            text,
+            tokens_used,
+            model: model_name,
+        })
     }
 
     /// FNV-1a 64-bit hash of the full prompt. Stable across runs/platforms, so
@@ -275,6 +399,75 @@ wear_level_min = 0.0
 wear_level_max = 0.4
 "#
         )
+    }
+}
+
+#[cfg(test)]
+mod local_gpu_tests {
+    use super::*;
+
+    /// Hermetic: when the `local-llm` feature is OFF (the default test build),
+    /// a `LocalServer` provider makes NO network call and returns the labelled
+    /// deterministic stub. Guarantees the default build never depends on a server.
+    #[cfg(not(feature = "local-llm"))]
+    #[test]
+    fn local_server_without_feature_falls_back_to_stub() {
+        let client = LlmClient::new(LlmProvider::LocalServer {
+            url: "http://127.0.0.1:9".to_string(), // discard port — must never be hit
+            model: "local-gpu".to_string(),
+        });
+        let resp = client
+            .complete(&LlmPrompt::new("sys", "make a modern street"))
+            .expect("stub fallback always succeeds");
+        assert_eq!(
+            resp.model, "deterministic-stub",
+            "feature-off LocalServer must produce the labelled stub, not real inference"
+        );
+        assert!(
+            resp.text.contains("DETERMINISTIC-STUB"),
+            "stub text must self-identify"
+        );
+    }
+
+    /// `local_gpu()` honours the env overrides and defaults to the llama-server
+    /// loopback port. Pure config assertion — no network.
+    #[test]
+    fn local_gpu_defaults_to_loopback_8080() {
+        // Only assert the default when the override is unset, to stay hermetic.
+        if std::env::var("OCHROMA_LLM_URL").is_err() {
+            match LlmProvider::local_gpu() {
+                LlmProvider::LocalServer { url, .. } => {
+                    assert_eq!(url, "http://127.0.0.1:8080", "default local-GPU endpoint");
+                }
+                other => panic!("local_gpu() must be a LocalServer, got {other:?}"),
+            }
+        }
+    }
+
+    /// Real local-GPU inference. Network + GPU dependent → `#[ignore]` (run
+    /// explicitly with `--features local-llm -- --ignored`). Proves Ask Ochroma's
+    /// backend round-trips through the local llama-server: a non-stub model name
+    /// and a non-empty completion come back. Mirrors the `#[ignore]` perf-bench
+    /// convention — never gates CI on a running server.
+    #[cfg(feature = "local-llm")]
+    #[test]
+    #[ignore]
+    fn local_gpu_real_inference_round_trips() {
+        let client = LlmClient::new(LlmProvider::local_gpu());
+        let prompt = LlmPrompt::new(
+            "You are a terse assistant. Answer in one word.",
+            "Reply with exactly: hello",
+        );
+        let resp = client.complete(&prompt).expect("local server reachable");
+        eprintln!(
+            "[local-gpu] model={} tokens={} text={:?}",
+            resp.model, resp.tokens_used, resp.text
+        );
+        assert_ne!(
+            resp.model, "deterministic-stub",
+            "expected REAL inference from the local GPU, got the stub — is llama-server up on :8080?"
+        );
+        assert!(!resp.text.trim().is_empty(), "real completion must be non-empty");
     }
 }
 

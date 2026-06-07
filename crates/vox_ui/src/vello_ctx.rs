@@ -10,6 +10,35 @@ pub enum DrawCmd {
     FillRect { rect: [f32; 4], color: [f32; 4] },
 }
 
+// --- Local-GPU policy (inlined; vox_ui has no vox_render dep) --------------
+
+/// Is this adapter the CPU software rasteriser (llvmpipe / SwiftShader) rather
+/// than a real GPU? Mirrors `vox_render::gpu::adapter::is_software`. "Use local
+/// GPU": the UI canvas must run on real hardware, not emulate on the CPU.
+#[cfg(feature = "game-ui")]
+fn is_software_adapter(info: &vello::wgpu::AdapterInfo) -> bool {
+    if info.device_type == vello::wgpu::DeviceType::Cpu {
+        return true;
+    }
+    let name = info.name.to_ascii_lowercase();
+    name.contains("llvmpipe")
+        || name.contains("swiftshader")
+        || name.contains("softpipe")
+        || name.contains("software")
+}
+
+/// Is the software fallback explicitly permitted via `OCHROMA_ALLOW_SOFTWARE_GPU`?
+#[cfg(feature = "game-ui")]
+fn software_gpu_allowed() -> bool {
+    matches!(
+        std::env::var("OCHROMA_ALLOW_SOFTWARE_GPU")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("on")
+    )
+}
+
 // --- CPU test stub --------------------------------------------------------
 
 /// Headless VelloCtx for unit tests — accumulates DrawCmd without a GPU.
@@ -200,6 +229,16 @@ impl VelloCtx {
                 compatible_surface: None,
             },
         ))?;
+        // Use local GPU: refuse the llvmpipe CPU software rasteriser for the UI
+        // canvas (override: OCHROMA_ALLOW_SOFTWARE_GPU=1). vox_ui does not depend
+        // on vox_render, so the policy is inlined here against vello's wgpu.
+        if is_software_adapter(&adapter.get_info()) && !software_gpu_allowed() {
+            eprintln!(
+                "[vello] refusing software adapter '{}' — set OCHROMA_ALLOW_SOFTWARE_GPU=1 to override",
+                adapter.get_info().name
+            );
+            return None;
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("vello-headless"),
@@ -624,6 +663,10 @@ mod tests {
             eprintln!("[vello] no GPU adapter — skipping shared-device unification proof");
             return;
         };
+        if is_software_adapter(&adapter.get_info()) && !software_gpu_allowed() {
+            eprintln!("[vello] software adapter — skipping shared-device unification proof");
+            return;
+        }
 
         // vox_render's most demanding device request (GpuGi compute path):
         //   features = empty, limits = default + unbounded storage/compute.

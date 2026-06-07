@@ -225,7 +225,9 @@ impl AtomBudgetGpu {
             })
             .await
             .ok_or(AtomBudgetGpuError::NoAdapter)?;
-        let adapter_name = adapter.get_info().name;
+        let info = adapter.get_info();
+        crate::gpu::adapter::ensure_hardware(&info).map_err(|_| AtomBudgetGpuError::NoAdapter)?;
+        let adapter_name = info.name;
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
