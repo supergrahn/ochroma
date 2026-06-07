@@ -38,6 +38,7 @@ Maintained as features land. Last updated: 2026-06-07.
 | Hybrid mesh+splat compositing | live | One-pass depth-correct compositing of triangle meshes with splats: perspective-correct 1/z depth interpolation, Sutherland-Hodgman near+far clipping |
 | Many-light sampler | live | ReSTIR-style weighted reservoir light selection (O(1) per shade point over arbitrary light counts), spatial-grid candidate culling, 16-band spectral path — unbiasedness proven to <1% vs brute force |
 | Render graph | live | RDG-style pass DAG: declared reads/writes, topo scheduling, dead-pass culling, cycle detection, declared-access enforcement — drives the postprocess chain bit-identically to the legacy path |
+| Spectral splat ray tracing | live | 3DGRT-style CPU reference: closed-form ray-vs-Gaussian peaks, CLAS-BVH traversal (footprint-padded, bit-identical to brute force), 16-band front-to-back compositing with hard budget, shadow-ray transmittance — cross-checked vs the EWA rasterizer to 3% |
 | Cascaded shadow maps | live | Multi-cascade directional shadows + shadow atlas, SDF soft shadows, shadow catcher |
 | Cinematic camera | library | Keyframed camera, depth-of-field with bokeh shapes, movie render to disk |
 | Multi-viewport | library | Perspective/Top/Front/Right simultaneous editor views |
@@ -55,7 +56,7 @@ Maintained as features land. Last updated: 2026-06-07.
 | Day/night cycle | live | Continuous time-of-day drives sun, GI sky, and shadows (smoke-asserted ~3× noon/midnight luma ratio) |
 | Sun model | live | Latitude + hour + day → sun direction (London default) |
 | GI baker | library | Offline multi-bounce spectral irradiance bake (K-means clusters) + runtime cache application |
-| Many-light sampling | — | Planned (MegaLights analogue; competitive-research candidate #19) |
+| Many-light sampling | live | MegaLights analogue shipped: see "Many-light sampler" under Rendering (ReSTIR-style reservoir selection, spectral path) |
 
 ## Scene & Asset Pipeline
 
@@ -81,7 +82,7 @@ Maintained as features land. Last updated: 2026-06-07.
 
 | Feature | Status | Description |
 |---|---|---|
-| Content browser | live | UE-style asset panel: recursive scan with cheap header-peek metadata (splat counts without full loads), type filters, ranked search, load-into-scene events |
+| Content browser | live | UE-style asset panel IN THE DOCK: real asset scan, working type filters + ranked search, kind-colored tiles with header-peek splat-count badges, double-click load with honest Output Log receipts |
 | Node-graph PCG editor | live | Typed DAG (10 port types, type-checked connections, deterministic topo-sort) with 11 node kinds (Terrain/Biome/Moisture/Vegetation/Building/Plot/Splatize/…) |
 | Live viewport graph execution | live | PCG-style: param edits re-cook ONLY the dirty subgraph (multi-edit safe, per-subgraph trailing-edge throttle) and update the 3D viewport without restart |
 | Subgraphs / graph functions | live | Collapse any selection into a reusable, registry-searchable node — byte-identical evaluation proven before/after collapse and expand, nested with typed depth guard |
@@ -98,7 +99,7 @@ Maintained as features land. Last updated: 2026-06-07.
 | NodeCanvas 2.0 | live | Bezier gradient wires (port-type colored endpoints, 32-segment AA), dot-grid zoom/pan/snap, minimap, category headers — shared `vox_ui` canvas for every graph tab |
 | Live engine viewport in dock | live | Real `SoftwareRasteriser` frames presented as the docked Viewport texture (not a mock) |
 | Graph bridge | live | Real `OchromaNodeGraph` → canvas projection: param edits re-cook through `live_cook`, cook errors surfaced in-panel |
-| Ask Ochroma (AI intents) v1 | live | Deterministic intent parser → `IntentAction` enum (the LLM seam); every AI action produces a receipt and is undoable |
+| Ask Ochroma (AI intents) v2 | live | IntentBackend seam: deterministic parser default, opt-in LLM (env) emitting schema-validated strict JSON with parser fallback — unvalidated output can never touch the graph; receipts carry provenance; every AI action undoable |
 | Ecosystem plugins (Crucible · Forge · FloraPrime) | live | UE-style host-plugin model: `PluginCtx` exposes only tokens/widgets/canvas (structurally enforced); three visual-editor plugins live in the dock |
 | Behavior-tree editor, sequencer, anim editor, material editor | library | Authoring UIs present; not yet driving shipped binaries |
 
@@ -123,7 +124,7 @@ Maintained as features land. Last updated: 2026-06-07.
 | Feature | Status | Description |
 |---|---|---|
 | Blend trees + skeletal clips | live | Keyframed clips, looping, lerp/slerp blend trees on a humanoid skeleton with a splat-skinning bridge |
-| Motion matching | library | O(N) nearest-feature pose selection (velocity/heading/phase feature space) |
+| Motion matching | live | PoseDatabase + nearest_continuing + inertial blending driving the walking_sim avatar from real locomotion state — smoke asserts clip selection, pose continuity, determinism |
 | IK (FABRIK) | library | Forward-and-backward reaching chain solver |
 | Morph targets, facial, GPU skinning | library | Blend shapes, face rigs, compute-shader skinning paths |
 
