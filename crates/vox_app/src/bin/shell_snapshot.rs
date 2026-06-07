@@ -18,6 +18,7 @@ fn main() {
     let mut tab = String::new();
     let mut palette = false;
     let mut grow_tree = false;
+    let mut forge_terrain = false;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -42,6 +43,7 @@ fn main() {
             }
             "--palette" => palette = true,
             "--grow-tree" => grow_tree = true,
+            "--forge-terrain" => forge_terrain = true,
             _ => {}
         }
         i += 1;
@@ -61,7 +63,8 @@ fn main() {
     // Install BOTH real plugins so their tabs + command categories coexist
     // (Crucible + Forge) — the two-plugin proof.
     shell.install_plugin(Box::new(vox_app::shell::plugins::CruciblePlugin::new()));
-    shell.install_plugin(Box::new(vox_app::shell::plugins::ForgePlugin::new()));
+    // Forge wired to the shell's terrain-sink so "Raise terrain" plants real splats.
+    shell.install_forge();
     // FloraPrime wired to the shell's grow-sink so "Grow tree" plants real splats.
     shell.install_floraprime();
     match tab.as_str() {
@@ -73,6 +76,16 @@ fn main() {
         // Default: the central tab is the REAL rendered viewport.
         _ => shell.focus_viewport(),
     }
+    if forge_terrain {
+        // Press "Raise terrain" headlessly: cook a heightfield patch and plant it
+        // into the live world so the viewport shows its real landform splats.
+        shell.raise_terrain_headless(0);
+        eprintln!(
+            "[shell_snapshot] raised terrain: {} things in the world, {} overlay splats",
+            shell.entities.len(),
+            shell.overlay.len()
+        );
+    }
     if grow_tree {
         // Press "Grow tree" headlessly: plant a Silver Birch (broadleaf, species 0)
         // into the live world so the viewport shows its real splats in the shot.
@@ -80,7 +93,7 @@ fn main() {
         eprintln!(
             "[shell_snapshot] grew a tree: {} things in the world, {} overlay splats",
             shell.entities.len(),
-            shell.tree_overlay.len()
+            shell.overlay.len()
         );
     }
     if palette {

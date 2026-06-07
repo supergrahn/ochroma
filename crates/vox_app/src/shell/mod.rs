@@ -26,7 +26,7 @@ use content_panel::{ContentAction, ContentPanel};
 use egui_dock::{DockArea, DockState, NodeIndex, Style as DockStyle};
 use graph_bridge::GraphBridge;
 use host::{InstalledPlugin, PluginCtx, TabDecl};
-use plugins::GrownTree;
+use plugins::{ForgeTerrain, GrownTree};
 use vox_core::types::GaussianSplat;
 use vox_editor::node_graph::NodeId;
 use std::cell::RefCell;
@@ -106,12 +106,15 @@ pub enum UndoEntry {
         prev: f32,
         next: f32,
     },
-    /// A FloraPrime tree was grown into the world: `count` splats were appended to
-    /// the viewport overlay and one World entity named `name` was added. Undo pops
-    /// exactly `count` splats off the overlay tail and removes the entity, restoring
-    /// the world to its pre-grow state (the grow appends both atomically, so the
-    /// tail is exactly this tree's splats).
-    GrowTree { name: String, count: usize },
+    /// An asset (a grown FloraPrime tree OR a raised Forge terrain patch) was
+    /// planted into the world: `len` splats were inserted into the viewport overlay
+    /// at index `start`, and one World entity named `name` was added. Undo removes
+    /// EXACTLY the `[start, start+len)` range from the overlay (NOT the tail) and
+    /// the entity, then shifts every later undo entry's `start` down by `len` so
+    /// the remaining assets' ranges stay valid. Range-tracked (not tail-truncated)
+    /// so two interleaved asset types undo independently without corrupting each
+    /// other's splats.
+    PlacedAsset { name: String, start: usize, len: usize },
 }
 
 /// A side-effecting request a registry command pushes for the shell to drain on
@@ -121,9 +124,9 @@ pub enum UndoEntry {
 /// SAME one-command-surface (the intent executor and a menu click both route
 /// through `registry.run`, which fires the closure that queues the request).
 ///
-/// (Not `PartialEq`/`Debug`: the `GrowTree` payload carries `GaussianSplat`s,
-/// which are `Pod` but neither — and the shell only ever drains these, never
-/// compares them.)
+/// (Not `PartialEq`/`Debug`: the `GrowTree`/`ForgeTerrain` payloads carry
+/// `GaussianSplat`s, which are `Pod` but neither — and the shell only ever drains
+/// these, never compares them.)
 #[derive(Clone)]
 pub enum ShellRequest {
     ThemeLight,
@@ -140,6 +143,11 @@ pub enum ShellRequest {
     /// numbered World entity, push an undo entry, and append a receipt. Queued by
     /// the shell when it drains FloraPrime's grow-sink.
     GrowTree(GrownTree),
+    /// Forge raised a terrain patch: plant its splats into the viewport overlay,
+    /// add a numbered World entity, push an undo entry, and append a receipt.
+    /// Queued by the shell when it drains Forge's terrain-sink — the terrain twin
+    /// of `GrowTree`, routed through the SAME `plant_asset` core.
+    ForgeTerrain(ForgeTerrain),
     /// The "＋ Add to world" affordance (toolbar primary action / empty-state
     /// teaching copy / palette `world.add`) asks to open the command palette in
     /// intent mode pre-filled with "add ", routing the user straight into the
@@ -170,20 +178,27 @@ pub struct EditorShell {
     /// The shared widget kit handed to plugins (token-styled controls only).
     pub widget_kit: WidgetKit,
     /// Cached viewport scene texture (rasterized splat frame). Uploaded once and
-    /// reused; invalidated (set to `None`) whenever [`Self::tree_overlay`] changes
-    /// so the next frame re-rasterizes the base scene + grown trees.
+    /// reused; invalidated (set to `None`) whenever [`Self::overlay`] changes so the
+    /// next frame re-rasterizes the base scene + planted assets.
     pub viewport_tex: Option<egui::TextureHandle>,
     /// Splats the shell owns ON TOP of the fixed `viewport::build_scene` base —
-    /// the grown FloraPrime trees. Appended on grow, truncated on undo. Composited
-    /// into the viewport texture each time the cache is rebuilt.
-    pub tree_overlay: Vec<GaussianSplat>,
+    /// every planted asset (grown FloraPrime trees AND raised Forge terrain
+    /// patches) appends here. Insertions are range-tracked on the undo stack so a
+    /// later undo removes exactly one asset's range (not the tail). Composited into
+    /// the viewport texture each time the cache is rebuilt.
+    pub overlay: Vec<GaussianSplat>,
     /// Shared queue FloraPrime's "Grow tree" button fills with [`GrownTree`]s; the
     /// shell drains it each frame into `GrowTree` requests. The host holds the SAME
     /// `Rc` it handed FloraPrime via [`plugins::FloraPrimePlugin::with_grow_sink`].
     pub flora_sink: Rc<RefCell<Vec<GrownTree>>>,
-    /// Per-species grow counter so each grown tree is named "<Species> NN"
-    /// (incrementing per species — "Silver Birch 01", "Silver Birch 02").
-    species_counts: std::collections::HashMap<String, usize>,
+    /// Shared queue Forge's "Raise terrain" button fills with [`ForgeTerrain`]s;
+    /// the shell drains it each frame into `ForgeTerrain` requests. The host holds
+    /// the SAME `Rc` it handed Forge via [`plugins::ForgePlugin::with_terrain_sink`]
+    /// — the terrain twin of `flora_sink`.
+    pub forge_sink: Rc<RefCell<Vec<ForgeTerrain>>>,
+    /// Per-label placement counter so each planted asset is named "<Label> NN"
+    /// (incrementing per label — "Silver Birch 01", "Forge Terrain 01").
+    asset_counts: std::collections::HashMap<String, usize>,
     /// Installed host-plugins (their tabs joined the dock, commands the registry).
     pub plugins: Vec<InstalledPlugin>,
     /// Set true by the `world.add` command (proves the registry callback fired;
@@ -267,9 +282,10 @@ impl EditorShell {
             bridge: GraphBridge::new(),
             widget_kit: WidgetKit::new(tokens),
             viewport_tex: None,
-            tree_overlay: Vec::new(),
+            overlay: Vec::new(),
             flora_sink: Rc::new(RefCell::new(Vec::new())),
-            species_counts: std::collections::HashMap::new(),
+            forge_sink: Rc::new(RefCell::new(Vec::new())),
+            asset_counts: std::collections::HashMap::new(),
             plugins: Vec::new(),
             last_command_flag,
             undo_stack: Vec::new(),
@@ -391,7 +407,7 @@ impl EditorShell {
     }
 
     /// Grow a tree headlessly (no UI click): build the default-species splats and
-    /// plant them through the SAME `plant_grown_tree` path the button drives, so
+    /// plant them through the SAME `plant_asset` core the button drives, so
     /// snapshots/tests can prove the planted tree without driving egui input. The
     /// `species_label`/`class`/`species_id` mirror a `FLORAPRIME_SPECIES` row.
     pub fn grow_tree_headless(&mut self, species_label: &str, class: &str, species_id: i32) {
@@ -401,6 +417,26 @@ impl EditorShell {
             species_label: species_label.to_string(),
             splats,
         });
+    }
+
+    /// Install the Forge environment plugin wired to THIS shell's terrain-sink, so
+    /// its "Raise terrain" button plants real splats into the live viewport (the
+    /// host drains `forge_sink` each frame). Use this instead of installing a bare
+    /// `ForgePlugin::new()` when the raised terrain must reach the world — the
+    /// terrain twin of [`Self::install_floraprime`].
+    pub fn install_forge(&mut self) {
+        let plugin = plugins::ForgePlugin::with_terrain_sink(self.forge_sink.clone());
+        self.install_plugin(Box::new(plugin));
+    }
+
+    /// Raise a terrain patch headlessly (no UI click): cook the patch and plant it
+    /// through the SAME `plant_asset` core the button drives, so snapshots/tests
+    /// can prove the planted landform without driving egui input. `seed` selects
+    /// the heightfield (distinct seeds → distinct mounds).
+    pub fn raise_terrain_headless(&mut self, seed: u32) {
+        let mut patch = plugins::forge_terrain_patch(seed);
+        let splats = std::mem::take(&mut patch.splats);
+        self.plant_asset(&patch.label, "terrain", splats, plugins::TERRAIN_PATCH_ORIGIN, "Raised a");
     }
 
     /// Lay out the full shell into an egui context for one frame.
@@ -429,25 +465,30 @@ impl EditorShell {
         self.toolbar(ctx);
         self.status_bar(ctx);
 
-        // Drain any trees FloraPrime grew (its "Grow tree" button fills the shared
-        // grow-sink) into GrowTree requests, queued onto the same request stream
-        // the shell drains — planting needs `&mut self` the plugin can't hold.
+        // Drain any assets the plugins emitted this frame — FloraPrime's "Grow
+        // tree" fills the grow-sink, Forge's "Raise terrain" fills the terrain-sink
+        // — into requests queued onto the same stream the shell drains (planting
+        // needs `&mut self` the plugins can't hold).
         {
             let grown: Vec<GrownTree> = self.flora_sink.borrow_mut().drain(..).collect();
-            if !grown.is_empty() {
+            let raised: Vec<ForgeTerrain> = self.forge_sink.borrow_mut().drain(..).collect();
+            if !grown.is_empty() || !raised.is_empty() {
                 let mut q = self.requests.borrow_mut();
                 for tree in grown {
                     q.push(ShellRequest::GrowTree(tree));
                 }
+                for patch in raised {
+                    q.push(ShellRequest::ForgeTerrain(patch));
+                }
             }
         }
-        // Apply the freshly-queued GrowTree requests THIS frame so the overlay is
+        // Apply the freshly-queued plant requests THIS frame so the overlay is
         // current before the viewport texture is (re)built below.
         self.drain_requests();
 
-        // Ensure the viewport scene texture is uploaded (rebuilt when the grown-tree
-        // overlay changed, since grow/undo invalidate the cache).
-        let viewport_tex = viewport::scene_texture(ctx, &mut self.viewport_tex, &self.tree_overlay);
+        // Ensure the viewport scene texture is uploaded (rebuilt when the planted
+        // overlay changed, since planting/undo invalidate the cache).
+        let viewport_tex = viewport::scene_texture(ctx, &mut self.viewport_tex, &self.overlay);
 
         let mut inspector_undo_edits: Vec<(NodeId, &'static str, String, f32)> = Vec::new();
         let mut content_action: Option<ContentAction> = None;
@@ -713,12 +754,26 @@ impl EditorShell {
                 self.last_inspector_edit = None;
                 format!("Undid: {target} {} -> {} (back to {})", fmt_num(next), fmt_num(prev), fmt_num(prev))
             }
-            Some(UndoEntry::GrowTree { name, count }) => {
-                // Remove exactly this tree's splats off the overlay tail (grow
-                // appended them last) and its World entity, then invalidate the
-                // viewport cache so the tree disappears next frame.
-                let new_len = self.tree_overlay.len().saturating_sub(count);
-                self.tree_overlay.truncate(new_len);
+            Some(UndoEntry::PlacedAsset { name, start, len }) => {
+                // Remove EXACTLY this asset's `[start, start+len)` range from the
+                // overlay (NOT the tail — a later-undone asset may sit above it) and
+                // its World entity, then invalidate the viewport cache so the asset
+                // disappears next frame. Range-tracked removal is what lets two
+                // interleaved asset types (a tree and a terrain patch) undo
+                // independently without truncating each other's splats.
+                let end = (start + len).min(self.overlay.len());
+                let start = start.min(end);
+                let removed = end - start;
+                self.overlay.drain(start..end);
+                // Every undo entry whose range sits ABOVE the removed one must shift
+                // down by `removed` so its `start` still points at its own splats.
+                for e in self.undo_stack.iter_mut() {
+                    if let UndoEntry::PlacedAsset { start: s, .. } = e {
+                        if *s >= end {
+                            *s -= removed;
+                        }
+                    }
+                }
                 if let Some(pos) = self.entities.iter().rposition(|e| e.name == name) {
                     self.entities.remove(pos);
                     if self.selected >= self.entities.len() {
@@ -727,7 +782,7 @@ impl EditorShell {
                 }
                 self.viewport_tex = None;
                 self.last_inspector_edit = None;
-                format!("Removed {name} ({count} points) from the world")
+                format!("Removed {name} ({removed} points) from the world")
             }
             None => "Nothing to undo".to_string(),
         };
@@ -752,6 +807,7 @@ impl EditorShell {
                 }
                 ShellRequest::LoadAsset(path) => self.load_content_asset(&path),
                 ShellRequest::GrowTree(tree) => self.plant_grown_tree(tree),
+                ShellRequest::ForgeTerrain(patch) => self.plant_forge_terrain(patch),
                 ShellRequest::OpenAddPalette => {
                     self.palette.open_intent_prefilled("add ");
                 }
@@ -759,34 +815,70 @@ impl EditorShell {
         }
     }
 
-    /// Plant a grown FloraPrime tree into the live world: append its splats to the
-    /// viewport overlay, add a numbered World entity ("Silver Birch 01"), push a
-    /// reversible undo entry, invalidate the viewport texture cache so the next
-    /// frame re-rasterizes with the tree, and append a domain-language receipt +
-    /// Output Log line. The splats and the entity are added atomically so undo can
-    /// truncate exactly this tree's tail off the overlay.
+    /// Plant a grown FloraPrime tree into the live world. Thin wrapper over the
+    /// shared [`Self::plant_asset`] core: same overlay/World-entity/undo/receipt
+    /// machinery a raised terrain patch uses, specialized only by the vegetation
+    /// kind, the tree origin, and the "Grew a" verb.
     fn plant_grown_tree(&mut self, tree: GrownTree) {
-        let count = tree.splats.len();
-        // Number the entity per species: "Silver Birch 01", "…02", …
-        let n = self
-            .species_counts
-            .entry(tree.species_label.clone())
-            .or_insert(0);
-        *n += 1;
-        let name = format!("{} {:02}", tree.species_label, *n);
+        self.plant_asset(
+            &tree.species_label,
+            "vegetation",
+            tree.splats,
+            plugins::TREE_PLANT_ORIGIN,
+            "Grew a",
+        );
+    }
 
-        self.tree_overlay.extend(tree.splats);
+    /// Plant a raised Forge terrain patch into the live world. Thin wrapper over
+    /// the shared [`Self::plant_asset`] core — the terrain twin of
+    /// [`Self::plant_grown_tree`], specialized only by the terrain kind, the patch
+    /// origin, and the "Raised a" verb.
+    fn plant_forge_terrain(&mut self, patch: ForgeTerrain) {
+        self.plant_asset(
+            &patch.label,
+            "terrain",
+            patch.splats,
+            plugins::TERRAIN_PATCH_ORIGIN,
+            "Raised a",
+        );
+    }
+
+    /// The shared planting core for EVERY placed asset (grown trees AND raised
+    /// terrain patches): insert `splats` into the viewport overlay at its current
+    /// tail, add a numbered World entity ("<label> NN"), push a RANGE-TRACKED undo
+    /// entry recording exactly where this asset's splats landed, invalidate the
+    /// viewport texture cache so the next frame re-rasterizes with the asset, and
+    /// append a domain-language receipt + Output Log line. The range (not a tail
+    /// length) is what lets a later undo remove exactly THIS asset's splats even
+    /// when another asset type was planted on top — no copy-pasted planting
+    /// machinery, no tail-truncation corruption between asset types.
+    fn plant_asset(
+        &mut self,
+        label: &str,
+        kind: &str,
+        splats: Vec<GaussianSplat>,
+        pos: [f32; 3],
+        verb: &str,
+    ) {
+        let len = splats.len();
+        let start = self.overlay.len();
+        // Number the entity per label: "Forge Terrain 01", "…02", …
+        let n = self.asset_counts.entry(label.to_string()).or_insert(0);
+        *n += 1;
+        let name = format!("{label} {:02}", *n);
+
+        self.overlay.extend(splats);
         self.entities.push(ShellEntity {
             name: name.clone(),
-            kind: "vegetation".into(),
-            pos: plugins::TREE_PLANT_ORIGIN,
+            kind: kind.to_string(),
+            pos,
         });
-        // Invalidate the cached viewport texture so the tree shows next frame.
+        // Invalidate the cached viewport texture so the asset shows next frame.
         self.viewport_tex = None;
-        self.push_undo(UndoEntry::GrowTree { name: name.clone(), count });
-        let receipt = format!("Grew a {name} ({count} points) — undo with Ctrl+Z");
+        self.push_undo(UndoEntry::PlacedAsset { name: name.clone(), start, len });
+        let receipt = format!("{verb} {name} ({len} points) — undo with Ctrl+Z");
         self.log_receipt(receipt.clone());
-        self.push_output_log(format!("[floraprime] {receipt}"));
+        self.push_output_log(format!("[{kind}] {receipt}"));
     }
 
     /// Append a line to the Output Log, capping it at [`HISTORY_CAP`].
@@ -2734,7 +2826,7 @@ mod tests {
     fn grow_tree_plants_splats_and_world_entity_through_drain() {
         let mut shell = EditorShell::default();
         let world_before = shell.entities.len();
-        let overlay_before = shell.tree_overlay.len();
+        let overlay_before = shell.overlay.len();
         assert_eq!(overlay_before, 0, "no grown splats before growing");
 
         // FloraPrime's grow() pushes a GrownTree onto the SAME sink the shell holds.
@@ -2756,7 +2848,7 @@ mod tests {
         assert_eq!(shell.entities.last().unwrap().name, "Silver Birch 01");
         // The viewport overlay grew by EXACTLY the tree's splat count.
         assert_eq!(
-            shell.tree_overlay.len(),
+            shell.overlay.len(),
             overlay_before + grown_count,
             "overlay must grow by the tree's splat count"
         );
@@ -2773,10 +2865,10 @@ mod tests {
     fn undo_removes_grown_tree_splats_and_world_entity() {
         let mut shell = EditorShell::default();
         let world_before = shell.entities.len();
-        let overlay_before = shell.tree_overlay.len();
+        let overlay_before = shell.overlay.len();
 
         shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
-        let after_count = shell.tree_overlay.len();
+        let after_count = shell.overlay.len();
         assert!(after_count > overlay_before, "growing adds overlay splats");
         assert_eq!(shell.entities.len(), world_before + 1);
         assert_eq!(shell.undo_stack.len(), 1, "growing pushes exactly one undo entry");
@@ -2785,7 +2877,7 @@ mod tests {
         assert!(shell.registry.run("edit.undo"));
         shell.drain_requests();
         assert_eq!(
-            shell.tree_overlay.len(),
+            shell.overlay.len(),
             overlay_before,
             "undo must restore the overlay to its EXACT pre-grow length"
         );
@@ -2814,6 +2906,191 @@ mod tests {
         let names: Vec<&str> = shell.entities.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"Silver Birch 01"), "first grow names …01; have {names:?}");
         assert!(names.contains(&"Silver Birch 02"), "second grow names …02; have {names:?}");
+    }
+
+    // === Forge: Raise terrain → real splats in the live world ===
+
+    /// RAISE (end-to-end through the real drain path): a patch Forge raised (pushed
+    /// onto the shell's terrain-sink) is planted by draining `forge_sink` into a
+    /// ForgeTerrain request and applying it. The world count increments, the
+    /// viewport overlay grows by the patch's splat count, and the receipt is exact.
+    #[test]
+    fn raise_terrain_plants_splats_and_world_entity_through_drain() {
+        let mut shell = EditorShell::default();
+        let world_before = shell.entities.len();
+        assert_eq!(shell.overlay.len(), 0, "no planted splats before raising");
+
+        // Forge's generate_terrain() pushes a ForgeTerrain onto the SAME sink.
+        let mut forge = plugins::ForgePlugin::with_terrain_sink(shell.forge_sink.clone());
+        forge.generate_terrain();
+        let patch_count = shell.forge_sink.borrow()[0].splats.len();
+        let n = plugins::FORGE_TERRAIN_RESOLUTION as usize;
+        assert_eq!(patch_count, n * n, "raised patch has resolution² splats");
+
+        // The shell drains the sink into a ForgeTerrain request, then applies it —
+        // the exact path EditorShell::ui runs each frame.
+        let raised: Vec<ForgeTerrain> = shell.forge_sink.borrow_mut().drain(..).collect();
+        for patch in raised {
+            shell.requests.borrow_mut().push(ShellRequest::ForgeTerrain(patch));
+        }
+        shell.drain_requests();
+
+        assert_eq!(shell.entities.len(), world_before + 1, "world grows by one entity");
+        assert_eq!(shell.entities.last().unwrap().name, "Forge Terrain 01");
+        assert_eq!(
+            shell.overlay.len(),
+            patch_count,
+            "overlay must grow by the patch's splat count"
+        );
+        assert_eq!(
+            shell.assistant_log.last().unwrap(),
+            &format!("Raised a Forge Terrain 01 ({patch_count} points) — undo with Ctrl+Z")
+        );
+    }
+
+    /// UNDO: after raising a patch, undo restores the world count AND the viewport
+    /// overlay EXACTLY to their pre-raise state (the patch's splats are gone).
+    #[test]
+    fn undo_removes_raised_terrain_splats_and_world_entity() {
+        let mut shell = EditorShell::default();
+        let world_before = shell.entities.len();
+
+        shell.raise_terrain_headless(0);
+        let after_count = shell.overlay.len();
+        assert!(after_count > 0, "raising adds overlay splats");
+        assert_eq!(shell.entities.len(), world_before + 1);
+        assert_eq!(shell.undo_stack.len(), 1, "raising pushes exactly one undo entry");
+
+        assert!(shell.registry.run("edit.undo"));
+        shell.drain_requests();
+        assert_eq!(shell.overlay.len(), 0, "undo must restore the overlay to empty");
+        assert_eq!(shell.entities.len(), world_before, "undo must remove the entity");
+        assert!(
+            !shell.entities.iter().any(|e| e.name == "Forge Terrain 01"),
+            "the raised entity must be gone after undo"
+        );
+        assert_eq!(
+            shell.assistant_log.last().unwrap(),
+            &format!("Removed Forge Terrain 01 ({after_count} points) from the world")
+        );
+    }
+
+    /// Two raises produce two distinctly-numbered entities ("…01", "…02").
+    #[test]
+    fn two_raises_produce_incrementing_named_entities() {
+        let mut shell = EditorShell::default();
+        shell.raise_terrain_headless(0);
+        shell.raise_terrain_headless(1);
+        let names: Vec<&str> = shell.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"Forge Terrain 01"), "first raise names …01; have {names:?}");
+        assert!(names.contains(&"Forge Terrain 02"), "second raise names …02; have {names:?}");
+    }
+
+    /// COEXISTENCE: grow a tree AND raise terrain → 2 entities, overlay = tree +
+    /// terrain. Undo the TERRAIN (the tail here) and the tree's splats survive
+    /// bit-identical. (The harder earlier-asset removal is the next test.)
+    #[test]
+    fn tree_and_terrain_coexist_and_undo_terrain_leaves_tree_untouched() {
+        fn splats_eq(a: &GaussianSplat, b: &GaussianSplat) -> bool {
+            a.position() == b.position()
+                && a.scales() == b.scales()
+                && a.opacity() == b.opacity()
+                && a.spectral() == b.spectral()
+        }
+
+        let mut shell = EditorShell::default();
+        let world_before = shell.entities.len();
+        // TREE first, then TERRAIN on top.
+        shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        let tree_count = shell.overlay.len();
+        let tree_splats: Vec<GaussianSplat> = shell.overlay[..tree_count].to_vec();
+        shell.raise_terrain_headless(0);
+        let terrain_count = shell.overlay.len() - tree_count;
+        assert!(terrain_count > 0);
+
+        // Two NEW entities, overlay = tree_count + terrain_count.
+        assert_eq!(
+            shell.entities.len(),
+            world_before + 2,
+            "a tree AND a terrain patch coexist (two new world entities)"
+        );
+        assert_eq!(shell.overlay.len(), tree_count + terrain_count);
+
+        // Undo the terrain (top of stack). The tree's splats sit at the overlay HEAD
+        // BELOW the terrain — a tail-truncating undo would chop them; range-tracked
+        // removal must leave them bit-identical.
+        assert!(shell.registry.run("edit.undo"));
+        shell.drain_requests();
+        assert_eq!(
+            shell.overlay.len(),
+            tree_count,
+            "undoing the terrain must leave EXACTLY the tree's splats"
+        );
+        assert!(!shell.entities.iter().any(|e| e.name == "Forge Terrain 01"));
+        assert!(shell.entities.iter().any(|e| e.name == "Silver Birch 01"));
+        assert!(
+            shell.overlay.iter().zip(tree_splats.iter()).all(|(a, b)| splats_eq(a, b)),
+            "the tree's splats must survive the terrain undo bit-identical"
+        );
+    }
+
+    /// COEXISTENCE, the hard case the tail-truncation bug CANNOT handle: tree, then
+    /// terrain, then undo the EARLIER tree while the terrain (planted ABOVE it)
+    /// survives. Range-tracked removal must drain the tree's `[0, tree_count)` range
+    /// and SHIFT the terrain's range down so its splats stay valid and bit-identical.
+    #[test]
+    fn undo_earlier_asset_shifts_later_asset_range() {
+        let mut shell = EditorShell::default();
+        // Plant tree, then terrain. Stack: [tree(0..T), terrain(T..T+G)].
+        shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        let tree_count = shell.overlay.len();
+        shell.raise_terrain_headless(0);
+        let terrain_count = shell.overlay.len() - tree_count;
+        // Capture the terrain splats (the tail) before removing the tree beneath it.
+        let terrain_splats: Vec<GaussianSplat> = shell.overlay[tree_count..].to_vec();
+
+        // Undo pops the terrain (LIFO), then re-plant it so the terrain entry sits
+        // BELOW a fresh nothing — no. To genuinely undo the EARLIER tree while the
+        // terrain remains, we manipulate the stack: pop the terrain entry, undo the
+        // tree, then the terrain range must have shifted to start at 0. Drive it via
+        // the public undo twice would remove both; instead we remove the tree entry
+        // out of order by swapping it to the top, mirroring a future "undo this
+        // specific asset" — assert the range-shift invariant the undo arm guarantees.
+        // Move the tree's PlacedAsset entry to the top so undo() targets it.
+        let tree_pos = shell
+            .undo_stack
+            .iter()
+            .position(|e| matches!(e, UndoEntry::PlacedAsset { name, .. } if name == "Silver Birch 01"))
+            .unwrap();
+        let tree_entry = shell.undo_stack.remove(tree_pos);
+        shell.undo_stack.push(tree_entry);
+
+        assert!(shell.registry.run("edit.undo")); // undo the tree (now top)
+        shell.drain_requests();
+        // The tree is gone; the terrain survived and its splats are bit-identical,
+        // now sitting at the HEAD of the overlay (the range shifted down by tree_count).
+        assert_eq!(shell.overlay.len(), terrain_count, "only the terrain remains");
+        assert!(!shell.entities.iter().any(|e| e.name == "Silver Birch 01"));
+        assert!(shell.entities.iter().any(|e| e.name == "Forge Terrain 01"));
+        fn eq(a: &GaussianSplat, b: &GaussianSplat) -> bool {
+            a.position() == b.position()
+                && a.scales() == b.scales()
+                && a.opacity() == b.opacity()
+                && a.spectral() == b.spectral()
+        }
+        assert!(
+            shell.overlay.iter().zip(terrain_splats.iter()).all(|(a, b)| eq(a, b)),
+            "the terrain's splats must survive the tree undo bit-identical"
+        );
+        // The remaining undo entry's range must have shifted to start at 0.
+        let terrain_entry = shell
+            .undo_stack
+            .iter()
+            .find(|e| matches!(e, UndoEntry::PlacedAsset { name, .. } if name == "Forge Terrain 01"))
+            .unwrap();
+        let UndoEntry::PlacedAsset { start, len, .. } = terrain_entry else { unreachable!() };
+        assert_eq!(*start, 0, "the surviving terrain range must shift to the head");
+        assert_eq!(*len, terrain_count);
     }
 
     // === World panel empty-state (teaching copy is reachable + honest) ===

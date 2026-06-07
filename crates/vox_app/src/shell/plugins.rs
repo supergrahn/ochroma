@@ -18,6 +18,8 @@ use glam::Quat;
 use std::cell::RefCell;
 use std::rc::Rc;
 use vox_core::types::GaussianSplat;
+use vox_editor::node_graph::{NodeInputs, OchromaNode};
+use vox_editor::nodes::terrain_node::TerrainNode;
 use vox_ui::design::icons::icon;
 use vox_ui::node_canvas::{CanvasGraph, NodeView, WireView};
 use vox_ui::{NodeCategory, PortType};
@@ -181,6 +183,17 @@ pub struct ForgePlugin {
     pub last_generated: Rc<RefCell<Option<String>>>,
     /// The Forge generator graph (real generator names as nodes).
     graph: CanvasGraph,
+    /// Raised terrain patches waiting for the host to plant them in the live
+    /// world. `generate_terrain()` pushes one [`ForgeTerrain`] (label + real
+    /// splats) here; the shell drains it each frame into the viewport overlay +
+    /// World panel + undo stack. Shared (cloned) so the host can hold the SAME
+    /// queue this plugin writes to — the terrain twin of FloraPrime's grow-sink.
+    pub terrain_sink: Rc<RefCell<Vec<ForgeTerrain>>>,
+    /// Per-raise seed so each "Raise terrain" press cooks a distinct heightfield
+    /// (so two raises produce two different mounds, not a duplicate).
+    raise_count: u32,
+    /// Set true once a terrain patch has been raised — the panel's readout reads it.
+    raised: bool,
 }
 
 impl Default for ForgePlugin {
@@ -188,6 +201,9 @@ impl Default for ForgePlugin {
         ForgePlugin {
             last_generated: Rc::new(RefCell::new(None)),
             graph: build_forge_graph(),
+            terrain_sink: Rc::new(RefCell::new(Vec::new())),
+            raise_count: 0,
+            raised: false,
         }
     }
 }
@@ -195,6 +211,29 @@ impl Default for ForgePlugin {
 impl ForgePlugin {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build a Forge plugin that writes raised terrain patches into the SHARED
+    /// `sink`, so the host can drain the SAME queue this plugin's "Raise terrain"
+    /// button fills. The host clones its own handle to `sink` before constructing
+    /// this — mirrors [`FloraPrimePlugin::with_grow_sink`].
+    pub fn with_terrain_sink(sink: Rc<RefCell<Vec<ForgeTerrain>>>) -> Self {
+        ForgePlugin {
+            terrain_sink: sink,
+            ..Self::default()
+        }
+    }
+
+    /// Cook a Forge terrain patch and emit it onto the terrain-sink for the host
+    /// to plant into the live world. The seed increments per raise so successive
+    /// presses produce distinct mounds. The same close-the-loop step `grow()`
+    /// drives for FloraPrime: a landform the user can SEE.
+    pub fn generate_terrain(&mut self) {
+        let seed = self.raise_count;
+        self.raise_count += 1;
+        let patch = forge_terrain_patch(seed);
+        self.terrain_sink.borrow_mut().push(patch);
+        self.raised = true;
     }
 }
 
@@ -262,6 +301,35 @@ impl EditorPlugin for ForgePlugin {
         if tab_id != FORGE_TAB {
             return;
         }
+        let t = cx.tokens;
+        let prim = {
+            let [r, g, b, a] = t.color("text.primary");
+            egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+        };
+        let sec = {
+            let [r, g, b, a] = t.color("text.secondary");
+            egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+        };
+
+        // The Forge tab's primary action — the terrain twin of FloraPrime's
+        // "Grow tree": cook a real heightfield patch and plant it into the live
+        // viewport. Icon + words, accent fill (the Canva rule), token-styled only.
+        ui.add_space(t.space[2]);
+        if vox_ui::widgets::primary_action(ui, icon::TERRAIN, "Raise terrain", t).clicked() {
+            self.generate_terrain();
+        }
+        ui.label(
+            egui::RichText::new(if self.raised {
+                "Raised a terrain patch into the world — see it in the Viewport (undo with Ctrl+Z)."
+            } else {
+                "Cook a small terrain patch and drop it into the live viewport."
+            })
+            .size(t.type_ramp.caption)
+            .color(if self.raised { prim } else { sec }),
+        );
+        ui.add_space(t.space[2]);
+        ui.separator();
+
         // Render the Forge generator graph through the SHARED canvas + host tokens
         // — no plugin-set color. Inherits curved type-colored wires, grid, minimap,
         // category-colored headers (the contract proof, identical to Crucible).
@@ -516,6 +584,156 @@ pub fn skeleton_to_splats(skeleton: &TreeSkeleton, class: &str, species_id: i32)
             node.pos[2] + TREE_PLANT_ORIGIN[2],
         ];
         splats.push(GaussianSplat::volume(pos, scale, Quat::IDENTITY, opacity, spectral));
+    }
+    splats
+}
+
+// ============================================================================
+// Forge terrain — the heightfield twin of skeleton_to_splats. The Forge tab's
+// "Raise terrain" action cooks a real `TerrainNode` heightfield (the SAME node
+// the Node Graph drives) and converts it to terrain-colored, height-shaded
+// GaussianSplats so the patch reads as a distinct landform in the live viewport.
+// ============================================================================
+
+/// A terrain patch the user raised, ready to plant into the live world: its
+/// display label (e.g. "Forge Terrain", which the shell numbers per-raise) and
+/// the REAL `GaussianSplat`s built from a cooked heightfield. The shell drains
+/// these from [`ForgePlugin`]'s terrain-sink and routes them into the viewport
+/// scene overlay + World panel + undo stack — the terrain twin of [`GrownTree`].
+///
+/// (`GaussianSplat` is `Pod` but not `PartialEq`/`Debug`, so this carries only
+/// `Clone`; tests compare splats field-by-field.)
+#[derive(Clone)]
+pub struct ForgeTerrain {
+    /// The friendly label (the shell appends an incrementing number).
+    pub label: String,
+    /// The deterministic splats built from the cooked heightfield.
+    pub splats: Vec<GaussianSplat>,
+}
+
+/// The resolution the Forge tab's "Raise terrain" action cooks. A small patch
+/// (16×16 cells = 256 splats) keeps the heightfield cheap and the landform
+/// readable; it respects `TerrainNode`'s cook bounds (16..=256).
+pub const FORGE_TERRAIN_RESOLUTION: u32 = 16;
+
+/// World-space corner where a raised terrain patch plants. OFFSET from the
+/// FloraPrime tree at [`TREE_PLANT_ORIGIN`] (`[-4, -1, -6]`) and the demo
+/// `build_scene` structures (amber buildings around x∈[-3, 2.5], z∈[-4, -9]):
+/// this sits the patch to the RIGHT of the scene, near the front, so it rises as
+/// a distinct mound against the dark studio background WITHOUT overlapping the
+/// tree or the buildings. Y is the ground band (`build_scene`'s ground sits at
+/// y=-1); the patch's heights rise above it.
+pub const TERRAIN_PATCH_ORIGIN: [f32; 3] = [3.2, -0.9, -6.5];
+
+/// World-space footprint (metres) the patch spans in X and Z. The heightfield's
+/// resolution×resolution grid maps onto this square so a 16-cell patch reads as a
+/// compact ~4m mound rather than a sprawling plane.
+pub const TERRAIN_PATCH_SPAN: f32 = 4.0;
+
+/// Vertical scale (metres) the normalized heightfield rises to — tall enough to
+/// read as a distinct hill rising above the flat ground band, short enough to
+/// stay in frame against the dark studio background.
+pub const TERRAIN_PATCH_HEIGHT: f32 = 2.4;
+
+/// Cook a small Forge terrain patch and convert it to terrain-colored splats.
+/// Deterministic in `seed`: cooks a real [`TerrainNode`] heightfield (the SAME
+/// node the Node Graph exposes) at [`FORGE_TERRAIN_RESOLUTION`], then splatizes
+/// it via [`heightfield_to_splats`]. Erosion is disabled (`droplet_count = 0`) so
+/// a small patch cooks instantly and reproducibly. Returns one splat per
+/// heightfield cell (`resolution²`).
+pub fn forge_terrain_patch(seed: u32) -> ForgeTerrain {
+    let node = TerrainNode {
+        resolution: FORGE_TERRAIN_RESOLUTION,
+        world_size: TERRAIN_PATCH_SPAN,
+        amplitude: TERRAIN_PATCH_HEIGHT,
+        octaves: 5,
+        frequency: 2.0,
+        seed,
+        droplet_count: 0,
+    };
+    // Cook through the real OchromaNode path — the heightfield the Node Graph and
+    // the shipped demo scenes both produce. The 16..=256 bound is respected by
+    // FORGE_TERRAIN_RESOLUTION, so cook never fails here.
+    let out = node
+        .cook(NodeInputs::new())
+        .expect("Forge terrain patch cooks within TerrainNode's 16..=256 bounds");
+    let hf = out["terrain"]
+        .as_terrain()
+        .expect("TerrainNode emits a terrain heightfield");
+    let splats = heightfield_to_splats(&hf.heights, hf.resolution);
+    ForgeTerrain {
+        label: "Forge Terrain".to_string(),
+        splats,
+    }
+}
+
+/// Convert a cooked heightfield into REAL terrain-colored `GaussianSplat`s — one
+/// volume splat per cell, laid out on a grid spanning [`TERRAIN_PATCH_SPAN`]
+/// metres in X/Z and translated by [`TERRAIN_PATCH_ORIGIN`]. Each cell's height
+/// (normalized to its 0..1 fraction of the patch's relief) drives BOTH its Y
+/// position (so the patch rises as a real mound) AND its spectrum: lower cells
+/// read GREEN (a vegetated valley — the mid green band high), higher cells read
+/// GREY/rocky (a flat earthy band, the green band suppressed). Fully
+/// deterministic: same heights → bit-identical splats.
+///
+/// Spectra are 16-band f16 reflectance built the way `viewport::build_scene`
+/// builds its colored splats (a band window high, the rest low) — height
+/// interpolates a green-dominant valley spectrum toward a flat grey rock
+/// spectrum, so the green band STRICTLY decreases with elevation. The patch reads
+/// in the SAME spectral pipeline as the rest of the viewport.
+pub fn heightfield_to_splats(heights: &[f32], resolution: u32) -> Vec<GaussianSplat> {
+    let n = resolution as usize;
+    // The patch's tallest cell sets the elevation fraction's reference, so the
+    // shading keys off the patch's own relief (not an absolute world height). A
+    // floored reference keeps a near-flat patch from saturating to all-rock.
+    let max_h = heights.iter().copied().fold(0.0f32, f32::max);
+    let relief = max_h.max(TERRAIN_PATCH_HEIGHT * 0.5);
+    // Cell size in world metres; centre the grid on the X/Z origin.
+    let cell = if n > 1 { TERRAIN_PATCH_SPAN / (n as f32 - 1.0) } else { 0.0 };
+    let half = TERRAIN_PATCH_SPAN * 0.5;
+
+    // Endpoint spectra (16-band reflectance), built like build_scene's `spd`.
+    // Valley (low): an EARTHY olive-green — the green window (6..=8) high but with a
+    // lifted warm floor (long-wavelength bands 11..=13 moderate), so it reads as
+    // mossy soil that SEPARATES from `build_scene`'s vivid, broad ground green
+    // (spd(5..=9, 0.85, 0.18)) rather than blending into it. Rock (high): a flat
+    // light-grey earthy band with the green window SUPPRESSED, reading as bare
+    // rock. Per band we lerp valley→rock by the height fraction, so the green band
+    // strictly falls and the mound shades green-valley → grey-peak.
+    let valley: [f32; 16] = std::array::from_fn(|b| match b {
+        6..=8 => 0.62,   // green window — present but muted (earthy, not neon)
+        11..=13 => 0.30, // warm floor — pushes the hue toward olive/brown
+        _ => 0.12,
+    });
+    let rock: [f32; 16] = std::array::from_fn(|b| if (6..=8).contains(&b) { 0.34 } else { 0.46 });
+
+    let mut splats = Vec::with_capacity(heights.len());
+    for (idx, &h) in heights.iter().enumerate() {
+        let gx = (idx % n) as f32;
+        let gz = (idx / n) as f32;
+        let t = (h / relief).clamp(0.0, 1.0); // 0 = valley, 1 = peak
+        // Per-band lerp valley→rock; build the f16 reflectance. The green window
+        // (5..=8) goes 0.78 → 0.30 as t rises, so high cells read greyer/rockier.
+        let spectral: [u16; 16] = std::array::from_fn(|b| {
+            let v = valley[b] * (1.0 - t) + rock[b] * t;
+            half::f16::from_f32(v).to_bits()
+        });
+        // Each cell is a small ground puff; lifted by its height so the patch is a
+        // real mound. Splats are sized to the cell so the surface reads as a
+        // continuous landform rather than scattered dots.
+        let pos = [
+            TERRAIN_PATCH_ORIGIN[0] - half + gx * cell,
+            TERRAIN_PATCH_ORIGIN[1] + h,
+            TERRAIN_PATCH_ORIGIN[2] - half + gz * cell,
+        ];
+        let s = (cell * 0.9).max(0.18);
+        splats.push(GaussianSplat::volume(
+            pos,
+            [s, s, s],
+            Quat::IDENTITY,
+            235u8,
+            spectral,
+        ));
     }
     splats
 }
@@ -1105,5 +1323,105 @@ mod tests {
         assert_eq!(sink.len(), 1, "grow() must emit exactly one GrownTree");
         assert_eq!(sink[0].species_label, "Silver Birch");
         assert_eq!(sink[0].splats.len(), 200, "the grown tree carries one splat per node");
+    }
+
+    // ---- Forge terrain → splats ---------------------------------------------
+
+    #[test]
+    fn heightfield_to_splats_has_one_splat_per_cell() {
+        // Every heightfield cell becomes exactly one splat — a 16×16 patch yields
+        // 256 splats, which reads as a landform in the viewport.
+        let heights = vec![0.5f32; 16 * 16];
+        let splats = heightfield_to_splats(&heights, 16);
+        assert_eq!(splats.len(), 256, "one splat per heightfield cell (16×16)");
+    }
+
+    #[test]
+    fn forge_terrain_patch_cooks_exactly_resolution_squared_splats() {
+        // The cooked patch carries one splat per cell of the FORGE_TERRAIN_RESOLUTION
+        // grid — the count the World-panel receipt reports.
+        let patch = forge_terrain_patch(0);
+        let n = FORGE_TERRAIN_RESOLUTION as usize;
+        assert_eq!(patch.splats.len(), n * n, "patch has resolution² splats");
+        assert_eq!(patch.label, "Forge Terrain");
+    }
+
+    #[test]
+    fn high_cells_read_rockier_grayer_than_low_cells() {
+        // Height-shaded spectra: a HIGH cell (near the patch's peak) reads rockier/
+        // greyer — its green band (7) is LOWER than a LOW cell's, because the
+        // Grassland blend swaps vegetation for snow/rock as elevation rises. Build a
+        // patch with one tall cell and one flat-low cell and compare their green.
+        let world_height = TERRAIN_PATCH_HEIGHT; // reference relief
+        // Low cell at ~0 height, high cell at the full relief.
+        let heights = vec![0.0f32, world_height];
+        let splats = heightfield_to_splats(&heights, 2);
+        // Resolution 2 → 4 cells; index 0 is low, index 1 is high (first row).
+        let low_green = splats[0].spectral_f32(7);
+        let high_green = splats[1].spectral_f32(7);
+        assert!(
+            low_green > high_green,
+            "low cell green band ({low_green:.4}) must exceed high cell green band \
+             ({high_green:.4}) — higher = rockier/greyer, lower = greener"
+        );
+    }
+
+    #[test]
+    fn high_cells_sit_above_low_cells_as_a_mound() {
+        // Height drives the splat's Y so the patch rises as a real mound: a taller
+        // heightfield cell plants HIGHER in world space than a shorter one.
+        let heights = vec![0.0f32, TERRAIN_PATCH_HEIGHT];
+        let splats = heightfield_to_splats(&heights, 2);
+        let low_y = splats[0].position()[1];
+        let high_y = splats[1].position()[1];
+        assert!(
+            high_y > low_y,
+            "the taller cell ({high_y:.3}) must plant above the shorter cell ({low_y:.3})"
+        );
+        // The mound rises by exactly the height delta off the ground origin.
+        assert!(
+            (high_y - low_y - TERRAIN_PATCH_HEIGHT).abs() < 1e-4,
+            "mound relief must equal the height delta ({})",
+            TERRAIN_PATCH_HEIGHT
+        );
+    }
+
+    #[test]
+    fn forge_terrain_patch_is_deterministic() {
+        // Same seed → bit-identical patch splats (the cook + splatize are pure).
+        let a = forge_terrain_patch(0);
+        let b = forge_terrain_patch(0);
+        assert_eq!(a.splats.len(), b.splats.len());
+        assert!(
+            a.splats.iter().zip(b.splats.iter()).all(|(x, y)| splats_eq(x, y)),
+            "identical seed must produce bit-identical terrain splats"
+        );
+    }
+
+    #[test]
+    fn different_seeds_produce_different_terrain_patches() {
+        // Distinct seeds cook distinct heightfields → distinct splats (so two raises
+        // are two different mounds, not a duplicate).
+        let a = forge_terrain_patch(0);
+        let b = forge_terrain_patch(1);
+        assert_eq!(a.splats.len(), b.splats.len());
+        assert!(
+            a.splats.iter().zip(b.splats.iter()).any(|(x, y)| !splats_eq(x, y)),
+            "different seeds must yield different terrain splats"
+        );
+    }
+
+    #[test]
+    fn raise_terrain_emits_a_patch_onto_the_sink() {
+        // The UI generate_terrain() path must push a ForgeTerrain (label + real
+        // splats) onto the shared terrain-sink so the host can plant it.
+        let mut p = ForgePlugin::new();
+        assert!(p.terrain_sink.borrow().is_empty());
+        p.generate_terrain();
+        let sink = p.terrain_sink.borrow();
+        assert_eq!(sink.len(), 1, "generate_terrain() must emit exactly one ForgeTerrain");
+        assert_eq!(sink[0].label, "Forge Terrain");
+        let n = FORGE_TERRAIN_RESOLUTION as usize;
+        assert_eq!(sink[0].splats.len(), n * n, "the patch carries one splat per cell");
     }
 }
