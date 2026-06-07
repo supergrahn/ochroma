@@ -17,6 +17,7 @@ fn main() {
     let mut theme = "dark".to_string();
     let mut tab = String::new();
     let mut palette = false;
+    let mut grow_tree = false;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -40,6 +41,7 @@ fn main() {
                 }
             }
             "--palette" => palette = true,
+            "--grow-tree" => grow_tree = true,
             _ => {}
         }
         i += 1;
@@ -60,7 +62,8 @@ fn main() {
     // (Crucible + Forge) — the two-plugin proof.
     shell.install_plugin(Box::new(vox_app::shell::plugins::CruciblePlugin::new()));
     shell.install_plugin(Box::new(vox_app::shell::plugins::ForgePlugin::new()));
-    shell.install_plugin(Box::new(vox_app::shell::plugins::FloraPrimePlugin::new()));
+    // FloraPrime wired to the shell's grow-sink so "Grow tree" plants real splats.
+    shell.install_floraprime();
     match tab.as_str() {
         "node_graph" => shell.focus_node_graph(),
         "content" => shell.focus_content(),
@@ -69,6 +72,16 @@ fn main() {
         "floraprime" => shell.focus_plugin_tab(vox_app::shell::plugins::FLORAPRIME_TAB),
         // Default: the central tab is the REAL rendered viewport.
         _ => shell.focus_viewport(),
+    }
+    if grow_tree {
+        // Press "Grow tree" headlessly: plant a Silver Birch (broadleaf, species 0)
+        // into the live world so the viewport shows its real splats in the shot.
+        shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        eprintln!(
+            "[shell_snapshot] grew a tree: {} things in the world, {} overlay splats",
+            shell.entities.len(),
+            shell.tree_overlay.len()
+        );
     }
     if palette {
         // Drive a scripted intent so the assistant receipt strip is LIT in the

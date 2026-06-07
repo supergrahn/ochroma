@@ -26,6 +26,8 @@ use content_panel::{ContentAction, ContentPanel};
 use egui_dock::{DockArea, DockState, NodeIndex, Style as DockStyle};
 use graph_bridge::GraphBridge;
 use host::{InstalledPlugin, PluginCtx, TabDecl};
+use plugins::GrownTree;
+use vox_core::types::GaussianSplat;
 use vox_editor::node_graph::NodeId;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -104,6 +106,12 @@ pub enum UndoEntry {
         prev: f32,
         next: f32,
     },
+    /// A FloraPrime tree was grown into the world: `count` splats were appended to
+    /// the viewport overlay and one World entity named `name` was added. Undo pops
+    /// exactly `count` splats off the overlay tail and removes the entity, restoring
+    /// the world to its pre-grow state (the grow appends both atomically, so the
+    /// tail is exactly this tree's splats).
+    GrowTree { name: String, count: usize },
 }
 
 /// A side-effecting request a registry command pushes for the shell to drain on
@@ -112,7 +120,11 @@ pub enum UndoEntry {
 /// here; `EditorShell::drain_requests` applies it. This keeps theme/focus on the
 /// SAME one-command-surface (the intent executor and a menu click both route
 /// through `registry.run`, which fires the closure that queues the request).
-#[derive(Debug, Clone, PartialEq)]
+///
+/// (Not `PartialEq`/`Debug`: the `GrowTree` payload carries `GaussianSplat`s,
+/// which are `Pod` but neither — and the shell only ever drains these, never
+/// compares them.)
+#[derive(Clone)]
 pub enum ShellRequest {
     ThemeLight,
     ThemeDark,
@@ -124,6 +136,10 @@ pub enum ShellRequest {
     /// The shell decodes it (or honestly reports what loading does today) and
     /// appends a receipt line to the Output Log.
     LoadAsset(PathBuf),
+    /// FloraPrime grew a tree: plant its splats into the viewport overlay, add a
+    /// numbered World entity, push an undo entry, and append a receipt. Queued by
+    /// the shell when it drains FloraPrime's grow-sink.
+    GrowTree(GrownTree),
 }
 
 /// The editor shell — owns the dock layout, panel state, and tokens.
@@ -148,8 +164,21 @@ pub struct EditorShell {
     pub bridge: GraphBridge,
     /// The shared widget kit handed to plugins (token-styled controls only).
     pub widget_kit: WidgetKit,
-    /// Cached viewport scene texture (rasterized splat frame), uploaded once.
+    /// Cached viewport scene texture (rasterized splat frame). Uploaded once and
+    /// reused; invalidated (set to `None`) whenever [`Self::tree_overlay`] changes
+    /// so the next frame re-rasterizes the base scene + grown trees.
     pub viewport_tex: Option<egui::TextureHandle>,
+    /// Splats the shell owns ON TOP of the fixed `viewport::build_scene` base —
+    /// the grown FloraPrime trees. Appended on grow, truncated on undo. Composited
+    /// into the viewport texture each time the cache is rebuilt.
+    pub tree_overlay: Vec<GaussianSplat>,
+    /// Shared queue FloraPrime's "Grow tree" button fills with [`GrownTree`]s; the
+    /// shell drains it each frame into `GrowTree` requests. The host holds the SAME
+    /// `Rc` it handed FloraPrime via [`plugins::FloraPrimePlugin::with_grow_sink`].
+    pub flora_sink: Rc<RefCell<Vec<GrownTree>>>,
+    /// Per-species grow counter so each grown tree is named "<Species> NN"
+    /// (incrementing per species — "Silver Birch 01", "Silver Birch 02").
+    species_counts: std::collections::HashMap<String, usize>,
     /// Installed host-plugins (their tabs joined the dock, commands the registry).
     pub plugins: Vec<InstalledPlugin>,
     /// Set true by the `world.add` command (proves the registry callback fired;
@@ -233,6 +262,9 @@ impl EditorShell {
             bridge: GraphBridge::new(),
             widget_kit: WidgetKit::new(tokens),
             viewport_tex: None,
+            tree_overlay: Vec::new(),
+            flora_sink: Rc::new(RefCell::new(Vec::new())),
+            species_counts: std::collections::HashMap::new(),
             plugins: Vec::new(),
             last_command_flag,
             undo_stack: Vec::new(),
@@ -344,6 +376,28 @@ impl EditorShell {
         self.plugins.push(InstalledPlugin { plugin, tabs, canvases });
     }
 
+    /// Install the FloraPrime vegetation plugin wired to THIS shell's grow-sink, so
+    /// its "Grow tree" button plants real splats into the live viewport (the host
+    /// drains `flora_sink` each frame). Use this instead of installing a bare
+    /// `FloraPrimePlugin::new()` when the grown tree must reach the world.
+    pub fn install_floraprime(&mut self) {
+        let plugin = plugins::FloraPrimePlugin::with_grow_sink(self.flora_sink.clone());
+        self.install_plugin(Box::new(plugin));
+    }
+
+    /// Grow a tree headlessly (no UI click): build the default-species splats and
+    /// plant them through the SAME `plant_grown_tree` path the button drives, so
+    /// snapshots/tests can prove the planted tree without driving egui input. The
+    /// `species_label`/`class`/`species_id` mirror a `FLORAPRIME_SPECIES` row.
+    pub fn grow_tree_headless(&mut self, species_label: &str, class: &str, species_id: i32) {
+        let skeleton = plugins::grow_tree_skeleton(species_id, 3.0, 200);
+        let splats = plugins::skeleton_to_splats(&skeleton, class, species_id);
+        self.plant_grown_tree(GrownTree {
+            species_label: species_label.to_string(),
+            splats,
+        });
+    }
+
     /// Lay out the full shell into an egui context for one frame.
     pub fn ui(&mut self, ctx: &egui::Context) {
         // Bump the frame counter first thing — inspector-drag coalescing keys off it.
@@ -370,8 +424,25 @@ impl EditorShell {
         self.toolbar(ctx);
         self.status_bar(ctx);
 
-        // Ensure the viewport scene texture is uploaded once.
-        let viewport_tex = viewport::scene_texture(ctx, &mut self.viewport_tex);
+        // Drain any trees FloraPrime grew (its "Grow tree" button fills the shared
+        // grow-sink) into GrowTree requests, queued onto the same request stream
+        // the shell drains — planting needs `&mut self` the plugin can't hold.
+        {
+            let grown: Vec<GrownTree> = self.flora_sink.borrow_mut().drain(..).collect();
+            if !grown.is_empty() {
+                let mut q = self.requests.borrow_mut();
+                for tree in grown {
+                    q.push(ShellRequest::GrowTree(tree));
+                }
+            }
+        }
+        // Apply the freshly-queued GrowTree requests THIS frame so the overlay is
+        // current before the viewport texture is (re)built below.
+        self.drain_requests();
+
+        // Ensure the viewport scene texture is uploaded (rebuilt when the grown-tree
+        // overlay changed, since grow/undo invalidate the cache).
+        let viewport_tex = viewport::scene_texture(ctx, &mut self.viewport_tex, &self.tree_overlay);
 
         let mut inspector_undo_edits: Vec<(NodeId, &'static str, String, f32)> = Vec::new();
         let mut content_action: Option<ContentAction> = None;
@@ -637,6 +708,22 @@ impl EditorShell {
                 self.last_inspector_edit = None;
                 format!("Undid: {target} {} -> {} (back to {})", fmt_num(next), fmt_num(prev), fmt_num(prev))
             }
+            Some(UndoEntry::GrowTree { name, count }) => {
+                // Remove exactly this tree's splats off the overlay tail (grow
+                // appended them last) and its World entity, then invalidate the
+                // viewport cache so the tree disappears next frame.
+                let new_len = self.tree_overlay.len().saturating_sub(count);
+                self.tree_overlay.truncate(new_len);
+                if let Some(pos) = self.entities.iter().rposition(|e| e.name == name) {
+                    self.entities.remove(pos);
+                    if self.selected >= self.entities.len() {
+                        self.selected = self.entities.len().saturating_sub(1);
+                    }
+                }
+                self.viewport_tex = None;
+                self.last_inspector_edit = None;
+                format!("Removed {name} ({count} points) from the world")
+            }
             None => "Nothing to undo".to_string(),
         };
         self.log_receipt(receipt.clone());
@@ -659,7 +746,47 @@ impl EditorShell {
                     self.undo();
                 }
                 ShellRequest::LoadAsset(path) => self.load_content_asset(&path),
+                ShellRequest::GrowTree(tree) => self.plant_grown_tree(tree),
             }
+        }
+    }
+
+    /// Plant a grown FloraPrime tree into the live world: append its splats to the
+    /// viewport overlay, add a numbered World entity ("Silver Birch 01"), push a
+    /// reversible undo entry, invalidate the viewport texture cache so the next
+    /// frame re-rasterizes with the tree, and append a domain-language receipt +
+    /// Output Log line. The splats and the entity are added atomically so undo can
+    /// truncate exactly this tree's tail off the overlay.
+    fn plant_grown_tree(&mut self, tree: GrownTree) {
+        let count = tree.splats.len();
+        // Number the entity per species: "Silver Birch 01", "…02", …
+        let n = self
+            .species_counts
+            .entry(tree.species_label.clone())
+            .or_insert(0);
+        *n += 1;
+        let name = format!("{} {:02}", tree.species_label, *n);
+
+        self.tree_overlay.extend(tree.splats);
+        self.entities.push(ShellEntity {
+            name: name.clone(),
+            kind: "vegetation".into(),
+            pos: plugins::TREE_PLANT_ORIGIN,
+        });
+        // Invalidate the cached viewport texture so the tree shows next frame.
+        self.viewport_tex = None;
+        self.push_undo(UndoEntry::GrowTree { name: name.clone(), count });
+        let receipt = format!("Grew a {name} ({count} points) — undo with Ctrl+Z");
+        self.log_receipt(receipt.clone());
+        self.push_output_log(format!("[floraprime] {receipt}"));
+    }
+
+    /// Append a line to the Output Log, capping it at [`HISTORY_CAP`].
+    fn push_output_log(&mut self, line: String) {
+        self.output_log.push(line);
+        let overflow = self.output_log.len().saturating_sub(HISTORY_CAP);
+        if overflow > 0 {
+            self.output_log.drain(0..overflow);
         }
     }
 
@@ -2368,7 +2495,8 @@ mod tests {
             "a single 10-frame drag must coalesce into ONE undo entry, got {}",
             shell.undo_stack.len()
         );
-        let UndoEntry::ParamSet { prev: entry_prev, next, .. } = shell.undo_stack.last().unwrap();
+        let UndoEntry::ParamSet { prev: entry_prev, next, .. } = shell.undo_stack.last().unwrap()
+        else { panic!("expected a ParamSet undo entry") };
         assert_eq!(*entry_prev, original, "the coalesced entry's prev must be the ORIGINAL value");
         assert_eq!(*next, 190.0, "the coalesced entry's next must be the final drag value");
 
@@ -2422,11 +2550,13 @@ mod tests {
             shell.undo_stack.len()
         );
         // The intent entry (middle of the stack) is intact: prev=100, next=200.
-        let UndoEntry::ParamSet { prev: i_prev, next: i_next, .. } = &shell.undo_stack[1];
+        let UndoEntry::ParamSet { prev: i_prev, next: i_next, .. } = &shell.undo_stack[1]
+        else { panic!("expected a ParamSet undo entry") };
         assert_eq!(*i_prev, 100.0, "intent entry prev must survive (100)");
         assert_eq!(*i_next, 200.0, "intent entry next must survive (200) — not overwritten by drag2");
         // The drag2 entry is its own fresh entry: prev=200, next=150.
-        let UndoEntry::ParamSet { prev: d2_prev, next: d2_next, .. } = &shell.undo_stack[2];
+        let UndoEntry::ParamSet { prev: d2_prev, next: d2_next, .. } = &shell.undo_stack[2]
+        else { panic!("expected a ParamSet undo entry") };
         assert_eq!(*d2_prev, 200.0);
         assert_eq!(*d2_next, 150.0);
     }
@@ -2449,9 +2579,11 @@ mod tests {
 
         // The SURVIVORS are the most recent: the newest undo entry's `next` is the last
         // value set (249 -> 249), and the oldest survivor is from iteration 50.
-        let UndoEntry::ParamSet { next, .. } = shell.undo_stack.last().unwrap();
+        let UndoEntry::ParamSet { next, .. } = shell.undo_stack.last().unwrap()
+        else { panic!("expected a ParamSet undo entry") };
         assert_eq!(*next, 249.0, "newest undo entry must be the last edit (seed=249)");
-        let UndoEntry::ParamSet { next: oldest_next, .. } = shell.undo_stack.first().unwrap();
+        let UndoEntry::ParamSet { next: oldest_next, .. } = shell.undo_stack.first().unwrap()
+        else { panic!("expected a ParamSet undo entry") };
         assert_eq!(*oldest_next, 50.0, "oldest survivor must be iteration 50 (the first 50 were dropped)");
 
         // The newest receipt names the last edit too.
@@ -2564,6 +2696,98 @@ mod tests {
             lit > 80,
             "the assistant receipt strip must light status.success text pixels in the modal (got {lit})"
         );
+    }
+
+    // === FloraPrime: Grow tree → real splats in the live world ===
+
+    /// GROW (end-to-end through the real drain path): a tree FloraPrime grew (pushed
+    /// onto the shell's grow-sink) is planted by draining `flora_sink` into a
+    /// GrowTree request and applying it. The world count increments, the viewport
+    /// overlay grows by the tree's splat count, and the receipt text is exact.
+    #[test]
+    fn grow_tree_plants_splats_and_world_entity_through_drain() {
+        let mut shell = EditorShell::default();
+        let world_before = shell.entities.len();
+        let overlay_before = shell.tree_overlay.len();
+        assert_eq!(overlay_before, 0, "no grown splats before growing");
+
+        // FloraPrime's grow() pushes a GrownTree onto the SAME sink the shell holds.
+        let mut flora = plugins::FloraPrimePlugin::with_grow_sink(shell.flora_sink.clone());
+        flora.grow(); // default species: Silver Birch, Medium (200 nodes)
+        let grown_count = shell.flora_sink.borrow()[0].splats.len();
+        assert_eq!(grown_count, 200, "grown Silver Birch has 200 splats");
+
+        // The shell drains the sink into a GrowTree request, then applies it — the
+        // exact path EditorShell::ui runs each frame.
+        let grown: Vec<GrownTree> = shell.flora_sink.borrow_mut().drain(..).collect();
+        for tree in grown {
+            shell.requests.borrow_mut().push(ShellRequest::GrowTree(tree));
+        }
+        shell.drain_requests();
+
+        // World count incremented by one; the new entity is named "Silver Birch 01".
+        assert_eq!(shell.entities.len(), world_before + 1, "world grows by one entity");
+        assert_eq!(shell.entities.last().unwrap().name, "Silver Birch 01");
+        // The viewport overlay grew by EXACTLY the tree's splat count.
+        assert_eq!(
+            shell.tree_overlay.len(),
+            overlay_before + grown_count,
+            "overlay must grow by the tree's splat count"
+        );
+        // The receipt reads in the domain language (matches the landed conventions).
+        assert_eq!(
+            shell.assistant_log.last().unwrap(),
+            &format!("Grew a Silver Birch 01 ({grown_count} points) — undo with Ctrl+Z")
+        );
+    }
+
+    /// UNDO: after growing a tree, undo restores the world count AND the viewport
+    /// overlay EXACTLY to their pre-grow state (the specific splats are gone).
+    #[test]
+    fn undo_removes_grown_tree_splats_and_world_entity() {
+        let mut shell = EditorShell::default();
+        let world_before = shell.entities.len();
+        let overlay_before = shell.tree_overlay.len();
+
+        shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        let after_count = shell.tree_overlay.len();
+        assert!(after_count > overlay_before, "growing adds overlay splats");
+        assert_eq!(shell.entities.len(), world_before + 1);
+        assert_eq!(shell.undo_stack.len(), 1, "growing pushes exactly one undo entry");
+
+        // Undo via the one-command-surface (edit.undo queues a request the shell drains).
+        assert!(shell.registry.run("edit.undo"));
+        shell.drain_requests();
+        assert_eq!(
+            shell.tree_overlay.len(),
+            overlay_before,
+            "undo must restore the overlay to its EXACT pre-grow length"
+        );
+        assert_eq!(
+            shell.entities.len(),
+            world_before,
+            "undo must remove the grown tree's World entity"
+        );
+        assert!(
+            !shell.entities.iter().any(|e| e.name == "Silver Birch 01"),
+            "the grown entity must be gone after undo"
+        );
+        // The undo receipt names the removed tree and its exact splat count.
+        assert_eq!(
+            shell.assistant_log.last().unwrap(),
+            &format!("Removed Silver Birch 01 ({after_count} points) from the world")
+        );
+    }
+
+    /// Two grows produce two distinctly-numbered entities ("…01", "…02").
+    #[test]
+    fn two_grows_produce_incrementing_named_entities() {
+        let mut shell = EditorShell::default();
+        shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        let names: Vec<&str> = shell.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"Silver Birch 01"), "first grow names …01; have {names:?}");
+        assert!(names.contains(&"Silver Birch 02"), "second grow names …02; have {names:?}");
     }
 
     /// Render the full shell with BOTH plugins installed and `focus` tab active.

@@ -94,7 +94,17 @@ pub fn build_scene() -> Vec<GaussianSplat> {
 /// Rasterize the scene to an RGBA8 buffer (row-major, 4 bytes/px) at
 /// [`VIEW_W`]x[`VIEW_H`], looking down the -Z axis at the scene.
 pub fn render_scene_rgba() -> Vec<u8> {
-    let splats = build_scene();
+    render_scene_rgba_with(&[])
+}
+
+/// Like [`render_scene_rgba`] but composites an additive `overlay` of splats
+/// (e.g. a grown FloraPrime tree the shell owns) ON TOP of the base
+/// [`build_scene`]. The base scene stays fixed; the overlay is what the shell
+/// grows/undoes, so a grown tree's splats render in the SAME spectral pipeline as
+/// the rest of the viewport.
+pub fn render_scene_rgba_with(overlay: &[GaussianSplat]) -> Vec<u8> {
+    let mut splats = build_scene();
+    splats.extend_from_slice(overlay);
     let eye = Vec3::new(0.0, 1.2, 6.0);
     let target = Vec3::new(0.0, 0.0, -6.0);
     let camera = RenderCamera {
@@ -124,13 +134,20 @@ pub fn render_scene_rgba() -> Vec<u8> {
     out
 }
 
-/// Build (or reuse) the viewport scene texture on `ctx`. The handle is cached in
-/// `cache`; the first call rasterizes the scene and uploads it.
-pub fn scene_texture(ctx: &egui::Context, cache: &mut Option<egui::TextureHandle>) -> egui::TextureHandle {
+/// Build (or reuse) the viewport scene texture on `ctx`, compositing `overlay`
+/// (the shell-owned grown splats) over the base scene. The handle is cached in
+/// `cache`; the first call (or the first after the shell invalidates the cache by
+/// setting it to `None`, e.g. after growing/undoing a tree) rasterizes the scene
+/// + overlay and uploads it.
+pub fn scene_texture(
+    ctx: &egui::Context,
+    cache: &mut Option<egui::TextureHandle>,
+    overlay: &[GaussianSplat],
+) -> egui::TextureHandle {
     if let Some(h) = cache {
         return h.clone();
     }
-    let rgba = render_scene_rgba();
+    let rgba = render_scene_rgba_with(overlay);
     let color =
         egui::ColorImage::from_rgba_unmultiplied([VIEW_W, VIEW_H], &rgba);
     let handle = ctx.load_texture("viewport_scene", color, egui::TextureOptions::LINEAR);
@@ -173,5 +190,36 @@ mod tests {
             "rendered scene has only {non_bg} non-background pixels (expected >5000)"
         );
         assert!(var > 50.0, "rendered scene is too flat (variance {var:.1})");
+    }
+
+    /// An overlay of grown-tree splats adds visible pixels: the composited frame
+    /// (base + overlay) lights MORE non-background pixels than the base alone, and
+    /// the base is recovered exactly when the overlay is empty.
+    #[test]
+    fn overlay_adds_visible_pixels_over_base() {
+        use crate::shell::plugins::{grow_tree_skeleton, skeleton_to_splats};
+        let count_non_bg = |rgba: &[u8]| -> usize {
+            let bg = [16i32, 18, 26];
+            rgba.chunks_exact(4)
+                .filter(|px| (0..3).map(|i| (px[i] as i32 - bg[i]).abs()).max().unwrap() > 12)
+                .count()
+        };
+        // Empty overlay reproduces the base frame byte-for-byte.
+        assert_eq!(
+            render_scene_rgba_with(&[]),
+            render_scene_rgba(),
+            "empty overlay must reproduce the base scene exactly"
+        );
+        let base_non_bg = count_non_bg(&render_scene_rgba());
+
+        // A grown Silver Birch overlay must add visible pixels.
+        let skel = grow_tree_skeleton(0, 3.0, 200);
+        let tree = skeleton_to_splats(&skel, "broadleaf", 0);
+        assert!(!tree.is_empty());
+        let with_tree_non_bg = count_non_bg(&render_scene_rgba_with(&tree));
+        assert!(
+            with_tree_non_bg > base_non_bg + 200,
+            "grown tree overlay must add visible pixels (base {base_non_bg}, with tree {with_tree_non_bg})"
+        );
     }
 }

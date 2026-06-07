@@ -14,8 +14,10 @@
 
 use super::command_palette::Command;
 use super::host::{EditorPlugin, PluginCtx, TabDecl};
+use glam::Quat;
 use std::cell::RefCell;
 use std::rc::Rc;
+use vox_core::types::GaussianSplat;
 use vox_ui::design::icons::icon;
 use vox_ui::node_canvas::{CanvasGraph, NodeView, WireView};
 use vox_ui::{NodeCategory, PortType};
@@ -412,6 +414,112 @@ pub fn grow_tree_skeleton(species_id: i32, crown_radius_m: f32, n_nodes: usize) 
     }
 }
 
+/// A tree the user grew, ready to plant into the live world: its display-species
+/// label (e.g. "Silver Birch", which the shell numbers per-grow) and the REAL
+/// `GaussianSplat`s built from the skeleton. The shell drains these from
+/// [`FloraPrimePlugin`]'s grow-sink and routes them into the viewport scene
+/// overlay + World panel + undo stack.
+///
+/// (`GaussianSplat` is `Pod` but not `PartialEq`/`Debug`, so this carries only
+/// `Clone`; tests compare splats bytewise via `bytemuck`.)
+#[derive(Clone)]
+pub struct GrownTree {
+    /// The friendly species label (the shell appends an incrementing number).
+    pub species_label: String,
+    /// The deterministic splats built from the grown skeleton.
+    pub splats: Vec<GaussianSplat>,
+}
+
+/// Where a grown tree plants on the demo terrain. v1 uses a FIXED clear spot to
+/// the left of the demo structures (`build_scene` places its amber "buildings"
+/// around x∈[-3,2.5], z∈[-4,-9]); this sits the tree to the LEFT of them at the
+/// scene's focal depth (z=-6), where its crown rises against the dark studio
+/// background above the green ground band, reading as a clear tree silhouette. A
+/// later slice adds "＋ Add to world" click-to-place. The Y offset drops the trunk
+/// base onto the ground band (`build_scene`'s ground sits at y=-1).
+pub const TREE_PLANT_ORIGIN: [f32; 3] = [-4.0, -1.0, -6.0];
+
+/// Convert a grown [`TreeSkeleton`] into REAL `GaussianSplat`s — one volume splat
+/// per skeleton node. Trunk/branch nodes (shallow depth) get a brown-bark
+/// spectrum; crown-tip nodes (the deepest third of the branch depth) get a leaf
+/// spectrum whose green band rises for broadleaf and darkens for conifer. Splat
+/// scale follows the node's branch radius (derived from its distance off the
+/// trunk axis), and every node is translated by [`TREE_PLANT_ORIGIN`]. Fully
+/// deterministic: same skeleton + class → bit-identical splats.
+///
+/// Spectra are 16-band f16 reflectance, derived the way `viewport::build_scene`
+/// derives its colored splats (a band window high, the rest low), so the tree
+/// reads in the SAME spectral pipeline as the rest of the scene.
+pub fn skeleton_to_splats(skeleton: &TreeSkeleton, class: &str, species_id: i32) -> Vec<GaussianSplat> {
+    // Band window helper: value `hi` inside `window`, `lo` outside → a colored
+    // 16-band reflectance (identical construction to build_scene's `spd`).
+    let spd = |window: std::ops::RangeInclusive<usize>, hi: f32, lo: f32| -> [u16; 16] {
+        std::array::from_fn(|i| {
+            let v = if window.contains(&i) { hi } else { lo };
+            half::f16::from_f32(v).to_bits()
+        })
+    };
+
+    // Brown bark: warm long-wavelength bias, muted (low overall reflectance).
+    let bark = spd(10..=13, 0.42, 0.12);
+    // Leaf spectra by class. Green = mid bands high. The window is NARROWER and
+    // the off-band floor LOWER than `build_scene`'s broad, muted ground green
+    // (spd(5..=9, 0.85, 0.18)), so the canopy reads as a saturated emerald that
+    // separates from the ground rather than blending into it. Broadleaf is a
+    // brighter, greener canopy; conifer is darker, slightly blue-green; grass
+    // (the meadow species) is the most vivid green.
+    let leaf = match class {
+        "conifer" => spd(6..=8, 0.6, 0.04),
+        "grass" => spd(6..=8, 0.98, 0.05),
+        _ => spd(6..=8, 0.92, 0.04), // broadleaf (default)
+    };
+
+    // The crown is the deepest third of branch depth — those tips get leaves.
+    let max_depth = skeleton.max_depth.max(1);
+    let crown_from = (max_depth * 2) / 3; // depth >= this → crown/leaf
+
+    // Re-derive per-node depth from the parent pointers (root depth 0). The
+    // skeleton stores parents in strictly-increasing index order (a spanning
+    // tree), so a single forward pass resolves every depth.
+    let mut depth = vec![0usize; skeleton.nodes.len()];
+    for (i, node) in skeleton.nodes.iter().enumerate() {
+        if node.parent != usize::MAX {
+            depth[i] = depth[node.parent] + 1;
+        }
+    }
+
+    let mut splats = Vec::with_capacity(skeleton.nodes.len());
+    for (i, node) in skeleton.nodes.iter().enumerate() {
+        let d = depth[i];
+        let is_crown = d >= crown_from && node.parent != usize::MAX;
+        // Branch radius proxy: distance from the trunk axis (x,z) sets how thick
+        // the splat is. Trunk/branch splats are slim cylinders-ish; crown tips
+        // are puffy leaf clusters. species_id nudges the leaf puffiness so two
+        // species of the same class still differ slightly in canopy density.
+        let off = (node.pos[0] * node.pos[0] + node.pos[2] * node.pos[2]).sqrt();
+        let (scale, opacity, spectral) = if is_crown {
+            // Crown tips are puffy leaf clusters — large enough to merge into a
+            // readable canopy silhouette in the splat rasterizer. species_id nudges
+            // density so two species of the same class still differ.
+            let puff = 0.34 + 0.05 * ((species_id.unsigned_abs() % 4) as f32) + 0.04 * off;
+            ([puff, puff, puff], 245u8, leaf)
+        } else {
+            // Trunk/branch: a solid bark column. Thickness tapers slightly toward
+            // the tips (off-axis distance) but keeps a generous floor so the trunk
+            // reads as a continuous stem, not scattered dots.
+            let thick = (0.30 - 0.02 * off).max(0.14);
+            ([thick, thick * 1.5, thick], 255u8, bark)
+        };
+        let pos = [
+            node.pos[0] + TREE_PLANT_ORIGIN[0],
+            node.pos[1] + TREE_PLANT_ORIGIN[1],
+            node.pos[2] + TREE_PLANT_ORIGIN[2],
+        ];
+        splats.push(GaussianSplat::volume(pos, scale, Quat::IDENTITY, opacity, spectral));
+    }
+    splats
+}
+
 /// The live state of the vegetation generation job — the panel's readout cycles
 /// idle → queued → preview as the user grows a tree.
 #[derive(Clone, Debug, PartialEq)]
@@ -440,6 +548,11 @@ pub struct FloraPrimePlugin {
     /// Flipped true when `floraprime.generate_tree` runs (the install/palette
     /// test reads it to prove the command executes).
     pub generated: Rc<RefCell<bool>>,
+    /// Grown trees waiting for the host to plant them in the live world. `grow()`
+    /// pushes one `GrownTree` (species label + real splats) here; the shell drains
+    /// it each frame into the viewport overlay + World panel + undo stack. Shared
+    /// (cloned) so the host can hold the SAME queue this plugin writes to.
+    pub grow_sink: Rc<RefCell<Vec<GrownTree>>>,
 }
 
 impl Default for FloraPrimePlugin {
@@ -450,6 +563,7 @@ impl Default for FloraPrimePlugin {
             detail_idx: 1,       // Medium / n_nodes=200 (the real default)
             state: GenState::Idle,
             generated: Rc::new(RefCell::new(false)),
+            grow_sink: Rc::new(RefCell::new(Vec::new())),
         }
     }
 }
@@ -457,6 +571,16 @@ impl Default for FloraPrimePlugin {
 impl FloraPrimePlugin {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build a FloraPrime plugin that writes grown trees into the SHARED `sink`,
+    /// so the host can drain the SAME queue this plugin's "Grow tree" button fills.
+    /// The host clones its own handle to `sink` before constructing this.
+    pub fn with_grow_sink(sink: Rc<RefCell<Vec<GrownTree>>>) -> Self {
+        FloraPrimePlugin {
+            grow_sink: sink,
+            ..Self::default()
+        }
     }
 
     /// The currently-selected job params resolved to the real `sample_tree`
@@ -467,12 +591,22 @@ impl FloraPrimePlugin {
         (species_id, self.crown_radius_m, n_nodes)
     }
 
-    /// Run the (stub) sampler for the current params and move the readout to
-    /// `Preview`. The same path the `floraprime.generate_tree` command drives.
+    /// Run the (stub) sampler for the current params, move the readout to
+    /// `Preview`, AND emit a [`GrownTree`] (species label + real splats) onto the
+    /// grow-sink for the host to plant into the live world. The same path the
+    /// `floraprime.generate_tree` command drives.
     pub fn grow(&mut self) {
         let (species_id, crown_radius_m, n_nodes) = self.job_params();
+        let (label, _, class) = FLORAPRIME_SPECIES[self.species_idx];
         self.state = GenState::Queued;
         let skeleton = grow_tree_skeleton(species_id, crown_radius_m, n_nodes);
+        // Build the REAL splats from the skeleton and hand them to the host to
+        // plant — this is the close-the-loop step: a tree the user can SEE.
+        let splats = skeleton_to_splats(&skeleton, class, species_id);
+        self.grow_sink.borrow_mut().push(GrownTree {
+            species_label: label.to_string(),
+            splats,
+        });
         self.state = GenState::Preview(skeleton);
         *self.generated.borrow_mut() = true;
     }
@@ -855,5 +989,121 @@ mod tests {
         // Detail presets map to the real n_nodes sampler args.
         let nodes: Vec<usize> = FLORAPRIME_DETAIL.iter().map(|(_, n)| *n).collect();
         assert_eq!(nodes, vec![100, 200, 400]);
+    }
+
+    // ---- skeleton → splats ---------------------------------------------------
+
+    /// Field-by-field splat equality (GaussianSplat is Pod but not PartialEq):
+    /// position, scales, opacity and every spectral band must match.
+    fn splats_eq(a: &GaussianSplat, b: &GaussianSplat) -> bool {
+        a.position() == b.position()
+            && a.scales() == b.scales()
+            && a.opacity() == b.opacity()
+            && a.spectral() == b.spectral()
+    }
+
+    #[test]
+    fn skeleton_to_splats_has_one_splat_per_node() {
+        // Every skeleton node becomes exactly one splat — a Medium tree (200 nodes)
+        // yields 200 splats, which reads as a tree silhouette in the viewport.
+        let s = grow_tree_skeleton(0, 3.0, 200);
+        let splats = skeleton_to_splats(&s, "broadleaf", 0);
+        assert_eq!(splats.len(), 200, "one splat per skeleton node");
+        assert_eq!(splats.len(), s.nodes.len());
+    }
+
+    #[test]
+    fn crown_splats_are_greener_than_trunk_splats() {
+        // The leaf (crown) spectra must read GREENER than the brown-bark trunk
+        // spectra: the crown's mid (green) band exceeds the trunk's, AND the trunk's
+        // long-wavelength (red/bark) band exceeds the crown's. Derive depth to split
+        // trunk vs crown the same way the converter does.
+        let s = grow_tree_skeleton(0, 3.0, 200);
+        let splats = skeleton_to_splats(&s, "broadleaf", 0);
+        let mut depth = vec![0usize; s.nodes.len()];
+        for (i, n) in s.nodes.iter().enumerate() {
+            if n.parent != usize::MAX {
+                depth[i] = depth[n.parent] + 1;
+            }
+        }
+        let crown_from = (s.max_depth.max(1) * 2) / 3;
+        // Average the green band (7) and a bark band (12) over trunk vs crown.
+        let (mut trunk_green, mut trunk_bark, mut nt) = (0f32, 0f32, 0f32);
+        let (mut crown_green, mut crown_bark, mut nc) = (0f32, 0f32, 0f32);
+        for (i, sp) in splats.iter().enumerate() {
+            let g = sp.spectral_f32(7);
+            let bark = sp.spectral_f32(12);
+            if depth[i] >= crown_from && s.nodes[i].parent != usize::MAX {
+                crown_green += g;
+                crown_bark += bark;
+                nc += 1.0;
+            } else {
+                trunk_green += g;
+                trunk_bark += bark;
+                nt += 1.0;
+            }
+        }
+        assert!(nt > 0.0 && nc > 0.0, "tree must have both trunk and crown splats");
+        let (cg, tg) = (crown_green / nc, trunk_green / nt);
+        let (cb, tb) = (crown_bark / nc, trunk_bark / nt);
+        assert!(cg > tg, "crown green band ({cg:.3}) must exceed trunk green band ({tg:.3})");
+        assert!(tb > cb, "trunk bark band ({tb:.3}) must exceed crown bark band ({cb:.3})");
+    }
+
+    #[test]
+    fn broadleaf_crown_greener_than_conifer_crown() {
+        // Class drives the leaf spectrum: a broadleaf canopy's green band is
+        // brighter than a conifer's darker needles (same skeleton).
+        let s = grow_tree_skeleton(0, 3.0, 200);
+        let broad = skeleton_to_splats(&s, "broadleaf", 0);
+        let conifer = skeleton_to_splats(&s, "conifer", 2);
+        // Compare the max green-band reflectance among each tree's splats (the crown
+        // tips). Broadleaf's leaf green (0.8) must exceed conifer's (0.5).
+        let max_green = |v: &[GaussianSplat]| {
+            v.iter().map(|sp| sp.spectral_f32(7)).fold(0.0f32, f32::max)
+        };
+        let bg = max_green(&broad);
+        let cg = max_green(&conifer);
+        assert!(bg > cg, "broadleaf crown green ({bg:.3}) must exceed conifer crown green ({cg:.3})");
+    }
+
+    #[test]
+    fn splat_scale_follows_branch_radius() {
+        // A wider crown radius → larger off-axis spread → larger crown splat scales.
+        // The widest splat of a 6m-crown tree must exceed the widest of a 2m-crown.
+        let small = skeleton_to_splats(&grow_tree_skeleton(0, 2.0, 200), "broadleaf", 0);
+        let large = skeleton_to_splats(&grow_tree_skeleton(0, 6.0, 200), "broadleaf", 0);
+        let max_scale = |v: &[GaussianSplat]| {
+            v.iter().map(|sp| sp.scales()[0]).fold(0.0f32, f32::max)
+        };
+        let ms = max_scale(&small);
+        let ml = max_scale(&large);
+        assert!(ml > ms, "6m-crown max splat scale ({ml:.3}) must exceed 2m-crown ({ms:.3})");
+    }
+
+    #[test]
+    fn skeleton_to_splats_is_deterministic() {
+        // Same skeleton + class + species → bit-identical splats (no rand).
+        let s = grow_tree_skeleton(1, 3.5, 200);
+        let a = skeleton_to_splats(&s, "broadleaf", 1);
+        let b = skeleton_to_splats(&s, "broadleaf", 1);
+        assert_eq!(a.len(), b.len());
+        assert!(
+            a.iter().zip(b.iter()).all(|(x, y)| splats_eq(x, y)),
+            "identical inputs must produce bit-identical splats"
+        );
+    }
+
+    #[test]
+    fn grow_emits_a_grown_tree_onto_the_sink() {
+        // The UI grow() path must push a GrownTree (species label + real splats)
+        // onto the shared grow-sink so the host can plant it.
+        let mut p = FloraPrimePlugin::new(); // defaults: Silver Birch, 3.0m, Medium(200)
+        assert!(p.grow_sink.borrow().is_empty());
+        p.grow();
+        let sink = p.grow_sink.borrow();
+        assert_eq!(sink.len(), 1, "grow() must emit exactly one GrownTree");
+        assert_eq!(sink[0].species_label, "Silver Birch");
+        assert_eq!(sink[0].splats.len(), 200, "the grown tree carries one splat per node");
     }
 }
