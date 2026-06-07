@@ -1,4 +1,5 @@
 mod demo_asset;
+pub mod avatar_motion;
 pub mod character_controller;
 pub mod ai_fsm;
 pub mod building_placement;

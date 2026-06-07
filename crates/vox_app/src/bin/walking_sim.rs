@@ -19,6 +19,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use ochroma_engine::engine_loop::{EngineLoop, SystemMask};
+use vox_app::avatar_motion;
 use vox_ai::perception::{BehaviorState, SpectralPerceptionAgent, ZonedRadianceSource};
 use vox_audio::biome_soundscape::{BiomeAmbientMix, BiomeKind};
 use vox_audio::AudioCommand;
@@ -565,6 +566,20 @@ struct WalkingSim {
     player_yaw: f32,
     player_pitch: f32,
 
+    // ---- Avatar motion matching (vox_render::motion_matching consumer) ----
+    // Selects the avatar's animation pose each frame from its REAL locomotion
+    // state (CharacterController velocity + facing yaw) via the engine's
+    // PoseDatabase / nearest_continuing / InertialBlender. The matched state is
+    // surfaced on the HUD/log line and asserted in the smoke.
+    avatar_motion: avatar_motion::AvatarMotion,
+    /// Last pose the matcher selected (for low-cadence HUD/log surfacing).
+    avatar_matched: avatar_motion::MatchedPose,
+    /// Frame-by-frame record of (world velocity, facing yaw) fed to the matcher
+    /// during the run, plus the (clip_id, pose_index) it produced. The smoke
+    /// replays the velocity record into a fresh matcher to prove determinism and
+    /// inspects the clip stream for the walk/idle/continuity assertions.
+    avatar_match_log: Vec<(Vec3, f32, u32, usize)>,
+
     // Game UI
     game_ui: GameUI,
     fps_display: f32,
@@ -767,6 +782,14 @@ impl WalkingSim {
             cc_transform,
             player_yaw: 0.0,
             player_pitch: 0.0,
+            avatar_motion: avatar_motion::AvatarMotion::new(),
+            avatar_matched: avatar_motion::MatchedPose {
+                clip_id: avatar_motion::CLIP_IDLE,
+                pose_index: 0,
+                root_speed: 0.0,
+                clip_changed: false,
+            },
+            avatar_match_log: Vec::new(),
             game_ui,
             fps_display: 0.0,
             win_time: 0.0,
@@ -1401,6 +1424,35 @@ impl WalkingSim {
         let cam_fwd = self.forward();
         self.loop_.shadow_mapper
             .update(self.cc_transform.position, cam_fwd, sun_dir);
+
+        // ---------------------------------------------------------------
+        // 2b. Avatar motion matching: select the avatar's animation pose from
+        //     its REAL locomotion state. cc.velocity is the CharacterController's
+        //     post-integration velocity (XZ = move_input * speed, so ~0 when
+        //     standing and ~speed when walking); player_yaw is the heading. The
+        //     engine's PoseDatabase picks idle/walk/run with hysteresis and the
+        //     InertialBlender smooths clip transitions. We record the input +
+        //     result so the smoke can replay it for the determinism assertion.
+        // ---------------------------------------------------------------
+        let avatar_vel = self.cc.velocity;
+        let matched = self
+            .avatar_motion
+            .tick(avatar_vel, self.player_yaw, dt);
+        self.avatar_matched = matched;
+        self.avatar_match_log
+            .push((avatar_vel, self.player_yaw, matched.clip_id, matched.pose_index));
+        // Surface the matched pose at a low cadence (every 30 frames) on a log
+        // line, mirroring the binary's other periodic progress prints. A clip
+        // change is always announced so transitions are visible.
+        if matched.clip_changed || self.gi_frame_counter.is_multiple_of(30) {
+            println!(
+                "[walking_sim] AvatarMotion: clip={} pose_idx={} root_speed={:.2} m/s (vel={:.2} m/s)",
+                matched.clip_name(),
+                matched.pose_index,
+                matched.root_speed,
+                Vec3::new(avatar_vel.x, 0.0, avatar_vel.z).length(),
+            );
+        }
 
         // ---------------------------------------------------------------
         // 3. Windmill animation tick. The script-driven speed multiplier scales
@@ -2208,6 +2260,137 @@ fn run_smoke() {
         // Render every frame to exercise the full compositor path with evolving
         // state; the frame checked below is re-captured after the script phases.
         app.render();
+    }
+
+    // ===================================================================
+    // AVATAR MOTION MATCHING SMOKE (vox_render::motion_matching consumer)
+    // -------------------------------------------------------------------
+    // The per-frame loop above ticked app.avatar_motion with the REAL
+    // CharacterController velocity + facing each frame, recording
+    // (world_velocity, yaw, matched_clip, matched_pose_index) into
+    // avatar_match_log. The scripted walk holds W for frames 0..walk_frames
+    // (velocity ~= cc.speed) then releases it (velocity ~= 0). We assert:
+    //   1. the WALK clip dominates the walking segment (> 70%),
+    //   2. the matcher lands on IDLE within 30 frames of the player stopping,
+    //   3. the matched stream is continuing (no backward pose jumps in-clip),
+    //   4. replaying the recorded velocity sequence into a fresh matcher
+    //      reproduces the identical (clip, pose) stream (determinism).
+    // ===================================================================
+    {
+        let log = &app.avatar_match_log;
+        assert!(
+            log.len() >= walk_frames as usize,
+            "avatar match log only has {} entries (< {} walk frames) — matcher not ticked per frame",
+            log.len(),
+            walk_frames
+        );
+
+        // --- Assertion 1: walk clip dominates the walking segment. ---
+        // A "walking frame" is one whose recorded horizontal velocity exceeds a
+        // clearly-moving threshold (well above idle, below run). We count only
+        // genuinely-moving frames so a stray stationary frame at a yaw flip does
+        // not dilute the ratio.
+        let mut walking_frames = 0u32;
+        let mut walk_clip_frames = 0u32;
+        for &(vel, _yaw, clip, _idx) in log.iter().take(walk_frames as usize) {
+            let hspeed = Vec3::new(vel.x, 0.0, vel.z).length();
+            if hspeed > 2.0 {
+                walking_frames += 1;
+                if clip == avatar_motion::CLIP_WALK {
+                    walk_clip_frames += 1;
+                }
+            }
+        }
+        let walk_ratio = if walking_frames > 0 {
+            walk_clip_frames as f32 / walking_frames as f32
+        } else {
+            0.0
+        };
+
+        // --- Assertion 2: idle reached within 30 frames of stopping. ---
+        // The player stops when W is released at frame `walk_frames`. Find the
+        // first frame at/after that whose recorded velocity is ~0 (the stop),
+        // then scan forward for the first IDLE match; require it within 30.
+        let stop_frame = (0..log.len()).find(|&i| {
+            i >= walk_frames as usize
+                && Vec3::new(log[i].0.x, 0.0, log[i].0.z).length() < 0.5
+        });
+        let frames_to_idle = stop_frame.and_then(|s| {
+            (s..log.len())
+                .find(|&i| log[i].2 == avatar_motion::CLIP_IDLE)
+                .map(|i| i - s)
+        });
+
+        // --- Assertion 3: continuing stream (no backward in-clip jumps). ---
+        let stream: Vec<(u32, usize)> = log.iter().map(|&(_, _, c, i)| (c, i)).collect();
+        let continuity_violations =
+            avatar_motion::continuity_violations(&app.avatar_motion, &stream);
+
+        // --- Assertion 4: determinism. Replay the recorded velocity/yaw
+        //     sequence into a brand-new matcher; the (clip, pose) stream must be
+        //     bit-identical. ---
+        let mut replay = avatar_motion::AvatarMotion::new();
+        let replay_stream: Vec<(u32, usize)> = log
+            .iter()
+            .map(|&(vel, yaw, _, _)| {
+                let m = replay.tick(vel, yaw, dt);
+                (m.clip_id, m.pose_index)
+            })
+            .collect();
+        let determinism_matches = replay_stream == stream;
+
+        // Distinct clips seen overall (proves the matcher exercised more than one
+        // clip across the run, not pinned to a constant).
+        let distinct_clips: std::collections::HashSet<u32> =
+            stream.iter().map(|&(c, _)| c).collect();
+
+        println!(
+            "[walking_sim] AVATAR MOTION: log_frames={} walking_frames={} walk_clip_frames={} walk_ratio={:.0}% frames_to_idle={:?} continuity_violations={} determinism_ok={} distinct_clips={} db_poses={} (idle={} walk={} run={})",
+            log.len(),
+            walking_frames,
+            walk_clip_frames,
+            walk_ratio * 100.0,
+            frames_to_idle,
+            continuity_violations,
+            determinism_matches,
+            distinct_clips.len(),
+            app.avatar_motion.pose_count(),
+            app.avatar_motion.pose_count_for(avatar_motion::CLIP_IDLE),
+            app.avatar_motion.pose_count_for(avatar_motion::CLIP_WALK),
+            app.avatar_motion.pose_count_for(avatar_motion::CLIP_RUN),
+        );
+
+        assert!(
+            walking_frames > 0,
+            "no walking frames recorded — scripted walk produced no velocity"
+        );
+        assert!(
+            walk_ratio > 0.70,
+            "WALK clip selected for only {:.0}% of {} walking frames (<= 70%) — motion matching not selecting walk while walking",
+            walk_ratio * 100.0,
+            walking_frames
+        );
+        let ttl_idle = frames_to_idle
+            .expect("matcher never reached IDLE after the player stopped — idle clip unreachable");
+        assert!(
+            ttl_idle <= 30,
+            "matcher took {} frames to reach IDLE after stopping (> 30) — hysteresis stuck",
+            ttl_idle
+        );
+        assert_eq!(
+            continuity_violations, 0,
+            "matched pose stream had {} backward in-clip jumps — stream not continuing",
+            continuity_violations
+        );
+        assert!(
+            determinism_matches,
+            "replaying the recorded velocity sequence produced a DIFFERENT match stream — matcher non-deterministic"
+        );
+        assert!(
+            distinct_clips.len() >= 2,
+            "matcher only ever selected {} clip(s) — never transitioned between locomotion states",
+            distinct_clips.len()
+        );
     }
 
     // ===================================================================
