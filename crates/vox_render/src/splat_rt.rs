@@ -20,7 +20,8 @@
 //!
 //! The GPU port reuses this exact `RayHit` math and `composite` ordering inside
 //! a hardware-BVH any-hit shader; the `clas::SplatCluster` BVH traversed here
-//! is the same acceleration structure the rasterizer's CLAS path already uses.
+//! is the same acceleration structure the atom-budget splat renderer already
+//! uses for LOD selection (the EWA rasterizer itself is BVH-free).
 
 use glam::{Mat3, Quat, Vec3};
 use vox_core::types::GaussianSplat;
@@ -808,7 +809,10 @@ mod tests {
     /// luma the rasterizer uses, and require (a) total luma within a measured
     /// tolerance and (b) the brightest pixel at the same coordinate. We place
     /// the camera head-on so EWA projection and world-space tracing agree
-    /// closely; the measured total-luma difference is ~3.0% (asserted at 20%),
+    /// closely; the measured total-luma difference is ~3.0% (asserted at 6% —
+    /// wave-11 showed a 20% band passes even a 1.5x-too-bright compositor that
+    /// drops transmittance, because sRGB gamma compresses radiance error; 6%
+    /// is double the real residual yet rejects the 1.2x case at rel=0.067),
     /// the residual coming from the perspective-vs-orthographic footprint
     /// difference and 8-bit quantization. The brightest pixel lands at the same
     /// coordinate (within 2px) in both paths.
@@ -892,11 +896,14 @@ mod tests {
         assert!(ras_total > 0.0, "rasterizer produced an empty image");
         assert!(rt_total > 0.0, "RT renderer produced an empty image");
 
-        // (a) Integrated radiance agreement within the documented 20% tolerance.
+        // (a) Integrated radiance agreement. 6% = 2x the measured ~3% residual;
+        // wave-11 proved 20% passed a compositor that drops transmittance
+        // entirely (1.5x radiance -> rel=0.197 after gamma compression), while
+        // 6% rejects even the 1.2x case (rel=0.067).
         let rel = (rt_total - ras_total).abs() / ras_total;
         assert!(
-            rel < 0.20,
-            "integrated luma mismatch: RT {} vs raster {} (rel {:.3} > 0.20)",
+            rel < 0.06,
+            "integrated luma mismatch: RT {} vs raster {} (rel {:.3} > 0.06)",
             rt_total,
             ras_total,
             rel

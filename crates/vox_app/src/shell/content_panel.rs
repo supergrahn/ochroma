@@ -224,14 +224,23 @@ pub fn format_count(n: u32) -> String {
 /// True if `c` is a Unicode combining mark (general category Mn — nonspacing
 /// mark) over the ranges that occur in practice. `std` exposes no
 /// general-category query, and we deliberately avoid a `unicode-segmentation`
-/// dependency for a cosmetic label helper; instead we match the common combining
-/// blocks explicitly (finding [7]): Combining Diacritical Marks (U+0300–U+036F),
-/// Extended (U+1AB0–U+1AFF), and Supplement (U+20D0–U+20FF). A mark in one of
-/// these ranges attaches to the PRECEDING base character, so it must never be
+/// dependency for a cosmetic label helper; instead we match the combining
+/// blocks explicitly (findings [7] + wave-11): Combining Diacritical Marks
+/// (U+0300–U+036F), Extended (U+1AB0–U+1AFF), Supplement (U+20D0–U+20FF),
+/// Hebrew points/accents (U+0591–U+05C7), Arabic harakat (U+064B–U+065F,
+/// U+0670), Thai vowel/tone marks (U+0E31, U+0E34–U+0E3A, U+0E47–U+0E4E), and
+/// Devanagari signs/matras (U+0900–U+0903, U+093A–U+094F, U+0951–U+0957).
+/// Still not the full Unicode Mn category — scripts beyond these (Khmer,
+/// Myanmar, …) remain a documented cosmetic limitation. A mark in one of these
+/// ranges attaches to the PRECEDING base character, so it must never be
 /// orphaned onto the ellipsis.
 fn is_combining_mark(c: char) -> bool {
     matches!(c as u32,
-        0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x20D0..=0x20FF)
+        0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x20D0..=0x20FF
+        | 0x0591..=0x05C7
+        | 0x064B..=0x065F | 0x0670
+        | 0x0E31 | 0x0E34..=0x0E3A | 0x0E47..=0x0E4E
+        | 0x0900..=0x0903 | 0x093A..=0x094F | 0x0951..=0x0957)
 }
 
 /// Truncate a name in the middle so both the stem start and the extension stay
@@ -520,6 +529,37 @@ mod tests {
             );
         }
         assert!(out.ends_with(".vxm"), "extension survives: {out:?}");
+    }
+
+    /// Wave-11: non-Latin combining marks (Hebrew points, Thai vowel marks,
+    /// Arabic harakat, Devanagari matras) must not be orphaned either — the
+    /// original fix only covered the three Latin/symbol blocks.
+    #[test]
+    fn truncate_middle_handles_non_latin_combining_marks() {
+        for (script, name) in [
+            ("hebrew", "\u{05D0}\u{0591}\u{05D1}\u{0591}\u{05D2}\u{0591}\u{05D3}\u{0591}\u{05D4}\u{0591}\u{05D5}\u{0591}.vxm"),
+            ("thai", "\u{0E01}\u{0E31}\u{0E02}\u{0E31}\u{0E03}\u{0E31}\u{0E04}\u{0E31}\u{0E05}\u{0E31}\u{0E07}\u{0E31}.vxm"),
+            ("arabic", "\u{0628}\u{064E}\u{062A}\u{064E}\u{062B}\u{064E}\u{062C}\u{064E}\u{062D}\u{064E}\u{062E}\u{064E}.vxm"),
+            ("devanagari", "\u{0915}\u{093F}\u{0916}\u{093F}\u{0917}\u{093F}\u{0918}\u{093F}\u{0919}\u{093F}\u{091A}\u{093F}.vxm"),
+        ] {
+            let out = truncate_middle(name, 12);
+            assert!(out.contains('\u{2026}'), "{script}: must be elided: {out:?}");
+            let chars: Vec<char> = out.chars().collect();
+            let ell = chars.iter().position(|&c| c == '\u{2026}').unwrap();
+            if ell > 0 {
+                assert!(
+                    !is_combining_mark(chars[ell - 1]),
+                    "{script}: char before … is an orphaned combining mark: {out:?}"
+                );
+            }
+            if ell + 1 < chars.len() {
+                assert!(
+                    !is_combining_mark(chars[ell + 1]),
+                    "{script}: char after … is an orphaned combining mark: {out:?}"
+                );
+            }
+            assert!(out.ends_with(".vxm"), "{script}: extension survives: {out:?}");
+        }
     }
 
     /// Finding [7] (regression): CJK and emoji names truncate without panic and
