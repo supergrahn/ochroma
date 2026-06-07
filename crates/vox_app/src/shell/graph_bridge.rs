@@ -456,6 +456,19 @@ impl GraphBridge {
             .map(|f| f.value)
     }
 
+    /// The cached display value of param `key` on the CONCRETE node `id` (the
+    /// value the inspector scrub field is bound to for that exact node). `None` if
+    /// the node is not tracked or has no such param. Undo round-trips through this
+    /// so an edit reads back / reverts the node that was actually edited — never a
+    /// different node that merely shares its kind.
+    pub fn param_value_of_node(&self, id: NodeId, key: &str) -> Option<f32> {
+        self.params
+            .iter()
+            .find(|(n, _)| *n == id)
+            .and_then(|(_, fields)| fields.iter().find(|f| f.key == key))
+            .map(|f| f.value)
+    }
+
     /// The id of the first node of the given registry `type_name`, in template
     /// order. The intent executor targets this node for `set`/`adjust`.
     pub fn first_node_of_kind(&self, type_name: &str) -> Option<NodeId> {

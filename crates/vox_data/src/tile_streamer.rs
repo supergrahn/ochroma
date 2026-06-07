@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
+use crate::vxm::VxmError;
 use crate::vxm_v2::{GaussianSplatV2, VxmFileV2};
 
 // ---------------------------------------------------------------------------
@@ -328,8 +329,15 @@ fn process_request(shared: &Shared, req: Request, max_retries: u32) -> LoadedTil
 /// Open + decode a tile, retrying on I/O errors up to `max_retries` extra times.
 /// Returns the number of attempts actually made alongside the result.
 ///
-/// A *decode* failure (file opened, bad contents) is not retried — retrying a
-/// corrupt file would only waste I/O.
+/// Retry policy by failure class:
+///   * an `open()` failure is *transient* I/O — retried;
+///   * a read failure mid-stream (e.g. a truncated / mid-write / partially
+///     copied file → `VxmError::Io(UnexpectedEof)`) is *transient* I/O too —
+///     it is retried, and a final failure is reported as [`StreamError::Io`];
+///   * a genuine *content* error (bad magic, unsupported version, bad
+///     decompression / alignment → any non-`Io` `VxmError`) is terminal and
+///     reported as [`StreamError::Decode`] — retrying a corrupt file would only
+///     waste I/O.
 fn load_tile_with_retries(
     path: &Path,
     max_retries: u32,
@@ -340,11 +348,14 @@ fn load_tile_with_retries(
     for attempt in 1..=total_attempts {
         match std::fs::File::open(path) {
             Ok(file) => {
-                // Opened: decode. Decode errors are terminal (no retry).
-                return match VxmFileV2::read(std::io::BufReader::new(file)) {
-                    Ok(tile) => (attempt, Ok(tile)),
-                    Err(e) => (attempt, Err(StreamError::Decode(e.to_string()))),
-                };
+                match VxmFileV2::read(std::io::BufReader::new(file)) {
+                    Ok(tile) => return (attempt, Ok(tile)),
+                    // Truncated / partial read is transient I/O: record it and
+                    // fall through to retry like an open() failure.
+                    Err(VxmError::Io(e)) => last_io_err = e.to_string(),
+                    // Real content error: terminal, no retry.
+                    Err(e) => return (attempt, Err(StreamError::Decode(e.to_string()))),
+                }
             }
             Err(e) => {
                 last_io_err = e.to_string();
@@ -612,6 +623,35 @@ mod tests {
         assert_eq!(d2.len(), 1);
         assert!(matches!(d2[0].result, Err(StreamError::Io(_))));
         assert_eq!(d2[0].attempts, 3);
+    }
+
+    // --- Truncated file: transient I/O, retried, reported as Io --------------
+
+    #[test]
+    fn truncated_file_retries_then_reports_io() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write a valid tile, then truncate it to half its length so it opens
+        // fine but read_exact hits UnexpectedEof mid-stream → VxmError::Io.
+        let tile = make_tile(100, [1.0, 2.0, 3.0]);
+        let path = write_tile(dir.path(), "truncated.vxm", &tile);
+        let full_len = std::fs::metadata(&path).unwrap().len();
+        assert!(full_len > 1, "tile should have nonzero length");
+        let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.set_len(full_len / 2).unwrap();
+        drop(f);
+
+        // max_retries = 2 → exactly 3 attempts, all transient I/O failures.
+        let s = TileStreamer::new(StreamerConfig { workers: 0, max_retries: 2 });
+        s.request((7, 0, 0), path, 1.0, 1);
+        assert!(s.step_one());
+        let done = s.drain_completed();
+        assert_eq!(done.len(), 1);
+        assert!(
+            matches!(done[0].result, Err(StreamError::Io(_))),
+            "truncated file must be classified Io (transient), got err={:?}",
+            done[0].result.as_ref().err()
+        );
+        assert_eq!(done[0].attempts, 3, "transient I/O must exhaust all retries");
     }
 
     // --- LRU eviction: exact victims, remaining within budget ----------------

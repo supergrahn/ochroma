@@ -392,17 +392,21 @@ pub fn estimate_radiance(
 }
 
 /// Full RGB shading contribution `f(light)` of one light at a shade point:
-/// `attenuation(distance) × color × max(N·L, 0)`. With `normal == ZERO` the
-/// cosine term is 1 (pure radiance), matching the sampler's scalar target so
+/// `attenuation(distance) × color × max(N·L, 0)`. The supplied `normal` is
+/// normalized internally (interpolated/non-unit normals are accepted), so the
+/// cosine term depends only on direction, never on `|normal|`. A `normal` that
+/// is exactly `Vec3::ZERO` — or one that normalizes to zero — takes the
+/// `cos == 1.0` branch (pure radiance), matching the sampler's scalar target so
 /// the brute-force reference is `Σ_i f_i`.
 fn shade_contribution(light: &PointLight, shade_point: Vec3, normal: Vec3) -> [f32; 3] {
     let d = light.position.distance(shade_point);
     let att = light.attenuation(d);
-    let cos = if normal == Vec3::ZERO {
+    let n = normal.normalize_or_zero();
+    let cos = if n == Vec3::ZERO {
         1.0
     } else {
         let to_light = (light.position - shade_point).normalize_or_zero();
-        normal.dot(to_light).max(0.0)
+        n.dot(to_light).max(0.0)
     };
     let s = att * cos;
     [light.color[0] * s, light.color[1] * s, light.color[2] * s]
@@ -505,6 +509,29 @@ mod tests {
                 "zero-attenuation light {far_index} selected on draw {k}"
             );
         }
+    }
+
+    /// A non-unit normal must produce the SAME radiance as the unit normal in
+    /// the same direction — `shade_contribution` normalizes internally, so the
+    /// cosine term never scales with `|normal|`. Before the fix, normal (0,5,0)
+    /// produced exactly 5× the result of (0,1,0).
+    #[test]
+    fn non_unit_normal_matches_unit_normal() {
+        let light = PointLight {
+            position: Vec3::new(0.0, 3.0, 0.0),
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            radius: 10.0,
+        };
+        let shade_point = Vec3::ZERO;
+
+        let unit = shade_contribution(&light, shade_point, Vec3::new(0.0, 1.0, 0.0));
+        let scaled = shade_contribution(&light, shade_point, Vec3::new(0.0, 5.0, 0.0));
+
+        // Bit-equal: same direction, length must be irrelevant.
+        assert_eq!(unit, scaled, "non-unit normal must match unit normal exactly");
+        // And the value is the cosine-enabled (att·1.0) result, not zero/disabled.
+        assert!(unit[0] > 0.0, "cosine-enabled contribution should be positive");
     }
 
     /// Grid path estimate matches full path within 3%; relevant_lights is a

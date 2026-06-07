@@ -24,6 +24,7 @@ use command_palette::{Command, CommandRegistry, PaletteState};
 use egui_dock::{DockArea, DockState, NodeIndex, Style as DockStyle};
 use graph_bridge::GraphBridge;
 use host::{InstalledPlugin, PluginCtx, TabDecl};
+use vox_editor::node_graph::NodeId;
 use std::cell::RefCell;
 use std::rc::Rc;
 use vox_ui::design::icons::icon;
@@ -84,13 +85,17 @@ pub struct ShellEntity {
 
 /// One reversible edit on the shell's undo stack (design UX Principle 2,
 /// "Provenance + reversibility"). Currently every intent/inspector param edit is
-/// a `ParamSet`: re-applying `prev` through the SAME `GraphBridge::apply_param`
-/// path reverts it (the bridge already supports re-applying a param + re-cooking).
+/// a `ParamSet`: re-applying `prev` to the SAME concrete `node_id` through
+/// `GraphBridge::apply_param` reverts it (the bridge already supports re-applying
+/// a param + re-cooking).
 #[derive(Debug, Clone)]
 pub enum UndoEntry {
-    /// A param edit on the first node of `node_kind`: `key` went `prev -> next`.
+    /// A param edit on the concrete node `node_id`: `key` went `prev -> next`.
+    /// Undo replays by `node_id` (NOT by kind) so the exact node that was edited
+    /// is the one reverted — with two nodes of the same kind, a kind-only lookup
+    /// would revert the wrong node or drop the undo entirely.
     ParamSet {
-        node_kind: &'static str,
+        node_id: NodeId,
         key: &'static str,
         target: String,
         prev: f32,
@@ -152,6 +157,14 @@ pub struct EditorShell {
     /// The assistant history strip shown in the palette: a human-readable receipt
     /// line per executed (or rejected) intent, newest last.
     pub assistant_log: Vec<String>,
+    /// Monotonic UI frame counter, bumped once per `ui()`. Used to coalesce a
+    /// continuous inspector drag (many per-frame value changes) into ONE undo
+    /// entry: see [`EditorShell::record_inspector_edit`].
+    frame: u64,
+    /// The last inspector edit's (node, key) and the frame it was recorded on, so a
+    /// drag spanning consecutive frames updates the existing undo entry's `next`
+    /// instead of pushing a new one per frame.
+    last_inspector_edit: Option<(NodeId, &'static str, u64)>,
 }
 
 impl Default for EditorShell {
@@ -203,6 +216,8 @@ impl EditorShell {
             undo_stack: Vec::new(),
             requests,
             assistant_log: Vec::new(),
+            frame: 0,
+            last_inspector_edit: None,
             entities: vec![
                 ShellEntity {
                     name: "Townhouse_Row_03".into(),
@@ -305,6 +320,9 @@ impl EditorShell {
 
     /// Lay out the full shell into an egui context for one frame.
     pub fn ui(&mut self, ctx: &egui::Context) {
+        // Bump the frame counter first thing — inspector-drag coalescing keys off it.
+        self.frame = self.frame.wrapping_add(1);
+
         // Apply any side-effecting requests queued by registry commands last frame
         // (theme swap, tab focus, undo) before laying anything out.
         self.drain_requests();
@@ -329,7 +347,7 @@ impl EditorShell {
         // Ensure the viewport scene texture is uploaded once.
         let viewport_tex = viewport::scene_texture(ctx, &mut self.viewport_tex);
 
-        let mut inspector_undo_edits: Vec<(&'static str, &'static str, String, f32)> = Vec::new();
+        let mut inspector_undo_edits: Vec<(NodeId, &'static str, String, f32)> = Vec::new();
         let mut viewer = ShellViewer {
             tokens: &self.tokens,
             widget_kit: &self.widget_kit,
@@ -349,8 +367,8 @@ impl EditorShell {
         // Route any manual inspector param edits onto the SAME undo stack the AI
         // intents use, so a Properties scrub is Ctrl+Z-reversible (UndoEntry doc
         // invariant).
-        for (node_kind, key, target, prev) in inspector_undo_edits {
-            self.record_inspector_edit(node_kind, key, target, prev);
+        for (node_id, key, target, prev) in inspector_undo_edits {
+            self.record_inspector_edit(node_id, key, target, prev);
         }
 
         // The palette overlays everything (foreground order). It runs commands in
@@ -449,20 +467,25 @@ impl EditorShell {
     /// receipt line "Set <target> <prev> -> <next>". On a rejected edit the
     /// receipt reports the cook failure and nothing is pushed onto the undo stack.
     fn apply_param_intent(&mut self, node_kind: &'static str, key: &'static str, target: &str, value: f32) -> String {
-        let prev = self.bridge.param_value_of_kind(node_kind, key);
-        let Some(prev) = prev else {
+        // Resolve the concrete node the intent targets (first node of the kind),
+        // then drive everything — apply, readback, undo — by that exact id so the
+        // undo round-trips against the same node, exactly like the inspector path.
+        let Some(node_id) = self.bridge.first_node_of_kind(node_kind) else {
+            return format!("There is no {target} to set");
+        };
+        let Some(prev) = self.bridge.param_value_of_node(node_id, key) else {
             return format!("There is no {target} to set");
         };
         if self.bridge.apply_param_by_kind(node_kind, key, value).is_none() {
             return format!("There is no {target} to set");
         }
         // The bridge rounds integer params + may reject; read back what cooked.
-        let applied = self.bridge.param_value_of_kind(node_kind, key).unwrap_or(value);
+        let applied = self.bridge.param_value_of_node(node_id, key).unwrap_or(value);
         if let Some(err) = self.bridge.last_cook_error.clone() {
             return format!("Couldn't set {target}: {err}");
         }
         self.push_undo(UndoEntry::ParamSet {
-            node_kind,
+            node_id,
             key,
             target: target.to_string(),
             prev,
@@ -473,30 +496,68 @@ impl EditorShell {
 
     /// Record a manual inspector param edit (already applied to the bridge by the
     /// Properties scrub) as a reversible [`UndoEntry::ParamSet`], so Ctrl+Z reverts
-    /// it through the SAME `apply_param_by_kind` path as an AI-intent edit. The
-    /// applied (clamped/rounded) value is read back from the bridge; an edit that
-    /// did not actually change the cooked value records nothing.
+    /// it on the SAME concrete `node_id` as an AI-intent edit. The applied
+    /// (clamped/rounded) value is read back from that exact node; an edit that did
+    /// not actually change the cooked value records nothing.
+    ///
+    /// Drag coalescing (finding [3]): a continuous scrub fires `changed()` on every
+    /// frame the value moves, so naively each frame would push its own undo entry —
+    /// dozens per gesture. Chosen approach: coalesce HERE rather than via egui
+    /// `drag_started`/`drag_stopped`, because the inspector stages edits and drains
+    /// them after the dock lays out, so the egui `Response` (and its gesture flags)
+    /// is gone by the time we record. Instead we track the last edit's
+    /// `(node_id, key, frame)`: if this edit hits the SAME `(node_id, key)` on the
+    /// current or immediately-preceding frame AND the top of the undo stack is that
+    /// entry, we update its `next` in place (keeping the gesture's ORIGINAL `prev`)
+    /// instead of pushing a new entry. A later, separate edit (a frame gap, or a
+    /// different param) starts a fresh entry.
     pub fn record_inspector_edit(
         &mut self,
-        node_kind: &'static str,
+        node_id: NodeId,
         key: &'static str,
         target: String,
         prev: f32,
     ) {
         let applied = self
             .bridge
-            .param_value_of_kind(node_kind, key)
+            .param_value_of_node(node_id, key)
             .unwrap_or(prev);
         if (applied - prev).abs() <= f32::EPSILON {
             return;
         }
+
+        // Coalesce consecutive-frame edits of the same (node, key) into the entry
+        // already on top of the stack: extend its `next`, preserve its `prev`.
+        let continues_gesture = matches!(
+            self.last_inspector_edit,
+            Some((last_id, last_key, last_frame))
+                if last_id == node_id
+                    && last_key == key
+                    && self.frame.saturating_sub(last_frame) <= 1
+        );
+        if continues_gesture
+            && let Some(UndoEntry::ParamSet {
+                node_id: top_id,
+                key: top_key,
+                next,
+                ..
+            }) = self.undo_stack.last_mut()
+            && *top_id == node_id
+            && *top_key == key
+        {
+            *next = applied;
+            self.last_inspector_edit = Some((node_id, key, self.frame));
+            return;
+        }
+
         self.push_undo(UndoEntry::ParamSet {
-            node_kind,
+            node_id,
             key,
             target,
             prev,
             next: applied,
         });
+        self.last_inspector_edit = Some((node_id, key, self.frame));
     }
 
     /// Revert the last reversible edit (the `edit.undo` command). Re-applies the
@@ -504,8 +565,13 @@ impl EditorShell {
     /// stack is a no-op with an honest receipt.
     pub fn undo(&mut self) -> String {
         let receipt = match self.undo_stack.pop() {
-            Some(UndoEntry::ParamSet { node_kind, key, target, prev, next }) => {
-                self.bridge.apply_param_by_kind(node_kind, key, prev);
+            Some(UndoEntry::ParamSet { node_id, key, target, prev, next }) => {
+                // Revert the CONCRETE node that was edited (not first-of-kind), so a
+                // graph with two nodes of the same kind reverts the right one.
+                self.bridge.apply_param(node_id, key, prev);
+                // A subsequent inspector edit must start a NEW undo entry, never
+                // coalesce into the one we just popped.
+                self.last_inspector_edit = None;
                 format!("Undid: {target} {} -> {} (back to {})", fmt_num(next), fmt_num(prev), fmt_num(prev))
             }
             None => "Nothing to undo".to_string(),
@@ -713,12 +779,13 @@ struct ShellViewer<'a> {
     viewport_tex: egui::TextureHandle,
     plugins: &'a mut Vec<InstalledPlugin>,
     /// Manual inspector scrub edits applied this frame, staged as
-    /// `(node_kind, key, target, prev)` for the shell to record as reversible
+    /// `(node_id, key, target, prev)` for the shell to record as reversible
     /// `UndoEntry::ParamSet`s after the dock lays out — so a Properties edit is
-    /// Ctrl+Z-undoable exactly like an AI-intent edit (the `UndoEntry` doc
-    /// invariant). `ShellViewer` borrows `bridge`, not `undo_stack`, so it stages
-    /// here and the shell drains via [`EditorShell::record_inspector_edit`].
-    undo_edits: &'a mut Vec<(&'static str, &'static str, String, f32)>,
+    /// Ctrl+Z-undoable on the SAME concrete node as an AI-intent edit (the
+    /// `UndoEntry` doc invariant). `ShellViewer` borrows `bridge`, not
+    /// `undo_stack`, so it stages here and the shell drains via
+    /// [`EditorShell::record_inspector_edit`].
+    undo_edits: &'a mut Vec<(NodeId, &'static str, String, f32)>,
 }
 
 impl egui_dock::TabViewer for ShellViewer<'_> {
@@ -801,18 +868,16 @@ impl ShellViewer<'_> {
                     });
                 }
             });
-            // The node's kind + a friendly target string, so the staged edit replays
-            // through the SAME apply_param_by_kind path the AI undo uses.
-            let node_kind = self.bridge.kind_for_node(node_id);
+            // Stage each edit against the CONCRETE node_id so undo round-trips to the
+            // exact node edited (not first-of-kind), replayed via the SAME
+            // apply_param path the AI undo uses.
             for (key, prev, v) in edits {
                 self.bridge.apply_param(node_id, key, v);
                 // Stage undo only when the edit actually applied (no cook error) —
                 // mirrors apply_param_intent, which never records a rejected edit.
-                if self.bridge.last_cook_error.is_none()
-                    && let Some(kind) = node_kind
-                {
+                if self.bridge.last_cook_error.is_none() {
                     self.undo_edits.push((
-                        kind,
+                        node_id,
                         key,
                         format!("{}.{key}", title.to_lowercase()),
                         prev,
@@ -2062,15 +2127,15 @@ mod tests {
     fn inspector_param_edit_is_undoable() {
         let mut shell = EditorShell::default();
         let terrain = shell.bridge.node_ids[0];
-        let prev = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
+        let prev = shell.bridge.param_value_of_node(terrain, "resolution").unwrap();
         assert_eq!(prev, 64.0);
-        let kind = shell.bridge.kind_for_node(terrain).unwrap();
 
         // The inspector applies the scrub edit straight to the bridge...
         shell.bridge.apply_param(terrain, "resolution", 100.0);
-        assert_eq!(shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap(), 100.0);
-        // ...and the shell drains it onto the undo stack (what the dock-show loop does).
-        shell.record_inspector_edit(kind, "resolution", "terrain.resolution".into(), prev);
+        assert_eq!(shell.bridge.param_value_of_node(terrain, "resolution").unwrap(), 100.0);
+        // ...and the shell drains it onto the undo stack (what the dock-show loop does),
+        // recorded against the CONCRETE node id.
+        shell.record_inspector_edit(terrain, "resolution", "terrain.resolution".into(), prev);
         assert_eq!(shell.undo_stack.len(), 1, "the inspector edit must record one undo entry");
 
         // Ctrl+Z (edit.undo) restores the PRE-EDIT value through the same path.
@@ -2078,6 +2143,91 @@ mod tests {
         shell.drain_requests();
         let reverted = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
         assert_eq!(reverted, 64.0, "undo must restore the inspector edit's pre-edit value 64, got {reverted}");
+    }
+
+    /// Finding [2]: with TWO nodes of the SAME kind, an inspector edit + undo must
+    /// round-trip against the CONCRETE node edited (node B) and NEVER touch the other
+    /// node (node A). Before the fix, undo replayed via first-of-kind, so it either
+    /// dropped the undo (equal values) or corrupted node A (differing values).
+    #[test]
+    fn inspector_undo_targets_edited_node_not_first_of_kind() {
+        let mut shell = EditorShell::default();
+        // The template already has one VegetationNode (node A). Add a second (node B).
+        let node_a = shell.bridge.first_node_of_kind("VegetationNode").unwrap();
+        let (node_b, _) = shell.bridge.add_node_by_kind("VegetationNode").unwrap();
+        assert_ne!(node_a, node_b, "must be two distinct VegetationNodes");
+
+        // Give A and B DIFFERENT heights so a first-of-kind bug would be observable:
+        // A=8, B=6. (Both default to 6; bump A to 8.)
+        shell.bridge.apply_param(node_a, "height", 8.0);
+        shell.bridge.apply_param(node_b, "height", 6.0);
+        let a_before = shell.bridge.param_value_of_node(node_a, "height").unwrap();
+        let b_before = shell.bridge.param_value_of_node(node_b, "height").unwrap();
+        assert_eq!(a_before, 8.0);
+        assert_eq!(b_before, 6.0);
+
+        // Edit node B via the inspector drain path: apply, then record by id.
+        shell.bridge.apply_param(node_b, "height", 10.0);
+        shell.record_inspector_edit(node_b, "height", "vegetation.height".into(), b_before);
+        assert_eq!(shell.undo_stack.len(), 1, "one undo entry recorded for the B edit");
+        assert_eq!(shell.bridge.param_value_of_node(node_b, "height").unwrap(), 10.0);
+        // Node A untouched by the edit.
+        assert_eq!(shell.bridge.param_value_of_node(node_a, "height").unwrap(), 8.0);
+
+        // Undo: B restored to 6, A NEVER touched (stays 8).
+        assert!(shell.registry.run("edit.undo"));
+        shell.drain_requests();
+        assert_eq!(
+            shell.bridge.param_value_of_node(node_b, "height").unwrap(),
+            6.0,
+            "undo must restore the EDITED node B to its pre-edit value"
+        );
+        assert_eq!(
+            shell.bridge.param_value_of_node(node_a, "height").unwrap(),
+            8.0,
+            "undo must NOT touch node A (the other node of the same kind)"
+        );
+    }
+
+    /// Finding [3]: ten consecutive-frame inspector edits to the same param coalesce
+    /// into ONE undo entry whose `prev` is the ORIGINAL value; a later, separate edit
+    /// (a frame gap) starts a SECOND entry.
+    #[test]
+    fn inspector_drag_coalesces_into_one_undo_entry() {
+        let mut shell = EditorShell::default();
+        let terrain = shell.bridge.node_ids[0];
+        let original = shell.bridge.param_value_of_node(terrain, "amplitude").unwrap();
+
+        // Simulate a 10-frame drag: one frame bump + one staged record per frame, all
+        // on the same (node, key). amplitude range is 0..=800, so 100,110,...,190 all land.
+        let mut prev = original;
+        for i in 0..10u32 {
+            shell.frame = shell.frame.wrapping_add(1); // each "frame" advances the counter
+            let target = 100.0 + i as f32 * 10.0;
+            shell.bridge.apply_param(terrain, "amplitude", target);
+            shell.record_inspector_edit(terrain, "amplitude", "terrain.amplitude".into(), prev);
+            prev = shell.bridge.param_value_of_node(terrain, "amplitude").unwrap();
+        }
+        assert_eq!(
+            shell.undo_stack.len(),
+            1,
+            "a single 10-frame drag must coalesce into ONE undo entry, got {}",
+            shell.undo_stack.len()
+        );
+        let UndoEntry::ParamSet { prev: entry_prev, next, .. } = shell.undo_stack.last().unwrap();
+        assert_eq!(*entry_prev, original, "the coalesced entry's prev must be the ORIGINAL value");
+        assert_eq!(*next, 190.0, "the coalesced entry's next must be the final drag value");
+
+        // A later, SEPARATE edit (a frame gap larger than 1) starts a 2nd entry.
+        let before_second = shell.bridge.param_value_of_node(terrain, "amplitude").unwrap();
+        shell.frame = shell.frame.wrapping_add(5);
+        shell.bridge.apply_param(terrain, "amplitude", 300.0);
+        shell.record_inspector_edit(terrain, "amplitude", "terrain.amplitude".into(), before_second);
+        assert_eq!(
+            shell.undo_stack.len(),
+            2,
+            "a separate edit after a frame gap must be a 2nd undo entry"
+        );
     }
 
     /// Finding 2: the undo stack and assistant log are bounded — pushing far more than
