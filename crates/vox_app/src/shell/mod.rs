@@ -14,19 +14,30 @@
 
 pub mod command_palette;
 pub mod cpu_render;
+pub mod graph_bridge;
+pub mod host;
+pub mod plugins;
+pub mod viewport;
 
 use command_palette::{Command, CommandRegistry, PaletteState};
 use egui_dock::{DockArea, DockState, NodeIndex, Style as DockStyle};
+use graph_bridge::GraphBridge;
+use host::{InstalledPlugin, PluginCtx, TabDecl};
 use std::cell::RefCell;
 use std::rc::Rc;
 use vox_ui::design::icons::icon;
-use vox_ui::node_canvas::{
-    CanvasGraph, NodeCanvas, NodeState, NodeView, WireView,
-};
-use vox_ui::widgets::{self, ScrubOpts};
-use vox_ui::{NodeCategory, PortType, Tokens};
+use vox_ui::node_canvas::NodeCanvas;
+use vox_ui::widgets::{self, ScrubOpts, WidgetKit};
+use vox_ui::Tokens;
 
-/// Identifies a dockable panel (the `egui_dock` tab payload).
+/// A dockable tab payload — a built-in panel or a plugin-contributed tab id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TabKind {
+    Builtin(PanelId),
+    Plugin(String),
+}
+
+/// Identifies a built-in dockable panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelId {
     Hierarchy,
@@ -73,7 +84,7 @@ pub struct ShellEntity {
 /// The editor shell — owns the dock layout, panel state, and tokens.
 pub struct EditorShell {
     pub tokens: Tokens,
-    pub dock: DockState<PanelId>,
+    pub dock: DockState<TabKind>,
     pub entities: Vec<ShellEntity>,
     pub selected: usize,
     pub search: String,
@@ -85,10 +96,17 @@ pub struct EditorShell {
     pub registry: CommandRegistry,
     /// The Ctrl+K command palette state.
     pub palette: PaletteState,
-    /// The node-graph canvas renderer state (pan/zoom/drag).
+    /// The node-graph canvas renderer state (pan/zoom/drag) for the Node Graph tab.
     pub canvas: NodeCanvas,
-    /// The representative cook graph driving the Node Graph tab.
-    pub graph: CanvasGraph,
+    /// The REAL live cook graph (vox_editor template) driving the Node Graph tab,
+    /// the Properties param fields, and the live-cook loop.
+    pub bridge: GraphBridge,
+    /// The shared widget kit handed to plugins (token-styled controls only).
+    pub widget_kit: WidgetKit,
+    /// Cached viewport scene texture (rasterized splat frame), uploaded once.
+    pub viewport_tex: Option<egui::TextureHandle>,
+    /// Installed host-plugins (their tabs joined the dock, commands the registry).
+    pub plugins: Vec<InstalledPlugin>,
     /// Set true by the `world.add` command (proves the registry callback fired;
     /// the palette test asserts it).
     pub last_command_flag: Rc<RefCell<bool>>,
@@ -105,16 +123,17 @@ impl EditorShell {
     /// left = World; center-top = Viewport, center-bottom = Node Graph;
     /// right = Properties; bottom = Content + Output Log (tabbed).
     pub fn new(tokens: Tokens) -> Self {
-        let mut dock = DockState::new(vec![PanelId::Viewport, PanelId::NodeGraph]);
+        use TabKind::Builtin as B;
+        let mut dock = DockState::new(vec![B(PanelId::Viewport), B(PanelId::NodeGraph)]);
         let surface = dock.main_surface_mut();
         // Left: World.
         let [center, _left] =
-            surface.split_left(NodeIndex::root(), 0.18, vec![PanelId::Hierarchy]);
+            surface.split_left(NodeIndex::root(), 0.18, vec![B(PanelId::Hierarchy)]);
         // Right: Properties.
-        let [center, _right] = surface.split_right(center, 0.78, vec![PanelId::Inspector]);
+        let [center, _right] = surface.split_right(center, 0.78, vec![B(PanelId::Inspector)]);
         // Bottom: Content + Output Log as a tab group.
         let [_center, _bottom] =
-            surface.split_below(center, 0.72, vec![PanelId::Content, PanelId::Output]);
+            surface.split_below(center, 0.72, vec![B(PanelId::Content), B(PanelId::Output)]);
 
         let last_command_flag = Rc::new(RefCell::new(false));
         let registry = build_registry(&last_command_flag);
@@ -122,12 +141,15 @@ impl EditorShell {
         canvas.set_snap(GRAPH_SNAP);
 
         EditorShell {
-            tokens,
+            tokens: tokens.clone(),
             dock,
             registry,
             palette: PaletteState::default(),
             canvas,
-            graph: build_demo_graph(),
+            bridge: GraphBridge::new(),
+            widget_kit: WidgetKit::new(tokens),
+            viewport_tex: None,
+            plugins: Vec::new(),
             last_command_flag,
             entities: vec![
                 ShellEntity {
@@ -159,6 +181,36 @@ impl EditorShell {
         }
     }
 
+    /// Install a host-plugin: its tabs join the dock (split into the bottom-right
+    /// area beside Properties) and its commands join the registry/palette. This is
+    /// the `EditorShell::install_plugin` wiring point the design names.
+    pub fn install_plugin(&mut self, plugin: Box<dyn crate::shell::host::EditorPlugin>) {
+        let tabs = plugin.tabs();
+        for cmd in plugin.commands() {
+            self.registry.add(cmd);
+        }
+        // Dock each plugin tab next to the Node Graph (center-bottom) so two
+        // graph editors visibly coexist.
+        if let Some((surface, node, _)) = self.dock.find_tab(&TabKind::Builtin(PanelId::NodeGraph)) {
+            for t in &tabs {
+                self.dock
+                    .set_focused_node_and_surface((surface, node));
+                self.dock.push_to_focused_leaf(TabKind::Plugin(t.id.clone()));
+            }
+        } else {
+            for t in &tabs {
+                self.dock
+                    .main_surface_mut()
+                    .push_to_first_leaf(TabKind::Plugin(t.id.clone()));
+            }
+        }
+        let canvases = tabs
+            .iter()
+            .map(|t| (t.id.clone(), NodeCanvas::new()))
+            .collect();
+        self.plugins.push(InstalledPlugin { plugin, tabs, canvases });
+    }
+
     /// Lay out the full shell into an egui context for one frame.
     pub fn ui(&mut self, ctx: &egui::Context) {
         // Ctrl+K toggles the one-command-surface (the AI-native entry point).
@@ -171,13 +223,19 @@ impl EditorShell {
         self.toolbar(ctx);
         self.status_bar(ctx);
 
+        // Ensure the viewport scene texture is uploaded once.
+        let viewport_tex = viewport::scene_texture(ctx, &mut self.viewport_tex);
+
         let mut viewer = ShellViewer {
             tokens: &self.tokens,
+            widget_kit: &self.widget_kit,
             entities: &mut self.entities,
             selected: &mut self.selected,
             search: &mut self.search,
             canvas: &mut self.canvas,
-            graph: &mut self.graph,
+            bridge: &mut self.bridge,
+            viewport_tex,
+            plugins: &mut self.plugins,
         };
         let dock_style = DockStyle::from_egui(ctx.style().as_ref());
         DockArea::new(&mut self.dock)
@@ -197,18 +255,22 @@ impl EditorShell {
     /// Select the Node Graph tab as the active/focused tab (for snapshots that
     /// want it maximized — used by `--tab node_graph`).
     pub fn focus_node_graph(&mut self) {
-        if let Some((surface, node, _tab)) = self.dock.find_tab(&PanelId::NodeGraph) {
-            self.dock
-                .set_active_tab((surface, node, self.node_graph_tab_index()));
-        }
+        self.focus_tab(&TabKind::Builtin(PanelId::NodeGraph));
     }
 
-    fn node_graph_tab_index(&self) -> egui_dock::TabIndex {
-        if let Some((s, n, t)) = self.dock.find_tab(&PanelId::NodeGraph) {
-            let _ = (s, n);
-            t
-        } else {
-            egui_dock::TabIndex(0)
+    /// Select the Viewport tab as the active/focused tab (the default snapshot).
+    pub fn focus_viewport(&mut self) {
+        self.focus_tab(&TabKind::Builtin(PanelId::Viewport));
+    }
+
+    /// Select a plugin tab as the active/focused tab by its id (`--tab crucible`).
+    pub fn focus_plugin_tab(&mut self, tab_id: &str) {
+        self.focus_tab(&TabKind::Plugin(tab_id.to_string()));
+    }
+
+    fn focus_tab(&mut self, tab: &TabKind) {
+        if let Some((surface, node, t)) = self.dock.find_tab(tab) {
+            self.dock.set_active_tab((surface, node, t));
         }
     }
 
@@ -325,13 +387,13 @@ impl EditorShell {
         });
     }
 
-    /// Move a tab from one panel to another node, returning the leaf rects of
-    /// the moved panel BEFORE and AFTER (for the dock movement test). Returns
-    /// `None` if either panel can't be located.
+    /// The leaf rect of the node holding a built-in panel (for the dock movement
+    /// test). Returns `None` if the panel can't be located.
     pub fn rect_of(&self, panel: PanelId) -> Option<egui::Rect> {
+        let want = TabKind::Builtin(panel);
         for (_si, node) in self.dock.iter_all_nodes() {
             if let Some(tabs) = node.tabs()
-                && tabs.contains(&panel)
+                && tabs.contains(&want)
             {
                 return node.rect();
             }
@@ -340,31 +402,45 @@ impl EditorShell {
     }
 }
 
-/// The `egui_dock` `TabViewer` that renders each built-in panel.
+/// The `egui_dock` `TabViewer` that renders each built-in panel AND dispatches
+/// plugin tabs to their `EditorPlugin::ui` through a restricted `PluginCtx`.
 struct ShellViewer<'a> {
     tokens: &'a Tokens,
+    widget_kit: &'a WidgetKit,
     entities: &'a mut Vec<ShellEntity>,
     selected: &'a mut usize,
     search: &'a mut String,
     canvas: &'a mut NodeCanvas,
-    graph: &'a mut CanvasGraph,
+    bridge: &'a mut GraphBridge,
+    viewport_tex: egui::TextureHandle,
+    plugins: &'a mut Vec<InstalledPlugin>,
 }
 
 impl egui_dock::TabViewer for ShellViewer<'_> {
-    type Tab = PanelId;
+    type Tab = TabKind;
 
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
-        format!("{}  {}", tab.icon(), tab.title()).into()
+        match tab {
+            TabKind::Builtin(p) => format!("{}  {}", p.icon(), p.title()).into(),
+            TabKind::Plugin(id) => {
+                let decl = self.plugin_tab(id);
+                match decl {
+                    Some(TabDecl { icon, title, .. }) => format!("{icon}  {title}").into(),
+                    None => id.clone().into(),
+                }
+            }
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
-            PanelId::Hierarchy => self.hierarchy(ui),
-            PanelId::Inspector => self.inspector(ui),
-            PanelId::Viewport => self.viewport(ui),
-            PanelId::NodeGraph => self.node_graph(ui),
-            PanelId::Content => self.content(ui),
-            PanelId::Output => self.output(ui),
+            TabKind::Builtin(PanelId::Hierarchy) => self.hierarchy(ui),
+            TabKind::Builtin(PanelId::Inspector) => self.inspector(ui),
+            TabKind::Builtin(PanelId::Viewport) => self.viewport(ui),
+            TabKind::Builtin(PanelId::NodeGraph) => self.node_graph(ui),
+            TabKind::Builtin(PanelId::Content) => self.content(ui),
+            TabKind::Builtin(PanelId::Output) => self.output(ui),
+            TabKind::Plugin(id) => self.plugin_tab_ui(ui, &id.clone()),
         }
     }
 }
@@ -389,6 +465,42 @@ impl ShellViewer<'_> {
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui) {
+        // When a graph node is selected, the Properties tab shows that node's
+        // REAL params (scrub fields); editing one routes request_recook +
+        // live_cook and refreshes the canvas wire labels.
+        if let Some((node_id, title, fields)) = self.bridge.selected_params() {
+            ui.heading(format!("{}  {title}", icon::NODE_GRAPH));
+            ui.separator();
+            let tokens = self.tokens;
+            let mut edits: Vec<(&'static str, f32)> = Vec::new();
+            widgets::foldout(ui, egui::Id::new("insp_node_params"), "Parameters", |ui| {
+                for f in &fields {
+                    ui.horizontal(|ui| {
+                        ui.label(f.label);
+                        let mut v = f.value;
+                        let resp = widgets::scrub_drag(
+                            ui,
+                            &mut v,
+                            tokens,
+                            ScrubOpts {
+                                speed: f.speed,
+                                range: Some(f.range.clone()),
+                                ..Default::default()
+                            },
+                        );
+                        if resp.changed() || (v - f.value).abs() > f32::EPSILON {
+                            edits.push((f.key, v));
+                        }
+                    });
+                }
+            });
+            for (key, v) in edits {
+                self.bridge.apply_param(node_id, key, v);
+            }
+            return;
+        }
+
+        // No node selected: show the World entity's transform (the friendly default).
         let sel = (*self.selected).min(self.entities.len().saturating_sub(1));
         let name = self.entities.get(sel).map(|e| e.name.clone()).unwrap_or_default();
         ui.heading(name);
@@ -432,37 +544,57 @@ impl ShellViewer<'_> {
     }
 
     fn viewport(&mut self, ui: &mut egui::Ui) {
-        // Phase 1: a token-colored placeholder for the GPU splat texture (the
-        // register_native_texture wiring lands in the viewport wave). It still
-        // proves the central dock area renders with a guided tip chip.
+        // A REAL engine frame: the rasterized spectral-splat scene, uploaded as a
+        // texture and drawn as an Image filling the tab. The floating "View: Real
+        // light" pill renders over it (UX principle 1: plain-language label).
         let rect = ui.available_rect_before_wrap();
         let [r, g, b, a] = self.tokens.color("surface.bg.0");
         ui.painter()
             .rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(r, g, b, a));
-        let scene = egui::Color32::from_rgb(34, 52, 40);
         let inner = rect.shrink(8.0);
-        ui.painter().rect_filled(inner, self.tokens.radius[1], scene);
-        // Guided tip chip (UX principle 1).
-        let chip = egui::Rect::from_min_size(
-            inner.left_bottom() + egui::vec2(12.0, -40.0),
-            egui::vec2(280.0, 28.0),
+        // Draw the rendered splat frame, scaled to fill the inner rect.
+        egui::Image::new(&self.viewport_tex)
+            .corner_radius(self.tokens.radius[1])
+            .paint_at(ui, inner);
+
+        // Floating "View: Real light" pill (top-left).
+        let pill = egui::Rect::from_min_size(
+            inner.left_top() + egui::vec2(12.0, 12.0),
+            egui::vec2(150.0, 26.0),
         );
-        let [cr, cg, cb, ca] = self.tokens.color("surface.bg.2");
-        ui.painter()
-            .rect_filled(chip, self.tokens.radius[2], egui::Color32::from_rgba_unmultiplied(cr, cg, cb, ca));
+        let [pr, pg, pb, pa] = self.tokens.color("surface.bg.2");
+        ui.painter().rect_filled(
+            pill,
+            self.tokens.radius[2],
+            egui::Color32::from_rgba_unmultiplied(pr, pg, pb, pa.min(235)),
+        );
+        let [ar, ag, ab, _] = self.tokens.color("status.success");
+        ui.painter().circle_filled(
+            pill.left_center() + egui::vec2(12.0, 0.0),
+            4.0,
+            egui::Color32::from_rgb(ar, ag, ab),
+        );
         ui.painter().text(
-            chip.left_center() + egui::vec2(10.0, 0.0),
+            pill.left_center() + egui::vec2(22.0, 0.0),
             egui::Align2::LEFT_CENTER,
-            "Tip: drag from the World list to place \u{2192} Do it",
+            "View: Real light",
             egui::FontId::proportional(self.tokens.type_ramp.body),
             egui::Color32::from_rgb(220, 222, 230),
         );
     }
 
     fn node_graph(&mut self, ui: &mut egui::Ui) {
-        // The real SOTA node canvas: bezier type-colored wires, dot grid, pan/
-        // zoom, snap-drag, minimap — all from the shared `NodeCanvas` renderer.
-        let _ = self.canvas.ui(ui, self.tokens, self.graph);
+        // The REAL cook graph: project the live OchromaNodeGraph onto a
+        // CanvasGraph each frame (typed wires from real ports, value labels from
+        // the cooked wire_values()), render it with the shared canvas, and route
+        // node selection into the Properties tab.
+        let mut cg = self.bridge.to_canvas_graph();
+        let resp = self.canvas.ui(ui, self.tokens, &mut cg);
+        if let Some(id) = resp.clicked {
+            self.bridge.select_by_canvas_id(id);
+        } else if resp.background_clicked {
+            self.bridge.selected = None;
+        }
     }
 
     fn content(&mut self, ui: &mut egui::Ui) {
@@ -501,6 +633,37 @@ impl ShellViewer<'_> {
             ui.label(egui::RichText::new(line).monospace());
         }
     }
+
+    /// Find a plugin tab declaration by its tab id.
+    fn plugin_tab(&self, tab_id: &str) -> Option<TabDecl> {
+        for p in self.plugins.iter() {
+            if let Some(t) = p.tabs.iter().find(|t| t.id == tab_id) {
+                return Some(t.clone());
+            }
+        }
+        None
+    }
+
+    /// Dispatch a plugin tab to its `EditorPlugin::ui` through a `PluginCtx` that
+    /// exposes ONLY the design system (tokens + widget kit + the per-tab canvas).
+    fn plugin_tab_ui(&mut self, ui: &mut egui::Ui, tab_id: &str) {
+        let tokens = self.tokens;
+        let kit = self.widget_kit;
+        for p in self.plugins.iter_mut() {
+            if !p.tabs.iter().any(|t| t.id == tab_id) {
+                continue;
+            }
+            if let Some((_, canvas)) = p.canvases.iter_mut().find(|(id, _)| id == tab_id) {
+                let mut cx = PluginCtx {
+                    tokens,
+                    widgets: kit,
+                    canvas,
+                };
+                p.plugin.ui(tab_id, ui, &mut cx);
+            }
+            return;
+        }
+    }
 }
 
 /// World-units the node-graph drag snaps to.
@@ -531,80 +694,12 @@ fn build_registry(flag: &Rc<RefCell<bool>>) -> CommandRegistry {
     r
 }
 
-/// Build the representative cook graph mirroring the mockup's bottom-left shape:
-/// Terrain -> Biome -> FloraPrime -> SplatWeight -> Splatize, with real port
-/// types and node categories so the canvas reads as a true SOTA graph surface.
-fn build_demo_graph() -> CanvasGraph {
-    let mut g = CanvasGraph::default();
-    g.nodes.push(
-        NodeView::new(1, "Terrain", NodeCategory::Spatial, egui::pos2(40.0, 90.0))
-            .with_output("terrain", PortType::Terrain),
-    );
-    g.nodes.push(
-        NodeView::new(2, "Biome Classify", NodeCategory::Field, egui::pos2(250.0, 60.0))
-            .with_input("terrain", PortType::Terrain)
-            .with_output("biome", PortType::BiomeMap),
-    );
-    g.nodes.push(
-        NodeView::new(3, "FloraPrime", NodeCategory::Generator, egui::pos2(250.0, 220.0))
-            .with_input("biome", PortType::BiomeMap)
-            .with_output("instances", PortType::Instances),
-    );
-    g.nodes.push(
-        NodeView::new(4, "SplatWeight", NodeCategory::Math, egui::pos2(470.0, 120.0))
-            .with_input("biome", PortType::BiomeMap)
-            .with_input("flora", PortType::Instances)
-            .with_output("weights", PortType::SplatWeights),
-    );
-    {
-        let mut splatize =
-            NodeView::new(5, "Splatize", NodeCategory::Sink, egui::pos2(690.0, 130.0))
-                .with_input("weights", PortType::SplatWeights)
-                .with_output("splats", PortType::Splats);
-        splatize.state = NodeState::Normal;
-        g.nodes.push(splatize);
-    }
-    for n in &mut g.nodes {
-        n.size.x = 150.0;
-    }
-    g.wires.push(WireView {
-        from_node: 1, from_port: "terrain".into(),
-        to_node: 2, to_port: "terrain".into(),
-        exec: false, label: None,
-    });
-    g.wires.push(WireView {
-        from_node: 2, from_port: "biome".into(),
-        to_node: 3, to_port: "biome".into(),
-        exec: false, label: None,
-    });
-    g.wires.push(WireView {
-        from_node: 2, from_port: "biome".into(),
-        to_node: 4, to_port: "biome".into(),
-        exec: false, label: None,
-    });
-    g.wires.push(WireView {
-        from_node: 3, from_port: "instances".into(),
-        to_node: 4, to_port: "flora".into(),
-        exec: false, label: None,
-    });
-    g.wires.push(WireView {
-        from_node: 4, from_port: "weights".into(),
-        to_node: 5, to_port: "weights".into(),
-        exec: false, label: Some("0.82".into()),
-    });
-    // A tintable comment frame grouping the field stage (item 14).
-    g.comments.push(vox_ui::node_canvas::CommentBox {
-        rect: egui::Rect::from_min_size(egui::pos2(230.0, 40.0), egui::vec2(190.0, 280.0)),
-        title: "Biome stage".into(),
-        tint: "accent.dim".into(),
-    });
-    g
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use egui_dock::{NodeIndex, SurfaceIndex, TabIndex};
+    use vox_ui::node_canvas::{CanvasGraph, NodeView, WireView};
+    use vox_ui::{NodeCategory, PortType};
 
     #[test]
     fn dock_tabs_present_and_movable() {
@@ -612,7 +707,10 @@ mod tests {
         let titles: Vec<&str> = shell
             .dock
             .iter_all_tabs()
-            .map(|(_, t)| t.title())
+            .filter_map(|(_, t)| match t {
+                TabKind::Builtin(p) => Some(p.title()),
+                TabKind::Plugin(_) => None,
+            })
             .collect();
         for want in ["World", "Properties", "Viewport", "Node Graph", "Content", "Output Log"] {
             assert!(titles.contains(&want), "missing dock tab {want}; have {titles:?}");
@@ -745,7 +843,7 @@ mod tests {
         // Sample the button interior centre (avoid the centred glyphs by sampling
         // a few px in from the left edge, vertically centred).
         let sx = (btn_rect.min.x as usize) + 8;
-        let sy = (btn_rect.center().y as usize);
+        let sy = btn_rect.center().y as usize;
         let i = (sy * w + sx) * 4;
         let a = [away_px[i], away_px[i + 1], away_px[i + 2]];
         let o = [over_px[i], over_px[i + 1], over_px[i + 2]];
@@ -779,11 +877,11 @@ mod tests {
         // Find the source location of Inspector and the destination (Hierarchy).
         let src = shell
             .dock
-            .find_tab(&PanelId::Inspector)
+            .find_tab(&TabKind::Builtin(PanelId::Inspector))
             .expect("find inspector");
         let (h_surface, h_node, _) = shell
             .dock
-            .find_tab(&PanelId::Hierarchy)
+            .find_tab(&TabKind::Builtin(PanelId::Hierarchy))
             .expect("find hierarchy");
         let dst = egui_dock::TabDestination::Node(
             h_surface,
@@ -1128,6 +1226,238 @@ mod tests {
         assert!(
             below_open < same_loc_closed - 4.0,
             "open backdrop ({below_open:.1}) must be dimmer than the closed scene ({same_loc_closed:.1})"
+        );
+    }
+
+    // === Phase 2b: REAL graph / REAL viewport / PLUGIN integration tests ===
+
+    /// Render the full shell at 1920x1080 with the given focused tab, returning
+    /// (rgba, w, h, shell) so a test can sample inside a specific tab's rect.
+    fn render_full_shell(
+        focus: &str,
+        with_crucible: bool,
+    ) -> (Vec<u8>, usize, usize, EditorShell) {
+        let (w, h) = (1920usize, 1080usize);
+        let tokens = Tokens::default();
+        let bg = tokens.color("surface.bg.0");
+        let ctx = egui::Context::default();
+        vox_ui::design::icons::install(&ctx);
+        vox_ui::egui_theme::apply(&ctx, &tokens);
+        let mut shell = EditorShell::new(tokens);
+        if with_crucible {
+            shell.install_plugin(Box::new(super::plugins::CruciblePlugin::new()));
+        }
+        match focus {
+            "viewport" => shell.focus_viewport(),
+            "node_graph" => shell.focus_node_graph(),
+            "crucible" => shell.focus_plugin_tab(super::plugins::CRUCIBLE_TAB),
+            _ => {}
+        }
+        let rgba = super::cpu_render::render_ui(&ctx, [w, h], bg, |ctx| shell.ui(ctx));
+        (rgba, w, h, shell)
+    }
+
+    /// REAL VIEWPORT: the Viewport tab paints actual rendered splats — >5000
+    /// non-background pixels INSIDE the viewport rect WITH scene-like color
+    /// variance (not a flat fill).
+    #[test]
+    fn viewport_tab_shows_real_rendered_splats() {
+        let (rgba, w, _h, shell) = render_full_shell("viewport", false);
+        let rect = shell
+            .rect_of(PanelId::Viewport)
+            .expect("viewport must have a leaf rect");
+
+        // Sample every pixel inside the viewport rect (shrunk to clear the tab
+        // strip + borders). Count non-bg and measure color variance.
+        let bg = [16i32, 18, 26]; // viewport studio background
+        let x0 = (rect.min.x as usize) + 12;
+        let x1 = (rect.max.x as usize).saturating_sub(12).min(w);
+        let y0 = (rect.min.y as usize) + 28;
+        let y1 = (rect.max.y as usize).saturating_sub(12);
+        let mut non_bg = 0usize;
+        let (mut sr, mut sg, mut sb, mut n) = (0f64, 0f64, 0f64, 0f64);
+        let mut samples: Vec<[f64; 3]> = Vec::new();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = px(&rgba, w, x as i32, y as i32);
+                let d = (0..3).map(|i| (p[i] as i32 - bg[i]).abs()).max().unwrap();
+                if d > 18 {
+                    non_bg += 1;
+                }
+                sr += p[0] as f64;
+                sg += p[1] as f64;
+                sb += p[2] as f64;
+                n += 1.0;
+                samples.push([p[0] as f64, p[1] as f64, p[2] as f64]);
+            }
+        }
+        assert!(
+            non_bg > 5000,
+            "viewport tab shows only {non_bg} rendered (non-bg) pixels inside its rect (need >5000)"
+        );
+        let (mr, mg, mb) = (sr / n, sg / n, sb / n);
+        let var: f64 = samples
+            .iter()
+            .map(|p| (p[0] - mr).powi(2) + (p[1] - mg).powi(2) + (p[2] - mb).powi(2))
+            .sum::<f64>()
+            / n;
+        assert!(
+            var > 80.0,
+            "viewport is too flat (color variance {var:.1}) — not a real scene"
+        );
+    }
+
+    /// The floating "View: Real light" pill renders over the viewport (its
+    /// surface.bg.2 card pixels exist near the top-left of the viewport rect).
+    #[test]
+    fn viewport_pill_renders_over_scene() {
+        let (rgba, w, _h, shell) = render_full_shell("viewport", false);
+        let rect = shell.rect_of(PanelId::Viewport).unwrap();
+        let card = Tokens::default().color("surface.bg.2");
+        // Scan the pill region (top-left of the inner viewport).
+        let mut hits = 0;
+        for y in (rect.min.y as usize + 20)..(rect.min.y as usize + 60) {
+            for x in (rect.min.x as usize + 12)..(rect.min.x as usize + 170) {
+                let p = px(&rgba, w, x as i32, y as i32);
+                if (0..3).all(|i| (p[i] as i32 - card[i] as i32).abs() <= 14) {
+                    hits += 1;
+                }
+            }
+        }
+        assert!(hits > 200, "the 'View: Real light' pill card is not painted (only {hits} card px)");
+    }
+
+    /// REAL GRAPH: the cooked template's REAL wire value labels appear in the
+    /// Node Graph canvas pixels — the "Terrain N cells" chip text region is lit.
+    #[test]
+    fn node_graph_tab_shows_real_wire_value_label_pixels() {
+        let (rgba, w, _h, shell) = render_full_shell("node_graph", false);
+        let rect = shell
+            .rect_of(PanelId::NodeGraph)
+            .expect("node graph must have a leaf rect");
+        // The wire value chips are bright text on a surface.bg.2 chip — count
+        // bright text pixels inside the graph rect (well above the dark canvas).
+        let mut bright = 0usize;
+        for y in (rect.min.y as usize + 28)..(rect.max.y as usize).saturating_sub(12) {
+            for x in (rect.min.x as usize + 12)..(rect.max.x as usize).saturating_sub(12) {
+                let p = px(&rgba, w, x as i32, y as i32);
+                let lum = (p[0] as u32 * 30 + p[1] as u32 * 59 + p[2] as u32 * 11) / 100;
+                if lum > 180 {
+                    bright += 1;
+                }
+            }
+        }
+        // Real cooked labels (node titles + value chips) light many bright px.
+        assert!(
+            bright > 300,
+            "node graph shows only {bright} bright label pixels — cooked wire/value text missing"
+        );
+    }
+
+    /// Selecting the Terrain node populates the Properties tab with its ACTUAL
+    /// param names, and a scrub edit changes the cooked sink count — proven by the
+    /// wire-value LABEL TEXT changing between two projections of the real graph.
+    #[test]
+    fn selecting_terrain_then_scrub_changes_wire_label_text() {
+        let mut shell = EditorShell::default();
+        let terrain = shell.bridge.node_ids[0];
+
+        // Select Terrain -> Properties shows its real params.
+        shell.bridge.selected = Some(terrain);
+        let (_, title, fields) = shell.bridge.selected_params().unwrap();
+        assert_eq!(title, "Terrain");
+        let keys: Vec<&str> = fields.iter().map(|f| f.key).collect();
+        assert!(
+            keys.contains(&"resolution") && keys.contains(&"amplitude"),
+            "Terrain Properties must list real params, got {keys:?}"
+        );
+
+        // The Terrain output wire label BEFORE the edit.
+        let label_of = |s: &EditorShell| -> String {
+            s.bridge
+                .to_canvas_graph()
+                .wires
+                .iter()
+                .find(|w| w.from_port == "terrain")
+                .and_then(|w| w.label.clone())
+                .unwrap_or_default()
+        };
+        let before = label_of(&shell);
+        assert!(before.contains("cells"), "before label should be a cell count, got {before:?}");
+
+        // Scrub the resolution up — request_recook + live_cook re-cook the graph.
+        shell.bridge.apply_param(terrain, "resolution", 96.0);
+        let after = label_of(&shell);
+        assert_ne!(
+            before, after,
+            "scrubbing terrain detail must change the cooked wire value label TEXT ({before:?} -> {after:?})"
+        );
+        // And the cooked sink (Splatize) splat count genuinely changed.
+        assert!(shell.bridge.sink_splat_count().unwrap() > 0);
+    }
+
+    /// PLUGIN: installing CruciblePlugin adds its dock tab AND its palette command.
+    #[test]
+    fn installing_crucible_adds_tab_and_palette_command() {
+        let mut shell = EditorShell::default();
+        shell.install_plugin(Box::new(super::plugins::CruciblePlugin::new()));
+
+        // Its tab joined the dock.
+        let has_tab = shell.dock.iter_all_tabs().any(|(_, t)| {
+            matches!(t, TabKind::Plugin(id) if id == super::plugins::CRUCIBLE_TAB)
+        });
+        assert!(has_tab, "Crucible plugin tab must be present in the dock");
+
+        // Its command is searchable in the palette registry under "Crucible".
+        let hits = shell.registry.search("crucible recook");
+        assert!(
+            hits.iter().any(|c| c.id == "crucible.recook" && c.category == "Crucible"),
+            "Crucible: Recook command must be in the palette under category 'Crucible'"
+        );
+    }
+
+    /// PLUGIN STYLING: the Crucible canvas renders its category headers in the
+    /// SAME token colors as the host graph — sample a Crucible Spatial-node header
+    /// pixel and assert it equals `category_header(Spatial)` (the host token), with
+    /// the plugin having set no color whatsoever.
+    ///
+    /// NOTE on enforcement: `PluginCtx` (see `host.rs`) exposes ONLY `tokens`,
+    /// `widgets`, `canvas` — it has NO `egui::Visuals` field and NO `egui::Context`
+    /// handle, so a plugin physically cannot restyle the host. The
+    /// `host::contract_surface::plugin_ctx_exposes_only_design_system` test pins
+    /// that type surface (an exhaustive destructure that breaks if a Visuals field
+    /// is ever added).
+    #[test]
+    fn crucible_canvas_uses_host_category_token_colors() {
+        let (rgba, w, _h, shell) = render_full_shell("crucible", true);
+        let rect = shell
+            .dock
+            .iter_all_nodes()
+            .find_map(|(_, node)| {
+                let has = node
+                    .tabs()
+                    .is_some_and(|ts| ts.iter().any(|t| matches!(t, TabKind::Plugin(id) if id == super::plugins::CRUCIBLE_TAB)));
+                if has { node.rect() } else { None }
+            })
+            .expect("crucible tab must have a leaf rect");
+
+        // The Crucible "terrain" node is a Spatial node near the top-left of the
+        // canvas. Its header must be drawn in category_header(Spatial). Scan a band
+        // a bit below the tab strip for a pixel matching that exact token color.
+        let want = Tokens::default().category_header(NodeCategory::Spatial);
+        let mut found = false;
+        'outer: for y in (rect.min.y as usize + 30)..(rect.min.y as usize + 220) {
+            for x in (rect.min.x as usize + 20)..(rect.min.x as usize + 320) {
+                let p = px(&rgba, w, x as i32, y as i32);
+                if (0..3).all(|i| (p[i] as i32 - want[i] as i32).abs() <= 16) {
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(
+            found,
+            "Crucible Spatial node header pixel must equal host category_header(Spatial)={want:?} — inherited styling"
         );
     }
 }

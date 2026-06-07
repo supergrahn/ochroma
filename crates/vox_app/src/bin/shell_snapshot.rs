@@ -56,8 +56,13 @@ fn main() {
     let bg = tokens.color("surface.bg.0");
 
     let mut shell = EditorShell::new(tokens.clone());
-    if tab == "node_graph" {
-        shell.focus_node_graph();
+    // Install the worked-example plugin so its tab + commands are in the shell.
+    shell.install_plugin(Box::new(vox_app::shell::plugins::CruciblePlugin::new()));
+    match tab.as_str() {
+        "node_graph" => shell.focus_node_graph(),
+        "crucible" => shell.focus_plugin_tab(vox_app::shell::plugins::CRUCIBLE_TAB),
+        // Default: the central tab is the REAL rendered viewport.
+        _ => shell.focus_viewport(),
     }
     if palette {
         shell.open_palette();
