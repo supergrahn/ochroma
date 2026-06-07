@@ -1131,16 +1131,18 @@ mod tests {
         }
     }
 
-    /// The `.usda` array-geometry limitation must surface as an error through
-    /// the browser dispatch, not a silent empty load.
+    /// Array-valued `.usda` geometry now loads through the browser dispatch
+    /// into real splats (openusd-rs 9fd19fa taught the text parser point3f[]/
+    /// int[]/tuple arrays — this previously surfaced UnsupportedTextArray).
     #[test]
-    fn load_asset_usda_array_geometry_errors() {
+    fn load_asset_usda_array_geometry_loads_splats() {
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../vox_usd/tests/data/points_text.usda");
-        let err = load_asset(&fixture, AssetKind::Usd).unwrap_err();
-        assert!(
-            matches!(err, BrowserError::Usd(vox_usd::UsdError::UnsupportedTextArray)),
-            "expected UnsupportedTextArray, got {err:?}",
-        );
+        match load_asset(&fixture, AssetKind::Usd).expect("array geometry loads") {
+            LoadedAsset::Splats(splats) => {
+                assert!(!splats.is_empty(), "point3f[] geometry yields splats");
+            }
+            other => panic!("expected Splats, got {other:?}"),
+        }
     }
 }
