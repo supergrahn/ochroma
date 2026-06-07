@@ -274,6 +274,14 @@ async fn run_rollback_async(cfg: RollbackQuicConfig) -> Result<RollbackQuicRepor
     let server_addr = server.local_addr()?;
 
     // Host = B (authoritative remote, player 1). Sends its input bits each tick.
+    //
+    // Same teardown race class as run_async (fixed there first): this task MOVES
+    // `server` and `conn` in, so when its body ends — and B legitimately ends
+    // early, since its final send is only a local write — both handles drop,
+    // quinn emits CONNECTION_CLOSE(0), and the close frame races B's in-flight
+    // packets to A's recv loop ("closed by peer: 0", ~4/6 under gate load).
+    // Fix: return the handles in the task's OUTPUT, so they stay alive inside
+    // the JoinHandle until we await it AFTER A's loop completes.
     let host_task = tokio::spawn(async move {
         let conn = server.accept().await?;
         let mut b_truth = WorldSim::new();
@@ -294,7 +302,7 @@ async fn run_rollback_async(cfg: RollbackQuicConfig) -> Result<RollbackQuicRepor
             send_res?;
             recv_res?; // A's keepalive packet (ignored)
         }
-        Ok::<[f32; 3], WalkDemoError>(b_final)
+        Ok::<_, WalkDemoError>((b_final, conn, server))
     });
 
     let client = QuicClient::connect(&server_addr.to_string(), "localhost").await?;
@@ -354,7 +362,14 @@ async fn run_rollback_async(cfg: RollbackQuicConfig) -> Result<RollbackQuicRepor
     }
     a.resimulate_if_needed();
 
-    let b_true_final = host_task.await.map_err(|e| WalkDemoError::Join(e.to_string()))??;
+    let (b_true_final, host_conn, host_server) =
+        host_task.await.map_err(|e| WalkDemoError::Join(e.to_string()))??;
+    // A's loop is done and B's handles were held in the task output — teardown
+    // order no longer matters.
+    drop(host_conn);
+    drop(host_server);
+    drop(conn);
+    drop(client);
 
     Ok(RollbackQuicReport {
         a_view_of_b_final: a.position_of(1),
