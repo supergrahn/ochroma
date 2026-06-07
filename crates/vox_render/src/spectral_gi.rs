@@ -512,6 +512,34 @@ impl GpuGi {
         )
     }
 
+    /// Build GI on a device the caller already owns — the shared present device
+    /// carried by a [`crate::gpu::GpuContext`] — instead of creating an isolated
+    /// headless device. No `Instance::new`, no `request_adapter`, no second
+    /// `request_device`: the GI compute pass binds its buffers on the SAME
+    /// `wgpu::Device` the window presents on, so its output buffers can later flow
+    /// directly into the rasterizer with no CPU round-trip.
+    ///
+    /// This shares the pass-construction code with [`GpuGi::new`] via
+    /// [`GpuGiPass::new`] (which takes a borrowed `&wgpu::Device` and has no
+    /// device-ownership logic), so the two constructors cannot drift in how the GI
+    /// pass is built — only in where the device comes from.
+    ///
+    /// Returns `Self` (not `Result`): the device already exists and succeeded at
+    /// surface bring-up, so there is no adapter/device-creation step that can fail
+    /// here. The standalone [`GpuGi::new`]/[`GpuGi::new_with_limits`] are untouched,
+    /// keeping the CPU-oracle validation twins on their own devices.
+    pub fn new_with_context(ctx: &crate::gpu::GpuContext, max_splats: u32) -> Self {
+        let capacity = max_splats.max(1);
+        let pass = GpuGiPass::new(ctx.device(), capacity);
+        Self {
+            device: ctx.device().clone(), // handle bump on the shared device, not a new device
+            queue: ctx.queue().clone(),
+            pass,
+            capacity,
+            adapter_name: ctx.adapter_name().to_string(),
+        }
+    }
+
     async fn new_async(
         max_splats: u32,
         required_limits: wgpu::Limits,
@@ -1133,6 +1161,109 @@ mod tests {
         eprintln!(
             "[gpu_gi equivalence] n={n} sample={} max|Δ|={max_delta:.2e} probe gpu={probe_g:.4} cpu={probe_c:.4}",
             sample.len()
+        );
+    }
+
+    /// Build a headless [`crate::gpu::GpuContext`] over a real device, mirroring
+    /// `WgpuBackend` minus the surface (compute-only adapter, no `compatible_surface`).
+    /// Returns `None` (and prints the skip line, matching `try_gpu`) when this box
+    /// has no adapter, so CI without a GPU stays green.
+    fn try_gpu_context(label: &str) -> Option<crate::gpu::GpuContext> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }));
+        let adapter = match adapter {
+            Some(a) => a,
+            None => {
+                eprintln!("[{label}] no adapter — skipping GPU test");
+                return None;
+            }
+        };
+        let info = adapter.get_info();
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("gpu_context_test_device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+            },
+            None,
+        ))
+        .expect("device creation on a box with a GPU");
+        Some(crate::gpu::GpuContext::from_parts(&device, &queue, &info))
+    }
+
+    /// Equivalence contract for the SHARED-DEVICE path: a `GpuGi` built via
+    /// [`GpuGi::new_with_context`] over a caller-supplied `GpuContext` must compute
+    /// GI band-for-band identically to the standalone [`GpuGi::new`] (own-device)
+    /// `GpuGi` on the same scene. This proves the shared-device constructor runs the
+    /// identical pipeline — only the device's provenance differs — and that the
+    /// validated own-device twin is preserved alongside it.
+    ///
+    /// The bound is `1e-6` (the same epsilon the existing `gpu_gi_is_deterministic`
+    /// twin uses), i.e. bit-identical modulo f16 readback noise: both paths run the
+    /// SAME WGSL on the SAME hardware, so any divergence would be a real defect.
+    #[test]
+    fn gpu_gi_new_with_context_matches_standalone() {
+        let Some(ctx) = try_gpu_context("gpu_context_test") else { return };
+
+        // Standalone own-device GpuGi (the validated twin's constructor) — skip
+        // together if this box has no adapter (try_gpu_context already returned).
+        let Some(standalone) = try_gpu(1024) else { return };
+
+        // Shared-device GpuGi on the supplied context — NO new Instance::new.
+        let shared = GpuGi::new_with_context(&ctx, 1024);
+
+        // (a) Shared identity: the shared GI reports the context's adapter name.
+        assert_eq!(
+            shared.adapter_name,
+            ctx.adapter_name(),
+            "new_with_context must carry the context's adapter name"
+        );
+
+        // (b) SAME computation, proven behaviorally on a non-trivial scene with a
+        //     bright emitter lighting a dark receiver (reuse the twin's scene).
+        let scene = emitter_receiver_scene(0.5);
+        let out_shared = shared.step(&scene, 12.0).expect("shared step");
+        let out_standalone = standalone.step(&scene, 12.0).expect("standalone step");
+        assert_eq!(out_shared.len(), out_standalone.len());
+
+        // The receiver must actually be lit (not a vacuous all-zero match).
+        let lit = (0..16).any(|b| receiver_band(&out_shared, b) > 1e-3);
+        assert!(
+            lit,
+            "shared-device GI must light the receiver, got {:?}",
+            (0..16).map(|b| receiver_band(&out_shared, b)).collect::<Vec<_>>()
+        );
+
+        let mut max_delta = 0.0f32;
+        for i in 0..scene.len() {
+            for b in 0..16 {
+                let s = f16::from_bits(out_shared[i].spectral()[b]).to_f32();
+                let o = f16::from_bits(out_standalone[i].spectral()[b]).to_f32();
+                let d = (s - o).abs();
+                if d > max_delta {
+                    max_delta = d;
+                }
+                assert!(
+                    d < 1e-6,
+                    "shared vs standalone divergence at splat {i} band {b}: \
+                     shared={s} standalone={o} (|Δ|={d})"
+                );
+            }
+        }
+
+        let recv_b8 = receiver_band(&out_shared, 8);
+        eprintln!(
+            "[gpu_gi shared-device] adapter={} receiver band8={recv_b8:.4} \
+             max|Δ| vs standalone={max_delta:.2e}",
+            ctx.adapter_name()
         );
     }
 

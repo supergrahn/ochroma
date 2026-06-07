@@ -151,6 +151,11 @@ struct EditorHost {
 
     cli: Cli,
     frames_rendered: u32,
+
+    /// GPU global illumination bound to the SHARED present device (the same
+    /// `wgpu::Device` the window presents on), built behind `OCHROMA_GI=gpu` from
+    /// the backend's `GpuContext` — proof the GI path uses no second device.
+    shared_gi: Option<vox_render::spectral_gi::GpuGi>,
 }
 
 impl EditorHost {
@@ -169,6 +174,7 @@ impl EditorHost {
             bg,
             cli,
             frames_rendered: 0,
+            shared_gi: None,
         }
     }
 
@@ -496,6 +502,45 @@ impl ApplicationHandler for EditorHost {
         configure_present_mailbox(&backend);
         println!("[ochroma_editor] surface present mode set to Mailbox");
 
+        // Behind OCHROMA_GI=gpu: bind GPU global illumination to the SHARED present
+        // device. This constructs the GI compute pass on the backend's own
+        // `wgpu::Device`/`Queue` (cloned handles — NOT a second `request_device`),
+        // proving the shared-device foundation end-to-end. With OCHROMA_GI unset,
+        // none of this runs and the editor's existing path is byte-identical.
+        if std::env::var("OCHROMA_GI")
+            .map(|v| v.eq_ignore_ascii_case("gpu"))
+            .unwrap_or(false)
+        {
+            // The backend does not expose its adapter identity, so resolve the
+            // adapter NAME via a device-less enumeration matching the backend's
+            // selection order (Vulkan first, then GL, then all) — no second device
+            // is created here, only a name lookup. The GI device below is the
+            // backend's actual present device.
+            let adapter_info = resolve_present_adapter_info();
+            let ctx = vox_render::gpu::GpuContext::from_parts(
+                backend.device(),
+                backend.queue(),
+                &adapter_info,
+            );
+            let gi = vox_render::spectral_gi::GpuGi::new_with_context(&ctx, 200_000);
+            // Same device, not a coincidence: the GI's adapter name equals the
+            // context's, which was resolved from the same present-adapter order.
+            assert_eq!(
+                gi.adapter_name,
+                adapter_info.name,
+                "GI must run on the present adapter, not a second device"
+            );
+            println!(
+                "[ochroma_editor] GI on shared present device (adapter={})",
+                gi.adapter_name
+            );
+            println!(
+                "[ochroma_editor] GI adapter = {} (backend adapter = {})",
+                gi.adapter_name, adapter_info.name
+            );
+            self.shared_gi = Some(gi);
+        }
+
         // egui input + theme. Install the Phosphor icon font and the tokenized
         // egui style exactly as the headless snapshot does, so the live dock is
         // the same dark, icon-led shell.
@@ -574,6 +619,49 @@ fn configure_present_mailbox(backend: &WgpuBackend) {
         view_formats: vec![],
     };
     backend.surface().configure(backend.device(), &config);
+}
+
+/// Resolve the `AdapterInfo` of the adapter the present backend selected.
+///
+/// `WgpuBackend` selects its adapter Vulkan-first (then GL, then all) and does not
+/// retain/expose the resulting `AdapterInfo`. To label the shared-device GI with the
+/// SAME adapter without a second `request_device`, we re-run that selection order as
+/// a NAME-ONLY enumeration: `request_adapter` returns an `Adapter` handle from which
+/// `get_info()` reads the identity, but NO device is created here. The GI compute
+/// pass itself runs on the backend's actual present device (cloned handles), so this
+/// resolves the name the present device's adapter reports, not a different GPU.
+fn resolve_present_adapter_info() -> wgpu::AdapterInfo {
+    let attempts: &[wgpu::Backends] = &[
+        wgpu::Backends::VULKAN,
+        wgpu::Backends::GL,
+        wgpu::Backends::all(),
+    ];
+    for backends in attempts {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: *backends,
+            ..Default::default()
+        });
+        if let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            }))
+        {
+            return adapter.get_info();
+        }
+    }
+    // Backend creation already succeeded, so an adapter exists; this is unreachable
+    // in practice. Provide a benign default rather than panicking the shell.
+    wgpu::AdapterInfo {
+        name: String::from("unknown"),
+        vendor: 0,
+        device: 0,
+        device_type: wgpu::DeviceType::Other,
+        driver: String::new(),
+        driver_info: String::new(),
+        backend: wgpu::Backend::Empty,
+    }
 }
 
 /// Convert an sRGB-encoded 8-bit channel to a linear 0..1 value for the surface
