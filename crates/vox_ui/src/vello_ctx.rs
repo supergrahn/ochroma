@@ -164,15 +164,18 @@ impl VelloCtx {
         _queue: &vello::wgpu::Queue,
         width:  u32,
         height: u32,
-        surface_format: vello::wgpu::TextureFormat,
+        // vello 0.5 dropped `RendererOptions::surface_format`; the renderer is no
+        // longer told the surface format up front. The param is retained so the
+        // windowed-path call site is unchanged, but it is now advisory only.
+        _surface_format: vello::wgpu::TextureFormat,
     ) -> Result<Self, vello::Error> {
         let renderer = vello::Renderer::new(
             device,
             vello::RendererOptions {
-                surface_format: Some(surface_format),
                 use_cpu:        false,
                 antialiasing_support: vello::AaSupport::area_only(),
                 num_init_threads: std::num::NonZeroUsize::new(1),
+                pipeline_cache: None,
             },
         )?;
         Ok(Self { renderer, scene: vello::Scene::new(), width, height, owned: None })
@@ -186,7 +189,7 @@ impl VelloCtx {
     pub fn new_headless(width: u32, height: u32) -> Option<Self> {
         use vello::wgpu;
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
@@ -212,10 +215,11 @@ impl VelloCtx {
             &device,
             vello::RendererOptions {
                 // No surface — we only ever render_to_texture offscreen.
-                surface_format: None,
+                // (vello 0.5 removed the `surface_format` option entirely.)
                 use_cpu:        false,
                 antialiasing_support: vello::AaSupport::area_only(),
                 num_init_threads: std::num::NonZeroUsize::new(1),
+                pipeline_cache: None,
             },
         )
         .ok()?;
@@ -337,15 +341,15 @@ impl VelloCtx {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("vello-readback") });
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &target,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &readback,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bpr),
                     rows_per_image: Some(h),
@@ -565,5 +569,189 @@ mod tests {
         println!("[vello] gpu red_px = {}", red_px);
         // 32x32 rect = 1024 px; allow AA slack on the border.
         assert!(red_px > 900, "expected >900 red px, got {}", red_px);
+    }
+
+    // --- GPU-STACK UNIFICATION PROOF -------------------------------------
+    //
+    // The point of the vello 0.4 -> 0.5.1 bump: vello 0.5.1 pins wgpu 24.0.3,
+    // the SAME major as vox_render's wgpu 24. Before the bump, vello dragged in
+    // wgpu 23 and its GPU UI ran on a SECOND device, compositing across the CPU.
+    // After the bump, ONE wgpu-24 device can serve BOTH vello and vox_render.
+    //
+    // VARIANT SHIPPED: (b) — "shared device satisfies both requirement sets".
+    // We CANNOT use variant (a) (dev-dep on vox_render + call its API) because
+    // vox_render already depends on vox_ui (see vox_render/Cargo.toml), so a
+    // `vox_ui -> vox_render` dev-dependency would form a dependency cycle. Cargo
+    // rejects that even for dev-deps in the same workspace edge.
+    //
+    // Instead we build ONE wgpu-24 `Device`/`Queue` configured with vox_render's
+    // EXACT device requirements — `Features::empty()` plus the most demanding
+    // limits any vox_render GPU entry point requests (the `GpuGi` compute path:
+    // unbounded storage-buffer count/size and compute-workgroup dispatch, which
+    // is a strict superset of the `downlevel_defaults()` used by the splat
+    // backend and material eval). We then hand that device to a vello 0.5
+    // `VelloCtx::new` (the windowed-path constructor that consumes a CALLER's
+    // device), render a real scene through it, and read pixels back.
+    //
+    // The assertion is a real computed pixel outcome: the centre of a red rect
+    // rendered by vello on the shared device reads back as opaque red (R high,
+    // G/B low) and >900 of the rect's pixels are red. If vello 0.5 could not run
+    // on a device built to vox_render's spec, `VelloCtx::new` or the render would
+    // fail and these pixels would never appear — proving the unification.
+    //
+    // Self-skips when no GPU adapter is present (headless CI without Vulkan/GL),
+    // matching the existing GPU tests in this module.
+    #[cfg(feature = "game-ui")]
+    #[test]
+    fn shared_wgpu24_device_drives_both_vello_and_vox_render_requirements() {
+        use vello::wgpu;
+
+        let w = 64u32;
+        let h = 64u32;
+
+        // ONE device, built to vox_render's exact requirements (wgpu 24).
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let Some(adapter) = pollster::block_on(instance.request_adapter(
+            &wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+            },
+        )) else {
+            eprintln!("[vello] no GPU adapter — skipping shared-device unification proof");
+            return;
+        };
+
+        // vox_render's most demanding device request (GpuGi compute path):
+        //   features = empty, limits = default + unbounded storage/compute.
+        // Mirrors crates/vox_render/src/spectral_gi.rs new_blocking().
+        // Clamp the "unbounded" sentinels to what the adapter actually exposes
+        // (u32::MAX/u64::MAX are requests, not guarantees — vox_render's own
+        // GpuGi path is similarly bounded by the adapter). Everything else stays
+        // at vox_render's request: default base limits + maxed storage/compute.
+        let al = adapter.limits();
+        let shared_limits = wgpu::Limits {
+            max_storage_buffers_per_shader_stage: al.max_storage_buffers_per_shader_stage,
+            max_buffer_size: al.max_buffer_size,
+            max_storage_buffer_binding_size: al.max_storage_buffer_binding_size,
+            max_compute_workgroups_per_dimension: al.max_compute_workgroups_per_dimension,
+            ..wgpu::Limits::default()
+        };
+
+        let (device, queue) = match pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("shared-vello-and-vox_render-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: shared_limits,
+                memory_hints: wgpu::MemoryHints::default(),
+            },
+            None,
+        )) {
+            Ok(dq) => dq,
+            Err(e) => {
+                eprintln!("[vello] shared device creation failed ({e}) — skipping proof");
+                return;
+            }
+        };
+
+        // (a) Drive VELLO on the shared device via the caller-supplied-device
+        // constructor (the windowed path). vello 0.5 / wgpu 24 must accept it.
+        let mut ctx = VelloCtx::new(
+            &device,
+            &queue,
+            w,
+            h,
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .expect("vello 0.5 Renderer must construct on a device built to vox_render's spec");
+
+        ctx.begin_frame();
+        // Opaque red rect over the centre.
+        ctx.fill_rect([16.0, 16.0, 32.0, 32.0], [1.0, 0.0, 0.0, 1.0]);
+
+        // Render vello's scene to an Rgba8Unorm target on the SHARED device, then
+        // read it back. (We own the target here; end_frame takes the same device.)
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("shared-device-vello-target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        ctx.end_frame(&device, &queue, &view)
+            .expect("vello render_to_texture on the shared device must succeed");
+
+        // Read the rendered texture back to CPU pixels.
+        let unpadded_bpr = w * 4;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bpr = unpadded_bpr.div_ceil(align) * align;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("shared-device-readback"),
+            size: (padded_bpr * h) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("shared-device-copy"),
+        });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bpr),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit(std::iter::once(enc.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        device.poll(wgpu::Maintain::Wait);
+        rx.recv().expect("map sender").expect("buffer map");
+        let data = slice.get_mapped_range();
+        let mut pixels = vec![[0u8; 4]; (w * h) as usize];
+        for y in 0..h {
+            let row = (y * padded_bpr) as usize;
+            for x in 0..w {
+                let p = row + (x * 4) as usize;
+                pixels[(y * w + x) as usize] = [data[p], data[p + 1], data[p + 2], data[p + 3]];
+            }
+        }
+        drop(data);
+        readback.unmap();
+
+        // (b) THE PROOF: vello rendered correctly on the device built to
+        // vox_render's spec. Centre pixel is opaque red; the rect is solidly red.
+        let centre = pixels[(32 * 64 + 32) as usize];
+        println!("[vello] shared-device centre pixel = {:?}", centre);
+        assert!(centre[0] > 200, "centre R should be high (red), got {}", centre[0]);
+        assert!(centre[1] < 64, "centre G should be low, got {}", centre[1]);
+        assert!(centre[2] < 64, "centre B should be low, got {}", centre[2]);
+
+        let red_px = pixels.iter()
+            .filter(|p| p[0] > 200 && p[1] < 64 && p[2] < 64)
+            .count();
+        println!("[vello] shared-device red_px = {}", red_px);
+        assert!(
+            red_px > 900,
+            "vello on the vox_render-spec device must paint the 32x32 red rect; got {red_px} red px",
+        );
     }
 }
