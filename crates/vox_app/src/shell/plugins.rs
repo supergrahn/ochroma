@@ -35,6 +35,16 @@ pub struct CruciblePlugin {
     pub recooked: Rc<RefCell<bool>>,
     /// This plugin's independent cook graph (real Crucible node names).
     graph: CanvasGraph,
+    /// Cooked scenes waiting for the host to plant — the Crucible twin of
+    /// `ForgePlugin::building_sink`, filled by "Cook scene" via
+    /// [`super::crucible_native::cook_scene`] (real Crucible cook engine with the
+    /// `crucible-native` feature, deterministic preview without it). Drained each
+    /// frame by the host exactly like `building_sink`.
+    pub scene_sink: Rc<RefCell<Vec<CrucibleScene>>>,
+    /// Per-cook seed so successive "Cook scene" presses can vary (reserved).
+    cook_count: u32,
+    /// Set true once a scene has been cooked — the panel's readout reads it.
+    cooked: bool,
 }
 
 impl Default for CruciblePlugin {
@@ -42,6 +52,9 @@ impl Default for CruciblePlugin {
         CruciblePlugin {
             recooked: Rc::new(RefCell::new(false)),
             graph: build_crucible_graph(),
+            scene_sink: Rc::new(RefCell::new(Vec::new())),
+            cook_count: 0,
+            cooked: false,
         }
     }
 }
@@ -49,6 +62,34 @@ impl Default for CruciblePlugin {
 impl CruciblePlugin {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build a Crucible plugin sharing the host's scene queue: cooked scenes are
+    /// pushed onto `scene_sink` for the host to plant each frame (the twin of
+    /// [`ForgePlugin::with_sinks`]).
+    pub fn with_scene_sink(scenes: Rc<RefCell<Vec<CrucibleScene>>>) -> Self {
+        CruciblePlugin { scene_sink: scenes, ..Self::default() }
+    }
+
+    /// Cook a scene with this build's backend (real Crucible cook engine with the
+    /// `crucible-native` feature, deterministic preview without) and emit it onto
+    /// the scene-sink for the host to plant. The seed increments per press. This
+    /// is the SAME button in every build; the receipt names which backend ran.
+    /// The existing `crucible.recook` command stays — this closes the loop end to
+    /// end (cook → USD → import → plant), recook is the graph-level re-run.
+    pub fn cook_scene_action(&mut self) {
+        let spec = super::crucible_native::CrucibleSceneSpec {
+            seed: self.cook_count as u64,
+            ..Default::default()
+        };
+        self.cook_count += 1;
+        let (splats, backend) = super::crucible_native::cook_scene(spec);
+        self.scene_sink.borrow_mut().push(CrucibleScene {
+            label: "Crucible Scene".to_string(),
+            splats,
+            backend,
+        });
+        self.cooked = true;
     }
 }
 
@@ -135,6 +176,38 @@ impl EditorPlugin for CruciblePlugin {
         if tab_id != CRUCIBLE_TAB {
             return;
         }
+        let t = cx.tokens;
+        let prim = {
+            let [r, g, b, a] = t.color("text.primary");
+            egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+        };
+        let sec = {
+            let [r, g, b, a] = t.color("text.secondary");
+            egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+        };
+
+        // "Cook scene" — the Crucible tab's primary action and the twin of
+        // Forge's "Add building": the SAME button in every build, only the
+        // backend differs. With `crucible-native` it drives the real Crucible cook
+        // engine (graph_builder::build(...).cook() → USD on disk → vox_usd import);
+        // without it, a deterministic preview cluster. Either way the cooked scene
+        // plants into the live viewport and the receipt names which backend ran.
+        ui.add_space(t.space[2]);
+        if vox_ui::widgets::primary_action(ui, icon::TERRAIN, "Cook scene", t).clicked() {
+            self.cook_scene_action();
+        }
+        ui.label(
+            egui::RichText::new(if self.cooked {
+                "Cooked a scene into the world — see it in the Viewport (undo with Ctrl+Z)."
+            } else {
+                "Cook a small scene and place it in the live viewport."
+            })
+            .size(t.type_ramp.caption)
+            .color(if self.cooked { prim } else { sec }),
+        );
+        ui.add_space(t.space[2]);
+        ui.separator();
+
         // The plugin renders its OWN graph through the SHARED canvas + host
         // tokens — it sets not a single color. `cx.canvas` is the per-tab
         // NodeCanvas the host owns on its behalf; `cx.tokens` is the host design
@@ -683,6 +756,20 @@ pub struct ForgeBuilding {
     /// The splats built by whichever backend this build carries.
     pub splats: Vec<GaussianSplat>,
     /// Which backend generated them — appended to the planting receipt.
+    pub backend: &'static str,
+}
+
+/// A cooked Crucible scene ready to plant: label, real splats, and the HONEST
+/// backend tag for the receipt ("Crucible native" when the cook→USD→import loop
+/// closed, the cook-ran-but-import-pending note, or the built-in preview note) —
+/// the Crucible twin of [`ForgeBuilding`].
+#[derive(Clone)]
+pub struct CrucibleScene {
+    /// The friendly label (the shell appends an incrementing number).
+    pub label: String,
+    /// The splats produced by whichever backend this build carries.
+    pub splats: Vec<GaussianSplat>,
+    /// Which backend produced them — appended to the planting receipt.
     pub backend: &'static str,
 }
 

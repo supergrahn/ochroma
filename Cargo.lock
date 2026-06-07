@@ -1116,6 +1116,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cook"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crucible-core",
+ "crucible-nodes",
+ "crucible-types",
+ "crucible-usd",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1452,10 +1465,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-nodes"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "crucible-core",
+ "crucible-types",
+ "crucible-usd",
+ "floraprime-rs",
+ "hashbrown 0.15.5",
+ "image",
+ "meshopt",
+ "nalgebra 0.33.2",
+ "noise",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "crucible-types"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "crucible-usd"
+version = "0.1.0"
+dependencies = [
+ "crucible-core",
+ "crucible-types",
+ "openusd-rs",
 ]
 
 [[package]]
@@ -2134,6 +2174,27 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+]
+
+[[package]]
+name = "float-cmp"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "floraprime-rs"
+version = "0.1.0"
+dependencies = [
+ "kiddo",
+ "nalgebra 0.33.2",
+ "rayon",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -3688,6 +3749,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "meshopt"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0cad96c96b1c198160517f5dc7c247ef36ebb9d49015c0cfca0c0ee8d7d1bbc"
+dependencies = [
+ "bitflags 2.11.0",
+ "cc",
+ "float-cmp",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "metal"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3841,6 +3914,7 @@ dependencies = [
  "num-complex 0.4.6",
  "num-rational 0.4.2",
  "num-traits",
+ "serde",
  "simba",
  "typenum",
 ]
@@ -4079,6 +4153,7 @@ checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
 dependencies = [
  "bytemuck",
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -7636,6 +7711,9 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "console_error_panic_hook",
+ "cook",
+ "crucible-core",
+ "crucible-types",
  "dirs-next",
  "egui",
  "egui-wgpu",
@@ -7671,6 +7749,7 @@ dependencies = [
  "vox_sim",
  "vox_terrain",
  "vox_ui",
+ "vox_usd",
  "wasm-bindgen",
  "web-sys",
  "wgpu",

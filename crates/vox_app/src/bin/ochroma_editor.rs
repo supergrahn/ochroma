@@ -124,7 +124,10 @@ fn load_tokens(light: bool) -> Tokens {
 /// windowed editor shows exactly the same dock.
 fn build_shell(tokens: Tokens) -> EditorShell {
     let mut shell = EditorShell::new(tokens);
-    shell.install_plugin(Box::new(vox_app::shell::plugins::CruciblePlugin::new()));
+    // Install Crucible wired to the shell's scene-sink (NOT the detached
+    // `::new()` sink) so pressing "Cook scene" plants real splats into the live
+    // windowed viewport — exactly as install_floraprime does for "Grow tree".
+    shell.install_crucible();
     shell.install_plugin(Box::new(vox_app::shell::plugins::ForgePlugin::new()));
     // Install FloraPrime wired to the shell's grow-sink (NOT the detached
     // `::new()` sink) so pressing "Grow tree" plants real splats into the live

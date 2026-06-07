@@ -20,6 +20,7 @@ pub mod host;
 pub mod intent;
 pub mod plugins;
 pub mod forge_native;
+pub mod crucible_native;
 pub mod script_gen;
 pub mod viewport;
 
@@ -28,7 +29,7 @@ use content_panel::{ContentAction, ContentPanel};
 use egui_dock::{DockArea, DockState, NodeIndex, Style as DockStyle};
 use graph_bridge::GraphBridge;
 use host::{InstalledPlugin, PluginCtx, TabDecl};
-use plugins::{ForgeBuilding, ForgeTerrain, GrownTree};
+use plugins::{CrucibleScene, ForgeBuilding, ForgeTerrain, GrownTree};
 use vox_core::types::GaussianSplat;
 use vox_editor::node_graph::NodeId;
 use std::cell::RefCell;
@@ -166,6 +167,10 @@ pub enum ShellRequest {
     ForgeTerrain(ForgeTerrain),
     /// Plant a generated building (the building twin of `ForgeTerrain`).
     ForgeBuilding(ForgeBuilding),
+    /// Plant a cooked Crucible scene (the Crucible twin of `ForgeBuilding`):
+    /// queued when the shell drains Crucible's scene-sink, routed through the
+    /// SAME `plant_asset` core.
+    CrucibleScene(CrucibleScene),
     /// The "＋ Add to world" affordance (toolbar primary action / empty-state
     /// teaching copy / palette `world.add`) asks to open the command palette in
     /// intent mode pre-filled with "add ", routing the user straight into the
@@ -217,6 +222,9 @@ pub struct EditorShell {
     /// Shared queue Forge's "Add building" button fills with [`ForgeBuilding`]s —
     /// drained each frame exactly like `forge_sink`.
     pub building_sink: Rc<RefCell<Vec<ForgeBuilding>>>,
+    /// Shared queue Crucible's "Cook scene" button fills with [`CrucibleScene`]s —
+    /// drained each frame exactly like `building_sink` (the Crucible twin).
+    pub scene_sink: Rc<RefCell<Vec<CrucibleScene>>>,
     /// Per-label placement counter so each planted asset is named "<Label> NN"
     /// (incrementing per label — "Silver Birch 01", "Forge Terrain 01").
     /// MONOTONIC BY DESIGN (wave-14 finding [1]): undo never decrements, so
@@ -315,6 +323,7 @@ impl EditorShell {
             flora_sink: Rc::new(RefCell::new(Vec::new())),
             forge_sink: Rc::new(RefCell::new(Vec::new())),
             building_sink: Rc::new(RefCell::new(Vec::new())),
+            scene_sink: Rc::new(RefCell::new(Vec::new())),
             asset_counts: std::collections::HashMap::new(),
             plugins: Vec::new(),
             last_command_flag,
@@ -485,6 +494,33 @@ impl EditorShell {
         });
     }
 
+    /// Install the Crucible plugin wired to THIS shell's scene-sink, so its
+    /// "Cook scene" button plants real splats into the live viewport (the host
+    /// drains `scene_sink` each frame). Use this instead of installing a bare
+    /// `CruciblePlugin::new()` when the cooked scene must reach the world — the
+    /// Crucible twin of [`Self::install_forge`].
+    pub fn install_crucible(&mut self) {
+        let plugin = plugins::CruciblePlugin::with_scene_sink(self.scene_sink.clone());
+        self.install_plugin(Box::new(plugin));
+    }
+
+    /// Press "Cook scene" headlessly (the snapshot binary's proof path) — cooks
+    /// with this build's backend and plants through the same core. With
+    /// `crucible-native` this runs the real Crucible cook engine
+    /// (graph_builder::build(...).cook() → USD on disk → vox_usd import attempt);
+    /// without it, a deterministic preview cluster.
+    pub fn cook_scene_headless(&mut self, seed: u64) {
+        let (splats, backend) = crucible_native::cook_scene(crucible_native::CrucibleSceneSpec {
+            seed,
+            ..Default::default()
+        });
+        self.plant_crucible_scene(CrucibleScene {
+            label: "Crucible Scene".to_string(),
+            splats,
+            backend,
+        });
+    }
+
     /// Lay out the full shell into an egui context for one frame.
     pub fn ui(&mut self, ctx: &egui::Context) {
         // Bump the frame counter first thing — inspector-drag coalescing keys off it.
@@ -519,7 +555,8 @@ impl EditorShell {
             let grown: Vec<GrownTree> = self.flora_sink.borrow_mut().drain(..).collect();
             let raised: Vec<ForgeTerrain> = self.forge_sink.borrow_mut().drain(..).collect();
             let built: Vec<ForgeBuilding> = self.building_sink.borrow_mut().drain(..).collect();
-            if !grown.is_empty() || !raised.is_empty() || !built.is_empty() {
+            let cooked: Vec<CrucibleScene> = self.scene_sink.borrow_mut().drain(..).collect();
+            if !grown.is_empty() || !raised.is_empty() || !built.is_empty() || !cooked.is_empty() {
                 let mut q = self.requests.borrow_mut();
                 for tree in grown {
                     q.push(ShellRequest::GrowTree(tree));
@@ -529,6 +566,9 @@ impl EditorShell {
                 }
                 for building in built {
                     q.push(ShellRequest::ForgeBuilding(building));
+                }
+                for scene in cooked {
+                    q.push(ShellRequest::CrucibleScene(scene));
                 }
             }
         }
@@ -995,6 +1035,7 @@ impl EditorShell {
                 ShellRequest::GrowTree(tree) => self.plant_grown_tree(tree),
                 ShellRequest::ForgeTerrain(patch) => self.plant_forge_terrain(patch),
                 ShellRequest::ForgeBuilding(building) => self.plant_forge_building(building),
+                ShellRequest::CrucibleScene(scene) => self.plant_crucible_scene(scene),
                 ShellRequest::OpenAddPalette => {
                     self.palette.open_intent_prefilled("add ");
                 }
@@ -1043,6 +1084,23 @@ impl EditorShell {
             building.splats,
             forge_native::BUILDING_PLANT_ORIGIN,
             "Built a",
+            &note,
+        );
+    }
+
+    /// Plant a cooked Crucible scene: same shared core as buildings, with the
+    /// backend tag carried into the receipt so the user always learns whether the
+    /// REAL Crucible cook engine ran (and whether its USD round-tripped) or the
+    /// built-in preview produced it — the Crucible twin of
+    /// [`Self::plant_forge_building`].
+    fn plant_crucible_scene(&mut self, scene: CrucibleScene) {
+        let note = format!(", {}", scene.backend);
+        self.plant_asset(
+            &scene.label,
+            "scene",
+            scene.splats,
+            crucible_native::CRUCIBLE_PLANT_ORIGIN,
+            "Cooked a",
             &note,
         );
     }
@@ -2580,12 +2638,16 @@ mod tests {
             .expect("crucible tab must have a leaf rect");
 
         // The Crucible "terrain" node is a Spatial node near the top-left of the
-        // canvas. Its header must be drawn in category_header(Spatial). Scan a band
-        // a bit below the tab strip for a pixel matching that exact token color.
+        // canvas. Its header must be drawn in category_header(Spatial). Scan most
+        // of the tab for a pixel matching that exact token color: the panel's
+        // "Cook scene" action button + caption + separator now sit above the
+        // canvas (mirroring the Forge tab), pushing the canvas down — the assert's
+        // intent is "a Spatial header in host token color SOMEWHERE in the tab",
+        // not a fixed offset.
         let want = Tokens::default().category_header(NodeCategory::Spatial);
         let mut found = false;
-        'outer: for y in (rect.min.y as usize + 30)..(rect.min.y as usize + 220) {
-            for x in (rect.min.x as usize + 20)..(rect.min.x as usize + 320) {
+        'outer: for y in (rect.min.y as usize + 30)..(rect.min.y as usize + 380) {
+            for x in (rect.min.x as usize + 20)..(rect.min.x as usize + 360) {
                 let p = px(&rgba, w, x as i32, y as i32);
                 if (0..3).all(|i| (p[i] as i32 - want[i] as i32).abs() <= 16) {
                     found = true;
@@ -3431,6 +3493,62 @@ mod tests {
         shell.undo();
         assert_eq!(shell.entities.len(), base_entities, "entity removed on undo");
         assert_eq!(shell.overlay.len(), base_overlay, "overlay restored on undo");
+    }
+
+    /// "Cook scene" end-to-end through the real drain path (the Crucible twin of
+    /// the building test): world +1, overlay grows by the cooked scene's splats,
+    /// the entity is named "Crucible Scene 01", the receipt reads
+    /// "Cooked a Crucible Scene 01 (N points, <backend>) — undo with Ctrl+Z" with
+    /// the ACTUAL backend tag this build/cook produced, and undo reverses exactly
+    /// the scene.
+    #[test]
+    fn cook_scene_plants_through_drain_with_backend_receipt() {
+        let mut shell = EditorShell::default();
+        let base_entities = shell.entities.len();
+        let base_overlay = shell.overlay.len();
+
+        let (splats, backend) =
+            crucible_native::cook_scene(crucible_native::CrucibleSceneSpec::default());
+        let count = splats.len();
+        assert!(count > 0);
+        shell.scene_sink.borrow_mut().push(CrucibleScene {
+            label: "Crucible Scene".to_string(),
+            splats,
+            backend,
+        });
+        // Drain exactly like ui() does.
+        let cooked: Vec<CrucibleScene> = shell.scene_sink.borrow_mut().drain(..).collect();
+        for s in cooked {
+            shell.plant_crucible_scene(s);
+        }
+
+        assert_eq!(shell.entities.len(), base_entities + 1, "one new world entity");
+        assert_eq!(shell.overlay.len(), base_overlay + count, "overlay grew by the scene");
+        let names: Vec<&str> = shell.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"Crucible Scene 01"), "named entity; have {names:?}");
+        let receipt = shell.assistant_log.last().expect("receipt logged");
+        assert_eq!(
+            receipt,
+            &format!("Cooked a Crucible Scene 01 ({count} points, {backend}) — undo with Ctrl+Z"),
+            "exact receipt with the honest backend tag: {receipt}"
+        );
+
+        // Undo removes exactly the scene.
+        shell.undo();
+        assert_eq!(shell.entities.len(), base_entities, "entity removed on undo");
+        assert_eq!(shell.overlay.len(), base_overlay, "overlay restored on undo");
+    }
+
+    /// Two cooks produce two distinctly-numbered Crucible scenes ("…01", "…02"),
+    /// proving the monotonic per-label counter the receipts rely on.
+    #[test]
+    fn two_cooks_produce_incrementing_named_scenes() {
+        let mut shell = EditorShell::default();
+        shell.cook_scene_headless(0);
+        shell.cook_scene_headless(1);
+        let names: Vec<&str> = shell.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"Crucible Scene 01"), "first scene; have {names:?}");
+        assert!(names.contains(&"Crucible Scene 02"), "second scene; have {names:?}");
     }
 
     /// Two raises produce two distinctly-numbered entities ("…01", "…02").

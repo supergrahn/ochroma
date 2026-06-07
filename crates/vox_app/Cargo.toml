@@ -16,11 +16,20 @@ spectra-native = ["vox_render/spectra-native"]
 # deterministic built-in PREVIEW box; with it on, the SAME button calls the real
 # `forge_building::generate()` and surfel-samples its mesh into splats.
 forge-native = ["dep:forge-building", "dep:forge-mesh"]
+# crucible-native: glue to the native Crucible cook engine (the Rust sibling at
+# ~/src/crucible/rust). OFF BY DEFAULT and behind OPTIONAL path deps, exactly
+# like `forge-native` above: a non-optional path dep would break every machine
+# without the sibling checkout (the documented build-break gotcha). With the
+# feature off, the Crucible tab's "Cook scene" plants a deterministic built-in
+# PREVIEW cluster; with it on, the SAME button drives the real
+# `graph_builder::build(...).cook()` → USD on disk → `vox_usd` import → splats.
+crucible-native = ["dep:cook", "dep:crucible-core", "dep:crucible-types"]
 
 [dependencies]
 vox_core = { path = "../vox_core" }
 vox_ai   = { path = "../vox_ai" }
 vox_data = { path = "../vox_data" }
+vox_usd  = { path = "../vox_usd" }
 vox_render = { path = "../vox_render" }
 vox_nn = { path = "../vox_nn" }
 vox_sim = { path = "../vox_sim" }
@@ -61,6 +70,20 @@ rhai = "1"
 # above turns them on.
 forge-building = { path = "../../../aetherspectra/forge/crates/building", optional = true }
 forge-mesh     = { path = "../../../aetherspectra/forge/crates/mesh", optional = true }
+
+# Native Crucible cook engine — OPTIONAL path deps to the Crucible sibling
+# (~/src/crucible/rust). `cook` exposes `graph_builder::build(...) -> CrucibleGraph`
+# and `CrucibleGraph::cook()` (writes a USD scene to a dir); we construct its
+# input types directly from `crucible-core` (CrucibleGraph) and `crucible-types`
+# (Mesh / CameraState / AtmosphereState / LightDescriptor). The relative path
+# from crates/vox_app resolves ../../.. -> ~/src, then into the crucible
+# workspace. cook transitively pulls crucible-nodes / crucible-usd / openusd-rs /
+# floraprime-rs from THAT workspace's own path deps. All `optional = true` so a
+# missing sibling checkout leaves default/CI builds completely unaffected; the
+# `crucible-native` feature above turns them on.
+cook           = { path = "../../../crucible/rust/crates/cook", optional = true }
+crucible-core  = { path = "../../../crucible/rust/crates/crucible-core", optional = true }
+crucible-types = { path = "../../../crucible/rust/crates/crucible-types", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { version = "0.2", optional = true }

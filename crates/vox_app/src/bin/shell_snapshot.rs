@@ -20,6 +20,7 @@ fn main() {
     let mut grow_tree = false;
     let mut forge_terrain = false;
     let mut add_building = false;
+    let mut cook_scene = false;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -46,6 +47,7 @@ fn main() {
             "--grow-tree" => grow_tree = true,
             "--forge-terrain" => forge_terrain = true,
             "--add-building" => add_building = true,
+            "--cook-scene" => cook_scene = true,
             _ => {}
         }
         i += 1;
@@ -64,7 +66,8 @@ fn main() {
     let mut shell = EditorShell::new(tokens.clone());
     // Install BOTH real plugins so their tabs + command categories coexist
     // (Crucible + Forge) — the two-plugin proof.
-    shell.install_plugin(Box::new(vox_app::shell::plugins::CruciblePlugin::new()));
+    // Crucible wired to the shell's scene-sink so "Cook scene" plants real splats.
+    shell.install_crucible();
     // Forge wired to the shell's terrain-sink so "Raise terrain" plants real splats.
     shell.install_forge();
     // FloraPrime wired to the shell's grow-sink so "Grow tree" plants real splats.
@@ -85,6 +88,18 @@ fn main() {
         shell.add_building_headless(0);
         eprintln!(
             "[shell_snapshot] added building: {} things in the world, {} overlay splats",
+            shell.entities.len(),
+            shell.overlay.len()
+        );
+    }
+    if cook_scene {
+        // Press "Cook scene" headlessly: cook with this build's backend (the real
+        // Crucible cook engine under --features crucible-native — graph_builder
+        // build+cook → USD on disk → vox_usd import attempt — the deterministic
+        // preview otherwise) and plant it so the viewport shows the cooked scene.
+        shell.cook_scene_headless(0);
+        eprintln!(
+            "[shell_snapshot] cooked scene: {} things in the world, {} overlay splats",
             shell.entities.len(),
             shell.overlay.len()
         );
