@@ -4,6 +4,7 @@ pub mod materials;
 pub mod proc_gs;
 pub mod library;
 pub mod vxm_v2;
+pub mod tile_streamer;
 pub mod hot_reload;
 pub mod proc_gs_advanced;
 pub mod forge_ecs;
