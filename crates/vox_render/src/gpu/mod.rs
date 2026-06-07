@@ -23,3 +23,4 @@ pub mod morph_compute;
 pub mod splat_rt_gpu;
 pub mod many_light_gpu;
 pub mod hybrid_compose_gpu;
+pub mod atom_budget_gpu;
