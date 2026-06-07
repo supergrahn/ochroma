@@ -103,6 +103,8 @@ Maintained as features land. Last updated: 2026-06-07.
 | Live engine viewport in dock | live | Real `SoftwareRasteriser` frames presented as the docked Viewport texture (not a mock) |
 | Graph bridge | live | Real `OchromaNodeGraph` → canvas projection: param edits re-cook through `live_cook`, cook errors surfaced in-panel |
 | Ask Ochroma (AI intents) v2 | live | IntentBackend seam: deterministic parser default, opt-in LLM (env) emitting schema-validated strict JSON with parser fallback — unvalidated output can never touch the graph; receipts carry provenance; every AI action undoable |
+| Generative placement (Grow tree · Raise terrain) | live | Plugin actions create real world content: FloraPrime skeletons → spectral splats, TerrainNode heightfields → terrain mounds; named entities, range-tracked independent undo, domain receipts |
+| AI script generation | live | Ask Ochroma writes compile-verified hot-reloadable rhai scripts from vetted templates (spin/bob/pulse), params clamped, content-hash-guarded undo — the LLM seam reuses the same path |
 | Ecosystem plugins (Crucible · Forge · FloraPrime) | live | UE-style host-plugin model: `PluginCtx` exposes only tokens/widgets/canvas (structurally enforced); three visual-editor plugins live in the dock |
 | Behavior-tree editor, sequencer, anim editor, material editor | library | Authoring UIs present; not yet driving shipped binaries |
 

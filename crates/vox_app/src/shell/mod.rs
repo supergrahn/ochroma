@@ -213,6 +213,10 @@ pub struct EditorShell {
     pub forge_sink: Rc<RefCell<Vec<ForgeTerrain>>>,
     /// Per-label placement counter so each planted asset is named "<Label> NN"
     /// (incrementing per label — "Silver Birch 01", "Forge Terrain 01").
+    /// MONOTONIC BY DESIGN (wave-14 finding [1]): undo never decrements, so
+    /// plant→undo→replant yields "…02" with no "…01" present. Numbers are
+    /// placement-order provenance, not a live census — reusing them after undo
+    /// would let two different assets carry the same name in receipts/logs.
     asset_counts: std::collections::HashMap<String, usize>,
     /// Installed host-plugins (their tabs joined the dock, commands the registry).
     pub plugins: Vec<InstalledPlugin>,
@@ -649,6 +653,15 @@ impl EditorShell {
     /// Push a reversible edit onto the undo stack, capping it at [`HISTORY_CAP`] so a
     /// held-down edit loop can never grow it unbounded (survivors are the most
     /// recent entries — the ones a user would actually undo).
+    ///
+    /// CONTRACT (wave-14 finding [0], resolved as intended behavior): when a
+    /// `PlacedAsset` entry ages out of the cap, the asset it placed becomes
+    /// PERMANENT — its splats stay in the overlay and its World entity remains.
+    /// That is standard editor undo-history semantics (content falling off the
+    /// history is kept, never silently deleted), NOT a leak: the splats are
+    /// live, rendered world state the user placed and chose not to undo within
+    /// the last [`HISTORY_CAP`] edits. Surviving entries' absolute `start`
+    /// ranges stay valid because the cap never touches the overlay.
     fn push_undo(&mut self, entry: UndoEntry) {
         // Finding [8]: clear the inspector-drag coalescing anchor at the SINGLE
         // chokepoint where any entry lands on the stack — mirroring undo()'s reset.
@@ -3268,6 +3281,65 @@ mod tests {
         assert_eq!(
             shell.assistant_log.last().unwrap(),
             &format!("Removed Forge Terrain 01 ({after_count} points) from the world")
+        );
+    }
+
+    /// Wave-14 [1] codified: counters are MONOTONIC — plant, undo, replant
+    /// yields "…02" with no "…01" present (numbers are placement provenance,
+    /// never reused; see the asset_counts field doc).
+    #[test]
+    fn replant_after_undo_gets_a_fresh_number_not_a_reused_one() {
+        let mut shell = EditorShell::default();
+        shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        shell.undo();
+        shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        let names: Vec<&str> = shell.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"Silver Birch 02"),
+            "replant after undo must take the NEXT number; have {names:?}"
+        );
+        assert!(
+            !names.contains(&"Silver Birch 01"),
+            "the undone 01 must be gone; have {names:?}"
+        );
+    }
+
+    /// Wave-14 [0] codified as the intended contract: a PlacedAsset whose undo
+    /// entry ages out of HISTORY_CAP becomes PERMANENT — splats stay in the
+    /// overlay, the entity stays in the world, and draining the entire
+    /// remaining stack cannot remove it. Content falling off undo history is
+    /// kept, never silently deleted (standard editor semantics).
+    #[test]
+    fn capped_out_placed_asset_becomes_permanent_not_leaked() {
+        let mut shell = EditorShell::default();
+        let base_entities = shell.entities.len();
+        // One tree, then push its undo entry off the cap with param edits.
+        shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        let tree_splats = shell.overlay.len();
+        assert!(tree_splats > 0, "the tree planted splats");
+        for i in 0..(HISTORY_CAP + 10) {
+            shell.push_undo(UndoEntry::ParamSet {
+                node_id: NodeId(0),
+                key: "resolution",
+                target: "terrain.resolution".into(),
+                prev: i as f32,
+                next: (i + 1) as f32,
+            });
+        }
+        // Drain the whole surviving stack.
+        while !shell.undo_stack.is_empty() {
+            shell.undo();
+        }
+        // The tree is now permanent: still rendered, still listed.
+        assert_eq!(
+            shell.overlay.len(),
+            tree_splats,
+            "capped-out asset's splats remain (permanent, by contract)"
+        );
+        assert_eq!(
+            shell.entities.len(),
+            base_entities + 1,
+            "capped-out asset's entity remains in the world"
         );
     }
 
