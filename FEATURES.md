@@ -35,10 +35,10 @@ Maintained as features land. Last updated: 2026-06-07.
 | DLSS-style upscaling | library | Quality/Balanced/Perf/UltraPerf internal-resolution modes + frame generation scaffolding |
 | Splat-VFX graph | live | Niagara-shaped typed node DAG where particles ARE spectral splats (blackbody fire, deterministic for rollback); unifies the 5 legacy particle modules |
 | Particles (CPU/GPU/splat) | library | Emitters with spectral emission; Gaussian splats as particles; particle death drives audio synthesis |
-| Hybrid mesh+splat compositing | live | One-pass depth-correct compositing of triangle meshes with splats: perspective-correct 1/z depth interpolation, Sutherland-Hodgman near+far clipping |
-| Many-light sampler | live | ReSTIR-style weighted reservoir light selection (O(1) per shade point over arbitrary light counts), spatial-grid candidate culling, 16-band spectral path — unbiasedness proven to <1% vs brute force |
+| Hybrid mesh+splat compositing | live | Depth-correct compositing of triangle meshes with splats: perspective-correct 1/z interpolation, Sutherland-Hodgman near+far clipping. **GPU WGSL twin**: two-pass compute, 1.79e-7 max deviation vs CPU oracle (RADV) |
+| Many-light sampler | live | ReSTIR-style weighted reservoir light selection (O(1) per shade point over arbitrary light counts), spatial-grid candidate culling, 16-band spectral path — unbiasedness proven to <1% vs brute force. **GPU WGSL twin**: u64 LCG emulated in 2xu32, selection 100% bit-exact with CPU on RADV |
 | Render graph | live | RDG-style pass DAG: declared reads/writes, topo scheduling, dead-pass culling, cycle detection, declared-access enforcement — drives the postprocess chain bit-identically to the legacy path |
-| Spectral splat ray tracing | live | 3DGRT-style CPU reference: closed-form ray-vs-Gaussian peaks, CLAS-BVH traversal (footprint-padded, bit-identical to brute force), 16-band front-to-back compositing with hard budget, shadow-ray transmittance — cross-checked vs the EWA rasterizer (measured ~3%, asserted at 6%) |
+| Spectral splat ray tracing | live | 3DGRT-style: closed-form ray-vs-Gaussian peaks, CLAS-BVH traversal (footprint-padded, bit-identical to brute force), 16-band front-to-back compositing with hard budget, shadow-ray transmittance — cross-checked vs the EWA rasterizer (measured ~3%, asserted at 6%). **GPU WGSL twin**: 1.19e-7 max deviation vs CPU oracle, ~18x, deterministic (RADV 780M) |
 | Spectral relight | live | Illuminant rebake of captured scenes: intrinsic recovery (÷ capture SPD) → re-illumination via the engine's own sun/sky/shadow machinery. `vox_tools relight --from tungsten --to daylight` prints computed band-ratio receipts; metamer-divergence proven (identical under one illuminant, divergent under another — structurally impossible in RGB engines) |
 | Cascaded shadow maps | live | Multi-cascade directional shadows + shadow atlas, SDF soft shadows, shadow catcher |
 | Cinematic camera | library | Keyframed camera, depth-of-field with bokeh shapes, movie render to disk |
@@ -93,6 +93,8 @@ Maintained as features land. Last updated: 2026-06-07.
 | Comment boxes + wire inspection | live | UE-style group boxes that move members; per-wire value chips showing the actual data that flowed |
 | Gizmo pipeline | live | Canonical drag→transform with mode honoring + snapping |
 | Scene hierarchy / inspector / picking | live | Entity tree, property panels, ray-based splat picking, undo stack |
+| Windowed editor (`ochroma_editor`) | live | The full shell in a real window: winit + egui-wgpu on the unified wgpu-24 device, live viewport, all plugin tabs, Ctrl+K palette; `--frames N --shot` proof mode with GPU readback |
+| Domain-language UX | live | Editor speaks to domain-knowledgeable non-game-devs: physical units, teaching empty states, jargon retreats to tooltips, receipts keep exact values (~40 surfaces swept) |
 | Editor SOTA shell (Phase 1) | live | Tokenized theme (JSON-swappable), Phosphor icons, egui_dock drag-docking, plain-language chrome, headless `shell_snapshot` proof — bitmap font deleted from the editor |
 | Real typography | live | parley shaping + swash rasterization (anti-aliased vector text, headless-capable); 5×7 bitmap font retired from HUD + editor |
 | Vello GPU UI path | live | SpectralHUD renders through a real `vello::Renderer` (headless-provable pixel readback) in the default binary; opt-in `game-ui` feature; CPU fallback always present |
