@@ -19,7 +19,7 @@ Maintained as features land. Last updated: 2026-06-07.
 | Anisotropic 3DGS rasteriser | live | True EWA per-splat projection with front-to-back **16-band spectral** per-pixel compositing (CPU reference path; `OCHROMA_RASTER=legacy\|gaussian` A/B lever) |
 | GPU rasteriser (wgpu) | live | Depth-sorted splat upload + tile-based EWA compute path; indexed rendering from LOD selections |
 | Spectra Vulkan path | library | `spectra-native` feature: path-traced spectral rendering via the sibling Spectra renderer (renders on RADV iGPU) |
-| Atom-budget LOD selector | live | "Nanite for splats": cluster-BVH frustum cull → solid-angle scoring → per-cluster LOD with a hard per-frame splat budget (144k scene → ≤24k selected in ~1.5 ms) |
+| Atom-budget LOD selector | live | "Nanite for splats": cluster-BVH frustum cull → solid-angle scoring → per-cluster LOD with a hard per-frame splat budget (144k scene → ≤24k selected in ~1.5 ms). **GPU WGSL twin**: scoring kernel in the oracle's exact op order, host shed — selection 100% exact vs CPU across cameras x budgets (RADV) |
 | Scale-proven LOD pipeline | live | Measured at **2.05M splats**: selector build 138 ms, select median 216 µs / p99 1.1 ms across a 100-frame camera flight, zero budget violations (`scale_trial` bin, hard-asserted) |
 | Spectral material compiler | live | Node-graph BSDF (Substrate-style layering, Fresnel, blackbody emitters, per-wavelength math) **compiling to naga-validated WGSL** — GPU output matches the CPU reference to 2.8e-6 per band on real hardware |
 | Cluster acceleration (CLAS) | live | Deterministic spatial clustering + median-split BVH over splats (culling, LOD, GI subset queries) |
@@ -103,6 +103,7 @@ Maintained as features land. Last updated: 2026-06-07.
 | Live engine viewport in dock | live | Real `SoftwareRasteriser` frames presented as the docked Viewport texture (not a mock) |
 | Graph bridge | live | Real `OchromaNodeGraph` → canvas projection: param edits re-cook through `live_cook`, cook errors surfaced in-panel |
 | Ask Ochroma (AI intents) v2 | live | IntentBackend seam: deterministic parser default, opt-in LLM (env) emitting schema-validated strict JSON with parser fallback — unvalidated output can never touch the graph; receipts carry provenance; every AI action undoable |
+| Native ecosystem backends (forge-native) | live | Off-by-default cargo feature: "Add building" calls the REAL Forge generator (sibling path dep) and surfel-samples its architecture to splats; default builds get a deterministic preview with an honest backend receipt |
 | Generative placement (Grow tree · Raise terrain) | live | Plugin actions create real world content: FloraPrime skeletons → spectral splats, TerrainNode heightfields → terrain mounds; named entities, range-tracked independent undo, domain receipts |
 | AI script generation | live | Ask Ochroma writes compile-verified hot-reloadable rhai scripts from vetted templates (spin/bob/pulse), params clamped, content-hash-guarded undo — the LLM seam reuses the same path |
 | Ecosystem plugins (Crucible · Forge · FloraPrime) | live | UE-style host-plugin model: `PluginCtx` exposes only tokens/widgets/canvas (structurally enforced); three visual-editor plugins live in the dock |
