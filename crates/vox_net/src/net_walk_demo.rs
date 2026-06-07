@@ -136,7 +136,13 @@ async fn run_async(cfg: WalkDemoConfig) -> Result<WalkDemoReport, WalkDemoError>
     // until BOTH sides complete; teardown ordering is deterministic.
     let host_fut = async {
         let conn = server.accept().await?;
-        run_side(
+        // Keep a CONNECTION handle alive past run_side: quinn closes the
+        // connection (code 0) when the last handle drops, and the host can
+        // legitimately finish first (its final send is only a local write) —
+        // the close then races the in-flight final packet to the client
+        // ("closed by peer: 0"). Endpoint lifetime alone is NOT enough.
+        let keep = conn.clone();
+        let result = run_side(
             conn,
             HOST_ENTITY_ID,
             move |tick| {
@@ -145,12 +151,14 @@ async fn run_async(cfg: WalkDemoConfig) -> Result<WalkDemoReport, WalkDemoError>
             },
             cfg.ticks,
         )
-        .await
+        .await;
+        result.map(|r| (r, keep))
     };
 
     let client_fut = async {
         let client = QuicClient::connect(&server_addr.to_string(), "localhost").await?;
         let client_conn = client.connection().clone();
+        let keep = client_conn.clone();
         let result = run_side(
             client_conn,
             CLIENT_ENTITY_ID,
@@ -161,16 +169,17 @@ async fn run_async(cfg: WalkDemoConfig) -> Result<WalkDemoReport, WalkDemoError>
             cfg.ticks,
         )
         .await;
-        // Return the endpoint alongside the result: dropping it INSIDE this
-        // future would re-create the same race mirrored (client teardown
-        // killing the host's still-pending final recv). It drops after join!.
-        result.map(|r| (r, client))
+        // Return the endpoint AND connection handle alongside the result:
+        // dropping either inside this future re-creates the race mirrored.
+        result.map(|r| (r, client, keep))
     };
 
     let (host_result, client_result) = tokio::join!(host_fut, client_fut);
-    let host_result = host_result?;
-    let (client_result, client_endpoint) = client_result?;
+    let (host_result, host_conn) = host_result?;
+    let (client_result, client_endpoint, client_conn_keep) = client_result?;
     // Both sides have fully completed; teardown order no longer matters.
+    drop(host_conn);
+    drop(client_conn_keep);
     drop(client_endpoint);
     drop(server);
 
