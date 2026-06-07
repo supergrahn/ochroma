@@ -100,30 +100,27 @@ pub const BACKEND_TAG: &str =
 pub const BACKEND_TAG_COOK_PREVIEW: &str =
     "Crucible cook ran (USD written); vox_usd round-trip pending — showing preview";
 
-/// The precise, verified state of the cook→USD→import loop, surfaced here so the
-/// limitation lives next to the code rather than in a commit message:
+/// The verified state of the cook→USD→import loop — now CLOSED:
 ///
 /// - `cook::graph_builder::build(...).cook()` runs for real and writes
 ///   `scene.usda` + `geometry/lighting/camera/atmosphere.usda` to disk (verified
 ///   by [`tests::native_cook_writes_usd_and_attempts_import`]).
 /// - Cook's `UsdExportNode` writes TEXT `.usda` whose geometry is array/tuple
-///   valued (`point3f[] points = [(...), ...]`). vox_usd's openusd-rs text
-///   parser cannot read array/tuple geometry and returns
-///   `UsdError::UnsupportedTextArray` (its own documented limitation, reproduced
-///   on cook's exact output).
-/// - crucible-usd's binary `write_scene_binary` IS readable by vox_usd, but it
-///   omits `point3f[] points` entirely ("Full point3f[] support is TODO" in that
-///   crate), so it would import zero geometry — not a usable workaround.
-/// - `cook::graph_builder` exposes only the text path, and the Crucible sibling
-///   is read-only by directive.
-///
-/// Therefore the native path RUNS the cook (real engine, real USD on disk),
-/// attempts the import, and on the expected `UnsupportedTextArray` falls back to
-/// the preview cluster with [`BACKEND_TAG_COOK_PREVIEW`]. The day cook gains a
-/// USDC export with point data — or vox_usd's text parser learns arrays — this
-/// path imports the real cooked geometry with NO change to the planting/receipt
-/// wiring (only [`cook_native_inner`] flips from preview-fallback to the
-/// imported splats, already implemented below).
+///   valued (`point3f[] points = [(...), ...]`). openusd-rs's text parser
+///   originally returned `UsdError::UnsupportedTextArray` on this — its commit
+///   `9fd19fa` taught the parser scalar/tuple arrays (point3f[]/int[]/normal3f[]
+///   etc.), so vox_usd now imports cook's exact output into real splats.
+/// - The native path RUNS the cook, imports the cooked `geometry.usda` layer
+///   (600 real box splats, verified), and returns it tagged [`BACKEND_TAG`]
+///   ("Crucible native"). The composition ROOT `scene.usda` (which sublayers
+///   geometry/lighting/camera/atmosphere) still returns `Err(Open)` from
+///   vox_usd — a SEPARATE sublayer-composition gap, not an array gap; folding
+///   the cooked lights/camera into the import awaits that. The geometry — the
+///   cooked mesh itself — round-trips today.
+/// - [`BACKEND_TAG_COOK_PREVIEW`] remains as the honest fallback for a genuine
+///   cook OR import failure (a malformed scene, a future cook change vox_usd
+///   can't yet read): the cook ran but its geometry didn't round-trip, so the
+///   preview cluster is planted rather than nothing — never a silent failure.
 #[cfg(feature = "crucible-native")]
 pub const COOK_LOOP_NOTE: &str = "see crucible_native::COOK_LOOP_NOTE doc comment";
 
@@ -334,16 +331,19 @@ fn cook_native_inner(dir: &std::path::Path, spec: CrucibleSceneSpec) -> Option<V
     let mut graph = build_box_scene(dir.to_path_buf()).ok()?;
     graph.cook().ok()?;
 
-    // Attempt the round-trip. The cook writes a root `scene.usda` that sublayers
-    // geometry/lighting/etc.; we import the composed root exactly as the content
-    // browser does. Today this returns Err(UnsupportedTextArray) / Err(Open)
-    // (COOK_LOOP_NOTE), so we fall through to None and cook_native tags the
-    // result honestly.
-    let scene = dir.join("scene.usda");
-    if !scene.exists() {
+    // Re-import the cooked GEOMETRY layer. The cook writes a root `scene.usda`
+    // that sublayers geometry/lighting/camera/atmosphere; vox_usd parses the
+    // geometry layer's array-valued meshes into splats (openusd-rs 9fd19fa) but
+    // cannot yet resolve the composition root's sublayers (Err(Open) on
+    // scene.usda — a vox_usd sublayer-composition gap, NOT an array gap; the
+    // geometry layer is what carries the cooked mesh). Importing geometry.usda
+    // directly closes the geometry loop; folding in the cooked lights/camera
+    // awaits vox_usd sublayer composition (COOK_LOOP_NOTE).
+    let geometry = dir.join("geometry.usda");
+    if !geometry.exists() {
         return None;
     }
-    let import = vox_usd::import_usd(&scene).ok()?;
+    let import = vox_usd::import_usd(&geometry).ok()?;
     if import.splats.is_empty() {
         return None;
     }
@@ -468,35 +468,33 @@ mod tests {
             assert!(dir.join(f).exists(), "cook must write {f}");
         }
 
-        // The cooked geometry is array-valued text USDA: vox_usd reports its
-        // documented UnsupportedTextArray (the precise blocker). If this ever
-        // succeeds, the loop is importable and cook_native_inner already returns
-        // the real splats — update COOK_LOOP_NOTE and this assert then.
-        let geom = vox_usd::import_usd(&dir.join("geometry.usda"));
+        // The cooked geometry is array-valued text USDA. openusd-rs commit
+        // 9fd19fa taught its text parser point3f[]/int[]/tuple arrays, so the
+        // round-trip is now CLOSED: importing the cooked scene yields the real
+        // box geometry as splats (this assert previously expected the
+        // UnsupportedTextArray blocker — see COOK_LOOP_NOTE history).
+        let scene = vox_usd::import_usd(&dir.join("geometry.usda")).expect("cooked geometry imports");
         assert!(
-            matches!(geom, Err(vox_usd::UsdError::UnsupportedTextArray)),
-            "cook's text geometry.usda is not yet importable by vox_usd (got {geom:?})"
+            !scene.splats.is_empty(),
+            "cook's geometry round-trips through vox_usd into real splats"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// End-to-end native path through [`cook_scene`]: the real cook runs, the
-    /// round-trip is attempted, and because it is blocked today the result is the
-    /// preview cluster tagged honestly with [`BACKEND_TAG_COOK_PREVIEW`] (the
-    /// cook RAN; only the import is pending). Non-empty and within the cap.
+    /// End-to-end native path through [`cook_scene`]: the real cook runs, its
+    /// USD round-trips through vox_usd (openusd-rs 9fd19fa closed the loop), and
+    /// the result is the imported cooked geometry tagged [`BACKEND_TAG`]
+    /// ("Crucible native"). Non-empty and within the cap.
     #[cfg(feature = "crucible-native")]
     #[test]
     fn native_cook_scene_runs_cook_and_tags_honestly() {
         let (splats, tag) = cook_scene(CrucibleSceneSpec::default());
         assert!(!splats.is_empty(), "native cook yields plantable splats");
         assert!(splats.len() <= MAX_SCENE_SPLATS, "hard cap holds");
-        // Today the round-trip is pending, so the honest cook-preview tag wins.
-        // (The day the import closes, this becomes BACKEND_TAG — assert either is
-        // acceptable so the test does not falsely fail when the loop closes.)
-        assert!(
-            tag == BACKEND_TAG_COOK_PREVIEW || tag == BACKEND_TAG,
-            "native tag is honest about the cook/import state: {tag}"
+        assert_eq!(
+            tag, BACKEND_TAG,
+            "the loop is closed: the real cooked geometry imported, so the tag is 'Crucible native'"
         );
     }
 

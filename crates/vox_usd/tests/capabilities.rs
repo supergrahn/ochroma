@@ -215,13 +215,16 @@ fn camera_fov_and_position() {
     assert!((p.z - 6.0).abs() < 1e-4, "cam z = {}", p.z);
 }
 
-// --- USDA array limitation surfaced ---------------------------------------
+// --- USDA array geometry now imports (openusd-rs 9fd19fa) ------------------
 
 #[test]
-fn usda_array_geometry_is_unsupported_not_silent_empty() {
+fn usda_array_geometry_imports_into_real_splats() {
+    // The text parser learned point3f[]/int[]/tuple arrays, so array-valued
+    // text .usda geometry — what crucible's cook engine writes — round-trips
+    // into real splats instead of the old UnsupportedTextArray blocker.
     let _serial = serial();
-    let err = import_usd(&fixture("points_text.usda")).unwrap_err();
-    assert_eq!(err, UsdError::UnsupportedTextArray);
+    let imp = import_usd(&fixture("points_text.usda")).expect("array geometry imports");
+    assert!(!imp.splats.is_empty(), "point3f[] geometry yields splats");
 }
 
 // --- metersPerUnit / upAxis recovered (CLI stats line) --------------------
