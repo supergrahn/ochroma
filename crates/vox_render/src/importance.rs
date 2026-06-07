@@ -671,9 +671,15 @@ mod tests {
         // the cluster is still suppressed, just in O(n·K) not O(n²).
         let min_w = 1.0 / (1.0 + REDUNDANCY_WEIGHT * MAX_NEIGHBOR_CANDIDATES as f32);
         println!("[co_located_splats_complete_quickly] n={n} elapsed={elapsed:?} score[0]={} score[last]={} (suppressed; min redundancy ~{min_w:.3})", scores[0], scores[n - 1]);
+        // Bound is an order-of-magnitude discriminator, not a benchmark: the capped
+        // O(n·K) path runs ~2.2s in debug on this scene; the O(n²) regression this
+        // guards (50k² pair evaluations) takes minutes. The original 2s bound sat
+        // ~10% UNDER the real runtime and flaked on machine noise — the exact
+        // wall-clock flake class the workspace gate keeps re-finding. 10s keeps a
+        // >10x regression signal without the noise sensitivity.
         assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "importance_scores on {n} co-located splats took {elapsed:?}, must be <2s (O(n²) regression)"
+            elapsed < std::time::Duration::from_secs(10),
+            "importance_scores on {n} co-located splats took {elapsed:?}, must be <10s (O(n²) regression)"
         );
     }
 
