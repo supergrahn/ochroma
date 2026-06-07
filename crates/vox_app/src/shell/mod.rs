@@ -160,6 +160,12 @@ impl Default for EditorShell {
     }
 }
 
+/// History bound for both the undo stack and the assistant log: a held-down agent
+/// loop (or a user spamming intents) must not grow either Vec without limit. When a
+/// push overflows this cap the OLDEST entries are dropped, so the survivors are
+/// always the most recent N.
+const HISTORY_CAP: usize = 200;
+
 impl EditorShell {
     /// Build the shell with the standard SOTA layout:
     /// left = World; center-top = Viewport, center-bottom = Node Graph;
@@ -323,6 +329,7 @@ impl EditorShell {
         // Ensure the viewport scene texture is uploaded once.
         let viewport_tex = viewport::scene_texture(ctx, &mut self.viewport_tex);
 
+        let mut inspector_undo_edits: Vec<(&'static str, &'static str, String, f32)> = Vec::new();
         let mut viewer = ShellViewer {
             tokens: &self.tokens,
             widget_kit: &self.widget_kit,
@@ -333,11 +340,18 @@ impl EditorShell {
             bridge: &mut self.bridge,
             viewport_tex,
             plugins: &mut self.plugins,
+            undo_edits: &mut inspector_undo_edits,
         };
         let dock_style = DockStyle::from_egui(ctx.style().as_ref());
         DockArea::new(&mut self.dock)
             .style(dock_style)
             .show(ctx, &mut viewer);
+        // Route any manual inspector param edits onto the SAME undo stack the AI
+        // intents use, so a Properties scrub is Ctrl+Z-reversible (UndoEntry doc
+        // invariant).
+        for (node_kind, key, target, prev) in inspector_undo_edits {
+            self.record_inspector_edit(node_kind, key, target, prev);
+        }
 
         // The palette overlays everything (foreground order). It runs commands in
         // place (it has the registry) and returns an intent submission for the
@@ -404,8 +418,30 @@ impl EditorShell {
                 )
             }
         };
-        self.assistant_log.push(receipt.clone());
+        self.log_receipt(receipt.clone());
         receipt
+    }
+
+    /// Push a receipt onto the assistant log, capping it at [`HISTORY_CAP`] so the
+    /// log can never grow unbounded across a long session (survivors are the most
+    /// recent entries).
+    fn log_receipt(&mut self, receipt: String) {
+        self.assistant_log.push(receipt);
+        let overflow = self.assistant_log.len().saturating_sub(HISTORY_CAP);
+        if overflow > 0 {
+            self.assistant_log.drain(0..overflow);
+        }
+    }
+
+    /// Push a reversible edit onto the undo stack, capping it at [`HISTORY_CAP`] so a
+    /// held-down edit loop can never grow it unbounded (survivors are the most
+    /// recent entries — the ones a user would actually undo).
+    fn push_undo(&mut self, entry: UndoEntry) {
+        self.undo_stack.push(entry);
+        let overflow = self.undo_stack.len().saturating_sub(HISTORY_CAP);
+        if overflow > 0 {
+            self.undo_stack.drain(0..overflow);
+        }
     }
 
     /// Apply an absolute param edit through `GraphBridge::apply_param_by_kind`,
@@ -425,7 +461,7 @@ impl EditorShell {
         if let Some(err) = self.bridge.last_cook_error.clone() {
             return format!("Couldn't set {target}: {err}");
         }
-        self.undo_stack.push(UndoEntry::ParamSet {
+        self.push_undo(UndoEntry::ParamSet {
             node_kind,
             key,
             target: target.to_string(),
@@ -433,6 +469,34 @@ impl EditorShell {
             next: applied,
         });
         format!("Set {target} {} -> {}", fmt_num(prev), fmt_num(applied))
+    }
+
+    /// Record a manual inspector param edit (already applied to the bridge by the
+    /// Properties scrub) as a reversible [`UndoEntry::ParamSet`], so Ctrl+Z reverts
+    /// it through the SAME `apply_param_by_kind` path as an AI-intent edit. The
+    /// applied (clamped/rounded) value is read back from the bridge; an edit that
+    /// did not actually change the cooked value records nothing.
+    pub fn record_inspector_edit(
+        &mut self,
+        node_kind: &'static str,
+        key: &'static str,
+        target: String,
+        prev: f32,
+    ) {
+        let applied = self
+            .bridge
+            .param_value_of_kind(node_kind, key)
+            .unwrap_or(prev);
+        if (applied - prev).abs() <= f32::EPSILON {
+            return;
+        }
+        self.push_undo(UndoEntry::ParamSet {
+            node_kind,
+            key,
+            target,
+            prev,
+            next: applied,
+        });
     }
 
     /// Revert the last reversible edit (the `edit.undo` command). Re-applies the
@@ -446,7 +510,7 @@ impl EditorShell {
             }
             None => "Nothing to undo".to_string(),
         };
-        self.assistant_log.push(receipt.clone());
+        self.log_receipt(receipt.clone());
         receipt
     }
 
@@ -648,6 +712,13 @@ struct ShellViewer<'a> {
     bridge: &'a mut GraphBridge,
     viewport_tex: egui::TextureHandle,
     plugins: &'a mut Vec<InstalledPlugin>,
+    /// Manual inspector scrub edits applied this frame, staged as
+    /// `(node_kind, key, target, prev)` for the shell to record as reversible
+    /// `UndoEntry::ParamSet`s after the dock lays out — so a Properties edit is
+    /// Ctrl+Z-undoable exactly like an AI-intent edit (the `UndoEntry` doc
+    /// invariant). `ShellViewer` borrows `bridge`, not `undo_stack`, so it stages
+    /// here and the shell drains via [`EditorShell::record_inspector_edit`].
+    undo_edits: &'a mut Vec<(&'static str, &'static str, String, f32)>,
 }
 
 impl egui_dock::TabViewer for ShellViewer<'_> {
@@ -706,7 +777,9 @@ impl ShellViewer<'_> {
             ui.heading(format!("{}  {title}", icon::NODE_GRAPH));
             ui.separator();
             let tokens = self.tokens;
-            let mut edits: Vec<(&'static str, f32)> = Vec::new();
+            // Each edit carries (key, pre-edit value, new value) so a manual scrub
+            // can be recorded as a reversible UndoEntry::ParamSet below.
+            let mut edits: Vec<(&'static str, f32, f32)> = Vec::new();
             widgets::foldout(ui, egui::Id::new("insp_node_params"), "Parameters", |ui| {
                 for f in &fields {
                     ui.horizontal(|ui| {
@@ -723,13 +796,28 @@ impl ShellViewer<'_> {
                             },
                         );
                         if resp.changed() || (v - f.value).abs() > f32::EPSILON {
-                            edits.push((f.key, v));
+                            edits.push((f.key, f.value, v));
                         }
                     });
                 }
             });
-            for (key, v) in edits {
+            // The node's kind + a friendly target string, so the staged edit replays
+            // through the SAME apply_param_by_kind path the AI undo uses.
+            let node_kind = self.bridge.kind_for_node(node_id);
+            for (key, prev, v) in edits {
                 self.bridge.apply_param(node_id, key, v);
+                // Stage undo only when the edit actually applied (no cook error) —
+                // mirrors apply_param_intent, which never records a rejected edit.
+                if self.bridge.last_cook_error.is_none()
+                    && let Some(kind) = node_kind
+                {
+                    self.undo_edits.push((
+                        kind,
+                        key,
+                        format!("{}.{key}", title.to_lowercase()),
+                        prev,
+                    ));
+                }
             }
             // Surface a live-cook failure (e.g. a param the node rejected) in
             // status.error red, so a rejected edit is visible rather than silently
@@ -1874,6 +1962,31 @@ mod tests {
         assert_eq!(shell.assistant_log.last().unwrap(), "Set terrain.resolution 64 -> 128");
     }
 
+    /// Findings 0/1 (intent path): a hostile resolution typed into Ask Ochroma is
+    /// clamped to the schema range BEFORE it reaches the unbounded heightfield
+    /// allocation. "set terrain resolution to 1000000" lands clamped at the schema
+    /// max (256); "-5" lands at the schema min (16); a non-finite value (1e30 parses
+    /// fine but is enormous) clamps too. None of these panic or abort the editor.
+    #[test]
+    fn intent_set_param_clamps_hostile_resolution() {
+        let mut shell = EditorShell::default();
+
+        shell.run_intent("set terrain resolution to 1000000");
+        let after = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
+        assert_eq!(after, 256.0, "hostile-large resolution must clamp to schema max 256, got {after}");
+        // The graph cooked cleanly (no abort) and still produces splats.
+        assert!(shell.bridge.sink_splat_count().unwrap() > 0, "sink still cooks after clamp");
+
+        shell.run_intent("set terrain resolution to -5");
+        let after = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
+        assert_eq!(after, 16.0, "negative resolution must clamp to schema min 16, got {after}");
+
+        shell.run_intent("set terrain resolution to 1e30");
+        let after = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
+        assert_eq!(after, 256.0, "1e30 resolution must clamp to schema max 256, got {after}");
+        assert!(shell.bridge.sink_splat_count().unwrap() > 0);
+    }
+
     /// INTENT (add node): "add vegetation" grows the live graph by one node whose
     /// real registry type_name is VegetationNode.
     #[test]
@@ -1939,6 +2052,59 @@ mod tests {
         assert_eq!(receipt, "Nothing to undo");
         // Value unchanged by the no-op undo.
         assert_eq!(shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap(), 64.0);
+    }
+
+    /// Finding 6: a MANUAL inspector param edit is recorded on the SAME undo stack as
+    /// AI intents, so Ctrl+Z reverts it (the UndoEntry doc invariant that previously
+    /// held only for AI edits). Drives the exact code path the inspector + dock-drain
+    /// use: `bridge.apply_param(node_id, ..)` then `record_inspector_edit(..)`.
+    #[test]
+    fn inspector_param_edit_is_undoable() {
+        let mut shell = EditorShell::default();
+        let terrain = shell.bridge.node_ids[0];
+        let prev = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
+        assert_eq!(prev, 64.0);
+        let kind = shell.bridge.kind_for_node(terrain).unwrap();
+
+        // The inspector applies the scrub edit straight to the bridge...
+        shell.bridge.apply_param(terrain, "resolution", 100.0);
+        assert_eq!(shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap(), 100.0);
+        // ...and the shell drains it onto the undo stack (what the dock-show loop does).
+        shell.record_inspector_edit(kind, "resolution", "terrain.resolution".into(), prev);
+        assert_eq!(shell.undo_stack.len(), 1, "the inspector edit must record one undo entry");
+
+        // Ctrl+Z (edit.undo) restores the PRE-EDIT value through the same path.
+        assert!(shell.registry.run("edit.undo"));
+        shell.drain_requests();
+        let reverted = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
+        assert_eq!(reverted, 64.0, "undo must restore the inspector edit's pre-edit value 64, got {reverted}");
+    }
+
+    /// Finding 2: the undo stack and assistant log are bounded — pushing far more than
+    /// the cap leaves exactly HISTORY_CAP survivors, and they are the MOST RECENT
+    /// ones. Drives the real intent path (each successful set pushes one undo entry +
+    /// one receipt).
+    #[test]
+    fn history_stacks_are_capped_to_most_recent() {
+        let mut shell = EditorShell::default();
+        // 250 distinct successful param edits via the real run_intent path. Seed is an
+        // integer param with range 0..=999, so each value lands distinctly.
+        for i in 0..250u32 {
+            let v = i % 1000;
+            shell.run_intent(&format!("set terrain seed to {v}"));
+        }
+        assert_eq!(shell.undo_stack.len(), HISTORY_CAP, "undo stack must be capped at {HISTORY_CAP}");
+        assert_eq!(shell.assistant_log.len(), HISTORY_CAP, "assistant log must be capped at {HISTORY_CAP}");
+
+        // The SURVIVORS are the most recent: the newest undo entry's `next` is the last
+        // value set (249 -> 249), and the oldest survivor is from iteration 50.
+        let UndoEntry::ParamSet { next, .. } = shell.undo_stack.last().unwrap();
+        assert_eq!(*next, 249.0, "newest undo entry must be the last edit (seed=249)");
+        let UndoEntry::ParamSet { next: oldest_next, .. } = shell.undo_stack.first().unwrap();
+        assert_eq!(*oldest_next, 50.0, "oldest survivor must be iteration 50 (the first 50 were dropped)");
+
+        // The newest receipt names the last edit too.
+        assert_eq!(shell.assistant_log.last().unwrap(), "Set terrain.seed 248 -> 249");
     }
 
     /// FORGE PLUGIN: both Crucible AND Forge tabs are present, both command

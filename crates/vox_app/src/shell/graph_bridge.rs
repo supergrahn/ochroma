@@ -221,6 +221,13 @@ impl GraphBridge {
         self.kinds.iter().find(|(n, _)| *n == id).map(|(_, k)| *k).unwrap_or("TerrainNode")
     }
 
+    /// The registry `type_name` (kind) of node `id`, if it is tracked by this
+    /// bridge. Public so the shell can record an inspector edit's undo entry against
+    /// the same node-kind the intent/undo machinery addresses.
+    pub fn kind_for_node(&self, id: NodeId) -> Option<&'static str> {
+        self.kinds.iter().find(|(n, _)| *n == id).map(|(_, k)| *k)
+    }
+
     fn position_of(&self, id: NodeId) -> egui::Pos2 {
         self.node_ids
             .iter()
@@ -346,13 +353,33 @@ impl GraphBridge {
     /// an immediate `live_cook` with a forced-elapsed clock so the cooked
     /// `wire_values()` refresh this frame. Returns the sink splat count after.
     pub fn apply_param(&mut self, id: NodeId, key: &str, value: f32) {
-        let integer = self
+        let field = self
             .params
             .iter()
             .find(|(n, _)| *n == id)
-            .and_then(|(_, fields)| fields.iter().find(|f| f.key == key))
-            .map(|f| f.integer)
-            .unwrap_or(false);
+            .and_then(|(_, fields)| fields.iter().find(|f| f.key == key));
+        let integer = field.map(|f| f.integer).unwrap_or(false);
+        let range = field.map(|f| f.range.clone());
+
+        // Defense in depth: reject a non-finite scrub/intent value (NaN/±inf)
+        // outright — `clamp` propagates NaN, and casting inf to an integer is UB-
+        // adjacent garbage that wraps to a huge u32 and OOMs the cook. A rejected
+        // value leaves the param untouched, exactly like an unknown key.
+        if !value.is_finite() {
+            self.last_cook_error =
+                Some(format!("{key} must be a finite number, got {value}"));
+            return;
+        }
+
+        // Clamp the incoming value to the param's schema range BEFORE it ever
+        // reaches set_param/cook. This kills BOTH the hostile-large path
+        // (1e30 / i64::MAX) and the negative-wrap path (-5 -> u32::MAX-4) for
+        // EVERY param — not just resolution — since the range is the single
+        // source of truth for what a node will accept.
+        let value = match &range {
+            Some(r) => value.clamp(*r.start(), *r.end()),
+            None => value,
+        };
 
         // For an Int param, cache the ROUNDED value — the same value that actually
         // cooks below (ParamValue::Int(value.round())). Caching the raw fractional
@@ -699,50 +726,67 @@ mod tests {
         assert!(b.last_cook_error.is_none(), "a valid edit must not record a cook error");
     }
 
-    /// Finding 8: a live-cook FAILURE is surfaced via `last_cook_error` AND the
-    /// cached param display reverts to the pre-edit value. TerrainNode::cook rejects
-    /// `resolution < 16` (returns CookFailed), so scrubbing resolution to 8 forces a
-    /// real cook error through the live_cook path.
+    /// Findings 0/1: `apply_param` clamps EVERY param to its schema range before it
+    /// reaches set_param/cook, so neither a hostile-large value (1e30) nor a negative
+    /// value can reach the unbounded n*n heightfield allocation. A clamped edit cooks
+    /// cleanly and the cached display equals the clamped (in-range) value.
     #[test]
-    fn cook_failure_is_surfaced_and_param_display_reverts() {
+    fn out_of_range_param_is_clamped_to_schema_and_cooks() {
         let mut b = GraphBridge::new();
         let terrain = b.node_ids[0];
-
-        // Start from a known-good resolution so the pre-edit value is well defined.
-        b.apply_param(terrain, "resolution", 64.0);
-        assert!(b.last_cook_error.is_none(), "baseline cook must succeed");
-        let good_display = cached_param(&b, terrain, "resolution");
-        assert_eq!(good_display, 64.0);
+        // resolution schema range is 16..=256.
         let good_splats = b.sink_splat_count().unwrap();
 
-        // Now scrub to an out-of-range value the node REJECTS at cook time.
-        b.apply_param(terrain, "resolution", 8.0);
-
-        // The error is exposed...
-        let err = b
-            .last_cook_error
-            .clone()
-            .expect("a rejected cook must record last_cook_error");
-        assert!(
-            err.contains("resolution must be >= 16"),
-            "error must carry the node's real reason, got {err:?}"
-        );
-        // ...the displayed param reverted to the pre-edit value (NOT 8)...
-        let reverted = cached_param(&b, terrain, "resolution");
+        // Hostile-large -> clamps to the schema max (256), cooks, no error.
+        b.apply_param(terrain, "resolution", 1_000_000.0);
         assert_eq!(
-            reverted, 64.0,
-            "display must revert to the pre-edit value on cook failure, got {reverted}"
+            cached_param(&b, terrain, "resolution"),
+            256.0,
+            "a hostile-large resolution must clamp to the schema max 256"
         );
-        // ...and the cooked output stayed at the last good state (still produces splats).
-        assert_eq!(
-            b.sink_splat_count().unwrap(),
-            good_splats,
-            "outputs must stay at the last good cook on failure"
-        );
+        assert!(b.last_cook_error.is_none(), "a clamped value must cook cleanly");
+        assert!(b.sink_splat_count().unwrap() > 0, "sink still cooks after the clamp");
 
-        // A subsequent valid edit clears the error.
-        b.apply_param(terrain, "resolution", 80.0);
-        assert!(b.last_cook_error.is_none(), "a successful cook must clear the error");
+        // Negative -> clamps to the schema min (16), cooks (no u32 wrap to OOM).
+        b.apply_param(terrain, "resolution", -5.0);
+        assert_eq!(
+            cached_param(&b, terrain, "resolution"),
+            16.0,
+            "a negative resolution must clamp to the schema min 16, not wrap to a huge u32"
+        );
+        assert!(b.last_cook_error.is_none(), "the clamped-to-min value cooks cleanly");
+
+        // 1e30 -> still clamps to 256 (no `as i64` -> i64::MAX -> u32 wrap).
+        b.apply_param(terrain, "resolution", 1e30);
+        assert_eq!(cached_param(&b, terrain, "resolution"), 256.0);
+        assert!(b.sink_splat_count().unwrap() > 0);
+
+        // The graph never aborted; the sink kept producing splats throughout.
+        assert!(b.sink_splat_count().unwrap() >= good_splats.min(1));
+    }
+
+    /// Findings 0/1: a non-finite scrub/intent value (NaN / ±inf) is REJECTED — it
+    /// must not be clamped (NaN.clamp() propagates NaN) nor reach set_param. The
+    /// param keeps its pre-edit value and `last_cook_error` records the reason.
+    #[test]
+    fn non_finite_param_is_rejected_and_leaves_value_unchanged() {
+        let mut b = GraphBridge::new();
+        let terrain = b.node_ids[0];
+        b.apply_param(terrain, "resolution", 64.0);
+        assert_eq!(cached_param(&b, terrain, "resolution"), 64.0);
+
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            b.apply_param(terrain, "resolution", bad);
+            assert_eq!(
+                cached_param(&b, terrain, "resolution"),
+                64.0,
+                "a non-finite resolution ({bad}) must leave the param at its pre-edit value"
+            );
+            assert!(
+                b.last_cook_error.is_some(),
+                "a rejected non-finite value records an error"
+            );
+        }
     }
 
     #[test]

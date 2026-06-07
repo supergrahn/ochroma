@@ -164,7 +164,18 @@ impl OchromaNode for TerrainNode {
 
     fn set_param(&mut self, key: &str, value: ParamValue) -> Result<(), NodeError> {
         match (key, value) {
-            ("resolution",    ParamValue::Int(v))   => { self.resolution    = v as u32; Ok(()) }
+            ("resolution",    ParamValue::Int(v))   => {
+                // Reject a negative resolution EXPLICITLY rather than `v as u32`,
+                // which wraps -5 to 4_294_967_291 — a value that sails past the
+                // `< 16` cook guard and OOMs `generate_heightfield`'s n*n alloc.
+                if v < 0 {
+                    return Err(NodeError::CookFailed(format!(
+                        "resolution must be >= 0, got {v}"
+                    )));
+                }
+                self.resolution = v as u32;
+                Ok(())
+            }
             ("world_size",    ParamValue::Float(v)) => { self.world_size    = v as f32; Ok(()) }
             ("amplitude",     ParamValue::Float(v)) => { self.amplitude     = v as f32; Ok(()) }
             ("octaves",       ParamValue::Int(v))   => { self.octaves       = v as usize; Ok(()) }
@@ -178,8 +189,15 @@ impl OchromaNode for TerrainNode {
     fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
 
     fn cook(&self, _inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
+        // Guard BOTH bounds: the lower bound keeps fBm meaningful, the upper bound
+        // (256, matching the inspector's `resolution` schema range 16..=256 in
+        // graph_bridge.rs) caps the heightfield's n*n allocation so a hostile
+        // resolution can never trigger a multi-terabyte alloc / abort.
         if self.resolution < 16 {
             return Err(NodeError::CookFailed(format!("resolution must be >= 16, got {}", self.resolution)));
+        }
+        if self.resolution > 256 {
+            return Err(NodeError::CookFailed(format!("resolution must be <= 256, got {}", self.resolution)));
         }
         let mut heights = generate_heightfield(self.resolution, self.amplitude, self.octaves, self.frequency, self.seed);
         if self.droplet_count > 0 {
@@ -253,6 +271,37 @@ mod tests {
         let node = TerrainNode { resolution: 8, ..Default::default() };
         let err = node.cook(NodeInputs::new()).unwrap_err();
         assert!(matches!(err, NodeError::CookFailed(_)));
+    }
+
+    /// A negative resolution must be rejected by set_param rather than wrapping to a
+    /// huge u32 via `v as u32` (which would sail past the `< 16` cook guard and OOM).
+    /// After rejection the node keeps its sane default resolution, so cook still
+    /// produces the default-sized heightfield.
+    #[test]
+    fn negative_resolution_is_rejected_keeping_sane_size() {
+        let mut node = TerrainNode { resolution: 64, droplet_count: 0, ..Default::default() };
+        let err = node.set_param("resolution", ParamValue::Int(-5)).unwrap_err();
+        assert!(matches!(err, NodeError::UnknownParam(_) | NodeError::CookFailed(_)));
+        // The rejected edit left the resolution untouched (64, NOT a wrapped u32).
+        assert_eq!(node.resolution, 64);
+        let out = node.cook(NodeInputs::new()).unwrap();
+        let hf = out["terrain"].as_terrain().unwrap();
+        assert_eq!(hf.heights.len(), 64 * 64, "heightfield size stays the sane 64x64");
+    }
+
+    /// The cook upper bound caps the n*n allocation: a resolution above the schema
+    /// max (256) is rejected at cook time, mirroring the existing `< 16` guard.
+    #[test]
+    fn over_max_resolution_is_rejected_at_cook() {
+        let node = TerrainNode { resolution: 1_000_000, droplet_count: 0, ..Default::default() };
+        let err = node.cook(NodeInputs::new()).unwrap_err();
+        match err {
+            NodeError::CookFailed(msg) => assert!(
+                msg.contains("<= 256"),
+                "cook must reject over-max resolution with the upper-bound reason, got {msg:?}"
+            ),
+            other => panic!("expected CookFailed for over-max resolution, got {other:?}"),
+        }
     }
 
     #[test]

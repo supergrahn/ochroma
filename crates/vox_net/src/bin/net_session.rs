@@ -41,7 +41,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use vox_net::quic_transport::{
-    QuicClient, QuicConnection, QuicServer, TransportError, TransportTuning,
+    QuicClient, QuicServer, TransportError, TransportTuning,
 };
 use vox_net::replication_packet::PlayerStatePacket;
 use vox_net::rollback::{InputFrame, Predictor, WorldSim, GameState};
@@ -268,17 +268,21 @@ fn run_host(port: u16, ticks: u32, seed: u64) -> Result<EndpointReport, Transpor
         }
 
         let checksum = checksum_of(&final_packet);
-        // Keep the connection alive briefly so the client's last read completes
-        // before this process tears the socket down.
-        drain_close(&conn).await;
+
+        // FINAL-ACK handshake (host side). The balanced per-tick join above already
+        // drained both directions through tick `ticks`, so the ONLY traffic left is
+        // the client's single final-ack stream. Receiving it to completion BEFORE we
+        // emit CONNECTION_CLOSE is what removes the teardown race: previously
+        // `drain_close` fired close() immediately, aborting whatever stream the
+        // client was still reading ("closed by peer: done (code 0)"). We hold `conn`
+        // (and thus the endpoint) alive across this recv; only after the ack lands do
+        // we close gracefully. The client, in turn, waits for this close before
+        // dropping its own handle — neither side closes while a stream is in flight.
+        conn.recv_player_state().await?; // client's FINAL ack
+        conn.raw().close(0u32.into(), b"done");
+
         Ok(EndpointReport { final_tick: ticks, final_pos, checksum })
     })
-}
-
-/// Idle-close: give in-flight datagrams a moment to flush. Quinn flushes on drop,
-/// but an explicit small grace avoids racing the peer's final read on teardown.
-async fn drain_close(conn: &QuicConnection) {
-    conn.raw().close(0u32.into(), b"done");
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +349,25 @@ fn run_client(connect: &str, ticks: u32, seed: u64) -> Result<EndpointReport, Tr
         let _ = seed; // seed is implicit in the host packets the client mirrors.
         let checksum = checksum_of(&last_host_packet);
         let final_pos = predictor.position_of(HOST_PLAYER as usize);
+
+        // FINAL-ACK handshake (client side). The balanced loop drained both
+        // directions, so the only thing left is OUR single final-ack stream. Send it,
+        // then WAIT for the host to close the connection gracefully rather than
+        // dropping `conn`/`client` the instant the loop ends — dropping first would
+        // emit our own CONNECTION_CLOSE(0) and race the host's still-pending final
+        // recv (the "closed by peer: 0" the host would observe). We hold both the
+        // connection handle AND the QuicClient endpoint alive until `closed()` fires
+        // (host has cleanly closed) — the cross-process analogue of net_walk_demo's
+        // run_async fix (handles held past `join!`). If the host DIES instead of
+        // closing (probe 2), `closed()` still returns within the test-harness idle
+        // timeout, so the host-killed death-detection bound is unchanged.
+        conn.send_player_state(&PlayerStatePacket::new(0, final_pos, [0u16; 16])).await?;
+        conn.raw().closed().await;
+        // Keep `client` (the endpoint) alive until here so it is never dropped mid
+        // handshake; explicit drops document the lifetime, mirroring run_async.
+        drop(conn);
+        drop(client);
+
         Ok(EndpointReport { final_tick: ticks, final_pos, checksum })
     })
 }
