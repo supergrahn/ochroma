@@ -41,6 +41,94 @@ impl PostProcessPipeline {
             apply_vignette(pixels, width, height, self.vignette_strength);
         }
     }
+
+    /// Apply the post-process chain via a [`RenderGraph`](crate::render_graph),
+    /// then copy the result back into `pixels`.
+    ///
+    /// The graph imports `hdr_input` and wires bloom → tonemap → vignette as
+    /// separate passes against typed resource handles. The wiring ADAPTS to the
+    /// enable flags: a disabled effect's pass is simply not added, and the next
+    /// pass reads from whichever resource is current (e.g. tonemap reads
+    /// `hdr_input` directly when bloom is off). Tone mapping always runs, so
+    /// there is always at least one pass and a well-defined `final` output.
+    ///
+    /// Result is bit-identical to [`apply`](Self::apply); that legacy method
+    /// remains the oracle.
+    pub fn apply_via_graph(&self, pixels: &mut [[f32; 4]], width: usize, height: usize) {
+        use crate::render_graph::{RenderGraphBuilder, ResourceDesc, ResourceFormat};
+
+        let desc = ResourceDesc {
+            width,
+            height,
+            format: ResourceFormat::Rgba32F,
+        };
+
+        let mut b = RenderGraphBuilder::new();
+        let hdr_input = b.import_resource("hdr_input", desc, pixels.to_vec());
+
+        // `current` tracks the resource holding the latest pixels. Each added
+        // pass reads it and writes a fresh buffer that becomes the new current.
+        let mut current = hdr_input;
+
+        if self.bloom_enabled {
+            let bloom_buf = b.create_resource("bloom_buf", desc);
+            let src = current;
+            let (threshold, intensity) = (self.bloom_threshold, self.bloom_intensity);
+            b.add_pass(
+                "bloom",
+                &[src],
+                &[bloom_buf],
+                Box::new(move |r| {
+                    let mut buf = r.read(src).to_vec();
+                    apply_bloom(&mut buf, width, height, threshold, intensity);
+                    r.write(bloom_buf).copy_from_slice(&buf);
+                }),
+            );
+            current = bloom_buf;
+        }
+
+        // Tone mapping always runs (matches legacy `apply`).
+        {
+            let tonemapped = b.create_resource("tonemapped", desc);
+            let src = current;
+            let method = self.tone_mapping;
+            b.add_pass(
+                "tonemap",
+                &[src],
+                &[tonemapped],
+                Box::new(move |r| {
+                    let mut buf = r.read(src).to_vec();
+                    apply_tone_mapping(&mut buf, method);
+                    r.write(tonemapped).copy_from_slice(&buf);
+                }),
+            );
+            current = tonemapped;
+        }
+
+        if self.vignette_enabled {
+            let final_buf = b.create_resource("final", desc);
+            let src = current;
+            let strength = self.vignette_strength;
+            b.add_pass(
+                "vignette",
+                &[src],
+                &[final_buf],
+                Box::new(move |r| {
+                    let mut buf = r.read(src).to_vec();
+                    apply_vignette(&mut buf, width, height, strength);
+                    r.write(final_buf).copy_from_slice(&buf);
+                }),
+            );
+            current = final_buf;
+        }
+
+        let mut graph = b
+            .compile(&[current])
+            .expect("post-process graph must compile");
+        graph.execute();
+        let out = graph.take_output(current);
+        pixels.copy_from_slice(&out);
+    }
 }
 
 /// Apply tone mapping to each pixel in the buffer.
@@ -347,5 +435,83 @@ mod gpu_pipeline_tests {
         // add_pass calls.
         let passes: Vec<Box<dyn super::PostProcessPass>> = Vec::new();
         assert_eq!(passes.len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod graph_wiring_tests {
+    use super::*;
+
+    const W: usize = 64;
+    const H: usize = 48;
+
+    /// Deterministic HDR test image with a seeded pattern containing values
+    /// above 1.0 so the bloom luminance threshold (1.0) is meaningful.
+    fn test_image() -> Vec<[f32; 4]> {
+        let mut img = vec![[0.0f32; 4]; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                // LCG-ish deterministic seed from pixel coords.
+                let s = (x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663)) as u32;
+                let f = |k: u32| ((s.wrapping_mul(k) >> 8) & 0xFFFF) as f32 / 65_535.0;
+                // Scale into [0, 3): plenty of pixels exceed the 1.0 threshold.
+                img[y * W + x] = [f(2_654_435_761) * 3.0, f(40_503) * 3.0, f(2_246_822_519) * 3.0, 1.0];
+            }
+        }
+        img
+    }
+
+    fn assert_bit_identical(a: &[[f32; 4]], b: &[[f32; 4]]) {
+        assert_eq!(a.len(), b.len());
+        for (i, (pa, pb)) in a.iter().zip(b.iter()).enumerate() {
+            for c in 0..4 {
+                assert_eq!(
+                    pa[c].to_bits(),
+                    pb[c].to_bits(),
+                    "pixel {i} channel {c}: graph={} legacy={}",
+                    pa[c],
+                    pb[c]
+                );
+            }
+        }
+    }
+
+    fn check_combo(bloom: bool, vignette: bool) {
+        let pipe = PostProcessPipeline {
+            tone_mapping: ToneMapping::ACES,
+            bloom_enabled: bloom,
+            bloom_threshold: 1.0,
+            bloom_intensity: 0.3,
+            vignette_enabled: vignette,
+            vignette_strength: 0.5,
+        };
+
+        let mut legacy = test_image();
+        pipe.apply(&mut legacy, W, H);
+
+        let mut graph = test_image();
+        pipe.apply_via_graph(&mut graph, W, H);
+
+        assert_bit_identical(&graph, &legacy);
+    }
+
+    #[test]
+    fn graph_bit_identical_bloom_off_vignette_off() {
+        check_combo(false, false);
+    }
+
+    #[test]
+    fn graph_bit_identical_bloom_on_vignette_off() {
+        check_combo(true, false);
+    }
+
+    #[test]
+    fn graph_bit_identical_bloom_off_vignette_on() {
+        check_combo(false, true);
+    }
+
+    #[test]
+    fn graph_bit_identical_bloom_on_vignette_on() {
+        check_combo(true, true);
     }
 }

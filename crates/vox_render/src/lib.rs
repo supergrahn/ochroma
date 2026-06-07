@@ -12,6 +12,7 @@ pub mod particles;
 pub mod vfx;
 pub mod animation;
 pub mod postprocess;
+pub mod render_graph;
 pub mod material_graph;
 pub mod material_compiler;
 pub mod material_gpu_eval;
