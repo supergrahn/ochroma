@@ -85,6 +85,22 @@ pub enum ManyLightGpuError {
     DeviceCreation(String),
     /// Mapping the readback buffer failed.
     Readback(String),
+    /// A required storage buffer would exceed a hard device limit
+    /// (`max_storage_buffer_binding_size` / `max_buffer_size`). Returned instead
+    /// of letting wgpu raise an uncaptured Validation Error that aborts the
+    /// process — so the caller can fall back to the CPU oracle.
+    ///
+    /// NOTE: this hardens the SAME no-panic-contract class as
+    /// [`crate::gpu::splat_rt_gpu::SplatRtGpuError::ExceedsDeviceLimits`]. A
+    /// refuter rejected the parallel finding here on reachability-today (every
+    /// shipped caller passes tiny sizes), but the contract docs are identical and
+    /// the missing-validation gap is structurally the same, so we close it the
+    /// same way.
+    ExceedsDeviceLimits {
+        what: &'static str,
+        requested: u64,
+        limit: u64,
+    },
 }
 
 impl std::fmt::Display for ManyLightGpuError {
@@ -95,6 +111,14 @@ impl std::fmt::Display for ManyLightGpuError {
                 write!(f, "GPU device creation failed: {e}")
             }
             ManyLightGpuError::Readback(e) => write!(f, "GPU readback failed: {e}"),
+            ManyLightGpuError::ExceedsDeviceLimits {
+                what,
+                requested,
+                limit,
+            } => write!(
+                f,
+                "GPU buffer '{what}' requires {requested} bytes, exceeding device limit {limit}"
+            ),
         }
     }
 }
@@ -121,6 +145,11 @@ pub struct ManyLightGpu {
     max_points: u32,
     /// Maximum raw draws per seed the LCG-test buffer can hold (per point).
     max_draws_per_point: u32,
+    /// `device.limits().max_storage_buffer_binding_size`, captured at creation so
+    /// `sample()` / `lcg_draws()` can validate each storage binding range and
+    /// return [`ManyLightGpuError::ExceedsDeviceLimits`] instead of letting wgpu
+    /// raise an uncaptured, process-aborting Validation Error.
+    max_storage_binding: u64,
     /// Adapter human name, for diagnostics / benches.
     pub adapter_name: String,
 }
@@ -178,6 +207,37 @@ impl ManyLightGpu {
         let seed_bytes = max_points as u64 * 8; // vec2<u32>
         let out_bytes = max_points as u64 * std::mem::size_of::<GpuLightSample>() as u64;
         let draw_bytes = max_points as u64 * max_draws_per_point as u64 * 4;
+
+        // Validate every STORAGE buffer against the device's binding/total limits
+        // BEFORE creating + binding them. Same no-panic-contract hardening as
+        // splat_rt_gpu: a bound range over `max_storage_buffer_binding_size`
+        // triggers an uncaptured, process-aborting wgpu Validation Error, so we
+        // surface it as a returned error here instead.
+        let limits = device.limits();
+        let max_storage_binding = limits.max_storage_buffer_binding_size as u64;
+        let max_buffer = limits.max_buffer_size;
+        for (what, bytes) in [
+            ("light_buffer", light_bytes),
+            ("point_buffer", point_bytes),
+            ("seed_buffer", seed_bytes),
+            ("out_buffer", out_bytes),
+            ("draw_buffer", draw_bytes),
+        ] {
+            if bytes > max_storage_binding {
+                return Err(ManyLightGpuError::ExceedsDeviceLimits {
+                    what,
+                    requested: bytes,
+                    limit: max_storage_binding,
+                });
+            }
+            if bytes > max_buffer {
+                return Err(ManyLightGpuError::ExceedsDeviceLimits {
+                    what,
+                    requested: bytes,
+                    limit: max_buffer,
+                });
+            }
+        }
 
         let light_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("many_light_lights"),
@@ -311,6 +371,7 @@ impl ManyLightGpu {
             max_lights,
             max_points,
             max_draws_per_point,
+            max_storage_binding,
             adapter_name,
         })
     }
@@ -366,18 +427,32 @@ impl ManyLightGpu {
         if n_points == 0 {
             return Ok(Vec::new());
         }
-        assert!(
-            lights.len() as u32 <= self.max_lights,
-            "scene exceeds max_lights: {} > {}",
-            lights.len(),
-            self.max_lights
-        );
-        assert!(
-            n_points as u32 <= self.max_points,
-            "dispatch exceeds max_points: {} > {}",
-            n_points,
-            self.max_points
-        );
+        // No-panic contract: size overruns go through the error channel (the
+        // converted `assert!`s were panics). Each over-limit also implies the
+        // corresponding storage binding would exceed the device cap.
+        if lights.len() as u32 > self.max_lights {
+            return Err(ManyLightGpuError::ExceedsDeviceLimits {
+                what: "light_buffer (scene exceeds max_lights)",
+                requested: lights.len() as u64 * std::mem::size_of::<GpuLight>() as u64,
+                limit: self.max_lights as u64 * std::mem::size_of::<GpuLight>() as u64,
+            });
+        }
+        if n_points as u32 > self.max_points {
+            return Err(ManyLightGpuError::ExceedsDeviceLimits {
+                what: "out_buffer (dispatch exceeds max_points)",
+                requested: n_points as u64 * std::mem::size_of::<GpuLightSample>() as u64,
+                limit: self.max_points as u64 * std::mem::size_of::<GpuLightSample>() as u64,
+            });
+        }
+        // Defensive: validate the actual bound ranges against the storage limit.
+        let out_range = n_points as u64 * std::mem::size_of::<GpuLightSample>() as u64;
+        if out_range > self.max_storage_binding {
+            return Err(ManyLightGpuError::ExceedsDeviceLimits {
+                what: "out_buffer",
+                requested: out_range,
+                limit: self.max_storage_binding,
+            });
+        }
 
         self.upload(lights, points, seeds, 0);
 
@@ -420,18 +495,20 @@ impl ManyLightGpu {
         if n_seeds == 0 || draws_per_seed == 0 {
             return Ok(Vec::new());
         }
-        assert!(
-            n_seeds as u32 <= self.max_points,
-            "lcg seeds exceed max_points: {} > {}",
-            n_seeds,
-            self.max_points
-        );
-        assert!(
-            draws_per_seed <= self.max_draws_per_point,
-            "draws_per_seed {} exceeds max_draws_per_point {}",
-            draws_per_seed,
-            self.max_draws_per_point
-        );
+        if n_seeds as u32 > self.max_points {
+            return Err(ManyLightGpuError::ExceedsDeviceLimits {
+                what: "seed_buffer (lcg seeds exceed max_points)",
+                requested: n_seeds as u64 * 8,
+                limit: self.max_points as u64 * 8,
+            });
+        }
+        if draws_per_seed > self.max_draws_per_point {
+            return Err(ManyLightGpuError::ExceedsDeviceLimits {
+                what: "draw_buffer (draws_per_seed exceeds max_draws_per_point)",
+                requested: n_seeds as u64 * draws_per_seed as u64 * 4,
+                limit: n_seeds as u64 * self.max_draws_per_point as u64 * 4,
+            });
+        }
 
         // Shade points are unused by lcg_test; pass zeros.
         let pts: Vec<Vec3> = vec![Vec3::ZERO; n_seeds];
@@ -827,6 +904,36 @@ mod tests {
             assert_eq!(sa.target.to_bits(), sb.target.to_bits(), "target differs at {i}");
             assert_eq!(sa.m, sb.m, "M differs at {i}");
         }
+    }
+
+    /// CONTRACT (class-consistency with splat_rt_gpu): an over-`max_points`
+    /// dispatch returns [`ManyLightGpuError::ExceedsDeviceLimits`] (the converted
+    /// `assert!`), NOT a panic. `new()` allocates tiny buffers; `sample()` is then
+    /// handed more points than allocated.
+    #[test]
+    fn sample_oversized_returns_error_not_panic() {
+        let Some(gpu) = try_gpu(1, 4, 1) else { return };
+        let lights = make_scene(1, 0xABCD_1234);
+        let points = vec![Vec3::ZERO; 100]; // 100 > max_points=4
+        let seeds = vec![0u64; 100];
+        let err = gpu
+            .sample(&lights, &points, &seeds)
+            .expect_err("oversized dispatch must return an error, not abort");
+        match err {
+            ManyLightGpuError::ExceedsDeviceLimits {
+                what,
+                requested,
+                limit,
+            } => {
+                assert_eq!(what, "out_buffer (dispatch exceeds max_points)");
+                assert!(requested > limit, "requested {requested} must exceed limit {limit}");
+            }
+            other => panic!("expected ExceedsDeviceLimits, got {other:?}"),
+        }
+        // GPU still usable: a valid dispatch still works (no abort happened).
+        let ok_pts = vec![Vec3::ZERO; 2];
+        let ok_seeds = vec![1u64, 2u64];
+        let _ = gpu.sample(&lights, &ok_pts, &ok_seeds).expect("valid sample after rejection");
     }
 
     // --- CPU reference helpers (mirror many_light.rs's private test helpers) ---

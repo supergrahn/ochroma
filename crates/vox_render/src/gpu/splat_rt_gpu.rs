@@ -72,6 +72,17 @@ pub enum SplatRtGpuError {
     DeviceCreation(String),
     /// Mapping the readback buffer failed.
     Readback(String),
+    /// A required storage buffer would exceed a hard device limit
+    /// (`max_storage_buffer_binding_size` / `max_buffer_size`). Returned instead
+    /// of letting wgpu raise an uncaptured Validation Error that aborts the
+    /// process — so the caller can fall back to the CPU oracle. `what` names the
+    /// offending buffer, `requested` is the byte size we'd need, `limit` is the
+    /// device's cap.
+    ExceedsDeviceLimits {
+        what: &'static str,
+        requested: u64,
+        limit: u64,
+    },
 }
 
 impl std::fmt::Display for SplatRtGpuError {
@@ -80,6 +91,14 @@ impl std::fmt::Display for SplatRtGpuError {
             SplatRtGpuError::NoAdapter => write!(f, "no GPU adapter available"),
             SplatRtGpuError::DeviceCreation(e) => write!(f, "GPU device creation failed: {e}"),
             SplatRtGpuError::Readback(e) => write!(f, "GPU readback failed: {e}"),
+            SplatRtGpuError::ExceedsDeviceLimits {
+                what,
+                requested,
+                limit,
+            } => write!(
+                f,
+                "GPU buffer '{what}' requires {requested} bytes, exceeding device limit {limit}"
+            ),
         }
     }
 }
@@ -99,6 +118,11 @@ pub struct SplatRtGpu {
     readback_buffer: wgpu::Buffer,
     max_splats: u32,
     max_pixels: u32,
+    /// `device.limits().max_storage_buffer_binding_size`, captured at creation so
+    /// `render()` can validate every storage binding range against it and return
+    /// [`SplatRtGpuError::ExceedsDeviceLimits`] instead of letting wgpu raise an
+    /// uncaptured Validation Error that aborts the process.
+    max_storage_binding: u64,
     /// Adapter human name, for diagnostics / benches.
     pub adapter_name: String,
 }
@@ -143,6 +167,33 @@ impl SplatRtGpu {
 
         let splat_bytes = max_splats as u64 * std::mem::size_of::<GaussianSplat>() as u64;
         let out_bytes = max_pixels as u64 * PIXEL_FLOATS as u64 * 4;
+
+        // Validate the up-front buffer sizing against the device's storage-binding
+        // and total-buffer limits BEFORE creating buffers / binding them. wgpu
+        // raises an uncaptured Validation Error (which aborts the process) if a
+        // bound range exceeds `max_storage_buffer_binding_size`, so we must catch
+        // it here and honor the documented no-panic contract. The splat and out
+        // buffers are both bound as STORAGE, so each must fit the binding limit;
+        // both must also fit `max_buffer_size`.
+        let limits = device.limits();
+        let max_storage_binding = limits.max_storage_buffer_binding_size as u64;
+        let max_buffer = limits.max_buffer_size;
+        for (what, bytes) in [("splat_buffer", splat_bytes), ("out_buffer", out_bytes)] {
+            if bytes > max_storage_binding {
+                return Err(SplatRtGpuError::ExceedsDeviceLimits {
+                    what,
+                    requested: bytes,
+                    limit: max_storage_binding,
+                });
+            }
+            if bytes > max_buffer {
+                return Err(SplatRtGpuError::ExceedsDeviceLimits {
+                    what,
+                    requested: bytes,
+                    limit: max_buffer,
+                });
+            }
+        }
 
         let splat_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("splat_rt_splats"),
@@ -230,6 +281,7 @@ impl SplatRtGpu {
             readback_buffer,
             max_splats,
             max_pixels,
+            max_storage_binding,
             adapter_name,
         })
     }
@@ -252,20 +304,46 @@ impl SplatRtGpu {
         if pixels == 0 {
             return Ok(Vec::new());
         }
-        assert!(
-            (width * height) <= self.max_pixels,
-            "render exceeds max_pixels: {} > {}",
-            width * height,
-            self.max_pixels
-        );
+        // The documented contract is "never panics — returns SplatRtGpuError so
+        // callers can fall back to the CPU oracle". The former `assert!`s here
+        // were panics that broke that contract, so they are routed through the
+        // error channel instead. We also validate the actual per-render storage
+        // binding ranges (out path: W*H*PIXEL_FLOATS*4; splat path: n*96) against
+        // `max_storage_buffer_binding_size` — the limit wgpu would otherwise trip
+        // with an uncaptured, process-aborting Validation Error in
+        // `create_bind_group`.
+        if (width * height) > self.max_pixels {
+            return Err(SplatRtGpuError::ExceedsDeviceLimits {
+                what: "out_buffer (render exceeds max_pixels)",
+                requested: (width as u64 * height as u64) * PIXEL_FLOATS as u64 * 4,
+                limit: self.max_pixels as u64 * PIXEL_FLOATS as u64 * 4,
+            });
+        }
+        let out_range = pixels as u64 * PIXEL_FLOATS as u64 * 4;
+        if out_range > self.max_storage_binding {
+            return Err(SplatRtGpuError::ExceedsDeviceLimits {
+                what: "out_buffer",
+                requested: out_range,
+                limit: self.max_storage_binding,
+            });
+        }
         let count = (scene.splats.len() as u32).min(self.max_splats);
         let n = count as usize;
-        assert!(
-            scene.splats.len() as u32 <= self.max_splats,
-            "scene exceeds max_splats: {} > {}",
-            scene.splats.len(),
-            self.max_splats
-        );
+        if scene.splats.len() as u32 > self.max_splats {
+            return Err(SplatRtGpuError::ExceedsDeviceLimits {
+                what: "splat_buffer (scene exceeds max_splats)",
+                requested: scene.splats.len() as u64 * std::mem::size_of::<GaussianSplat>() as u64,
+                limit: self.max_splats as u64 * std::mem::size_of::<GaussianSplat>() as u64,
+            });
+        }
+        let splat_range = n as u64 * std::mem::size_of::<GaussianSplat>() as u64;
+        if splat_range > self.max_storage_binding {
+            return Err(SplatRtGpuError::ExceedsDeviceLimits {
+                what: "splat_buffer",
+                requested: splat_range,
+                limit: self.max_storage_binding,
+            });
+        }
 
         // Upload splats (raw 96-byte POD) and the camera uniform.
         if n > 0 {
@@ -551,6 +629,73 @@ mod tests {
 
         let cpu_total: f32 = cpu.iter().flat_map(|p| p.iter()).sum();
         assert!(cpu_total > 0.0, "CPU oracle produced an empty image");
+    }
+
+    /// CONTRACT: `new()` returns [`SplatRtGpuError::ExceedsDeviceLimits`] (NOT a
+    /// process-aborting wgpu Validation Error) when the requested buffers would
+    /// exceed `max_storage_buffer_binding_size`. Probe-proven threshold: out path
+    /// fails above floor(limit/68) pixels. We request well above the default
+    /// 128 MiB cap and assert the exact variant + fields, never aborting.
+    #[test]
+    fn new_rejects_oversized_out_buffer_with_error_not_panic() {
+        // 4M pixels * 17 floats * 4 bytes = 272 MB out buffer, above the 128 MiB
+        // default storage-binding limit — must surface as a clean error.
+        let err = match SplatRtGpu::new(1, 4_000_000) {
+            Ok(g) => {
+                // Only acceptable if this box's limit is actually large enough.
+                let lim = g.max_storage_binding;
+                let out_bytes = 4_000_000u64 * PIXEL_FLOATS as u64 * 4;
+                assert!(
+                    out_bytes <= lim,
+                    "new() succeeded but out_bytes {out_bytes} > limit {lim}"
+                );
+                eprintln!("[limits] device storage limit {lim} >= {out_bytes}; skip");
+                return;
+            }
+            Err(SplatRtGpuError::NoAdapter) => {
+                eprintln!("[limits] no adapter — skipping");
+                return;
+            }
+            Err(e) => e,
+        };
+        match err {
+            SplatRtGpuError::ExceedsDeviceLimits {
+                what,
+                requested,
+                limit,
+            } => {
+                assert_eq!(what, "out_buffer");
+                assert_eq!(requested, 4_000_000u64 * PIXEL_FLOATS as u64 * 4);
+                assert!(requested > limit, "requested {requested} must exceed limit {limit}");
+            }
+            other => panic!("expected ExceedsDeviceLimits, got {other:?}"),
+        }
+    }
+
+    /// CONTRACT: a too-large render returns the error variant (here via the
+    /// converted `max_pixels` guard) WITHOUT aborting. Sized so `new()` succeeds
+    /// (tiny buffers) but the render asks for more pixels than allocated.
+    #[test]
+    fn render_oversized_returns_error_not_panic() {
+        let Some(gpu) = try_gpu(3, 16) else { return };
+        let (scene, cam, _res) = cross_check_scene();
+        // 100x100 = 10000 pixels >> max_pixels=16 → converted-assert error path.
+        let err = gpu
+            .render(&scene, &cam, 100, 100)
+            .expect_err("oversized render must return an error, not abort");
+        match err {
+            SplatRtGpuError::ExceedsDeviceLimits {
+                what,
+                requested,
+                limit,
+            } => {
+                assert_eq!(what, "out_buffer (render exceeds max_pixels)");
+                assert!(requested > limit, "requested {requested} must exceed limit {limit}");
+            }
+            other => panic!("expected ExceedsDeviceLimits, got {other:?}"),
+        }
+        // The GPU is still usable afterward (no abort): a valid render still works.
+        let _ = gpu.render(&scene, &cam, 4, 4).expect("valid render after rejection");
     }
 
     /// Determinism: two GPU renders of the same scene are bit-identical.

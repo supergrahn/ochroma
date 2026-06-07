@@ -1127,6 +1127,364 @@ mod tests {
         assert!(gpu_d < 20.0, "near mesh depth must win on GPU: {gpu_d}");
     }
 
+    /// REGRESSION for finding [1] (BARY_EPS over-coverage). A long, thin,
+    /// near-vertical sliver triangle (~2px wide, tall) swept sub-pixel in x.
+    /// With the old fixed `BARY_EPS = 1e-4`, the GPU dilated the sliver's
+    /// silhouette and lit pixels the CPU strictly rejects (full-pixel ~0.58
+    /// spectral divergence). The per-triangle relative epsilon must reproduce the
+    /// CPU's strict inside-test exactly — assert NO over-coverage at the suite's
+    /// own 1e-4 abs gate across the whole sweep.
+    #[test]
+    fn gpu_matches_cpu_thin_triangle_no_over_coverage() {
+        let cam = head_on_camera();
+        let il = illum();
+        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else { return };
+
+        // The sliver spans nearly the full vertical view but only a hair in x, so
+        // the per-pixel barycentric step on the long edges is large while the x
+        // edges are near-vertical — exactly the high-aspect case that exposed the
+        // dilation. Sweep x by sub-pixel offsets so a silhouette pixel's
+        // barycentric lands in the divergent (-1e-4, 0) band at some offset.
+        // Sliver half-width ~0.3 world ≈ 2.3px at this projection (eye z=20, 64px):
+        // thin enough that the side edges' per-pixel barycentric step is small
+        // (the dilation-sensitive case) yet wide enough to cover real pixels.
+        let mut worst_abs = 0.0f32;
+        let mut worst_off = 0.0f32;
+        for step in 0..64i32 {
+            let xoff = (step as f32 - 32.0) * 0.03125; // sub-pixel x sweep, ~±1 world
+            let tri = HybridMesh {
+                positions: vec![
+                    [xoff - 0.3, -7.0, 0.0],
+                    [xoff + 0.3, -7.0, 0.0],
+                    [xoff, 7.0, 0.0],
+                ],
+                indices: vec![0, 1, 2],
+                reflectance: single_band_f32(11, 1.0),
+                object_id: 1,
+            };
+            let scene = HybridScene {
+                meshes: vec![tri],
+                splats: &[],
+            };
+            let cpu = cpu_render(&scene, &cam, &il);
+            let g = gpu.render(&scene, &cam, &il, W, H).expect("gpu thin");
+            let (abs, _rel) = measure_dev(&cpu, &g);
+            if abs > worst_abs {
+                worst_abs = abs;
+                worst_off = xoff;
+            }
+        }
+        eprintln!(
+            "[thin_triangle] worst max_abs_dev over sweep = {worst_abs:e} at xoff={worst_off} (asserting < 1e-4)"
+        );
+        assert!(
+            worst_abs < 1e-4,
+            "thin-triangle over-coverage: GPU<->CPU max abs band deviation {worst_abs:e} exceeds 1e-4 at xoff={worst_off}"
+        );
+
+        // Sanity: the sliver actually lit something on the CPU (otherwise the
+        // sweep proves nothing). Use a centred offset that definitely covers
+        // pixel columns.
+        let tri = HybridMesh {
+            positions: vec![[-0.3, -7.0, 0.0], [0.3, -7.0, 0.0], [0.0, 7.0, 0.0]],
+            indices: vec![0, 1, 2],
+            reflectance: single_band_f32(11, 1.0),
+            object_id: 1,
+        };
+        let scene = HybridScene {
+            meshes: vec![tri],
+            splats: &[],
+        };
+        let cpu = cpu_render(&scene, &cam, &il);
+        let lit: f32 = cpu.spectral.iter().map(|p| p[11]).sum();
+        assert!(lit > 0.0, "thin sliver must light at least one CPU pixel");
+    }
+
+    /// REGRESSION for finding [1]: the ORIGINAL shared-diagonal scene must remain
+    /// hole-free. `quad()` is two triangles sharing a diagonal; if the relative
+    /// epsilon were too tight the diagonal pixels would drop out (the hole the
+    /// 1e-4 epsilon originally fixed). Assert exact CPU/GPU parity on the wall.
+    #[test]
+    fn gpu_matches_cpu_shared_diagonal_no_holes() {
+        let cam = head_on_camera();
+        let il = illum();
+        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else { return };
+
+        // A wall straddling the framebuffer centre so its shared diagonal runs
+        // across many pixels (the classic hole locus).
+        let wall = quad(0.0, 6.0, single_band_f32(11, 1.0), 7);
+        let scene = HybridScene {
+            meshes: vec![wall],
+            splats: &[],
+        };
+        let cpu = cpu_render(&scene, &cam, &il);
+        let g = gpu.render(&scene, &cam, &il, W, H).expect("gpu diag");
+        let (max_abs, max_rel) = measure_dev(&cpu, &g);
+        eprintln!(
+            "[shared_diagonal] max_abs_dev={max_abs:e} max_rel_dev={max_rel:e} (asserting abs < 1e-4)"
+        );
+        assert!(max_abs < 1e-4, "shared-diagonal hole/over-cover: abs {max_abs:e} exceeds 1e-4");
+        assert!(max_rel < 1e-3, "shared-diagonal rel {max_rel:e} exceeds 1e-3");
+
+        // The wall must actually be filled (no diagonal hole) — count lit pixels
+        // and require a contiguous, fully-covered region (no missing diagonal).
+        let lit_gpu = g.spectral.iter().filter(|p| p[11] > 0.5).count();
+        let lit_cpu = cpu.spectral.iter().filter(|p| p[11] > 0.5).count();
+        assert_eq!(
+            lit_gpu, lit_cpu,
+            "GPU lit-pixel count {lit_gpu} must equal CPU {lit_cpu} (no holes, no over-coverage)"
+        );
+        assert!(lit_cpu > 100, "wall must cover a substantial pixel region: {lit_cpu}");
+    }
+
+    /// DRIFT-PINNING (finding [2]): the GPU module's host-side clip+project prep
+    /// (`build_mesh_tris` → the verbatim-copied `clip_triangle_near` /
+    /// `clip_polygon_far` / `to_camera_space` / `project_cam` / `edge`) is pinned
+    /// to the oracle's PUBLIC render path. We push an adversarial geometry set
+    /// (near-straddling, far-straddling, both-straddling, grazing-parallel,
+    /// fully-clipped, degenerate zero-area) through BOTH the oracle's public
+    /// `render_hybrid_lit` AND the GPU `render_lit`, and require the resolved
+    /// depth buffers to agree per pixel. Because the GPU's clip/project is a hand
+    /// copy of the oracle's PRIVATE helpers, any future edit that drifts the
+    /// oracle (a different `inside` epsilon, an operand-order change in
+    /// `project_cam`, etc.) moves the clipped silhouette / interpolated depth on
+    /// the oracle path only — the copy stays put — and this test goes RED. The
+    /// blocky `gpu_matches_cpu_*` scenes would not catch a sub-1e-4 clip-edge
+    /// drift; depth on clip-straddling geometry is the sensitive witness.
+    #[test]
+    fn drift_pinning_clip_project_matches_oracle_public_path() {
+        // Camera looks down -Z from z=20 (build_gaussian_camera: near=0.05,
+        // far=1e6, cam_z ≈ 20 - world_z). The framebuffer depth stores cam_z.
+        let cam = head_on_camera();
+        let il = illum();
+        let sun = SunLight::default();
+        let Some(gpu) = try_gpu(256, 4, (W * H) as u32) else { return };
+
+        // Each entry: (name, mesh). One triangle each, chosen to exercise a
+        // distinct branch of the clip/project pipeline.
+        let refl = single_band_f32(11, 1.0);
+        let cases: Vec<(&str, HybridMesh)> = vec![
+            // Near-straddling: apex in front of the eye (cam_z<0.05 → world_z>19.95),
+            // base well in front — clip_triangle_near splits it into a polygon.
+            (
+                "near_straddling",
+                HybridMesh {
+                    positions: vec![[0.0, 0.0, 25.0], [-6.0, -5.0, 5.0], [6.0, -5.0, 5.0]],
+                    indices: vec![0, 1, 2],
+                    reflectance: refl,
+                    object_id: 1,
+                },
+            ),
+            // Far-straddling: one vertex past the far plane (cam_z>1e6 →
+            // world_z < 20-1e6), the rest in range — clip_polygon_far trims it.
+            (
+                "far_straddling",
+                HybridMesh {
+                    positions: vec![[-5.0, 4.0, 0.0], [5.0, 4.0, 0.0], [0.0, -4.0, -2.0e6]],
+                    indices: vec![0, 1, 2],
+                    reflectance: refl,
+                    object_id: 2,
+                },
+            ),
+            // Both-straddling: one vertex past near, one past far, one in range —
+            // exercises both Sutherland–Hodgman passes in sequence.
+            (
+                "both_straddling",
+                HybridMesh {
+                    positions: vec![[0.0, 5.0, 25.0], [-6.0, -5.0, 0.0], [6.0, -5.0, -2.0e6]],
+                    indices: vec![0, 1, 2],
+                    reflectance: refl,
+                    object_id: 3,
+                },
+            ),
+            // Grazing-parallel: a near-edge-on triangle whose screen-space area is
+            // tiny — stresses the area2.abs()<1e-6 / projection precision branch.
+            (
+                "grazing_parallel",
+                HybridMesh {
+                    positions: vec![[-8.0, 0.0, 0.001], [8.0, 0.0, -0.001], [-8.0, 0.0001, 0.0]],
+                    indices: vec![0, 1, 2],
+                    reflectance: refl,
+                    object_id: 4,
+                },
+            ),
+            // Fully-clipped: entirely behind the near plane (all cam_z<0.05 →
+            // all world_z>19.95) — clip_triangle_near returns <3 verts, dropped.
+            (
+                "fully_clipped",
+                HybridMesh {
+                    positions: vec![[-4.0, -4.0, 30.0], [4.0, -4.0, 30.0], [0.0, 4.0, 28.0]],
+                    indices: vec![0, 1, 2],
+                    reflectance: refl,
+                    object_id: 5,
+                },
+            ),
+            // Degenerate zero-area: three collinear vertices — the cross-product
+            // normal length test (nlen<=1e-12) rejects it on both paths.
+            (
+                "degenerate_zero_area",
+                HybridMesh {
+                    positions: vec![[-5.0, -2.0, 0.0], [0.0, 0.0, 0.0], [5.0, 2.0, 0.0]],
+                    indices: vec![0, 1, 2],
+                    reflectance: refl,
+                    object_id: 6,
+                },
+            ),
+        ];
+
+        for (name, mesh) in cases {
+            let scene = HybridScene {
+                meshes: vec![mesh],
+                splats: &[],
+            };
+            // Oracle PUBLIC path → its framebuffer depth.
+            let mut fb = SpectralFramebuffer::new(W, H);
+            render_hybrid_lit(&scene, &cam, &il, &sun, &mut fb);
+            // GPU path (host-prep uses the copied clip/project helpers).
+            let g = gpu.render_lit(&scene, &cam, &il, &sun, W, H).expect("gpu render_lit");
+
+            let mut max_depth_rel = 0.0f32;
+            let mut diff_pixels = 0usize;
+            for i in 0..(W * H) as usize {
+                let cd = fb.depth[i];
+                let gd = g.depth[i];
+                // Both "nothing drawn" → f32::MAX on both; treat as equal.
+                let c_empty = cd == f32::MAX;
+                let g_empty = gd == f32::MAX;
+                if c_empty != g_empty {
+                    diff_pixels += 1;
+                    continue;
+                }
+                if c_empty && g_empty {
+                    continue;
+                }
+                // Relative depth deviation. Perspective inv-z interpolation over an
+                // extreme cam_z span (both_straddling: 0.05..1e6) accumulates f32
+                // ULPs that differ between GPU and CPU rounding — that is inherent,
+                // not clip drift. A genuine clip/project drift moves the post-clip
+                // screen verts and would change the covered set (asserted ==0
+                // below) and the depth by a LARGE relative amount.
+                let rel = (cd - gd).abs() / cd.abs().max(1e-3);
+                if rel > max_depth_rel {
+                    max_depth_rel = rel;
+                }
+            }
+            eprintln!(
+                "[drift_pinning] {name}: max_depth_rel={max_depth_rel:e} coverage_mismatch_px={diff_pixels}"
+            );
+            // The COVERED PIXEL SET is the exact witness for clip/project drift:
+            // identical clip+project → identical post-clip screen verts → identical
+            // covered set. This is asserted bit-exactly (zero mismatch).
+            assert_eq!(
+                diff_pixels, 0,
+                "{name}: GPU/oracle coverage diverged on {diff_pixels} pixels — clip/project drift"
+            );
+            // Depth agreement (relative) is the secondary witness; a real drift in
+            // the interpolation/projection operands moves it far past this bound.
+            assert!(
+                max_depth_rel < 1e-3,
+                "{name}: GPU/oracle depth diverged by rel {max_depth_rel:e} — clip/project drift"
+            );
+        }
+
+        // Pin must be meaningful: at least one adversarial case must actually draw
+        // pixels through the clip pipeline (otherwise the test pins nothing).
+        let drawn = {
+            let scene = HybridScene {
+                meshes: vec![HybridMesh {
+                    positions: vec![[0.0, 0.0, 25.0], [-6.0, -5.0, 5.0], [6.0, -5.0, 5.0]],
+                    indices: vec![0, 1, 2],
+                    reflectance: refl,
+                    object_id: 1,
+                }],
+                splats: &[],
+            };
+            let mut fb = SpectralFramebuffer::new(W, H);
+            render_hybrid_lit(&scene, &cam, &il, &sun, &mut fb);
+            fb.depth.iter().filter(|&&d| d != f32::MAX).count()
+        };
+        assert!(
+            drawn > 50,
+            "near-straddling case must rasterize a real clipped region (drew {drawn} px)"
+        );
+    }
+
+    /// DIAGNOSTIC (ignored): dump host-side min normalized barycentric for the
+    /// boundary pixels of both the shared-diagonal quad and the thin sliver, under
+    /// separate-op vs FMA edge evaluation, to derive the inside-test strategy.
+    #[test]
+    #[ignore]
+    fn diag_bary_magnitudes() {
+        let cam = head_on_camera();
+        let edge = |a: (f32, f32), b: (f32, f32), px: f32, py: f32| {
+            (b.0 - a.0) * (py - a.1) - (b.1 - a.1) * (px - a.0)
+        };
+        let edge_fma = |a: (f32, f32), b: (f32, f32), px: f32, py: f32| {
+            (b.0 - a.0).mul_add(py - a.1, -((b.1 - a.1) * (px - a.0)))
+        };
+        let gcam = build_gaussian_camera(&cam, W as usize, H as usize);
+
+        for (name, mesh) in [
+            ("diagonal_quad", quad(0.0, 6.0, single_band_f32(11, 1.0), 7)),
+            (
+                "thin_sliver",
+                HybridMesh {
+                    positions: vec![
+                        [-0.9375 - 0.3, -7.0, 0.0],
+                        [-0.9375 + 0.3, -7.0, 0.0],
+                        [-0.9375, 7.0, 0.0],
+                    ],
+                    indices: vec![0, 1, 2],
+                    reflectance: single_band_f32(11, 1.0),
+                    object_id: 1,
+                },
+            ),
+        ] {
+            let tris = build_mesh_tris(&[mesh], &gcam, &SunLight::default(), W, H);
+            let mut worst_sep = f32::MAX;
+            let mut worst_fma_diff = 0.0f32;
+            for tri in &tris {
+                let a = (tri.a[0], tri.a[1]);
+                let b = (tri.b[0], tri.b[1]);
+                let c = (tri.c[0], tri.c[1]);
+                let inv = tri.inv_area2;
+                for py in 0..H {
+                    for px in 0..W {
+                        let pxf = px as f32 + 0.5;
+                        let pyf = py as f32 + 0.5;
+                        let w = [
+                            edge(b, c, pxf, pyf) * inv,
+                            edge(c, a, pxf, pyf) * inv,
+                            edge(a, b, pxf, pyf) * inv,
+                        ];
+                        let wf = [
+                            edge_fma(b, c, pxf, pyf) * inv,
+                            edge_fma(c, a, pxf, pyf) * inv,
+                            edge_fma(a, b, pxf, pyf) * inv,
+                        ];
+                        let minw = w[0].min(w[1]).min(w[2]);
+                        let minf = wf[0].min(wf[1]).min(wf[2]);
+                        let sep_in = minw >= 0.0;
+                        let fma_in = minf >= 0.0;
+                        if sep_in != fma_in {
+                            eprintln!(
+                                "[{name}] FLIP px=({px},{py}) sep_min={minw:e} fma_min={minf:e}"
+                            );
+                        }
+                        if minw.abs() < worst_sep.abs() && minw < 0.0 {
+                            worst_sep = minw;
+                        }
+                        let d = (minw - minf).abs();
+                        if d > worst_fma_diff {
+                            worst_fma_diff = d;
+                        }
+                    }
+                }
+            }
+            eprintln!("[{name}] closest-to-zero negative sep_min={worst_sep:e} worst |sep-fma|={worst_fma_diff:e}");
+        }
+    }
+
     fn cube_mesh(c: [f32; 3], h: f32, refl: [f32; 16], object_id: u32) -> HybridMesh {
         let [cx, cy, cz] = c;
         let positions = vec![

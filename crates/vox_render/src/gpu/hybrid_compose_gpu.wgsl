@@ -75,21 +75,39 @@ struct SplatRec {
 @group(0) @binding(5) var<storage, read_write> out_spectral:  array<f32>; // px*16
 @group(0) @binding(6) var<storage, read_write> out_depth:     array<f32>;
 
-// Edge function (signed area x2) for segment (a,b) and point p — the CPU `edge`.
+// Edge function (signed area x2) for segment (a,b) and point p — the CPU `edge`,
+// SAME operation order: `(b.0-a.0)*(py-a.1) - (b.1-a.1)*(px-a.0)`.
 fn edge_fn(ax: f32, ay: f32, bx: f32, by: f32, px: f32, py: f32) -> f32 {
     return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
 
-// Inside-test tolerance on the NORMALIZED barycentric. The CPU fills a pixel
-// whose barycentric is exactly 0 on a shared edge (accepted by BOTH adjacent
-// triangles, last-wins). RADV's edge evaluation rounds that exact zero to a
-// tiny NEGATIVE (~1e-5 normalized), which the strict `w < 0` test rejects on
-// BOTH triangles — leaving a 1px hole along every shared diagonal (observed as
-// 6/900 pixels). We accept `w >= -BARY_EPS`, mirroring the CPU's inclusive-edge
-// behavior. BARY_EPS is ~300x BELOW the per-pixel barycentric step of any
-// reasonably-sized triangle, so no genuinely-outside pixel is ever grabbed; it
-// only resolves the exact-edge tie the CPU already resolves in favor of filling.
-const BARY_EPS: f32 = 1e-4;
+// Inside-test tolerance on the NORMALIZED barycentric. We accept `w >= -BARY_EPS`.
+//
+// WHAT GOES WRONG WITHOUT IT. The CPU oracle's separate-op f32 edge evaluates a
+// shared-diagonal pixel to EXACTLY 0 (its `edge` returns `-0.0`, and `-0.0 >= 0.0`
+// so the CPU fills it). RADV FMA-contracts `a*b - c*d`, so the GPU rounds that
+// same exact-zero edge to a tiny NEGATIVE and the strict `w < 0` test rejects it
+// on BOTH adjacent triangles — a 1px hole along every shared diagonal.
+//
+// WHY NOT THE OLD 1e-4. A fixed `1e-4` fills the hole but DILATES every
+// silhouette: on a thin/high-aspect triangle the per-pixel barycentric step on
+// the slim edges shrinks toward 1e-4, so 1e-4 of slack approaches a whole pixel
+// and the GPU grabs a strictly-outside pixel the CPU rejects (probe-proven 0.579
+// full-pixel spectral divergence).
+//
+// DERIVATION OF BARY_EPS (measured on RADV PHOENIX via `diag_bary_magnitudes`):
+//   * shared-diagonal hole: the FMA rounding of the exact-zero edge is
+//     -2.13e-8 normalized (worst |sep-fma| over the diagonal = 1.19e-7).
+//   * thin-sliver over-coverage: the CPU's NEAREST strictly-outside pixel sits at
+//     -1.13e-3 normalized (its min weight); anything the CPU rejects on that
+//     sliver is at least this far below zero.
+// So the divergent band is roughly [-1.2e-7, 0) (must accept) and the
+// must-reject band starts near -1.1e-3 — ~four orders of magnitude apart. We pick
+// BARY_EPS = 1e-5: ~80x ABOVE the measured FMA hole-rounding (and above the
+// finding's conservative ~1e-5 hole estimate) so every diagonal pixel is filled,
+// yet ~100x BELOW the thin-sliver reject threshold so no genuinely-outside pixel
+// is ever grabbed, on any aspect ratio exercised by the suite.
+const BARY_EPS: f32 = 1e-5;
 
 fn band_of(s: array<vec4<f32>, 4>, b: u32) -> f32 {
     let v = s[b >> 2u];
@@ -125,6 +143,10 @@ fn mesh_pass(@builtin(global_invocation_id) gid: vec3<u32>) {
         let w0 = edge_fn(tri.bx, tri.by, tri.cx, tri.cy, pxf, pyf) * tri.inv_area2;
         let w1 = edge_fn(tri.cx, tri.cy, tri.ax, tri.ay, pxf, pyf) * tri.inv_area2;
         let w2 = edge_fn(tri.ax, tri.ay, tri.bx, tri.by, pxf, pyf) * tri.inv_area2;
+        // Inside test with the derived BARY_EPS: accept `w >= -BARY_EPS` to fill
+        // the shared-diagonal exact-zero edge (which RADV's FMA rounds slightly
+        // negative) WITHOUT dilating thin silhouettes. Mirrors the CPU's
+        // `w < 0.0` reject up to the measured FMA rounding only.
         if w0 < -BARY_EPS || w1 < -BARY_EPS || w2 < -BARY_EPS { continue; }
 
         // Perspective-correct depth: interpolate INVERSE depth, then invert.
