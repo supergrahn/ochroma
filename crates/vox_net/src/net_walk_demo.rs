@@ -127,9 +127,14 @@ async fn run_async(cfg: WalkDemoConfig) -> Result<WalkDemoReport, WalkDemoError>
     let server = QuicServer::listen("127.0.0.1:0").await?;
     let server_addr = server.local_addr()?;
 
-    // Host side: accept the established connection in a task so the client's
-    // connect handshake and the server's accept run concurrently.
-    let host_task = tokio::spawn(async move {
+    // Host and client run as two CONCURRENT FUTURES IN THIS SCOPE (join!, not
+    // spawn): the original spawn MOVED `server` into the task, so whichever
+    // side finished its lockstep loop first dropped its QUIC endpoint —
+    // killing written-but-undelivered final packets and erroring the slower
+    // peer's recv with "closed by peer: 0" (a rare, load-dependent teardown
+    // race the workspace gate hit ~1/7 runs). With join!, both endpoints live
+    // until BOTH sides complete; teardown ordering is deterministic.
+    let host_fut = async {
         let conn = server.accept().await?;
         run_side(
             conn,
@@ -141,25 +146,33 @@ async fn run_async(cfg: WalkDemoConfig) -> Result<WalkDemoReport, WalkDemoError>
             cfg.ticks,
         )
         .await
-    });
+    };
 
-    let client = QuicClient::connect(&server_addr.to_string(), "localhost").await?;
-    let client_conn = client.connection().clone();
+    let client_fut = async {
+        let client = QuicClient::connect(&server_addr.to_string(), "localhost").await?;
+        let client_conn = client.connection().clone();
+        let result = run_side(
+            client_conn,
+            CLIENT_ENTITY_ID,
+            move |tick| {
+                // Client walks +Z only.
+                [0.0, 0.0, cfg.client_speed_z * cfg.dt * tick as f32]
+            },
+            cfg.ticks,
+        )
+        .await;
+        // Return the endpoint alongside the result: dropping it INSIDE this
+        // future would re-create the same race mirrored (client teardown
+        // killing the host's still-pending final recv). It drops after join!.
+        result.map(|r| (r, client))
+    };
 
-    let client_result = run_side(
-        client_conn,
-        CLIENT_ENTITY_ID,
-        move |tick| {
-            // Client walks +Z only.
-            [0.0, 0.0, cfg.client_speed_z * cfg.dt * tick as f32]
-        },
-        cfg.ticks,
-    )
-    .await?;
-
-    let host_result = host_task
-        .await
-        .map_err(|e| WalkDemoError::Join(e.to_string()))??;
+    let (host_result, client_result) = tokio::join!(host_fut, client_fut);
+    let host_result = host_result?;
+    let (client_result, client_endpoint) = client_result?;
+    // Both sides have fully completed; teardown order no longer matters.
+    drop(client_endpoint);
+    drop(server);
 
     Ok(WalkDemoReport {
         host_final: host_result.own_final,
