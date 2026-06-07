@@ -97,6 +97,32 @@ enum Commands {
         no_guard: bool,
     },
 
+    /// Relight a captured splat asset (any of .vxm/.ply/.spz): recover each
+    /// splat's intrinsic spectral base by dividing out the assumed `--from`
+    /// illuminant, then re-illuminate under `--to` (sky ambient + optional
+    /// shadow rays) and write a new .vxm. OFFLINE/asset-time. Illuminant names:
+    /// tungsten, daylight, cool_led, neutral, d65, d50, a, f11, sun@<hour>[,<lat>].
+    Relight {
+        /// Input splat asset (.vxm, .ply, or .spz).
+        #[arg(long)]
+        input: PathBuf,
+        /// Output .vxm file.
+        #[arg(long)]
+        output: PathBuf,
+        /// Assumed capture-time illuminant to divide out.
+        #[arg(long)]
+        from: String,
+        /// Target illuminant to relight to.
+        #[arg(long)]
+        to: String,
+        /// Disable shadow rays for the direct (sun) term.
+        #[arg(long, default_value_t = false)]
+        no_shadows: bool,
+        /// Disable the sky-ambient term.
+        #[arg(long, default_value_t = false)]
+        no_sky: bool,
+    },
+
     /// Build the game for a target platform.
     Build {
         #[arg(long, default_value = "linux")]
@@ -274,6 +300,15 @@ fn main() {
         }
         Commands::Prune { input, output, keep, max_pixel_diff, no_guard } => {
             match vox_tools::prune::run_prune(&input, &output, keep, max_pixel_diff, no_guard) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Error: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Relight { input, output, from, to, no_shadows, no_sky } => {
+            match vox_tools::relight::run_relight(&input, &output, &from, &to, no_shadows, no_sky) {
                 Ok(_) => {}
                 Err(e) => {
                     eprintln!("Error: {e:#}");

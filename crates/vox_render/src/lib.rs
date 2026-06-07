@@ -96,6 +96,7 @@ pub mod platform_profiles;
 pub mod spectral_uplift;
 pub mod spectral_atmosphere;
 pub mod spectral_gi;
+pub mod relight;
 pub mod importance;
 #[cfg(feature = "spectra-native")]
 pub mod splat_convert;
