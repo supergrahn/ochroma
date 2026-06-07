@@ -19,6 +19,7 @@ fn main() {
     let mut palette = false;
     let mut grow_tree = false;
     let mut forge_terrain = false;
+    let mut add_building = false;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -44,6 +45,7 @@ fn main() {
             "--palette" => palette = true,
             "--grow-tree" => grow_tree = true,
             "--forge-terrain" => forge_terrain = true,
+            "--add-building" => add_building = true,
             _ => {}
         }
         i += 1;
@@ -75,6 +77,17 @@ fn main() {
         "floraprime" => shell.focus_plugin_tab(vox_app::shell::plugins::FLORAPRIME_TAB),
         // Default: the central tab is the REAL rendered viewport.
         _ => shell.focus_viewport(),
+    }
+    if add_building {
+        // Press "Add building" headlessly: generate with this build's backend
+        // (real Forge generator under --features forge-native, the built-in
+        // preview otherwise) and plant it so the viewport shows the building.
+        shell.add_building_headless(0);
+        eprintln!(
+            "[shell_snapshot] added building: {} things in the world, {} overlay splats",
+            shell.entities.len(),
+            shell.overlay.len()
+        );
     }
     if forge_terrain {
         // Press "Raise terrain" headlessly: cook a heightfield patch and plant it

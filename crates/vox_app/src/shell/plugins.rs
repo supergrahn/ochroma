@@ -194,6 +194,15 @@ pub struct ForgePlugin {
     raise_count: u32,
     /// Set true once a terrain patch has been raised — the panel's readout reads it.
     raised: bool,
+    /// Generated buildings waiting for the host to plant — the building twin of
+    /// `terrain_sink`, filled by "Add building" via
+    /// [`super::forge_native::generate_building`] (real Forge generator with the
+    /// `forge-native` feature, deterministic preview without it).
+    pub building_sink: Rc<RefCell<Vec<ForgeBuilding>>>,
+    /// Per-build seed so successive "Add building" presses vary the facade.
+    build_count: u32,
+    /// Set true once a building has been added — the panel's readout reads it.
+    built: bool,
 }
 
 impl Default for ForgePlugin {
@@ -204,6 +213,9 @@ impl Default for ForgePlugin {
             terrain_sink: Rc::new(RefCell::new(Vec::new())),
             raise_count: 0,
             raised: false,
+            building_sink: Rc::new(RefCell::new(Vec::new())),
+            build_count: 0,
+            built: false,
         }
     }
 }
@@ -222,6 +234,39 @@ impl ForgePlugin {
             terrain_sink: sink,
             ..Self::default()
         }
+    }
+
+    /// Build a Forge plugin sharing BOTH host queues: raised terrain patches and
+    /// generated buildings. The host (`EditorShell::install_forge`) drains both
+    /// each frame — one constructor so the two sinks can never be half-wired.
+    pub fn with_sinks(
+        terrain: Rc<RefCell<Vec<ForgeTerrain>>>,
+        buildings: Rc<RefCell<Vec<ForgeBuilding>>>,
+    ) -> Self {
+        ForgePlugin {
+            terrain_sink: terrain,
+            building_sink: buildings,
+            ..Self::default()
+        }
+    }
+
+    /// Generate a building with this build's backend (real Forge generator with
+    /// the `forge-native` feature, deterministic preview without) and emit it
+    /// onto the building-sink for the host to plant. The seed increments per
+    /// press so successive buildings vary.
+    pub fn generate_building_action(&mut self) {
+        let spec = super::forge_native::BuildingSpec {
+            seed: self.build_count as u64,
+            ..Default::default()
+        };
+        self.build_count += 1;
+        let (splats, backend) = super::forge_native::generate_building(spec);
+        self.building_sink.borrow_mut().push(ForgeBuilding {
+            label: "Forge Building".to_string(),
+            splats,
+            backend,
+        });
+        self.built = true;
     }
 
     /// Cook a Forge terrain patch and emit it onto the terrain-sink for the host
@@ -326,6 +371,23 @@ impl EditorPlugin for ForgePlugin {
             })
             .size(t.type_ramp.caption)
             .color(if self.raised { prim } else { sec }),
+        );
+
+        // "Add building" — the SAME button in every build; only the backend
+        // differs (real Forge generator with the forge-native feature, the
+        // built-in preview without). The receipt names which one ran.
+        ui.add_space(t.space[2]);
+        if vox_ui::widgets::primary_action(ui, icon::MESH, "Add building", t).clicked() {
+            self.generate_building_action();
+        }
+        ui.label(
+            egui::RichText::new(if self.built {
+                "Added a building to the world — see it in the Viewport (undo with Ctrl+Z)."
+            } else {
+                "Generate a small building and place it in the live viewport."
+            })
+            .size(t.type_ramp.caption)
+            .color(if self.built { prim } else { sec }),
         );
         ui.add_space(t.space[2]);
         ui.separator();
@@ -609,6 +671,19 @@ pub struct ForgeTerrain {
     pub label: String,
     /// The deterministic splats built from the cooked heightfield.
     pub splats: Vec<GaussianSplat>,
+}
+
+/// A generated building ready to plant: label, real splats, and the HONEST
+/// backend tag for the receipt ("Forge native" vs the built-in preview note) —
+/// the building twin of [`ForgeTerrain`].
+#[derive(Clone)]
+pub struct ForgeBuilding {
+    /// The friendly label (the shell appends an incrementing number).
+    pub label: String,
+    /// The splats built by whichever backend this build carries.
+    pub splats: Vec<GaussianSplat>,
+    /// Which backend generated them — appended to the planting receipt.
+    pub backend: &'static str,
 }
 
 /// The resolution the Forge tab's "Raise terrain" action cooks. A small patch

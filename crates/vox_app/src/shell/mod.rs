@@ -19,6 +19,7 @@ pub mod graph_bridge;
 pub mod host;
 pub mod intent;
 pub mod plugins;
+pub mod forge_native;
 pub mod script_gen;
 pub mod viewport;
 
@@ -27,7 +28,7 @@ use content_panel::{ContentAction, ContentPanel};
 use egui_dock::{DockArea, DockState, NodeIndex, Style as DockStyle};
 use graph_bridge::GraphBridge;
 use host::{InstalledPlugin, PluginCtx, TabDecl};
-use plugins::{ForgeTerrain, GrownTree};
+use plugins::{ForgeBuilding, ForgeTerrain, GrownTree};
 use vox_core::types::GaussianSplat;
 use vox_editor::node_graph::NodeId;
 use std::cell::RefCell;
@@ -163,6 +164,8 @@ pub enum ShellRequest {
     /// Queued by the shell when it drains Forge's terrain-sink — the terrain twin
     /// of `GrowTree`, routed through the SAME `plant_asset` core.
     ForgeTerrain(ForgeTerrain),
+    /// Plant a generated building (the building twin of `ForgeTerrain`).
+    ForgeBuilding(ForgeBuilding),
     /// The "＋ Add to world" affordance (toolbar primary action / empty-state
     /// teaching copy / palette `world.add`) asks to open the command palette in
     /// intent mode pre-filled with "add ", routing the user straight into the
@@ -211,6 +214,9 @@ pub struct EditorShell {
     /// the SAME `Rc` it handed Forge via [`plugins::ForgePlugin::with_terrain_sink`]
     /// — the terrain twin of `flora_sink`.
     pub forge_sink: Rc<RefCell<Vec<ForgeTerrain>>>,
+    /// Shared queue Forge's "Add building" button fills with [`ForgeBuilding`]s —
+    /// drained each frame exactly like `forge_sink`.
+    pub building_sink: Rc<RefCell<Vec<ForgeBuilding>>>,
     /// Per-label placement counter so each planted asset is named "<Label> NN"
     /// (incrementing per label — "Silver Birch 01", "Forge Terrain 01").
     /// MONOTONIC BY DESIGN (wave-14 finding [1]): undo never decrements, so
@@ -308,6 +314,7 @@ impl EditorShell {
             overlay: Vec::new(),
             flora_sink: Rc::new(RefCell::new(Vec::new())),
             forge_sink: Rc::new(RefCell::new(Vec::new())),
+            building_sink: Rc::new(RefCell::new(Vec::new())),
             asset_counts: std::collections::HashMap::new(),
             plugins: Vec::new(),
             last_command_flag,
@@ -449,7 +456,8 @@ impl EditorShell {
     /// `ForgePlugin::new()` when the raised terrain must reach the world — the
     /// terrain twin of [`Self::install_floraprime`].
     pub fn install_forge(&mut self) {
-        let plugin = plugins::ForgePlugin::with_terrain_sink(self.forge_sink.clone());
+        let plugin =
+            plugins::ForgePlugin::with_sinks(self.forge_sink.clone(), self.building_sink.clone());
         self.install_plugin(Box::new(plugin));
     }
 
@@ -460,7 +468,21 @@ impl EditorShell {
     pub fn raise_terrain_headless(&mut self, seed: u32) {
         let mut patch = plugins::forge_terrain_patch(seed);
         let splats = std::mem::take(&mut patch.splats);
-        self.plant_asset(&patch.label, "terrain", splats, plugins::TERRAIN_PATCH_ORIGIN, "Raised a");
+        self.plant_asset(&patch.label, "terrain", splats, plugins::TERRAIN_PATCH_ORIGIN, "Raised a", "");
+    }
+
+    /// Press "Add building" headlessly (the snapshot binary's proof path) —
+    /// generates with this build's backend and plants through the same core.
+    pub fn add_building_headless(&mut self, seed: u64) {
+        let (splats, backend) = forge_native::generate_building(forge_native::BuildingSpec {
+            seed,
+            ..Default::default()
+        });
+        self.plant_forge_building(ForgeBuilding {
+            label: "Forge Building".to_string(),
+            splats,
+            backend,
+        });
     }
 
     /// Lay out the full shell into an egui context for one frame.
@@ -496,13 +518,17 @@ impl EditorShell {
         {
             let grown: Vec<GrownTree> = self.flora_sink.borrow_mut().drain(..).collect();
             let raised: Vec<ForgeTerrain> = self.forge_sink.borrow_mut().drain(..).collect();
-            if !grown.is_empty() || !raised.is_empty() {
+            let built: Vec<ForgeBuilding> = self.building_sink.borrow_mut().drain(..).collect();
+            if !grown.is_empty() || !raised.is_empty() || !built.is_empty() {
                 let mut q = self.requests.borrow_mut();
                 for tree in grown {
                     q.push(ShellRequest::GrowTree(tree));
                 }
                 for patch in raised {
                     q.push(ShellRequest::ForgeTerrain(patch));
+                }
+                for building in built {
+                    q.push(ShellRequest::ForgeBuilding(building));
                 }
             }
         }
@@ -968,6 +994,7 @@ impl EditorShell {
                 ShellRequest::LoadAsset(path) => self.load_content_asset(&path),
                 ShellRequest::GrowTree(tree) => self.plant_grown_tree(tree),
                 ShellRequest::ForgeTerrain(patch) => self.plant_forge_terrain(patch),
+                ShellRequest::ForgeBuilding(building) => self.plant_forge_building(building),
                 ShellRequest::OpenAddPalette => {
                     self.palette.open_intent_prefilled("add ");
                 }
@@ -986,6 +1013,7 @@ impl EditorShell {
             tree.splats,
             plugins::TREE_PLANT_ORIGIN,
             "Grew a",
+            "",
         );
     }
 
@@ -1000,6 +1028,22 @@ impl EditorShell {
             patch.splats,
             plugins::TERRAIN_PATCH_ORIGIN,
             "Raised a",
+            "",
+        );
+    }
+
+    /// Plant a generated building: same shared core as trees and terrain, with
+    /// the backend tag carried into the receipt so the user always learns
+    /// whether the REAL Forge generator or the built-in preview built it.
+    fn plant_forge_building(&mut self, building: ForgeBuilding) {
+        let note = format!(", {}", building.backend);
+        self.plant_asset(
+            &building.label,
+            "building",
+            building.splats,
+            forge_native::BUILDING_PLANT_ORIGIN,
+            "Built a",
+            &note,
         );
     }
 
@@ -1019,6 +1063,7 @@ impl EditorShell {
         splats: Vec<GaussianSplat>,
         pos: [f32; 3],
         verb: &str,
+        note: &str,
     ) {
         let len = splats.len();
         let start = self.overlay.len();
@@ -1036,7 +1081,7 @@ impl EditorShell {
         // Invalidate the cached viewport texture so the asset shows next frame.
         self.viewport_tex = None;
         self.push_undo(UndoEntry::PlacedAsset { name: name.clone(), start, len });
-        let receipt = format!("{verb} {name} ({len} points) — undo with Ctrl+Z");
+        let receipt = format!("{verb} {name} ({len} points{note}) — undo with Ctrl+Z");
         self.log_receipt(receipt.clone());
         self.push_output_log(format!("[{kind}] {receipt}"));
     }
@@ -3067,7 +3112,11 @@ mod tests {
             .expect("Forge tab must have a leaf rect");
         let want = Tokens::default().category_header(NodeCategory::Spatial);
         let mut found = false;
-        'outer: for y in (rect.min.y as usize + 30)..(rect.min.y as usize + 220) {
+        // Scan most of the tab: the panel's action buttons above the canvas have
+        // grown ("Raise terrain" + "Add building"), pushing the canvas down — the
+        // assert's intent is "a header in host token color SOMEWHERE in the tab",
+        // not a fixed offset.
+        'outer: for y in (rect.min.y as usize + 30)..(rect.min.y as usize + 380) {
             for x in (rect.min.x as usize + 20)..(rect.min.x as usize + 360) {
                 let p = px(&rgba, w, x as i32, y as i32);
                 if (0..3).all(|i| (p[i] as i32 - want[i] as i32).abs() <= 16) {
@@ -3341,6 +3390,47 @@ mod tests {
             base_entities + 1,
             "capped-out asset's entity remains in the world"
         );
+    }
+
+    /// "Add building" end-to-end through the real drain path: world +1, overlay
+    /// grows by the building's splats, and the receipt names the BACKEND (the
+    /// honest tag differs per build config — assert via the constant).
+    #[test]
+    fn add_building_plants_through_drain_with_backend_receipt() {
+        let mut shell = EditorShell::default();
+        let base_entities = shell.entities.len();
+        let base_overlay = shell.overlay.len();
+
+        let (splats, backend) =
+            forge_native::generate_building(forge_native::BuildingSpec::default());
+        let count = splats.len();
+        assert!(count > 0);
+        shell.building_sink.borrow_mut().push(ForgeBuilding {
+            label: "Forge Building".to_string(),
+            splats,
+            backend,
+        });
+        // Drain exactly like ui() does.
+        let built: Vec<ForgeBuilding> = shell.building_sink.borrow_mut().drain(..).collect();
+        for b in built {
+            shell.plant_forge_building(b);
+        }
+
+        assert_eq!(shell.entities.len(), base_entities + 1, "one new world entity");
+        assert_eq!(shell.overlay.len(), base_overlay + count, "overlay grew by the building");
+        let names: Vec<&str> = shell.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"Forge Building 01"), "named entity; have {names:?}");
+        let receipt = shell.assistant_log.last().expect("receipt logged");
+        assert!(
+            receipt.contains(&format!("({count} points, {})", forge_native::BACKEND_TAG)),
+            "receipt names the backend: {receipt}"
+        );
+        assert!(receipt.starts_with("Built a Forge Building 01"), "verb + name: {receipt}");
+
+        // Undo removes exactly the building.
+        shell.undo();
+        assert_eq!(shell.entities.len(), base_entities, "entity removed on undo");
+        assert_eq!(shell.overlay.len(), base_overlay, "overlay restored on undo");
     }
 
     /// Two raises produce two distinctly-numbered entities ("…01", "…02").
