@@ -57,8 +57,22 @@ fn parse_cli() -> Cli {
         match args[i].as_str() {
             "--frames" => {
                 i += 1;
-                if i < args.len() {
-                    cli.frames = args[i].parse().ok();
+                // A garbage/negative/missing value must NEVER silently parse to
+                // None (which would be indistinguishable from "no --frames" and
+                // hang the proof loop forever). Fail fast with a clear message.
+                if i >= args.len() {
+                    eprintln!("[ochroma_editor] --frames expects a non-negative integer, got nothing");
+                    std::process::exit(2);
+                }
+                match args[i].parse::<u32>() {
+                    Ok(n) => cli.frames = Some(n),
+                    Err(_) => {
+                        eprintln!(
+                            "[ochroma_editor] --frames expects a non-negative integer, got {:?}",
+                            args[i]
+                        );
+                        std::process::exit(2);
+                    }
                 }
             }
             "--shot" => {
@@ -77,6 +91,22 @@ fn parse_cli() -> Cli {
         }
         i += 1;
     }
+
+    // --shot with no --frames is documented as a one-shot capture: default to a
+    // single frame so the shot is captured and the process exits 0 (without this
+    // the is_last_frame gate is never true and the loop runs forever).
+    if cli.shot.is_some() && cli.frames.is_none() {
+        cli.frames = Some(1);
+    }
+
+    // --frames 0 renders zero frames (set up, then exit 0 immediately). But a
+    // zero-frame run can never capture a shot, so --frames 0 --shot is a usage
+    // error rather than a silent no-capture exit.
+    if cli.frames == Some(0) && cli.shot.is_some() {
+        eprintln!("[ochroma_editor] need at least 1 frame to capture a --shot (got --frames 0)");
+        std::process::exit(2);
+    }
+
     cli
 }
 
@@ -96,7 +126,10 @@ fn build_shell(tokens: Tokens) -> EditorShell {
     let mut shell = EditorShell::new(tokens);
     shell.install_plugin(Box::new(vox_app::shell::plugins::CruciblePlugin::new()));
     shell.install_plugin(Box::new(vox_app::shell::plugins::ForgePlugin::new()));
-    shell.install_plugin(Box::new(vox_app::shell::plugins::FloraPrimePlugin::new()));
+    // Install FloraPrime wired to the shell's grow-sink (NOT the detached
+    // `::new()` sink) so pressing "Grow tree" plants real splats into the live
+    // windowed viewport — exactly as the headless shell_snapshot binary does.
+    shell.install_floraprime();
     shell.focus_viewport();
     shell
 }
@@ -328,8 +361,18 @@ impl EditorHost {
         drop(mapped);
         buffer.unmap();
 
-        cpu_render::write_png(path, &rgba, w, h)
-            .unwrap_or_else(|e| panic!("failed to write {path}: {e}"));
+        // Create the parent directory if it's trivially missing, then write.
+        // A bad/unwritable path must NOT panic — report the io error and exit
+        // cleanly with a non-zero code so callers/CI get a clear failure.
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = cpu_render::write_png(path, &rgba, w, h) {
+            eprintln!("[ochroma_editor] failed to write {path}: {e}");
+            std::process::exit(1);
+        }
         let nonbg = cpu_render::non_background_fraction(&rgba, self.bg, 6) * 100.0;
         let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         println!(
@@ -343,6 +386,15 @@ impl EditorHost {
             None => return,
         };
         if self.backend.is_none() {
+            return;
+        }
+
+        // --frames 0 means render ZERO frames: the window/backend are already set
+        // up (resumed() ran), so exit 0 immediately without presenting a frame.
+        // (--frames 0 --shot is rejected at parse time, so there's no shot here.)
+        if self.cli.frames == Some(0) {
+            println!("[ochroma_editor] rendered 0 frames (--frames 0), exiting 0");
+            event_loop.exit();
             return;
         }
 
@@ -362,7 +414,24 @@ impl EditorHost {
         let backend = self.backend.as_ref().expect("backend");
         let surface_tex = match backend.surface().get_current_texture() {
             Ok(t) => t,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                // The surface must be reconfigured before the next acquire will
+                // succeed — without this we'd busy-spin on the same error under
+                // ControlFlow::Poll. Reconfigure (which also re-applies the
+                // Mailbox workaround) then retry on the next redraw.
+                eprintln!("[ochroma_editor] surface lost/outdated — reconfiguring");
+                if let Some(backend) = self.backend.as_ref() {
+                    configure_present_mailbox(backend);
+                }
+                window.request_redraw();
+                return;
+            }
+            Err(wgpu::SurfaceError::OutOfMemory) => {
+                eprintln!("[ochroma_editor] surface out of memory — exiting 1");
+                std::process::exit(1);
+            }
             Err(e) => {
+                // Timeout (or any future variant): transient, just retry.
                 eprintln!("[ochroma_editor] surface error: {e}");
                 window.request_redraw();
                 return;

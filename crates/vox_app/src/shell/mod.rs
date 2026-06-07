@@ -140,6 +140,11 @@ pub enum ShellRequest {
     /// numbered World entity, push an undo entry, and append a receipt. Queued by
     /// the shell when it drains FloraPrime's grow-sink.
     GrowTree(GrownTree),
+    /// The "＋ Add to world" affordance (toolbar primary action / empty-state
+    /// teaching copy / palette `world.add`) asks to open the command palette in
+    /// intent mode pre-filled with "add ", routing the user straight into the
+    /// Ask-Ochroma path that really inserts a node (`IntentAction::AddNode`).
+    OpenAddPalette,
 }
 
 /// The editor shell — owns the dock layout, panel state, and tokens.
@@ -747,6 +752,9 @@ impl EditorShell {
                 }
                 ShellRequest::LoadAsset(path) => self.load_content_asset(&path),
                 ShellRequest::GrowTree(tree) => self.plant_grown_tree(tree),
+                ShellRequest::OpenAddPalette => {
+                    self.palette.open_intent_prefilled("add ");
+                }
             }
         }
     }
@@ -1077,12 +1085,7 @@ impl ShellViewer<'_> {
         // Empty state teaches: how to put the first thing into the world.
         if shown == 0 {
             let [r, g, b, a] = self.tokens.color("text.secondary");
-            let msg = if self.entities.is_empty() {
-                "This is your world — it's empty for now. Press ＋ Add to world, \
-                 or ask Ochroma for what you'd like to see."
-            } else {
-                "Nothing here matches your search. Clear it to see everything in the world."
-            };
+            let msg = hierarchy_empty_message(self.entities.is_empty());
             ui.add_space(8.0);
             ui.label(
                 egui::RichText::new(msg)
@@ -1327,6 +1330,21 @@ fn fmt_num(v: f32) -> String {
     }
 }
 
+/// The teaching copy the World panel shows when nothing is listed. With an empty
+/// world it points at the real "＋ Add to world" affordance (which opens the
+/// Ask-Ochroma intent path that genuinely inserts a node); otherwise the search
+/// filter hid everything. Pure so the empty-world branch is unit-testable from a
+/// constructed-empty shell without driving egui paint.
+fn hierarchy_empty_message(entities_empty: bool) -> &'static str {
+    if entities_empty {
+        "This is your world — it's empty for now. Press ＋ Add to world \
+         to ask Ochroma for the first thing you'd like to see \
+         (try \"add a birch tree\")."
+    } else {
+        "Nothing here matches your search. Clear it to see everything in the world."
+    }
+}
+
 /// Build the editor's one-command-surface. Menus, toolbar, palette and (later)
 /// the AI assistant all dispatch through these. `flag` is flipped by the
 /// representative `world.add` command so the palette test can observe execution.
@@ -1336,12 +1354,20 @@ fn build_registry(
 ) -> CommandRegistry {
     let mut r = CommandRegistry::new();
     let f = flag.clone();
+    let q = requests.clone();
     r.add(Command::new(
         "world.add",
         "Add to world",
         "Create",
         "Ctrl+A",
-        move || *f.borrow_mut() = true,
+        move || {
+            // Proves the registry callback fired (the palette test asserts this),
+            // AND queues the real action: open the palette in intent mode primed
+            // with "add " so the next sentence inserts a node via AddNode. The
+            // request is drained next frame (opening the palette needs `&mut`).
+            *f.borrow_mut() = true;
+            q.borrow_mut().push(ShellRequest::OpenAddPalette);
+        },
     ));
     r.add(Command::new("create.terrain", "Add terrain", "Create", "", || {}));
     r.add(Command::new("create.biome", "Add a climate layer", "Create", "", || {}));
@@ -2788,6 +2814,117 @@ mod tests {
         let names: Vec<&str> = shell.entities.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"Silver Birch 01"), "first grow names …01; have {names:?}");
         assert!(names.contains(&"Silver Birch 02"), "second grow names …02; have {names:?}");
+    }
+
+    // === World panel empty-state (teaching copy is reachable + honest) ===
+
+    /// The empty-WORLD branch selects the teaching copy that points at the real
+    /// "＋ Add to world" affordance; the non-empty (search-hid-everything) branch
+    /// selects the search copy. Asserts the exact strings so the copy can't drift
+    /// away from what the button does.
+    #[test]
+    fn hierarchy_empty_message_is_the_add_teaching_copy_when_world_is_empty() {
+        let empty = hierarchy_empty_message(true);
+        assert_eq!(
+            empty,
+            "This is your world — it's empty for now. Press ＋ Add to world \
+             to ask Ochroma for the first thing you'd like to see \
+             (try \"add a birch tree\").",
+            "empty world must show the Add-to-world teaching copy"
+        );
+        let filtered = hierarchy_empty_message(false);
+        assert_eq!(
+            filtered,
+            "Nothing here matches your search. Clear it to see everything in the world.",
+            "a non-empty world with no visible rows is the search-empty case"
+        );
+        assert_ne!(empty, filtered, "the two empty states must teach different things");
+    }
+
+    /// EMPTY-STATE REACHABILITY: a shell whose World IS empty (built by clearing
+    /// the public `entities` Vec — the only path to emptiness, since the real
+    /// removal path / grow-undo only shrinks back to the 4 seeds) renders the
+    /// hierarchy without panic, and the empty-WORLD teaching branch is selected.
+    /// We render the real shell with the World/Hierarchy tab active so the
+    /// `hierarchy()` code path (and its `entities.is_empty()` branch) actually
+    /// executes, then assert the message the branch resolves to.
+    #[test]
+    fn empty_world_renders_teaching_copy() {
+        let ctx = egui::Context::default();
+        vox_ui::egui_theme::apply(&ctx, &Tokens::default());
+        let mut shell = EditorShell::default();
+
+        // Empty the world via the real public field (construction-time emptiness;
+        // noted: the in-editor remove/undo path can't reach 0 from the 4 seeds, so
+        // clearing the Vec is the honest way to reach the empty state).
+        shell.entities.clear();
+        shell.search.clear();
+        assert!(shell.entities.is_empty(), "world is empty for this test");
+
+        // Render the full shell one frame — the World/Hierarchy tab is in the
+        // default dock, so hierarchy() runs and hits the empty-world branch
+        // without panicking.
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1920.0, 1080.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| shell.ui(ctx));
+
+        // The branch the rendered hierarchy took resolves to the teaching copy.
+        assert_eq!(
+            hierarchy_empty_message(shell.entities.is_empty()),
+            "This is your world — it's empty for now. Press ＋ Add to world \
+             to ask Ochroma for the first thing you'd like to see \
+             (try \"add a birch tree\").",
+            "an empty world must render the Add-to-world teaching copy"
+        );
+    }
+
+    /// The "＋ Add to world" command is no longer a no-op: running `world.add`
+    /// and draining queues opens the palette in INTENT mode pre-filled with "add ",
+    /// dropping the user straight into the Ask-Ochroma path that really inserts a
+    /// node. (The flag still flips so the existing palette test holds.)
+    #[test]
+    fn world_add_opens_intent_palette_prefilled() {
+        let mut shell = EditorShell::default();
+        assert!(!shell.palette.open, "palette starts closed");
+
+        assert!(shell.registry.run("world.add"), "world.add must be a real command");
+        shell.drain_requests();
+
+        assert!(shell.palette.open, "world.add must OPEN the palette");
+        assert_eq!(
+            shell.palette.mode,
+            command_palette::PaletteMode::Intent,
+            "world.add must open the palette in intent (Ask-Ochroma) mode"
+        );
+        assert_eq!(
+            shell.palette.query, "add ",
+            "the intent line must be pre-filled with the 'add ' verb"
+        );
+        assert!(
+            *shell.last_command_flag.borrow(),
+            "world.add must still flip the command flag (palette test invariant)"
+        );
+    }
+
+    /// The prefilled intent line is a REAL working add: completing "add a birch
+    /// tree" and running it through the same `run_intent` the palette submits
+    /// inserts a node into the live graph (the affordance is not theatre).
+    #[test]
+    fn add_intent_from_prefill_inserts_a_real_node() {
+        let mut shell = EditorShell::default();
+        let nodes_before = shell.bridge.node_count();
+        let receipt = shell.run_intent("add a birch tree");
+        assert!(
+            shell.bridge.node_count() > nodes_before,
+            "completing the pre-filled 'add ' intent must add a real graph node \
+             (before={nodes_before}, after={}, receipt={receipt:?})",
+            shell.bridge.node_count()
+        );
     }
 
     /// Render the full shell with BOTH plugins installed and `focus` tab active.

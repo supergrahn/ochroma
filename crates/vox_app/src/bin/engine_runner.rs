@@ -2510,7 +2510,7 @@ impl EngineApp {
                                 .show(ui, |ui| {
                                     ui.label(
                                         egui::RichText::new(format!(
-                                            "FPS: {:.0} | Spectra: {} | {} splats | DLSS {}",
+                                            "FPS: {:.0} | Spectra: {} | {} points | DLSS {}",
                                             fps, !self.spectral_bypass, splat_count, dlss_mode,
                                         ))
                                         .color(egui::Color32::from_rgb(140, 145, 160))
@@ -2673,13 +2673,14 @@ impl EngineApp {
         if now.duration_since(self.title_timer).as_secs_f32() >= 0.5 {
             if let Some(w) = &self.window {
                 let title = if self.editor_visible {
+                    let n = self.editor.entity_count();
+                    let noun = if n == 1 { "thing" } else { "things" };
                     format!(
-                        "Ochroma Engine \u{2014} Editor | {} entities | {:.0} FPS",
-                        self.editor.entity_count(),
-                        self.fps,
+                        "Ochroma Engine \u{2014} Editor | {} {} in the world | {:.0} FPS",
+                        n, noun, self.fps,
                     )
                 } else {
-                    format!("Ochroma Engine | {} splats | {:.0} FPS", self.total_splat_count(), self.fps)
+                    format!("Ochroma Engine | {} points | {:.0} FPS", self.total_splat_count(), self.fps)
                 };
                 w.set_title(&title);
             }
@@ -3125,7 +3126,7 @@ impl ApplicationHandler for EngineApp {
         println!();
         println!("Ochroma Engine v0.1.0");
         println!("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
-        println!("  {} entities | {} splats | {} clusters",
+        println!("  {} things in the world | {} points | {} clusters",
             self.loop_.runtime.entity_count(),
             self.scene_splats.len(),
             self.clas_cluster_count);

@@ -236,6 +236,17 @@ impl PaletteState {
         }
     }
 
+    /// Open the palette directly in intent mode pre-filled with `prefill` (e.g.
+    /// "add "), so the user lands in the Ask-Ochroma sentence path with the verb
+    /// already typed. Used by the "＋ Add to world" affordance — pressing Enter on
+    /// a completed sentence ("add a birch tree") submits a real `AddNode` intent.
+    pub fn open_intent_prefilled(&mut self, prefill: &str) {
+        self.open = true;
+        self.mode = PaletteMode::Intent;
+        self.query = prefill.to_string();
+        self.selected = 0;
+    }
+
     /// Render the centered dual-mode "Ask Ochroma" modal over `ctx`. Tab toggles
     /// command/intent mode. In command mode, Up/Down + Enter run the highlighted
     /// command (in place). In intent mode, Enter SUBMITS the typed sentence as a
