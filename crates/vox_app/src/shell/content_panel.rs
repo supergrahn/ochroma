@@ -221,9 +221,28 @@ pub fn format_count(n: u32) -> String {
     }
 }
 
+/// True if `c` is a Unicode combining mark (general category Mn — nonspacing
+/// mark) over the ranges that occur in practice. `std` exposes no
+/// general-category query, and we deliberately avoid a `unicode-segmentation`
+/// dependency for a cosmetic label helper; instead we match the common combining
+/// blocks explicitly (finding [7]): Combining Diacritical Marks (U+0300–U+036F),
+/// Extended (U+1AB0–U+1AFF), and Supplement (U+20D0–U+20FF). A mark in one of
+/// these ranges attaches to the PRECEDING base character, so it must never be
+/// orphaned onto the ellipsis.
+fn is_combining_mark(c: char) -> bool {
+    matches!(c as u32,
+        0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x20D0..=0x20FF)
+}
+
 /// Truncate a name in the middle so both the stem start and the extension stay
 /// visible, e.g. `townhouse_row_03.vxm` -> `townho…03.vxm`. Returns the original
 /// when it already fits within `max` chars.
+///
+/// Truncation is char (USV) based — panic-safe for multi-byte CJK/emoji — but a
+/// raw char slice can split a grapheme cluster, orphaning a combining mark onto
+/// the ellipsis (finding [7]). To avoid that we trim trailing combining marks
+/// from the HEAD slice (so the ellipsis follows a complete cluster) and leading
+/// combining marks from the TAIL slice (so the tail starts on a base character).
 fn truncate_middle(name: &str, max: usize) -> String {
     let chars: Vec<char> = name.chars().collect();
     if chars.len() <= max || max < 3 {
@@ -232,8 +251,20 @@ fn truncate_middle(name: &str, max: usize) -> String {
     let keep = max - 1; // room for the ellipsis
     let head = keep.div_ceil(2);
     let tail = keep - head;
-    let head_s: String = chars[..head].iter().collect();
-    let tail_s: String = chars[chars.len() - tail..].iter().collect();
+
+    // Head: drop trailing combining marks so the ellipsis never stacks one.
+    let mut head_end = head;
+    while head_end > 0 && is_combining_mark(chars[head_end - 1]) {
+        head_end -= 1;
+    }
+    // Tail: drop leading combining marks so the tail starts on a base character.
+    let mut tail_start = chars.len() - tail;
+    while tail_start < chars.len() && is_combining_mark(chars[tail_start]) {
+        tail_start += 1;
+    }
+
+    let head_s: String = chars[..head_end].iter().collect();
+    let tail_s: String = chars[tail_start..].iter().collect();
     format!("{head_s}\u{2026}{tail_s}")
 }
 
@@ -461,5 +492,45 @@ mod tests {
         assert!(out.contains('\u{2026}'), "a long name must be elided: {out}");
         assert!(out.ends_with(".vxm"), "the extension must survive: {out}");
         assert_eq!(truncate_middle("cube.vxm", 12), "cube.vxm", "short names are untouched");
+    }
+
+    /// Finding [7]: a name built from base+combining-mark pairs truncates without
+    /// orphaning a combining mark onto the ellipsis (no char adjacent to '…' on
+    /// either side is a combining mark), and the result is shorter than input.
+    #[test]
+    fn truncate_middle_does_not_orphan_combining_marks() {
+        // "é" as base 'e' + U+0301 (combining acute), repeated, + ".vxm".
+        let name = "e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}.vxm";
+        let out = truncate_middle(name, 12);
+        assert!(out.contains('\u{2026}'), "must be elided: {out:?}");
+        let chars: Vec<char> = out.chars().collect();
+        let ell = chars.iter().position(|&c| c == '\u{2026}').unwrap();
+        // The char BEFORE the ellipsis must not be a combining mark (head trimmed).
+        if ell > 0 {
+            assert!(
+                !is_combining_mark(chars[ell - 1]),
+                "char before … is an orphaned combining mark: {out:?}"
+            );
+        }
+        // The char AFTER the ellipsis must not be a combining mark (tail trimmed).
+        if ell + 1 < chars.len() {
+            assert!(
+                !is_combining_mark(chars[ell + 1]),
+                "char after … is an orphaned combining mark: {out:?}"
+            );
+        }
+        assert!(out.ends_with(".vxm"), "extension survives: {out:?}");
+    }
+
+    /// Finding [7] (regression): CJK and emoji names truncate without panic and
+    /// keep the extension (char-boundary safety preserved).
+    #[test]
+    fn truncate_middle_handles_cjk_and_emoji() {
+        let cjk = truncate_middle("日本語のファイル名前テスト.vxm", 12);
+        assert!(cjk.contains('\u{2026}'), "CJK name must elide: {cjk:?}");
+        assert!(cjk.ends_with(".vxm"), "CJK extension survives: {cjk:?}");
+        let emoji = truncate_middle("🎮🎮🎮🎮🎮🎮🎮🎮🎮🎮🎮🎮.vxm", 12);
+        assert!(emoji.contains('\u{2026}'), "emoji name must elide: {emoji:?}");
+        assert!(emoji.ends_with(".vxm"), "emoji extension survives: {emoji:?}");
     }
 }

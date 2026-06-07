@@ -788,6 +788,7 @@ impl WalkingSim {
                 pose_index: 0,
                 root_speed: 0.0,
                 clip_changed: false,
+                blended_joints: Vec::new(),
             },
             avatar_match_log: Vec::new(),
             game_ui,
@@ -1438,21 +1439,25 @@ impl WalkingSim {
         let matched = self
             .avatar_motion
             .tick(avatar_vel, self.player_yaw, dt);
-        self.avatar_matched = matched;
         self.avatar_match_log
             .push((avatar_vel, self.player_yaw, matched.clip_id, matched.pose_index));
         // Surface the matched pose at a low cadence (every 30 frames) on a log
         // line, mirroring the binary's other periodic progress prints. A clip
-        // change is always announced so transitions are visible.
+        // change is always announced so transitions are visible. The
+        // `blend_root_y` field (finding [4]) surfaces the InertialBlender's live
+        // output — during a transition it sweeps between the source and target hip
+        // height instead of snapping.
         if matched.clip_changed || self.gi_frame_counter.is_multiple_of(30) {
             println!(
-                "[walking_sim] AvatarMotion: clip={} pose_idx={} root_speed={:.2} m/s (vel={:.2} m/s)",
+                "[walking_sim] AvatarMotion: clip={} pose_idx={} root_speed={:.2} m/s blend_root_y={:.4} (vel={:.2} m/s)",
                 matched.clip_name(),
                 matched.pose_index,
                 matched.root_speed,
+                matched.blended_root_y(),
                 Vec3::new(avatar_vel.x, 0.0, avatar_vel.z).length(),
             );
         }
+        self.avatar_matched = matched;
 
         // ---------------------------------------------------------------
         // 3. Windmill animation tick. The script-driven speed multiplier scales
@@ -2209,11 +2214,13 @@ fn run_smoke() {
     let spawn_pos = app.cc_transform.position;
     let windmill_anim_start = app.windmill.anim_time;
     let dt = 1.0 / 60.0; // fixed 60Hz step
-    let total_frames = 160u32;
-    // Inject "walk forward" input for nearly the whole run so the real
-    // CharacterController movement code carries the player into an orb (nearest
-    // orb is ~21m out; at 8 m/s collection radius 2.5m is reached by ~frame 140).
-    let walk_frames = total_frames - 5;
+    // Inject "walk forward" input so the real CharacterController movement code
+    // carries the player into an orb (nearest orb is ~21m out; at 8 m/s collection
+    // radius 2.5m is reached by ~frame 140), THEN keep recording 40 more frames
+    // after the stop so the "idle within 30 frames of stopping" assertion has a
+    // real ≥40-frame window to measure (finding [5]).
+    let walk_frames = 155u32;
+    let total_frames = walk_frames + 40;
 
     // Capture GI-lit splats input vs output to prove radiance was injected.
     // After the first GI step, latest_gi_bands should be non-zero and the
@@ -2372,10 +2379,15 @@ fn run_smoke() {
         );
         let ttl_idle = frames_to_idle
             .expect("matcher never reached IDLE after the player stopped — idle clip unreachable");
+        // There are 40 recorded frames after the stop, so this 30-frame bound is a
+        // real, exercisable window (finding [5]): a 5–30-frame hysteresis stall
+        // would now be observable rather than truncated off the end of the log.
+        let post_stop_window = log.len().saturating_sub(stop_frame.unwrap());
         assert!(
             ttl_idle <= 30,
-            "matcher took {} frames to reach IDLE after stopping (> 30) — hysteresis stuck",
-            ttl_idle
+            "matcher took {} frames to reach IDLE after stopping (> 30) — hysteresis stuck (post-stop window was {} frames)",
+            ttl_idle,
+            post_stop_window
         );
         assert_eq!(
             continuity_violations, 0,
@@ -2390,6 +2402,46 @@ fn run_smoke() {
             distinct_clips.len() >= 2,
             "matcher only ever selected {} clip(s) — never transitioned between locomotion states",
             distinct_clips.len()
+        );
+
+        // --- Assertion 5: the InertialBlender output is OBSERVABLE and actually
+        //     interpolates across a clip transition (finding [4]). On an
+        //     idle->walk switch the blended root-joint Z must land STRICTLY
+        //     between the source (idle, z≈0) and the target (walk) pose's root Z —
+        //     not snap to either — proving the blend result is live, not discarded.
+        let dt_b = 1.0 / 60.0;
+        let mut blend_probe = avatar_motion::AvatarMotion::new();
+        // Settle on idle for ~half a gait cycle so a switch to walk targets a
+        // MID-clip pose (root z > 0) — a real discontinuity for the blender.
+        let mut idle = blend_probe.tick(Vec3::ZERO, 0.0, dt_b);
+        for _ in 0..30 {
+            idle = blend_probe.tick(Vec3::ZERO, 0.0, dt_b);
+        }
+        let source_root_z = idle.blended_joints[0].z;
+        // Switch to walking forward (yaw 0 forward = (0,0,-1) so -Z world speed),
+        // then sample a few frames into the transition where the blend is
+        // interpolating between the source and the live walk target.
+        let mut walk = blend_probe.tick(Vec3::new(0.0, 0.0, -avatar_motion::WALK_SPEED), 0.0, dt_b);
+        assert!(walk.clip_changed, "idle->walk must begin an inertial transition");
+        for _ in 0..4 {
+            walk = blend_probe.tick(Vec3::new(0.0, 0.0, -avatar_motion::WALK_SPEED), 0.0, dt_b);
+        }
+        let target_root_z = blend_probe
+            .pose_root_position(walk.pose_index)
+            .z;
+        let blended_root_z = walk.blended_joints[0].z;
+        let (lo, hi) = (source_root_z.min(target_root_z), source_root_z.max(target_root_z));
+        println!(
+            "[walking_sim] AVATAR MOTION BLEND: source_root_z={:.4} blended_root_z={:.4} target_root_z={:.4}",
+            source_root_z, blended_root_z, target_root_z
+        );
+        assert!(
+            (hi - lo) > 1e-3,
+            "source/target root Z must differ for the blend test to be meaningful (lo={lo} hi={hi})"
+        );
+        assert!(
+            blended_root_z > lo + 1e-4 && blended_root_z < hi - 1e-4,
+            "blended root Z {blended_root_z} must lie STRICTLY between source {source_root_z} and target {target_root_z} — blend not interpolating"
         );
     }
 

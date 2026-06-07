@@ -16,6 +16,28 @@
 //! which iterates poses in insertion order. The same velocity sequence
 //! therefore always yields the same matched pose indices — exercised by the
 //! `determinism_*` unit test and the smoke's 4th assertion.
+//!
+//! ## What the matcher selects vs. what the cursor advances (finding [6])
+//!
+//! The engine's `build_feature` stores channels 2–7 as ABSOLUTE world positions
+//! (the root trajectory point `speed*(t+0.1)` and the two world foot positions
+//! `speed*t + fore`). A naive query that left those channels at 0/unit-vector
+//! made them incommensurable with the stored clips, collapsing the 9D match to a
+//! velocity threshold and pinning `nearest_continuing` to each clip's entry pose
+//! (the old bug). We now build the query in the SAME clip-local space: a gait
+//! cursor (`gait_time`, advanced by `dt` and wrapped at the clip duration) drives
+//! a clip-local baseline `speed * gait_time`, and the trajectory + foot channels
+//! are synthesized from the SAME analytic gait the clips use ([`eval_locomotion`])
+//! evaluated at that cursor phase. So a query at gait phase 0.25 carries a
+//! genuinely different foot signature than one at phase 0.75 and the matcher
+//! discriminates poses WITHIN a clip — proven by
+//! `walk_query_phase_discriminates_within_clip`.
+//!
+//! With the feature layout fixed, pose selection is driven FULLY through the
+//! engine matcher (`nearest_continuing`): the returned index IS the played pose
+//! (idle/walk/run classification AND within-clip phase). The gait cursor exists
+//! only to author the phase-discriminating query; it is not a separate playback
+//! clock layered over the matcher. This is the variant we shipped.
 
 use glam::Vec3;
 use vox_render::motion_matching::{InertialBlender, PoseDatabase, PoseDatabaseBuilder};
@@ -49,7 +71,7 @@ const RIGHT_FOOT: usize = 8;
 /// band so matching reflects reality: idle 0, walk = the controller's 8 m/s,
 /// run = a faster 16 m/s sprint band. The idle/walk/run structure, the forward
 /// motion, and the sinusoidal gait phase are all exactly as specified.
-const WALK_SPEED: f32 = 8.0;
+pub const WALK_SPEED: f32 = 8.0;
 const RUN_SPEED: f32 = 16.0;
 
 /// Gait stride frequency (full foot cycles per second) for walk/run.
@@ -144,26 +166,37 @@ pub fn build_locomotion_database() -> PoseDatabase {
 }
 
 /// The result of a single [`AvatarMotion::tick`]: which clip/pose the matcher
-/// landed on plus the blended root speed it represents.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// landed on, the inertial-blended joint positions, and the root speed.
+#[derive(Clone, Debug, PartialEq)]
 pub struct MatchedPose {
     /// Clip id of the matched pose (`CLIP_IDLE` / `CLIP_WALK` / `CLIP_RUN`).
     pub clip_id: u32,
     /// Index of the matched pose within the database (insertion order).
     pub pose_index: usize,
     /// Root locomotion speed (m/s) of the matched pose — the magnitude of the
-    /// matched pose's root joint velocity, blended via the inertial blender's
-    /// current state.
+    /// matched pose's root joint velocity.
     pub root_speed: f32,
     /// True iff this tick switched to a different clip than the previous tick
     /// (an inertial transition was begun).
     pub clip_changed: bool,
+    /// The inertial-blended joint positions for THIS tick (finding [4]). During a
+    /// clip transition these interpolate from the previous pose toward the matched
+    /// target, so a mid-transition root-joint value lies strictly between source
+    /// and target — the InertialBlender's output is now observable, not discarded.
+    pub blended_joints: Vec<Vec3>,
 }
 
 impl MatchedPose {
     /// Human-readable clip name for HUD / log surfacing.
     pub fn clip_name(&self) -> &'static str {
         clip_name(self.clip_id)
+    }
+
+    /// Root-joint (hip) world Y of the inertial-blended pose — a single scalar
+    /// the HUD/log surfaces to make the blend observable (finding [4]). Mid-clip
+    /// transition this reads between the source and target hip heights.
+    pub fn blended_root_y(&self) -> f32 {
+        self.blended_joints.first().map(|p| p.y).unwrap_or(0.0)
     }
 }
 
@@ -240,12 +273,18 @@ pub struct AvatarMotion {
     blender: InertialBlender,
     /// Per-clip index ranges in `db.poses` (clips are ingested contiguously).
     clip_ranges: Vec<ClipRange>,
-    /// Current playback / hysteresis cursor into `db.poses`. Within a clip it
-    /// advances forward each tick (gait playback); on a clip change it jumps to
-    /// the matched entry pose.
+    /// Current pose index into `db.poses` — the last matched pose, and the seed
+    /// for `nearest_continuing`'s hysteresis.
     current_idx: usize,
     /// Clip id of the current pose (to detect clip changes).
     current_clip: u32,
+    /// Gait cursor: clip-relative time (seconds) used to author the
+    /// phase-discriminating query (finding [3]). Advances by `dt` each tick and
+    /// wraps at [`CLIP_DURATION`] so the synthesized query foot signature sweeps
+    /// through a full gait cycle, letting the matcher pick distinct within-clip
+    /// poses. NOT a playback clock layered over the matcher — the matched index is
+    /// the played pose.
+    gait_time: f32,
 }
 
 impl AvatarMotion {
@@ -255,12 +294,20 @@ impl AvatarMotion {
         let clip_ranges = Self::compute_clip_ranges(&db);
         // Seed on the first pose (idle clip, index 0).
         let current_clip = db.poses.first().map(|p| p.clip_id).unwrap_or(CLIP_IDLE);
+        // Finding [4]: seed the blender's current pose to the initial (idle entry)
+        // pose so the FIRST transition blends from a real pose, not the world
+        // origin (the old cold-start computed a full-magnitude bogus offset).
+        let mut blender = InertialBlender::new(NUM_JOINTS);
+        if let Some(first) = db.poses.first() {
+            blender.current_pose = first.joint_positions.clone();
+        }
         Self {
             db,
-            blender: InertialBlender::new(NUM_JOINTS),
+            blender,
             clip_ranges,
             current_idx: 0,
             current_clip,
+            gait_time: 0.0,
         }
     }
 
@@ -279,10 +326,6 @@ impl AvatarMotion {
             }
         }
         ranges
-    }
-
-    fn range_for(&self, clip_id: u32) -> Option<ClipRange> {
-        self.clip_ranges.iter().copied().find(|r| r.clip_id == clip_id)
     }
 
     /// Local (clip-relative) pose index for a global database index, if the
@@ -304,6 +347,17 @@ impl AvatarMotion {
         self.db.poses.iter().filter(|p| p.clip_id == clip_id).count()
     }
 
+    /// Raw (UN-blended) root-joint world position of the pose at `pose_index` —
+    /// the blend target. Used to verify the inertial blend interpolates toward,
+    /// but does not snap to, the matched pose (finding [4]).
+    pub fn pose_root_position(&self, pose_index: usize) -> Vec3 {
+        self.db
+            .poses
+            .get(pose_index)
+            .and_then(|p| p.joint_positions.first().copied())
+            .unwrap_or(Vec3::ZERO)
+    }
+
     /// Select an animation pose for the avatar's CURRENT locomotion state.
     ///
     /// `root_velocity` is the avatar's world-space velocity (the
@@ -312,80 +366,89 @@ impl AvatarMotion {
     /// and `dt` advances the inertial blender. Returns the [`MatchedPose`].
     ///
     /// The 9D query feature is built to match the engine's `build_feature`
-    /// layout exactly — `[vel_x, vel_z, dir_x, dir_z, foot_l.x, foot_l.z,
-    /// foot_r.x, foot_r.z, vel_y]` — but expressed in the avatar's FACING-LOCAL
-    /// frame so that "moving forward" always reads as +Z velocity regardless of
-    /// world heading (the clips are all authored facing +Z). We rotate the
-    /// world velocity by `-facing_yaw` into that local frame.
+    /// layout AND SEMANTICS exactly — `[vel_x, vel_z, dir_x, dir_z, foot_l.x,
+    /// foot_l.z, foot_r.x, foot_r.z, vel_y]` — expressed in the avatar's
+    /// FACING-LOCAL frame so "moving forward" always reads as +Z velocity
+    /// regardless of world heading (the clips are all authored facing +Z). We
+    /// rotate the world velocity by `-facing_yaw` into that local frame.
+    ///
+    /// Crucially (finding [3]) channels 2–7 carry the SAME absolute-position
+    /// semantics the clips store: the trajectory point and foot positions are
+    /// synthesized from the SAME analytic gait ([`eval_locomotion`]) at the gait
+    /// cursor's clip-phase, anchored to the matched clip's BAND speed. That makes
+    /// the query commensurate with the stored poses, so the matcher discriminates
+    /// poses WITHIN a clip instead of pinning to the entry pose. The position
+    /// channels use the quantized BAND speed (0/walk/run) rather than the raw
+    /// instantaneous speed so a small velocity bob cannot shift the baseline and
+    /// jolt the matched index backward (keeping the stream continuous); the
+    /// velocity channels (0,1,8) still carry the real instantaneous velocity, which
+    /// is what classifies idle/walk/run.
     pub fn tick(&mut self, root_velocity: Vec3, facing_yaw: f32, dt: f32) -> MatchedPose {
         // Rotate world velocity into the avatar's facing-local frame. walking_sim
-        // forward = (sin yaw, 0, -cos yaw). A point in world space maps to local
-        // by the inverse (transpose) of that basis: forward -> local +Z,
-        // right -> local +X. Derive local components by projecting onto the
-        // local basis vectors.
+        // forward = (sin yaw, 0, -cos yaw). Project onto the local basis vectors.
         let (s, c) = facing_yaw.sin_cos();
         let forward = Vec3::new(s, 0.0, -c); // local +Z axis in world space
         let right = Vec3::new(c, 0.0, s); // local +X axis in world space
         let local_vx = root_velocity.dot(right);
         let local_vz = root_velocity.dot(forward);
+        let local_speed = Vec3::new(local_vx, 0.0, local_vz).length();
 
-        // Direction channels: the trajectory/heading term. The clips encode this
-        // as the root position a short time ahead (trajectory[0]); for the query
-        // we use the normalized desired travel direction in local space, which
-        // is +Z forward when moving. When stationary the direction is zero,
-        // which matches the idle clip's near-static trajectory.
-        let horiz = Vec3::new(local_vx, 0.0, local_vz);
-        let dir = if horiz.length_squared() > 1e-6 {
-            horiz.normalize()
-        } else {
-            Vec3::ZERO
+        // Advance the gait cursor (clip-relative time), wrapping each cycle.
+        self.gait_time = (self.gait_time + dt).rem_euclid(CLIP_DURATION);
+
+        // Quantize the avatar's speed to the nearest clip BAND (idle/walk/run) and
+        // synthesize the position channels at that band's speed + gait frequency,
+        // so they exactly mirror one clip's analytic motion. This stabilizes the
+        // within-clip phase signal against velocity bob.
+        let (phase_speed, gait_hz) = {
+            let to_idle = local_speed;
+            let to_walk = (local_speed - WALK_SPEED).abs();
+            let to_run = (local_speed - RUN_SPEED).abs();
+            if to_run <= to_walk && to_run <= to_idle {
+                (RUN_SPEED, RUN_GAIT_HZ)
+            } else if to_walk <= to_idle {
+                (WALK_SPEED, WALK_GAIT_HZ)
+            } else {
+                (0.0, WALK_GAIT_HZ)
+            }
         };
 
-        // Query feature in the engine's build_feature layout. Feet contribute
-        // 0 in the query (we match on locomotion velocity + direction, not foot
-        // placement), which is a neutral value that does not bias clip choice.
+        // Synthesize the query's channels 2–7 from the SAME analytic gait the
+        // clips use, at the cursor phase, anchored to the matched band's baseline
+        // `phase_speed * gait_time`. When near-stationary the band is idle
+        // (phase_speed 0), so the baseline and foot sweep collapse to ~0 — matching
+        // the idle clip's planted feet and static trajectory.
+        let query_joints = eval_locomotion(self.gait_time, phase_speed, gait_hz);
+        // Trajectory[0] = root position a short step (0.1s) ahead, exactly as the
+        // builder ingests it (clamped to the clip duration).
+        let traj_t = (self.gait_time + 0.1).min(CLIP_DURATION);
+        let traj0 = eval_locomotion(traj_t, phase_speed, gait_hz)[0];
+        let foot_l = query_joints[LEFT_FOOT];
+        let foot_r = query_joints[RIGHT_FOOT];
+
+        // Query feature in the engine's build_feature layout/semantics.
         let query: [f32; 9] = [
-            local_vx,         // vel_x
-            local_vz,         // vel_z
-            dir.x,            // dir_x  (trajectory.x)
-            dir.z,            // dir_z  (trajectory.z)
-            0.0,              // foot_l.x
-            0.0,              // foot_l.z
-            0.0,              // foot_r.x
-            0.0,              // foot_r.z
-            root_velocity.y,  // hip_vel_y
+            local_vx,        // vel_x
+            local_vz,        // vel_z
+            traj0.x,         // dir_x  (trajectory.x)
+            traj0.z,         // dir_z  (trajectory.z)
+            foot_l.x,        // foot_l.x
+            foot_l.z,        // foot_l.z
+            foot_r.x,        // foot_r.x
+            foot_r.z,        // foot_r.z
+            root_velocity.y, // hip_vel_y
         ];
 
-        // Motion matching SELECTS the clip (and the entry pose) via the engine's
-        // hysteresis-aware nearest search. The continuation bonus biases it to
-        // keep the current clip unless the locomotion state clearly calls for a
-        // different one — this is what stops idle/walk/run from flickering.
-        let matched_idx = self
+        // Motion matching SELECTS the pose via the engine's hysteresis-aware
+        // nearest search. With the feature layout fixed, this drives BOTH clip
+        // classification AND within-clip phase — the returned index is the played
+        // pose (finding [6]). The continuation bonus biases toward the current
+        // pose so the stream advances smoothly instead of flickering.
+        let next_idx = self
             .db
             .nearest_continuing(self.current_idx, &query, CONTINUATION_BONUS);
-        let next_clip = self.db.poses[matched_idx].clip_id;
-
-        // PLAYBACK: a static locomotion query matches the same single best pose
-        // every frame (the engine library is a pose SELECTOR, not a playback
-        // clock — see the report note). To produce a continuing, gait-advancing
-        // stream we advance a playback cursor forward WITHIN the matched clip,
-        // wrapping at the clip end. On a clip CHANGE we jump to the matched entry
-        // pose and let the blender absorb the discontinuity.
+        let next_clip = self.db.poses[next_idx].clip_id;
         let clip_changed = next_clip != self.current_clip;
-        let next_idx = if clip_changed {
-            matched_idx
-        } else if let Some(range) = self.range_for(next_clip) {
-            // Advance one pose within the clip, wrapping at the end. If the
-            // hysteresis cursor somehow left the clip, re-enter at the match.
-            if range.contains(self.current_idx) && range.len() > 0 {
-                let local = self.current_idx - range.start;
-                range.start + (local + 1) % range.len()
-            } else {
-                matched_idx
-            }
-        } else {
-            matched_idx
-        };
 
         // Begin an inertial transition only when the matched CLIP changes — a
         // within-clip advance is already continuous, but a clip switch is a
@@ -395,6 +458,7 @@ impl AvatarMotion {
             self.blender.begin_transition(&target);
         }
         let blended = self.blender.update(&target, dt);
+        debug_assert_eq!(blended.len(), NUM_JOINTS);
 
         // Blended root speed: horizontal speed of the matched pose's root joint
         // velocity (the locomotion speed the pose represents).
@@ -405,9 +469,6 @@ impl AvatarMotion {
             .unwrap_or(Vec3::ZERO);
         let root_speed = Vec3::new(root_vel.x, 0.0, root_vel.z).length();
 
-        // Sanity: blended pose has the rig's joint count (blender is wired).
-        debug_assert_eq!(blended.len(), NUM_JOINTS);
-
         self.current_idx = next_idx;
         self.current_clip = next_clip;
 
@@ -416,6 +477,7 @@ impl AvatarMotion {
             pose_index: next_idx,
             root_speed,
             clip_changed,
+            blended_joints: blended,
         }
     }
 }
@@ -528,6 +590,101 @@ mod tests {
         assert!(
             distinct > 3,
             "matched index stream is degenerate ({distinct} distinct indices)"
+        );
+    }
+
+    /// Finding [3]: the query now carries real foot/trajectory semantics, so the
+    /// matcher discriminates poses WITHIN a clip by gait phase. A steady walk
+    /// query sampled at gait phase 0.25 must match a DIFFERENT walk pose than the
+    /// same query at phase 0.75 — proving channels 2–7 (feet/trajectory) genuinely
+    /// distinguish within-clip phases (they were dead before the fix).
+    #[test]
+    fn walk_query_phase_discriminates_within_clip() {
+        // Drive a steady walk and collect, per gait phase, which pose the matcher
+        // picks. We advance the gait cursor by ticking and read the matched index
+        // at the cursor times nearest phase 0.25 and 0.75 of the clip.
+        let dt = 1.0 / 60.0;
+        let phase_a_t = 0.25 * CLIP_DURATION; // 0.5 s
+        let phase_b_t = 0.75 * CLIP_DURATION; // 1.5 s
+
+        let pose_at = |target_t: f32| -> usize {
+            let mut avatar = AvatarMotion::new();
+            // Prime to WALK first (so we are within the walk clip), then advance
+            // the gait cursor to the target clip-time.
+            let mut last = 0usize;
+            // gait_time starts at 0 and advances dt each tick; tick until it just
+            // passes target_t. Each tick feeds a steady walk velocity.
+            let steps = (target_t / dt).round() as usize;
+            for _ in 0..steps {
+                last = avatar
+                    .tick(forward_world_velocity(WALK_SPEED), 0.0, dt)
+                    .pose_index;
+            }
+            last
+        };
+
+        let a = pose_at(phase_a_t);
+        let b = pose_at(phase_b_t);
+        // Both must be WALK-clip poses.
+        let walk_range_start = 21usize; // idle occupies 0..21
+        let walk_range_end = 42usize;
+        assert!(
+            (walk_range_start..walk_range_end).contains(&a),
+            "phase-0.25 match {a} is not a walk-clip pose"
+        );
+        assert!(
+            (walk_range_start..walk_range_end).contains(&b),
+            "phase-0.75 match {b} is not a walk-clip pose"
+        );
+        assert_ne!(
+            a, b,
+            "phase 0.25 and 0.75 matched the SAME walk pose ({a}) — feet/trajectory channels do not discriminate within the clip"
+        );
+    }
+
+    /// Finding [4]: the InertialBlender output is returned in `MatchedPose` and
+    /// actually interpolates across a clip transition. On idle->walk the blended
+    /// root-joint Z lands STRICTLY between the idle (z≈0) and walk target Z — it
+    /// neither stays at the source nor snaps to the target. Also proves the
+    /// blender is seeded to a real pose (no origin cold-start snap).
+    #[test]
+    fn blend_output_interpolates_across_transition() {
+        let dt = 1.0 / 60.0;
+        let mut avatar = AvatarMotion::new();
+        // Settle on idle for ~half a gait cycle so the gait cursor has advanced;
+        // the idle pose stays near the origin (root z≈0). Switching to walk then
+        // matches a MID-clip walk pose (root z well > 0), so the idle->walk
+        // transition carries a real positional discontinuity for the blender to
+        // absorb (the idle->walk ENTRY poses are near-identical, so a 1-frame
+        // transition would have nothing to interpolate).
+        let mut idle = avatar.tick(Vec3::ZERO, 0.0, dt);
+        for _ in 0..30 {
+            idle = avatar.tick(Vec3::ZERO, 0.0, dt);
+        }
+        assert_eq!(idle.blended_joints.len(), NUM_JOINTS, "blend output is surfaced");
+        let source_z = idle.blended_joints[0].z;
+
+        let walk = avatar.tick(forward_world_velocity(WALK_SPEED), 0.0, dt);
+        assert!(walk.clip_changed, "idle->walk must begin a transition");
+        // The blend starts AT the source on the transition frame (offset = full
+        // discontinuity) and decays toward the target over the half-life. Sample a
+        // few frames into the transition: the blended root Z must now lie STRICTLY
+        // between the source (idle, z≈0) and the live walk target — proving the
+        // blender is interpolating, not snapping to either endpoint.
+        let mut walk = walk;
+        for _ in 0..4 {
+            walk = avatar.tick(forward_world_velocity(WALK_SPEED), 0.0, dt);
+        }
+        let target_z = avatar.pose_root_position(walk.pose_index).z;
+        let blended_z = walk.blended_joints[0].z;
+        let (lo, hi) = (source_z.min(target_z), source_z.max(target_z));
+        assert!(
+            (hi - lo) > 1e-3,
+            "source ({source_z}) and target ({target_z}) root Z must differ for a meaningful test"
+        );
+        assert!(
+            blended_z > lo + 1e-4 && blended_z < hi - 1e-4,
+            "blended root Z {blended_z} must lie strictly between source {source_z} and target {target_z}"
         );
     }
 

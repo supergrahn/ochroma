@@ -437,7 +437,7 @@ impl EditorShell {
         // parser. A validated SetParam value still flows through `apply_param`'s
         // clamp below — the seam never bypasses that safety net.
         let resolution =
-            intent::resolve_intent(&self.intent_backend, text, &self.intent_schema, &self.registry);
+            intent::resolve_intent(&mut self.intent_backend, text, &self.intent_schema, &self.registry);
         let provenance = resolution.provenance;
         // `action` is always `Some` for every backend (Unknown is itself an
         // action); the Option exists for forward-compat with a "no-op" resolution.
@@ -506,6 +506,14 @@ impl EditorShell {
     /// held-down edit loop can never grow it unbounded (survivors are the most
     /// recent entries — the ones a user would actually undo).
     fn push_undo(&mut self, entry: UndoEntry) {
+        // Finding [8]: clear the inspector-drag coalescing anchor at the SINGLE
+        // chokepoint where any entry lands on the stack — mirroring undo()'s reset.
+        // This guarantees a non-inspector push (e.g. an AI intent's
+        // `apply_param_intent`) that interleaves between drag frames can never be
+        // coalesced INTO: the next inspector frame starts a fresh entry instead of
+        // overwriting the foreign entry's `next`. `record_inspector_edit` re-sets
+        // the anchor AFTER it pushes its OWN entry, so a pure drag still coalesces.
+        self.last_inspector_edit = None;
         self.undo_stack.push(entry);
         let overflow = self.undo_stack.len().saturating_sub(HISTORY_CAP);
         if overflow > 0 {
@@ -2120,9 +2128,12 @@ mod tests {
     fn llm_hostile_setparam_still_clamps_via_run_intent() {
         let mut shell = EditorShell::default();
         // Inject a canned "LLM" that emits a hostile value for a REAL key.
-        shell.intent_backend = intent::IntentBackend::LlmCanned(std::sync::Arc::new(|_p| {
-            Ok(r#"{"SetParam":{"node_kind":"terrain","key":"resolution","value":1e30}}"#.to_string())
-        }));
+        shell.intent_backend = intent::IntentBackend::LlmCanned {
+            f: std::sync::Arc::new(|_p| {
+                Ok(r#"{"SetParam":{"node_kind":"terrain","key":"resolution","value":1e30}}"#.to_string())
+            }),
+            unavailable: false,
+        };
         let receipt = shell.run_intent("crank the terrain detail to infinity");
         let after = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
         assert_eq!(after, 256.0, "hostile LLM value must clamp to schema max 256, got {after}");
@@ -2334,6 +2345,53 @@ mod tests {
             2,
             "a separate edit after a frame gap must be a 2nd undo entry"
         );
+    }
+
+    /// Finding [8]: an AI intent that edits the SAME (node, key) as an in-progress
+    /// inspector drag must NOT be coalesced into. Drag frame, then an AI intent on
+    /// the same param, then another drag frame on the same param — all within the
+    /// 1-frame coalescing window — must yield THREE distinct undo entries (drag,
+    /// intent, drag), with the intent entry's prev/next INTACT.
+    #[test]
+    fn ai_intent_between_drag_frames_is_not_coalesced_into() {
+        let mut shell = EditorShell::default();
+        let terrain = shell.bridge.node_ids[0];
+        let original = shell.bridge.param_value_of_node(terrain, "resolution").unwrap();
+        assert_eq!(original, 64.0);
+
+        // Drag frame 1: inspector scrub resolution 64 -> 100.
+        shell.frame = shell.frame.wrapping_add(1);
+        shell.bridge.apply_param(terrain, "resolution", 100.0);
+        shell.record_inspector_edit(terrain, "resolution", "terrain.resolution".into(), original);
+        assert_eq!(shell.undo_stack.len(), 1, "drag frame 1 records one entry");
+
+        // AI intent on the SAME (node, key), same frame window: resolution -> 200.
+        let receipt = shell.run_intent("set terrain resolution to 200");
+        assert!(receipt.starts_with("Set terrain.resolution 100 -> 200"), "intent receipt: {receipt}");
+        assert_eq!(shell.undo_stack.len(), 2, "the AI intent must push its OWN entry, not coalesce");
+
+        // Drag frame 2 on the SAME (node, key), still within the window: 200 -> 150.
+        shell.frame = shell.frame.wrapping_add(1);
+        let before_drag2 = shell.bridge.param_value_of_node(terrain, "resolution").unwrap();
+        assert_eq!(before_drag2, 200.0);
+        shell.bridge.apply_param(terrain, "resolution", 150.0);
+        shell.record_inspector_edit(terrain, "resolution", "terrain.resolution".into(), before_drag2);
+
+        // THREE entries: drag1, intent, drag2 — the intent's entry was NOT overwritten.
+        assert_eq!(
+            shell.undo_stack.len(),
+            3,
+            "drag/intent/drag on the same param must be 3 entries, got {}",
+            shell.undo_stack.len()
+        );
+        // The intent entry (middle of the stack) is intact: prev=100, next=200.
+        let UndoEntry::ParamSet { prev: i_prev, next: i_next, .. } = &shell.undo_stack[1];
+        assert_eq!(*i_prev, 100.0, "intent entry prev must survive (100)");
+        assert_eq!(*i_next, 200.0, "intent entry next must survive (200) — not overwritten by drag2");
+        // The drag2 entry is its own fresh entry: prev=200, next=150.
+        let UndoEntry::ParamSet { prev: d2_prev, next: d2_next, .. } = &shell.undo_stack[2];
+        assert_eq!(*d2_prev, 200.0);
+        assert_eq!(*d2_next, 150.0);
     }
 
     /// Finding 2: the undo stack and assistant log are bounded — pushing far more than
