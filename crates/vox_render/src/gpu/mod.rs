@@ -20,3 +20,4 @@ pub mod oit_pass;
 pub mod bloom_pass;
 pub mod dof_pass;
 pub mod morph_compute;
+pub mod splat_rt_gpu;
