@@ -34,6 +34,7 @@ Maintained as features land. Last updated: 2026-06-07.
 | DLSS-style upscaling | library | Quality/Balanced/Perf/UltraPerf internal-resolution modes + frame generation scaffolding |
 | Splat-VFX graph | live | Niagara-shaped typed node DAG where particles ARE spectral splats (blackbody fire, deterministic for rollback); unifies the 5 legacy particle modules |
 | Particles (CPU/GPU/splat) | library | Emitters with spectral emission; Gaussian splats as particles; particle death drives audio synthesis |
+| Hybrid mesh+splat compositing | live | One-pass depth-correct compositing of triangle meshes with splats: perspective-correct 1/z depth interpolation, Sutherland-Hodgman near+far clipping |
 | Cascaded shadow maps | live | Multi-cascade directional shadows + shadow atlas, SDF soft shadows, shadow catcher |
 | Cinematic camera | library | Keyframed camera, depth-of-field with bokeh shapes, movie render to disk |
 | Multi-viewport | library | Perspective/Top/Front/Right simultaneous editor views |
@@ -90,6 +91,12 @@ Maintained as features land. Last updated: 2026-06-07.
 | Editor SOTA shell (Phase 1) | live | Tokenized theme (JSON-swappable), Phosphor icons, egui_dock drag-docking, plain-language chrome, headless `shell_snapshot` proof — bitmap font deleted from the editor |
 | Real typography | live | parley shaping + swash rasterization (anti-aliased vector text, headless-capable); 5×7 bitmap font retired from HUD + editor |
 | Vello GPU UI path | live | SpectralHUD renders through a real `vello::Renderer` (headless-provable pixel readback) in the default binary; opt-in `game-ui` feature; CPU fallback always present |
+| Command palette + CommandRegistry | live | Single command surface: menus, fuzzy palette (Ctrl+P), shortcuts and AI intents all dispatch the same registry — duplicate ids replace, never shadow |
+| NodeCanvas 2.0 | live | Bezier gradient wires (port-type colored endpoints, 32-segment AA), dot-grid zoom/pan/snap, minimap, category headers — shared `vox_ui` canvas for every graph tab |
+| Live engine viewport in dock | live | Real `SoftwareRasteriser` frames presented as the docked Viewport texture (not a mock) |
+| Graph bridge | live | Real `OchromaNodeGraph` → canvas projection: param edits re-cook through `live_cook`, cook errors surfaced in-panel |
+| Ask Ochroma (AI intents) v1 | live | Deterministic intent parser → `IntentAction` enum (the LLM seam); every AI action produces a receipt and is undoable |
+| Ecosystem plugins (Crucible · Forge · FloraPrime) | live | UE-style host-plugin model: `PluginCtx` exposes only tokens/widgets/canvas (structurally enforced); three visual-editor plugins live in the dock |
 | Behavior-tree editor, sequencer, anim editor, material editor | library | Authoring UIs present; not yet driving shipped binaries |
 
 ## Simulation & Gameplay
@@ -132,6 +139,8 @@ Maintained as features land. Last updated: 2026-06-07.
 | Feature | Status | Description |
 |---|---|---|
 | Rollback netcode | live | Predict/rollback/resimulate with 8-frame history — proven over a real QUIC (TLS 1.3) loopback session with convergence assertions |
+| Two-process session harness | live | `net_session` host/client/selftest binary: real cross-process QUIC probes (self-spawn via `current_exe`, self-reported LISTENING, bounded host-kill death detection) |
+| Transport tuning policy split | live | `TransportTuning::game()` (30 s idle / 5 s keep-alive) vs `test_harness()` (5 s / 1 s) — harness latency requirements no longer dictate engine-wide transport policy |
 | Entity replication | library | Delta compression, snapshots, replication loop/packets |
 | Lobby / world hosting / CRDT | experimental | Session scaffolding, conflict-free types |
 
