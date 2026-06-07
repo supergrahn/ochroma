@@ -7,15 +7,51 @@ file:symbol (cited). This addendum re-scopes the roadmap accordingly.
 
 ---
 
-## Correction up front: "rheos" is a dashboard, not a trainer
+## rheos — the AI-native reasoning BRAIN (the ecosystem's taproot)
 
-`~/src/rheos` **does not exist on this box**. "Rheos" is **Rheos Observatory** — a
-training-run *dashboard / observability* layer on the production box
-(`lumengen/scripts/lumengen_to_rheos.py:1-16`, contract `rheos_dashboard_run_v1`).
-The actual **model trainer** in the ecosystem is **lumengen** (+ `floraprime_gen`).
-So the trainer questions resolve onto lumengen, below. rheos itself could later
-surface Ochroma's own perf/soak metrics (#18) on a shared dashboard — trivial,
-optional.
+`~/src/rheos` is not on this workstation — the real project lives on the production
+box at **`tomespensin:/home/tomespen/git/rheos`** (scouted read-only over ssh,
+2026-06-07). The local "dashboard" was only its observability shadow; rheos itself
+is far more.
+
+**What it is:** a **modular-composition reasoning system** — "grow capability by
+composing many small reasoners (experts) instead of scaling one monolith"
+(`IDEA.md`). A learned ROUTER/orchestrator reasons about a task and dispatches to
+domain expert submodels — file-finder, code-repair, math, sequence, reasoning —
+then composes/validates their results (`ARCHITECTURE.md`). 1207 Mojo + 581 Python
+files; a **Brain V4 cognition trainer** (oracle-surprise curriculum, concept-SFT,
+hierarchical prediction); IID/OOD/structural-OOD/adversarial/composition-OOD eval
+splits. It runs the **same gate-culture as Ochroma** — a promotion ladder
+(`smoke20 → short gate → bounded 1337 → promote only if the rung survives`,
+`INTELLIGENCE-ROADMAP.md`). **It serves inference**: `apps/agent/api_server_v1.py`
++ `inference_service_v1.py` + `parallel_inference_v1.py`, and a real
+`swebench_agent_v1.py` (autonomous code repair).
+
+**rheos is the architectural taproot:** lumengen *borrowed rheos's HPT / verifier /
+substrate machinery* and stress-tested it in 3D (`rheos/NOTES_lumengen_cross_
+pollination.md`). The two already cross-pollinate.
+
+**Why it matters for Ochroma — it IS the real AI-native backend (#13) and the
+"AI creates code" engine, and it's better than "plug in an LLM":** Ochroma's Ask
+Ochroma already has the seam — `IntentBackend::Llm` → `resolve_intent` →
+schema-validated `IntentAction` with deny-unknown-fields + clamp + deterministic
+parser fallback (an unvalidated backend output can NEVER touch the graph). rheos
+serves inference over an HTTP API. So **#13 "real LLM backend" = point the
+LlmBackend at rheos's `api_server_v1`** — but instead of a monolithic LLM, the
+backend is a *reasoning orchestrator composing domain experts* (a placement expert,
+a script-gen/repair expert, a scene-design expert). The safety story is already
+paid for by the seam we built. **Seam (M):** an HTTP `IntentBackend` variant +
+rheos exposing an intent-resolution expert. rheos's code-repair expert is also the
+natural upgrade for "AI creates code" (the rhai/script generation backed by a real
+repair model, not just templates).
+
+> Together the three siblings are the complete **AI-native creation stack**:
+> **rheos = the brain** (reasoning/orchestration), **lumengen = the content**
+> (photo/text→3D), **aetherspectra = the story** (scene brief + narrative sim).
+> Ochroma is the spectral-splat **engine + editor** that renders it, relights it,
+> and makes it playable + provable. A domain person describes a world → aetherspectra
+> structures it → rheos orchestrates the build → lumengen generates the assets →
+> Ochroma renders it spectrally in a windowed editor. Every piece exists in-house.
 
 ---
 
@@ -102,7 +138,7 @@ existing `train.py` → bridge replaces the stub. **S (train) + M (bridge)**, no
 | **aetherspectra Director** | gameplay breadth + #6/#13 (story→scene plan); Gemini = the #13 LLM backend | in-Rust schema map `CreativeBrief→Vec<IntentAction>` | **L → M** |
 | **aetherspectra mantle** | gameplay breadth (quest/event/world-state) + wedge synergy | service/offline event-timeline replay | **L** |
 | **floraprime_gen** | unblocks floraprime-native | trainer-offline (data + 1 run) + bridge | **XL → S+M** |
-| **rheos (Observatory)** | optional #18 metrics surfacing | log-emitter | trivial |
+| **rheos** (reasoning brain, remote on tomespensin) | **#13 real AI backend** for Ask Ochroma (orchestrator composing experts, not a monolithic LLM) + **AI-creates-code** (code-repair expert) + optional #18 metrics | **HTTP IntentBackend** → rheos `api_server_v1`, behind the existing schema-validated/undoable seam | **M** |
 
 ---
 
