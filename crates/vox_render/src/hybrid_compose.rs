@@ -239,6 +239,43 @@ fn clip_triangle_near(tri: [[f32; 3]; 3], near: f32) -> Vec<[f32; 3]> {
     out
 }
 
+/// Sutherland–Hodgman clip of a camera-space polygon against the far plane
+/// (`cam_z <= far`). Symmetric to [`clip_triangle_near`] but operates on an
+/// already-near-clipped polygon (3 or 4 verts) and keeps the *near* side. A vertex
+/// beyond `far` is interpolated to the exact `cam_z == far` crossing rather than
+/// dropping the whole sub-polygon — so a triangle whose visible portion is partly
+/// within far but has a corner past `far` keeps its in-range area instead of
+/// vanishing. (Previously any past-far vertex discarded the entire polygon; with
+/// far = 1e6 that was effectively unreachable, but the all-or-nothing drop was an
+/// honesty gap. This clips it properly.)
+fn clip_polygon_far(poly: &[[f32; 3]], far: f32) -> Vec<[f32; 3]> {
+    let inside = |v: &[f32; 3]| v[2] <= far;
+    let intersect = |a: &[f32; 3], b: &[f32; 3]| -> [f32; 3] {
+        // Parametric crossing of the far plane along a->b in cam_z. Only called on a
+        // straddling edge (one vertex <= far, one > far), so the denominator is
+        // strictly nonzero.
+        let t = (far - a[2]) / (b[2] - a[2]);
+        [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), far]
+    };
+    let n = poly.len();
+    let mut out: Vec<[f32; 3]> = Vec::with_capacity(n + 1);
+    for i in 0..n {
+        let cur = poly[i];
+        let prev = poly[(i + n - 1) % n];
+        let cur_in = inside(&cur);
+        let prev_in = inside(&prev);
+        if cur_in {
+            if !prev_in {
+                out.push(intersect(&prev, &cur));
+            }
+            out.push(cur);
+        } else if prev_in {
+            out.push(intersect(&prev, &cur));
+        }
+    }
+    out
+}
+
 /// Edge function (signed area ×2) for the triangle (a, b) and point p in 2D.
 #[inline]
 fn edge(a: (f32, f32), b: (f32, f32), px: f32, py: f32) -> f32 {
@@ -321,14 +358,26 @@ fn rasterise_meshes(
                 stats.skipped_degenerate += 1;
                 continue;
             };
-            let clipped = clip_triangle_near([ca, cb, cc], gcam.near);
-            if clipped.len() < 3 {
+            let near_clipped = clip_triangle_near([ca, cb, cc], gcam.near);
+            if near_clipped.len() < 3 {
                 // Entirely behind the near plane.
                 stats.skipped_degenerate += 1;
                 continue;
             }
+            // Second Sutherland–Hodgman pass: clip the in-front polygon against the
+            // far plane so a corner past `far` trims that region instead of dropping
+            // the whole polygon.
+            let clipped = clip_polygon_far(&near_clipped, gcam.far);
+            if clipped.len() < 3 {
+                // Entirely beyond the far plane.
+                stats.skipped_degenerate += 1;
+                continue;
+            }
 
-            // Project the clipped polygon's vertices; fan it into triangles.
+            // Project the clipped polygon's vertices; fan it into triangles. After
+            // both clip passes every vertex satisfies near <= cam_z <= far, so
+            // project_cam never rejects — the fallback below is defensive only (e.g.
+            // a non-finite coordinate from a degenerate intersect).
             let mut proj: Vec<(f32, f32, f32)> = Vec::with_capacity(clipped.len());
             let mut all_projected = true;
             for cv in &clipped {
@@ -341,8 +390,7 @@ fn rasterise_meshes(
                 }
             }
             if !all_projected {
-                // A clipped vertex fell beyond the far plane (or otherwise
-                // unprojectable); drop this triangle conservatively.
+                // A clipped vertex was unprojectable (non-finite); drop conservatively.
                 stats.skipped_degenerate += 1;
                 continue;
             }
@@ -1254,4 +1302,49 @@ mod tests {
         );
     }
 
+    /// Regression for the far-plane all-or-nothing drop. A polygon with one vertex
+    /// past `far` and two within must be CLIPPED to the in-range region (producing a
+    /// new boundary vertex at exactly cam_z == far), not discarded whole.
+    #[test]
+    fn clip_polygon_far_trims_past_far_vertex_instead_of_dropping() {
+        let far = 100.0f32;
+        // Triangle: two verts at cam_z=50 (inside), one at cam_z=150 (past far).
+        let poly = [
+            [-10.0, 0.0, 50.0],
+            [10.0, 0.0, 50.0],
+            [0.0, 0.0, 150.0],
+        ];
+        let out = clip_polygon_far(&poly, far);
+
+        // Old behaviour would discard the whole polygon downstream; the clip must
+        // instead yield a quad (4 verts): the 2 inside verts + 2 boundary crossings.
+        assert_eq!(out.len(), 4, "far clip must produce a 4-vertex quad, got {out:?}");
+
+        // Every output vertex must satisfy cam_z <= far (with the crossings sitting
+        // EXACTLY on the plane at cam_z == 100).
+        let mut on_plane = 0;
+        for v in &out {
+            assert!(v[2] <= far + 1e-3, "vertex past far survived: {v:?}");
+            if (v[2] - far).abs() < 1e-3 {
+                on_plane += 1;
+            }
+        }
+        assert_eq!(on_plane, 2, "exactly two new vertices must lie on the far plane");
+
+        // The crossing from [10,0,50]->[0,0,150] hits far at t=(100-50)/(150-50)=0.5,
+        // i.e. x = 10 + 0.5*(0-10) = 5.0, and the other at x = -5.0.
+        let xs: Vec<f32> = out
+            .iter()
+            .filter(|v| (v[2] - far).abs() < 1e-3)
+            .map(|v| v[0])
+            .collect();
+        assert!(
+            xs.iter().any(|&x| (x - 5.0).abs() < 1e-3),
+            "expected a crossing at x=5.0, got {xs:?}"
+        );
+        assert!(
+            xs.iter().any(|&x| (x + 5.0).abs() < 1e-3),
+            "expected a crossing at x=-5.0, got {xs:?}"
+        );
+    }
 }

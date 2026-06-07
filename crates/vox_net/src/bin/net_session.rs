@@ -40,7 +40,9 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use vox_net::quic_transport::{QuicClient, QuicConnection, QuicServer, TransportError};
+use vox_net::quic_transport::{
+    QuicClient, QuicConnection, QuicServer, TransportError, TransportTuning,
+};
 use vox_net::replication_packet::PlayerStatePacket;
 use vox_net::rollback::{InputFrame, Predictor, WorldSim, GameState};
 
@@ -54,6 +56,10 @@ const RECV_DELAY_TICKS: u64 = 3;
 /// Connection-retry window for the client (covers "client started before host").
 const CONNECT_RETRY_TOTAL: Duration = Duration::from_secs(10);
 const CONNECT_RETRY_STEP: Duration = Duration::from_millis(100);
+/// Per-attempt connect timeout. Bounds a single `connect().await` so a handshake
+/// against a not-yet-bound port fails fast and the retry loop genuinely cycles
+/// (rather than one in-flight handshake completing once the host binds mid-attempt).
+const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(250);
 /// Hard wall-clock kill for selftest children — no leaked test binaries, ever.
 const CHILD_HARD_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -88,7 +94,16 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         "selftest" => {
             let opts = Opts::parse(args)?;
-            run_selftest(opts.port, &args[0])
+            // Resolve the spawn target from the actual on-disk path, NOT argv0.
+            // argv0 (args[0]) is caller-controlled and is not guaranteed to be a
+            // resolvable filesystem path: launched via PATH lookup or with a
+            // rewritten argv0 (`exec -a fakename <bin> selftest`), it is a bare name
+            // and Command::new does no shell-style PATH resolution — yielding ENOENT.
+            // current_exe() returns the real binary path regardless of how argv0 was
+            // set; we fall back to args[0] only if it errors.
+            let self_exe = std::env::current_exe()
+                .unwrap_or_else(|_| std::path::PathBuf::from(&args[0]));
+            run_selftest(opts.port, &self_exe)
         }
         other => Err(format!(
             "unknown mode '{other}'. usage: net_session <host|client|selftest> [--port N] [--connect ADDR] [--ticks T] [--seed S]"
@@ -196,9 +211,32 @@ fn run_host(port: u16, ticks: u32, seed: u64) -> Result<EndpointReport, Transpor
         .map_err(|e| TransportError::Endpoint(e.to_string()))?;
     rt.block_on(async move {
         let bind = format!("127.0.0.1:{port}");
-        let server = QuicServer::listen(&bind).await?;
-        eprintln!("[net_session] host listening on {}", server.local_addr()?);
-        let conn = server.accept().await?;
+        // Use the SHORT test-harness idle timeout: this binary is the net_session
+        // selftest harness, not a real game transport, so its host-killed probe wants
+        // fast dead-peer detection. The engine default (30s) is untouched.
+        let server = QuicServer::listen_with(&bind, TransportTuning::test_harness()).await?;
+        let local = server.local_addr()?;
+        // Print the OS-chosen bound port on STDOUT, early and parseable, BEFORE
+        // accept() blocks. The parent (selftest) reads this instead of pre-picking a
+        // port — eliminating the bind/connect TOCTOU window entirely. Flush so the
+        // parent's line-reader sees it without waiting for process exit.
+        println!("[net_session] LISTENING addr={local}");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        eprintln!("[net_session] host listening on {local}");
+        // Accept, tolerating aborted handshakes: the client-first retry probe makes
+        // several connection attempts that are deliberately abandoned (their endpoints
+        // drop mid-handshake), which the host sees as aborted incomings. Skip those
+        // and wait for the real, fully-established connection rather than erroring out.
+        let conn = loop {
+            match server.accept().await {
+                Ok(c) => break c,
+                Err(e) => {
+                    eprintln!("[net_session] host skipping aborted incoming: {e}");
+                    continue;
+                }
+            }
+        };
         eprintln!("[net_session] host accepted client {}", conn.remote_address());
 
         let mut sim = WorldSim::new();
@@ -313,10 +351,30 @@ fn run_client(connect: &str, ticks: u32, seed: u64) -> Result<EndpointReport, Tr
 
 async fn connect_with_retry(connect: &str) -> Result<QuicClient, TransportError> {
     let deadline = Instant::now() + CONNECT_RETRY_TOTAL;
+    // `attempts` counts EVERY connect attempt, incremented once per loop iteration
+    // (before the connect), so the reported value = failed attempts + 1 success. A
+    // first-try success reports 1; N>=2 means at least one attempt genuinely failed
+    // and was retried.
     let mut attempts = 0u32;
     loop {
         attempts += 1;
-        match QuicClient::connect(connect, "localhost").await {
+        // Bound each individual attempt so a connect against a not-yet-bound port
+        // FAILS FAST (instead of a single in-flight handshake silently succeeding
+        // once the host binds mid-handshake). This makes the retry path real: each
+        // dead-port attempt errors within CONNECT_ATTEMPT_TIMEOUT, then we sleep and
+        // retry, so the reported attempt count reflects actual retries.
+        let attempt = tokio::time::timeout(
+            CONNECT_ATTEMPT_TIMEOUT,
+            QuicClient::connect_with(connect, "localhost", TransportTuning::test_harness()),
+        )
+        .await;
+        let result = match attempt {
+            Ok(inner) => inner,
+            Err(_) => Err(TransportError::Connection(format!(
+                "attempt {attempts} timed out after {CONNECT_ATTEMPT_TIMEOUT:?}"
+            ))),
+        };
+        match result {
             Ok(c) => {
                 eprintln!("[net_session] client connected after {attempts} attempt(s)");
                 return Ok(c);
@@ -373,11 +431,17 @@ struct ChildOutput {
     stderr: String,
 }
 
-/// Spawn a child process and stream its stdout/stderr onto a reader thread so the
+/// Spawn a child process and stream its stdout/stderr onto reader threads so the
 /// pipes can never fill and deadlock the child. The `Child` handle stays in the
 /// parent so a timeout can hard-kill it (see [`ManagedChild::wait`]).
+///
+/// stdout and stderr are read on SEPARATE threads (so a long-running child whose
+/// stderr has not yet EOF'd does not block stdout draining), and stdout is scanned
+/// line-by-line for the early `[net_session] LISTENING addr=ADDR` marker — the bound
+/// address is sent on a one-shot channel as soon as it appears, letting the parent
+/// learn the OS-chosen port WITHOUT pre-picking it (closing the TOCTOU window).
 fn spawn_managed(
-    self_exe: &str,
+    self_exe: &std::path::Path,
     args: &[&str],
 ) -> Result<ManagedChild, String> {
     let mut child = Command::new(self_exe)
@@ -385,41 +449,72 @@ fn spawn_managed(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("spawn {self_exe} {args:?}: {e}"))?;
+        .map_err(|e| format!("spawn {} {args:?}: {e}", self_exe.display()))?;
 
     let stdout_pipe = child.stdout.take().expect("piped stdout");
     let stderr_pipe = child.stderr.take().expect("piped stderr");
 
-    let (tx, rx) = mpsc::channel();
+    let (out_tx, out_rx) = mpsc::channel::<String>();
+    let (err_tx, err_rx) = mpsc::channel::<String>();
+    let (addr_tx, addr_rx) = mpsc::channel::<SocketAddr>();
+
     std::thread::spawn(move || {
-        use std::io::Read;
-        let mut out = String::new();
-        let mut err = String::new();
-        let mut so = stderr_pipe;
-        let mut sout = stdout_pipe;
-        let _ = so.read_to_string(&mut err);
-        let _ = sout.read_to_string(&mut out);
-        let _ = tx.send((out, err));
+        use std::io::{BufRead, BufReader};
+        let mut acc = String::new();
+        let mut addr_sent = false;
+        let reader = BufReader::new(stdout_pipe);
+        for line in reader.lines().map_while(Result::ok) {
+            if !addr_sent
+                && let Some(rest) = line.strip_prefix("[net_session] LISTENING addr=")
+                && let Ok(a) = rest.trim().parse::<SocketAddr>()
+            {
+                let _ = addr_tx.send(a);
+                addr_sent = true;
+            }
+            acc.push_str(&line);
+            acc.push('\n');
+        }
+        let _ = out_tx.send(acc);
     });
 
-    Ok(ManagedChild { child, rx })
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut err = String::new();
+        let mut so = stderr_pipe;
+        let _ = so.read_to_string(&mut err);
+        let _ = err_tx.send(err);
+    });
+
+    Ok(ManagedChild { child, out_rx, err_rx, addr_rx })
 }
 
 struct ManagedChild {
     child: std::process::Child,
-    rx: mpsc::Receiver<(String, String)>,
+    out_rx: mpsc::Receiver<String>,
+    err_rx: mpsc::Receiver<String>,
+    addr_rx: mpsc::Receiver<SocketAddr>,
 }
 
 impl ManagedChild {
     /// Wait up to `timeout` for the child to exit. On overrun, HARD-KILL it and
     /// return an error (never a zombie). Returns (exit_code, stdout, stderr).
+    /// Block until the child prints its `LISTENING addr=` line (or `timeout`
+    /// elapses). Returns the OS-chosen bound address. Used so the parent never has
+    /// to pre-pick a port — the host binds `:0` itself and reports the real port.
+    fn bound_addr(&self, timeout: Duration) -> Result<SocketAddr, String> {
+        self.addr_rx
+            .recv_timeout(timeout)
+            .map_err(|_| "host did not report a LISTENING addr in time".to_string())
+    }
+
     fn wait(mut self, timeout: Duration) -> Result<ChildOutput, String> {
         let deadline = Instant::now() + timeout;
         loop {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
-                    // Collect piped output (the reader thread fills the channel).
-                    let (out, err) = self.rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+                    // Collect piped output (the reader threads fill the channels).
+                    let out = self.out_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+                    let err = self.err_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
                     return Ok(ChildOutput { code: status.code(), stdout: out, stderr: err });
                 }
                 Ok(None) => {
@@ -442,29 +537,29 @@ impl ManagedChild {
     }
 }
 
-fn run_selftest(base_port: u16, self_exe: &str) -> Result<(), String> {
-    // Allocate a fresh port per probe to avoid clashes; base_port==0 lets us pick.
-    let port = if base_port == 0 { pick_free_port()? } else { base_port };
+fn run_selftest(base_port: u16, self_exe: &std::path::Path) -> Result<(), String> {
     let ticks = 32u32;
     let seed = 7u64;
 
-    println!("[selftest] self_exe={self_exe}");
+    println!("[selftest] self_exe={}", self_exe.display());
     println!("[selftest] === Probe 1: nominal two-process session (host+client) ===");
 
-    // Robustness probe: start the CLIENT FIRST so it must retry until the host is
-    // listening. This exercises the connect-retry window over the process boundary.
-    let connect_addr = format!("127.0.0.1:{port}");
+    // Host binds the port ITSELF and reports the actual bound port on stdout; the
+    // client connects to THAT port. `base_port` defaults to 0 (OS-chosen), so there
+    // is never a window where a port is known-but-unbound (no pre-pick) — the
+    // bind/connect TOCTOU is gone. A manual `--port N` is still honored here.
+    let probe1_port = base_port.to_string();
+    let host = spawn_managed(
+        self_exe,
+        &["host", "--port", &probe1_port, "--ticks", &ticks.to_string(), "--seed", &seed.to_string()],
+    )?;
+    let host_addr = host.bound_addr(Duration::from_secs(10))?;
+    let connect_addr = host_addr.to_string();
+    println!("[selftest] host bound (self-reported) addr={host_addr}");
+
     let client = spawn_managed(
         self_exe,
         &["client", "--connect", &connect_addr, "--ticks", &ticks.to_string(), "--seed", &seed.to_string()],
-    )?;
-    // Give the client a head start so it genuinely retries before the host binds.
-    // CONNECT_RETRY_STEP is 100ms, so an 800ms gap forces several real retries
-    // (the connect to a closed UDP port fails fast, then we sleep and retry).
-    std::thread::sleep(Duration::from_millis(800));
-    let host = spawn_managed(
-        self_exe,
-        &["host", "--port", &port.to_string(), "--ticks", &ticks.to_string(), "--seed", &seed.to_string()],
     )?;
 
     let host_out = host.wait(CHILD_HARD_TIMEOUT)?;
@@ -517,12 +612,8 @@ fn run_selftest(base_port: u16, self_exe: &str) -> Result<(), String> {
         "[selftest] PASS convergence: client reconciled to host, dist={conv:.9} m (< {EPS})"
     );
 
-    // Retry count is reported by the client on stderr ("connected after N attempt(s)").
-    let retries = extract_attempts(&client_out.stderr).unwrap_or(0);
-    println!("[selftest] PROBE client-first-connect: connected after {retries} attempt(s)");
-    if retries < 1 {
-        return Err("retry probe: client never reported an attempt count".into());
-    }
+    println!("[selftest] === Probe 1b: client-first connect FORCES real retries ===");
+    probe_client_retry(self_exe)?;
 
     println!("[selftest] === Probe 2: host killed mid-session (client errors, no hang) ===");
     probe_host_killed(self_exe)?;
@@ -536,19 +627,18 @@ fn run_selftest(base_port: u16, self_exe: &str) -> Result<(), String> {
 
 /// Probe 2: start host+client, kill the host mid-run, assert the client exits
 /// NON-zero within a bounded latency (it must error cleanly, not hang to timeout).
-fn probe_host_killed(self_exe: &str) -> Result<(), String> {
-    let port = pick_free_port()?;
+fn probe_host_killed(self_exe: &std::path::Path) -> Result<(), String> {
     // ~6000 ticks/sec over loopback (one QUIC bidi round-trip per tick), so 60_000
     // ticks runs ~10s — long enough that a kill ~1s in is genuinely mid-session.
     let ticks = 60_000u32;
-    let connect_addr = format!("127.0.0.1:{port}");
 
     let mut host = spawn_managed(
         self_exe,
-        &["host", "--port", &port.to_string(), "--ticks", &ticks.to_string(), "--seed", "3"],
+        &["host", "--port", "0", "--ticks", &ticks.to_string(), "--seed", "3"],
     )?;
-    // Let the host bind first, then start the client.
-    std::thread::sleep(Duration::from_millis(200));
+    // Host self-reports its bound port (no pre-pick TOCTOU); then start the client.
+    let host_addr = host.bound_addr(Duration::from_secs(10))?;
+    let connect_addr = host_addr.to_string();
     let client = spawn_managed(
         self_exe,
         &["client", "--connect", &connect_addr, "--ticks", &ticks.to_string(), "--seed", "3"],
@@ -572,8 +662,59 @@ fn probe_host_killed(self_exe: &str) -> Result<(), String> {
         "[selftest] PROBE host-killed: client errored cleanly {latency_ms} ms after host kill (exit {:?})",
         client_out.code
     );
-    if latency_ms > 15_000 {
-        return Err(format!("client took too long to notice host death: {latency_ms} ms"));
+    // The host/client use TransportTuning::test_harness() (5s idle), so death is
+    // detected in ~5-6s. A latency near the engine default (30s) would mean the short
+    // config was NOT applied — assert the tight bound to catch that regression.
+    if latency_ms > 8_000 {
+        return Err(format!(
+            "client took too long to notice host death: {latency_ms} ms (expected ~5-6s with the short test-harness idle timeout)"
+        ));
+    }
+    Ok(())
+}
+
+/// Probe 1b: start the client against a port that is GUARANTEED dead for more than
+/// one retry window, so the connect-retry path is provably exercised across the
+/// process boundary. We pre-pick a free port, start the client pointing at it, wait
+/// past the client's first retry deadline (so its first connect MUST fail and it MUST
+/// sleep+retry), THEN start the host on that exact port. The probe asserts the client
+/// reports >= 2 attempts — i.e. at least one real failed attempt followed by success.
+fn probe_client_retry(self_exe: &std::path::Path) -> Result<(), String> {
+    // A deliberately-dead target. (Unlike the nominal probe, here a pre-pick is the
+    // POINT: we need a port nothing is listening on yet so the first connect fails.)
+    let port = pick_free_port()?;
+    let ticks = 16u32;
+    let seed = 7u64;
+    let connect_addr = format!("127.0.0.1:{port}");
+
+    let client = spawn_managed(
+        self_exe,
+        &["client", "--connect", &connect_addr, "--ticks", &ticks.to_string(), "--seed", &seed.to_string()],
+    )?;
+    // CONNECT_RETRY_STEP is 100ms; wait well past several windows so the client's
+    // first connect has provably failed and it has retried at least once before the
+    // host ever binds. 600ms => >= ~5 attempt windows elapsed.
+    std::thread::sleep(Duration::from_millis(600));
+    let host = spawn_managed(
+        self_exe,
+        &["host", "--port", &port.to_string(), "--ticks", &ticks.to_string(), "--seed", &seed.to_string()],
+    )?;
+
+    let host_out = host.wait(CHILD_HARD_TIMEOUT)?;
+    let client_out = client.wait(CHILD_HARD_TIMEOUT)?;
+    assert_zero("retry-host", &host_out)?;
+    assert_zero("retry-client", &client_out)?;
+
+    // The client reports total attempts on stderr ("connected after N attempt(s)"),
+    // where N counts every connect attempt INCLUDING the successful one — so N >= 2
+    // means at least one failed attempt was retried.
+    let attempts = extract_attempts(&client_out.stderr)
+        .ok_or("retry probe: client never reported an attempt count")?;
+    println!("[selftest] PROBE client-first-connect: connected after {attempts} attempt(s)");
+    if attempts < 2 {
+        return Err(format!(
+            "retry probe did not force a real retry: client connected after only {attempts} attempt(s) (expected >= 2 — the first connect should have failed against the dead port)"
+        ));
     }
     Ok(())
 }
@@ -581,17 +722,25 @@ fn probe_host_killed(self_exe: &str) -> Result<(), String> {
 /// Probe 3: run one full session, let both exit, then run a SECOND full session on
 /// the SAME port — proves the listening port rebinds cleanly after the first host
 /// released it (no lingering bind / address-in-use).
-fn probe_sequential_rebind(self_exe: &str) -> Result<(), String> {
-    let port = pick_free_port()?;
+fn probe_sequential_rebind(self_exe: &std::path::Path) -> Result<(), String> {
     let ticks = 16u32;
-    let connect_addr = format!("127.0.0.1:{port}");
 
-    let run_once = |label: &str| -> Result<u64, String> {
+    // First run lets the host pick the port (self-reported, no pre-pick); the SECOND
+    // run is then forced onto that exact port to prove the bind was released and
+    // rebinds cleanly. `port` is filled in from run 1's self-reported addr.
+    let mut port: Option<u16> = None;
+
+    let run_once = |label: &str, port: &mut Option<u16>| -> Result<u64, String> {
+        let bind_port = port.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string());
         let host = spawn_managed(
             self_exe,
-            &["host", "--port", &port.to_string(), "--ticks", &ticks.to_string(), "--seed", "5"],
+            &["host", "--port", &bind_port, "--ticks", &ticks.to_string(), "--seed", "5"],
         )?;
-        std::thread::sleep(Duration::from_millis(150));
+        let host_addr = host.bound_addr(Duration::from_secs(10))?;
+        if port.is_none() {
+            *port = Some(host_addr.port());
+        }
+        let connect_addr = host_addr.to_string();
         let client = spawn_managed(
             self_exe,
             &["client", "--connect", &connect_addr, "--ticks", &ticks.to_string(), "--seed", "5"],
@@ -608,10 +757,11 @@ fn probe_sequential_rebind(self_exe: &str) -> Result<(), String> {
         Ok(hf.checksum)
     };
 
-    let first = run_once("rebind-1")?;
+    let first = run_once("rebind-1", &mut port)?;
     // Second session reuses the exact same port — if the OS hadn't released the
     // bind, QuicServer::listen would fail with address-in-use.
-    let second = run_once("rebind-2")?;
+    let second = run_once("rebind-2", &mut port)?;
+    let port = port.expect("port set by rebind-1");
     if first != second {
         return Err(format!(
             "rebind produced different checksums (0x{first:016x} vs 0x{second:016x}) — non-determinism!"

@@ -93,35 +93,72 @@ fn ensure_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-/// Bounded idle timeout (ms) after which a connection with no traffic is dropped.
+/// Idle timeout + keep-alive tuning for a QUIC connection.
 ///
-/// In the original in-process loopback proof the host and client shared one tokio
-/// runtime, so a dropped endpoint was observed almost immediately. Across two real
-/// OS processes there is no such shared signal: if a peer is hard-killed (SIGKILL)
-/// it sends no CONNECTION_CLOSE, and the survivor would otherwise block until
-/// QUIC's multi-second default idle timeout. Setting an explicit short idle timeout
-/// (paired with a keep-alive so an *active* session never trips it) bounds
-/// dead-peer detection to a few seconds — required for the "host killed mid-session"
-/// robustness probe to error cleanly instead of hanging.
-const IDLE_TIMEOUT_MS: u32 = 5_000;
-/// Keep-alive interval (ms): well under the idle timeout, so a live but momentarily
-/// quiet connection is never mistaken for a dead one.
-const KEEP_ALIVE_MS: u64 = 1_000;
+/// The idle timeout bounds dead-peer detection: across two real OS processes there
+/// is no shared runtime signal, so if a peer is hard-killed (SIGKILL) it sends no
+/// CONNECTION_CLOSE and the survivor would otherwise block until QUIC's default
+/// idle timeout. The keep-alive (well under the idle timeout) ensures a live but
+/// momentarily quiet connection is never mistaken for a dead one.
+///
+/// This is **tunable** because a test harness's death-detection latency must NOT
+/// dictate engine-wide transport policy. The engine default ([`Self::game`]) uses a
+/// generous 30s idle so a momentarily-unpolled live session (a paused/backgrounded
+/// frame, a long blocking load, a stalled debugger breakpoint that prevents quinn
+/// from being polled) is not silently torn down. A test harness can opt into a short
+/// idle ([`Self::test_harness`]) via [`server_config_with`] / [`client_config_with`].
+#[derive(Debug, Clone, Copy)]
+pub struct TransportTuning {
+    /// Idle timeout in milliseconds (no-traffic connection drop bound).
+    pub idle_timeout_ms: u32,
+    /// Keep-alive interval in milliseconds (must be < `idle_timeout_ms`).
+    pub keep_alive_ms: u64,
+}
 
-/// Shared transport tuning applied to both server and client configs: a bounded
-/// idle timeout plus a keep-alive. Returns a ready-to-install `TransportConfig`.
-fn tuned_transport_config() -> Arc<quinn::TransportConfig> {
+impl TransportTuning {
+    /// Game-appropriate default: 30s idle + 5s keep-alive.
+    ///
+    /// Rationale: a real game session can legitimately go unpolled for several
+    /// seconds (alt-tab/background throttling, a long synchronous asset load, a
+    /// blocking frame, or a debugger paused on a breakpoint). A 5s idle (the old
+    /// engine-wide value, lifted from a localhost test probe) would tear those down.
+    /// 30s comfortably survives such stalls while still detecting a truly dead peer
+    /// in well under a minute; the 5s keep-alive keeps an active-but-quiet
+    /// connection alive with ample margin (6 keep-alives per idle window).
+    pub const fn game() -> Self {
+        Self { idle_timeout_ms: 30_000, keep_alive_ms: 5_000 }
+    }
+
+    /// Short idle (5s + 1s keep-alive) for the net_session selftest harness only.
+    ///
+    /// The host-killed probe needs the survivor to error within a ~5-6s bound; this
+    /// value exists solely to keep that probe fast and must never be installed on a
+    /// real game transport.
+    pub const fn test_harness() -> Self {
+        Self { idle_timeout_ms: 5_000, keep_alive_ms: 1_000 }
+    }
+}
+
+impl Default for TransportTuning {
+    fn default() -> Self {
+        Self::game()
+    }
+}
+
+/// Build a `TransportConfig` from explicit [`TransportTuning`].
+fn tuned_transport_config(tuning: TransportTuning) -> Arc<quinn::TransportConfig> {
     let mut tc = quinn::TransportConfig::default();
-    let idle = quinn::IdleTimeout::try_from(std::time::Duration::from_millis(IDLE_TIMEOUT_MS as u64))
-        .expect("idle timeout within QUIC varint range");
+    let idle =
+        quinn::IdleTimeout::try_from(std::time::Duration::from_millis(tuning.idle_timeout_ms as u64))
+            .expect("idle timeout within QUIC varint range");
     tc.max_idle_timeout(Some(idle));
-    tc.keep_alive_interval(Some(std::time::Duration::from_millis(KEEP_ALIVE_MS)));
+    tc.keep_alive_interval(Some(std::time::Duration::from_millis(tuning.keep_alive_ms)));
     Arc::new(tc)
 }
 
-/// Build the server-side `quinn::ServerConfig` from a freshly generated self-signed cert.
+/// Build the server-side `quinn::ServerConfig` with explicit transport tuning.
 /// Crucially advertises [`ALPN_PROTOCOL`] so the TLS handshake can negotiate with the client.
-fn server_config() -> Result<quinn::ServerConfig, TransportError> {
+pub fn server_config_with(tuning: TransportTuning) -> Result<quinn::ServerConfig, TransportError> {
     let cert = SelfSignedCert::generate("localhost")?;
 
     let server_cert = rustls::pki_types::CertificateDer::from(cert.cert_der.clone());
@@ -140,13 +177,18 @@ fn server_config() -> Result<quinn::ServerConfig, TransportError> {
         quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
             .map_err(|e| TransportError::CertGen(e.to_string()))?,
     ));
-    server_config.transport_config(tuned_transport_config());
+    server_config.transport_config(tuned_transport_config(tuning));
     Ok(server_config)
 }
 
-/// Build the client-side `quinn::ClientConfig`. Skips certificate verification
-/// (dev only) and advertises the same ALPN protocol as the server.
-fn client_config() -> Result<quinn::ClientConfig, TransportError> {
+/// Server config with the game-default transport tuning ([`TransportTuning::game`]).
+fn server_config() -> Result<quinn::ServerConfig, TransportError> {
+    server_config_with(TransportTuning::default())
+}
+
+/// Build the client-side `quinn::ClientConfig` with explicit transport tuning. Skips
+/// certificate verification (dev only) and advertises the same ALPN as the server.
+pub fn client_config_with(tuning: TransportTuning) -> Result<quinn::ClientConfig, TransportError> {
     let mut tls_config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
@@ -157,8 +199,13 @@ fn client_config() -> Result<quinn::ClientConfig, TransportError> {
         quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)
             .map_err(|e| TransportError::Connection(e.to_string()))?,
     ));
-    client_config.transport_config(tuned_transport_config());
+    client_config.transport_config(tuned_transport_config(tuning));
     Ok(client_config)
+}
+
+/// Client config with the game-default transport tuning ([`TransportTuning::game`]).
+fn client_config() -> Result<quinn::ClientConfig, TransportError> {
+    client_config_with(TransportTuning::default())
 }
 
 /// Legacy endpoint-only transport handle.
@@ -310,13 +357,20 @@ impl QuicServer {
     ///
     /// [`local_addr`]: QuicServer::local_addr
     pub async fn listen(addr: &str) -> Result<Self, TransportError> {
+        Self::listen_with(addr, TransportTuning::default()).await
+    }
+
+    /// Like [`listen`](Self::listen) but with explicit transport tuning. The
+    /// net_session selftest harness passes [`TransportTuning::test_harness`] here so
+    /// its host-killed probe detects death fast; real game code uses the default.
+    pub async fn listen_with(addr: &str, tuning: TransportTuning) -> Result<Self, TransportError> {
         ensure_crypto_provider();
 
         let addr: SocketAddr = addr
             .parse()
             .map_err(|e: std::net::AddrParseError| TransportError::Endpoint(e.to_string()))?;
 
-        let endpoint = quinn::Endpoint::server(server_config()?, addr)
+        let endpoint = quinn::Endpoint::server(server_config_with(tuning)?, addr)
             .map_err(|e| TransportError::Endpoint(e.to_string()))?;
 
         Ok(Self { endpoint })
@@ -362,6 +416,16 @@ impl QuicClient {
     /// awaits the returned `Connecting`, so on success the connection is immediately
     /// usable for [`QuicConnection::send_packet`].
     pub async fn connect(addr: &str, server_name: &str) -> Result<Self, TransportError> {
+        Self::connect_with(addr, server_name, TransportTuning::default()).await
+    }
+
+    /// Like [`connect`](Self::connect) but with explicit transport tuning. Used by
+    /// the net_session selftest harness to install the short-idle test config.
+    pub async fn connect_with(
+        addr: &str,
+        server_name: &str,
+        tuning: TransportTuning,
+    ) -> Result<Self, TransportError> {
         ensure_crypto_provider();
 
         let addr: SocketAddr = addr
@@ -370,7 +434,7 @@ impl QuicClient {
 
         let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())
             .map_err(|e| TransportError::Endpoint(e.to_string()))?;
-        endpoint.set_default_client_config(client_config()?);
+        endpoint.set_default_client_config(client_config_with(tuning)?);
 
         let connecting = endpoint
             .connect(addr, server_name)
@@ -447,6 +511,33 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_tuning_game_default_uses_generous_idle() {
+        // The engine-wide default must be the GAME value (30s idle + 5s keep-alive),
+        // NOT the 5s test-harness value — a momentarily-unpolled live session must
+        // survive a multi-second stall.
+        let game = TransportTuning::default();
+        assert_eq!(game.idle_timeout_ms, 30_000, "game idle must be 30s");
+        assert_eq!(game.keep_alive_ms, 5_000, "game keep-alive must be 5s");
+        assert_eq!(
+            TransportTuning::game().idle_timeout_ms,
+            30_000,
+            "TransportTuning::game must match the default"
+        );
+    }
+
+    #[test]
+    fn transport_tuning_test_harness_uses_short_idle() {
+        // The harness opt-in keeps the old fast death-detection bound.
+        let h = TransportTuning::test_harness();
+        assert_eq!(h.idle_timeout_ms, 5_000, "harness idle must be 5s");
+        assert_eq!(h.keep_alive_ms, 1_000, "harness keep-alive must be 1s");
+        assert!(
+            h.keep_alive_ms < h.idle_timeout_ms as u64,
+            "keep-alive must stay under idle timeout"
+        );
+    }
 
     #[test]
     fn self_signed_cert_generates_non_empty_der() {

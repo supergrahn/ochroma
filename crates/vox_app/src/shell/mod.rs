@@ -185,20 +185,60 @@ impl EditorShell {
     /// area beside Properties) and its commands join the registry/palette. This is
     /// the `EditorShell::install_plugin` wiring point the design names.
     pub fn install_plugin(&mut self, plugin: Box<dyn crate::shell::host::EditorPlugin>) {
-        let tabs = plugin.tabs();
+        let plugin_id = plugin.id().to_string();
+        let raw_tabs = plugin.tabs();
+
+        // 1. Reject duplicate TabDecl ids WITHIN this plugin (log + drop the dupes).
+        //    Two equal `TabKind::Plugin(id)` entries would shadow each other in
+        //    dispatch (the first match wins), so a plugin declaring the same tab id
+        //    twice is a plugin bug — surface it loudly and keep only the first.
+        let mut tabs: Vec<crate::shell::host::TabDecl> = Vec::with_capacity(raw_tabs.len());
+        for t in raw_tabs {
+            if tabs.iter().any(|kept| kept.id == t.id) {
+                eprintln!(
+                    "[shell] install_plugin('{plugin_id}'): duplicate TabDecl id '{}' within plugin — rejected (keeping the first)",
+                    t.id
+                );
+                continue;
+            }
+            tabs.push(t);
+        }
+
+        // 2. Duplicate PLUGIN id REPLACES the existing install in place — the same
+        //    same-id-replaces discipline the command registry (CommandRegistry::add),
+        //    subgraph registry, content-browser, and node-graph registries use. This
+        //    is the FIFTH appearance of this registry-collision pattern in the shell;
+        //    reinstalling under an existing plugin id swaps it rather than stacking a
+        //    shadowed duplicate. Remove the old plugin's dock tabs first.
+        if let Some(pos) = self.plugins.iter().position(|ip| ip.plugin.id() == plugin_id) {
+            let old = self.plugins.remove(pos);
+            for t in &old.tabs {
+                while let Some(loc) = self.dock.find_tab(&TabKind::Plugin(t.id.clone())) {
+                    self.dock.remove_tab(loc);
+                }
+            }
+        }
+
         for cmd in plugin.commands() {
             self.registry.add(cmd);
         }
         // Dock each plugin tab next to the Node Graph (center-bottom) so two
-        // graph editors visibly coexist.
-        if let Some((surface, node, _)) = self.dock.find_tab(&TabKind::Builtin(PanelId::NodeGraph)) {
-            for t in &tabs {
-                self.dock
-                    .set_focused_node_and_surface((surface, node));
-                self.dock.push_to_focused_leaf(TabKind::Plugin(t.id.clone()));
+        // graph editors visibly coexist. Skip any tab id that already exists in the
+        // dock from ANOTHER plugin (log it) so dispatch never becomes ambiguous.
+        for t in &tabs {
+            if self.dock.find_tab(&TabKind::Plugin(t.id.clone())).is_some() {
+                eprintln!(
+                    "[shell] install_plugin('{plugin_id}'): tab id '{}' already docked by another plugin — skipping",
+                    t.id
+                );
+                continue;
             }
-        } else {
-            for t in &tabs {
+            if let Some((surface, node, _)) =
+                self.dock.find_tab(&TabKind::Builtin(PanelId::NodeGraph))
+            {
+                self.dock.set_focused_node_and_surface((surface, node));
+                self.dock.push_to_focused_leaf(TabKind::Plugin(t.id.clone()));
+            } else {
                 self.dock
                     .main_surface_mut()
                     .push_to_first_leaf(TabKind::Plugin(t.id.clone()));
@@ -496,6 +536,16 @@ impl ShellViewer<'_> {
             });
             for (key, v) in edits {
                 self.bridge.apply_param(node_id, key, v);
+            }
+            // Surface a live-cook failure (e.g. a param the node rejected) in
+            // status.error red, so a rejected edit is visible rather than silently
+            // leaving stale outputs while the display reverts to the last good value.
+            if let Some(err) = self.bridge.last_cook_error.clone() {
+                let [r, g, b, a] = self.tokens.color("status.error");
+                ui.colored_label(
+                    egui::Color32::from_rgba_unmultiplied(r, g, b, a),
+                    format!("{}  cook failed: {err}", icon::WARNING),
+                );
             }
             return;
         }
@@ -1413,6 +1463,111 @@ mod tests {
         assert!(
             hits.iter().any(|c| c.id == "crucible.recook" && c.category == "Crucible"),
             "Crucible: Recook command must be in the palette under category 'Crucible'"
+        );
+    }
+
+    /// A minimal test plugin with a controllable id and tab id list, used to drive
+    /// the install_plugin dedup paths.
+    struct TestPlugin {
+        id: String,
+        tab_ids: Vec<String>,
+    }
+    impl crate::shell::host::EditorPlugin for TestPlugin {
+        fn id(&self) -> &str {
+            &self.id
+        }
+        fn tabs(&self) -> Vec<crate::shell::host::TabDecl> {
+            self.tab_ids
+                .iter()
+                .map(|t| crate::shell::host::TabDecl {
+                    id: t.clone(),
+                    title: t.clone(),
+                    icon: "",
+                })
+                .collect()
+        }
+        fn commands(&self) -> Vec<Command> {
+            Vec::new()
+        }
+        fn ui(&mut self, _tab_id: &str, _ui: &mut egui::Ui, _ctx: &mut crate::shell::host::PluginCtx) {}
+    }
+
+    fn count_plugin_tabs_in_dock(shell: &EditorShell, tab_id: &str) -> usize {
+        shell
+            .dock
+            .iter_all_tabs()
+            .filter(|(_, t)| matches!(t, TabKind::Plugin(id) if id == tab_id))
+            .count()
+    }
+
+    /// install_plugin: reinstalling a plugin under the SAME id REPLACES it in place
+    /// (no shadowed duplicate) — exactly ONE InstalledPlugin and exactly ONE dock tab
+    /// remain, mirroring CommandRegistry::add's same-id-replaces policy.
+    #[test]
+    fn install_plugin_duplicate_id_replaces_in_place() {
+        let mut shell = EditorShell::default();
+        let before = shell.plugins.len();
+
+        shell.install_plugin(Box::new(TestPlugin {
+            id: "test.dup".into(),
+            tab_ids: vec!["test.dup.tab".into()],
+        }));
+        assert_eq!(shell.plugins.len(), before + 1, "first install adds one plugin");
+        assert_eq!(
+            count_plugin_tabs_in_dock(&shell, "test.dup.tab"),
+            1,
+            "first install docks exactly one tab"
+        );
+
+        // Reinstall the SAME plugin id.
+        shell.install_plugin(Box::new(TestPlugin {
+            id: "test.dup".into(),
+            tab_ids: vec!["test.dup.tab".into()],
+        }));
+        assert_eq!(
+            shell.plugins.iter().filter(|ip| ip.plugin.id() == "test.dup").count(),
+            1,
+            "duplicate plugin id must REPLACE, not stack a second InstalledPlugin"
+        );
+        assert_eq!(
+            count_plugin_tabs_in_dock(&shell, "test.dup.tab"),
+            1,
+            "duplicate plugin id must leave exactly one dock tab (no shadowed duplicate)"
+        );
+    }
+
+    /// install_plugin: a plugin declaring the SAME TabDecl id twice has the duplicate
+    /// rejected — only one canvas/tab is registered for that id.
+    #[test]
+    fn install_plugin_rejects_duplicate_tab_ids_within_one_plugin() {
+        let mut shell = EditorShell::default();
+        shell.install_plugin(Box::new(TestPlugin {
+            id: "test.duptab".into(),
+            tab_ids: vec!["shared.tab".into(), "shared.tab".into(), "other.tab".into()],
+        }));
+
+        let installed = shell
+            .plugins
+            .iter()
+            .find(|ip| ip.plugin.id() == "test.duptab")
+            .expect("plugin installed");
+        // The duplicate "shared.tab" must have been dropped: 2 unique tabs kept.
+        assert_eq!(
+            installed.tabs.len(),
+            2,
+            "duplicate TabDecl id must be rejected, leaving 2 unique tabs, got {:?}",
+            installed.tabs.iter().map(|t| &t.id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            installed.tabs.iter().filter(|t| t.id == "shared.tab").count(),
+            1,
+            "exactly one 'shared.tab' must remain"
+        );
+        // And the dock holds exactly one tab for the deduped id.
+        assert_eq!(
+            count_plugin_tabs_in_dock(&shell, "shared.tab"),
+            1,
+            "dock must hold exactly one 'shared.tab' entry"
         );
     }
 

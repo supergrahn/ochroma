@@ -122,6 +122,10 @@ pub struct GraphBridge {
     pub selected: Option<NodeId>,
     /// World-space layout positions for each node (template order).
     positions: Vec<egui::Pos2>,
+    /// The error from the most recent failed live-cook (if any), surfaced in the
+    /// Properties tab so an edit that the graph rejected is visible rather than
+    /// silently leaving stale outputs. Cleared on the next successful cook.
+    pub last_cook_error: Option<String>,
 }
 
 impl GraphBridge {
@@ -172,6 +176,7 @@ impl GraphBridge {
             params,
             selected: None,
             positions,
+            last_cook_error: None,
         }
     }
 
@@ -304,8 +309,6 @@ impl GraphBridge {
     /// an immediate `live_cook` with a forced-elapsed clock so the cooked
     /// `wire_values()` refresh this frame. Returns the sink splat count after.
     pub fn apply_param(&mut self, id: NodeId, key: &str, value: f32) {
-        // Mirror the new value into our cached field so the Properties scrub
-        // field keeps showing the edited value.
         let integer = self
             .params
             .iter()
@@ -313,24 +316,61 @@ impl GraphBridge {
             .and_then(|(_, fields)| fields.iter().find(|f| f.key == key))
             .map(|f| f.integer)
             .unwrap_or(false);
+
+        // For an Int param, cache the ROUNDED value — the same value that actually
+        // cooks below (ParamValue::Int(value.round())). Caching the raw fractional
+        // scrub value would make the inspector show e.g. 96.4 while the node cooked
+        // at 96 (a cosmetic divergence between display and cooked state).
+        let cached_value = if integer { value.round() } else { value };
+
+        // Remember the pre-edit cached value so we can REVERT the display if the
+        // edit fails to cook (so the inspector never shows an edited-but-not-applied
+        // parameter).
+        let prev_value = self
+            .params
+            .iter()
+            .find(|(n, _)| *n == id)
+            .and_then(|(_, fields)| fields.iter().find(|f| f.key == key))
+            .map(|f| f.value);
+
+        // Mirror the (rounded) value into our cached field so the Properties scrub
+        // field shows what cooked.
         if let Some((_, fields)) = self.params.iter_mut().find(|(n, _)| *n == id)
             && let Some(field) = fields.iter_mut().find(|f| f.key == key)
         {
-            field.value = value;
+            field.value = cached_value;
         }
 
         let pv = if integer {
-            ParamValue::Int(value.round() as i64)
+            ParamValue::Int(cached_value as i64)
         } else {
             ParamValue::Float(value as f64)
         };
-        if self.graph.request_recook(id, key, pv).is_err() {
+
+        // Helper: on a cook failure, record the error string AND revert the cached
+        // display to the pre-edit value (the outputs stayed stale, so the inspector
+        // must not present the rejected value as if it were applied).
+        let revert = |this: &mut Self, err: String| {
+            if let Some(prev) = prev_value
+                && let Some((_, fields)) = this.params.iter_mut().find(|(n, _)| *n == id)
+                && let Some(field) = fields.iter_mut().find(|f| f.key == key)
+            {
+                field.value = prev;
+            }
+            this.last_cook_error = Some(err);
+        };
+
+        if let Err(e) = self.graph.request_recook(id, key, pv) {
+            revert(self, e.to_string());
             return;
         }
         // Force the throttle past its budget so the edit cooks now (the editor's
         // real loop would call this every frame with Instant::now()).
         let now = Instant::now() + self.graph.recook_budget() * 2;
-        let _ = self.graph.live_cook(now);
+        match self.graph.live_cook(now) {
+            Ok(_) => self.last_cook_error = None,
+            Err(e) => revert(self, e.to_string()),
+        }
     }
 
     /// The cooked sink (Splatize) splat count — proves a recook changed output.
@@ -436,6 +476,91 @@ mod tests {
             before, after,
             "raising vegetation branch levels must change the cooked sink splat count ({before} -> {after})"
         );
+    }
+
+    /// Read the cached display value of a node's param field (what the inspector
+    /// scrub field is bound to).
+    fn cached_param(b: &GraphBridge, id: NodeId, key: &str) -> f32 {
+        b.params
+            .iter()
+            .find(|(n, _)| *n == id)
+            .and_then(|(_, fields)| fields.iter().find(|f| f.key == key))
+            .map(|f| f.value)
+            .expect("param field exists")
+    }
+
+    /// Finding 7: scrubbing an INTEGER param to a fractional value caches the ROUNDED
+    /// value — the inspector mirrors what actually cooked (96), not the raw scrub
+    /// (96.4). `resolution` is an integer param (schema `integer: true`).
+    #[test]
+    fn int_param_cached_value_is_rounded_to_what_cooked() {
+        let mut b = GraphBridge::new();
+        let terrain = b.node_ids[0];
+
+        // Confirm resolution is an integer param (precondition for the fix).
+        let is_int = b
+            .params
+            .iter()
+            .find(|(n, _)| *n == terrain)
+            .and_then(|(_, fields)| fields.iter().find(|f| f.key == "resolution"))
+            .map(|f| f.integer)
+            .unwrap();
+        assert!(is_int, "resolution must be an integer param");
+
+        // Scrub to a fractional value; the node cooks at round(96.4) = 96.
+        b.apply_param(terrain, "resolution", 96.4);
+        let displayed = cached_param(&b, terrain, "resolution");
+        assert_eq!(
+            displayed, 96.0,
+            "Int param display must equal the cooked value (round(96.4)=96), got {displayed}"
+        );
+        assert!(b.last_cook_error.is_none(), "a valid edit must not record a cook error");
+    }
+
+    /// Finding 8: a live-cook FAILURE is surfaced via `last_cook_error` AND the
+    /// cached param display reverts to the pre-edit value. TerrainNode::cook rejects
+    /// `resolution < 16` (returns CookFailed), so scrubbing resolution to 8 forces a
+    /// real cook error through the live_cook path.
+    #[test]
+    fn cook_failure_is_surfaced_and_param_display_reverts() {
+        let mut b = GraphBridge::new();
+        let terrain = b.node_ids[0];
+
+        // Start from a known-good resolution so the pre-edit value is well defined.
+        b.apply_param(terrain, "resolution", 64.0);
+        assert!(b.last_cook_error.is_none(), "baseline cook must succeed");
+        let good_display = cached_param(&b, terrain, "resolution");
+        assert_eq!(good_display, 64.0);
+        let good_splats = b.sink_splat_count().unwrap();
+
+        // Now scrub to an out-of-range value the node REJECTS at cook time.
+        b.apply_param(terrain, "resolution", 8.0);
+
+        // The error is exposed...
+        let err = b
+            .last_cook_error
+            .clone()
+            .expect("a rejected cook must record last_cook_error");
+        assert!(
+            err.contains("resolution must be >= 16"),
+            "error must carry the node's real reason, got {err:?}"
+        );
+        // ...the displayed param reverted to the pre-edit value (NOT 8)...
+        let reverted = cached_param(&b, terrain, "resolution");
+        assert_eq!(
+            reverted, 64.0,
+            "display must revert to the pre-edit value on cook failure, got {reverted}"
+        );
+        // ...and the cooked output stayed at the last good state (still produces splats).
+        assert_eq!(
+            b.sink_splat_count().unwrap(),
+            good_splats,
+            "outputs must stay at the last good cook on failure"
+        );
+
+        // A subsequent valid edit clears the error.
+        b.apply_param(terrain, "resolution", 80.0);
+        assert!(b.last_cook_error.is_none(), "a successful cook must clear the error");
     }
 
     #[test]
