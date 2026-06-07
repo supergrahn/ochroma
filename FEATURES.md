@@ -26,6 +26,7 @@ Maintained as features land. Last updated: 2026-06-07.
 | Hierarchical LOD + crossfade | live | 4-level per-cluster LOD chains (full → billboard) with opacity crossfade bands |
 | HLOD baker | library | K-means++ multi-level merged-splat representations for far hierarchies |
 | World partition + streaming | library | 3D cell streaming, tile manager with active radius, level streaming, splat GPU buffer pooling |
+| Disk tile streamer | live | Background-thread .vxm tile loading: priority queue, generation-based cancellation (teleports drop obsolete loads without I/O), byte-exact LRU residency cache with budget eviction |
 | Spectral framebuffer | live | 16-channel spectral + depth/normals/motion/object-id/albedo G-buffer |
 | Tone mapping + post | live | ACES/Reinhard/Filmic with exposure/white-point; bloom, vignette, fog, god rays, chromatic aberration |
 | Temporal accumulation | library | Reprojected accumulation buffer with blend alpha (denoising support) |
@@ -35,6 +36,8 @@ Maintained as features land. Last updated: 2026-06-07.
 | Splat-VFX graph | live | Niagara-shaped typed node DAG where particles ARE spectral splats (blackbody fire, deterministic for rollback); unifies the 5 legacy particle modules |
 | Particles (CPU/GPU/splat) | library | Emitters with spectral emission; Gaussian splats as particles; particle death drives audio synthesis |
 | Hybrid mesh+splat compositing | live | One-pass depth-correct compositing of triangle meshes with splats: perspective-correct 1/z depth interpolation, Sutherland-Hodgman near+far clipping |
+| Many-light sampler | live | ReSTIR-style weighted reservoir light selection (O(1) per shade point over arbitrary light counts), spatial-grid candidate culling, 16-band spectral path — unbiasedness proven to <1% vs brute force |
+| Render graph | live | RDG-style pass DAG: declared reads/writes, topo scheduling, dead-pass culling, cycle detection, declared-access enforcement — drives the postprocess chain bit-identically to the legacy path |
 | Cascaded shadow maps | live | Multi-cascade directional shadows + shadow atlas, SDF soft shadows, shadow catcher |
 | Cinematic camera | library | Keyframed camera, depth-of-field with bokeh shapes, movie render to disk |
 | Multi-viewport | library | Perspective/Top/Front/Right simultaneous editor views |
