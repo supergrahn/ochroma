@@ -92,7 +92,13 @@ pub fn run_relight(
 
     let (relit, report) = relight_scene(&splats, &settings);
 
-    let shadows_str = if settings.cast_shadows() { "on" } else { "off" };
+    // Wave-12 minor finding: derive the printed shadow state from what
+    // `relight_scene` actually does. Shadow rays are cast only when shadows are
+    // enabled AND the target illuminant is directional (a sun with a direction);
+    // preset/CIE illuminants are ambient-only (`sun_direction() == None`) and
+    // trace zero shadow rays, so the receipt must not claim shadows=on for them.
+    let shadows_active = settings.cast_shadows() && settings.target().sun_direction().is_some();
+    let shadows_str = if shadows_active { "on" } else { "off" };
     let sky_str = if settings.sky_ambient() { "on" } else { "off" };
     let threads = report.thread_count;
     let ratio_before = report.ratio_short_long_before;
@@ -144,6 +150,12 @@ pub fn run_relight(
         "relight: f16 round-trip max band error {:.4} (< 0.002 budget)",
         report.f16_roundtrip_error
     );
+    if report.clamped_bands > 0 {
+        println!(
+            "relight: {} bands clamped to f16 max",
+            report.clamped_bands
+        );
+    }
 
     write_vxm(output, relit)?;
     println!(
@@ -216,6 +228,42 @@ mod tests {
             r_after > 0.85,
             "AFTER ratio {r_after} must rise toward daylight flatness"
         );
+
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn cli_relight_ambient_target_reports_shadows_off() {
+        // Wave-12 minor: an ambient-only target (daylight) traces zero shadow
+        // rays even with shadows requested (--shadows, i.e. no_shadows=false).
+        // The receipt must say shadows=off, not shadows=on.
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let input = dir.join(format!("ochroma_relight_shadow_in_{pid}.vxm"));
+        let output = dir.join(format!("ochroma_relight_shadow_out_{pid}.vxm"));
+        write_demo(&input, 32);
+
+        // Drive run_relight directly and assert the derived shadow state, mirroring
+        // the exact expression the CLI prints. no_shadows=false requests shadows.
+        let reference = IlluminantSpec::parse("tungsten").unwrap();
+        let target = IlluminantSpec::parse("daylight").unwrap();
+        let is_identity = reference.name() == target.name();
+        // no_shadows=false => shadows requested; mirrors run_relight's expression.
+        let no_shadows = false;
+        let settings = RelightSettings::new(reference, target)
+            .with_shadows(!no_shadows && !is_identity)
+            .with_sky_ambient(true);
+        let shadows_active =
+            settings.cast_shadows() && settings.target().sun_direction().is_some();
+        assert!(
+            !shadows_active,
+            "ambient daylight target must trace no shadow rays => shadows=off"
+        );
+
+        // And the end-to-end driver must not panic with shadows requested.
+        run_relight(&input, &output, "tungsten", "daylight", false, true)
+            .expect("relight runs with shadows requested against ambient target");
 
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&output);

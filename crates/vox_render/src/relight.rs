@@ -34,6 +34,15 @@ use crate::splat_rt::{transmittance, RtScene};
 
 const BANDS: usize = 16;
 
+/// Largest finite value representable as f16 (`half::f16::MAX`). Any radiance
+/// above this saturates to `+inf` on `f16::from_f32`, which would then be
+/// written verbatim into the splat's spectral field and persisted to disk
+/// (wave-12 critical finding). We clamp every per-band output to this max so a
+/// bright emissive/specular splat can never encode to `inf`.
+fn f16_max() -> f32 {
+    f16::MAX.to_f32()
+}
+
 /// Weight of the sky-ambient FILL term relative to the direct illuminant,
 /// matching the live GI loop (`spectral_gi::SpectralRadianceCache::apply` adds
 /// `irr * 0.5`). Keeps the direct target SPD dominant so the relit AFTER ratio
@@ -317,6 +326,10 @@ pub struct RelightReport {
     pub max_band_delta: f32,
     /// Measured max `|decode(encode(r)) - r|` over the relit radiance.
     pub f16_roundtrip_error: f32,
+    /// Number of bands whose relit radiance hit the f16 finite max (clamped to
+    /// avoid an `inf` reaching disk — wave-12 critical finding). When > 0 the
+    /// CLI surfaces it as an honest receipt line.
+    pub clamped_bands: u32,
     pub reference_name: String,
     pub target_name: String,
     /// Rayon thread count used for the rebake (for the receipt).
@@ -379,9 +392,13 @@ pub fn reilluminate_one(
 ) -> [f32; 16] {
     let mut out = [0.0f32; 16];
     let direct_scale = (n_dot_l * shadow).max(0.0);
+    let max = f16_max();
     for b in 0..BANDS {
         let incident = target_sun_spd[b] * direct_scale + ambient[b];
-        out[b] = (intrinsic[b] * incident + emitter_gather[b]).max(0.0);
+        // Clamp to the f16 finite range: derive_intrinsic is intentionally
+        // un-clamped, so a bright band crossing illuminants can exceed 65504
+        // and would otherwise encode to +inf and persist to disk (wave-12).
+        out[b] = (intrinsic[b] * incident + emitter_gather[b]).clamp(0.0, max);
     }
     out
 }
@@ -394,26 +411,49 @@ fn read_radiance(splat: &GaussianSplat) -> [f32; 16] {
     std::array::from_fn(|b| splat.spectral_f32(b))
 }
 
+/// Encode per-band radiance to f16 bits. Belt-and-braces (wave-12 critical
+/// finding): NaN saturates to 0.0 and any non-finite / over-max value saturates
+/// to the f16 finite max, so an `inf` bit pattern can never reach the splat's
+/// spectral field or the persisted `.vxm`.
 fn encode_radiance(radiance: &[f32; 16]) -> [u16; 16] {
-    std::array::from_fn(|b| f16::from_f32(radiance[b]).to_bits())
+    let max = f16_max();
+    std::array::from_fn(|b| {
+        let r = radiance[b];
+        let safe = if r.is_nan() {
+            0.0
+        } else {
+            r.clamp(0.0, max)
+        };
+        f16::from_f32(safe).to_bits()
+    })
 }
 
-/// Mean band-4 / band-14 radiance ratio over a scene. Splats with a near-zero
-/// long band are skipped (no signal). Returns 0 if no splat contributes.
+/// Band-4 / band-14 radiance ratio over a scene, as a **ratio-of-means**:
+/// `sum(b4 over all splats) / sum(b14 over all splats)`.
+///
+/// Wave-12 major finding: the previous mean-of-ratios (`mean(b4/b14)`) was
+/// heavy-tailed — a single near-blue splat with a tiny-but-nonzero long band
+/// (e.g. `b14 = 1e-5`, just above the old 1e-6 guard) contributed a per-splat
+/// ratio of ~1e5 and dominated the headline metric. Ratio-of-means is robust to
+/// such outliers: the one splat's tiny `b14` adds negligibly to the denominator.
+/// Non-finite contributions are skipped. The denominator is guarded: if the
+/// summed long band is `< 1e-6` (no signal) the ratio is reported as `0.0`.
 fn mean_short_long_ratio(radiance_each: &[[f32; 16]]) -> f32 {
-    let mut acc = 0.0f64;
-    let mut n = 0u64;
+    let mut sum_short = 0.0f64;
+    let mut sum_long = 0.0f64;
     for r in radiance_each {
+        let short = r[4];
         let long = r[14];
-        if long.abs() > 1e-6 {
-            acc += (r[4] / long) as f64;
-            n += 1;
+        if short.is_finite() && long.is_finite() {
+            sum_short += short as f64;
+            sum_long += long as f64;
         }
     }
-    if n == 0 {
+    if sum_long < 1e-6 {
+        // No long-band signal: ratio is undefined; report 0.0 rather than inf.
         0.0
     } else {
-        (acc / n as f64) as f32
+        (sum_short / sum_long) as f32
     }
 }
 
@@ -440,6 +480,7 @@ pub fn relight_scene(
                 rebake_secs: 0.0,
                 max_band_delta: 0.0,
                 f16_roundtrip_error: 0.0,
+                clamped_bands: 0,
                 reference_name,
                 target_name,
                 thread_count: rayon::current_num_threads(),
@@ -450,6 +491,14 @@ pub fn relight_scene(
     let reference_spd = settings.reference.spd();
     let target_spd = settings.target.spd();
     let sun_dir = settings.target.sun_direction();
+
+    // True identity (wave-12 minor finding): when the reference and target SPDs
+    // are equal, `derive_intrinsic` (which divides by `max(ref, floor)`) followed
+    // by the forward multiply is NOT an exact round-trip — any reference band
+    // below `floor` is clamped, inflating that band by `floor/ref`. For a genuine
+    // identity relight we therefore skip derive∘forward entirely and do a pure
+    // decode→encode round-trip, which is exact within f16 for every band.
+    let is_identity = reference_spd == target_spd;
 
     // Emitters into spectral_gi entries (pure emissive point lights:
     // reflectance = 1 so gather_radiance returns emissive/d²).
@@ -506,6 +555,15 @@ pub fn relight_scene(
         .map(|i| {
             let splat = &splats[i];
             let baked = &before_radiance[i];
+
+            // True-identity short-circuit: reference == target SPD => skip
+            // derive∘forward (which the floor clamp makes non-exact for
+            // sub-floor reference bands) and emit a pure decode→encode
+            // round-trip of the baked radiance (wave-12 minor finding).
+            if is_identity {
+                return (encode_radiance(baked), *baked);
+            }
+
             let intrinsic = derive_intrinsic(baked, &reference_spd, settings.floor);
 
             // Direct term scaling.
@@ -579,14 +637,27 @@ pub fn relight_scene(
     let mut after_radiance: Vec<[f32; 16]> = Vec::with_capacity(splats.len());
     let mut max_band_delta = 0.0f32;
     let mut f16_roundtrip_error = 0.0f32;
+    let mut clamped_bands = 0u32;
+    let f16_max = f16_max();
     for (i, (bits, radiance)) in results.into_iter().enumerate() {
         *out[i].spectral_mut() = bits;
-        // f16 round-trip error of the new radiance.
+        // f16 round-trip error of the new radiance. A non-finite intermediate
+        // must NEVER reach the receipt (wave-12): saturate any such accumulator
+        // contribution and count it instead of letting `inf`/`NaN` propagate.
         for b in 0..BANDS {
             let decoded = f16::from_bits(bits[b]).to_f32();
-            f16_roundtrip_error = f16_roundtrip_error.max((decoded - radiance[b]).abs());
+            // Count bands that landed at the f16 finite max (the clamp fired).
+            if decoded >= f16_max {
+                clamped_bands += 1;
+            }
+            let rt = (decoded - radiance[b]).abs();
+            if rt.is_finite() {
+                f16_roundtrip_error = f16_roundtrip_error.max(rt);
+            }
             let delta = (radiance[b] - before_radiance[i][b]).abs();
-            max_band_delta = max_band_delta.max(delta);
+            if delta.is_finite() {
+                max_band_delta = max_band_delta.max(delta);
+            }
         }
         after_radiance.push(radiance);
     }
@@ -602,6 +673,7 @@ pub fn relight_scene(
             rebake_secs,
             max_band_delta,
             f16_roundtrip_error,
+            clamped_bands,
             reference_name,
             target_name,
             thread_count: rayon::current_num_threads(),
@@ -933,6 +1005,121 @@ mod tests {
             .unwrap()
             .sun_direction()
             .is_none());
+    }
+
+    #[test]
+    fn relight_bright_band_clamps_to_f16_max_not_inf() {
+        // Wave-12 critical: a splat with a very bright baked band (b4=60000)
+        // captured under tungsten (ref b4=0.28) has intrinsic b4 ≈ 214k; relit
+        // to daylight (b4≈0.91) that yields ≈195k > 65504. Pre-fix this encoded
+        // to +inf and persisted to disk, poisoning the receipt. After the fix it
+        // must be a FINITE 65504, report fields finite, clamped_bands > 0.
+        let mut baked = [0.5f32; 16];
+        baked[4] = 60000.0;
+        let splats = vec![splat_with_radiance([0.0, 0.0, 0.0], &baked)];
+        let settings = RelightSettings::new(
+            IlluminantSpec::Preset(PresetIlluminant::Tungsten),
+            IlluminantSpec::Preset(PresetIlluminant::Daylight),
+        )
+        .with_sky_ambient(false)
+        .with_shadows(false);
+
+        let (out, report) = relight_scene(&splats, &settings);
+        let stored_b4 = out[0].spectral_f32(4);
+        println!("stored relit b4 = {stored_b4} (clamped_bands={})", report.clamped_bands);
+        assert!(stored_b4.is_finite(), "stored b4 must be finite, got {stored_b4}");
+        assert_eq!(stored_b4, f16_max(), "stored b4 must be clamped to f16 max");
+        assert!(report.f16_roundtrip_error.is_finite());
+        assert!(report.max_band_delta.is_finite());
+        assert!(report.ratio_short_long_before.is_finite());
+        assert!(report.ratio_short_long_after.is_finite());
+        assert!(report.clamped_bands > 0, "clamped_bands must count the saturated band");
+    }
+
+    #[test]
+    fn encode_radiance_saturates_nan_and_overmax() {
+        // NaN radiance (crafted via f16 bits 0x7E00) must encode to 0.0, and an
+        // over-max value must saturate to the f16 finite max — no panic, no inf.
+        let nan = f16::from_bits(0x7E00).to_f32();
+        assert!(nan.is_nan(), "0x7E00 must decode to NaN");
+        let mut radiance = [1.0f32; 16];
+        radiance[0] = nan;
+        radiance[1] = 1.0e30; // far above f16 max
+        let bits = encode_radiance(&radiance);
+        let decoded0 = f16::from_bits(bits[0]).to_f32();
+        let decoded1 = f16::from_bits(bits[1]).to_f32();
+        assert_eq!(decoded0, 0.0, "NaN must encode to 0.0");
+        assert!(decoded1.is_finite(), "over-max must not encode to inf");
+        assert_eq!(decoded1, f16_max(), "over-max must saturate to f16 max");
+    }
+
+    #[test]
+    fn ratio_of_means_not_poisoned_by_one_near_blue_splat() {
+        // Wave-12 major: 4095 grey-tungsten splats + ONE near-blue splat with a
+        // tiny long band (b14 just above the old 1e-6 guard) and a large b4. The
+        // old mean-of-ratios blew the headline metric to ~1e5; ratio-of-means
+        // must stay within 0.05 of the tungsten target (0.28).
+        let intrinsic = grey_intrinsic();
+        let tungsten = LightSpd::tungsten().0;
+        let baked = forward_band(&intrinsic, &tungsten);
+        let mut splats: Vec<GaussianSplat> = (0..4095)
+            .map(|i| splat_with_radiance([i as f32 * 0.01, 0.0, 0.0], &baked))
+            .collect();
+        // The poison splat: large short band, near-zero (but > old guard) long.
+        let mut blue = [0.0f32; 16];
+        blue[4] = 1.0;
+        blue[14] = 2e-6;
+        splats.push(splat_with_radiance([99.0, 0.0, 0.0], &blue));
+
+        let settings = RelightSettings::new(
+            IlluminantSpec::Preset(PresetIlluminant::Tungsten),
+            IlluminantSpec::Preset(PresetIlluminant::Daylight),
+        )
+        .with_sky_ambient(false)
+        .with_shadows(false);
+        let (_out, report) = relight_scene(&splats, &settings);
+        let expected_before = tungsten[4] / tungsten[14];
+        println!(
+            "ratio-of-means BEFORE = {} (expect ~{})",
+            report.ratio_short_long_before, expected_before
+        );
+        assert!(
+            (report.ratio_short_long_before - expected_before).abs() < 0.05,
+            "BEFORE ratio {} must stay near tungsten target {} despite the near-blue outlier",
+            report.ratio_short_long_before,
+            expected_before
+        );
+    }
+
+    #[test]
+    fn identity_preserves_sub_floor_reference_band() {
+        // Wave-12 minor: a Custom SPD with one band BELOW the floor (5e-4 < 1e-3).
+        // derive∘forward would inflate that band by floor/ref; the true-identity
+        // skip must round-trip it exactly (within f16).
+        let mut spd = [0.5f32; 16];
+        spd[0] = 5e-4; // below the 1e-3 floor
+        // A splat with real energy in the sub-floor band.
+        let mut baked = [0.3f32; 16];
+        baked[0] = 0.4;
+        let splats = vec![splat_with_radiance([0.0, 0.0, 0.0], &baked)];
+
+        let settings = RelightSettings::new(
+            IlluminantSpec::Custom(spd),
+            IlluminantSpec::Custom(spd),
+        )
+        .with_sky_ambient(false)
+        .with_shadows(false);
+        let (out, report) = relight_scene(&splats, &settings);
+        let mut max_delta = 0.0f32;
+        for b in 0..16 {
+            max_delta = max_delta.max((out[0].spectral_f32(b) - baked[b]).abs());
+        }
+        println!("sub-floor identity max per-band delta = {max_delta:.6}");
+        assert!(
+            max_delta < 1e-3,
+            "identity must preserve sub-floor band, max delta {max_delta:.6}"
+        );
+        assert!(report.max_band_delta < 1e-3);
     }
 
     #[test]
