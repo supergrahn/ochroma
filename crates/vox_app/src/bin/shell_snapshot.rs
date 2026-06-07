@@ -60,10 +60,12 @@ fn main() {
     // (Crucible + Forge) — the two-plugin proof.
     shell.install_plugin(Box::new(vox_app::shell::plugins::CruciblePlugin::new()));
     shell.install_plugin(Box::new(vox_app::shell::plugins::ForgePlugin::new()));
+    shell.install_plugin(Box::new(vox_app::shell::plugins::FloraPrimePlugin::new()));
     match tab.as_str() {
         "node_graph" => shell.focus_node_graph(),
         "crucible" => shell.focus_plugin_tab(vox_app::shell::plugins::CRUCIBLE_TAB),
         "forge" => shell.focus_plugin_tab(vox_app::shell::plugins::FORGE_TAB),
+        "floraprime" => shell.focus_plugin_tab(vox_app::shell::plugins::FLORAPRIME_TAB),
         // Default: the central tab is the REAL rendered viewport.
         _ => shell.focus_viewport(),
     }
