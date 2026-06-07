@@ -177,6 +177,16 @@ pub struct EditorShell {
     /// drag spanning consecutive frames updates the existing undo entry's `next`
     /// instead of pushing a new one per frame.
     last_inspector_edit: Option<(NodeId, &'static str, u64)>,
+    /// Which brain resolves an Ask-Ochroma sentence (Adoption #16). Selected ONCE
+    /// at construction from `OCHROMA_ASK_LLM`: default `Deterministic` (offline,
+    /// network-free); the env var opts into the LLM seam. Read once here, never
+    /// per keystroke.
+    intent_backend: intent::IntentBackend,
+    /// The live editable param schema handed to the LLM (node kinds + keys +
+    /// ranges) so it can map fuzzy words onto real params. The clamp in
+    /// `apply_param` remains the authority on ranges; this is prompt + key
+    /// validation only.
+    intent_schema: intent::SchemaContext,
 }
 
 impl Default for EditorShell {
@@ -232,6 +242,8 @@ impl EditorShell {
             output_log: Vec::new(),
             frame: 0,
             last_inspector_edit: None,
+            intent_backend: intent::IntentBackend::from_env(),
+            intent_schema: intent::SchemaContext::default_editable(),
             entities: vec![
                 ShellEntity {
                     name: "Townhouse_Row_03".into(),
@@ -419,7 +431,19 @@ impl EditorShell {
     /// sentence in, a real graph/registry mutation out, with provenance.
     pub fn run_intent(&mut self, text: &str) -> String {
         use intent::IntentAction;
-        let action = intent::parse_intent(text, &self.registry);
+        // Adoption #16: resolve through the selected backend (deterministic by
+        // default; LLM if OCHROMA_ASK_LLM opted in). The LLM may only ever produce
+        // a schema-validated action; any failure falls back to the deterministic
+        // parser. A validated SetParam value still flows through `apply_param`'s
+        // clamp below — the seam never bypasses that safety net.
+        let resolution =
+            intent::resolve_intent(&self.intent_backend, text, &self.intent_schema, &self.registry);
+        let provenance = resolution.provenance;
+        // `action` is always `Some` for every backend (Unknown is itself an
+        // action); the Option exists for forward-compat with a "no-op" resolution.
+        let action = resolution
+            .action
+            .unwrap_or(IntentAction::Unknown { suggestions: Vec::new() });
         let receipt = match action {
             IntentAction::SetParam { node_kind, key, target, value } => {
                 self.apply_param_intent(node_kind, key, &target, value)
@@ -459,6 +483,10 @@ impl EditorShell {
                 )
             }
         };
+        // Tag the receipt with provenance so the assistant log is honest about
+        // whether the parser or the model drove the edit: "(parser)" /
+        // "(llm:model)" / "(llm failed → parser)". Single log path (log_receipt).
+        let receipt = format!("{receipt} {}", provenance.receipt_tag());
         self.log_receipt(receipt.clone());
         receipt
     }
@@ -2076,10 +2104,30 @@ mod tests {
         // Cooked value (read back from the REAL graph's param cache) is 128.
         let after = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
         assert_eq!(after, 128.0, "intent must cook terrain resolution to 128, got {after}");
-        // Receipt text is exact.
-        assert_eq!(receipt, "Set terrain.resolution 64 -> 128");
+        // Receipt text is exact, now tagged with provenance (default backend is the
+        // deterministic parser → "(parser)").
+        assert_eq!(receipt, "Set terrain.resolution 64 -> 128 (parser)");
         // And it surfaced in the assistant history strip.
-        assert_eq!(shell.assistant_log.last().unwrap(), "Set terrain.resolution 64 -> 128");
+        assert_eq!(shell.assistant_log.last().unwrap(), "Set terrain.resolution 64 -> 128 (parser)");
+    }
+
+    /// Adoption #16: a HOSTILE LLM output flowing through the REAL `run_intent`
+    /// path still clamps. The seam validates only the KEY (passing the value
+    /// through unclamped), so this proves the clamp in `apply_param` is the safety
+    /// net behind the LLM: `{"SetParam":{...,"value":1e30}}` cooks to the schema
+    /// max (256), not the unbounded value, and the receipt is tagged "(llm:canned)".
+    #[test]
+    fn llm_hostile_setparam_still_clamps_via_run_intent() {
+        let mut shell = EditorShell::default();
+        // Inject a canned "LLM" that emits a hostile value for a REAL key.
+        shell.intent_backend = intent::IntentBackend::LlmCanned(std::sync::Arc::new(|_p| {
+            Ok(r#"{"SetParam":{"node_kind":"terrain","key":"resolution","value":1e30}}"#.to_string())
+        }));
+        let receipt = shell.run_intent("crank the terrain detail to infinity");
+        let after = shell.bridge.param_value_of_kind("TerrainNode", "resolution").unwrap();
+        assert_eq!(after, 256.0, "hostile LLM value must clamp to schema max 256, got {after}");
+        assert!(shell.bridge.sink_splat_count().unwrap() > 0, "sink still cooks after the clamp");
+        assert_eq!(receipt, "Set terrain.resolution 64 -> 256 (llm:canned)");
     }
 
     /// Findings 0/1 (intent path): a hostile resolution typed into Ask Ochroma is
@@ -2140,6 +2188,9 @@ mod tests {
             shell.registry.commands.iter().map(|c| c.title.clone()).collect();
         let listed = receipt
             .trim_start_matches("I don't know how to do that yet — try: ")
+            // The receipt now carries a trailing provenance tag ("(parser)") —
+            // strip it before splitting so the last suggestion isn't polluted.
+            .trim_end_matches(" (parser)")
             .split(", ")
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
@@ -2309,7 +2360,7 @@ mod tests {
         assert_eq!(*oldest_next, 50.0, "oldest survivor must be iteration 50 (the first 50 were dropped)");
 
         // The newest receipt names the last edit too.
-        assert_eq!(shell.assistant_log.last().unwrap(), "Set terrain.seed 248 -> 249");
+        assert_eq!(shell.assistant_log.last().unwrap(), "Set terrain.seed 248 -> 249 (parser)");
     }
 
     /// FORGE PLUGIN: both Crucible AND Forge tabs are present, both command
@@ -2391,7 +2442,7 @@ mod tests {
         let mut shell = EditorShell::new(tokens.clone());
         // Script the generative loop, then open the palette in intent mode.
         let receipt = shell.run_intent("set terrain resolution to 128");
-        assert_eq!(receipt, "Set terrain.resolution 64 -> 128");
+        assert_eq!(receipt, "Set terrain.resolution 64 -> 128 (parser)");
         shell.palette.mode = command_palette::PaletteMode::Intent;
         let rgba = super::cpu_render::render_ui(&ctx, [w, h], bg, |ctx| {
             shell.palette.open = true;
