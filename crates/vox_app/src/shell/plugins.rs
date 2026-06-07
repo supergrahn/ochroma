@@ -527,24 +527,26 @@ impl EditorPlugin for FloraPrimePlugin {
         );
         ui.label(
             egui::RichText::new(
-                "Configure a FloraPrime tree-generation job in plain language, then preview it.",
+                "Pick a species, set how wide the crown should be, choose how detailed, then grow it.",
             )
             .size(t.type_ramp.caption)
             .color(sec),
         );
         ui.add_space(t.space[3]);
 
-        // Species picker — named species, not raw ids (UX Principle 1).
+        // Species picker — named species, not raw ids (UX Principle 1). The
+        // selected text reads as a forester would name it (species + leaf type);
+        // the internal id is kept on each dropdown row so nothing is lost.
         ui.label(egui::RichText::new("Species").color(prim).strong());
         let cur = FLORAPRIME_SPECIES[self.species_idx];
         egui::ComboBox::from_id_salt("floraprime.species")
-            .selected_text(format!("{} (species {})", cur.0, cur.1))
+            .selected_text(format!("{} ({})", cur.0, cur.2))
             .show_ui(ui, |ui| {
                 for (i, (label, sid, class)) in FLORAPRIME_SPECIES.iter().enumerate() {
                     ui.selectable_value(
                         &mut self.species_idx,
                         i,
-                        format!("{label} (species {sid}, {class})"),
+                        format!("{label} ({class}, species {sid})"),
                     );
                 }
             });
@@ -552,24 +554,29 @@ impl EditorPlugin for FloraPrimePlugin {
 
         // Crown radius slider in metres (the real sample_tree arg).
         ui.label(egui::RichText::new("Crown radius").color(prim).strong());
-        cx.widgets.scrub_drag(
-            ui,
-            &mut self.crown_radius_m,
-            vox_ui::widgets::ScrubOpts {
-                speed: 0.02,
-                range: Some(0.5..=12.0),
-                suffix: " m",
-                axis_color: None,
-            },
-        );
+        cx.widgets
+            .scrub_drag(
+                ui,
+                &mut self.crown_radius_m,
+                vox_ui::widgets::ScrubOpts {
+                    speed: 0.02,
+                    range: Some(0.5..=12.0),
+                    suffix: " m",
+                    axis_color: None,
+                },
+            )
+            .on_hover_text(
+                "How far the leafy crown spreads, in metres. A wider crown also grows a taller tree.",
+            );
         ui.add_space(t.space[2]);
 
-        // Detail level — n_nodes mapped to Low/Medium/High (plain language).
+        // Detail level — n_nodes mapped to Low/Medium/High (plain language). The
+        // raw branch-point count rides along in parentheses (precision retained).
         ui.label(egui::RichText::new("Detail level").color(prim).strong());
         ui.horizontal(|ui| {
             for (i, (label, n_nodes)) in FLORAPRIME_DETAIL.iter().enumerate() {
                 if ui
-                    .selectable_label(self.detail_idx == i, format!("{label} ({n_nodes} nodes)"))
+                    .selectable_label(self.detail_idx == i, format!("{label} ({n_nodes} branch points)"))
                     .clicked()
                 {
                     self.detail_idx = i;
@@ -590,35 +597,38 @@ impl EditorPlugin for FloraPrimePlugin {
         match &self.state {
             GenState::Idle => {
                 ui.label(
-                    egui::RichText::new("State: idle — press \"Grow tree\" to generate.")
+                    egui::RichText::new("Nothing grown yet — press \"Grow tree\" to see one.")
                         .color(sec),
                 );
             }
             GenState::Queued => {
-                ui.label(egui::RichText::new("State: queued…").color(sec));
+                ui.label(egui::RichText::new("Growing…").color(sec));
             }
             GenState::Preview(s) => {
                 let (_, _, class) = FLORAPRIME_SPECIES[self.species_idx];
                 ui.label(
-                    egui::RichText::new("State: preview ready")
+                    egui::RichText::new("Here's your tree")
                         .color(prim)
                         .strong(),
                 );
+                // Domain-readable summary: height and how bushy it branches, in
+                // plain words. Exact structural counts ride in parentheses so a
+                // technical user still sees them (precision retained, not deleted).
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} nodes · {} edges · branch depth {} · {:.1} m tall · {} QSM",
+                        "{:.1} m tall · branches {} levels deep · {} leaf type \
+                         ({} branch points, {} connections)",
+                        s.height_m,
+                        s.max_depth,
+                        class,
                         s.nodes.len(),
                         s.edges,
-                        s.max_depth,
-                        s.height_m,
-                        class,
                     ))
                     .color(sec),
                 );
                 ui.label(
                     egui::RichText::new(
-                        "(placeholder skeleton from the deterministic CPU stub — the FloraPrime \
-                         Python sampler bridge replaces it.)",
+                        "(Preview built locally on the CPU — the full FloraPrime grower replaces it later.)",
                     )
                     .size(t.type_ramp.caption)
                     .color(sec),

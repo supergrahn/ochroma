@@ -128,18 +128,18 @@ fn param_schema(type_name: &str) -> Vec<ParamField> {
     };
     match type_name {
         "TerrainNode" => vec![
-            f("resolution", "Detail (cells/side)", 64.0, 1.0, true, 16.0..=256.0),
-            f("amplitude", "Height", 200.0, 1.0, false, 0.0..=800.0),
-            f("seed", "Seed", 7.0, 1.0, true, 0.0..=999.0),
+            f("resolution", "Detail (16–256)", 64.0, 1.0, true, 16.0..=256.0),
+            f("amplitude", "Height (m)", 200.0, 1.0, false, 0.0..=800.0),
+            f("seed", "Variation (seed)", 7.0, 1.0, true, 0.0..=999.0),
         ],
         "BiomeNode" => vec![
-            f("world_height", "World height", 400.0, 1.0, false, 1.0..=2000.0),
-            f("moisture", "Moisture", 0.5, 0.01, false, 0.0..=1.0),
+            f("world_height", "World height (m)", 400.0, 1.0, false, 1.0..=2000.0),
+            f("moisture", "Moisture (dry→wet)", 0.5, 0.01, false, 0.0..=1.0),
         ],
         "VegetationNode" => vec![
             f("branch_levels", "Branch levels", 4.0, 1.0, true, 1.0..=8.0),
-            f("trunk_radius", "Trunk radius", 0.3, 0.01, false, 0.05..=2.0),
-            f("height", "Tree height", 6.0, 0.1, false, 1.0..=30.0),
+            f("trunk_radius", "Trunk radius (m)", 0.3, 0.01, false, 0.05..=2.0),
+            f("height", "Tree height (m)", 6.0, 0.1, false, 1.0..=30.0),
         ],
         _ => Vec::new(),
     }

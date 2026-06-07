@@ -477,8 +477,12 @@ impl EditorShell {
                 }
             }
             IntentAction::Unknown { suggestions } => {
+                // Teach by example: a domain person should see sentences they could
+                // actually type, then the nearest real commands as a fallback.
                 format!(
-                    "I don't know how to do that yet — try: {}",
+                    "I'm not sure how to do that yet. Try something like \
+                     'make the terrain more detailed' or 'add a birch tree' — \
+                     or one of: {}",
                     suggestions.join(", ")
                 )
             }
@@ -675,10 +679,10 @@ impl EditorShell {
             None => format!("[content] {name}: unrecognized asset type — not loaded"),
             Some(kind) => match load_asset(path, kind) {
                 Ok(LoadedAsset::Splats(splats)) => {
-                    format!("[content] Loaded {name}: {} splats", splats.len())
+                    format!("[content] Loaded {name}: {} points", splats.len())
                 }
                 Ok(LoadedAsset::Scene(_)) => {
-                    format!("[content] Loaded {name}: scene handed to the import pipeline")
+                    format!("[content] Loaded {name}: scene queued for import")
                 }
                 Ok(LoadedAsset::Script(_)) => format!("[content] Opened script {name}"),
                 Ok(LoadedAsset::Shader(_)) => format!("[content] Opened shader {name}"),
@@ -819,8 +823,8 @@ impl EditorShell {
                 {
                     self.snap = !self.snap;
                 }
-                let _ = widgets::icon_button(ui, icon::SHOW_FLAGS, "Show flags");
-                let _ = widgets::icon_button(ui, icon::PERF, "Performance");
+                let _ = widgets::icon_button(ui, icon::SHOW_FLAGS, "What's shown");
+                let _ = widgets::icon_button(ui, icon::PERF, "Speed & smoothness");
                 ui.separator();
                 let _ = widgets::icon_button(ui, icon::PLAY, "Play");
                 let _ = widgets::icon_button(ui, icon::PAUSE, "Pause");
@@ -841,7 +845,9 @@ impl EditorShell {
                         .color(egui::Color32::from_rgba_unmultiplied(r, g, b, a)),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!("{} entities", self.entities.len()));
+                    let n = self.entities.len();
+                    let noun = if n == 1 { "thing" } else { "things" };
+                    ui.label(format!("{n} {noun} in the world"));
                     ui.separator();
                     ui.label("Ochroma 0.1.0");
                 });
@@ -927,10 +933,12 @@ impl ShellViewer<'_> {
         widgets::search_box(ui, self.search);
         ui.separator();
         let q = self.search.to_lowercase();
+        let mut shown = 0usize;
         for (i, e) in self.entities.iter().enumerate() {
             if !q.is_empty() && !e.name.to_lowercase().contains(&q) {
                 continue;
             }
+            shown += 1;
             let (ic, color_key) = vox_ui::design::icons::entity_icon(&e.kind);
             let [r, g, b, a] = self.tokens.color(color_key);
             let label = egui::RichText::new(format!("{ic}  {}", e.name))
@@ -938,6 +946,21 @@ impl ShellViewer<'_> {
             if ui.selectable_label(*self.selected == i, label).clicked() {
                 *self.selected = i;
             }
+        }
+        // Empty state teaches: how to put the first thing into the world.
+        if shown == 0 {
+            let [r, g, b, a] = self.tokens.color("text.secondary");
+            let msg = if self.entities.is_empty() {
+                "This is your world — it's empty for now. Press ＋ Add to world, \
+                 or ask Ochroma for what you'd like to see."
+            } else {
+                "Nothing here matches your search. Clear it to see everything in the world."
+            };
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(msg)
+                    .color(egui::Color32::from_rgba_unmultiplied(r, g, b, a)),
+            );
         }
     }
 
@@ -996,7 +1019,7 @@ impl ShellViewer<'_> {
                 let [r, g, b, a] = self.tokens.color("status.error");
                 ui.colored_label(
                     egui::Color32::from_rgba_unmultiplied(r, g, b, a),
-                    format!("{}  cook failed: {err}", icon::WARNING),
+                    format!("{}  Couldn't update that: {err}", icon::WARNING),
                 );
             }
             return;
@@ -1108,10 +1131,20 @@ impl ShellViewer<'_> {
     }
 
     fn output(&mut self, ui: &mut egui::Ui) {
+        // A short, warm intro line so an empty log still tells a domain person
+        // what they're looking at (precise engine lines follow, unchanged).
+        let [hr, hg, hb, ha] = self.tokens.color("text.secondary");
+        ui.label(
+            egui::RichText::new(
+                "This is the activity log — everything Ochroma does shows up here, newest at the bottom.",
+            )
+            .color(egui::Color32::from_rgba_unmultiplied(hr, hg, hb, ha)),
+        );
+        ui.separator();
         for line in [
-            "[ochroma] Engine started",
-            "[ochroma] Loaded scene: alpine_demo",
-            "[render] Atom budget: 2.4M splats",
+            "[ochroma] Ochroma started",
+            "[ochroma] Opened world: alpine_demo",
+            "[render] Showing 2.4M points (detail budget)",
             "[ok] All systems healthy",
         ] {
             ui.label(egui::RichText::new(line).monospace());
@@ -1183,8 +1216,8 @@ fn build_registry(
         "Ctrl+A",
         move || *f.borrow_mut() = true,
     ));
-    r.add(Command::new("create.terrain", "Forge: Terrain", "Create", "", || {}));
-    r.add(Command::new("create.biome", "Add biome layer", "Create", "", || {}));
+    r.add(Command::new("create.terrain", "Add terrain", "Create", "", || {}));
+    r.add(Command::new("create.biome", "Add a climate layer", "Create", "", || {}));
     r.add(Command::new("file.save", "Save world", "File", "Ctrl+S", || {}));
     r.add(Command::new("file.open", "Open world…", "File", "Ctrl+O", || {}));
     // Undo routes through the registry too (same one-command-surface) — its
@@ -1194,8 +1227,8 @@ fn build_registry(
         q.borrow_mut().push(ShellRequest::Undo)
     }));
     r.add(Command::new("edit.redo", "Redo", "Edit", "Ctrl+Shift+Z", || {}));
-    r.add(Command::new("build.cook", "Recook graph", "Build", "F5", || {}));
-    r.add(Command::new("view.wireframe", "Toggle wireframe", "Window", "", || {}));
+    r.add(Command::new("build.cook", "Update the world", "Build", "F5", || {}));
+    r.add(Command::new("view.wireframe", "Show the wireframe outline", "Window", "", || {}));
     r.add(Command::new("help.about", "About Ochroma", "Help", "", || {}));
 
     // The theme + tab-focus commands the intent assistant (and menus) dispatch.
@@ -1210,7 +1243,7 @@ fn build_registry(
         q.borrow_mut().push(ShellRequest::ThemeDark)
     }));
     let q = requests.clone();
-    r.add(Command::new("view.focus_viewport", "Show the Viewport", "Window", "", move || {
+    r.add(Command::new("view.focus_viewport", "Show the world", "Window", "", move || {
         q.borrow_mut().push(ShellRequest::FocusViewport)
     }));
     let q = requests.clone();
@@ -2191,14 +2224,18 @@ mod tests {
         let mut shell = EditorShell::default();
         let receipt = shell.run_intent("flibbertigibbet wuzzle xyzzy");
         assert!(
-            receipt.starts_with("I don't know how to do that yet — try: "),
+            receipt.starts_with("I'm not sure how to do that yet."),
             "unknown intent must answer honestly, got {receipt:?}"
         );
-        // Every suggested title must be a real registered command title.
+        // Every suggested title must be a real registered command title. The
+        // honest fallback lists the nearest real commands after "or one of: ".
         let real_titles: Vec<String> =
             shell.registry.commands.iter().map(|c| c.title.clone()).collect();
-        let listed = receipt
-            .trim_start_matches("I don't know how to do that yet — try: ")
+        let after = receipt
+            .split("or one of: ")
+            .nth(1)
+            .expect("receipt must name the nearest real commands after 'or one of: '");
+        let listed = after
             // The receipt now carries a trailing provenance tag ("(parser)") —
             // strip it before splitting so the last suggestion isn't polluted.
             .trim_end_matches(" (parser)")

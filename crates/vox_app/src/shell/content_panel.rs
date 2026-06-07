@@ -108,8 +108,9 @@ impl ContentPanel {
         let visible = browser.visible();
         let shown = visible.len();
         let [sr, sg, sb, sa] = tokens.color("text.secondary");
+        let item = if total == 1 { "item" } else { "items" };
         ui.label(
-            egui::RichText::new(format!("{total} assets \u{B7} {shown} shown"))
+            egui::RichText::new(format!("{total} {item} \u{B7} {shown} shown"))
                 .color(egui::Color32::from_rgba_unmultiplied(sr, sg, sb, sa)),
         );
 
@@ -120,9 +121,9 @@ impl ContentPanel {
         // --- Empty state ------------------------------------------------------
         if tiles.is_empty() {
             let msg = if total == 0 {
-                "No assets here yet. Drop .vxm/.spz/.ply/.gltf/.rhai/.wgsl files into the content folder, then press Refresh."
+                "Nothing here yet. Drop your captures, models or scenes (.vxm, .spz, .ply, .gltf) into this folder, then press Refresh."
             } else {
-                "Nothing matches your search or filter. Clear them to see all assets."
+                "Nothing matches your search or filter. Clear them to see everything."
             };
             ui.add_space(8.0);
             let [tr, tg, tb, ta] = tokens.color("text.secondary");
@@ -367,8 +368,13 @@ fn tile_widget(
         egui::Color32::from_rgba_unmultiplied(nr, ng, nb, na),
     );
 
-    // Full name on hover.
-    resp.on_hover_text(&t.name)
+    // Full name on hover — plus a point count in domain language when known
+    // (the badge shows the compact number; the hover spells out what it means).
+    let hover = match t.splat_count {
+        Some(n) => format!("{}\n{} points", t.name, format_count(n)),
+        None => t.name.clone(),
+    };
+    resp.on_hover_text(hover)
 }
 
 #[cfg(test)]

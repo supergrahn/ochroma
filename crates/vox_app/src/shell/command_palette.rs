@@ -344,9 +344,9 @@ impl PaletteState {
                         // Mode header + a hint that Tab toggles.
                         ui.horizontal(|ui| {
                             let title = if intent_mode {
-                                "Ask Ochroma — Intent"
+                                "Ask Ochroma — Describe it"
                             } else {
-                                "Ask Ochroma — Command"
+                                "Ask Ochroma — Find a command"
                             };
                             ui.label(
                                 egui::RichText::new(format!(
@@ -368,7 +368,7 @@ impl PaletteState {
                             );
                         });
                         let hint = if intent_mode {
-                            "Describe what you want… e.g. set terrain resolution to 128"
+                            "Describe what you want… e.g. 'make the terrain more detailed' or 'add a birch tree'"
                         } else {
                             "Type a command…"
                         };
@@ -383,7 +383,8 @@ impl PaletteState {
                         if intent_mode {
                             ui.label(
                                 egui::RichText::new(
-                                    "Press Enter — I'll generate the edit, not just navigate.",
+                                    "Press Enter and I'll make the change for you — \
+                                     describe it the way you'd say it out loud.",
                                 )
                                 .color(c32(t, "text.secondary")),
                             );

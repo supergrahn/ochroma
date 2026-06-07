@@ -136,19 +136,19 @@ pub fn parse_intent(text: &str, registry: &CommandRegistry) -> IntentAction {
     if lower.contains("crucible") {
         return IntentAction::RunCommand {
             id: "view.focus_crucible",
-            receipt: "Focused the Crucible graph".into(),
+            receipt: "Showing the Crucible graph".into(),
         };
     }
     if lower.contains("node graph") || (lower.contains("show") && lower.contains("graph")) {
         return IntentAction::RunCommand {
             id: "view.focus_node_graph",
-            receipt: "Focused the Node Graph".into(),
+            receipt: "Showing the Node Graph".into(),
         };
     }
     if lower.contains("viewport") || lower.contains("the scene") {
         return IntentAction::RunCommand {
             id: "view.focus_viewport",
-            receipt: "Focused the Viewport".into(),
+            receipt: "Showing the world".into(),
         };
     }
 
