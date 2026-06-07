@@ -13,6 +13,18 @@ fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(name)
 }
 
+/// Serialize all tests in this binary: openusd-rs keeps a process-global
+/// layer cache behind a Mutex, and under heavy parallel load the in-binary
+/// thread interleaving has wedged this suite (a workspace gate hung ~9h here
+/// while the suite passes standalone in 0.3s). The whole suite runs in well
+/// under a second, so serial execution costs nothing and removes the
+/// interleaving entirely. (into_inner: a poisoned guard from a prior panicking
+/// test must not cascade.)
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Exact expected splat count for the 2 m cube under the default 200 spm sampler.
 ///
 /// 6 quad faces → 12 triangles. Each triangle of the 2 m cube has area 2 m².
@@ -28,6 +40,7 @@ fn cube_expected_splats(spm: f32) -> usize {
 
 #[test]
 fn open_and_compose_usdc() {
+    let _serial = serial();
     let imp = import_usd(&fixture("cube_lit.usdc")).expect("cube_lit imports");
     assert!(imp.stats.prims >= 3, "prims={}", imp.stats.prims);
     assert_eq!(imp.stats.meshes, 1, "exactly one mesh");
@@ -37,6 +50,7 @@ fn open_and_compose_usdc() {
 
 #[test]
 fn mesh_bbox_equals_authored_cube_corners() {
+    let _serial = serial();
     let imp = import_usd(&fixture("cube_lit.usdc")).unwrap();
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
@@ -61,6 +75,7 @@ fn mesh_bbox_equals_authored_cube_corners() {
 
 #[test]
 fn xform_translate_moves_splat_mean() {
+    let _serial = serial();
     // The instancer fixture's three positions average to (4/3, -1/3, 2). We
     // verify Xform accumulation independently with a translated re-import: the
     // PointInstancer path applies `world` to every position, so a parent
@@ -89,6 +104,7 @@ fn xform_translate_moves_splat_mean() {
 
 #[test]
 fn mesh_splat_count_matches_sampler_formula() {
+    let _serial = serial();
     let imp = import_usd(&fixture("cube_lit.usdc")).unwrap();
     let surface: Vec<_> = imp.splats.iter().filter(|s| s.is_surface()).collect();
     assert_eq!(
@@ -103,6 +119,7 @@ fn mesh_splat_count_matches_sampler_formula() {
 
 #[test]
 fn mesh_splat_count_scales_with_density_setting() {
+    let _serial = serial();
     // At 10 spm each 2 m² triangle yields clamp(ceil(20),1,50)=20 → 240.
     let settings = UsdImportSettings { mesh_splats_per_sqm: 10.0, ..Default::default() };
     let imp = import_usd_with(&fixture("cube_lit.usdc"), &settings).unwrap();
@@ -115,6 +132,7 @@ fn mesh_splat_count_scales_with_density_setting() {
 
 #[test]
 fn instancer_emits_exact_volume_splats() {
+    let _serial = serial();
     let imp = import_usd(&fixture("instancer.usdc")).unwrap();
     let vol: Vec<_> = imp.splats.iter().filter(|s| s.is_volume()).collect();
     assert_eq!(vol.len(), 3, "exactly 3 instances");
@@ -141,6 +159,7 @@ fn instancer_emits_exact_volume_splats() {
 
 #[test]
 fn red_material_upsamples_to_spectrum_band_for_band() {
+    let _serial = serial();
     let imp = import_usd(&fixture("red_cube.usdc")).unwrap();
     let splat = imp
         .splats
@@ -163,6 +182,7 @@ fn red_material_upsamples_to_spectrum_band_for_band() {
 
 #[test]
 fn sphere_light_intensity_and_color_exact() {
+    let _serial = serial();
     let imp = import_usd(&fixture("cube_lit.usdc")).unwrap();
     assert_eq!(imp.lights.len(), 1, "one light");
     let light = &imp.lights[0];
@@ -175,6 +195,7 @@ fn sphere_light_intensity_and_color_exact() {
 
 #[test]
 fn camera_fov_and_position() {
+    let _serial = serial();
     let imp = import_usd(&fixture("cube_lit.usdc")).unwrap();
     let cam = imp.camera.as_ref().expect("camera present");
 
@@ -198,6 +219,7 @@ fn camera_fov_and_position() {
 
 #[test]
 fn usda_array_geometry_is_unsupported_not_silent_empty() {
+    let _serial = serial();
     let err = import_usd(&fixture("points_text.usda")).unwrap_err();
     assert_eq!(err, UsdError::UnsupportedTextArray);
 }
@@ -206,6 +228,7 @@ fn usda_array_geometry_is_unsupported_not_silent_empty() {
 
 #[test]
 fn open_succeeds_with_stats_for_cube_lit() {
+    let _serial = serial();
     let imp = import_usd(&fixture("cube_lit.usdc")).unwrap();
     assert_eq!(imp.stats.meshes, 1);
     assert_eq!(imp.stats.lights, 1);
@@ -222,6 +245,7 @@ fn open_succeeds_with_stats_for_cube_lit() {
 /// noise is expected — the contract is "no abort, an Err comes back".)
 #[test]
 fn hostile_inputs_error_instead_of_aborting() {
+    let _serial = serial();
     let dir = std::env::temp_dir().join("vox_usd_hostile");
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -266,6 +290,7 @@ fn hostile_inputs_error_instead_of_aborting() {
 /// IS the CPU defense and this test proves it on a 200-deep hostile file.
 #[test]
 fn deep_nesting_is_capped_not_stack_overflow() {
+    let _serial = serial();
     const DEPTH: usize = 200;
     let mut text = String::with_capacity(DEPTH * 24);
     text.push_str("#usda 1.0\n");
@@ -300,6 +325,7 @@ fn deep_nesting_is_capped_not_stack_overflow() {
 /// stops the walk with a warning instead of unbounded work.
 #[test]
 fn prim_count_cap_stops_hostile_breadth() {
+    let _serial = serial();
     let mut text = String::from("#usda 1.0\n");
     for i in 0..500 {
         text.push_str(&format!("def Xform \"w{i}\" {{}}\n"));
