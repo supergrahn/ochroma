@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod gpu_timing;
+pub mod tile_range_build;
 pub mod blend_skinning_compute;
 pub mod radix_sort_pass;
 pub mod compute_sort;
