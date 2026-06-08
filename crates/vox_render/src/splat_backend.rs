@@ -58,6 +58,67 @@ fn resolve_slang_kernel_dir() -> Option<std::path::PathBuf> {
     p.is_dir().then_some(p)
 }
 
+/// One-shot still: **path-trace** `splats` from a camera at `eye` looking at
+/// `target` (`fov_y` radians) at `width`×`height`, accumulating `spp` samples on
+/// the Vulkan backend, lit by a directional sun along `sun_dir` (direction toward
+/// the sun). Returns RGBA8 (`w*h*4`). Synchronous — for cinematic stills; the
+/// wgpu `TiledSplatRenderer` stays the interactive path. Builds a coloured,
+/// camera-facing scene via [`crate::splat_convert::splats_to_lit_scene`].
+#[cfg(feature = "spectra-native")]
+pub fn pathtrace_splats_to_rgba(
+    splats: &[vox_core::types::GaussianSplat],
+    eye: [f32; 3],
+    target: [f32; 3],
+    fov_y: f32,
+    width: u32,
+    height: u32,
+    spp: u32,
+    sun_dir: [f32; 3],
+) -> Result<Vec<u8>, String> {
+    use crate::splat_convert::{camera_layer, splats_to_lit_scene};
+    use spectra_scene_data::light::LightData;
+    use spectra_scene_state::{LightLayer, LIGHT_FLOATS};
+
+    let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
+    let mut config = RenderConfig::near_realtime(width, height);
+    config.slang_kernel_dir = resolve_slang_kernel_dir();
+    config.target_spp = spp;
+    let mut renderer = Renderer::new(gpu, config);
+
+    let mut scene = splats_to_lit_scene(splats, width, height, eye);
+
+    // The sun, as a directional light (it travels FROM the sun, i.e. -sun_dir).
+    let dir = [-sun_dir[0], -sun_dir[1], -sun_dir[2]];
+    let light = LightData::directional(dir, [1.0, 0.97, 0.92], 5.0);
+    let mut lv = light.to_f32_array().to_vec();
+    lv.resize(LIGHT_FLOATS, 0.0);
+    scene.lights = LightLayer { light_data: lv, light_count: 1 };
+
+    let view = glam::Mat4::look_at_rh(
+        glam::Vec3::from(eye),
+        glam::Vec3::from(target),
+        glam::Vec3::Y,
+    )
+    .to_cols_array();
+    let cam = camera_layer(view, fov_y, width, height);
+    scene.camera = cam.clone();
+    renderer
+        .load_scene_state(scene)
+        .map_err(|e| format!("load_scene_state: {e:?}"))?;
+    renderer.set_camera_view_matrix(cam.view_matrix);
+    renderer.set_view_proj(cam.view_matrix);
+
+    let frame = renderer.render().map_err(|e| format!("render: {e:?}"))?;
+    let n = (frame.width * frame.height) as usize;
+    let mut out = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        for ch in 0..4 {
+            out.push((frame.beauty[i * 4 + ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(feature = "spectra-native")]
 impl SpectraRenderBackend {
     /// Spawn render thread with near-realtime config (4 spp, DLSS, NRC, ReSTIR PT).

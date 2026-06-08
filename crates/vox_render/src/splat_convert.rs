@@ -149,6 +149,103 @@ pub fn camera_layer(view_matrix: [f32; 16], fov_y_radians: f32, width: u32, heig
     cam
 }
 
+/// Resolve a splat's 16-band spectral reflectance to a linear sRGB albedo.
+fn splat_albedo(s: &GaussianSplat) -> [f32; 3] {
+    use vox_core::spectral::{spectral_to_xyz, xyz_to_srgb, Illuminant, SpectralBands};
+    let bands = SpectralBands(std::array::from_fn(|i| half::f16::from_bits(s.spectral()[i]).to_f32()));
+    let xyz = spectral_to_xyz(&bands, &Illuminant::d65());
+    let lin = xyz_to_srgb(xyz);
+    [lin[0].clamp(0.0, 1.0), lin[1].clamp(0.0, 1.0), lin[2].clamp(0.0, 1.0)]
+}
+
+/// Convert splats into a **lit, coloured** [`SceneState`] for the path tracer.
+///
+/// Unlike [`splats_to_scene`] (axis-aligned grey billboards), each splat here
+/// becomes a **camera-facing** quad sized by its scale — so volume splats stay
+/// solid from any view — carrying a per-colour Lambert [`MaterialData`] built
+/// from the splat's spectral reflectance (resolved to sRGB albedo). Materials are
+/// deduplicated by quantised colour to keep the count small. `eye` is the camera
+/// position the quads face. **Additive**: `splats_to_scene` is unchanged.
+pub fn splats_to_lit_scene(splats: &[GaussianSplat], width: u32, height: u32, eye: [f32; 3]) -> SceneState {
+    use glam::Vec3;
+    use spectra_scene_data::MaterialData;
+    use spectra_scene_state::{MaterialLayer, MATERIAL_FLOATS};
+
+    let eye = Vec3::from(eye);
+    let renderable: Vec<&GaussianSplat> =
+        splats.iter().filter(|s| s.is_surface() || s.is_volume()).collect();
+
+    let mut positions = Vec::with_capacity(renderable.len() * 12);
+    let mut normals = Vec::with_capacity(renderable.len() * 12);
+    let mut uvs = Vec::with_capacity(renderable.len() * 8);
+    let mut indices = Vec::with_capacity(renderable.len() * 6);
+    let mut material_ids = Vec::with_capacity(renderable.len() * 2);
+    let mut params: Vec<f32> = Vec::new();
+    let mut palette: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+
+    for (i, s) in renderable.iter().enumerate() {
+        let c = Vec3::from(s.position());
+        let to_eye = {
+            let d = eye - c;
+            if d.length_squared() < 1e-8 { Vec3::Z } else { d.normalize() }
+        };
+        let up = if to_eye.y.abs() < 0.99 { Vec3::Y } else { Vec3::X };
+        let right = up.cross(to_eye).normalize();
+        let realup = to_eye.cross(right);
+        let r = if s.is_volume() {
+            s.scales().iter().copied().fold(0.0_f32, f32::max).max(1e-3)
+        } else {
+            s.scale_u().max(s.scale_v()).max(1e-3)
+        };
+        let (u, v) = (right * r, realup * r);
+        let corners = [c - u - v, c + u - v, c + u + v, c - u + v];
+        for p in &corners {
+            positions.extend_from_slice(&[p.x, p.y, p.z]);
+            normals.extend_from_slice(&[to_eye.x, to_eye.y, to_eye.z]);
+        }
+        uvs.extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]);
+        let base = (i * 4) as u32;
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+
+        // Per-colour material (deduped by 5-bit-per-channel quantised albedo).
+        let rgb = splat_albedo(s);
+        let key = (((rgb[0] * 31.0) as u32) << 10)
+            | (((rgb[1] * 31.0) as u32) << 5)
+            | ((rgb[2] * 31.0) as u32);
+        let mid = *palette.entry(key).or_insert_with(|| {
+            let idx = (params.len() / MATERIAL_FLOATS) as u32;
+            let mut mat = MaterialData::default();
+            mat.base_color = [rgb[0], rgb[1], rgb[2], 1.0];
+            mat.roughness = 0.85;
+            mat.metallic = 0.0;
+            let mut arr = mat.to_f32_array();
+            arr.resize(MATERIAL_FLOATS, 0.0);
+            params.extend_from_slice(&arr);
+            idx
+        });
+        material_ids.push(mid);
+        material_ids.push(mid);
+    }
+
+    let material_count = params.len() / MATERIAL_FLOATS;
+    let mut scene = SceneState::new(width, height);
+    scene.geometry.vertex_count = positions.len() / 3;
+    scene.geometry.triangle_count = indices.len() / 3;
+    scene.geometry.positions = positions;
+    scene.geometry.normals = normals;
+    scene.geometry.uvs = uvs;
+    scene.geometry.indices = indices;
+    scene.geometry.material_ids = material_ids;
+    scene.materials = MaterialLayer {
+        params,
+        spectral_spd: std::collections::HashMap::new(),
+        material_count,
+    };
+    scene.mark_geometry_changed();
+    scene.mark_materials_changed();
+    scene
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

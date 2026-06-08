@@ -31,6 +31,7 @@ spectra-gaussian-render = { path = "../../../spectra/rust/spectra-gaussian-rende
 spectra-renderer = { path = "../../../spectra/rust/spectra-renderer", optional = true }
 spectra-gpu = { path = "../../../spectra/rust/spectra-gpu", optional = true }
 spectra-scene-state = { path = "../../../spectra/rust/spectra-scene-state", optional = true }
+spectra-scene-data = { path = "../../../spectra/rust/spectra-scene-data", optional = true }
 
 [features]
 default = ["crucible"]
@@ -46,6 +47,7 @@ spectra-native = [
     "dep:spectra-renderer",
     "dep:spectra-gpu",
     "dep:spectra-scene-state",
+    "dep:spectra-scene-data",
     "spectra-gpu/vulkan-backend",
 ]
 crucible = ["vox_nodes/crucible"]
