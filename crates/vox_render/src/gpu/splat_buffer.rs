@@ -123,9 +123,40 @@ pub fn gaussian_splat_to_gpu_full(s: &GaussianSplat) -> GpuSplatFull {
     }
 }
 
+/// Pack per-splat transforms for `tile_assign`'s binding 6 (`splat_transforms`):
+/// two `vec4<f32>` per splat — `[scale_u, scale_v, scale_w, 0]` then the decoded
+/// rotation quaternion `[x, y, z, w]` (`tile_assign` builds the world covariance
+/// from these). [`gaussian_splat_to_gpu_full`] does NOT emit them, so the tiled
+/// renderer uploads this alongside the packed splats (both written once).
+pub fn gaussian_splats_to_transforms(splats: &[GaussianSplat]) -> Vec<[f32; 4]> {
+    let mut out = Vec::with_capacity(splats.len() * 2);
+    for s in splats {
+        let sc = s.scales();
+        let q = s.decoded_rotation();
+        out.push([sc[0], sc[1], sc[2], 0.0]);
+        out.push([q.x, q.y, q.z, q.w]);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transforms_pack_scale_then_quat_xyzw() {
+        use glam::Quat;
+        let s = GaussianSplat::volume([1.0, 2.0, 3.0], [0.3, 0.5, 0.7], Quat::IDENTITY, 255, [0u16; 16]);
+        let t = gaussian_splats_to_transforms(std::slice::from_ref(&s));
+        assert_eq!(t.len(), 2, "two vec4 per splat");
+        assert_eq!(t[0], [0.3, 0.5, 0.7, 0.0], "first vec4 = scale.xyz, 0");
+        // identity quaternion is (x,y,z,w) = (0,0,0,1)
+        let q = t[1];
+        assert!(
+            q[0].abs() < 1e-3 && q[1].abs() < 1e-3 && q[2].abs() < 1e-3 && (q[3] - 1.0).abs() < 1e-3,
+            "second vec4 = identity quat xyzw (0,0,0,1), got {q:?}"
+        );
+    }
 
     #[test]
     fn size_is_80_bytes() {
