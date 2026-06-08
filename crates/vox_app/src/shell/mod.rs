@@ -133,6 +133,14 @@ pub enum UndoEntry {
         /// before deleting, so a since-modified file is preserved.
         bytes: Vec<u8>,
     },
+    /// A grouped transaction (AAA Spec 07): a SEQUENCE of `members` applied as ONE
+    /// reversible step, so a multi-action plan ("add 5 birch trees" → five planted
+    /// trees) is reverted by ONE Ctrl+Z. Counts as a SINGLE undo-stack entry
+    /// (HISTORY_CAP-wise). Undo reverts the members in REVERSE order — the group's
+    /// members are NOT individually on the undo stack while in flight, so each must
+    /// drain its own correct `[start, len)` range highest-start-first off the LIVE
+    /// overlay (see [`Self::undo`]). The mechanism Specs 09 and 12 reuse.
+    Group { label: String, members: Vec<UndoEntry> },
 }
 
 /// A side-effecting request a registry command pushes for the shell to drain on
@@ -736,6 +744,37 @@ impl EditorShell {
             IntentAction::GenerateScript { params, name } => {
                 self.generate_script_intent(params, &name)
             }
+            IntentAction::PlantTree { species_label, species_id, class, pos } => {
+                // A lone PlantTree leaf (e.g. an LLM emitting a single PlantTree):
+                // plant it and push its entry directly — no group needed for one.
+                let e = self.plant_grown_tree_at(&species_label, class, species_id, pos);
+                self.push_undo(e);
+                format!("Planted a {species_label} — undo with Ctrl+Z")
+            }
+            IntentAction::Plan { label, steps } => {
+                // AAA Spec 07: execute every step in order, COLLECTING each planted
+                // tree's undo entry, then push ONE Group so the whole plan reverts
+                // with a single Ctrl+Z. Count + species are summarized in the receipt.
+                let mut members: Vec<UndoEntry> = Vec::new();
+                let mut species_label = String::new();
+                for step in steps {
+                    if let IntentAction::PlantTree { species_label: sl, species_id, class, pos } = step {
+                        if species_label.is_empty() {
+                            species_label = sl.clone();
+                        }
+                        members.push(self.plant_grown_tree_at(&sl, class, species_id, pos));
+                    }
+                }
+                let count = members.len();
+                if !members.is_empty() {
+                    self.push_undo(UndoEntry::Group { label: label.clone(), members });
+                }
+                if species_label.is_empty() {
+                    format!("{label} — undo with Ctrl+Z")
+                } else {
+                    format!("Planted {count} {species_label} — undo with Ctrl+Z")
+                }
+            }
             IntentAction::Unknown { suggestions } => {
                 // Teach by example: a domain person should see sentences they could
                 // actually type, then the nearest real commands as a fallback.
@@ -994,7 +1033,35 @@ impl EditorShell {
     /// stack is a no-op with an honest receipt.
     pub fn undo(&mut self) -> String {
         let receipt = match self.undo_stack.pop() {
-            Some(UndoEntry::ParamSet { node_id, key, target, prev, next }) => {
+            Some(UndoEntry::Group { label, members }) => {
+                // AAA Spec 07: revert a grouped transaction as ONE undo. The members
+                // are NOT individually on `undo_stack` while in flight, so we revert
+                // them HIGHEST-START-FIRST (reverse insertion order): each `undo_one`
+                // drains its own `[start, len)` off the LIVE overlay, and going in
+                // reverse means a member never has to be range-shifted by a later
+                // member's removal (the higher ranges go first). We do NOT
+                // additionally shift the in-flight members.
+                let n = members.len();
+                for member in members.into_iter().rev() {
+                    self.undo_one(member);
+                }
+                self.last_inspector_edit = None;
+                format!("Undid {label} ({n} steps) from the world")
+            }
+            Some(entry) => self.undo_one(entry),
+            None => "Nothing to undo".to_string(),
+        };
+        self.log_receipt(receipt.clone());
+        receipt
+    }
+
+    /// Revert ONE undo entry against the LIVE shell state and return its receipt.
+    /// Holds the per-variant revert bodies that [`Self::undo`] used to inline, so
+    /// both the single-entry path and a [`UndoEntry::Group`]'s per-member reverts
+    /// run identical logic. (A `Group` is never passed here — `undo` flattens it.)
+    fn undo_one(&mut self, entry: UndoEntry) -> String {
+        match entry {
+            UndoEntry::ParamSet { node_id, key, target, prev, next } => {
                 // Revert the CONCRETE node that was edited (not first-of-kind), so a
                 // graph with two nodes of the same kind reverts the right one.
                 self.bridge.apply_param(node_id, key, prev);
@@ -1003,7 +1070,7 @@ impl EditorShell {
                 self.last_inspector_edit = None;
                 format!("Undid: {target} {} -> {} (back to {})", fmt_num(next), fmt_num(prev), fmt_num(prev))
             }
-            Some(UndoEntry::PlacedAsset { name, start, len }) => {
+            UndoEntry::PlacedAsset { name, start, len } => {
                 // Remove EXACTLY this asset's `[start, start+len)` range from the
                 // overlay (NOT the tail — a later-undone asset may sit above it) and
                 // its World entity, then invalidate the viewport cache so the asset
@@ -1033,7 +1100,7 @@ impl EditorShell {
                 self.last_inspector_edit = None;
                 format!("Removed {name} ({removed} points) from the world")
             }
-            Some(UndoEntry::GeneratedScript { label, path, bytes }) => {
+            UndoEntry::GeneratedScript { label, path, bytes } => {
                 self.last_inspector_edit = None;
                 // Never destroy what the user has since changed: only delete the
                 // file if it is byte-for-byte the content we wrote. A missing file,
@@ -1060,10 +1127,18 @@ impl EditorShell {
                     ),
                 }
             }
-            None => "Nothing to undo".to_string(),
-        };
-        self.log_receipt(receipt.clone());
-        receipt
+            UndoEntry::Group { label, members } => {
+                // Defensive: a Group should never be passed to undo_one (undo()
+                // flattens it), but handle it by reverting in reverse so the type
+                // stays total instead of panicking.
+                let n = members.len();
+                for member in members.into_iter().rev() {
+                    self.undo_one(member);
+                }
+                self.last_inspector_edit = None;
+                format!("Undid {label} ({n} steps) from the world")
+            }
+        }
     }
 
     /// Drain queued [`ShellRequest`]s (theme swap, tab focus, undo) — the effects
@@ -1284,6 +1359,30 @@ impl EditorShell {
         verb: &str,
         note: &str,
     ) {
+        // Plant through the non-pushing core, then push the returned undo entry —
+        // the single-asset path. (A grouped plan collects the entries instead and
+        // pushes ONE Group; see `run_intent`'s Plan arm + `plant_grown_tree_at`.)
+        let e = self.plant_asset_collect(label, kind, splats, pos, verb, note);
+        self.push_undo(e);
+    }
+
+    /// The non-pushing planting CORE (AAA Spec 07): does everything [`plant_asset`]
+    /// does — records the overlay range, increments the per-label counter, formats
+    /// the numbered name, extends the overlay, pushes the World entity, invalidates
+    /// the viewport cache, logs the receipt + Output Log line — EXCEPT it does NOT
+    /// touch the undo stack. It RETURNS the [`UndoEntry::PlacedAsset`] instead, so a
+    /// caller can either push it directly (single asset, via [`plant_asset`]) or
+    /// COLLECT several into one [`UndoEntry::Group`] (a multi-step plan). Behavior
+    /// for a single asset is byte-identical to the old `plant_asset`.
+    fn plant_asset_collect(
+        &mut self,
+        label: &str,
+        kind: &str,
+        splats: Vec<GaussianSplat>,
+        pos: [f32; 3],
+        verb: &str,
+        note: &str,
+    ) -> UndoEntry {
         let len = splats.len();
         let start = self.overlay.len();
         // Number the entity per label: "Forge Terrain 01", "…02", …
@@ -1299,10 +1398,35 @@ impl EditorShell {
         });
         // Invalidate the cached viewport texture so the asset shows next frame.
         self.viewport_tex = None;
-        self.push_undo(UndoEntry::PlacedAsset { name: name.clone(), start, len });
         let receipt = format!("{verb} {name} ({len} points{note}) — undo with Ctrl+Z");
         self.log_receipt(receipt.clone());
         self.push_output_log(format!("[{kind}] {receipt}"));
+        UndoEntry::PlacedAsset { name, start, len }
+    }
+
+    /// Grow a tree of `species_id`/`class` and plant it at the ABSOLUTE world
+    /// position `pos` (AAA Spec 07's per-step planter). The skeleton-to-splats path
+    /// already bakes `TREE_PLANT_ORIGIN` into every splat, so we translate each
+    /// splat by the DELTA `pos - TREE_PLANT_ORIGIN` (NOT by `pos` absolute — that
+    /// would land the tree at `pos*2 - origin`). Returns the entry from the
+    /// non-pushing core so the caller groups several into one undo transaction.
+    fn plant_grown_tree_at(
+        &mut self,
+        species_label: &str,
+        class: &str,
+        species_id: i32,
+        pos: [f32; 3],
+    ) -> UndoEntry {
+        let skeleton = plugins::grow_tree_skeleton(species_id, 3.0, 200);
+        let mut splats = plugins::skeleton_to_splats(&skeleton, class, species_id);
+        // The splats are baked at TREE_PLANT_ORIGIN; shift them to `pos` by the delta.
+        let origin = plugins::TREE_PLANT_ORIGIN;
+        let delta = [pos[0] - origin[0], pos[1] - origin[1], pos[2] - origin[2]];
+        for s in &mut splats {
+            let p = s.position();
+            s.set_position([p[0] + delta[0], p[1] + delta[1], p[2] + delta[2]]);
+        }
+        self.plant_asset_collect(species_label, "vegetation", splats, pos, "Grew a", "")
     }
 
     /// Append a line to the Output Log, capping it at [`HISTORY_CAP`].
@@ -3947,6 +4071,54 @@ mod tests {
         assert_eq!(*len, terrain_count);
     }
 
+    // === AAA Spec 07: multi-step Plan → ONE grouped-undo transaction ===
+
+    /// HEADLINE: "add 5 birch trees" plants FIVE distinct entities laid out in a
+    /// row (strictly increasing x), as ONE undo-stack Group entry — so a SINGLE
+    /// Ctrl+Z restores both the world and the overlay exactly to their pre-plan
+    /// state. Proves the grouped-undo reverse-order range math is correct.
+    #[test]
+    fn add_five_birch_trees_is_one_undo_group() {
+        let mut shell = EditorShell::default();
+        let e0 = shell.entities.len();
+        let o0 = shell.overlay.len();
+
+        let receipt = shell.run_intent("add 5 birch trees");
+        assert!(receipt.contains('5'), "receipt must name the count: {receipt}");
+        assert!(receipt.contains("Silver Birch"), "receipt must name the species: {receipt}");
+
+        // Five distinct new World entities were added.
+        assert_eq!(shell.entities.len(), e0 + 5, "five trees → five new entities");
+        // Their x-positions are strictly increasing (a row), proving delta-correct
+        // placement (an off-by-origin bug would not produce this exact monotone row).
+        let new_xs: Vec<f32> = shell.entities[e0..].iter().map(|e| e.pos[0]).collect();
+        assert!(
+            new_xs.windows(2).all(|w| w[1] > w[0]),
+            "the five trees must form a row with strictly increasing x: {new_xs:?}"
+        );
+        assert_eq!(
+            new_xs,
+            vec![-4.0, 0.0, 4.0, 8.0, 12.0],
+            "delta-translation must land the row at x = [-4,0,4,8,12]"
+        );
+        assert!(shell.overlay.len() > o0, "planting five trees adds overlay splats");
+        // ONE Group on the undo stack — NOT five separate entries.
+        assert_eq!(shell.undo_stack.len(), 1, "the plan is ONE grouped undo entry");
+        assert!(
+            matches!(shell.undo_stack[0], UndoEntry::Group { ref members, .. } if members.len() == 5),
+            "the single entry must be a Group of five members"
+        );
+
+        // One Ctrl+Z (via the one-command-surface) restores EVERYTHING.
+        assert!(shell.registry.run("edit.undo"));
+        shell.drain_requests();
+        assert_eq!(shell.entities.len(), e0, "one undo restores the world entity count");
+        assert_eq!(shell.overlay.len(), o0, "one undo restores the overlay length exactly");
+        assert!(shell.undo_stack.is_empty(), "the Group is consumed by the single undo");
+
+        println!("OK: 5 trees, distinct x, one undo restores 0");
+    }
+
     // === World panel empty-state (teaching copy is reachable + honest) ===
 
     /// The empty-WORLD branch selects the teaching copy that points at the real
@@ -4042,19 +4214,44 @@ mod tests {
         );
     }
 
-    /// The prefilled intent line is a REAL working add: completing "add a birch
-    /// tree" and running it through the same `run_intent` the palette submits
-    /// inserts a node into the live graph (the affordance is not theatre).
+    /// The prefilled intent line is a REAL working add (the affordance is not
+    /// theatre). AAA Spec 07 split "add <thing>" into two real effects:
+    /// (a) a non-species noun ("add a vegetation node") inserts a real GRAPH node;
+    /// (b) a species phrase ("add a birch tree") now plants a real TREE — a World
+    /// entity + overlay splats + one undo entry — instead of a bare graph node.
+    /// Both are genuine mutations, so the affordance produces real work either way.
     #[test]
     fn add_intent_from_prefill_inserts_a_real_node() {
+        // (a) A non-species "add" still inserts a real graph node (the AddNode path).
         let mut shell = EditorShell::default();
         let nodes_before = shell.bridge.node_count();
-        let receipt = shell.run_intent("add a birch tree");
+        let receipt = shell.run_intent("add a vegetation node");
         assert!(
             shell.bridge.node_count() > nodes_before,
-            "completing the pre-filled 'add ' intent must add a real graph node \
+            "a non-species 'add … node' intent must add a real graph node \
              (before={nodes_before}, after={}, receipt={receipt:?})",
             shell.bridge.node_count()
+        );
+
+        // (b) A species phrase plants a real tree (Spec 07): one new World entity,
+        // overlay splats, and exactly one undo entry — a genuine world mutation.
+        let mut shell = EditorShell::default();
+        let entities_before = shell.entities.len();
+        let overlay_before = shell.overlay.len();
+        let receipt = shell.run_intent("add a birch tree");
+        assert_eq!(
+            shell.entities.len(),
+            entities_before + 1,
+            "'add a birch tree' must plant one real tree entity (receipt={receipt:?})"
+        );
+        assert!(
+            shell.overlay.len() > overlay_before,
+            "planting a tree must add overlay splats (receipt={receipt:?})"
+        );
+        assert_eq!(
+            shell.undo_stack.len(),
+            1,
+            "a single-tree plan pushes exactly one undo entry (receipt={receipt:?})"
         );
     }
 

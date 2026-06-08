@@ -75,10 +75,36 @@ pub enum IntentAction {
         /// The desired file-name stem in domain language (e.g. "windmill_spin").
         name: String,
     },
+    /// A single grown tree to plant at an absolute world position (AAA Spec 07,
+    /// the leaf of a multi-step [`IntentAction::Plan`]). `species_id`/`class` mirror
+    /// a `FLORAPRIME_SPECIES` row; `species_label` is the friendly name used in the
+    /// receipt and the World-entity numbering. The executor grows the skeleton,
+    /// translates it to `pos`, and plants it through the shared planting core.
+    PlantTree {
+        species_label: String,
+        species_id: i32,
+        class: &'static str,
+        pos: [f32; 3],
+    },
+    /// A FLAT, sequenced container of validated leaf actions executed as ONE
+    /// grouped-undo transaction (AAA Spec 07): "add 5 birch trees" → five
+    /// [`PlantTree`] steps planted in order, reverted by ONE Ctrl+Z. Flat-only by
+    /// construction — a `Plan` never nests another `Plan` (the parser and the LLM
+    /// validator both reject nesting), so the executor can iterate `steps` once.
+    Plan { label: String, steps: Vec<IntentAction> },
     /// The parser could not map the sentence to any action. Carries the three
     /// nearest real command titles (fuzzy) so the assistant can suggest honestly.
     Unknown { suggestions: Vec<String> },
 }
+
+/// The most steps a single [`IntentAction::Plan`] may contain. A request for more
+/// (e.g. "add 9999999 trees") is CLAMPED to this, so one sentence can never plant
+/// an unbounded number of entities in a single grouped transaction.
+pub const PLAN_MAX_STEPS: usize = 64;
+
+/// The spacing (metres) between consecutive planted trees when a multi-tree
+/// [`IntentAction::Plan`] lays them out in a row along +X from `TREE_PLANT_ORIGIN`.
+pub const ROW_STEP_M: f32 = 4.0;
 
 /// Parse a natural-language sentence into an [`IntentAction`].
 ///
@@ -129,6 +155,15 @@ pub fn parse_intent(text: &str, registry: &CommandRegistry) -> IntentAction {
     // down" / "make the light pulse". Placed BEFORE add-node and theme so the
     // verb phrasings ("spin", "bob", "pulse") win over a bare noun match.
     if let Some(action) = try_generate_script(&lower) {
+        return action;
+    }
+
+    // --- 3b. Plant a Plan of trees: "add 5 birch trees" (AAA Spec 07). ---------
+    // Placed BEFORE try_add_node so "add 5 birch trees" becomes a multi-step Plan
+    // (five distinct entities, one grouped undo) rather than the node-graph "add a
+    // tree" → AddNode. Returns None for non-species nouns ("add vegetation", "add a
+    // building node"), so those still fall through to try_add_node below.
+    if let Some(action) = try_plant_plan(&lower) {
         return action;
     }
 
@@ -542,8 +577,23 @@ enum LlmIntent {
     RunCommand(LlmRunCommand),
     #[serde(rename = "GenerateScript")]
     GenerateScript(LlmGenerateScript),
+    #[serde(rename = "PlantTree")]
+    PlantTree(LlmPlantTree),
+    #[serde(rename = "Plan")]
+    Plan(Vec<LlmIntent>),
     #[serde(rename = "Unknown")]
     Unknown,
+}
+
+/// The LLM's PlantTree shape (AAA Spec 07): a species word + a count, resolved
+/// through the SAME [`resolve_species`] synonym map the deterministic parser uses
+/// and CLAMPED to `1..=PLAN_MAX_STEPS`, so the model can never plant an unknown
+/// species or an unbounded count.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LlmPlantTree {
+    species: String,
+    count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -659,9 +709,98 @@ fn parse_llm_intent(raw: &str, schema: &SchemaContext) -> Option<IntentAction> {
             };
             Some(IntentAction::GenerateScript { params, name: p.name })
         }
+        LlmIntent::PlantTree(p) => {
+            // Resolve the species via the SAME synonym map as the parser; clamp the
+            // count to 1..=PLAN_MAX_STEPS. A PlantTree with a count is a row of trees
+            // (one entity per step), so it resolves to a flat Plan, mirroring the
+            // deterministic parser's "add N <species>" path.
+            let (label, id, class) = resolve_species(&p.species.to_lowercase())?;
+            let n = p.count.clamp(1, PLAN_MAX_STEPS);
+            Some(plant_row_plan(label, id, class, n))
+        }
+        LlmIntent::Plan(members) => {
+            // FLAT-ONLY: map each member through the SAME per-variant validation and
+            // REJECT any nested Plan, so a Plan can never contain another Plan. A
+            // member that is itself a PlantTree row expands into its own leaves,
+            // which are spliced in flat.
+            let mut steps: Vec<IntentAction> = Vec::new();
+            for m in members {
+                if matches!(m, LlmIntent::Plan(_)) {
+                    return None; // flat-only: no nested Plans
+                }
+                match resolve_llm_member(m, schema)? {
+                    // A PlantTree row resolves to a Plan; splice its leaves in flat.
+                    IntentAction::Plan { steps: inner, .. } => steps.extend(inner),
+                    other => steps.push(other),
+                }
+            }
+            Some(IntentAction::Plan {
+                label: format!("Planned {} steps", steps.len()),
+                steps,
+            })
+        }
         LlmIntent::Unknown => Some(IntentAction::Unknown {
             suggestions: Vec::new(),
         }),
+    }
+}
+
+/// Validate a single already-parsed Plan MEMBER into an [`IntentAction`], reusing
+/// the per-variant resolution. The caller has already rejected nested Plans, so a
+/// member is never a `Plan` here.
+fn resolve_llm_member(member: LlmIntent, schema: &SchemaContext) -> Option<IntentAction> {
+    match member {
+        LlmIntent::SetParam(p) => {
+            let (node_kind, key, target) = schema.resolve(&p.node_kind, &p.key)?;
+            Some(IntentAction::SetParam { node_kind, key, target, value: p.value })
+        }
+        LlmIntent::AdjustParam(p) => {
+            let (node_kind, key, target) = schema.resolve(&p.node_kind, &p.key)?;
+            Some(IntentAction::AdjustParam { node_kind, key, target, delta: p.delta })
+        }
+        LlmIntent::AddNode(p) => {
+            let (kind, friendly) = schema.resolve_add(&p.kind)?;
+            Some(IntentAction::AddNode { kind, friendly })
+        }
+        LlmIntent::RunCommand(p) => {
+            let id = canonical_command_id(&p.id)?;
+            Some(IntentAction::RunCommand { id, receipt: format!("Ran {id}") })
+        }
+        LlmIntent::GenerateScript(_) => None, // a script is not a plant step
+        LlmIntent::PlantTree(p) => {
+            let (label, id, class) = resolve_species(&p.species.to_lowercase())?;
+            Some(plant_row_plan(label, id, class, p.count.clamp(1, PLAN_MAX_STEPS)))
+        }
+        LlmIntent::Unknown => Some(IntentAction::Unknown { suggestions: Vec::new() }),
+        LlmIntent::Plan(_) => None, // unreachable: caller rejected nested Plans
+    }
+}
+
+/// Build a flat [`IntentAction::Plan`] of `n` stepped [`IntentAction::PlantTree`]
+/// leaves for a resolved species, laid out in a row along +X from the tree origin
+/// — the SAME geometry the deterministic [`try_plant_plan`] produces. Shared so
+/// the parser and the LLM validator can never disagree on tree placement.
+fn plant_row_plan(
+    species_label: &'static str,
+    species_id: i32,
+    class: &'static str,
+    n: usize,
+) -> IntentAction {
+    let steps: Vec<IntentAction> = (0..n)
+        .map(|i| IntentAction::PlantTree {
+            species_label: species_label.to_string(),
+            species_id,
+            class,
+            pos: [
+                plant_origin()[0] + (i as f32) * ROW_STEP_M,
+                plant_origin()[1],
+                plant_origin()[2],
+            ],
+        })
+        .collect();
+    IntentAction::Plan {
+        label: format!("Planted {n} {species_label}"),
+        steps,
     }
 }
 
@@ -753,6 +892,8 @@ fn describe_intent_variants() -> &'static str {
   {"AddNode":{"kind":"<noun, e.g. tree/building/biome>"}}
   {"RunCommand":{"id":"view.theme_light|view.theme_dark|view.focus_crucible|view.focus_node_graph|view.focus_viewport"}}
   {"GenerateScript":{"template":"spin|bob|pulse_light","name":"<file stem, e.g. windmill_spin>","params":{"<slot>":<number>}}}
+  {"PlantTree":{"species":"birch|oak|pine|spruce|tree","count":<int>}}
+  {"Plan":{"label":"<text>","steps":[<leaf>,...]}}
   {"Unknown":null}"#
 }
 
@@ -925,6 +1066,85 @@ fn generate_subject(lower: &str) -> &'static str {
         }
     }
     "scene"
+}
+
+/// Resolve a species WORD to a real FloraPrime `(species_label, species_id,
+/// class)` row, or `None` if the word is not a known species. The bare noun
+/// "tree" (with no species qualifier) defaults to Silver Birch. Shared by the
+/// deterministic [`try_plant_plan`] parser and the LLM `PlantTree` validator so
+/// both agree on what "birch"/"oak"/"a tree" mean.
+fn resolve_species(word: &str) -> Option<(&'static str, i32, &'static str)> {
+    if word.contains("birch") {
+        Some(("Silver Birch", 0, "broadleaf"))
+    } else if word.contains("oak") {
+        Some(("English Oak", 1, "broadleaf"))
+    } else if word.contains("pine") {
+        Some(("Scots Pine", 2, "conifer"))
+    } else if word.contains("spruce") {
+        Some(("Norway Spruce", 3, "conifer"))
+    } else if word.contains("tree") {
+        // A bare "tree" with no species qualifier defaults to Silver Birch.
+        Some(("Silver Birch", 0, "broadleaf"))
+    } else {
+        None
+    }
+}
+
+/// "add 5 birch trees" / "plant 3 oaks" / "grow a pine" → a flat
+/// [`IntentAction::Plan`] of N [`IntentAction::PlantTree`] steps laid out in a row
+/// along +X from `TREE_PLANT_ORIGIN` (AAA Spec 07). Matches a leading
+/// `add|plant|grow` verb, an optional integer count (default 1, clamped to
+/// `1..=PLAN_MAX_STEPS`), then a species word. Returns `None` when no species word
+/// is present (so "add vegetation" / "add a building node" fall through to
+/// [`try_add_node`]), keeping the node-graph add path intact.
+fn try_plant_plan(lower: &str) -> Option<IntentAction> {
+    let rest = lower
+        .strip_prefix("add ")
+        .or_else(|| lower.strip_prefix("plant "))
+        .or_else(|| lower.strip_prefix("grow "))?;
+
+    // Find the species word anywhere in the tail; bail (None) if there is none, so
+    // non-species "add X" sentences fall through to the node-graph add path.
+    let (species_label, species_id, class) = rest
+        .split_whitespace()
+        .find_map(|w| resolve_species(w))?;
+
+    // The count is the first integer token, if any (e.g. "5" in "add 5 birch
+    // trees"); absent → 1. Clamp to the documented 1..=PLAN_MAX_STEPS bound.
+    let n = rest
+        .split_whitespace()
+        .find_map(|w| w.parse::<i64>().ok())
+        .map(|v| v.clamp(1, PLAN_MAX_STEPS as i64) as usize)
+        .unwrap_or(1);
+
+    let steps: Vec<IntentAction> = (0..n)
+        .map(|i| {
+            let pos = [
+                plant_origin()[0] + (i as f32) * ROW_STEP_M,
+                plant_origin()[1],
+                plant_origin()[2],
+            ];
+            IntentAction::PlantTree {
+                species_label: species_label.to_string(),
+                species_id,
+                class,
+                pos,
+            }
+        })
+        .collect();
+
+    Some(IntentAction::Plan {
+        label: format!("Planted {n} {species_label}"),
+        steps,
+    })
+}
+
+/// The world-space origin trees are laid out from (the first tree of a row lands
+/// here; subsequent ones step +X by [`ROW_STEP_M`]). Mirrors
+/// `plugins::TREE_PLANT_ORIGIN`, kept local so `intent.rs` (which must not depend
+/// on the planting plugins for parsing) stays self-contained and unit-testable.
+const fn plant_origin() -> [f32; 3] {
+    super::plugins::TREE_PLANT_ORIGIN
 }
 
 /// "add a building node" / "add vegetation" / "create a tree". Maps the friendly
@@ -1168,12 +1388,14 @@ mod tests {
             IntentAction::AddNode { .. } => "AddNode",
             IntentAction::RunCommand { .. } => "RunCommand",
             IntentAction::GenerateScript { .. } => "GenerateScript",
+            IntentAction::PlantTree { .. } => "PlantTree",
+            IntentAction::Plan { .. } => "Plan",
             IntentAction::Unknown { .. } => "Unknown",
         };
         // Every arm's name MUST appear in the prompt description, or the model is
         // told about a variant set that no longer matches the enum.
         let desc = describe_intent_variants();
-        for name in ["SetParam", "AdjustParam", "AddNode", "RunCommand", "GenerateScript", "Unknown"] {
+        for name in ["SetParam", "AdjustParam", "AddNode", "RunCommand", "GenerateScript", "PlantTree", "Plan", "Unknown"] {
             assert!(desc.contains(name), "prompt description must mention variant {name}");
         }
         assert!(desc.contains(mentioned));
@@ -1389,6 +1611,53 @@ mod tests {
                 assert_eq!(speed, 16.0, "hostile speed must clamp to the documented max at the seam");
             }
             other => panic!("expected clamped Spin GenerateScript, got {other:?}"),
+        }
+    }
+
+    // === AAA Spec 07: multi-step Plan (Ask-Ochroma → sequenced PlantTree) ===
+
+    /// "add 5 birch trees" parses to a flat Plan of FIVE PlantTree steps, each a
+    /// Silver Birch (id 0), laid out in a row stepped +4m along X from the tree
+    /// origin: the five x-coordinates are EXACTLY [-4, 0, 4, 8, 12].
+    #[test]
+    fn plant_plan_parses_five_stepped_positions() {
+        match parse_intent("add 5 birch trees", &registry()) {
+            IntentAction::Plan { steps, .. } => {
+                assert_eq!(steps.len(), 5, "five trees → five steps");
+                let xs: Vec<f32> = steps
+                    .iter()
+                    .map(|s| match s {
+                        IntentAction::PlantTree { species_label, species_id, pos, .. } => {
+                            assert_eq!(species_label, "Silver Birch");
+                            assert_eq!(*species_id, 0);
+                            pos[0]
+                        }
+                        other => panic!("each step must be a PlantTree, got {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(
+                    xs,
+                    vec![-4.0, 0.0, 4.0, 8.0, 12.0],
+                    "five trees must step +4m along X from the tree origin"
+                );
+            }
+            other => panic!("expected Plan, got {other:?}"),
+        }
+    }
+
+    /// A pathological count is CLAMPED: "add 9999999 trees" parses to a Plan whose
+    /// step count is exactly PLAN_MAX_STEPS (no unbounded planting).
+    #[test]
+    fn plant_plan_clamps_count() {
+        match parse_intent("add 9999999 trees", &registry()) {
+            IntentAction::Plan { steps, .. } => {
+                assert_eq!(
+                    steps.len(),
+                    PLAN_MAX_STEPS,
+                    "an over-large count must clamp to PLAN_MAX_STEPS"
+                );
+            }
+            other => panic!("expected a clamped Plan, got {other:?}"),
         }
     }
 
