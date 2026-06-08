@@ -1,16 +1,16 @@
 name: CI
 
 # Ochroma's workspace references sibling repos via relative path deps
-# (`../../../spectra/...`, `../../../crucible/...`). Cargo must
-# load those manifests even when the features that use them are disabled, so a
-# lone checkout can NEVER build (this is why every CI run since March failed at
-# "failed to load manifest"). Each job therefore checks out all three repos
+# (`../../../spectra/...`, `../../../crucible/...`, `../../../openusd-rs`). Cargo
+# must load those manifests even when the features that use them are disabled, so
+# a lone checkout can NEVER build (this is why every CI run since March failed at
+# "failed to load manifest"). Each job therefore checks out all FOUR repos
 # side-by-side under $GITHUB_WORKSPACE, reproducing the local ~/src layout.
 #
 # REQUIRED SECRET: `SIBLING_REPOS_PAT` — a fine-grained PAT with read-only
-# Contents access to supergrahn/spectra and supergrahn/crucible (both
-# private). Fork PRs don't receive secrets, so their CI fails at checkout —
-# accepted, since forks can't build the private deps anyway.
+# Contents access to supergrahn/spectra, supergrahn/crucible AND
+# supergrahn/openusd-rs (all private). Fork PRs don't receive secrets, so their
+# CI fails at checkout — accepted, since forks can't build the private deps anyway.
 
 on:
   push:
@@ -51,6 +51,12 @@ jobs:
           repository: supergrahn/crucible
           token: ${{ secrets.SIBLING_REPOS_PAT }}
           path: crucible
+
+      - uses: actions/checkout@v4
+        with:
+          repository: supergrahn/openusd-rs
+          token: ${{ secrets.SIBLING_REPOS_PAT }}
+          path: openusd-rs
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -118,6 +124,12 @@ jobs:
           repository: supergrahn/crucible
           token: ${{ secrets.SIBLING_REPOS_PAT }}
           path: crucible
+
+      - uses: actions/checkout@v4
+        with:
+          repository: supergrahn/openusd-rs
+          token: ${{ secrets.SIBLING_REPOS_PAT }}
+          path: openusd-rs
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
@@ -150,6 +162,12 @@ jobs:
           repository: supergrahn/crucible
           token: ${{ secrets.SIBLING_REPOS_PAT }}
           path: crucible
+
+      - uses: actions/checkout@v4
+        with:
+          repository: supergrahn/openusd-rs
+          token: ${{ secrets.SIBLING_REPOS_PAT }}
+          path: openusd-rs
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

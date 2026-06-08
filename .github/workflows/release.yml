@@ -45,9 +45,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      # Three-repo side-by-side checkout — mirrors ci.yml. ochroma's path deps
-      # resolve `../../../{spectra,crucible}` from each crate dir to
-      # $GITHUB_WORKSPACE/{spectra,crucible}.
+      # Four-repo side-by-side checkout — mirrors ci.yml. ochroma's path deps
+      # resolve `../../../{spectra,crucible,openusd-rs}` from each crate dir to
+      # $GITHUB_WORKSPACE/{spectra,crucible,openusd-rs}.
       - uses: actions/checkout@v4
         with:
           path: ochroma
@@ -63,6 +63,12 @@ jobs:
           repository: supergrahn/crucible
           token: ${{ secrets.SIBLING_REPOS_PAT }}
           path: crucible
+
+      - uses: actions/checkout@v4
+        with:
+          repository: supergrahn/openusd-rs
+          token: ${{ secrets.SIBLING_REPOS_PAT }}
+          path: openusd-rs
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
