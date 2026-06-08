@@ -49,14 +49,41 @@ pub struct ImportResult {
 }
 
 /// Import an asset with full pipeline.
+///
+/// AAA Spec 10 — the import GATE: after the per-format loader produces splats,
+/// every imported asset is validated for integrity (finite positions, positive
+/// scales) and spectral validity (finite, non-all-zero radiance). Integrity
+/// errors REJECT the import (a NaN position or non-finite radiance would silently
+/// corrupt the scene); warnings (e.g. an all-zero-radiance splat) pass but are
+/// appended to `warnings`. Catches corruption at the boundary, before it reaches
+/// the scene graph — for ALL formats (ply/glb/gltf/vxm) in one place.
 pub fn import_asset(path: &Path, settings: &ImportSettings) -> Result<ImportResult, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    match ext {
+    let mut result = match ext {
         "ply" => import_ply(path, settings),
         "glb" | "gltf" => import_gltf_full(path, settings),
         "vxm" => import_vxm(path, settings),
         _ => Err(format!("Unsupported format: .{}", ext)),
+    }?;
+
+    let report =
+        crate::asset_validate::validate_splats(&result.splats, crate::asset_validate::ValidationBudget::UNLIMITED);
+    if !report.is_ok() {
+        return Err(format!(
+            "asset failed validation ({} error(s)): {}",
+            report.error_count(),
+            report
+                .receipts()
+                .into_iter()
+                .filter(|r| r.starts_with("[error]"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
     }
+    if report.warning_count() > 0 {
+        result.warnings.extend(report.receipts());
+    }
+    Ok(result)
 }
 
 fn import_ply(path: &Path, settings: &ImportSettings) -> Result<ImportResult, String> {
