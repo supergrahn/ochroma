@@ -21,6 +21,7 @@ pub mod intent;
 pub mod plugins;
 pub mod forge_native;
 pub mod crucible_native;
+pub mod play;
 pub mod script_gen;
 pub mod viewport;
 
