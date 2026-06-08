@@ -1,6 +1,7 @@
 pub mod advisor;
 pub mod agent;
 pub mod city_sim;
+pub mod care_economy;
 pub mod buildings;
 pub mod citizen;
 pub mod disasters;

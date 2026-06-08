@@ -76,6 +76,11 @@ pub struct Citizen {
     pub needs: Needs,
     pub daily_state: DailyState,
     pub workplace: Option<u32>,
+    /// Citizen ids this citizen is the guardian of (e.g. a parent's children).
+    /// Drives the "dependent-care gates employment" mechanic: a guardian of a
+    /// dependent in a care-requiring lifecycle stage can't take a job unless a
+    /// covering care service exists. Empty for citizens with no dependents.
+    pub dependents: Vec<u32>,
 }
 
 impl Citizen {
@@ -117,8 +122,20 @@ impl CitizenManager {
             needs: Needs::default(),
             daily_state: DailyState::AtHome,
             workplace: None,
+            dependents: Vec::new(),
         });
         id
+    }
+
+    /// Record that `guardian_id` is responsible for `dependent_id` (e.g. a parent
+    /// for a child). Used by the dependent-care employment gate. No-op if the
+    /// guardian doesn't exist or the dependent is already recorded.
+    pub fn add_dependent(&mut self, guardian_id: u32, dependent_id: u32) {
+        if let Some(g) = self.citizens.iter_mut().find(|c| c.id == guardian_id) {
+            if !g.dependents.contains(&dependent_id) {
+                g.dependents.push(dependent_id);
+            }
+        }
     }
 
     pub fn count(&self) -> usize {

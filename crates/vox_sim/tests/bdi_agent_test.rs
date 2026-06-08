@@ -14,6 +14,7 @@ fn make_citizen(id: u32, residence: Option<u32>, employment: Option<u32>, needs:
         needs,
         daily_state: DailyState::AtHome,
         workplace: employment,
+        dependents: Vec::new(),
     }
 }
 

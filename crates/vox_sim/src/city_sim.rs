@@ -25,10 +25,10 @@ use vox_core::lwc::WorldCoord;
 
 use crate::agent::AgentManager;
 use crate::buildings::{BuildingManager, BuildingType};
-use crate::citizen::CitizenManager;
+use crate::citizen::{CitizenManager, LifecycleStage};
 use crate::economy::CityBudget;
 use crate::employment::{
-    calculate_crime_rate, match_employment, match_housing, process_education,
+    calculate_crime_rate, match_employment_gated, match_housing, process_education,
 };
 use crate::migration::MigrationSystem;
 use crate::roads::{RoadNetwork, RoadType};
@@ -345,8 +345,16 @@ impl CitySim {
             match_housing(citizens, &mut self.buildings);
         }
         {
+            // Employment matching, now gated by the dependent-care mechanic: a
+            // guardian of a Child can't take a job unless Childcare covers home.
             let citizens = self.citizens.all_mut();
-            match_employment(citizens, &mut self.buildings);
+            match_employment_gated(
+                citizens,
+                &mut self.buildings,
+                &self.services,
+                LifecycleStage::Child,
+                ServiceType::Childcare,
+            );
         }
 
         // Mirror each citizen's new residence onto its commuter home position so that, if
