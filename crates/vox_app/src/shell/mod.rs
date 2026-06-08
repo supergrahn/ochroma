@@ -1221,6 +1221,12 @@ impl EditorShell {
         let Some((ra, rb)) = self.demo_groups.clone() else {
             return self.status.clone();
         };
+        // The forgery surfaces can be undone (Ctrl+Z drains their overlay range):
+        // if either recorded range is now out of bounds, the demo no longer exists,
+        // so keep the prior status rather than panic on a stale slice.
+        if ra.end > self.overlay.len() || rb.end > self.overlay.len() {
+            return self.status.clone();
+        }
         let group_a = &self.overlay[ra];
         let group_b = &self.overlay[rb];
         let gallery = &self.reference_illuminant;
@@ -3495,6 +3501,30 @@ mod tests {
             "status must name the active light: {:?}",
             shell.status
         );
+    }
+
+    /// AAA Spec 03 regression: undoing a planted forgery surface (which shrinks
+    /// the overlay below the recorded demo ranges) must NOT panic when the HUD is
+    /// next recomputed (Ctrl+L). The bounds guard keeps the prior status instead
+    /// of slicing a stale range.
+    #[test]
+    fn forgery_demo_survives_undo_then_illuminant_cycle() {
+        let mut shell = EditorShell::default();
+        shell.requests.borrow_mut().push(ShellRequest::ForgeryDemo);
+        shell.drain_requests();
+        assert!(shell.demo_groups.is_some(), "forgery planted");
+
+        // Undo removes the last planted forgery surface, shrinking the overlay so
+        // the second recorded range is now out of bounds.
+        shell.requests.borrow_mut().push(ShellRequest::Undo);
+        shell.drain_requests();
+
+        // Cycling the inspection light recomputes the HUD — would index-panic on
+        // the stale range before the bounds guard; now it returns safely.
+        shell.requests.borrow_mut().push(ShellRequest::CycleIlluminant);
+        shell.drain_requests();
+        let hud = shell.hud_receipt();
+        assert!(!hud.is_empty(), "hud_receipt must return a safe string, not panic");
     }
 
     /// UNDO: after growing a tree, undo restores the world count AND the viewport
