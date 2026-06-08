@@ -30,7 +30,11 @@
 //! `screen.y = (-ndc.y*0.5+0.5)*h = (1-(ndc.y*0.5+0.5))*h` — byte-for-byte the
 //! same pixel row `tile_assign` used to pick the tile. The `tile_assign` uniform
 //! keeps the canonical (un-negated) `view_proj`. This was confirmed empirically
-//! against the CPU `spectra_render` coverage in `tiled_vs_cpu_coverage`.
+//! in `tiled_y_orientation_matches_cpu`: the GPU lit region's centroid
+//! co-locates with the CPU `spectra_render` reference (dy ≈ 4px / 256), which a
+//! mirrored binding would not — coverage MAGNITUDE legitimately differs (the GPU
+//! EWA footprint is tighter than the CPU path), so orientation, not area, is the
+//! invariant asserted.
 
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
@@ -493,6 +497,14 @@ impl TiledSplatRenderer {
     /// Adapter name backing the shared device (diagnostics).
     pub fn adapter_name(&self) -> &str {
         self.ctx.adapter_name()
+    }
+
+    /// The persistent on-device splat buffer (`array<GpuSplatFull>`, 80 B/splat).
+    /// Exposed so the resident GI→raster path ([`crate::gpu::gi_combine`]) can
+    /// fold GI radiance into `spectral[0..8]` in place before [`Self::render`]
+    /// reads it — additive accessor, no change to existing logic.
+    pub fn splat_buf(&self) -> &wgpu::Buffer {
+        &self.splat_buf
     }
 
     /// Are GPU timestamps live (vs. wall-clock fallback)?

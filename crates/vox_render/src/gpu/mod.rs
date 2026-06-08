@@ -29,6 +29,8 @@ pub mod many_light_gpu;
 pub mod hybrid_compose_gpu;
 pub mod atom_budget_gpu;
 pub mod relight_gpu;
+pub mod gi_combine;
+pub mod resident_gi_raster;
 
 use std::sync::Arc;
 

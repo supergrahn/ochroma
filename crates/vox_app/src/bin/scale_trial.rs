@@ -29,6 +29,7 @@ use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
 use vox_render::atom_budget::{AtomBudgetSelector, Selection};
 use vox_render::clas;
+use vox_render::gpu::resident_gi_raster::ResidentGiRaster;
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::gpu::tiled_splat_renderer::TiledSplatRenderer;
 use vox_render::gpu::GpuContext;
@@ -394,6 +395,141 @@ fn run_gpu_tiled(subset: &[GaussianSplat], render_cam: &RenderCamera) -> ExitCod
     }
 }
 
+/// Read layers 0 and 1 (the 8 spectral bands) of a resident-render output
+/// texture back to the host and count pixels with any non-zero band. This is the
+/// proof readback for the resident path (whose `render_frame` returns a raw
+/// `wgpu::Texture`, not a `TiledFrame`). Returns `(non_black_count, total)`.
+fn count_nonblack_spectral(
+    ctx: &GpuContext,
+    tex: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> (usize, usize) {
+    let device = ctx.device();
+    let queue = ctx.queue();
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded_bpr = (width * 16).div_ceil(align) * align;
+    let layer_bytes = (padded_bpr * height) as u64;
+
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("resident_proof_readback"),
+        size: layer_bytes * 2,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("resident_proof_enc"),
+    });
+    for layer in 0u32..2 {
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: layer as u64 * layer_bytes,
+                    bytes_per_row: Some(padded_bpr),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+    }
+    queue.submit(Some(enc.finish()));
+
+    let slice = readback.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    device.poll(wgpu::Maintain::Wait);
+    let total = (width * height) as usize;
+    if !matches!(rx.recv(), Ok(Ok(()))) {
+        return (0, total);
+    }
+    let mut non_black = 0usize;
+    {
+        let data = slice.get_mapped_range();
+        // Read f32 directly from the mapped bytes (no bytemuck dep in vox_app).
+        let f32_at = |byte_idx: usize| -> f32 {
+            f32::from_le_bytes([
+                data[byte_idx],
+                data[byte_idx + 1],
+                data[byte_idx + 2],
+                data[byte_idx + 3],
+            ])
+        };
+        let padded_bpr_b = padded_bpr as usize;
+        let layer1_off_b = layer_bytes as usize;
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let b0 = y * padded_bpr_b + x * 16; // 16 bytes/texel (rgba32f)
+                let b1 = layer1_off_b + y * padded_bpr_b + x * 16;
+                let any = (0..4).any(|k| f32_at(b0 + k * 4) != 0.0)
+                    || (0..4).any(|k| f32_at(b1 + k * 4) != 0.0);
+                if any {
+                    non_black += 1;
+                }
+            }
+        }
+    }
+    readback.unmap();
+    (non_black, total)
+}
+
+/// Run the RESIDENT GI -> raster path (AAA Spec 11) over `subset`: GI compute
+/// output bound directly into the rasterizer with ZERO CPU readback between GI
+/// and the raster (no per-frame GI poll). Prints the Done-When line. Exits 0 when
+/// >10% non-black AND `map_async/frame == 0`; else 1. On no adapter, prints
+/// "SKIPPED no adapter" and exits 0.
+fn run_gpu_resident(subset: &[GaussianSplat], render_cam: &RenderCamera) -> ExitCode {
+    let Some(ctx) = headless_context() else {
+        println!("[scale_trial] SKIPPED no adapter");
+        return ExitCode::SUCCESS;
+    };
+    let mut resident = match ResidentGiRaster::new(ctx.clone(), subset, RENDER_W, RENDER_H) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("[scale_trial] gpu_resident FAIL: construction: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Noon hour drives a non-trivial sky-ambient GI term.
+    let tex = match resident.render_frame(render_cam, 12.0) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("[scale_trial] gpu_resident FAIL: render: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (non_black, total) = count_nonblack_spectral(&ctx, &tex, RENDER_W, RENDER_H);
+    let pct = non_black as f64 / total as f64 * 100.0;
+    let map_async = resident.map_async_count();
+
+    println!(
+        "[scale_trial] gpu_resident frames=1 | non_black_px={}/{} ({:.1}%) | map_async/frame={}",
+        non_black, total, pct, map_async
+    );
+    if pct > 10.0 && map_async == 0 {
+        ExitCode::SUCCESS
+    } else {
+        if pct <= 10.0 {
+            println!("[scale_trial] gpu_resident FAIL: only {:.1}% non-black (need > 10%)", pct);
+        }
+        if map_async != 0 {
+            println!(
+                "[scale_trial] gpu_resident FAIL: map_async/frame={} (need 0 — GI poll not eliminated)",
+                map_async
+            );
+        }
+        ExitCode::FAILURE
+    }
+}
+
 fn main() -> ExitCode {
     println!("[scale_trial] === Ochroma atom-budget scale trial ===");
 
@@ -488,6 +624,15 @@ fn main() -> ExitCode {
     // assertions) — it is a self-contained renderer proof.
     if std::env::args().any(|a| a == "--gpu-tiled") {
         return run_gpu_tiled(&subset, &render_cam);
+    }
+
+    // --- 5c. Optional RESIDENT GI->raster proof (`--gpu-resident`) -----------
+    // AAA Spec 11: runs GI compute with its output bound DIRECTLY into the
+    // rasterizer — ZERO CPU readback between GI and the raster (no per-frame GI
+    // poll). Reuses the selected `subset` + `render_cam`; prints the Done-When
+    // line and exits (self-contained renderer proof).
+    if std::env::args().any(|a| a == "--gpu-resident") {
+        return run_gpu_resident(&subset, &render_cam);
     }
 
     let t_raster = Instant::now();

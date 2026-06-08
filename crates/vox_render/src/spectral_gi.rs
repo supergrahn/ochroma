@@ -432,6 +432,48 @@ impl GpuGiPass {
             );
         }
     }
+
+    /// RESIDENT-PATH dispatch (AAA Spec 11): byte-for-byte identical to
+    /// [`Self::dispatch`] EXCEPT it OMITS the trailing
+    /// `copy_buffer_to_buffer(radiance_buffer → readback_buffer)`. The GI output
+    /// stays resident in `radiance_buffer` (a legal `STORAGE | COPY_SRC` read
+    /// input) so a downstream consumer can bind it directly on the same device —
+    /// no CPU readback, no `map_async`, no `poll(Wait)`. The compute work, the
+    /// uniform packing, and the splat upload are reproduced verbatim so the
+    /// resident `radiance_buffer` holds EXACTLY the values the readback path
+    /// would have copied out.
+    pub fn dispatch_resident(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        splats_gpu: &[GpuSplatEntry],
+        splat_count: u32,
+        max_emitters: u32,
+        sky_ambient: [f32; 16],
+    ) {
+        let count = splat_count.min(self.max_splats);
+        queue.write_buffer(&self.splat_buffer, 0, bytemuck::cast_slice(splats_gpu));
+        let mut sky_packed = [[0.0f32; 4]; 4];
+        for b in 0..16 {
+            sky_packed[b / 4][b % 4] = sky_ambient[b];
+        }
+        let params = GiParamsUniform {
+            splat_count: count,
+            max_emitters,
+            _pad0: 0,
+            _pad1: 0,
+            sky_ambient: sky_packed,
+        };
+        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("gi_pass_resident"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
+        // NO copy_buffer_to_buffer(radiance → readback): the output stays resident.
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -690,11 +732,55 @@ impl GpuGi {
             .collect();
         Ok(out)
     }
+
+    /// The resident GI radiance buffer (`array<array<f32,16>>`, 16 f32/splat,
+    /// `STORAGE | COPY_SRC`). On the resident GI→raster path this binds DIRECTLY
+    /// as a read input to [`crate::gpu::gi_combine::GiCombinePass`] — additive
+    /// accessor exposing `GpuGiPass::radiance_buffer`, no logic change.
+    pub fn radiance_buffer(&self) -> &wgpu::Buffer {
+        &self.pass.radiance_buffer
+    }
+
+    /// RESIDENT GI dispatch (AAA Spec 11): pack `splats`, compute the sky-ambient
+    /// term from `hour`, and record the GI compute pass into `encoder` via
+    /// [`GpuGiPass::dispatch_resident`] — which OMITS the readback copy. Performs
+    /// NO `queue.submit`, NO `map_async`, NO `poll(Wait)`: the caller batches this
+    /// into one encoder with the downstream fold + raster and submits ONCE. The
+    /// GI output is left resident in [`Self::radiance_buffer`].
+    ///
+    /// Mirrors [`Self::step`]'s packing exactly (`Self::pack` per splat, the same
+    /// `sky_ambient_for_hour`, the same `MAX_EMITTERS` prefix bound), so the
+    /// resident `radiance_buffer` holds the IDENTICAL per-band radiance the
+    /// readback path would have produced — only the readback is dropped.
+    pub fn dispatch_gi_resident(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        splats: &[GaussianSplat],
+        hour: f32,
+    ) {
+        if splats.is_empty() {
+            return;
+        }
+        let count = (splats.len() as u32).min(self.capacity);
+        let n = count as usize;
+        let gpu_entries: Vec<GpuSplatEntry> = splats[..n].iter().map(Self::pack).collect();
+        let sky_ambient = Self::sky_ambient_for_hour(hour);
+        self.pass.dispatch_resident(
+            encoder,
+            queue,
+            &gpu_entries,
+            count,
+            MAX_EMITTERS,
+            sky_ambient,
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spectral::RenderCamera;
     use vox_core::types::GaussianSplat;
 
     fn make_splat(pos: [f32; 3], spectral_val: f32, opacity: u8) -> GaussianSplat {
@@ -1272,6 +1358,299 @@ mod tests {
             "[gpu_gi shared-device] adapter={} receiver band8={recv_b8:.4} \
              max|Δ| vs standalone={max_delta:.2e}",
             ctx.adapter_name()
+        );
+    }
+
+    /// Read layers 0 and 1 (the 8 spectral bands) of a 4-layer `rgba32float`
+    /// texture array back to the host as one `[f32; 8]` per pixel. This is the
+    /// PROOF readback shared by both sides of the resident-vs-readback oracle —
+    /// it reads the FINAL raster output, not the GI buffer, so it does not affect
+    /// the resident path's GI→raster zero-readback property. Returns
+    /// `(pixels, lit_count)` where a pixel is "lit" when any of its 8 bands > 0.
+    fn read_spectral_layers(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        tex: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> (Vec<[f32; 8]>, usize) {
+        let unpadded_bpr = width * 16; // rgba32float = 16 bytes/texel
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bpr = unpadded_bpr.div_ceil(align) * align;
+        let layer_bytes = (padded_bpr * height) as u64;
+
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("resident_proof_readback"),
+            size: layer_bytes * 2,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("resident_proof_readback_enc"),
+        });
+        for layer in 0u32..2 {
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: layer as u64 * layer_bytes,
+                        bytes_per_row: Some(padded_bpr),
+                        rows_per_image: Some(height),
+                    },
+                },
+                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            );
+        }
+        queue.submit(Some(enc.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        device.poll(wgpu::Maintain::Wait);
+        assert!(matches!(rx.recv(), Ok(Ok(()))), "proof readback map must succeed");
+
+        let total = (width * height) as usize;
+        let mut out = Vec::with_capacity(total);
+        let mut lit = 0usize;
+        {
+            let data = slice.get_mapped_range();
+            let floats: &[f32] = bytemuck::cast_slice(&data);
+            let row_floats = (padded_bpr / 4) as usize;
+            let layer0_off = 0usize;
+            let layer1_off = (layer_bytes / 4) as usize;
+            for y in 0..height as usize {
+                for x in 0..width as usize {
+                    let b0 = layer0_off + y * row_floats + x * 4;
+                    let b1 = layer1_off + y * row_floats + x * 4;
+                    let px = [
+                        floats[b0], floats[b0 + 1], floats[b0 + 2], floats[b0 + 3],
+                        floats[b1], floats[b1 + 1], floats[b1 + 2], floats[b1 + 3],
+                    ];
+                    if px.iter().any(|&v| v != 0.0) {
+                        lit += 1;
+                    }
+                    out.push(px);
+                }
+            }
+        }
+        readback.unmap();
+        (out, lit)
+    }
+
+    /// THE HEADLINE TEST (AAA Spec 11): the resident GI -> raster SEAM must be
+    /// BIT-IDENTICAL to the readback oracle.
+    ///
+    /// "The resident result is bit-identical to the readback oracle" is proven at
+    /// the GI -> raster HANDOFF BUFFER — the splat buffer `splat_raster` reads.
+    /// The resident path binds the GI radiance buffer DIRECTLY as input to
+    /// [`GiCombinePass`], which folds `radiance[i][0..8]` into
+    /// `splat_buf[i].spectral[0..8]` (f16-quantized via `quantize_f16` =
+    /// `f32_to_f16_rne`) with ZERO CPU readback. The READBACK ORACLE runs the SAME
+    /// GI via the verbatim CPU-Vec path ([`GpuGi::step`]) and re-packs the GI-lit
+    /// splats through `gaussian_splat_to_gpu_full` — exactly what
+    /// `TiledSplatRenderer::new` uploads. The two splat buffers must be
+    /// bit-identical (`max_abs < 1e-6`), which proves the on-device f16 fold
+    /// reproduces the oracle's `half::f16` round-trip EXACTLY.
+    ///
+    /// We assert bit-identity at the SEAM rather than on the rendered texture
+    /// because the FROZEN tiled chain's radix sort scatters with `atomicAdd`, so
+    /// the per-tile splat order — and thus the overlap-blended pixel values — is
+    /// run-to-run NONDETERMINISTIC: rendering the IDENTICAL splats twice on the
+    /// SAME renderer already differs by ~1.0 over ~12k/65536 pixels (measured;
+    /// see the printed `raster_nondeterminism` line below). That nondeterminism
+    /// is a property of the frozen chain, OUT OF SCOPE for Spec 11, and would
+    /// make a `< 1e-6` TEXTURE bound physically impossible for ANY two-render
+    /// comparison — so the bit-exact bound is asserted where it is real and
+    /// meaningful: the GI output bound directly into the raster's input buffer.
+    /// The full resident `render_frame` still runs as a liveness/anti-vacuous
+    /// check (it lights >200 pixels) and the residency proof (`map_async == 0`).
+    #[test]
+    fn resident_gi_seam_matches_readback_oracle() {
+        use crate::gpu::gi_combine::GiCombinePass;
+        use crate::gpu::resident_gi_raster::ResidentGiRaster;
+        use crate::gpu::splat_buffer::{gaussian_splat_to_gpu_full, GpuSplatFull};
+        use wgpu::util::DeviceExt;
+
+        const W: u32 = 256;
+        const H: u32 = 256;
+
+        let Some(ctx) = try_gpu_context("resident_gi_seam") else { return };
+        let device = ctx.device();
+        let queue = ctx.queue();
+
+        // Non-trivial emitter+receiver scene: a bright emitter + a dense overlapping
+        // grid of dark receivers in the upper-world band, so the raster lights >200
+        // pixels. >200 splats total.
+        let mut scene: Vec<GaussianSplat> = Vec::new();
+        scene.push(GaussianSplat::volume(
+            [0.0, 2.5, 0.5],
+            [0.3, 0.3, 0.3],
+            glam::Quat::IDENTITY,
+            255,
+            [f16::from_f32(0.8).to_bits(); 16],
+        ));
+        const NX: i32 = 18;
+        const NY: i32 = 14;
+        let (x0, x1) = (-3.0f32, 3.0f32);
+        let (y0, y1) = (0.6f32, 4.4f32);
+        for gy in 0..NY {
+            for gx in 0..NX {
+                let x = x0 + (x1 - x0) * gx as f32 / (NX - 1) as f32;
+                let y = y0 + (y1 - y0) * gy as f32 / (NY - 1) as f32;
+                scene.push(GaussianSplat::volume(
+                    [x, y, 0.0],
+                    [0.25, 0.25, 0.25],
+                    glam::Quat::IDENTITY,
+                    20, // dark receiver (opacity <= 128 -> not an emitter)
+                    [f16::from_f32(0.05).to_bits(); 16],
+                ));
+            }
+        }
+        let n = scene.len();
+        assert!(n > 200, "scene must be non-trivial, got {n}");
+
+        let cam = RenderCamera {
+            view: glam::Mat4::look_at_rh(
+                glam::Vec3::new(0.0, 2.5, 8.0),
+                glam::Vec3::new(0.0, 2.5, 0.0),
+                glam::Vec3::Y,
+            ),
+            proj: glam::Mat4::perspective_rh(
+                std::f32::consts::FRAC_PI_3,
+                W as f32 / H as f32,
+                0.1,
+                100.0,
+            ),
+        };
+        let hour = 12.0;
+
+        // ── SEAM (bit-exact): resident GI -> fold into the SAME splat buffer the
+        //    raster reads. Reproduce the resident handoff into a COPY_SRC buffer
+        //    (the tiled renderer's internal splat buffer is not COPY_SRC) using the
+        //    EXACT resident components: dispatch_gi_resident (no readback) + the
+        //    GiCombinePass fold, in ONE encoder, ONE submit, NO map/poll on the GI
+        //    handoff. ──────────────────────────────────────────────────────────
+        let packed: Vec<GpuSplatFull> = scene.iter().map(gaussian_splat_to_gpu_full).collect();
+        let seam_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("resident_seam_splats"),
+            contents: bytemuck::cast_slice(&packed),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+        let gi = GpuGi::new_with_context(&ctx, n as u32);
+        let fold = GiCombinePass::new(device);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("resident_seam_enc"),
+        });
+        gi.dispatch_gi_resident(&mut enc, queue, &scene, hour); // GI output stays resident
+        fold.dispatch(device, &mut enc, gi.radiance_buffer(), &seam_buf, n as u32);
+        let bytes = (n * std::mem::size_of::<GpuSplatFull>()) as u64;
+        let seam_rb = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("resident_seam_rb"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        enc.copy_buffer_to_buffer(&seam_buf, 0, &seam_rb, 0, bytes);
+        queue.submit(Some(enc.finish())); // ONE submit for GI + fold + proof copy
+        let slice = seam_rb.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        device.poll(wgpu::Maintain::Wait);
+        assert!(matches!(rx.recv(), Ok(Ok(()))), "seam readback map must succeed");
+        let resident_splats: Vec<GpuSplatFull> = {
+            let d = slice.get_mapped_range();
+            bytemuck::cast_slice::<u8, GpuSplatFull>(&d).to_vec()
+        };
+        seam_rb.unmap();
+
+        // READBACK ORACLE: GpuGi::step (verbatim CPU-Vec readback path) -> re-pack
+        // via gaussian_splat_to_gpu_full (what TiledSplatRenderer::new uploads).
+        let lit_splats = GpuGi::new_with_context(&ctx, n as u32)
+            .step(&scene, hour)
+            .expect("oracle gi step");
+        let oracle_splats: Vec<GpuSplatFull> =
+            lit_splats.iter().map(gaussian_splat_to_gpu_full).collect();
+
+        // The receiver grid must actually be lit (anti-vacuous): the dark
+        // receivers (originally spectral 0.05) must have risen on the oracle path.
+        let lit_count = (1..n)
+            .filter(|&i| oracle_splats[i].spectral[0] > 0.05 + 1e-4)
+            .count();
+        assert!(
+            lit_count > 100,
+            "GI must light the receivers off their dark floor (anti-vacuous), got {lit_count}"
+        );
+
+        // Bit-identity at the GI->raster handoff buffer (spectral[0..8]).
+        let mut max_abs = 0.0f32;
+        for i in 0..n {
+            for b in 0..8 {
+                let d = (resident_splats[i].spectral[b] - oracle_splats[i].spectral[b]).abs();
+                if d > max_abs {
+                    max_abs = d;
+                }
+            }
+        }
+
+        // ── LIVENESS + residency proof: run the full resident frame loop. ──────
+        let mut resident = match ResidentGiRaster::new(ctx.clone(), &scene, W, H) {
+            Ok(r) => r,
+            Err(e) => panic!("resident construction failed on a box with a GPU: {e}"),
+        };
+        let res_tex = resident.render_frame(&cam, hour).expect("resident render");
+        // IMPORTANT: render_frame reuses ONE output texture, so we must copy the
+        // result to a host Vec BEFORE the next render overwrites it.
+        let (res_px_a, lit_px) =
+            read_spectral_layers(ctx.device(), ctx.queue(), &res_tex, W, H);
+
+        // Honest measurement of the frozen-chain raster nondeterminism that makes a
+        // texture-level <1e-6 bound impossible: render the SAME resident frame again
+        // and report the per-pixel delta (expected ~1.0 over thousands of pixels).
+        let res_tex2 = resident.render_frame(&cam, hour).expect("resident render 2");
+        let (res_px_b, _) = read_spectral_layers(ctx.device(), ctx.queue(), &res_tex2, W, H);
+        let mut raster_max = 0.0f32;
+        let mut raster_diff_px = 0usize;
+        for (a, b) in res_px_a.iter().zip(res_px_b.iter()) {
+            let mut pd = 0.0f32;
+            for k in 0..8 {
+                pd = pd.max((a[k] - b[k]).abs());
+            }
+            if pd > 1e-6 {
+                raster_diff_px += 1;
+            }
+            raster_max = raster_max.max(pd);
+        }
+
+        eprintln!(
+            "[resident_gi_seam] seam max_abs={max_abs:e} lit_px={lit_px} lit_receivers={lit_count} \
+             (asserting seam < 1e-6)"
+        );
+        eprintln!(
+            "[resident_gi_seam] raster_nondeterminism (frozen chain, out of scope): \
+             same-frame-twice max_abs={raster_max:e} diff_px={raster_diff_px}/{} \
+             — why the bit-exact bound is asserted at the SEAM, not the texture",
+            res_px_a.len()
+        );
+
+        assert!(lit_px > 200, "resident raster must light >200 pixels (anti-vacuous), got {lit_px}");
+        assert!(
+            max_abs < 1e-6,
+            "resident GI->raster SEAM must be bit-identical to the readback oracle: max_abs={max_abs:e}"
+        );
+        assert_eq!(
+            resident.map_async_count(),
+            0,
+            "resident path must perform ZERO GI-side map_async (the residency proof)"
         );
     }
 
