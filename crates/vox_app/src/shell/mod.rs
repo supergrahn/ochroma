@@ -31,6 +31,7 @@ use graph_bridge::GraphBridge;
 use host::{InstalledPlugin, PluginCtx, TabDecl};
 use plugins::{CrucibleScene, ForgeBuilding, ForgeTerrain, GrownTree};
 use vox_core::types::GaussianSplat;
+use vox_render::relight::IlluminantSpec;
 use vox_editor::node_graph::NodeId;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -176,6 +177,18 @@ pub enum ShellRequest {
     /// intent mode pre-filled with "add ", routing the user straight into the
     /// Ask-Ochroma path that really inserts a node (`IntentAction::AddNode`).
     OpenAddPalette,
+    /// AAA Spec 03: plant the two metameric "forgery" surfaces into the overlay
+    /// (identical under the gallery lamp, divergent under the inspection lamp) and
+    /// set the live ΔsRGB HUD receipt. The wedge made one-key reachable.
+    ForgeryDemo,
+    /// Advance the active inspection illuminant to the next in the cycle
+    /// (neutral → cool_led → tungsten → daylight → …) and recompute the ΔsRGB
+    /// receipt. Bound to Ctrl+L and the `view.illuminant` command — the dramatic
+    /// "flip the forgery" key.
+    CycleIlluminant,
+    /// Set the active inspection illuminant explicitly (the `--illuminant <name>`
+    /// proof-mode path); recomputes the ΔsRGB receipt and re-rasterizes.
+    SetIlluminant(IlluminantSpec),
 }
 
 /// The editor shell — owns the dock layout, panel state, and tokens.
@@ -273,6 +286,19 @@ pub struct EditorShell {
     /// Defaults to the real [`Self::default_script_root`] (`assets/scripts/generated`);
     /// tests override it to a temp dir so they never leave files under `assets/`.
     script_root: PathBuf,
+    /// AAA Spec 03 — the illuminant the scene splats were (approximately) lit by:
+    /// the "gallery lamp" the forgery pair was matched under. Used as the
+    /// `reference` for `derive_intrinsic` AND as the metamer baseline in the HUD.
+    /// `neutral` by construction ([`metamer_demo_pair`] is neutral-metameric).
+    reference_illuminant: IlluminantSpec,
+    /// AAA Spec 03 — the active inspection light the viewport renders the overlay
+    /// under. Equals `reference_illuminant` by default (the forgery reads
+    /// identical); Ctrl+L cycles it so the forgery splits under cool_led/tungsten.
+    active_illuminant: IlluminantSpec,
+    /// AAA Spec 03 — the two overlay ranges of the planted forgery surfaces, so
+    /// [`Self::hud_receipt`] can slice them out of `overlay` and compute the live
+    /// ΔsRGB divergence. `None` until the forgery demo is planted.
+    demo_groups: Option<(std::ops::Range<usize>, std::ops::Range<usize>)>,
 }
 
 impl Default for EditorShell {
@@ -337,6 +363,12 @@ impl EditorShell {
             intent_backend: intent::IntentBackend::from_env(),
             intent_schema: intent::SchemaContext::default_editable(),
             script_root: Self::default_script_root(),
+            // The forgery pair is metameric under NEUTRAL, so the gallery lamp +
+            // bake reference is neutral; the active light starts equal (identical
+            // appearance) until the user switches it with Ctrl+L.
+            reference_illuminant: IlluminantSpec::parse("neutral").unwrap(),
+            active_illuminant: IlluminantSpec::parse("neutral").unwrap(),
+            demo_groups: None,
             entities: vec![
                 ShellEntity {
                     name: "Townhouse_Row_03".into(),
@@ -542,6 +574,13 @@ impl EditorShell {
         if ctrl_z {
             self.registry.run("edit.undo");
         }
+        // Ctrl+L cycles the inspection light — the AAA Spec-03 "flip the forgery"
+        // key. Under the gallery lamp the planted metamer pair reads identical;
+        // under cool_led/tungsten it splits and the ΔsRGB HUD flips to "(forgery)".
+        let ctrl_l = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::L));
+        if ctrl_l {
+            self.requests.borrow_mut().push(ShellRequest::CycleIlluminant);
+        }
 
         self.menu_bar(ctx);
         self.toolbar(ctx);
@@ -578,7 +617,13 @@ impl EditorShell {
 
         // Ensure the viewport scene texture is uploaded (rebuilt when the planted
         // overlay changed, since planting/undo invalidate the cache).
-        let viewport_tex = viewport::scene_texture(ctx, &mut self.viewport_tex, &self.overlay);
+        let viewport_tex = viewport::scene_texture(
+            ctx,
+            &mut self.viewport_tex,
+            &self.overlay,
+            &self.reference_illuminant,
+            &self.active_illuminant,
+        );
 
         let mut inspector_undo_edits: Vec<(NodeId, &'static str, String, f32)> = Vec::new();
         let mut content_action: Option<ContentAction> = None;
@@ -1039,6 +1084,21 @@ impl EditorShell {
                 ShellRequest::OpenAddPalette => {
                     self.palette.open_intent_prefilled("add ");
                 }
+                ShellRequest::ForgeryDemo => self.plant_forgery_demo(),
+                ShellRequest::CycleIlluminant => {
+                    let next = Self::next_illuminant(&self.active_illuminant.name());
+                    self.active_illuminant =
+                        IlluminantSpec::parse(next).unwrap_or_else(|| {
+                            IlluminantSpec::parse("neutral").unwrap()
+                        });
+                    self.viewport_tex = None; // re-rasterize under the new light
+                    self.status = self.hud_receipt();
+                }
+                ShellRequest::SetIlluminant(spec) => {
+                    self.active_illuminant = spec;
+                    self.viewport_tex = None;
+                    self.status = self.hud_receipt();
+                }
             }
         }
     }
@@ -1103,6 +1163,90 @@ impl EditorShell {
             "Cooked a",
             &note,
         );
+    }
+
+    /// AAA Spec 03 — plant the two metameric "forgery" surfaces. Seeds the
+    /// verified [`vox_render::relight::metamer_demo_pair`], bakes each reflectance
+    /// under the gallery (reference) light so the stored spectral is RADIANCE,
+    /// plants BOTH as small surfaces through the shared [`Self::plant_asset`] core
+    /// at offset positions, records their overlay ranges, and sets the live ΔsRGB
+    /// HUD receipt. Under the gallery lamp the two read identical; switch the
+    /// inspection light (Ctrl+L) and they split — the wedge no RGB engine can copy.
+    fn plant_forgery_demo(&mut self) {
+        let (base_refl, alt_refl) = vox_render::relight::metamer_demo_pair();
+        let ref_spd = self.reference_illuminant.spd();
+        let bake = |refl: &[f32; 16]| -> [u16; 16] {
+            let radiance = vox_render::relight::forward_band(refl, &ref_spd);
+            std::array::from_fn(|b| half::f16::from_f32(radiance[b].clamp(0.0, 65504.0)).to_bits())
+        };
+        // A small 3×3 patch of volume splats centered at `center`.
+        let surface = |center: [f32; 3], bits: [u16; 16]| -> Vec<GaussianSplat> {
+            let mut v = Vec::new();
+            for ix in -1..=1 {
+                for iy in -1..=1 {
+                    v.push(GaussianSplat::volume(
+                        [center[0] + ix as f32 * 0.35, center[1] + iy as f32 * 0.35, center[2]],
+                        [0.3, 0.3, 0.3],
+                        glam::Quat::IDENTITY,
+                        255,
+                        bits,
+                    ));
+                }
+            }
+            v
+        };
+        let pos_a = [-1.3f32, 0.6, -4.5];
+        let pos_b = [1.3f32, 0.6, -4.5];
+        let group_a = surface(pos_a, bake(&base_refl));
+        let group_b = surface(pos_b, bake(&alt_refl));
+
+        let start_a = self.overlay.len();
+        self.plant_asset("Forgery Original", "forgery", group_a, pos_a, "Planted a", "");
+        let range_a = start_a..self.overlay.len();
+        let start_b = self.overlay.len();
+        self.plant_asset("Forgery Copy", "forgery", group_b, pos_b, "Planted a", "");
+        let range_b = start_b..self.overlay.len();
+
+        self.demo_groups = Some((range_a, range_b));
+        self.status = self.hud_receipt();
+    }
+
+    /// AAA Spec 03 — the live ΔsRGB receipt over the two planted forgery surfaces.
+    /// Computes TWO numbers from CURRENT shell state (never hardcoded): the
+    /// divergence under the gallery lamp (the metamer baseline, ≈0) and under the
+    /// active inspection light. The label flips to "(forgery)" once the active
+    /// divergence clears 0.03 — the spectral signature an RGB capture cannot hold.
+    /// Returns the prior status unchanged if no forgery has been planted.
+    pub(crate) fn hud_receipt(&self) -> String {
+        let Some((ra, rb)) = self.demo_groups.clone() else {
+            return self.status.clone();
+        };
+        let group_a = &self.overlay[ra];
+        let group_b = &self.overlay[rb];
+        let gallery = &self.reference_illuminant;
+        let d = vox_render::relight::metamer_divergence(
+            group_a, group_b, &self.reference_illuminant, gallery, gallery,
+        );
+        let l = vox_render::relight::metamer_divergence(
+            group_a, group_b, &self.reference_illuminant, gallery, &self.active_illuminant,
+        );
+        let label = if l > 0.03 { "forgery" } else { "metamer" };
+        format!(
+            "{}: ΔsRGB {d:.3} (metamer) · {}: ΔsRGB {l:.3} ({label})",
+            gallery.name(),
+            self.active_illuminant.name()
+        )
+    }
+
+    /// The inspection-light cycle for Ctrl+L: gallery (neutral) → the two
+    /// strongest forgery-revealers → back. Every name is `IlluminantSpec::parse`able.
+    fn next_illuminant(current: &str) -> &'static str {
+        match current {
+            "neutral" => "cool_led",
+            "cool_led" => "tungsten",
+            "tungsten" => "daylight",
+            _ => "neutral",
+        }
     }
 
     /// The shared planting core for EVERY placed asset (grown trees AND raised
@@ -1758,6 +1902,19 @@ fn build_registry(
     r.add(Command::new("build.cook", "Update the world", "Build", "F5", || {}));
     r.add(Command::new("view.wireframe", "Show the wireframe outline", "Window", "", || {}));
     r.add(Command::new("help.about", "About Ochroma", "Help", "", || {}));
+
+    // AAA Spec 03 — the wedge made one-key reachable. "demo.forgery" plants the
+    // two metameric surfaces; "view.illuminant" (Ctrl+L) flips the inspection
+    // light so they split. Both queue a request the shell drains (planting +
+    // illuminant state need `&mut self` the closure can't hold).
+    let q = requests.clone();
+    r.add(Command::new("demo.forgery", "Plant the spectral forgery demo", "View", "", move || {
+        q.borrow_mut().push(ShellRequest::ForgeryDemo)
+    }));
+    let q = requests.clone();
+    r.add(Command::new("view.illuminant", "Cycle the inspection light", "View", "Ctrl+L", move || {
+        q.borrow_mut().push(ShellRequest::CycleIlluminant)
+    }));
 
     // The theme + tab-focus commands the intent assistant (and menus) dispatch.
     // Each queues a `ShellRequest` drained next frame — the intent executor and a
@@ -3276,6 +3433,67 @@ mod tests {
         assert_eq!(
             shell.assistant_log.last().unwrap(),
             &format!("Grew a Silver Birch 01 ({grown_count} points) — undo with Ctrl+Z")
+        );
+    }
+
+    /// AAA Spec 03 — the forgery demo's live ΔsRGB HUD reads the wedge correctly:
+    /// metameric under the gallery lamp, "(forgery)" under the inspection lamp.
+    /// Drives the SAME request path the editor UI uses (plant → flip light).
+    #[test]
+    fn forgery_demo_hud_receipt() {
+        // The active light's ΔsRGB is the LAST "ΔsRGB <num>" in the receipt.
+        let active_delta = |hud: &str| -> f32 {
+            hud.rsplit("ΔsRGB ")
+                .next()
+                .and_then(|frag| frag.split_whitespace().next())
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(f32::NAN)
+        };
+
+        let mut shell = EditorShell::default();
+        let overlay_before = shell.overlay.len();
+        shell.requests.borrow_mut().push(ShellRequest::ForgeryDemo);
+        shell.drain_requests();
+        assert!(
+            shell.demo_groups.is_some(),
+            "forgery demo must record its two overlay ranges"
+        );
+        assert!(
+            shell.overlay.len() > overlay_before,
+            "forgery demo must plant surfaces into the overlay"
+        );
+
+        // Under the gallery lamp (neutral == active) the pair reads identical.
+        let hud0 = shell.hud_receipt();
+        println!("[forgery] gallery HUD: {hud0}");
+        assert!(hud0.contains("(metamer)"), "gallery HUD must read metamer: {hud0:?}");
+        let d0 = active_delta(&hud0);
+        assert!(
+            d0 < 0.012,
+            "gallery ΔsRGB must be metameric (<0.012), got {d0} from {hud0:?}"
+        );
+
+        // Flip the inspection light to cool_led through the request path.
+        shell.requests.borrow_mut().push(ShellRequest::SetIlluminant(
+            IlluminantSpec::parse("cool_led").unwrap(),
+        ));
+        shell.drain_requests();
+        let hud1 = shell.hud_receipt();
+        println!("[forgery] cool_led HUD: {hud1}");
+        assert!(
+            hud1.contains("(forgery)"),
+            "under cool_led the HUD must read forgery: {hud1:?}"
+        );
+        let l1 = active_delta(&hud1);
+        assert!(
+            l1 > 0.03,
+            "forgery ΔsRGB must exceed 0.03 under cool_led, got {l1} from {hud1:?}"
+        );
+        // The status bar mirrors the receipt (the drain set it).
+        assert!(
+            shell.status.contains("cool_led"),
+            "status must name the active light: {:?}",
+            shell.status
         );
     }
 

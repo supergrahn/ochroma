@@ -681,6 +681,122 @@ pub fn relight_scene(
     )
 }
 
+// ---------------------------------------------------------------------------
+// Metamer / forgery metric (the wedge made measurable)
+// ---------------------------------------------------------------------------
+
+/// sRGB distance between two splat groups' mean appearance under one illuminant.
+///
+/// Each group's stored RADIANCE is divided back to an intrinsic base by the
+/// `reference` SPD ([`derive_intrinsic`], floor `1e-3`); the per-group MEAN
+/// intrinsic is forwarded through `illum` via the shipped render-consistent
+/// observer [`vox_data::spectral_capture::forward_rgb`] — the SAME collapse the
+/// `relight_breaks_metamers` gate trusts — and the result is the Euclidean
+/// distance in linear sRGB. Empty groups read as black (no panic).
+///
+/// This is the metamer/forgery metric: ~0 under the light the pair was matched
+/// under, non-zero under any other illuminant — a number no RGB pipeline can
+/// produce, because an RGB capture stored a single triple. Forward-compatible
+/// with the reflectance split (gap #34): when splats store reflectance instead
+/// of baked radiance, drop the `derive_intrinsic` division and nothing else
+/// changes.
+pub fn srgb_distance_under(
+    group_a: &[GaussianSplat],
+    group_b: &[GaussianSplat],
+    reference: &IlluminantSpec,
+    illum: &IlluminantSpec,
+) -> f32 {
+    use vox_data::spectral_capture::{forward_rgb, LightSpd};
+    let ref_spd = reference.spd();
+    let light = LightSpd(illum.spd());
+    let mean_rgb = |group: &[GaussianSplat]| -> [f32; 3] {
+        if group.is_empty() {
+            return forward_rgb(&[0.0; 16], &light);
+        }
+        let mut mean = [0.0f32; 16];
+        for s in group {
+            let intrinsic = derive_intrinsic(&read_radiance(s), &ref_spd, 1e-3);
+            for b in 0..BANDS {
+                mean[b] += intrinsic[b];
+            }
+        }
+        let inv = 1.0 / group.len() as f32;
+        for b in 0..BANDS {
+            mean[b] *= inv;
+        }
+        forward_rgb(&mean, &light)
+    };
+    let a = mean_rgb(group_a);
+    let b = mean_rgb(group_b);
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// Metamer divergence between two splat groups — their [`srgb_distance_under`]
+/// the inspection light `illum_b`.
+///
+/// The pair is, by construction, matched under some reference/gallery light;
+/// `illum_a` is retained for symmetry and forward-compatibility with the
+/// reflectance split (gap #34). The divergence of interest is read under
+/// `illum_b` — "identical under the gallery lamp, divergent under the inspection
+/// lamp."
+pub fn metamer_divergence(
+    group_a: &[GaussianSplat],
+    group_b: &[GaussianSplat],
+    reference: &IlluminantSpec,
+    _illum_a: &IlluminantSpec,
+    illum_b: &IlluminantSpec,
+) -> f32 {
+    srgb_distance_under(group_a, group_b, reference, illum_b)
+}
+
+/// A ready-made metamer pair: two 16-band reflectances that read near-identical
+/// under neutral light but diverge sharply (`> 0.03` sRGB) under `cool_led`.
+///
+/// Searches sharp single/double-band spikes over a flat baseline — narrow
+/// spectral features are weighted very differently by `cool_led`'s blue-heavy
+/// SPD than by a flat neutral light, so a pair invisible to a neutral camera
+/// diverges strongly under `cool_led` (the response one stored RGB triple cannot
+/// reproduce). The editor's forgery demo seeds its two surfaces from this; the
+/// `relight_breaks_metamers` test validates the property. Called ONCE at plant
+/// time, never per frame (a small fixed search).
+pub fn metamer_demo_pair() -> ([f32; 16], [f32; 16]) {
+    use vox_data::spectral_capture::{forward_rgb, LightSpd};
+    let neutral = LightSpd::neutral();
+    let cool = LightSpd::cool_led();
+    let mut best: Option<([f32; 16], [f32; 16], f32)> = None; // (base, alt, cool_div)
+    let levels = [0.2f32, 0.4, 0.6, 0.8, 1.0];
+    for i in 2..=12 {
+        let mut base = [0.2f32; 16];
+        base[i] = (base[i] + 0.7).min(1.0);
+        let rn = forward_rgb(&base, &neutral);
+        let rc = forward_rgb(&base, &cool);
+        for j in 2..=12 {
+            for k in (j + 1)..=12 {
+                for &aj in &levels {
+                    for &ak in &levels {
+                        let mut alt = [0.2f32; 16];
+                        alt[j] = (alt[j] + aj).min(1.0);
+                        alt[k] = (alt[k] + ak).min(1.0);
+                        let an = forward_rgb(&alt, &neutral);
+                        let neutral_dist: f32 =
+                            (0..3).map(|c| (an[c] - rn[c]).powi(2)).sum::<f32>().sqrt();
+                        if neutral_dist < 0.01 {
+                            let ac = forward_rgb(&alt, &cool);
+                            let cool_div: f32 =
+                                (0..3).map(|c| (ac[c] - rc[c]).powi(2)).sum::<f32>().sqrt();
+                            if best.as_ref().map(|(_, _, d)| cool_div > *d).unwrap_or(true) {
+                                best = Some((base, alt, cool_div));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let (base, alt, _) = best.expect("should find a sharp neutral-light metamer");
+    (base, alt)
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -810,60 +926,47 @@ mod tests {
         );
     }
 
-    /// Build two intrinsic bases with equal sRGB under neutral light but
-    /// different per-band spectra. The pair is searched to MAXIMIZE the sRGB
-    /// divergence the bases show under `cool_led` (the differentiation proof),
-    /// subject to remaining a genuine neutral-light metamer (RGB distance < 0.01,
-    /// VERIFIED against XYZ — never assumed).
-    ///
-    /// A smooth-base lobe perturbation only reaches ~0.01 divergence under the
-    /// engine's broadband `cool_led` (the same weak-separation note made by
-    /// `spectral_capture.rs`'s own metamer test). To exceed the 0.03 threshold we
-    /// search SHARP single/double-band metamers: a one-band base spike vs a
-    /// two-band alt over a flat 0.2 baseline. Narrow spectral features are
-    /// weighted very differently by the blue-heavy `cool_led` SPD
-    /// (`spectral_capture.rs:33`) than by a flat neutral light, so a pair that is
-    /// invisible to a neutral camera diverges strongly under `cool_led` — exactly
-    /// the response an RGB pipeline (one triple stored at capture) cannot produce.
+    /// Two intrinsic bases with equal sRGB under neutral light but divergent
+    /// per-band spectra. Delegates to the now-public [`metamer_demo_pair`] (the
+    /// search logic was promoted out of the test module so the editor forgery
+    /// demo can seed from the SAME verified pair this test validates).
     fn metamer_pair() -> ([f32; 16], [f32; 16]) {
-        let neutral = LightSpd::neutral();
-        let cool = LightSpd::cool_led();
-        let mut best: Option<([f32; 16], [f32; 16], f32)> = None; // (base, alt, cool_div)
-        let levels = [0.2f32, 0.4, 0.6, 0.8, 1.0];
-        for i in 2..=12 {
-            let mut base = [0.2f32; 16];
-            base[i] = (base[i] + 0.7).min(1.0);
-            // forward_rgb white-balances against the lighting illuminant — the
-            // shipped, render-consistent observer (spectral_capture.rs:207).
-            let rn = forward_rgb(&base, &neutral);
-            let rc = forward_rgb(&base, &cool);
-            for j in 2..=12 {
-                for k in (j + 1)..=12 {
-                    for &aj in &levels {
-                        for &ak in &levels {
-                            let mut alt = [0.2f32; 16];
-                            alt[j] = (alt[j] + aj).min(1.0);
-                            alt[k] = (alt[k] + ak).min(1.0);
-                            let an = forward_rgb(&alt, &neutral);
-                            let neutral_dist: f32 = (0..3)
-                                .map(|c| (an[c] - rn[c]).powi(2))
-                                .sum::<f32>()
-                                .sqrt();
-                            if neutral_dist < 0.01 {
-                                let ac = forward_rgb(&alt, &cool);
-                                let cool_div: f32 =
-                                    (0..3).map(|c| (ac[c] - rc[c]).powi(2)).sum::<f32>().sqrt();
-                                if best.as_ref().map(|(_, _, d)| cool_div > *d).unwrap_or(true) {
-                                    best = Some((base, alt, cool_div));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let (base, alt, _) = best.expect("should find a sharp neutral-light metamer");
-        (base, alt)
+        metamer_demo_pair()
+    }
+
+    /// Step-1 proof for AAA Spec 03: the public metamer metric reproduces, on
+    /// REAL `GaussianSplat` groups, the exact divergence numbers the
+    /// `relight_breaks_metamers` gate asserts on raw reflectances — i.e. the
+    /// editor's ΔsRGB HUD is computing the wedge correctly. Each reflectance is
+    /// baked under neutral so the stored spectral is RADIANCE (splat semantics),
+    /// exactly as `plant_forgery_demo` will.
+    #[test]
+    fn metamer_divergence_matches_forward_rgb() {
+        let (base, alt) = metamer_demo_pair();
+        let neutral_spd = LightSpd::neutral().0;
+        let group_base = vec![splat_with_radiance([0.0, 0.0, 0.0], &forward_band(&base, &neutral_spd))];
+        let group_alt = vec![splat_with_radiance([0.0, 0.0, 0.0], &forward_band(&alt, &neutral_spd))];
+
+        let neutral = IlluminantSpec::parse("neutral").unwrap();
+        let cool = IlluminantSpec::parse("cool_led").unwrap();
+
+        // Reference == neutral, baked under neutral: derive_intrinsic recovers the
+        // reflectance, so this equals forward_rgb(base/alt, neutral) — the metamer.
+        let d_day = srgb_distance_under(&group_base, &group_alt, &neutral, &neutral);
+        // Same pair under the inspection light: the forgery splits.
+        let d_led = metamer_divergence(&group_base, &group_alt, &neutral, &neutral, &cool);
+
+        println!(
+            "metamer_divergence: neutral ΔsRGB {d_day:.4} (metamer), cool_led ΔsRGB {d_led:.4} (forgery)"
+        );
+        assert!(
+            d_day < 0.012,
+            "pair must read identical under neutral (metamer), got {d_day:.4}"
+        );
+        assert!(
+            d_led > 0.03,
+            "pair must diverge under cool_led (forgery), got {d_led:.4}"
+        );
     }
 
     #[test]

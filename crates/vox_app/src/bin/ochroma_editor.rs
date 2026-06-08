@@ -31,7 +31,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use vox_app::shell::{cpu_render, EditorShell};
+use vox_app::shell::{cpu_render, EditorShell, ShellRequest};
 use vox_render::gpu::wgpu_backend::WgpuBackend;
 use vox_ui::Tokens;
 
@@ -47,10 +47,16 @@ struct Cli {
     shot: Option<String>,
     /// Theme to load tokens from ("dark" default, "light" optional).
     light: bool,
+    /// AAA Spec 03 proof mode: `--demo forgery` plants the metameric forgery pair
+    /// at startup so the first frame already shows it.
+    demo: Option<String>,
+    /// AAA Spec 03: `--illuminant <name>` sets the inspection light (e.g.
+    /// `cool_led`) so the captured shot shows the forgery split.
+    illuminant: Option<String>,
 }
 
 fn parse_cli() -> Cli {
-    let mut cli = Cli { frames: None, shot: None, light: false };
+    let mut cli = Cli { frames: None, shot: None, light: false, demo: None, illuminant: None };
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -85,6 +91,18 @@ fn parse_cli() -> Cli {
                 i += 1;
                 if i < args.len() {
                     cli.light = args[i] == "light";
+                }
+            }
+            "--demo" => {
+                i += 1;
+                if i < args.len() {
+                    cli.demo = Some(args[i].clone());
+                }
+            }
+            "--illuminant" => {
+                i += 1;
+                if i < args.len() {
+                    cli.illuminant = Some(args[i].clone());
                 }
             }
             _ => {}
@@ -122,7 +140,7 @@ fn load_tokens(light: bool) -> Tokens {
 /// Build a fully-populated `EditorShell` with all three real plugins installed,
 /// focused on the live viewport tab — identical setup to `shell_snapshot` so the
 /// windowed editor shows exactly the same dock.
-fn build_shell(tokens: Tokens) -> EditorShell {
+fn build_shell(tokens: Tokens, cli: &Cli) -> EditorShell {
     let mut shell = EditorShell::new(tokens);
     // Install Crucible wired to the shell's scene-sink (NOT the detached
     // `::new()` sink) so pressing "Cook scene" plants real splats into the live
@@ -134,6 +152,26 @@ fn build_shell(tokens: Tokens) -> EditorShell {
     // windowed viewport — exactly as the headless shell_snapshot binary does.
     shell.install_floraprime();
     shell.focus_viewport();
+
+    // AAA Spec 03 proof mode: plant the forgery and/or set the inspection light
+    // through the SAME request path the editor UI uses, then drain so the FIRST
+    // rendered frame already shows the relit forgery. ForgeryDemo is queued before
+    // SetIlluminant so the HUD receipt has the planted ranges when the light flips.
+    if cli.demo.as_deref() == Some("forgery") {
+        shell.requests.borrow_mut().push(ShellRequest::ForgeryDemo);
+    }
+    if let Some(name) = &cli.illuminant {
+        match vox_render::relight::IlluminantSpec::parse(name) {
+            Some(spec) => shell.requests.borrow_mut().push(ShellRequest::SetIlluminant(spec)),
+            None => eprintln!("[ochroma_editor] unknown --illuminant {name:?}; keeping the gallery light"),
+        }
+    }
+    shell.drain_requests();
+    if cli.demo.as_deref() == Some("forgery") {
+        // Surface the live receipt on stdout so the proof run is gate-checkable
+        // without reading pixels.
+        println!("[ochroma_editor] forgery HUD: {}", shell.status);
+    }
     shell
 }
 
@@ -162,7 +200,7 @@ impl EditorHost {
     fn new(cli: Cli) -> Self {
         let tokens = load_tokens(cli.light);
         let bg = tokens.color("surface.bg.0");
-        let shell = build_shell(tokens.clone());
+        let shell = build_shell(tokens.clone(), &cli);
         Self {
             window: None,
             backend: None,

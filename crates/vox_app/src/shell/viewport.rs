@@ -134,20 +134,54 @@ pub fn render_scene_rgba_with(overlay: &[GaussianSplat]) -> Vec<u8> {
     out
 }
 
+/// Like [`render_scene_rgba_with`] but RE-ILLUMINATES the overlay under a target
+/// illuminant before compositing — the AAA Spec-03 forgery view. The base scene
+/// stays fixed (rendered under d65); only the shell-owned `overlay` (the planted
+/// forgery surfaces) is relit from `reference` to `target` through
+/// [`vox_render::relight::relight_scene`], so two metameric surfaces that read
+/// identical under the matched/gallery light split into visibly divergent hues
+/// under the inspection light — a hue shift no RGB engine can produce, because an
+/// RGB capture stored a single triple. The hue change lives in the splat
+/// radiance, so the camera observer stays d65 (the redistribution already
+/// happened in the spectral relight).
+pub fn render_scene_rgba_relit(
+    overlay: &[GaussianSplat],
+    reference: &vox_render::relight::IlluminantSpec,
+    target: &vox_render::relight::IlluminantSpec,
+) -> Vec<u8> {
+    use vox_render::relight::{relight_scene, RelightSettings};
+    let settings = RelightSettings::new(reference.clone(), target.clone())
+        .with_sky_ambient(false)
+        .with_shadows(false);
+    let (relit, _report) = relight_scene(overlay, &settings);
+    render_scene_rgba_with(&relit)
+}
+
 /// Build (or reuse) the viewport scene texture on `ctx`, compositing `overlay`
 /// (the shell-owned grown splats) over the base scene. The handle is cached in
 /// `cache`; the first call (or the first after the shell invalidates the cache by
-/// setting it to `None`, e.g. after growing/undoing a tree) rasterizes the scene
-/// + overlay and uploads it.
+/// setting it to `None`, e.g. after growing/undoing a tree, or switching the
+/// inspection light) rasterizes the scene + overlay and uploads it.
+///
+/// When `target` differs from `reference` (the user switched the inspection
+/// light), the overlay is re-illuminated first via [`render_scene_rgba_relit`];
+/// when they match (the default), the cheap non-relit path is byte-identical to
+/// the historical behavior.
 pub fn scene_texture(
     ctx: &egui::Context,
     cache: &mut Option<egui::TextureHandle>,
     overlay: &[GaussianSplat],
+    reference: &vox_render::relight::IlluminantSpec,
+    target: &vox_render::relight::IlluminantSpec,
 ) -> egui::TextureHandle {
     if let Some(h) = cache {
         return h.clone();
     }
-    let rgba = render_scene_rgba_with(overlay);
+    let rgba = if reference.name() == target.name() {
+        render_scene_rgba_with(overlay)
+    } else {
+        render_scene_rgba_relit(overlay, reference, target)
+    };
     let color =
         egui::ColorImage::from_rgba_unmultiplied([VIEW_W, VIEW_H], &rgba);
     let handle = ctx.load_texture("viewport_scene", color, egui::TextureOptions::LINEAR);
