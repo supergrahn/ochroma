@@ -194,6 +194,14 @@ struct EditorHost {
     /// `wgpu::Device` the window presents on), built behind `OCHROMA_GI=gpu` from
     /// the backend's `GpuContext` — proof the GI path uses no second device.
     shared_gi: Option<vox_render::spectral_gi::GpuGi>,
+
+    /// Spec 08 — measures the editor's present (egui) render pass in GPU-ms via
+    /// TIMESTAMP_QUERY. Inert (`disabled()`) until the backend is created in
+    /// `resumed()`, and inert on adapters without the feature or under
+    /// `OCHROMA_NO_TIMESTAMP=1`.
+    gpu_timers: vox_render::gpu::gpu_timing::GpuTimers,
+    /// One-shot latch so the "timestamps unavailable" notice prints at most once.
+    no_timestamp_warned: bool,
 }
 
 impl EditorHost {
@@ -213,6 +221,8 @@ impl EditorHost {
             cli,
             frames_rendered: 0,
             shared_gi: None,
+            gpu_timers: vox_render::gpu::gpu_timing::GpuTimers::disabled(),
+            no_timestamp_warned: false,
         }
     }
 
@@ -289,14 +299,36 @@ impl EditorHost {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                // Spec 08 — bracket the present (egui) pass for GPU-ms (None when
+                // the timer is disabled, so the pass runs exactly as before).
+                timestamp_writes: self.gpu_timers.render_writes(0),
                 occlusion_query_set: None,
             };
             let mut render_pass = encoder.begin_render_pass(&rp_desc).forget_lifetime();
             egui_renderer.render(&mut render_pass, tris, &screen_descriptor);
         }
 
+        // Resolve the present-pass timestamps into the timer's readback buffer
+        // (no-op when disabled) — must be encoded before submit.
+        self.gpu_timers.resolve(&mut encoder);
         backend.queue().submit(std::iter::once(encoder.finish()));
+
+        // Read the measured present-pass GPU-ms and feed the status-bar HUD. One
+        // poll(Wait) per frame (same stall class as the existing readbacks; Spec 11
+        // defers it). On an adapter without timestamps, warn once and carry on.
+        if self.gpu_timers.is_enabled() {
+            if let Some(ms) = self.gpu_timers.resolve_ms(backend.device(), 0) {
+                self.shell.set_gpu_pass_ms("present", ms);
+                // In proof mode (--frames N) echo the measured ms to stdout so the
+                // run is gate-checkable without reading the status-bar pixels.
+                if self.cli.frames.is_some() {
+                    println!("[ochroma_editor] gpu: present {ms:.3} ms");
+                }
+            }
+        } else if !self.no_timestamp_warned {
+            println!("[ochroma_editor] gpu: timestamps unavailable (CPU frame timer only)");
+            self.no_timestamp_warned = true;
+        }
 
         for id in &full_output.textures_delta.free {
             egui_renderer.free_texture(id);
@@ -539,6 +571,24 @@ impl ApplicationHandler for EditorHost {
 
         configure_present_mailbox(&backend);
         println!("[ochroma_editor] surface present mode set to Mailbox");
+
+        // Spec 08 — build the present-pass GPU timer on the backend's device,
+        // gated on the GRANTED features (OCHROMA_NO_TIMESTAMP=1 forces it off).
+        // Inert when the adapter lacks TIMESTAMP_QUERY — the editor still runs.
+        self.gpu_timers = if std::env::var("OCHROMA_NO_TIMESTAMP").is_ok() {
+            vox_render::gpu::gpu_timing::GpuTimers::disabled()
+        } else {
+            vox_render::gpu::gpu_timing::GpuTimers::new(
+                backend.device(),
+                backend.queue(),
+                backend.features(),
+                1,
+            )
+        };
+        println!(
+            "[ochroma_editor] gpu frame timer: {}",
+            if self.gpu_timers.is_enabled() { "TIMESTAMP_QUERY" } else { "unavailable (CPU only)" }
+        );
 
         // Behind OCHROMA_GI=gpu: bind GPU global illumination to the SHARED present
         // device. This constructs the GI compute pass on the backend's own

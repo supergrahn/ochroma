@@ -199,6 +199,10 @@ pub struct EditorShell {
     pub selected: usize,
     pub search: String,
     pub status: String,
+    /// Last measured GPU pass time (label, milliseconds) for the frame-budget HUD
+    /// (Spec 08). Set by the editor each frame from a `GpuTimers` reading; shown in
+    /// the status bar. A SEPARATE field from `status` (which the forgery HUD owns).
+    pub last_gpu_pass_ms: Option<(&'static str, f32)>,
     /// Toolbar gizmo mode (0=move,1=rotate,2=scale).
     pub gizmo: u8,
     pub snap: bool,
@@ -394,6 +398,7 @@ impl EditorShell {
             selected: 0,
             search: String::new(),
             status: "All systems healthy".into(),
+            last_gpu_pass_ms: None,
             gizmo: 0,
             snap: true,
         }
@@ -1244,6 +1249,12 @@ impl EditorShell {
         )
     }
 
+    /// Spec 08 — record the last measured GPU pass time for the frame-budget HUD.
+    /// Overwrite-not-append (bounded), shown in the status bar next frame.
+    pub fn set_gpu_pass_ms(&mut self, pass: &'static str, ms: f32) {
+        self.last_gpu_pass_ms = Some((pass, ms));
+    }
+
     /// The inspection-light cycle for Ctrl+L: gallery (neutral) → the two
     /// strongest forgery-revealers → back. Every name is `IlluminantSpec::parse`able.
     fn next_illuminant(current: &str) -> &'static str {
@@ -1484,6 +1495,11 @@ impl EditorShell {
                     egui::RichText::new(format!("\u{25CF}  {}", self.status))
                         .color(egui::Color32::from_rgba_unmultiplied(r, g, b, a)),
                 );
+                // Spec 08 — the measured frame budget: last GPU pass time in ms.
+                if let Some((pass, ms)) = self.last_gpu_pass_ms {
+                    ui.separator();
+                    ui.label(format!("GPU: {pass} {ms:.1} ms"));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let n = self.entities.len();
                     let noun = if n == 1 { "thing" } else { "things" };
@@ -3525,6 +3541,20 @@ mod tests {
         shell.drain_requests();
         let hud = shell.hud_receipt();
         assert!(!hud.is_empty(), "hud_receipt must return a safe string, not panic");
+    }
+
+    /// Spec 08 — the GPU-ms HUD field is set by set_gpu_pass_ms and renders the
+    /// exact status-bar string (a real value, not a stub).
+    #[test]
+    fn gpu_pass_ms_hud_field_set_and_formatted() {
+        let mut shell = EditorShell::default();
+        assert!(shell.last_gpu_pass_ms.is_none(), "no GPU-ms before any frame");
+        shell.set_gpu_pass_ms("present", 0.42);
+        let (pass, ms) = shell.last_gpu_pass_ms.expect("set_gpu_pass_ms stored a reading");
+        assert_eq!(pass, "present");
+        assert!((ms - 0.42).abs() < 1e-6, "stored the exact ms");
+        // The exact string the status bar renders.
+        assert_eq!(format!("GPU: {pass} {ms:.1} ms"), "GPU: present 0.4 ms");
     }
 
     /// UNDO: after growing a tree, undo restores the world count AND the viewport

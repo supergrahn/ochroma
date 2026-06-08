@@ -9,6 +9,10 @@ pub struct WgpuBackend {
     config: wgpu::SurfaceConfiguration,
     width: u32,
     height: u32,
+    /// The GRANTED device features (authoritative — an adapter may grant a
+    /// superset of what was requested). Used to build a live `GpuTimers` for the
+    /// present-pass GPU-ms HUD (Spec 08).
+    features: wgpu::Features,
 }
 
 impl WgpuBackend {
@@ -76,11 +80,19 @@ impl WgpuBackend {
                 info.name, info.device_type, info.backend
             );
 
+            // Opt into TIMESTAMP_QUERY when the adapter supports it (Spec 08
+            // present-pass GPU-ms HUD), gated so request_device never starts
+            // failing on adapters that lack it — purely additive capability.
+            let ts_features = if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+                wgpu::Features::TIMESTAMP_QUERY
+            } else {
+                wgpu::Features::empty()
+            };
             let (device, queue) = match adapter
                 .request_device(
                     &wgpu::DeviceDescriptor {
                         label: Some("ochroma-device"),
-                        required_features: wgpu::Features::empty(),
+                        required_features: ts_features,
                         required_limits: wgpu::Limits::downlevel_defaults(),
                         memory_hints: wgpu::MemoryHints::default(),
                     },
@@ -127,6 +139,7 @@ impl WgpuBackend {
             surface.configure(&device, &config);
 
             eprintln!("[wgpu] Successfully initialised with {name} backend");
+            let features = device.features();
             return Ok(Self {
                 surface,
                 device,
@@ -134,6 +147,7 @@ impl WgpuBackend {
                 config,
                 width,
                 height,
+                features,
             });
         }
 
@@ -308,6 +322,12 @@ impl WgpuBackend {
     /// Returns a reference to the wgpu queue.
     pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
+    }
+
+    /// The GRANTED device features — whether `TIMESTAMP_QUERY` is available for
+    /// the present-pass GPU-ms HUD (Spec 08).
+    pub fn features(&self) -> wgpu::Features {
+        self.features
     }
 
     /// Returns the surface texture format.

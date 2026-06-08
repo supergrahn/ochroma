@@ -166,11 +166,19 @@ impl GpuRelight {
         let info = adapter.get_info();
         crate::gpu::adapter::ensure_hardware(&info).map_err(|_| GpuRelightError::NoAdapter)?;
         let adapter_name = info.name;
+        // Opt into TIMESTAMP_QUERY when the adapter supports it (Spec 08 ms-gate),
+        // gated so request_device NEVER starts failing on adapters that lack it —
+        // additive capability, no behavior change to the relight pass itself.
+        let ts_features = if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            wgpu::Features::TIMESTAMP_QUERY
+        } else {
+            wgpu::Features::empty()
+        };
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("relight_gpu_device"),
-                    required_features: wgpu::Features::empty(),
+                    required_features: ts_features,
                     required_limits,
                     memory_hints: wgpu::MemoryHints::default(),
                 },
@@ -342,17 +350,18 @@ impl GpuRelight {
     /// Threading: call from any thread; internally one encoder, one submit, one
     /// poll. Panics: never. Over `max_splats` →
     /// [`GpuRelightError::ExceedsDeviceLimits`] (caller checks, like the GI twin).
-    pub fn relight(
+    fn relight_with_timers(
         &self,
         splats: &[GaussianSplat],
         ref_spd: &[f32; 16],
         target_spd: &[f32; 16],
         ambient: &[f32; 16],
         floor: f32,
-    ) -> Result<Vec<GaussianSplat>, GpuRelightError> {
+        timers: &crate::gpu::gpu_timing::GpuTimers,
+    ) -> Result<(Vec<GaussianSplat>, Option<f32>), GpuRelightError> {
         let n = splats.len();
         if n == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
         if n as u32 > self.max_splats {
             return Err(GpuRelightError::ExceedsDeviceLimits {
@@ -407,7 +416,7 @@ impl GpuRelight {
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("relight_gpu_pass"),
-                timestamp_writes: None,
+                timestamp_writes: timers.compute_writes(0),
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
@@ -415,6 +424,9 @@ impl GpuRelight {
         }
         let copy_bytes = n as u64 * OUT_U32_PER_SPLAT * 4;
         encoder.copy_buffer_to_buffer(&self.out_buffer, 0, &self.out_readback, 0, copy_bytes);
+        // Resolve the pass timestamps into the timer's readback buffer (no-op when
+        // the timer is disabled) — must be encoded before submit.
+        timers.resolve(&mut encoder);
         self.queue.submit(Some(encoder.finish()));
 
         let data = self.map_read(&self.out_readback, copy_bytes)?;
@@ -432,7 +444,63 @@ impl GpuRelight {
             }
         }
         self.out_readback.unmap();
-        Ok(out)
+        // Read the measured GPU-ms for the compute pass (None when untimed).
+        let ms = timers.resolve_ms(&self.device, 0);
+        Ok((out, ms))
+    }
+
+    /// Re-illuminate `splats` under `target_spd` on the GPU. The shipped path —
+    /// behaviourally identical to before (it passes a disabled timer, so the pass
+    /// runs with `timestamp_writes: None` exactly as it always has).
+    pub fn relight(
+        &self,
+        splats: &[GaussianSplat],
+        ref_spd: &[f32; 16],
+        target_spd: &[f32; 16],
+        ambient: &[f32; 16],
+        floor: f32,
+    ) -> Result<Vec<GaussianSplat>, GpuRelightError> {
+        self.relight_with_timers(
+            splats,
+            ref_spd,
+            target_spd,
+            ambient,
+            floor,
+            &crate::gpu::gpu_timing::GpuTimers::disabled(),
+        )
+        .map(|(out, _ms)| out)
+    }
+
+    /// Like [`Self::relight`] but also returns the measured GPU-ms for the compute
+    /// pass (`Some(ms)` when `timers` is live, `None` when timestamps are
+    /// unavailable). Spec 08 — the first ms-asserted gate.
+    pub fn relight_timed(
+        &self,
+        splats: &[GaussianSplat],
+        ref_spd: &[f32; 16],
+        target_spd: &[f32; 16],
+        ambient: &[f32; 16],
+        floor: f32,
+        timers: &crate::gpu::gpu_timing::GpuTimers,
+    ) -> Result<(Vec<GaussianSplat>, Option<f32>), GpuRelightError> {
+        self.relight_with_timers(splats, ref_spd, target_spd, ambient, floor, timers)
+    }
+
+    /// The GRANTED device features (e.g. whether `TIMESTAMP_QUERY` is available),
+    /// so a caller can build a live [`crate::gpu::gpu_timing::GpuTimers`].
+    pub fn features(&self) -> wgpu::Features {
+        self.device.features()
+    }
+
+    /// The relight device — for building a [`crate::gpu::gpu_timing::GpuTimers`]
+    /// on the SAME device the pass runs on.
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// The relight queue (timestamp period source).
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
     }
 
     /// Adapter human name (for diagnostics / benches).
@@ -543,6 +611,73 @@ mod tests {
                 splat_with_radiance([gx, gy, gz], &baked)
             })
             .collect()
+    }
+
+    /// AAA Spec 08 — the first ms-asserted gate: the relight compute pass reports
+    /// a REAL, finite, bounded-non-zero GPU-millisecond reading via `TIMESTAMP_QUERY`
+    /// on real hardware. Skips gracefully on a no-GPU lane (try_gpu → None) or an
+    /// adapter without `TIMESTAMP_QUERY` (timers disabled, ms None) — never flakes.
+    #[test]
+    fn gpu_timers_relight_pass_nonzero() {
+        use crate::gpu::gpu_timing::GpuTimers;
+        let n = 4096u32;
+        let Some(gpu) = try_gpu(n) else {
+            return;
+        };
+
+        let tungsten = IlluminantSpec::Preset(PresetIlluminant::Tungsten).spd();
+        let daylight = IlluminantSpec::Preset(PresetIlluminant::Daylight).spd();
+        let ambient = earth_ambient();
+        let baked = forward_band(&[0.5; 16], &tungsten);
+        let splats: Vec<GaussianSplat> = (0..n)
+            .map(|i| splat_with_radiance([i as f32 * 0.01, 0.0, 0.0], &baked))
+            .collect();
+
+        let timers = GpuTimers::new(gpu.device(), gpu.queue(), gpu.features(), 1);
+        let (out, ms) = gpu
+            .relight_timed(&splats, &tungsten, &daylight, &ambient, 1e-3, &timers)
+            .expect("relight_timed");
+        assert_eq!(out.len(), splats.len(), "every splat relit");
+
+        if !timers.is_enabled() {
+            eprintln!("[gpu_relight] adapter lacks TIMESTAMP_QUERY — ms gate skipped");
+            assert!(ms.is_none(), "no timestamp support → no ms");
+            return;
+        }
+        let ms = ms.expect("timestamp resolved on a TIMESTAMP_QUERY adapter");
+        eprintln!("relight pass measured: {ms:.3} ms ({n} splats)");
+        assert!(
+            ms.is_finite() && ms > 0.0,
+            "GPU relight pass must take measurable time, got {ms}"
+        );
+        assert!(ms < 50.0, "4096-splat relight must be < 50ms, got {ms}");
+    }
+
+    /// A disabled timer yields no ms even through `relight_timed` — the untimed
+    /// path stays a pure relight (and the disabled surface never panics).
+    #[test]
+    fn gpu_timers_disabled_returns_none() {
+        use crate::gpu::gpu_timing::GpuTimers;
+        let t = GpuTimers::disabled();
+        assert!(!t.is_enabled(), "disabled timer reports disabled");
+        assert!(t.compute_writes(0).is_none(), "disabled timer writes nothing");
+
+        let n = 256u32;
+        let Some(gpu) = try_gpu(n) else {
+            return;
+        };
+        let tungsten = IlluminantSpec::Preset(PresetIlluminant::Tungsten).spd();
+        let daylight = IlluminantSpec::Preset(PresetIlluminant::Daylight).spd();
+        let ambient = earth_ambient();
+        let baked = forward_band(&[0.5; 16], &tungsten);
+        let splats: Vec<GaussianSplat> = (0..n)
+            .map(|i| splat_with_radiance([i as f32 * 0.01, 0.0, 0.0], &baked))
+            .collect();
+        let (out, ms) = gpu
+            .relight_timed(&splats, &tungsten, &daylight, &ambient, 1e-3, &t)
+            .expect("relight");
+        assert_eq!(out.len(), splats.len());
+        assert!(ms.is_none(), "disabled timer must yield no ms");
     }
 
     /// THE VALIDATION (Done-When gate, correctness ONLY): the GPU relit output
