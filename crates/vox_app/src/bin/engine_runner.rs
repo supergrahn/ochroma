@@ -1856,6 +1856,7 @@ impl EngineApp {
             audio: None,
             light: None,
             splats: Vec::new(),
+            geom_splats: Vec::new(),
             prefab_ref: None,
         }).collect();
 

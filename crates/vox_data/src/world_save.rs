@@ -30,6 +30,15 @@ pub struct SavedEntity {
     /// `#[serde(default)]` keeps older saves (without splats) loadable.
     #[serde(default)]
     pub splats: Vec<SavedSplat>,
+    /// AAA Spec 06 — the LOSSLESS Gaussian-splat geometry this entity owns in the
+    /// editor overlay, stored as raw quantized records ([`SavedSplatGeom`]) so the
+    /// 16-band `u16` spectral and `i16` rotation round-trip BIT-IDENTICALLY (the
+    /// legacy `splats` field above stores f32 reflectance for the game layer; this
+    /// stores the exact in-memory splat for the editor save/load). Mapped through
+    /// [`crate::splat_codec::to_saved_geom`] / [`from_saved_geom`]. `#[serde(default)]`
+    /// keeps older saves (without it) loadable.
+    #[serde(default)]
+    pub geom_splats: Vec<SavedSplatGeom>,
     /// If this entity was spawned from a prefab, the reference back to it.
     /// `None` for hand-placed entities. `#[serde(default)]` keeps older saves loadable.
     #[serde(default)]
@@ -52,6 +61,40 @@ pub struct SavedSplat {
     pub spectral: [f32; SAVED_SPLAT_BANDS],
     /// Alpha in [0, 1].
     pub opacity: f32,
+}
+
+/// A single Gaussian splat persisted LOSSLESSLY for the editor save/load (AAA
+/// Spec 06).
+///
+/// Unlike [`SavedSplat`] (which stores f32 reflectance for the game layer), this
+/// mirrors the runtime [`vox_core::types::GaussianSplat`] layout: the 16-band
+/// `spectral` is the RAW `u16` (f16 bits) and `rotation` is the RAW `i16`
+/// quantization, so a save → load round-trip reproduces every splat bit-for-bit.
+/// Built and consumed only through [`crate::splat_codec::to_saved_geom`] /
+/// [`from_saved_geom`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedSplatGeom {
+    /// World-space centroid.
+    pub position: [f32; 3],
+    /// `0` = 2DGS surface, `1` = 3DGS volume (matches `GaussianSplat::kind`).
+    pub kind: u32,
+    /// 2DGS disk u-axis (zero for volumes).
+    pub tangent_u: [f32; 3],
+    /// 2DGS u-radius / 3DGS x half-axis.
+    pub scale_u: f32,
+    /// 2DGS disk v-axis (zero for volumes).
+    pub tangent_v: [f32; 3],
+    /// 2DGS v-radius / 3DGS y half-axis.
+    pub scale_v: f32,
+    /// RAW quantized quaternion XYZW (each `/ 32767`); identity for surfaces.
+    pub rotation: [i16; 4],
+    /// 2DGS unused (0) / 3DGS z half-axis.
+    pub scale_w: f32,
+    /// Alpha (0..=255).
+    pub opacity: u8,
+    /// RAW 16-band f16-as-`u16` spectral signature, 380–755 nm — copied verbatim
+    /// so it round-trips bit-identically.
+    pub spectral: [u16; SAVED_SPLAT_BANDS],
 }
 
 /// A reference recording that an entity (or group of entities) originated from
@@ -113,6 +156,7 @@ impl SavedEntity {
             audio: None,
             light: None,
             splats: Vec::new(),
+            geom_splats: Vec::new(),
             prefab_ref: None,
         }
     }
@@ -226,6 +270,7 @@ mod tests {
                 audio: None,
                 light: None,
                 splats: vec![],
+                geom_splats: vec![],
                 prefab_ref: None,
             }],
             resources: SavedResources {

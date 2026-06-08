@@ -16,6 +16,7 @@ fn make_test_entity(name: &str) -> SavedEntity {
         audio: None,
         light: None,
         splats: vec![],
+        geom_splats: vec![],
         prefab_ref: None,
     }
 }

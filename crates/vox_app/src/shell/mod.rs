@@ -316,6 +316,14 @@ pub enum ShellRequest {
     /// AND its exact overlay splat range at a +X offset, as ONE grouped undo.
     /// Queued by `edit.duplicate` (Ctrl+D); drained into `duplicate_selected`.
     DuplicateSelection,
+    /// AAA Spec 06: persist the whole world (entities + their lossless overlay
+    /// splat geometry) to `path`. Queued by `file.save` (Ctrl+S); the drain arm
+    /// calls [`EditorShell::save_world`] and pushes an Output Log receipt.
+    SaveWorld(PathBuf),
+    /// AAA Spec 06: load a saved world from `path`, resetting the scene and
+    /// REPLAYING each entity's splats through `plant_asset`. Queued by `file.open`
+    /// (Ctrl+O); the drain arm calls [`EditorShell::load_world`] + a receipt.
+    OpenWorld(PathBuf),
 }
 
 /// The editor shell — owns the dock layout, panel state, and tokens.
@@ -1341,6 +1349,26 @@ impl EditorShell {
                 ShellRequest::DuplicateSelection => {
                     self.duplicate_selected();
                 }
+                ShellRequest::SaveWorld(path) => {
+                    let line = match self.save_world(&path) {
+                        Ok((entities, splats)) => format!(
+                            "[save] Saved {entities} entities and {splats} splats to {}",
+                            path.display()
+                        ),
+                        Err(e) => format!("[save] Couldn't save to {}: {e}", path.display()),
+                    };
+                    self.push_output_log(line);
+                }
+                ShellRequest::OpenWorld(path) => {
+                    let line = match self.load_world(&path) {
+                        Ok((entities, splats)) => format!(
+                            "[open] Loaded {entities} entities and {splats} splats from {}",
+                            path.display()
+                        ),
+                        Err(e) => format!("[open] Couldn't open {}: {e}", path.display()),
+                    };
+                    self.push_output_log(line);
+                }
             }
         }
     }
@@ -1656,6 +1684,85 @@ impl EditorShell {
         let receipt = format!("Duplicated {n} item(s) — undo with Ctrl+Z");
         self.log_receipt(receipt.clone());
         receipt
+    }
+
+    /// AAA Spec 06 — persist the WHOLE world to `path`: one [`SavedEntity`] per
+    /// [`ShellEntity`], and for every entity that owns an overlay range (recorded
+    /// by Spec 09's `asset_range`) its EXACT splat slice mapped LOSSLESSLY through
+    /// [`vox_data::to_saved_geom`] into `geom_splats`. Rangeless entities (the seed
+    /// rows: Townhouse, Sun, Camera…) save as bare records with no splats. The
+    /// 16-band `u16` spectral and `i16` rotation are copied verbatim, so a later
+    /// [`Self::load_world`] reproduces the overlay byte-identically. Returns
+    /// `(entity_count, total_splats_written)`. NO-PANIC: an I/O / serialize failure
+    /// is an `Err(String)`.
+    pub fn save_world(&self, path: &std::path::Path) -> Result<(usize, usize), String> {
+        let mut save = vox_data::world_save::WorldSave::new("project");
+        let mut total_splats = 0usize;
+        for entity in &self.entities {
+            let mut saved = vox_data::world_save::SavedEntity::new(&entity.name, entity.pos);
+            saved.tags = vec![entity.kind.clone()];
+            // Spec 09 provenance: this entity OWNS overlay[start..start+len]. Slice
+            // it and map each splat through the lossless codec. A rangeless entity
+            // (seed rows) leaves geom_splats empty.
+            if let Some(r) = entity.asset_range {
+                let end = (r.start + r.len).min(self.overlay.len());
+                let start = r.start.min(end);
+                let slice = &self.overlay[start..end];
+                saved.geom_splats = slice.iter().map(vox_data::to_saved_geom).collect();
+                total_splats += saved.geom_splats.len();
+            }
+            save.add_entity(saved);
+        }
+        save.save_to_file(path)?;
+        Ok((self.entities.len(), total_splats))
+    }
+
+    /// AAA Spec 06 — load a saved world from `path`, REPLACING the current scene.
+    /// Resets every piece of scene state (entities, overlay, undo stack,
+    /// per-label counters, selection), then for each [`SavedEntity`]: if it carries
+    /// `geom_splats`, reconstruct them through [`vox_data::from_saved_geom`] and
+    /// REPLAY them through [`Self::plant_asset`] — so `asset_counts`, the undo
+    /// stack, the per-entity `asset_range`, and the viewport cache all stay
+    /// coherent (NEVER poke `self.overlay` directly). A rangeless saved entity
+    /// becomes a bare [`ShellEntity`]. The trailing " NN" placement number is
+    /// stripped from the saved name to recover the plant label (re-numbering on
+    /// replay is expected — geometry is what must be bit-exact). Returns
+    /// `(entity_count, total_splats_loaded)`. NO-PANIC: a missing / corrupt file is
+    /// an `Err(String)`.
+    pub fn load_world(&mut self, path: &std::path::Path) -> Result<(usize, usize), String> {
+        let save = vox_data::world_save::WorldSave::load_from_file(path)?;
+        // Reset the scene state so the load is a clean replace, not an append.
+        self.entities.clear();
+        self.overlay.clear();
+        self.undo_stack.clear();
+        self.asset_counts.clear();
+        self.selection = Selection::single(0);
+        self.viewport_tex = None;
+        self.last_inspector_edit = None;
+
+        let mut total_splats = 0usize;
+        for saved in &save.entities {
+            let kind = saved.tags.first().cloned().unwrap_or_else(|| "mesh".to_string());
+            if saved.geom_splats.is_empty() {
+                // A rangeless entity (a seed row) — bare ShellEntity, no replay.
+                self.entities.push(ShellEntity {
+                    name: saved.name.clone(),
+                    kind,
+                    pos: saved.position,
+                    asset_range: None,
+                });
+            } else {
+                // Reconstruct the splats losslessly and REPLAY through plant_asset so
+                // all Spec 07/09 bookkeeping (counts, undo, asset_range, cache) stays
+                // coherent. Strip the trailing " NN" to recover the plant label.
+                let splats: Vec<GaussianSplat> =
+                    saved.geom_splats.iter().map(vox_data::from_saved_geom).collect();
+                total_splats += splats.len();
+                let label = dup_label(&saved.name);
+                self.plant_asset(&label, &kind, splats, saved.position, "Loaded", "");
+            }
+        }
+        Ok((self.entities.len(), total_splats))
     }
 
     /// Append a line to the Output Log, capping it at [`HISTORY_CAP`].
@@ -2298,8 +2405,17 @@ fn build_registry(
     ));
     r.add(Command::new("create.terrain", "Add terrain", "Create", "", || {}));
     r.add(Command::new("create.biome", "Add a climate layer", "Create", "", || {}));
-    r.add(Command::new("file.save", "Save world", "File", "Ctrl+S", || {}));
-    r.add(Command::new("file.open", "Open world…", "File", "Ctrl+O", || {}));
+    // Save / open the project world (AAA Spec 06) route through the registry like
+    // undo: each closure queues a request the shell drains (real file I/O needs
+    // `&mut self`). No file-dialog dependency — a fixed CWD path for now.
+    let q = requests.clone();
+    r.add(Command::new("file.save", "Save world", "File", "Ctrl+S", move || {
+        q.borrow_mut().push(ShellRequest::SaveWorld(PathBuf::from("project.ochroma_world")))
+    }));
+    let q = requests.clone();
+    r.add(Command::new("file.open", "Open world…", "File", "Ctrl+O", move || {
+        q.borrow_mut().push(ShellRequest::OpenWorld(PathBuf::from("project.ochroma_world")))
+    }));
     // Undo routes through the registry too (same one-command-surface) — its
     // closure queues a request the shell drains, since undo needs `&mut self`.
     let q = requests.clone();
@@ -4705,5 +4821,67 @@ mod tests {
             "the original tree's splats must be bit-identical after undo"
         );
         println!("OK: duplicate doubled overlay, one undo removed exactly the copy");
+    }
+
+    /// AAA Spec 06 (HEADLINE): a grown tree saved to disk and reloaded into a FRESH
+    /// editor reproduces its overlay BYTE-IDENTICALLY — the 16-band `u16` spectral
+    /// and `i16` rotation match bit-for-bit, the entity comes back, and the splat
+    /// counts are exact. This is the floor under every editor workflow.
+    #[test]
+    fn save_then_fresh_open_round_trips_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.ochroma_world");
+
+        // --- Shell A: grow a tree, then save the world ---
+        let mut a = EditorShell::default();
+        let entities_before = a.entities.len();
+        a.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        let grown = a.overlay.len();
+        assert!(grown >= 200, "the grown tree must have >= 200 splats, got {grown}");
+        // Bit-exact probes captured from the LIVE overlay before saving.
+        let band7 = a.overlay[0].spectral_f32(6);
+        let rot0 = a.overlay[0].rotation_raw();
+
+        let (we, ws) = a.save_world(&path).unwrap();
+        assert_eq!(we, a.entities.len(), "save reports one SavedEntity per ShellEntity");
+        assert_eq!(ws, grown, "save reports exactly the grown splat count");
+
+        // --- Shell B (FRESH): load the saved world ---
+        let mut b = EditorShell::default();
+        let (le, lsp) = b.load_world(&path).unwrap();
+        assert_eq!(le, entities_before + 1, "load yields the seed rows + the one tree entity");
+        assert_eq!(lsp, grown, "load reports exactly the grown splat count");
+        assert_eq!(b.overlay.len(), grown, "the reloaded overlay has exactly the grown splats");
+
+        // The lossless guarantee: spectral (u16/f16) and rotation (i16) are bit-exact.
+        assert_eq!(
+            b.overlay[0].spectral_f32(6), band7,
+            "band 7 of splat 0 must be bit-identical after reload"
+        );
+        assert_eq!(
+            b.overlay[0].rotation_raw(), rot0,
+            "rotation i16 of splat 0 must be bit-identical after reload"
+        );
+        // Whole-overlay bit-exactness, not just splat 0.
+        for (i, (loaded, orig)) in b.overlay.iter().zip(a.overlay.iter()).enumerate() {
+            assert_eq!(loaded.spectral(), orig.spectral(), "splat {i} spectral bit-identical");
+            assert_eq!(loaded.rotation_raw(), orig.rotation_raw(), "splat {i} rotation bit-identical");
+            assert_eq!(loaded.position(), orig.position(), "splat {i} position match");
+            assert_eq!(loaded.kind(), orig.kind(), "splat {i} kind match");
+        }
+        // The tree entity is back (re-numbered on replay, but the label survives).
+        assert!(
+            b.entities.iter().any(|e| e.name.contains("Silver Birch")),
+            "a Silver Birch entity must exist after reload"
+        );
+        // load REPLAYS through plant_asset → the per-entity asset_range is coherent.
+        let tree = b.entities.iter().find(|e| e.name.contains("Silver Birch")).unwrap();
+        assert_eq!(
+            tree.asset_range_for_test(),
+            Some((0, grown)),
+            "the reloaded tree owns overlay[0..grown] (asset_range replayed coherently)"
+        );
+
+        println!("OK: tree saved and reloaded bit-identical ({grown} splats)");
     }
 }

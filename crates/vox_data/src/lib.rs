@@ -23,6 +23,8 @@ pub mod gi_export;
 pub mod gltf_animation;
 pub mod gltf_import;
 pub mod world_save;
+pub mod splat_codec;
+pub use splat_codec::{to_saved_geom, from_saved_geom};
 pub mod material_system;
 pub mod prefab;
 pub mod import_pipeline;
