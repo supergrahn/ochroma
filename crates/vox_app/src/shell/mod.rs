@@ -83,6 +83,18 @@ impl PanelId {
     }
 }
 
+/// The `[start, len)` slice of the viewport `overlay` that a planted World entity
+/// OWNS (AAA Spec 09 provenance index). Planting records it on the entity so a
+/// later duplicate can clone EXACTLY that entity's splats (not the whole overlay),
+/// and so undo's range-shift keeps every surviving entity pointing at its own
+/// splats. The two projections — the `PlacedAsset` undo entry and this per-entity
+/// range — are shifted in lockstep by the undo arm. Spec 06 serializes this index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverlayRange {
+    pub start: usize,
+    pub len: usize,
+}
+
 /// A demo entity shown in the World/Properties panels so the snapshot has real
 /// content (the inspector's drag-scrub fields bind to the selected one).
 #[derive(Clone)]
@@ -90,6 +102,109 @@ pub struct ShellEntity {
     pub name: String,
     pub kind: String,
     pub pos: [f32; 3],
+    /// The overlay range this entity's splats occupy, IF it was planted (a grown
+    /// tree / raised terrain / duplicate). `None` for the seed demo entities
+    /// (Townhouse, Sun, Camera…) which have no overlay splats — those are filtered
+    /// out of `edit.duplicate`. Kept in lockstep with the `PlacedAsset` undo range.
+    asset_range: Option<OverlayRange>,
+}
+
+impl ShellEntity {
+    /// Test-only read of the provenance range as a plain `(start, len)` tuple, so
+    /// the Spec 09 tests can assert EXACT ranges without exposing the field.
+    #[cfg(test)]
+    pub fn asset_range_for_test(&self) -> Option<(usize, usize)> {
+        self.asset_range.map(|r| (r.start, r.len))
+    }
+}
+
+/// The World hierarchy's multi-selection (AAA Spec 09). `set` is the FULL
+/// selection (always non-empty in normal use); `primary` is the "active" row the
+/// inspector binds to and the anchor `extend_to` ranges from. The two are kept
+/// consistent: `primary` is always a member of `set` (or repointed when it would
+/// not be). A single-select shell behaves exactly as before — `set == {i}`,
+/// `primary == i` — so the existing inspector/hierarchy/undo tests stay green.
+#[derive(Clone, Default)]
+pub struct Selection {
+    primary: usize,
+    set: std::collections::BTreeSet<usize>,
+}
+
+impl Selection {
+    /// A single-row selection: `set = {i}`, `primary = i`.
+    pub fn single(i: usize) -> Self {
+        let mut set = std::collections::BTreeSet::new();
+        set.insert(i);
+        Self { primary: i, set }
+    }
+
+    /// The active row — the one the inspector binds to.
+    pub fn primary(&self) -> usize {
+        self.primary
+    }
+
+    /// Whether row `i` is selected.
+    pub fn contains(&self, i: usize) -> bool {
+        self.set.contains(&i)
+    }
+
+    /// The selected indices in ascending order.
+    pub fn indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.set.iter().copied()
+    }
+
+    /// How many rows are selected.
+    pub fn len(&self) -> usize {
+        self.set.len()
+    }
+
+    /// Whether nothing is selected.
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
+
+    /// Toggle row `i` in/out of the selection (Cmd/Ctrl-click). If toggling OUT the
+    /// current `primary`, repoint `primary` to the lowest remaining row (or 0 when
+    /// the set is now empty) so `primary` is never a stale, non-member index.
+    pub fn toggle(&mut self, i: usize) {
+        if !self.set.remove(&i) {
+            self.set.insert(i);
+            self.primary = i;
+        } else if self.primary == i {
+            self.primary = self.set.iter().next().copied().unwrap_or(0);
+        }
+    }
+
+    /// Replace the whole selection with just row `i` (a plain click).
+    pub fn select_only(&mut self, i: usize) {
+        *self = Self::single(i);
+    }
+
+    /// Range-select from the current `primary` (the anchor) to `i` INCLUSIVE
+    /// (Shift-click), handling `i < primary`. Fills the contiguous span; `primary`
+    /// stays the anchor.
+    pub fn extend_to(&mut self, i: usize) {
+        let (lo, hi) = if i < self.primary { (i, self.primary) } else { (self.primary, i) };
+        for j in lo..=hi {
+            self.set.insert(j);
+        }
+    }
+
+    /// Drop every selected index `>= len` (e.g. after an entity was removed by
+    /// undo), then repoint `primary` to a surviving member (the lowest), or to the
+    /// last valid row when the set went empty — preserving the old "selection
+    /// clamps into range" behavior.
+    pub fn clamp_to(&mut self, len: usize) {
+        self.set.retain(|&i| i < len);
+        if !self.set.contains(&self.primary) {
+            self.primary = self
+                .set
+                .iter()
+                .next()
+                .copied()
+                .unwrap_or_else(|| len.saturating_sub(1));
+        }
+    }
 }
 
 /// One reversible edit on the shell's undo stack (design UX Principle 2,
@@ -197,6 +312,10 @@ pub enum ShellRequest {
     /// Set the active inspection illuminant explicitly (the `--illuminant <name>`
     /// proof-mode path); recomputes the ΔsRGB receipt and re-rasterizes.
     SetIlluminant(IlluminantSpec),
+    /// AAA Spec 09: duplicate the current selection — clone every selected entity
+    /// AND its exact overlay splat range at a +X offset, as ONE grouped undo.
+    /// Queued by `edit.duplicate` (Ctrl+D); drained into `duplicate_selected`.
+    DuplicateSelection,
 }
 
 /// The editor shell — owns the dock layout, panel state, and tokens.
@@ -204,7 +323,10 @@ pub struct EditorShell {
     pub tokens: Tokens,
     pub dock: DockState<TabKind>,
     pub entities: Vec<ShellEntity>,
-    pub selected: usize,
+    /// The World hierarchy selection (AAA Spec 09 — multi-select). Replaces the old
+    /// single `selected: usize`; `self.selected()` is the back-compat accessor for
+    /// the active (primary) row the inspector binds to.
+    pub selection: Selection,
     pub search: String,
     pub status: String,
     /// Last measured GPU pass time (label, milliseconds) for the frame-budget HUD
@@ -325,6 +447,11 @@ impl Default for EditorShell {
 /// always the most recent N.
 const HISTORY_CAP: usize = 200;
 
+/// The world-space offset a duplicate is placed at relative to its source (Spec
+/// 09): +2 units along X, so the copy lands visibly beside the original (not on
+/// top of it). Applied to BOTH the entity transform and every cloned splat.
+const DUP_OFFSET: [f32; 3] = [2.0, 0.0, 0.0];
+
 impl EditorShell {
     /// Build the shell with the standard SOTA layout:
     /// left = World; center-top = Viewport, center-bottom = Node Graph;
@@ -386,24 +513,30 @@ impl EditorShell {
                     name: "Townhouse_Row_03".into(),
                     kind: "mesh".into(),
                     pos: [12.0, 0.0, -4.0],
+                    asset_range: None,
                 },
                 ShellEntity {
                     name: "Terrain_Alpine".into(),
                     kind: "terrain".into(),
                     pos: [0.0, 0.0, 0.0],
+                    asset_range: None,
                 },
                 ShellEntity {
                     name: "Sun_Directional".into(),
                     kind: "light".into(),
                     pos: [40.0, 80.0, 20.0],
+                    asset_range: None,
                 },
                 ShellEntity {
                     name: "Camera_Main".into(),
                     kind: "camera".into(),
                     pos: [5.0, 2.0, 14.0],
+                    asset_range: None,
                 },
             ],
-            selected: 0,
+            // Preserve the old "row 0 selected" default so the inspector tests stay
+            // green; the Selection model is single-select until the user multi-picks.
+            selection: Selection::single(0),
             search: String::new(),
             status: "All systems healthy".into(),
             last_gpu_pass_ms: None,
@@ -489,6 +622,13 @@ impl EditorShell {
     pub fn install_floraprime(&mut self) {
         let plugin = plugins::FloraPrimePlugin::with_grow_sink(self.flora_sink.clone());
         self.install_plugin(Box::new(plugin));
+    }
+
+    /// The active (primary) selected row — back-compat accessor for the old
+    /// `self.selected` field, now backed by [`Selection`] (Spec 09 multi-select).
+    /// The inspector binds to this row.
+    pub fn selected(&self) -> usize {
+        self.selection.primary()
     }
 
     /// Grow a tree headlessly (no UI click): build the default-species splats and
@@ -587,6 +727,14 @@ impl EditorShell {
         if ctrl_z {
             self.registry.run("edit.undo");
         }
+        // Ctrl+D duplicates the World selection (Spec 09) through the same registry
+        // surface — the command queues a DuplicateSelection request drained below.
+        let ctrl_d = ctx.input(|i| {
+            i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::D)
+        });
+        if ctrl_d {
+            self.registry.run("edit.duplicate");
+        }
         // Ctrl+L cycles the inspection light — the AAA Spec-03 "flip the forgery"
         // key. Under the gallery lamp the planted metamer pair reads identical;
         // under cool_led/tungsten it splits and the ΔsRGB HUD flips to "(forgery)".
@@ -644,7 +792,7 @@ impl EditorShell {
             tokens: &self.tokens,
             widget_kit: &self.widget_kit,
             entities: &mut self.entities,
-            selected: &mut self.selected,
+            selection: &mut self.selection,
             search: &mut self.search,
             canvas: &mut self.canvas,
             bridge: &mut self.bridge,
@@ -1090,11 +1238,22 @@ impl EditorShell {
                         }
                     }
                 }
+                // TWIN shift (Spec 09): the per-entity provenance ranges are the
+                // SECOND projection of the same overlay. Shift every surviving
+                // entity range that sits ABOVE the removed slice down by `removed`,
+                // exactly like the undo stack above, so entity ranges and undo
+                // ranges stay consistent. (The removed entity drops its own range
+                // with its row below — no shift needed for it.)
+                for ent in self.entities.iter_mut() {
+                    if let Some(r) = ent.asset_range.as_mut() {
+                        if r.start >= end {
+                            r.start -= removed;
+                        }
+                    }
+                }
                 if let Some(pos) = self.entities.iter().rposition(|e| e.name == name) {
                     self.entities.remove(pos);
-                    if self.selected >= self.entities.len() {
-                        self.selected = self.entities.len().saturating_sub(1);
-                    }
+                    self.selection.clamp_to(self.entities.len());
                 }
                 self.viewport_tex = None;
                 self.last_inspector_edit = None;
@@ -1178,6 +1337,9 @@ impl EditorShell {
                     self.active_illuminant = spec;
                     self.viewport_tex = None;
                     self.status = self.hud_receipt();
+                }
+                ShellRequest::DuplicateSelection => {
+                    self.duplicate_selected();
                 }
             }
         }
@@ -1395,6 +1557,10 @@ impl EditorShell {
             name: name.clone(),
             kind: kind.to_string(),
             pos,
+            // Record the provenance range (Spec 09): start/len are the SAME values
+            // the PlacedAsset undo entry carries — zero extra computation. This lets
+            // edit.duplicate clone EXACTLY this entity's splats.
+            asset_range: Some(OverlayRange { start, len }),
         });
         // Invalidate the cached viewport texture so the asset shows next frame.
         self.viewport_tex = None;
@@ -1427,6 +1593,69 @@ impl EditorShell {
             s.set_position([p[0] + delta[0], p[1] + delta[1], p[2] + delta[2]]);
         }
         self.plant_asset_collect(species_label, "vegetation", splats, pos, "Grew a", "")
+    }
+
+    /// Duplicate the current selection (AAA Spec 09, Ctrl+D). For every selected
+    /// entity that OWNS an overlay range (the seed demo entities don't — they're
+    /// filtered out), clone EXACTLY its splats at the `DUP_OFFSET` (+X), plant the
+    /// copy through the SAME [`Self::plant_asset_collect`] core (so it's numbered,
+    /// receipted, and overlay-tracked just like any planted asset), and COLLECT the
+    /// per-copy [`UndoEntry::PlacedAsset`] into ONE [`UndoEntry::Group`] — so the
+    /// whole duplicate (single OR multi-select) is one Ctrl+Z (matching Spec 07's
+    /// grouped-undo). The new copies become the selection. Returns the receipt.
+    fn duplicate_selected(&mut self) -> String {
+        // Snapshot the sources BEFORE planting (planting mutates `self.overlay` /
+        // `self.entities`, which would invalidate live indices and ranges). Only
+        // entities with a provenance range are duplicable; the seed entities yield
+        // `None` and are filtered out here.
+        let sources: Vec<(String, String, [f32; 3], OverlayRange)> = self
+            .selection
+            .indices()
+            .filter_map(|i| {
+                let e = self.entities.get(i)?;
+                Some((dup_label(&e.name), e.kind.clone(), e.pos, e.asset_range?))
+            })
+            .collect();
+        if sources.is_empty() {
+            let msg = "Nothing to duplicate".to_string();
+            self.log_receipt(msg.clone());
+            return msg;
+        }
+
+        let n = sources.len();
+        let mut members: Vec<UndoEntry> = Vec::with_capacity(n);
+        let mut new_indices: Vec<usize> = Vec::with_capacity(n);
+        for (label, kind, pos, r) in sources {
+            // Clone EXACTLY this entity's splats and translate each by DUP_OFFSET so
+            // the copy lands beside the source (same shape, +X). The range is valid
+            // because we snapshotted it before any planting widened the overlay.
+            let mut splats = self.overlay[r.start..r.start + r.len].to_vec();
+            for s in &mut splats {
+                let p = s.position();
+                s.set_position([
+                    p[0] + DUP_OFFSET[0],
+                    p[1] + DUP_OFFSET[1],
+                    p[2] + DUP_OFFSET[2],
+                ]);
+            }
+            let copy_pos = [pos[0] + DUP_OFFSET[0], pos[1] + DUP_OFFSET[1], pos[2] + DUP_OFFSET[2]];
+            // The new entity is pushed to the END of `self.entities`, so its index
+            // is the length-before-push; capture it for the post-loop reselection.
+            new_indices.push(self.entities.len());
+            let entry = self.plant_asset_collect(&label, &kind, splats, copy_pos, "Duplicated", "");
+            members.push(entry);
+        }
+        // ONE Group for the WHOLE duplicate (single or multi) → one Ctrl+Z.
+        self.push_undo(UndoEntry::Group {
+            label: format!("Duplicated {n} item(s)"),
+            members,
+        });
+        // Select the copies (primary = first copy) so the user can immediately move
+        // / re-duplicate them.
+        self.selection = selection_of(&new_indices);
+        let receipt = format!("Duplicated {n} item(s) — undo with Ctrl+Z");
+        self.log_receipt(receipt.clone());
+        receipt
     }
 
     /// Append a line to the Output Log, capping it at [`HISTORY_CAP`].
@@ -1656,7 +1885,7 @@ struct ShellViewer<'a> {
     tokens: &'a Tokens,
     widget_kit: &'a WidgetKit,
     entities: &'a mut Vec<ShellEntity>,
-    selected: &'a mut usize,
+    selection: &'a mut Selection,
     search: &'a mut String,
     canvas: &'a mut NodeCanvas,
     bridge: &'a mut GraphBridge,
@@ -1723,8 +1952,17 @@ impl ShellViewer<'_> {
             let [r, g, b, a] = self.tokens.color(color_key);
             let label = egui::RichText::new(format!("{ic}  {}", e.name))
                 .color(egui::Color32::from_rgba_unmultiplied(r, g, b, a));
-            if ui.selectable_label(*self.selected == i, label).clicked() {
-                *self.selected = i;
+            if ui.selectable_label(self.selection.contains(i), label).clicked() {
+                // Modifier-aware multi-select (Spec 09): Cmd/Ctrl toggles, Shift
+                // range-selects from the anchor, a plain click selects only this row.
+                let mods = ui.input(|inp| inp.modifiers);
+                if mods.command {
+                    self.selection.toggle(i);
+                } else if mods.shift {
+                    self.selection.extend_to(i);
+                } else {
+                    self.selection.select_only(i);
+                }
             }
         }
         // Empty state teaches: how to put the first thing into the world.
@@ -1801,7 +2039,7 @@ impl ShellViewer<'_> {
         }
 
         // No node selected: show the World entity's transform (the friendly default).
-        let sel = (*self.selected).min(self.entities.len().saturating_sub(1));
+        let sel = self.selection.primary().min(self.entities.len().saturating_sub(1));
         let name = self.entities.get(sel).map(|e| e.name.clone()).unwrap_or_default();
         ui.heading(name);
         ui.separator();
@@ -2010,6 +2248,30 @@ fn hierarchy_empty_message(entities_empty: bool) -> &'static str {
     }
 }
 
+/// The base label for a duplicate (Spec 09): strip a trailing ` NN` numeric
+/// suffix (so "Silver Birch 01" → "Silver Birch", and the duplicate is re-numbered
+/// by the planting counter to "Silver Birch 02"), but leave a user-renamed name
+/// like "My Tree" untouched (its last token isn't a number). The strip fires ONLY
+/// when the last space-token parses as a `u32`.
+fn dup_label(name: &str) -> String {
+    match name.rsplit_once(' ') {
+        Some((head, tail)) if tail.parse::<u32>().is_ok() => head.to_string(),
+        _ => name.to_string(),
+    }
+}
+
+/// Build a [`Selection`] over `indices` (the freshly-planted copies), with the
+/// FIRST index as primary — so after a duplicate the new copies are selected and
+/// the inspector binds to the first one.
+fn selection_of(indices: &[usize]) -> Selection {
+    let mut sel = Selection::default();
+    for &i in indices {
+        sel.set.insert(i);
+    }
+    sel.primary = indices.first().copied().unwrap_or(0);
+    sel
+}
+
 /// Build the editor's one-command-surface. Menus, toolbar, palette and (later)
 /// the AI assistant all dispatch through these. `flag` is flipped by the
 /// representative `world.add` command so the palette test can observe execution.
@@ -2045,6 +2307,12 @@ fn build_registry(
         q.borrow_mut().push(ShellRequest::Undo)
     }));
     r.add(Command::new("edit.redo", "Redo", "Edit", "Ctrl+Shift+Z", || {}));
+    // Duplicate the selection (Spec 09) — clones each selected entity + its splats
+    // at +X as ONE grouped undo. Queues a request the shell drains (needs `&mut`).
+    let q = requests.clone();
+    r.add(Command::new("edit.duplicate", "Duplicate", "Edit", "Ctrl+D", move || {
+        q.borrow_mut().push(ShellRequest::DuplicateSelection)
+    }));
     r.add(Command::new("build.cook", "Update the world", "Build", "F5", || {}));
     r.add(Command::new("view.wireframe", "Show the wireframe outline", "Window", "", || {}));
     r.add(Command::new("help.about", "About Ochroma", "Help", "", || {}));
@@ -2606,17 +2874,22 @@ mod tests {
             s / n
         };
         let cx = w / 2 - 10;
+        // The backdrop sample sits at 85% height — well BELOW the modal card. (Was
+        // 75%, but the card's command list grows downward with each registered
+        // command; Spec 09's new `edit.duplicate` row pushed the card's lower edge
+        // into the 75% patch. 85% is clear of the card and yields the same margin on
+        // both versions, so it still proves the backdrop dim without being layout-
+        // fragile to one extra command row.)
         let card_open = patch_lum(&open_rgba, cx, h * 28 / 100);
-        let below_open = patch_lum(&open_rgba, cx, h * 75 / 100);
+        let below_open = patch_lum(&open_rgba, cx, h * 85 / 100);
         assert!(
             card_open > below_open + 5.0,
             "open: modal card patch ({card_open:.1}) must be brighter than the dimmed viewport below it ({below_open:.1})"
         );
-        // Closed: no modal, so the same centre-column patch at 28% height is the
-        // viewport scene at full (undimmed) brightness — the open card patch must
-        // be DIMMER than the closed (undimmed) scene at that location, proving the
-        // backdrop dim is really there.
-        let same_loc_closed = patch_lum(&closed_rgba, cx, h * 75 / 100);
+        // Closed: no modal, so the same centre-column patch is the viewport scene at
+        // full (undimmed) brightness — the open backdrop patch must be DIMMER than
+        // the closed (undimmed) scene at that location, proving the dim is real.
+        let same_loc_closed = patch_lum(&closed_rgba, cx, h * 85 / 100);
         assert!(
             below_open < same_loc_closed - 4.0,
             "open backdrop ({below_open:.1}) must be dimmer than the closed scene ({same_loc_closed:.1})"
@@ -4273,5 +4546,164 @@ mod tests {
         }
         let rgba = super::cpu_render::render_ui(&ctx, [w, h], bg, |ctx| shell.ui(ctx));
         (rgba, w, h, shell)
+    }
+
+    // === AAA Spec 09: prefab / duplicate / multi-select ===
+
+    fn dup_splats_eq(a: &GaussianSplat, b: &GaussianSplat) -> bool {
+        a.position() == b.position()
+            && a.scales() == b.scales()
+            && a.opacity() == b.opacity()
+            && a.spectral() == b.spectral()
+    }
+
+    /// PROVENANCE (Step 1): planting records each entity's exact `[start, len)`
+    /// overlay range, and undoing an EARLIER asset shifts the SURVIVING entity's
+    /// range down — the entity-range projection stays consistent with the overlay,
+    /// exactly like the undo-stack range does. Mirrors the
+    /// `undo_earlier_asset_shifts_later_asset_range` out-of-order undo setup.
+    #[test]
+    fn plant_asset_records_entity_range_and_undo_shifts_it() {
+        let mut shell = EditorShell::default();
+        // Plant a tree, then a terrain patch. Overlay: [tree(0..T), terrain(T..T+G)].
+        shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        let tree_n = shell.overlay.len();
+        shell.raise_terrain_headless(0);
+        let terr_len = shell.overlay.len() - tree_n;
+
+        // The tree entity owns exactly [0, tree_n); the terrain owns [tree_n, G).
+        let tree_ent = shell
+            .entities
+            .iter()
+            .find(|e| e.name == "Silver Birch 01")
+            .expect("tree entity present");
+        assert_eq!(
+            tree_ent.asset_range_for_test(),
+            Some((0, tree_n)),
+            "the tree entity must own the overlay head [0, tree_n)"
+        );
+        let terr_ent = shell
+            .entities
+            .iter()
+            .find(|e| e.name == "Forge Terrain 01")
+            .expect("terrain entity present");
+        assert_eq!(
+            terr_ent.asset_range_for_test(),
+            Some((tree_n, terr_len)),
+            "the terrain entity must own [tree_n, terr_len)"
+        );
+
+        // Undo the EARLIER tree out of order (swap its undo entry to the top), as in
+        // undo_earlier_asset_shifts_later_asset_range — the surviving terrain entity
+        // range must shift down to start at 0.
+        let tree_pos = shell
+            .undo_stack
+            .iter()
+            .position(|e| matches!(e, UndoEntry::PlacedAsset { name, .. } if name == "Silver Birch 01"))
+            .unwrap();
+        let tree_entry = shell.undo_stack.remove(tree_pos);
+        shell.undo_stack.push(tree_entry);
+        assert!(shell.registry.run("edit.undo"));
+        shell.drain_requests();
+
+        assert!(!shell.entities.iter().any(|e| e.name == "Silver Birch 01"));
+        let terr_ent = shell
+            .entities
+            .iter()
+            .find(|e| e.name == "Forge Terrain 01")
+            .expect("terrain survives the tree undo");
+        assert_eq!(
+            terr_ent.asset_range_for_test(),
+            Some((0, terr_len)),
+            "the surviving terrain entity range must shift to the overlay head"
+        );
+    }
+
+    /// SELECTION MODEL (Step 2): a `Selection` tracks the exact set of indices under
+    /// single / range / toggle / clamp operations — the World multi-select algebra.
+    #[test]
+    fn selection_toggle_and_range_track_indices() {
+        let mut sel = Selection::single(4);
+        sel.extend_to(7); // anchor 4 .. 7 inclusive
+        assert_eq!(sel.indices().collect::<Vec<_>>(), vec![4, 5, 6, 7]);
+
+        sel.toggle(5); // remove the middle one
+        assert_eq!(sel.indices().collect::<Vec<_>>(), vec![4, 6, 7]);
+
+        sel.clamp_to(6); // drop everything >= 6
+        assert_eq!(sel.indices().collect::<Vec<_>>(), vec![4]);
+        assert_eq!(sel.primary(), 4, "primary must repoint to a surviving member");
+    }
+
+    /// HEADLINE (Step 3): duplicate ONE selected tree → the overlay DOUBLES (gains
+    /// exactly the tree's splats), a "Silver Birch 02" copy entity exists, every
+    /// copy splat is the source +2.0 in X with bit-exact spectral, and ONE Ctrl+Z
+    /// removes EXACTLY the copy — overlay and entities back to base, the original
+    /// splats bit-identical. The whole duplicate is one grouped undo.
+    #[test]
+    fn duplicate_one_tree_doubles_overlay_and_one_undo_removes_exactly_the_copy() {
+        let mut shell = EditorShell::default();
+        // Plant ONE tree; capture the base world/overlay AFTER it.
+        shell.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        let base_entities = shell.entities.len();
+        let base_overlay = shell.overlay.len();
+        let tree_len = base_overlay; // the tree owns the whole overlay head here
+        // The source splats, captured before duplicating.
+        let source: Vec<GaussianSplat> = shell.overlay[..tree_len].to_vec();
+
+        // Select the tree entity (the one with a provenance range).
+        let tree_idx = shell
+            .entities
+            .iter()
+            .position(|e| e.name == "Silver Birch 01")
+            .expect("tree entity present");
+        shell.selection = Selection::single(tree_idx);
+
+        // Duplicate through the SAME request + drain path the Ctrl+D command drives.
+        shell.registry.run("edit.duplicate");
+        shell.drain_requests();
+
+        // One new entity, overlay doubled (old + the tree's own len).
+        assert_eq!(
+            shell.entities.len(),
+            base_entities + 1,
+            "duplicate adds exactly one World entity"
+        );
+        assert_eq!(
+            shell.overlay.len(),
+            base_overlay + tree_len,
+            "duplicate adds exactly the tree's splats (overlay doubles)"
+        );
+        assert!(
+            shell.entities.iter().any(|e| e.name == "Silver Birch 02"),
+            "the copy must be the next-numbered 'Silver Birch 02'"
+        );
+        // Every copy splat == source +2.0 X, with bit-exact spectral/scales/opacity.
+        let copy: Vec<GaussianSplat> = shell.overlay[tree_len..].to_vec();
+        assert_eq!(copy.len(), source.len(), "copy splat count == source");
+        for (c, s) in copy.iter().zip(source.iter()) {
+            let cp = c.position();
+            let sp = s.position();
+            assert!((cp[0] - (sp[0] + 2.0)).abs() < 1e-4, "copy X = source X + 2.0");
+            assert!((cp[1] - sp[1]).abs() < 1e-4, "copy Y unchanged");
+            assert!((cp[2] - sp[2]).abs() < 1e-4, "copy Z unchanged");
+            assert_eq!(c.spectral(), s.spectral(), "copy spectral is bit-exact");
+            assert_eq!(c.scales(), s.scales(), "copy scales bit-exact");
+            assert_eq!(c.opacity(), s.opacity(), "copy opacity bit-exact");
+        }
+        // The copies are now selected (primary = the new entity).
+        assert!(shell.selection.contains(base_entities), "the copy is selected");
+
+        // ONE Ctrl+Z removes EXACTLY the copy — back to base, originals untouched.
+        assert!(shell.registry.run("edit.undo"));
+        shell.drain_requests();
+        assert_eq!(shell.overlay.len(), base_overlay, "one undo restores the overlay length");
+        assert_eq!(shell.entities.len(), base_entities, "one undo removes exactly the copy entity");
+        assert!(!shell.entities.iter().any(|e| e.name == "Silver Birch 02"));
+        assert!(
+            shell.overlay.iter().zip(source.iter()).all(|(a, b)| dup_splats_eq(a, b)),
+            "the original tree's splats must be bit-identical after undo"
+        );
+        println!("OK: duplicate doubled overlay, one undo removed exactly the copy");
     }
 }
