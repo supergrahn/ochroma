@@ -30,6 +30,8 @@ use vox_core::types::GaussianSplat;
 use vox_render::atom_budget::{AtomBudgetSelector, Selection};
 use vox_render::clas;
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
+use vox_render::gpu::tiled_splat_renderer::TiledSplatRenderer;
+use vox_render::gpu::GpuContext;
 use vox_render::spectral::RenderCamera;
 
 // --- Scene scale knobs (chosen to clear 2M splats deterministically) -------
@@ -315,6 +317,83 @@ fn run_sweep(
     }
 }
 
+/// Build a headless [`GpuContext`] on the local hardware GPU. Returns `None`
+/// (the caller then prints "SKIPPED no adapter" and exits 0) when no hardware
+/// adapter is available — protecting the green gate on GPU-less CI.
+fn headless_context() -> Option<GpuContext> {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        ..Default::default()
+    });
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    }))?;
+    let info = adapter.get_info();
+    if vox_render::gpu::adapter::ensure_hardware(&info).is_err() {
+        return None;
+    }
+    let features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
+    let (device, queue) = pollster::block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            label: Some("scale_trial_gpu_tiled_device"),
+            required_features: features,
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::default(),
+        },
+        None,
+    ))
+    .ok()?;
+    Some(GpuContext::from_parts(&device, &queue, &info))
+}
+
+/// Run the on-device tiled renderer over `subset` at the proof resolution and
+/// print the Done-When line. Exit 0 when >10% non-black; else exit 1 with a
+/// printed reason. On no adapter, prints "SKIPPED no adapter" and exits 0.
+fn run_gpu_tiled(subset: &[GaussianSplat], render_cam: &RenderCamera) -> ExitCode {
+    let Some(ctx) = headless_context() else {
+        println!("[scale_trial] SKIPPED no adapter");
+        return ExitCode::SUCCESS;
+    };
+    let mut renderer = match TiledSplatRenderer::new(ctx.clone(), subset, RENDER_W, RENDER_H) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("[scale_trial] gpu_tiled FAIL: renderer construction: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let frame = match renderer.render(render_cam) {
+        Ok(f) => f,
+        Err(e) => {
+            println!("[scale_trial] gpu_tiled FAIL: render: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let illuminant = Illuminant::d65();
+    let (_pixels, non_black) = frame.resolve_to_srgb(&ctx, &illuminant);
+    let total = (RENDER_W * RENDER_H) as usize;
+    let pct = non_black as f64 / total as f64 * 100.0;
+
+    let (ms, label) = match frame.raster_gpu_ms {
+        Some(g) => (g, "GPU"),
+        None => (frame.wall_ms, "wall"),
+    };
+    println!(
+        "[scale_trial] gpu_tiled raster {:.3} ms {} | subset_splats={} | non_black_px={}/{} ({:.1}%)",
+        ms, label, subset.len(), non_black, total, pct
+    );
+    if pct > 10.0 {
+        ExitCode::SUCCESS
+    } else {
+        println!(
+            "[scale_trial] gpu_tiled FAIL: only {:.1}% non-black (need > 10%)",
+            pct
+        );
+        ExitCode::FAILURE
+    }
+}
+
 fn main() -> ExitCode {
     println!("[scale_trial] === Ochroma atom-budget scale trial ===");
 
@@ -401,6 +480,16 @@ fn main() -> ExitCode {
         .iter()
         .map(|&i| scene[i as usize])
         .collect();
+
+    // --- 5b. Optional GPU tiled-raster proof (`--gpu-tiled`) ----------------
+    // Reuses the selected `subset` + `render_cam`. Runs the on-device tiled
+    // chain (tile_assign → radix_sort → tile_range_build → splat_raster) and
+    // prints the Done-When line. Exits here (does not continue the CPU sweep
+    // assertions) — it is a self-contained renderer proof.
+    if std::env::args().any(|a| a == "--gpu-tiled") {
+        return run_gpu_tiled(&subset, &render_cam);
+    }
+
     let t_raster = Instant::now();
     let mut rasteriser = SoftwareRasteriser::new(RENDER_W, RENDER_H);
     let illuminant = Illuminant::d65();

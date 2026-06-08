@@ -304,7 +304,11 @@ mod tests {
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
         );
-        let _ = v.validate(&module);
+        // MUST validate, not just parse: a dimension-invalid expression (e.g.
+        // mat3x3 * vec2) parses fine but fails validation, and discarding the
+        // result let exactly that bug ship undriven. Assert it succeeds.
+        v.validate(&module)
+            .expect("tile_assign.wgsl must pass naga validation, not just parse");
     }
 
     #[test]
@@ -316,6 +320,7 @@ mod tests {
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
         );
-        let _ = v.validate(&module);
+        v.validate(&module)
+            .expect("write_indirect_args.wgsl must pass naga validation");
     }
 }

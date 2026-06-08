@@ -111,11 +111,15 @@ fn project_cov3_to_conic(cov3: mat3x3<f32>, p_view: vec3<f32>, focal: vec2<f32>)
     // For simplicity we embed W in the Jacobian via the view matrix rows.
     // Here we use J directly on Σ_world (common practical approximation).
     // Σ_2D = J * Σ_world * J^T
-    let JT = transpose(J);  // 3x2
-
-    // Σ_world * J^T  → 3×2
-    let SJT_col0 = cov3 * JT[0]; // mat3*vec3 → vec3
-    let SJT_col1 = cov3 * JT[1];
+    //
+    // J is a WGSL `mat2x3` — 2 columns, each a vec3 — and those columns are the
+    // ROWS of the 2×3 math Jacobian, i.e. exactly the COLUMNS of J^T. So
+    // Σ_world · J^T has columns `cov3 * J[i]` (mat3x3 * vec3 → vec3). The previous
+    // `transpose(J)` produced a `mat3x2` whose columns are vec2, making
+    // `cov3 * JT[i]` a dimension-invalid `mat3x3 * vec2` that failed naga
+    // validation (latent: no GPU path drove this shader until the tiled renderer).
+    let SJT_col0 = cov3 * J[0]; // Σ_world * (J^T col 0) → vec3
+    let SJT_col1 = cov3 * J[1]; // Σ_world * (J^T col 1) → vec3
 
     // J * (Σ_world * J^T)  → 2×2
     let cov2_00 = dot(J[0], SJT_col0);
