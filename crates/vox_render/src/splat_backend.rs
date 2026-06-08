@@ -41,6 +41,23 @@ pub struct SpectraRenderBackend {
     height: u32,
 }
 
+/// Locate the Spectra `.slang` kernel directory: `SPECTRA_SLANG_DIR` if set and
+/// valid, else the `spectra/slang` dir beside the engine repo (matching the
+/// `../../../spectra/...` path deps in Cargo.toml). Returns `None` if neither
+/// exists (the renderer then falls back to temp_dir and produces blank frames).
+#[cfg(feature = "spectra-native")]
+fn resolve_slang_kernel_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if let Ok(d) = std::env::var("SPECTRA_SLANG_DIR") {
+        let p = PathBuf::from(d);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../spectra/slang");
+    p.is_dir().then_some(p)
+}
+
 #[cfg(feature = "spectra-native")]
 impl SpectraRenderBackend {
     /// Spawn render thread with near-realtime config (4 spp, DLSS, NRC, ReSTIR PT).
@@ -57,7 +74,13 @@ impl SpectraRenderBackend {
         Self::spawn(config, width, height)
     }
 
-    fn spawn(config: RenderConfig, width: u32, height: u32) -> Result<Self, String> {
+    fn spawn(mut config: RenderConfig, width: u32, height: u32) -> Result<Self, String> {
+        // Without a Slang kernel dir, the renderer falls back to temp_dir() and
+        // finds no `.slang` files -> every dispatch is a no-op -> blank frames.
+        // Resolve it: SPECTRA_SLANG_DIR override, else the spectra repo's slang/.
+        if config.slang_kernel_dir.is_none() {
+            config.slang_kernel_dir = resolve_slang_kernel_dir();
+        }
         let (tx, rx) = channel::<RtCommand>();
         let last_output: Arc<Mutex<Arc<Vec<u8>>>> =
             Arc::new(Mutex::new(Arc::new(Vec::new())));
@@ -297,7 +320,9 @@ mod tests {
         );
 
         // 2. A near-realtime config at our target resolution (low spp for speed).
-        let config = RenderConfig::near_realtime(w, h);
+        let mut config = RenderConfig::near_realtime(w, h);
+        config.slang_kernel_dir = super::resolve_slang_kernel_dir();
+        assert!(config.slang_kernel_dir.is_some(), "Slang kernel dir not found (set SPECTRA_SLANG_DIR)");
         let mut renderer = Renderer::new(gpu, config);
 
         // 3. One bright surface splat at the origin, facing the camera (+Z normal).
