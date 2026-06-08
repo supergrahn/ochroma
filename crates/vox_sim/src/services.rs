@@ -13,9 +13,6 @@ pub enum ServiceType {
     PowerPlant,
     WaterTreatment,
     PrimarySchool,
-    /// Childcare / kindergarten — care for the Child lifecycle stage; the service
-    /// the dependent-care employment gate looks for.
-    Childcare,
     SecondarySchool,
     Clinic,
     FireStation,
@@ -81,8 +78,6 @@ impl ServiceManager {
         self.next_id += 1;
         let (radius, capacity, cost, staff) = match service_type {
             ServiceType::PrimarySchool => (1000.0, 500, 5000.0, 20),
-            // Childcare: walkable coverage, small capacity, cheap to run.
-            ServiceType::Childcare => (1500.0, 50, 400.0, 8),
             ServiceType::SecondarySchool => (2000.0, 1000, 10000.0, 40),
             ServiceType::University => (5000.0, 5000, 50000.0, 200),
             ServiceType::Clinic => (1000.0, 200, 3000.0, 10),
