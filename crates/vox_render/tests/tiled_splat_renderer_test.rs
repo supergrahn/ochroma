@@ -19,9 +19,9 @@ use glam::{Mat4, Quat, Vec3};
 use half::f16;
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
+use vox_render::gpu::GpuContext;
 use vox_render::gpu::adapter;
 use vox_render::gpu::tiled_splat_renderer::TiledSplatRenderer;
-use vox_render::gpu::GpuContext;
 use vox_render::spectral::RenderCamera;
 
 const WIDTH: u32 = 256;
@@ -162,7 +162,10 @@ fn tiled_renderer_draws_non_black() {
     // The frame must be coherently lit (a real centroid exists, not scattered
     // single pixels) and clear the 10% Done-When bar.
     let centroid = nonblack_centroid(&pixels, WIDTH);
-    assert!(centroid.is_some(), "GPU tiled frame is entirely black — dead pipeline");
+    assert!(
+        centroid.is_some(),
+        "GPU tiled frame is entirely black — dead pipeline"
+    );
     assert!(
         cov > 0.10,
         "GPU tiled frame only {:.1}% non-black (need > 10%) — pipeline drew nothing usable",
@@ -215,12 +218,27 @@ fn tiled_y_orientation_matches_cpu() {
     eprintln!(
         "[orientation] gpu_centroid=({:.0},{:.0}) cpu_centroid=({:.0},{:.0}) dy={:.0}px dx={:.0}px \
          | gpu_cov={:.1}% cpu_cov={:.1}%",
-        gpu_c.0, gpu_c.1, cpu_c.0, cpu_c.1, dy, dx, gpu_cov * 100.0, cpu_cov * 100.0
+        gpu_c.0,
+        gpu_c.1,
+        cpu_c.0,
+        cpu_c.1,
+        dy,
+        dx,
+        gpu_cov * 100.0,
+        cpu_cov * 100.0
     );
 
     // Both must draw a coherent region (guards a 0/0 false pass).
-    assert!(cpu_cov > 0.10, "CPU reference drew only {:.1}% — bad test scene", cpu_cov * 100.0);
-    assert!(gpu_cov > 0.10, "GPU drew only {:.1}% — dead pipeline", gpu_cov * 100.0);
+    assert!(
+        cpu_cov > 0.10,
+        "CPU reference drew only {:.1}% — bad test scene",
+        cpu_cov * 100.0
+    );
+    assert!(
+        gpu_cov > 0.10,
+        "GPU drew only {:.1}% — dead pipeline",
+        gpu_cov * 100.0
+    );
 
     // Vertical centroids must agree within 15% of the frame height. A Y-flip puts
     // the GPU centroid ~(HEIGHT - cpu) away — this fails loud on it.
@@ -229,7 +247,8 @@ fn tiled_y_orientation_matches_cpu() {
         dy < tol,
         "GPU vs CPU vertical centroid differs by {dy:.0}px (> {tol:.0}px) — Y-flip / tile-binding \
          mismatch: gpu_cy={:.0} cpu_cy={:.0}",
-        gpu_c.1, cpu_c.1
+        gpu_c.1,
+        cpu_c.1
     );
     // Horizontal too (cheap; catches an X mirror).
     assert!(

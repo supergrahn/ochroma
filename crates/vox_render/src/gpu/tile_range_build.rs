@@ -44,6 +44,18 @@ pub fn cpu_tile_ranges(sorted_tile_idx: &[u32], num_tiles: usize) -> Vec<[u32; 2
     ranges
 }
 
+/// Persistent encoder-B handles for [`TileRangeBuildPass::dispatch_prepared`]
+/// (M3.1 Task 5): the params uniform (`UNIFORM|COPY_DST`, rewritten per frame
+/// with the live `count`) and the bind group, built ONCE by
+/// [`TileRangeBuildPass::prepare`] against caller-owned buffers. Kills the
+/// per-frame `create_buffer_init` + bind group the [`TileRangeBuildPass::dispatch`]
+/// path pays. Rebuild whenever the bound `sorted_keys_hi` buffer is recreated
+/// (the renderer's entry-scratch grow path).
+pub struct TileRangePrepared {
+    params_buf: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
 /// GPU twin of [`cpu_tile_ranges`]: two compute entry points (`clear_ranges`,
 /// `build_ranges`) over one bind group layout (params uniform, sorted keys,
 /// ranges read-write).
@@ -122,7 +134,11 @@ impl TileRangeBuildPass {
             cache: None,
         });
 
-        Self { clear_pipeline, build_pipeline, bgl }
+        Self {
+            clear_pipeline,
+            build_pipeline,
+            bgl,
+        }
     }
 
     /// Clear then build the per-tile ranges into the caller-owned `tile_ranges`
@@ -139,7 +155,12 @@ impl TileRangeBuildPass {
         count: u32,
         num_tiles: u32,
     ) {
-        let params = TileRangeParams { count, num_tiles, _pad0: 0, _pad1: 0 };
+        let params = TileRangeParams {
+            count,
+            num_tiles,
+            _pad0: 0,
+            _pad1: 0,
+        };
         let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("tile_range_params"),
             contents: bytemuck::bytes_of(&params),
@@ -150,9 +171,18 @@ impl TileRangeBuildPass {
             label: Some("tile_range_build_bg"),
             layout: &self.bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: sorted_keys_hi.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: tile_ranges.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: sorted_keys_hi.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: tile_ranges.as_entire_binding(),
+                },
             ],
         });
 
@@ -172,6 +202,89 @@ impl TileRangeBuildPass {
             });
             pass.set_pipeline(&self.build_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(count.div_ceil(256).max(1), 1, 1);
+        }
+    }
+
+    /// Build the persistent params buffer + bind group for
+    /// [`Self::dispatch_prepared`] (M3.1 Task 5 — additive; [`Self::dispatch`]
+    /// is untouched). The params buffer is `UNIFORM|COPY_DST` so the live
+    /// `count` can be rewritten per frame via `queue.write_buffer`.
+    pub fn prepare(
+        &self,
+        device: &wgpu::Device,
+        sorted_keys_hi: &wgpu::Buffer,
+        tile_ranges: &wgpu::Buffer,
+    ) -> TileRangePrepared {
+        let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tile_range_prepared_params"),
+            size: std::mem::size_of::<TileRangeParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tile_range_prepared_bg"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: sorted_keys_hi.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: tile_ranges.as_entire_binding(),
+                },
+            ],
+        });
+
+        TileRangePrepared {
+            params_buf,
+            bind_group,
+        }
+    }
+
+    /// [`Self::dispatch`] against pre-built handles (M3.1 Task 5): the
+    /// identical clear → build encode, with the per-frame host work shrunk to
+    /// one 16 B `queue.write_buffer` (pre-submit — executes before the
+    /// encoder's command buffer at the next `queue.submit`; safe because the
+    /// prepared params buffer is written exactly once per call).
+    pub fn dispatch_prepared(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        count: u32,
+        num_tiles: u32,
+        prepared: &TileRangePrepared,
+    ) {
+        let params = TileRangeParams {
+            count,
+            num_tiles,
+            _pad0: 0,
+            _pad1: 0,
+        };
+        queue.write_buffer(&prepared.params_buf, 0, bytemuck::bytes_of(&params));
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("tile_range_clear"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.clear_pipeline);
+            pass.set_bind_group(0, &prepared.bind_group, &[]);
+            pass.dispatch_workgroups(num_tiles.div_ceil(256).max(1), 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("tile_range_build"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.build_pipeline);
+            pass.set_bind_group(0, &prepared.bind_group, &[]);
             pass.dispatch_workgroups(count.div_ceil(256).max(1), 1, 1);
         }
     }

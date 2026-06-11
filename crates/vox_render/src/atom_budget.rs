@@ -25,9 +25,9 @@ use glam::Vec3;
 
 use vox_core::types::GaussianSplat;
 
-use crate::clas::{build_cluster_bvh, build_clusters, ClusterBVHNode, SplatCluster};
+use crate::clas::{ClusterBVHNode, SplatCluster, build_cluster_bvh, build_clusters};
 use crate::frustum::Frustum;
-use crate::hierarchical_lod::{crossfade_factor, select_lod_level, LOD_LEVEL_COUNT};
+use crate::hierarchical_lod::{LOD_LEVEL_COUNT, crossfade_factor, select_lod_level};
 use crate::spectral::RenderCamera;
 
 /// Fraction of original splat count kept at each LOD level.
@@ -362,8 +362,7 @@ impl AtomBudgetSelector {
                     continue;
                 }
                 let next_lod = w.lod - 1;
-                let next_count =
-                    self.lods[w.cluster_id as usize].levels[next_lod as usize].len();
+                let next_count = self.lods[w.cluster_id as usize].levels[next_lod as usize].len();
                 let delta = next_count - w.count;
                 if total + delta > budget {
                     break;
@@ -475,10 +474,10 @@ fn build_cluster_lod(cluster: &SplatCluster, splats: &[GaussianSplat]) -> Cluste
 
     let n = sorted.len();
     let l0 = sorted.clone();
-    let l1_len = ((n as f32 * LOD_FRACTIONS[1]).round() as usize)
-        .clamp(if n > 0 { 1 } else { 0 }, n);
-    let l2_len = ((n as f32 * LOD_FRACTIONS[2]).round() as usize)
-        .clamp(if n > 0 { 1 } else { 0 }, n);
+    let l1_len =
+        ((n as f32 * LOD_FRACTIONS[1]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
+    let l2_len =
+        ((n as f32 * LOD_FRACTIONS[2]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
     let l1 = sorted[..l1_len].to_vec();
     let l2 = sorted[..l2_len].to_vec();
     let l3 = if n > 0 { vec![sorted[0]] } else { Vec::new() };
@@ -491,7 +490,9 @@ fn build_cluster_lod(cluster: &SplatCluster, splats: &[GaussianSplat]) -> Cluste
 
 /// Bounding-sphere radius of a cluster's AABB.
 fn aabb_radius(cluster: &SplatCluster) -> f32 {
-    ((cluster.aabb_max - cluster.aabb_min) * 0.5).length().max(1e-4)
+    ((cluster.aabb_max - cluster.aabb_min) * 0.5)
+        .length()
+        .max(1e-4)
 }
 
 /// Camera eye position in world space (inverse-view translation).
@@ -585,7 +586,11 @@ mod tests {
     #[test]
     fn budget_is_spent_not_just_bounded() {
         let scene = grid_scene();
-        assert!(scene.len() >= 60_000, "scene should be ~64k, got {}", scene.len());
+        assert!(
+            scene.len() >= 60_000,
+            "scene should be ~64k, got {}",
+            scene.len()
+        );
         let mut sel = AtomBudgetSelector::build(&scene, 128);
         // Camera in the middle of the cloud looking along +Z so most clusters
         // are in view.
@@ -606,7 +611,10 @@ mod tests {
         let mut scene = Vec::new();
         for i in 0..2000 {
             let f = i as f32;
-            scene.push(splat_at([(f % 10.0) - 5.0, (f * 0.01) % 5.0, -10.0 - (f * 0.1)], 200));
+            scene.push(splat_at(
+                [(f % 10.0) - 5.0, (f * 0.01) % 5.0, -10.0 - (f * 0.1)],
+                200,
+            ));
         }
         let mut sel = AtomBudgetSelector::build(&scene, 64);
 
@@ -653,7 +661,10 @@ mod tests {
                 far += 1;
             }
         }
-        assert!(near > 0 && far > 0, "both clusters must contribute (near={near} far={far})");
+        assert!(
+            near > 0 && far > 0,
+            "both clusters must contribute (near={near} far={far})"
+        );
         assert!(
             near >= 4 * far,
             "near cluster ({near}) should emit >= 4x the far cluster ({far})"
@@ -750,7 +761,10 @@ mod tests {
             "hard bound violated: selected {} > budget 100",
             out.indices.len()
         );
-        assert!(out.indices.len() > 0, "shedding must not empty the selection");
+        assert!(
+            out.indices.len() > 0,
+            "shedding must not empty the selection"
+        );
         // Histogram counts only EMITTING clusters — it must sum to <= budget
         // (every survivor is at L3 = 1 splat under this much pressure).
         let emitting: usize = stats.lod_histogram.iter().sum();
@@ -791,10 +805,7 @@ mod tests {
         assert!(!ids.is_empty(), "must return clusters");
 
         // Covered splat count meets the goal.
-        let covered: usize = ids
-            .iter()
-            .map(|&id| sel.cluster_indices(id).len())
-            .sum();
+        let covered: usize = ids.iter().map(|&id| sel.cluster_indices(id).len()).sum();
         assert!(covered >= k, "subset covers {covered} splats (< {k})");
 
         // Old path: sort ALL splats by distance, take k, record max distance.

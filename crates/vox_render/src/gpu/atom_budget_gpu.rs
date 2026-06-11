@@ -62,9 +62,9 @@ use glam::{Vec3, Vec4Swizzles};
 use vox_core::types::GaussianSplat;
 
 use crate::atom_budget::{Selection, SelectionStats};
-use crate::clas::{build_cluster_bvh, build_clusters, ClusterBVHNode, SplatCluster};
+use crate::clas::{ClusterBVHNode, SplatCluster, build_cluster_bvh, build_clusters};
 use crate::frustum::Frustum;
-use crate::hierarchical_lod::{crossfade_factor, LOD_LEVEL_COUNT};
+use crate::hierarchical_lod::{LOD_LEVEL_COUNT, crossfade_factor};
 use crate::spectral::RenderCamera;
 
 /// Fraction of original splat count kept at each LOD level — IDENTICAL to the
@@ -85,10 +85,11 @@ struct GpuCluster {
 const _: () = assert!(std::mem::size_of::<GpuCluster>() == 48);
 
 /// One host-normalized frustum plane (`normal.xyz + d`). Matches `Plane` in the
-/// shader.
+/// shader. `pub(crate)` so the same-crate GPU twins (`instanced_select_gpu`)
+/// upload the identical plane PODs instead of re-deriving them.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct GpuPlane {
+pub(crate) struct GpuPlane {
     n_d: [f32; 4],
 }
 
@@ -442,10 +443,7 @@ impl AtomBudgetGpu {
     /// cluster). Returns one [`GpuClusterScore`] per cluster, indexed by cluster
     /// id (clusters are ids `0..cluster_count`, contiguous). The host budget pass
     /// in [`select`](Self::select) consumes this; exposed for cross-checks.
-    pub fn score(
-        &self,
-        camera: &RenderCamera,
-    ) -> Result<Vec<GpuClusterScore>, AtomBudgetGpuError> {
+    pub fn score(&self, camera: &RenderCamera) -> Result<Vec<GpuClusterScore>, AtomBudgetGpuError> {
         let n = self.clusters.len();
         if n == 0 {
             return Ok(Vec::new());
@@ -555,7 +553,14 @@ impl AtomBudgetGpu {
         let frustum = Frustum::from_view_proj(camera.view_proj());
         let mut visible: Vec<u32> = Vec::new();
         if let Some(bvh) = &self.bvh {
-            collect_visible_gpu(bvh, &self.clusters, &self.resident, &frustum, &scores, &mut visible);
+            collect_visible_gpu(
+                bvh,
+                &self.clusters,
+                &self.resident,
+                &frustum,
+                &scores,
+                &mut visible,
+            );
         }
         visible.sort_unstable();
 
@@ -701,11 +706,7 @@ impl AtomBudgetGpu {
         })
     }
 
-    fn map_read(
-        &self,
-        buffer: &wgpu::Buffer,
-        bytes: u64,
-    ) -> Result<Vec<u8>, AtomBudgetGpuError> {
+    fn map_read(&self, buffer: &wgpu::Buffer, bytes: u64) -> Result<Vec<u8>, AtomBudgetGpuError> {
         let slice = buffer.slice(..bytes);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |res| {
@@ -735,10 +736,10 @@ fn build_cluster_lod(cluster: &SplatCluster, splats: &[GaussianSplat]) -> Cluste
 
     let n = sorted.len();
     let l0 = sorted.clone();
-    let l1_len = ((n as f32 * LOD_FRACTIONS[1]).round() as usize)
-        .clamp(if n > 0 { 1 } else { 0 }, n);
-    let l2_len = ((n as f32 * LOD_FRACTIONS[2]).round() as usize)
-        .clamp(if n > 0 { 1 } else { 0 }, n);
+    let l1_len =
+        ((n as f32 * LOD_FRACTIONS[1]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
+    let l2_len =
+        ((n as f32 * LOD_FRACTIONS[2]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
     let l1 = sorted[..l1_len].to_vec();
     let l2 = sorted[..l2_len].to_vec();
     let l3 = if n > 0 { vec![sorted[0]] } else { Vec::new() };
@@ -861,7 +862,8 @@ fn collect_visible_gpu(
 }
 
 /// Camera eye position — IDENTICAL to the oracle's private `camera_eye`.
-fn camera_eye(camera: &RenderCamera) -> Vec3 {
+/// `pub(crate)`: shared with `instanced_select_gpu` (no behavior change).
+pub(crate) fn camera_eye(camera: &RenderCamera) -> Vec3 {
     camera.view.inverse().col(3).truncate()
 }
 
@@ -870,7 +872,8 @@ fn camera_eye(camera: &RenderCamera) -> Vec3 {
 /// plane floats the oracle's CPU `contains_sphere` does. Plane order matches the
 /// oracle (left, right, bottom, top, near, far); the all-planes AND test is
 /// order-independent, but the order is kept for clarity.
-fn frustum_planes(vp: glam::Mat4) -> [GpuPlane; 6] {
+/// `pub(crate)`: shared with `instanced_select_gpu` (no behavior change).
+pub(crate) fn frustum_planes(vp: glam::Mat4) -> [GpuPlane; 6] {
     let row0 = vp.row(0);
     let row1 = vp.row(1);
     let row2 = vp.row(2);
@@ -1201,7 +1204,9 @@ mod tests {
             let mut cpu0 = Selection::new();
             let cpu0_stats = cpu.select(&looking_at, 0, &mut cpu0);
             let mut gpu0 = Selection::new();
-            let gpu0_stats = gpu.select(&looking_at, 0, &mut gpu0).expect("budget-0 select");
+            let gpu0_stats = gpu
+                .select(&looking_at, 0, &mut gpu0)
+                .expect("budget-0 select");
             assert_eq!(
                 gpu0.indices(),
                 cpu0.indices(),
@@ -1236,7 +1241,10 @@ mod tests {
                 limit,
             } => {
                 assert_eq!(what, "out_buffer (scene exceeds max_clusters)");
-                assert!(requested > limit, "requested {requested} must exceed limit {limit}");
+                assert!(
+                    requested > limit,
+                    "requested {requested} must exceed limit {limit}"
+                );
             }
             other => panic!("expected ExceedsDeviceLimits, got {other:?}"),
         }
@@ -1245,7 +1253,10 @@ mod tests {
         let err2 = gpu
             .select(&cam, 1000, &mut out)
             .expect_err("oversized select must return an error, not abort");
-        assert!(matches!(err2, AtomBudgetGpuError::ExceedsDeviceLimits { .. }));
+        assert!(matches!(
+            err2,
+            AtomBudgetGpuError::ExceedsDeviceLimits { .. }
+        ));
 
         // GPU still usable: a tiny scene that fits still works (no abort).
         let mut small = AtomBudgetGpu::new(4).expect("re-init small gpu");
@@ -1282,8 +1293,7 @@ mod tests {
                 let mid = (c.aabb_min + c.aabb_max) * 0.5;
                 let mut passes = 1u32;
                 for p in &planes {
-                    let dist =
-                        p.n_d[0] * mid.x + p.n_d[1] * mid.y + p.n_d[2] * mid.z + p.n_d[3];
+                    let dist = p.n_d[0] * mid.x + p.n_d[1] * mid.y + p.n_d[2] * mid.z + p.n_d[3];
                     if dist < -radius {
                         passes = 0;
                         break;

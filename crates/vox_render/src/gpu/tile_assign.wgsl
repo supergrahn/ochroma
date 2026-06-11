@@ -5,7 +5,7 @@
 // the splat's 3-sigma screen-space bounding box overlaps.
 
 const TILE_SIZE: u32 = 16u;
-const MAX_TILES_PER_SPLAT: u32 = 16u;
+const MAX_TILES_PER_SPLAT: u32 = 256u;
 
 // ── Uniforms ──────────────────────────────────────────────────────────────────
 

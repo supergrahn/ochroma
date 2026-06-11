@@ -101,18 +101,13 @@ impl SplatBufferAllocator {
 ///   - `position_depth.xyz` = world position; `.w` = 0.0 (tile_assign will fill view-Z)
 ///   - `conic` = [0.0; 3] (tile_assign will compute from scale+quat)
 ///   - `opacity_color.w` = opacity / 255.0
-///   - `spectral` = f16 bands unpacked to f32
+///   - `spectral` = 16-band f16 spectra pair-averaged into 8 f32 bins
 pub fn gaussian_splat_to_gpu_full(s: &GaussianSplat) -> GpuSplatFull {
-    let spectral = [
-        f16::from_bits(s.spectral()[0]).to_f32(),
-        f16::from_bits(s.spectral()[1]).to_f32(),
-        f16::from_bits(s.spectral()[2]).to_f32(),
-        f16::from_bits(s.spectral()[3]).to_f32(),
-        f16::from_bits(s.spectral()[4]).to_f32(),
-        f16::from_bits(s.spectral()[5]).to_f32(),
-        f16::from_bits(s.spectral()[6]).to_f32(),
-        f16::from_bits(s.spectral()[7]).to_f32(),
-    ];
+    let spectral = std::array::from_fn(|i| {
+        let a = f16::from_bits(s.spectral()[i * 2]).to_f32();
+        let b = f16::from_bits(s.spectral()[i * 2 + 1]).to_f32();
+        (a + b) * 0.5
+    });
 
     GpuSplatFull {
         position_depth: [s.position()[0], s.position()[1], s.position()[2], 0.0],
@@ -146,14 +141,23 @@ mod tests {
     #[test]
     fn transforms_pack_scale_then_quat_xyzw() {
         use glam::Quat;
-        let s = GaussianSplat::volume([1.0, 2.0, 3.0], [0.3, 0.5, 0.7], Quat::IDENTITY, 255, [0u16; 16]);
+        let s = GaussianSplat::volume(
+            [1.0, 2.0, 3.0],
+            [0.3, 0.5, 0.7],
+            Quat::IDENTITY,
+            255,
+            [0u16; 16],
+        );
         let t = gaussian_splats_to_transforms(std::slice::from_ref(&s));
         assert_eq!(t.len(), 2, "two vec4 per splat");
         assert_eq!(t[0], [0.3, 0.5, 0.7, 0.0], "first vec4 = scale.xyz, 0");
         // identity quaternion is (x,y,z,w) = (0,0,0,1)
         let q = t[1];
         assert!(
-            q[0].abs() < 1e-3 && q[1].abs() < 1e-3 && q[2].abs() < 1e-3 && (q[3] - 1.0).abs() < 1e-3,
+            q[0].abs() < 1e-3
+                && q[1].abs() < 1e-3
+                && q[2].abs() < 1e-3
+                && (q[3] - 1.0).abs() < 1e-3,
             "second vec4 = identity quat xyzw (0,0,0,1), got {q:?}"
         );
     }
@@ -175,23 +179,31 @@ mod tests {
         let mut s = GaussianSplat::zeroed();
         s.set_position([1.0, 2.0, 3.0]);
         s.set_opacity(255);
-        // Encode 1.0 as f16 in the first band.
+        // Encode values in the first source pair.
         s.spectral_mut()[0] = half::f16::from_f32(1.0).to_bits();
-        // Encode 0.5 in the second band.
         s.spectral_mut()[1] = half::f16::from_f32(0.5).to_bits();
+        // Encode values in the second source pair.
+        s.spectral_mut()[2] = half::f16::from_f32(0.25).to_bits();
+        s.spectral_mut()[3] = half::f16::from_f32(0.75).to_bits();
 
         let gpu = gaussian_splat_to_gpu_full(&s);
 
         assert_eq!(gpu.position_depth[0], 1.0);
         assert_eq!(gpu.position_depth[1], 2.0);
         assert_eq!(gpu.position_depth[2], 3.0);
-        assert_eq!(gpu.position_depth[3], 0.0, "depth must be 0 (set by tile_assign)");
+        assert_eq!(
+            gpu.position_depth[3], 0.0,
+            "depth must be 0 (set by tile_assign)"
+        );
 
         assert_eq!(gpu.conic, [0.0; 3], "conic must be 0 (set by tile_assign)");
 
-        assert!((gpu.opacity_color[3] - 1.0).abs() < 1e-6, "opacity 255 → 1.0");
+        assert!(
+            (gpu.opacity_color[3] - 1.0).abs() < 1e-6,
+            "opacity 255 → 1.0"
+        );
 
-        assert!((gpu.spectral[0] - 1.0).abs() < 1e-3);
+        assert!((gpu.spectral[0] - 0.75).abs() < 1e-3);
         assert!((gpu.spectral[1] - 0.5).abs() < 1e-3);
     }
 
@@ -210,7 +222,12 @@ mod tests {
         }
         impl FakeAllocator {
             fn new(max: usize) -> Self {
-                Self { max, free_list: Vec::new(), occupied: vec![false; max], next: 0 }
+                Self {
+                    max,
+                    free_list: Vec::new(),
+                    occupied: vec![false; max],
+                    next: 0,
+                }
             }
             fn alloc(&mut self) -> Option<u32> {
                 if let Some(idx) = self.free_list.pop() {
