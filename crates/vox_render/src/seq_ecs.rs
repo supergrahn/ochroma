@@ -10,8 +10,8 @@ use bevy_ecs::prelude::*;
 use glam::{Quat, Vec3};
 
 use crate::lod_ecs::TimeStep;
-use crate::sequencer::{KeyframeValue, Sequence};
 use crate::rigid_animation::RigidStateMachine;
+use crate::sequencer::{KeyframeValue, Sequence};
 
 // ── Components ─────────────────────────────────────────────────────────────
 
@@ -78,7 +78,10 @@ pub struct RigidAnimationComponent {
 /// `sequence.playback_speed` must be ≥ 0.0. Negative values are not supported.
 pub fn sequence_player_system(
     dt: Res<TimeStep>,
-    mut query: Query<(&mut SequencePlayerComponent, &mut vox_core::ecs::TransformComponent)>,
+    mut query: Query<(
+        &mut SequencePlayerComponent,
+        &mut vox_core::ecs::TransformComponent,
+    )>,
 ) {
     for (mut player, mut transform) in query.iter_mut() {
         if !player.playing {
@@ -98,10 +101,15 @@ pub fn sequence_player_system(
 
         let results = player.sequence.evaluate(player.current_time);
         for (_track_name, value) in results {
-            if let KeyframeValue::Transform { position, rotation, scale } = value {
+            if let KeyframeValue::Transform {
+                position,
+                rotation,
+                scale,
+            } = value
+            {
                 transform.position = Vec3::from(position);
                 transform.rotation = Quat::from_array(rotation);
-                transform.scale    = Vec3::from(scale);
+                transform.scale = Vec3::from(scale);
                 break; // Apply the first Transform track (tracks are ordered by insertion)
             }
         }
@@ -112,13 +120,16 @@ pub fn sequence_player_system(
 /// position/rotation/scale to the entity's `TransformComponent`.
 pub fn rigid_animation_system(
     dt: Res<TimeStep>,
-    mut query: Query<(&mut RigidAnimationComponent, &mut vox_core::ecs::TransformComponent)>,
+    mut query: Query<(
+        &mut RigidAnimationComponent,
+        &mut vox_core::ecs::TransformComponent,
+    )>,
 ) {
     for (mut anim, mut transform) in query.iter_mut() {
         let kf = anim.machine.tick(dt.0);
         transform.position = kf.position;
         transform.rotation = kf.rotation;
-        transform.scale    = kf.scale;
+        transform.scale = kf.scale;
     }
 }
 
@@ -171,9 +182,9 @@ mod tests {
 
     #[test]
     fn sequence_advances_transform() {
+        use crate::sequencer::{Interpolation, SequenceKeyframe, TrackType};
         use bevy_ecs::schedule::Schedule;
         use bevy_ecs::world::World;
-        use crate::sequencer::{TrackType, SequenceKeyframe, Interpolation};
 
         let mut world = World::new();
         world.insert_resource(TimeStep(0.5)); // 0.5 s per tick
@@ -181,38 +192,46 @@ mod tests {
         // Build a 2-second sequence: y moves from 0 → 10
         let mut seq = Sequence::new("move", 2.0);
         let idx = seq.add_track("cam", TrackType::CameraTransform);
-        seq.add_keyframe(idx, SequenceKeyframe {
-            time: 0.0,
-            value: KeyframeValue::Transform {
-                position: [0.0, 0.0, 0.0],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale:    [1.0, 1.0, 1.0],
+        seq.add_keyframe(
+            idx,
+            SequenceKeyframe {
+                time: 0.0,
+                value: KeyframeValue::Transform {
+                    position: [0.0, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+                interpolation: Interpolation::Linear,
             },
-            interpolation: Interpolation::Linear,
-        });
-        seq.add_keyframe(idx, SequenceKeyframe {
-            time: 2.0,
-            value: KeyframeValue::Transform {
-                position: [0.0, 10.0, 0.0],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale:    [1.0, 1.0, 1.0],
+        );
+        seq.add_keyframe(
+            idx,
+            SequenceKeyframe {
+                time: 2.0,
+                value: KeyframeValue::Transform {
+                    position: [0.0, 10.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+                interpolation: Interpolation::Linear,
             },
-            interpolation: Interpolation::Linear,
-        });
+        );
 
         let mut player = SequencePlayerComponent::new(seq);
         player.play();
 
-        let entity = world.spawn((
-            player,
-            vox_core::ecs::TransformComponent::default(),
-        )).id();
+        let entity = world
+            .spawn((player, vox_core::ecs::TransformComponent::default()))
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(sequence_player_system);
         schedule.run(&mut world);
 
-        let transform = world.entity(entity).get::<vox_core::ecs::TransformComponent>().unwrap();
+        let transform = world
+            .entity(entity)
+            .get::<vox_core::ecs::TransformComponent>()
+            .unwrap();
         // After 0.5 s on a 0→10 y range over 2 s: should be ~y=2.5
         assert!(
             transform.position.y > 0.0,
@@ -223,47 +242,58 @@ mod tests {
 
     #[test]
     fn sequence_stops_when_finished() {
+        use crate::sequencer::{Interpolation, SequenceKeyframe, TrackType};
         use bevy_ecs::schedule::Schedule;
         use bevy_ecs::world::World;
-        use crate::sequencer::{TrackType, SequenceKeyframe, Interpolation};
 
         let mut world = World::new();
         world.insert_resource(TimeStep(5.0)); // overshoot a 2 s sequence
 
         let mut seq = Sequence::new("short", 2.0);
         let idx = seq.add_track("cam", TrackType::CameraTransform);
-        seq.add_keyframe(idx, SequenceKeyframe {
-            time: 0.0,
-            value: KeyframeValue::Transform {
-                position: [0.0, 0.0, 0.0],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale:    [1.0, 1.0, 1.0],
+        seq.add_keyframe(
+            idx,
+            SequenceKeyframe {
+                time: 0.0,
+                value: KeyframeValue::Transform {
+                    position: [0.0, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+                interpolation: Interpolation::Linear,
             },
-            interpolation: Interpolation::Linear,
-        });
+        );
 
         let mut player = SequencePlayerComponent::new(seq);
         player.play();
 
-        let entity = world.spawn((
-            player,
-            vox_core::ecs::TransformComponent::default(),
-        )).id();
+        let entity = world
+            .spawn((player, vox_core::ecs::TransformComponent::default()))
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(sequence_player_system);
         schedule.run(&mut world);
 
-        let player = world.entity(entity).get::<SequencePlayerComponent>().unwrap();
-        assert!(player.is_finished(), "player should be finished after overshooting duration");
-        assert!(!player.playing, "playing should be false when sequence ends");
+        let player = world
+            .entity(entity)
+            .get::<SequencePlayerComponent>()
+            .unwrap();
+        assert!(
+            player.is_finished(),
+            "player should be finished after overshooting duration"
+        );
+        assert!(
+            !player.playing,
+            "playing should be false when sequence ends"
+        );
     }
 
     #[test]
     fn rigid_animation_advances_transform() {
+        use crate::rigid_animation::{RigidClip, RigidKeyframe};
         use bevy_ecs::schedule::Schedule;
         use bevy_ecs::world::World;
-        use crate::rigid_animation::{RigidClip, RigidKeyframe};
 
         let mut world = World::new();
         world.insert_resource(TimeStep(0.25)); // 250 ms per tick
@@ -281,16 +311,21 @@ mod tests {
         let mut machine = RigidStateMachine::new("move");
         machine.add_state("move", clip);
 
-        let entity = world.spawn((
-            RigidAnimationComponent { machine },
-            vox_core::ecs::TransformComponent::default(),
-        )).id();
+        let entity = world
+            .spawn((
+                RigidAnimationComponent { machine },
+                vox_core::ecs::TransformComponent::default(),
+            ))
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(rigid_animation_system);
         schedule.run(&mut world);
 
-        let transform = world.entity(entity).get::<vox_core::ecs::TransformComponent>().unwrap();
+        let transform = world
+            .entity(entity)
+            .get::<vox_core::ecs::TransformComponent>()
+            .unwrap();
         assert!(
             transform.position.y > 0.0,
             "rigid animation should write a valid position, y={}",
@@ -311,48 +346,56 @@ mod tests {
 
     #[test]
     fn sequence_loops_correctly() {
+        use crate::sequencer::{Interpolation, SequenceKeyframe, TrackType};
         use bevy_ecs::schedule::Schedule;
         use bevy_ecs::world::World;
-        use crate::sequencer::{TrackType, SequenceKeyframe, Interpolation};
 
         let mut world = World::new();
         world.insert_resource(TimeStep(1.5)); // tick past the 1-second duration
 
         let mut seq = Sequence::new("loop", 1.0);
         let idx = seq.add_track("cam", TrackType::CameraTransform);
-        seq.add_keyframe(idx, SequenceKeyframe {
-            time: 0.0,
-            value: KeyframeValue::Transform {
-                position: [0.0, 0.0, 0.0],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale:    [1.0, 1.0, 1.0],
+        seq.add_keyframe(
+            idx,
+            SequenceKeyframe {
+                time: 0.0,
+                value: KeyframeValue::Transform {
+                    position: [0.0, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+                interpolation: Interpolation::Linear,
             },
-            interpolation: Interpolation::Linear,
-        });
-        seq.add_keyframe(idx, SequenceKeyframe {
-            time: 1.0,
-            value: KeyframeValue::Transform {
-                position: [0.0, 5.0, 0.0],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale:    [1.0, 1.0, 1.0],
+        );
+        seq.add_keyframe(
+            idx,
+            SequenceKeyframe {
+                time: 1.0,
+                value: KeyframeValue::Transform {
+                    position: [0.0, 5.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+                interpolation: Interpolation::Linear,
             },
-            interpolation: Interpolation::Linear,
-        });
+        );
 
         let mut player = SequencePlayerComponent::new(seq);
         player.looping = true;
         player.play();
 
-        let entity = world.spawn((
-            player,
-            vox_core::ecs::TransformComponent::default(),
-        )).id();
+        let entity = world
+            .spawn((player, vox_core::ecs::TransformComponent::default()))
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(sequence_player_system);
         schedule.run(&mut world);
 
-        let player = world.entity(entity).get::<SequencePlayerComponent>().unwrap();
+        let player = world
+            .entity(entity)
+            .get::<SequencePlayerComponent>()
+            .unwrap();
         // After 1.5s tick on a 1s sequence, current_time should wrap to 0.5s
         assert!(player.playing, "looping sequence should still be playing");
         assert!(

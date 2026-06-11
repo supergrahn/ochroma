@@ -2,11 +2,11 @@ use glam::Vec3;
 
 /// Atmospheric scattering parameters.
 pub struct AtmosphereParams {
-    pub rayleigh_scale_height: f32,  // km
-    pub mie_scale_height: f32,       // km
-    pub rayleigh_coefficient: Vec3,  // RGB scattering coefficients
+    pub rayleigh_scale_height: f32, // km
+    pub mie_scale_height: f32,      // km
+    pub rayleigh_coefficient: Vec3, // RGB scattering coefficients
     pub mie_coefficient: f32,
-    pub mie_g: f32,                  // anisotropy (-1 to 1)
+    pub mie_g: f32, // anisotropy (-1 to 1)
     pub sun_intensity: f32,
 }
 
@@ -24,11 +24,7 @@ impl Default for AtmosphereParams {
 }
 
 /// Compute sky colour at a given view direction using single-scattering approximation.
-pub fn compute_sky_color(
-    view_dir: Vec3,
-    sun_dir: Vec3,
-    params: &AtmosphereParams,
-) -> [f32; 3] {
+pub fn compute_sky_color(view_dir: Vec3, sun_dir: Vec3, params: &AtmosphereParams) -> [f32; 3] {
     let cos_theta = view_dir.dot(sun_dir).clamp(-1.0, 1.0);
 
     // Rayleigh phase function: 3/(16pi) * (1 + cos^2 theta)

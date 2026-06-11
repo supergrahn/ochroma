@@ -88,7 +88,8 @@ pub fn compare_engines(ochroma: &EngineProfile, other: &EngineProfile) -> Compar
 
     // Spectral rendering is a big differentiator.
     if ochroma.has_spectral && !other.has_spectral {
-        advantages.push("Ochroma has spectral rendering for physically accurate colour".to_string());
+        advantages
+            .push("Ochroma has spectral rendering for physically accurate colour".to_string());
     }
 
     // Calculate score: +1 for each advantage, -1 for each disadvantage, normalised.

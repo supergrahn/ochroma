@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use vox_core::spectral::SpectralBands;
-use serde::{Serialize, Deserialize};
 
 /// A node in the spectral material graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,17 +9,34 @@ pub enum MaterialNode {
     /// Reference a named material from the library.
     MaterialRef { tag: String },
     /// Multiply two spectral inputs element-wise.
-    Multiply { a: Box<MaterialNode>, b: Box<MaterialNode> },
+    Multiply {
+        a: Box<MaterialNode>,
+        b: Box<MaterialNode>,
+    },
     /// Add two spectral inputs.
-    Add { a: Box<MaterialNode>, b: Box<MaterialNode> },
+    Add {
+        a: Box<MaterialNode>,
+        b: Box<MaterialNode>,
+    },
     /// Lerp between two inputs based on a factor.
-    Mix { a: Box<MaterialNode>, b: Box<MaterialNode>, factor: f32 },
+    Mix {
+        a: Box<MaterialNode>,
+        b: Box<MaterialNode>,
+        factor: f32,
+    },
     /// Scale all bands by a constant.
-    Scale { input: Box<MaterialNode>, factor: f32 },
+    Scale {
+        input: Box<MaterialNode>,
+        factor: f32,
+    },
     /// Fresnel effect: increase reflectance at grazing angles.
     Fresnel { base: Box<MaterialNode>, power: f32 },
     /// Clamp all bands to [min, max].
-    Clamp { input: Box<MaterialNode>, min: f32, max: f32 },
+    Clamp {
+        input: Box<MaterialNode>,
+        min: f32,
+        max: f32,
+    },
     /// Invert: 1.0 - input per band.
     Invert { input: Box<MaterialNode> },
 }
@@ -32,7 +49,9 @@ impl MaterialNode {
             Self::MaterialRef { tag } => {
                 // Look up from default library
                 let lib = vox_data::materials::MaterialLibrary::default();
-                lib.get(tag).map(|m| m.spd).unwrap_or(SpectralBands([0.5; 16]))
+                lib.get(tag)
+                    .map(|m| m.spd)
+                    .unwrap_or(SpectralBands([0.5; 16]))
             }
             Self::Multiply { a, b } => {
                 let va = a.evaluate();
@@ -92,7 +111,10 @@ impl SpectralMaterialGraph {
 
     /// Evaluate emission SPD (returns zeros if no emission).
     pub fn evaluate_emission(&self) -> SpectralBands {
-        self.emission.as_ref().map(|n| n.evaluate()).unwrap_or(SpectralBands([0.0; 16]))
+        self.emission
+            .as_ref()
+            .map(|n| n.evaluate())
+            .unwrap_or(SpectralBands([0.0; 16]))
     }
 }
 
@@ -120,29 +142,30 @@ impl MaterialGraph {
     }
 
     fn build_module(&self) -> naga::Module {
-        use naga::{Function, FunctionResult, Module, Span, Statement};
         use crate::naga_builder::NagaBuilder;
+        use naga::{Function, FunctionResult, Module, Span, Statement};
 
         let mut module = Module::default();
         let arr_ty = NagaBuilder::array_f32_8(&mut module.types);
 
         let mut func = Function {
             name: Some("evaluate_material".into()),
-            result: Some(FunctionResult { ty: arr_ty, binding: None }),
+            result: Some(FunctionResult {
+                ty: arr_ty,
+                binding: None,
+            }),
             ..Default::default()
         };
 
         // CPU-evaluate the node tree to produce the constant SPD for the shader.
         let spd = self.evaluate_cpu();
-        let (expr, compose_start) = NagaBuilder::emit_constant_spd(
-            &spd.0,
-            &mut func.expressions,
-            &mut module.types,
-        );
+        let (expr, compose_start) =
+            NagaBuilder::emit_constant_spd(&spd.0, &mut func.expressions, &mut module.types);
 
         let emit_range = func.expressions.range_from(compose_start);
         func.body.push(Statement::Emit(emit_range), Span::UNDEFINED);
-        func.body.push(Statement::Return { value: Some(expr) }, Span::UNDEFINED);
+        func.body
+            .push(Statement::Return { value: Some(expr) }, Span::UNDEFINED);
 
         module.functions.append(func, Span::UNDEFINED);
         module
@@ -161,10 +184,16 @@ mod material_graph_tests {
     #[test]
     fn compile_constant_graph_produces_valid_module() {
         let graph = MaterialGraph::new(MaterialNode::Constant {
-            spd: [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2],
+            spd: [
+                0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2,
+            ],
         });
         let result = graph.compile();
-        assert!(result.is_ok(), "compile() returned error: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "compile() returned error: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -193,7 +222,9 @@ mod material_graph_tests {
             factor: 0.5,
         });
         let module = graph.compile().unwrap();
-        let names: Vec<_> = module.functions.iter()
+        let names: Vec<_> = module
+            .functions
+            .iter()
             .filter_map(|(_, f)| f.name.as_deref())
             .collect();
         assert!(names.contains(&"evaluate_material"));

@@ -85,8 +85,7 @@ impl MovieRenderQueue {
                 let header_bytes = data.as_bytes().to_vec();
                 let mut full = header_bytes;
                 full.extend_from_slice(&rgb);
-                std::fs::write(&path, &full)
-                    .map_err(|e| format!("write failed: {}", e))?;
+                std::fs::write(&path, &full).map_err(|e| format!("write failed: {}", e))?;
             }
             OutputFormat::PNG => {
                 // Simplified: write as PPM with .png extension (real impl would use png encoder)
@@ -102,8 +101,7 @@ impl MovieRenderQueue {
                 }
                 let mut full = header.into_bytes();
                 full.extend_from_slice(&rgb);
-                std::fs::write(&path, &full)
-                    .map_err(|e| format!("write failed: {}", e))?;
+                std::fs::write(&path, &full).map_err(|e| format!("write failed: {}", e))?;
             }
         }
 

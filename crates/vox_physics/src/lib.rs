@@ -11,17 +11,27 @@ pub struct Aabb {
 
 impl Aabb {
     pub fn from_center_half_extents(center: Vec3, half: Vec3) -> Self {
-        Self { min: center - half, max: center + half }
+        Self {
+            min: center - half,
+            max: center + half,
+        }
     }
 
     pub fn intersects(&self, other: &Aabb) -> bool {
-        self.min.x <= other.max.x && self.max.x >= other.min.x
-            && self.min.y <= other.max.y && self.max.y >= other.min.y
-            && self.min.z <= other.max.z && self.max.z >= other.min.z
+        self.min.x <= other.max.x
+            && self.max.x >= other.min.x
+            && self.min.y <= other.max.y
+            && self.max.y >= other.min.y
+            && self.min.z <= other.max.z
+            && self.max.z >= other.min.z
     }
 
-    pub fn center(&self) -> Vec3 { (self.min + self.max) * 0.5 }
-    pub fn half_extents(&self) -> Vec3 { (self.max - self.min) * 0.5 }
+    pub fn center(&self) -> Vec3 {
+        (self.min + self.max) * 0.5
+    }
+    pub fn half_extents(&self) -> Vec3 {
+        (self.max - self.min) * 0.5
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -55,7 +65,13 @@ impl PhysicsWorld {
         let id = self.next_id;
         self.next_id += 1;
         body.id = id;
-        self.entries.insert(id, BodyEntry { body, collider: None });
+        self.entries.insert(
+            id,
+            BodyEntry {
+                body,
+                collider: None,
+            },
+        );
         id
     }
 
@@ -63,7 +79,13 @@ impl PhysicsWorld {
         let id = self.next_id;
         self.next_id += 1;
         body.id = id;
-        self.entries.insert(id, BodyEntry { body, collider: Some(half_extents) });
+        self.entries.insert(
+            id,
+            BodyEntry {
+                body,
+                collider: Some(half_extents),
+            },
+        );
         id
     }
 
@@ -117,9 +139,12 @@ impl PhysicsWorld {
                     let eb = &self.entries[&id_b];
                     match (&ea.collider, &eb.collider) {
                         (Some(ha), Some(hb)) => (
-                            *ha, *hb,
-                            ea.body.position, eb.body.position,
-                            ea.body.is_static, eb.body.is_static,
+                            *ha,
+                            *hb,
+                            ea.body.position,
+                            eb.body.position,
+                            ea.body.is_static,
+                            eb.body.is_static,
                         ),
                         _ => continue,
                     }
@@ -132,9 +157,12 @@ impl PhysicsWorld {
                 }
 
                 // Compute per-axis penetration depths
-                let overlap_x = (aabb_a.max.x.min(aabb_b.max.x) - aabb_a.min.x.max(aabb_b.min.x)).max(0.0);
-                let overlap_y = (aabb_a.max.y.min(aabb_b.max.y) - aabb_a.min.y.max(aabb_b.min.y)).max(0.0);
-                let overlap_z = (aabb_a.max.z.min(aabb_b.max.z) - aabb_a.min.z.max(aabb_b.min.z)).max(0.0);
+                let overlap_x =
+                    (aabb_a.max.x.min(aabb_b.max.x) - aabb_a.min.x.max(aabb_b.min.x)).max(0.0);
+                let overlap_y =
+                    (aabb_a.max.y.min(aabb_b.max.y) - aabb_a.min.y.max(aabb_b.min.y)).max(0.0);
+                let overlap_z =
+                    (aabb_a.max.z.min(aabb_b.max.z) - aabb_a.min.z.max(aabb_b.min.z)).max(0.0);
 
                 // Separation axis: smallest overlap
                 let sep = if overlap_x <= overlap_y && overlap_x <= overlap_z {
@@ -191,6 +219,7 @@ pub mod destruction;
 pub mod fluid;
 pub mod pbf;
 pub mod rope;
+pub mod sdf;
 pub mod spectral_damage;
 pub mod spectral_fracture;
 pub mod spectral_physics;
@@ -200,11 +229,14 @@ pub mod vehicle;
 pub mod wetness;
 pub mod xpbd;
 
-pub mod rapier;
 pub mod ecs;
+pub mod rapier;
 
+pub use ecs::{
+    PhysicsBodyComponent, PhysicsBodyTypeComponent, SdfColliderComponent, SdfColliderDiagnostics,
+    SdfColliderRuntime,
+};
 pub use rapier::RapierPhysicsWorld;
-pub use ecs::{PhysicsBodyComponent, PhysicsBodyTypeComponent};
 pub use spectral_physics::{SpectralImpactResult, SpectralPhysics};
 
 // Re-export Rapier handle types so consumers don't need a direct rapier3d dependency

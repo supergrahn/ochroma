@@ -53,9 +53,21 @@ impl ShadowMapper {
     /// cascade 2: 100 - 500 m
     pub fn new(resolution: usize) -> Self {
         let configs = vec![
-            CascadeConfig { near: 0.0, far: 20.0, resolution },
-            CascadeConfig { near: 20.0, far: 100.0, resolution },
-            CascadeConfig { near: 100.0, far: 500.0, resolution },
+            CascadeConfig {
+                near: 0.0,
+                far: 20.0,
+                resolution,
+            },
+            CascadeConfig {
+                near: 20.0,
+                far: 100.0,
+                resolution,
+            },
+            CascadeConfig {
+                near: 100.0,
+                far: 500.0,
+                resolution,
+            },
         ];
         let cascades = configs.into_iter().map(CascadeShadowMap::new).collect();
         Self {
@@ -81,8 +93,8 @@ impl ShadowMapper {
             let centre = camera_pos + camera_fwd * mid;
 
             // Radius encloses the frustum slice (conservative sphere approximation).
-            let radius = (cascade.config.far - cascade.config.near) * 0.5
-                + cascade.config.far * 0.4; // padding for off-axis coverage
+            let radius =
+                (cascade.config.far - cascade.config.near) * 0.5 + cascade.config.far * 0.4; // padding for off-axis coverage
             self.cascade_radii.push(radius);
 
             // Light view: look from above the centre along the sun direction.
@@ -96,9 +108,8 @@ impl ShadowMapper {
             let light_view = Mat4::look_at_rh(light_pos, centre, up);
 
             // Orthographic projection sized to enclose the cascade sphere.
-            let light_proj = Mat4::orthographic_rh(
-                -radius, radius, -radius, radius, 0.01, radius * 4.0,
-            );
+            let light_proj =
+                Mat4::orthographic_rh(-radius, radius, -radius, radius, 0.01, radius * 4.0);
 
             cascade.light_view_proj = light_proj * light_view;
             cascade.clear();

@@ -90,14 +90,7 @@ fn push_splat_quad(
     uvs.extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]);
 
     // Two triangles: (0,1,2) and (0,2,3), offset by `base`.
-    indices.extend_from_slice(&[
-        base,
-        base + 1,
-        base + 2,
-        base,
-        base + 2,
-        base + 3,
-    ]);
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
 /// Convert a slice of [`GaussianSplat`] into a renderable [`SceneState`].
@@ -121,7 +114,14 @@ pub fn splats_to_scene(splats: &[GaussianSplat], width: u32, height: u32) -> Sce
 
     for (i, s) in renderable.iter().enumerate() {
         let base = (i * VERTS_PER_SPLAT) as u32;
-        push_splat_quad(s, base, &mut positions, &mut normals, &mut uvs, &mut indices);
+        push_splat_quad(
+            s,
+            base,
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut indices,
+        );
     }
 
     let mut scene = SceneState::new(width, height);
@@ -140,7 +140,12 @@ pub fn splats_to_scene(splats: &[GaussianSplat], width: u32, height: u32) -> Sce
 ///
 /// This is the camera type the native renderer consumes (`Renderer::set_camera_view_matrix`
 /// reads `CameraLayer::view_matrix`). Width/height set the target resolution and aspect.
-pub fn camera_layer(view_matrix: [f32; 16], fov_y_radians: f32, width: u32, height: u32) -> CameraLayer {
+pub fn camera_layer(
+    view_matrix: [f32; 16],
+    fov_y_radians: f32,
+    width: u32,
+    height: u32,
+) -> CameraLayer {
     let mut cam = CameraLayer::new_default();
     cam.view_matrix = view_matrix;
     cam.fov_y_radians = fov_y_radians;
@@ -151,11 +156,17 @@ pub fn camera_layer(view_matrix: [f32; 16], fov_y_radians: f32, width: u32, heig
 
 /// Resolve a splat's 16-band spectral reflectance to a linear sRGB albedo.
 fn splat_albedo(s: &GaussianSplat) -> [f32; 3] {
-    use vox_core::spectral::{spectral_to_xyz, xyz_to_srgb, Illuminant, SpectralBands};
-    let bands = SpectralBands(std::array::from_fn(|i| half::f16::from_bits(s.spectral()[i]).to_f32()));
+    use vox_core::spectral::{Illuminant, SpectralBands, spectral_to_xyz, xyz_to_srgb};
+    let bands = SpectralBands(std::array::from_fn(|i| {
+        half::f16::from_bits(s.spectral()[i]).to_f32()
+    }));
     let xyz = spectral_to_xyz(&bands, &Illuminant::d65());
     let lin = xyz_to_srgb(xyz);
-    [lin[0].clamp(0.0, 1.0), lin[1].clamp(0.0, 1.0), lin[2].clamp(0.0, 1.0)]
+    [
+        lin[0].clamp(0.0, 1.0),
+        lin[1].clamp(0.0, 1.0),
+        lin[2].clamp(0.0, 1.0),
+    ]
 }
 
 /// Convert splats into a **lit, coloured** [`SceneState`] for the path tracer.
@@ -166,14 +177,21 @@ fn splat_albedo(s: &GaussianSplat) -> [f32; 3] {
 /// from the splat's spectral reflectance (resolved to sRGB albedo). Materials are
 /// deduplicated by quantised colour to keep the count small. `eye` is the camera
 /// position the quads face. **Additive**: `splats_to_scene` is unchanged.
-pub fn splats_to_lit_scene(splats: &[GaussianSplat], width: u32, height: u32, eye: [f32; 3]) -> SceneState {
+pub fn splats_to_lit_scene(
+    splats: &[GaussianSplat],
+    width: u32,
+    height: u32,
+    eye: [f32; 3],
+) -> SceneState {
     use glam::Vec3;
     use spectra_scene_data::MaterialData;
-    use spectra_scene_state::{MaterialLayer, MATERIAL_FLOATS};
+    use spectra_scene_state::{MATERIAL_FLOATS, MaterialLayer};
 
     let eye = Vec3::from(eye);
-    let renderable: Vec<&GaussianSplat> =
-        splats.iter().filter(|s| s.is_surface() || s.is_volume()).collect();
+    let renderable: Vec<&GaussianSplat> = splats
+        .iter()
+        .filter(|s| s.is_surface() || s.is_volume())
+        .collect();
 
     let mut positions = Vec::with_capacity(renderable.len() * 12);
     let mut normals = Vec::with_capacity(renderable.len() * 12);
@@ -187,9 +205,17 @@ pub fn splats_to_lit_scene(splats: &[GaussianSplat], width: u32, height: u32, ey
         let c = Vec3::from(s.position());
         let to_eye = {
             let d = eye - c;
-            if d.length_squared() < 1e-8 { Vec3::Z } else { d.normalize() }
+            if d.length_squared() < 1e-8 {
+                Vec3::Z
+            } else {
+                d.normalize()
+            }
         };
-        let up = if to_eye.y.abs() < 0.99 { Vec3::Y } else { Vec3::X };
+        let up = if to_eye.y.abs() < 0.99 {
+            Vec3::Y
+        } else {
+            Vec3::X
+        };
         let right = up.cross(to_eye).normalize();
         let realup = to_eye.cross(right);
         let r = if s.is_volume() {

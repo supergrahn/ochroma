@@ -31,9 +31,18 @@ pub struct AnimTransition {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TransitionConditionDef {
-    BoolParam { name: String, value: bool },
-    FloatThreshold { name: String, op: CompareOp, value: f32 },
-    Trigger { name: String },
+    BoolParam {
+        name: String,
+        value: bool,
+    },
+    FloatThreshold {
+        name: String,
+        op: CompareOp,
+        value: f32,
+    },
+    Trigger {
+        name: String,
+    },
     Always,
 }
 
@@ -180,7 +189,12 @@ impl AnimGraphDefinition {
         });
     }
 
-    pub fn add_parameter(&mut self, name: &str, param_type: AnimParamType, default: AnimParamValue) {
+    pub fn add_parameter(
+        &mut self,
+        name: &str,
+        param_type: AnimParamType,
+        default: AnimParamValue,
+    ) {
         self.parameters.push(AnimParameter {
             name: name.to_string(),
             param_type,
@@ -237,7 +251,9 @@ mod tests {
         graph.add_transition(
             "Run",
             "Jump",
-            TransitionConditionDef::Trigger { name: "jump".into() },
+            TransitionConditionDef::Trigger {
+                name: "jump".into(),
+            },
             0.1,
         );
 
@@ -248,9 +264,17 @@ mod tests {
     #[test]
     fn test_parameter_types() {
         let mut graph = AnimGraphDefinition::new("Test");
-        graph.add_parameter("is_grounded", AnimParamType::Bool, AnimParamValue::Bool(true));
+        graph.add_parameter(
+            "is_grounded",
+            AnimParamType::Bool,
+            AnimParamValue::Bool(true),
+        );
         graph.add_parameter("speed", AnimParamType::Float, AnimParamValue::Float(0.0));
-        graph.add_parameter("jump", AnimParamType::Trigger, AnimParamValue::Trigger(false));
+        graph.add_parameter(
+            "jump",
+            AnimParamType::Trigger,
+            AnimParamValue::Trigger(false),
+        );
 
         assert_eq!(graph.parameters.len(), 3);
         assert_eq!(graph.parameters[0].param_type, AnimParamType::Bool);

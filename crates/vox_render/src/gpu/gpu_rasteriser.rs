@@ -15,7 +15,11 @@ fn create_depth_texture(
 ) -> (wgpu::Texture, wgpu::TextureView, wgpu::Sampler) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("depth_texture"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -239,7 +243,8 @@ impl GpuRasteriser {
             mapped_at_creation: false,
         });
 
-        let (depth_texture, depth_view, depth_sampler) = create_depth_texture(device, width, height);
+        let (depth_texture, depth_view, depth_sampler) =
+            create_depth_texture(device, width, height);
 
         Self {
             pipeline,
@@ -265,7 +270,11 @@ impl GpuRasteriser {
         // Create 512×512 shadow depth texture
         let shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shadow_depth_texture"),
-            size: wgpu::Extent3d { width: 512, height: 512, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 512,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -396,8 +405,14 @@ impl GpuRasteriser {
             label: Some("shadow_bind_group"),
             layout: bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: light_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: splat_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: light_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: splat_buffer.as_entire_binding(),
+                },
             ],
         });
 

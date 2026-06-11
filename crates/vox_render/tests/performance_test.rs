@@ -1,12 +1,18 @@
+use glam::{Mat4, Vec3};
+use std::time::Instant;
+use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::spectral::RenderCamera;
-use vox_core::spectral::Illuminant;
-use glam::{Vec3, Mat4};
-use std::time::Instant;
 
 fn make_splat(x: f32, y: f32, z: f32) -> GaussianSplat {
-    GaussianSplat::volume([x, y, z], [0.1, 0.1, 0.1], glam::Quat::IDENTITY, 200, [15360; 16])
+    GaussianSplat::volume(
+        [x, y, z],
+        [0.1, 0.1, 0.1],
+        glam::Quat::IDENTITY,
+        200,
+        [15360; 16],
+    )
 }
 
 #[test]
@@ -17,7 +23,11 @@ fn render_1000_splats_under_100ms() {
 
     let mut rasteriser = SoftwareRasteriser::new(256, 256);
     let camera = RenderCamera {
-        view: Mat4::look_at_rh(Vec3::new(25.0, 20.0, 25.0), Vec3::new(25.0, 0.0, 10.0), Vec3::Y),
+        view: Mat4::look_at_rh(
+            Vec3::new(25.0, 20.0, 25.0),
+            Vec3::new(25.0, 0.0, 10.0),
+            Vec3::Y,
+        ),
         proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 200.0),
     };
 
@@ -25,7 +35,11 @@ fn render_1000_splats_under_100ms() {
     let _fb = rasteriser.render(&splats, &camera, &Illuminant::d65(), None);
     let elapsed = start.elapsed();
 
-    assert!(elapsed.as_millis() < 100, "1000 splats should render in <100ms, took {}ms", elapsed.as_millis());
+    assert!(
+        elapsed.as_millis() < 100,
+        "1000 splats should render in <100ms, took {}ms",
+        elapsed.as_millis()
+    );
 }
 
 #[test]
@@ -37,17 +51,31 @@ fn frustum_cull_10000_instances_under_10ms() {
     let frustum = Frustum::from_view_proj(proj * view);
 
     let positions: Vec<Vec3> = (0..10000)
-        .map(|i| Vec3::new((i % 100) as f32 * 10.0 - 500.0, 0.0, -((i / 100) as f32 * 10.0)))
+        .map(|i| {
+            Vec3::new(
+                (i % 100) as f32 * 10.0 - 500.0,
+                0.0,
+                -((i / 100) as f32 * 10.0),
+            )
+        })
         .collect();
 
     let start = Instant::now();
-    let visible_count: usize = positions.iter()
+    let visible_count: usize = positions
+        .iter()
         .filter(|p| frustum.contains_sphere(**p, 5.0))
         .count();
     let elapsed = start.elapsed();
 
-    assert!(elapsed.as_millis() < 10, "10k frustum tests should complete in <10ms, took {}ms", elapsed.as_millis());
-    assert!(visible_count > 0 && visible_count < 10000, "Some should be visible, some culled");
+    assert!(
+        elapsed.as_millis() < 10,
+        "10k frustum tests should complete in <10ms, took {}ms",
+        elapsed.as_millis()
+    );
+    assert!(
+        visible_count > 0 && visible_count < 10000,
+        "Some should be visible, some culled"
+    );
 }
 
 #[test]
@@ -65,5 +93,9 @@ fn citizen_simulation_100k_under_100ms() {
     }
     let elapsed = start.elapsed();
 
-    assert!(elapsed.as_millis() < 100, "1000 citizens x 100 ticks should complete in <100ms, took {}ms", elapsed.as_millis());
+    assert!(
+        elapsed.as_millis() < 100,
+        "1000 citizens x 100 ticks should complete in <100ms, took {}ms",
+        elapsed.as_millis()
+    );
 }

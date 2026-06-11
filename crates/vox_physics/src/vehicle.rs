@@ -155,7 +155,11 @@ mod tests {
         for _ in 0..50 {
             v.step(0.016);
         }
-        assert!(v.speed() > 1.0, "vehicle should accelerate: speed = {}", v.speed());
+        assert!(
+            v.speed() > 1.0,
+            "vehicle should accelerate: speed = {}",
+            v.speed()
+        );
     }
 
     #[test]
@@ -200,10 +204,7 @@ mod tests {
         let fwd_after = v.forward();
 
         let dot = fwd_before.dot(fwd_after);
-        assert!(
-            dot < 0.99,
-            "steering should change direction: dot = {dot}"
-        );
+        assert!(dot < 0.99, "steering should change direction: dot = {dot}");
     }
 
     #[test]

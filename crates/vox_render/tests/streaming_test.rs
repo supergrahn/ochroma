@@ -1,5 +1,5 @@
-use vox_render::streaming::TileManager;
 use vox_core::lwc::{TileCoord, TileState};
+use vox_render::streaming::TileManager;
 
 #[test]
 fn test_initial_state_all_cold() {
@@ -17,12 +17,20 @@ fn test_camera_update_activates_nearby_tiles() {
 
     // With radius=1, should activate a 3x3 grid = 9 tiles
     let active = mgr.active_tiles();
-    assert_eq!(active.len(), 9, "Expected 9 active tiles, got {}", active.len());
+    assert_eq!(
+        active.len(),
+        9,
+        "Expected 9 active tiles, got {}",
+        active.len()
+    );
 
     // Center tile should be active
     assert_eq!(mgr.tile_state(TileCoord { x: 0, z: 0 }), TileState::Active);
     assert_eq!(mgr.tile_state(TileCoord { x: 1, z: 0 }), TileState::Active);
-    assert_eq!(mgr.tile_state(TileCoord { x: -1, z: -1 }), TileState::Active);
+    assert_eq!(
+        mgr.tile_state(TileCoord { x: -1, z: -1 }),
+        TileState::Active
+    );
 }
 
 #[test]
@@ -47,5 +55,8 @@ fn test_camera_move_evicts_far_tiles() {
     // Old tiles should be evicted (no longer tracked)
     assert_eq!(mgr.tile_state(TileCoord { x: 0, z: 0 }), TileState::Cold);
     // New camera area should be active
-    assert_eq!(mgr.tile_state(TileCoord { x: 10, z: 10 }), TileState::Active);
+    assert_eq!(
+        mgr.tile_state(TileCoord { x: 10, z: 10 }),
+        TileState::Active
+    );
 }

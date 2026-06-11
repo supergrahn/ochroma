@@ -44,8 +44,10 @@ impl ParticleEmitter {
 
     pub fn dust(position: Vec3) -> Self {
         let brown_spd: [u16; 16] = std::array::from_fn(|i| {
-            let v = [0.10f32, 0.12, 0.15, 0.20, 0.22, 0.20, 0.18, 0.15,
-                     0.10, 0.12, 0.15, 0.20, 0.22, 0.20, 0.18, 0.15];
+            let v = [
+                0.10f32, 0.12, 0.15, 0.20, 0.22, 0.20, 0.18, 0.15, 0.10, 0.12, 0.15, 0.20, 0.22,
+                0.20, 0.18, 0.15,
+            ];
             f16::from_f32(v[i]).to_bits()
         });
         Self {
@@ -81,7 +83,10 @@ impl ParticleSystem {
 
     #[allow(dead_code)]
     fn next_random(&mut self) -> f32 {
-        self.rng_state = self.rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.rng_state = self
+            .rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.rng_state >> 33) as f32 / (1u64 << 31) as f32
     }
 
@@ -93,7 +98,9 @@ impl ParticleSystem {
         // Update existing particles
         self.particles.retain_mut(|p| {
             p.lifetime -= dt;
-            if p.lifetime <= 0.0 { return false; }
+            if p.lifetime <= 0.0 {
+                return false;
+            }
             p.velocity += Vec3::new(0.0, -9.81, 0.0) * dt; // gravity
             p.position += p.velocity * dt;
             p.opacity = (p.lifetime / p.max_lifetime).clamp(0.0, 1.0);
@@ -105,10 +112,18 @@ impl ParticleSystem {
             emitter.accumulator += emitter.emission_rate * dt;
             while emitter.accumulator >= 1.0 && self.particles.len() < self.max_particles {
                 emitter.accumulator -= 1.0;
-                let rand_x = (self.rng_state as f32 / u64::MAX as f32 - 0.5) * emitter.velocity_randomness;
-                self.rng_state = self.rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let rand_z = (self.rng_state as f32 / u64::MAX as f32 - 0.5) * emitter.velocity_randomness;
-                self.rng_state = self.rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let rand_x =
+                    (self.rng_state as f32 / u64::MAX as f32 - 0.5) * emitter.velocity_randomness;
+                self.rng_state = self
+                    .rng_state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1);
+                let rand_z =
+                    (self.rng_state as f32 / u64::MAX as f32 - 0.5) * emitter.velocity_randomness;
+                self.rng_state = self
+                    .rng_state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1);
 
                 self.particles.push(Particle {
                     position: emitter.position,
@@ -125,16 +140,21 @@ impl ParticleSystem {
 
     /// Convert active particles to GaussianSplats for rendering.
     pub fn to_splats(&self) -> Vec<GaussianSplat> {
-        self.particles.iter().map(|p| {
-            GaussianSplat::volume(
-                [p.position.x, p.position.y, p.position.z],
-                [p.scale, p.scale, p.scale],
-                glam::Quat::IDENTITY,
-                (p.opacity * 200.0) as u8,
-                p.spectral,
-            )
-        }).collect()
+        self.particles
+            .iter()
+            .map(|p| {
+                GaussianSplat::volume(
+                    [p.position.x, p.position.y, p.position.z],
+                    [p.scale, p.scale, p.scale],
+                    glam::Quat::IDENTITY,
+                    (p.opacity * 200.0) as u8,
+                    p.spectral,
+                )
+            })
+            .collect()
     }
 
-    pub fn particle_count(&self) -> usize { self.particles.len() }
+    pub fn particle_count(&self) -> usize {
+        self.particles.len()
+    }
 }

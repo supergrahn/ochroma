@@ -99,7 +99,10 @@ mod tests {
         let mut cam = CameraController::new(16.0 / 9.0);
         let pos_before = cam.position;
         cam.orbit(std::f32::consts::FRAC_PI_4);
-        assert_ne!(cam.position.x, pos_before.x, "orbit should change X position");
+        assert_ne!(
+            cam.position.x, pos_before.x,
+            "orbit should change X position"
+        );
     }
 
     #[test]
@@ -114,7 +117,10 @@ mod tests {
     fn zoom_clamps_to_min() {
         let mut cam = CameraController::new(1.0);
         cam.zoom(-100000.0);
-        assert!(cam.orbit_distance >= 10.0, "zoom should clamp to minimum 10");
+        assert!(
+            cam.orbit_distance >= 10.0,
+            "zoom should clamp to minimum 10"
+        );
     }
 
     #[test]

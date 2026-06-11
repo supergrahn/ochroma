@@ -258,10 +258,7 @@ impl MicroDetailGenerator {
             let y = i as f32 * 0.08 + offset;
             let thickness = 0.003 + (rng % 50) as f32 / 10000.0;
 
-            splats.push(make_micro_splat(
-                [0.5, y, 0.0],
-                [0.5, thickness, 0.001],
-            ));
+            splats.push(make_micro_splat([0.5, y, 0.0], [0.5, thickness, 0.001]));
         }
 
         splats

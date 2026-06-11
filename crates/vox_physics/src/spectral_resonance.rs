@@ -89,8 +89,7 @@ impl SpectralFracture {
 
         for i in 0..count {
             let t = i as f32 / count as f32;
-            let base_normal =
-                Vec3::new((t * TAU).cos(), 0.0, (t * TAU).sin()).normalize();
+            let base_normal = Vec3::new((t * TAU).cos(), 0.0, (t * TAU).sin()).normalize();
 
             let normal = if profile.regularity > 0.7 {
                 snap_to_axis(base_normal)
@@ -103,8 +102,7 @@ impl SpectralFracture {
                 (base_normal + perturb).normalize()
             };
 
-            let dist = (impulse_ns / (profile.stiffness.max(0.1) * 1000.0))
-                .clamp(0.05, 0.5);
+            let dist = (impulse_ns / (profile.stiffness.max(0.1) * 1000.0)).clamp(0.05, 0.5);
             let origin = impact_local + normal * dist * (t + 0.5);
             planes.push(FractureResonancePlane { origin, normal });
         }
@@ -133,8 +131,8 @@ mod tests {
     fn glass_profile_has_high_resonance_frequency() {
         // Glass: sharp absorption at short wavelengths (UV/violet), transparent at long
         let glass_spectral = [
-            0.9f32, 0.9, 0.85, 0.80, 0.1, 0.05, 0.05, 0.05,
-            0.05, 0.04, 0.03, 0.03, 0.02, 0.02, 0.02, 0.02,
+            0.9f32, 0.9, 0.85, 0.80, 0.1, 0.05, 0.05, 0.05, 0.05, 0.04, 0.03, 0.03, 0.02, 0.02,
+            0.02, 0.02,
         ];
         let profile = SpectralResonanceProfile::from_spectral(&glass_spectral);
         println!("glass resonance_hz = {:.1} Hz", profile.resonance_hz);
@@ -149,8 +147,8 @@ mod tests {
     fn wood_profile_has_low_resonance_frequency() {
         // Wood: broad absorption across mid-range, peak in orange/green
         let wood_spectral = [
-            0.1f32, 0.12, 0.15, 0.25, 0.45, 0.55, 0.40, 0.30,
-            0.25, 0.20, 0.17, 0.15, 0.13, 0.12, 0.11, 0.10,
+            0.1f32, 0.12, 0.15, 0.25, 0.45, 0.55, 0.40, 0.30, 0.25, 0.20, 0.17, 0.15, 0.13, 0.12,
+            0.11, 0.10,
         ];
         let profile = SpectralResonanceProfile::from_spectral(&wood_spectral);
         println!("wood resonance_hz = {:.1} Hz", profile.resonance_hz);
@@ -166,8 +164,7 @@ mod tests {
         // Crystal: uniform absorption → high regularity → axis-aligned planes
         let crystal = [0.8f32; 16];
         let profile = SpectralResonanceProfile::from_spectral(&crystal);
-        let planes =
-            SpectralFracture::compute_planes(Vec3::ZERO, 100.0, &profile, 8);
+        let planes = SpectralFracture::compute_planes(Vec3::ZERO, 100.0, &profile, 8);
         for plane in &planes {
             let aligned = plane.normal.x.abs() > 0.9
                 || plane.normal.y.abs() > 0.9

@@ -36,8 +36,8 @@ impl WebRenderConfig {
     pub fn estimated_vram_mb(&self) -> f32 {
         // 64 bytes per GpuSplatData + frame buffer + depth buffer
         let splat_vram = self.max_splats as f32 * 64.0 / (1024.0 * 1024.0);
-        let fb_vram = self.physical_width() as f32 * self.physical_height() as f32 * 8.0
-            / (1024.0 * 1024.0);
+        let fb_vram =
+            self.physical_width() as f32 * self.physical_height() as f32 * 8.0 / (1024.0 * 1024.0);
         splat_vram + fb_vram
     }
 
@@ -100,11 +100,11 @@ impl Platform {
     /// Maximum VRAM budget for this platform (MB).
     pub fn vram_budget_mb(&self) -> f32 {
         match self {
-            Self::NativeDesktop => 8192.0,     // 8 GB
-            Self::NativeConsole => 12288.0,    // 12 GB (PS5)
-            Self::WebBrowser => 2048.0,        // 2 GB (conservative)
-            Self::Mobile => 1024.0,            // 1 GB
-            Self::CloudStreaming => 16384.0,    // 16 GB
+            Self::NativeDesktop => 8192.0,   // 8 GB
+            Self::NativeConsole => 12288.0,  // 12 GB (PS5)
+            Self::WebBrowser => 2048.0,      // 2 GB (conservative)
+            Self::Mobile => 1024.0,          // 1 GB
+            Self::CloudStreaming => 16384.0, // 16 GB
         }
     }
 }

@@ -49,18 +49,24 @@ fn rotating_bone_rotates_splats() {
 #[test]
 fn animation_playback_advances_time() {
     let mut clip = AnimationClip::new("walk", 2.0);
-    clip.add_keyframe(0, Keyframe {
-        time: 0.0,
-        position: Vec3::ZERO,
-        rotation: Quat::IDENTITY,
-        scale: Vec3::ONE,
-    });
-    clip.add_keyframe(0, Keyframe {
-        time: 2.0,
-        position: Vec3::new(10.0, 0.0, 0.0),
-        rotation: Quat::IDENTITY,
-        scale: Vec3::ONE,
-    });
+    clip.add_keyframe(
+        0,
+        Keyframe {
+            time: 0.0,
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        },
+    );
+    clip.add_keyframe(
+        0,
+        Keyframe {
+            time: 2.0,
+            position: Vec3::new(10.0, 0.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        },
+    );
 
     let mut player = AnimationPlayer::new(vec![clip]);
     player.update(1.0); // Advance 1 second into a 2-second clip.
@@ -77,20 +83,26 @@ fn animation_playback_advances_time() {
 #[test]
 fn two_clip_blending_produces_intermediate() {
     let mut clip_a = AnimationClip::new("idle", 1.0);
-    clip_a.add_keyframe(0, Keyframe {
-        time: 0.0,
-        position: Vec3::ZERO,
-        rotation: Quat::IDENTITY,
-        scale: Vec3::ONE,
-    });
+    clip_a.add_keyframe(
+        0,
+        Keyframe {
+            time: 0.0,
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        },
+    );
 
     let mut clip_b = AnimationClip::new("run", 1.0);
-    clip_b.add_keyframe(0, Keyframe {
-        time: 0.0,
-        position: Vec3::new(10.0, 0.0, 0.0),
-        rotation: Quat::IDENTITY,
-        scale: Vec3::ONE,
-    });
+    clip_b.add_keyframe(
+        0,
+        Keyframe {
+            time: 0.0,
+            position: Vec3::new(10.0, 0.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        },
+    );
 
     let mut player = AnimationPlayer::new(vec![clip_a, clip_b]);
     player.blend_to(1, 1.0); // Blend to clip 1 over 1 second.
@@ -100,7 +112,11 @@ fn two_clip_blending_produces_intermediate() {
     let m = pose.get(&0).expect("bone 0 should have a pose");
     let (_, _, trans) = m.to_scale_rotation_translation();
     // Should be roughly (5, 0, 0) — halfway between (0,0,0) and (10,0,0).
-    assert!((trans.x - 5.0).abs() < 1.0, "x: {} (expected ~5.0)", trans.x);
+    assert!(
+        (trans.x - 5.0).abs() < 1.0,
+        "x: {} (expected ~5.0)",
+        trans.x
+    );
 }
 
 #[test]

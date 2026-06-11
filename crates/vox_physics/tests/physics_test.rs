@@ -29,7 +29,11 @@ fn falling_body_hits_ground() {
         world.step(0.016);
     }
     let body = world.get_body(1).unwrap();
-    assert!(body.position.y <= 0.1, "Body should hit ground, y={}", body.position.y);
+    assert!(
+        body.position.y <= 0.1,
+        "Body should hit ground, y={}",
+        body.position.y
+    );
 }
 
 #[test]
@@ -50,11 +54,23 @@ fn static_body_doesnt_move() {
 fn collision_detection_finds_overlapping_bodies() {
     let mut world = PhysicsWorld::new();
     world.add_body_with_collider(
-        RigidBody { id: 0, position: Vec3::ZERO, velocity: Vec3::ZERO, mass: 1.0, is_static: false },
+        RigidBody {
+            id: 0,
+            position: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            mass: 1.0,
+            is_static: false,
+        },
         Vec3::splat(1.0),
     );
     world.add_body_with_collider(
-        RigidBody { id: 0, position: Vec3::new(1.5, 0.0, 0.0), velocity: Vec3::ZERO, mass: 1.0, is_static: false },
+        RigidBody {
+            id: 0,
+            position: Vec3::new(1.5, 0.0, 0.0),
+            velocity: Vec3::ZERO,
+            mass: 1.0,
+            is_static: false,
+        },
         Vec3::splat(1.0),
     );
     let pairs = world.check_collisions();
@@ -65,11 +81,23 @@ fn collision_detection_finds_overlapping_bodies() {
 fn collision_response_separates_bodies() {
     let mut world = PhysicsWorld::new();
     world.add_body_with_collider(
-        RigidBody { id: 0, position: Vec3::new(-0.5, 5.0, 0.0), velocity: Vec3::ZERO, mass: 1.0, is_static: true },
+        RigidBody {
+            id: 0,
+            position: Vec3::new(-0.5, 5.0, 0.0),
+            velocity: Vec3::ZERO,
+            mass: 1.0,
+            is_static: true,
+        },
         Vec3::splat(1.0),
     );
     world.add_body_with_collider(
-        RigidBody { id: 0, position: Vec3::new(0.5, 5.0, 0.0), velocity: Vec3::ZERO, mass: 1.0, is_static: false },
+        RigidBody {
+            id: 0,
+            position: Vec3::new(0.5, 5.0, 0.0),
+            velocity: Vec3::ZERO,
+            mass: 1.0,
+            is_static: false,
+        },
         Vec3::splat(1.0),
     );
     // Run enough steps so collision resolution pushes them apart

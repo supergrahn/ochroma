@@ -10,7 +10,11 @@ pub struct DripParams {
 
 impl Default for DripParams {
     fn default() -> Self {
-        Self { particle_count: 10_000, max_steps: 500, seed: 0 }
+        Self {
+            particle_count: 10_000,
+            max_steps: 500,
+            seed: 0,
+        }
     }
 }
 
@@ -31,7 +35,9 @@ pub fn run_drip_simulation(
     let mut accumulation = vec![0u32; n];
     let mut rng = params.seed;
     let lcg = |s: &mut u64| -> f32 {
-        *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (*s >> 33) as f32 / u32::MAX as f32
     };
 
@@ -58,19 +64,23 @@ pub fn run_drip_simulation(
             let mut best_nz = z;
             if x > 0 && heights[z * res + x - 1] - h > best_rise {
                 best_rise = heights[z * res + x - 1] - h;
-                best_nx = x - 1; best_nz = z;
+                best_nx = x - 1;
+                best_nz = z;
             }
             if x < res - 1 && heights[z * res + x + 1] - h > best_rise {
                 best_rise = heights[z * res + x + 1] - h;
-                best_nx = x + 1; best_nz = z;
+                best_nx = x + 1;
+                best_nz = z;
             }
             if z > 0 && heights[(z - 1) * res + x] - h > best_rise {
                 best_rise = heights[(z - 1) * res + x] - h;
-                best_nx = x; best_nz = z - 1;
+                best_nx = x;
+                best_nz = z - 1;
             }
             if z < res - 1 && heights[(z + 1) * res + x] - h > best_rise {
                 best_rise = heights[(z + 1) * res + x] - h;
-                best_nx = x; best_nz = z + 1;
+                best_nx = x;
+                best_nz = z + 1;
             }
             if best_rise < 0.001 {
                 break;
@@ -85,12 +95,14 @@ pub fn run_drip_simulation(
         .iter()
         .map(|&v| (v as f32 / max_acc).sqrt())
         .collect();
-    DripResult { drip_intensity, resolution }
+    DripResult {
+        drip_intensity,
+        resolution,
+    }
 }
 
 const WATER_SPECTRAL_USGS: [f32; 16] = [
-    0.03, 0.04, 0.05, 0.05, 0.05, 0.04, 0.03, 0.03, 0.02, 0.02, 0.01, 0.01, 0.01, 0.01, 0.01,
-    0.01,
+    0.03, 0.04, 0.05, 0.05, 0.05, 0.04, 0.03, 0.03, 0.02, 0.02, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01,
 ];
 
 pub fn blend_wet_spectral(dry: &[f32; 16], wet_factor: f32) -> [f32; 16] {
@@ -130,15 +142,17 @@ mod tests {
             }
         }
         let normals = vec![[0.0f32, 1.0, 0.0]; n];
-        let params = DripParams { particle_count: 100, max_steps: 50, seed: 42 };
+        let params = DripParams {
+            particle_count: 100,
+            max_steps: 50,
+            seed: 42,
+        };
         let result = run_drip_simulation(&heights, &normals, resolution, &params);
         assert_eq!(result.drip_intensity.len(), n);
         let max_intensity = result.drip_intensity.iter().cloned().fold(0.0f32, f32::max);
         assert!(max_intensity > 0.0, "slope should produce nonzero flow");
         let downhill_avg: f32 = (0..resolution as usize)
-            .map(|z| {
-                result.drip_intensity[z * resolution as usize + (resolution as usize - 1)]
-            })
+            .map(|z| result.drip_intensity[z * resolution as usize + (resolution as usize - 1)])
             .sum::<f32>()
             / resolution as f32;
         let uphill_avg: f32 = (0..resolution as usize)

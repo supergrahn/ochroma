@@ -1,8 +1,8 @@
 use glam::{Quat, Vec3};
 use half;
 use vox_core::types::GaussianSplat;
-use vox_physics::destruction::{SplatAssembly, spectral_shift_on_break};
 use vox_physics::SpectralPhysics;
+use vox_physics::destruction::{SplatAssembly, spectral_shift_on_break};
 
 /// Dropping a rigid body onto a glass floor causes the floor splats' spectral
 /// bands 1-3 (UV/violet) to visibly reduce (crack damage) upon impact.
@@ -45,7 +45,8 @@ fn rigid_body_impact_cracks_glass_spectral() {
     assert!(
         cracked_band2 < original_band2 - 0.05,
         "glass crack should reduce band 2 (UV/violet) by > 0.05: original={:.4} cracked={:.4}",
-        original_band2, cracked_band2
+        original_band2,
+        cracked_band2
     );
 }
 
@@ -54,7 +55,9 @@ fn rigid_body_impact_cracks_glass_spectral() {
 fn rigid_body_impact_generates_fracture_planes() {
     let glass_spectral: [u16; 16] = {
         let mut s = [0u16; 16];
-        for b in 0..4 { s[b] = half::f16::from_f32(0.8).to_bits(); }
+        for b in 0..4 {
+            s[b] = half::f16::from_f32(0.8).to_bits();
+        }
         s
     };
     let splat = GaussianSplat::volume([0.0; 3], [1.0; 3], Quat::IDENTITY, 255, glass_spectral);
@@ -72,7 +75,10 @@ fn rigid_body_impact_generates_fracture_planes() {
 
     let impact = Vec3::new(0.0, 0.0, 0.0);
     let planes = assembly.fracture_at(impact, 150.0);
-    assert!(!planes.is_empty(), "high impulse should generate fracture planes");
+    assert!(
+        !planes.is_empty(),
+        "high impulse should generate fracture planes"
+    );
 }
 
 /// Reachable facade: from a game's perspective, one call applies an impact to a
@@ -86,8 +92,8 @@ fn rigid_body_impact_generates_fracture_planes() {
 fn facade_brittle_glass_shatters_more_than_ductile_metal() {
     // Brittle glass: sharp alternating absorption, low total energy.
     let glass_spectral: [u16; 16] = [
-        60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100,
-        60000, 100, 60000, 100,
+        60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000,
+        100,
     ];
     // Ductile metal: flat, high-energy absorption across all bands.
     let metal_spectral: [u16; 16] = [60000u16; 16];

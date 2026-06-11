@@ -133,9 +133,7 @@ impl HotMaterialLibrary {
     }
 
     fn load_file(path: &Path) -> (Option<SpectralMaterialConfig>, Option<SystemTime>) {
-        let mtime = std::fs::metadata(path)
-            .and_then(|m| m.modified())
-            .ok();
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         let config = std::fs::read_to_string(path)
             .ok()
             .and_then(|s| toml::from_str::<SpectralMaterialConfig>(&s).ok());
@@ -169,10 +167,7 @@ impl vox_core::asset_watcher::AssetWatcher for HotMaterialLibrary {
         changed_names
             .into_iter()
             .map(|name| {
-                let path = self
-                    .path_for(&name)
-                    .cloned()
-                    .unwrap_or_default();
+                let path = self.path_for(&name).cloned().unwrap_or_default();
                 vox_core::asset_watcher::AssetChanged { name, path }
             })
             .collect()
@@ -183,10 +178,7 @@ impl vox_core::asset_watcher::AssetWatcher for HotMaterialLibrary {
         changed_names
             .into_iter()
             .map(|name| {
-                let path = self
-                    .path_for(&name)
-                    .cloned()
-                    .unwrap_or_default();
+                let path = self.path_for(&name).cloned().unwrap_or_default();
                 vox_core::asset_watcher::AssetChanged { name, path }
             })
             .collect()
@@ -221,8 +213,7 @@ pub fn material_reload_system(
     if changed.is_empty() {
         return;
     }
-    let changed_set: std::collections::HashSet<&str> =
-        changed.iter().map(String::as_str).collect();
+    let changed_set: std::collections::HashSet<&str> = changed.iter().map(String::as_str).collect();
     for (entity, mat_ref) in query.iter() {
         if changed_set.contains(mat_ref.material_name.as_str()) {
             commands.entity(entity).insert(MaterialDirty);
@@ -401,7 +392,11 @@ metallic = 0.3
 
         // Force a poll
         let changed = lib.force_reload();
-        assert!(changed.contains(&"newmat".to_string()), "should detect new file: {:?}", changed);
+        assert!(
+            changed.contains(&"newmat".to_string()),
+            "should detect new file: {:?}",
+            changed
+        );
         assert!(lib.get("newmat").is_some());
     }
 
@@ -438,17 +433,16 @@ metallic = 0.3
         world.insert_resource(HotReloadDeltaTime(0.0)); // bypass rate limit
 
         // Spawn an entity with MaterialRef
-        world.spawn(MaterialRef { material_name: "dirttest".into() });
+        world.spawn(MaterialRef {
+            material_name: "dirttest".into(),
+        });
 
         let mut schedule = Schedule::default();
         schedule.add_systems(material_reload_system);
         schedule.run(&mut world);
         world.flush();
 
-        let dirty_count = world
-            .query::<&MaterialDirty>()
-            .iter(&world)
-            .count();
+        let dirty_count = world.query::<&MaterialDirty>().iter(&world).count();
         // May be 0 if mtime granularity didn't register the change in <10ms,
         // but the system must not panic
         let _ = dirty_count;
@@ -456,7 +450,9 @@ metallic = 0.3
 
     #[test]
     fn material_ref_component() {
-        let mat_ref = MaterialRef { material_name: "wood".into() };
+        let mat_ref = MaterialRef {
+            material_name: "wood".into(),
+        };
         assert_eq!(mat_ref.material_name, "wood");
         let cloned = mat_ref.clone();
         assert_eq!(cloned.material_name, "wood");

@@ -153,13 +153,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
                 ],
             });
 
-        let pipeline_layout =
-            self.device
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("material_eval_pl"),
-                    bind_group_layouts: &[&bgl],
-                    push_constant_ranges: &[],
-                });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("material_eval_pl"),
+                bind_group_layouts: &[&bgl],
+                push_constant_ranges: &[],
+            });
 
         let pipeline = self
             .device
@@ -264,9 +264,15 @@ mod tests {
                 "layer_red_over_grey",
                 MaterialDag {
                     nodes: vec![
-                        BsdfNode::RgbUplift { rgb: [0.9, 0.1, 0.1] },
+                        BsdfNode::RgbUplift {
+                            rgb: [0.9, 0.1, 0.1],
+                        },
                         BsdfNode::SpectralConstant { spd: [0.18; 16] },
-                        BsdfNode::Layer { coat: 0, base: 1, f0: 0.04 },
+                        BsdfNode::Layer {
+                            coat: 0,
+                            base: 1,
+                            f0: 0.04,
+                        },
                     ],
                     output: 2,
                 },
@@ -292,9 +298,18 @@ mod tests {
                                 0.64, 0.64, 0.65, 0.65,
                             ],
                         },
-                        BsdfNode::Fresnel { base: 0, power: 5.0 },
-                        BsdfNode::RgbUplift { rgb: [0.2, 0.6, 0.9] },
-                        BsdfNode::Mix { a: 1, b: 2, factor: 0.35 },
+                        BsdfNode::Fresnel {
+                            base: 0,
+                            power: 5.0,
+                        },
+                        BsdfNode::RgbUplift {
+                            rgb: [0.2, 0.6, 0.9],
+                        },
+                        BsdfNode::Mix {
+                            a: 1,
+                            b: 2,
+                            factor: 0.35,
+                        },
                     ],
                     output: 3,
                 },
@@ -330,10 +345,7 @@ mod tests {
                     max_err = max_err.max(err);
                     eprintln!(
                         "  band {band:>2} (λ={:>5.1}nm): cpu={:.8} gpu={:.8} |Δ|={:.2e}",
-                        BAND_WAVELENGTHS[band],
-                        cpu[band],
-                        gpu_spd[band],
-                        err
+                        BAND_WAVELENGTHS[band], cpu[band], gpu_spd[band], err
                     );
                     assert!(
                         err < 1e-5,

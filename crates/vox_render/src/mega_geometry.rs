@@ -29,7 +29,7 @@ pub struct ScreenTile {
     pub y: u32,
     pub width: u32,
     pub height: u32,
-    pub splat_indices: Vec<u32>,  // splats visible in this tile
+    pub splat_indices: Vec<u32>, // splats visible in this tile
 }
 
 impl MegaGeometryDispatch {
@@ -81,9 +81,11 @@ impl MegaGeometryDispatch {
             }
 
             let x_min = ((sx - radius).max(0.0) / self.tile_size as f32).floor() as u32;
-            let x_max = ((sx + radius).min(self.screen_width as f32 - 1.0) / self.tile_size as f32).ceil() as u32;
+            let x_max = ((sx + radius).min(self.screen_width as f32 - 1.0) / self.tile_size as f32)
+                .ceil() as u32;
             let y_min = ((sy - radius).max(0.0) / self.tile_size as f32).floor() as u32;
-            let y_max = ((sy + radius).min(self.screen_height as f32 - 1.0) / self.tile_size as f32).ceil() as u32;
+            let y_max = ((sy + radius).min(self.screen_height as f32 - 1.0) / self.tile_size as f32)
+                .ceil() as u32;
 
             let tiles_x = self.screen_width.div_ceil(self.tile_size);
 

@@ -1,4 +1,5 @@
-// GI → raster residency fold: writes the GI radiance buffer's first 8 bands
+// GI → raster residency fold: writes the GI radiance buffer into eight packed
+// spectral bins
 // DIRECTLY into the tiled renderer's persistent splat buffer, on-device, with
 // NO CPU readback between the GI compute pass and the rasterizer. ONE THREAD
 // PER SPLAT.
@@ -7,9 +8,9 @@
 // f32 of GI-lit per-band radiance per splat. The raster consumer
 // (`TiledSplatRenderer.splat_buf`) is `array<GpuSplatFull>` (80 bytes), whose
 // `spectral: array<f32,8>` field at byte offset 48 carries the 8 GPU spectral
-// bands the raster shader reads. This kernel folds `radiance[i][0..8]` into
-// `splats[i].spectral[0..8]`, dropping bands 8..15 — exactly the first-8-bands
-// rule the host-side `gaussian_splat_to_gpu_full` uses when it packs splats.
+// bins the raster shader reads. This kernel folds the 16 source bands into
+// adjacent pair averages: (0,1), (2,3), ..., (14,15). That is exactly the host
+// `gaussian_splat_to_gpu_full` packing rule.
 //
 // ============================  CORRECTNESS  ================================
 // The readback oracle (`GpuGi::step` → `gaussian_splat_to_gpu_full`) round-trips
@@ -127,10 +128,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (i >= params.count) {
         return;
     }
-    // Fold the GI radiance's first 8 bands into the splat's spectral, f16-
-    // quantized to match the readback oracle. Bands 8..15 of radiance are
-    // dropped (the first-8-bands rule of `gaussian_splat_to_gpu_full`).
+    // Fold the GI radiance's 16 bands into the splat's 8 pair bins, f16-
+    // quantized to match the readback oracle.
     for (var b = 0u; b < 8u; b = b + 1u) {
-        splats[i].spectral[b] = quantize_f16(radiance[i][b]);
+        let a = radiance[i][b * 2u];
+        let c = radiance[i][b * 2u + 1u];
+        splats[i].spectral[b] = quantize_f16((a + c) * 0.5);
     }
 }

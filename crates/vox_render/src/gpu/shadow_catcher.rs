@@ -14,7 +14,11 @@ pub fn generate_convex_hull_2d(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
     }
 
     let mut sorted = points.to_vec();
-    sorted.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap().then(a[1].partial_cmp(&b[1]).unwrap()));
+    sorted.sort_by(|a, b| {
+        a[0].partial_cmp(&b[0])
+            .unwrap()
+            .then(a[1].partial_cmp(&b[1]).unwrap())
+    });
 
     let cross = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| -> f32 {
         (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])

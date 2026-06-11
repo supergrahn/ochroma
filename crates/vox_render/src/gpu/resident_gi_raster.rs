@@ -29,9 +29,9 @@
 
 use vox_core::types::GaussianSplat;
 
+use crate::gpu::GpuContext;
 use crate::gpu::gi_combine::GiCombinePass;
 use crate::gpu::tiled_splat_renderer::{TiledRenderError, TiledSplatRenderer};
-use crate::gpu::GpuContext;
 use crate::spectral::RenderCamera;
 use crate::spectral_gi::{GpuGi, GpuGiError};
 

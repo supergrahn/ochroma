@@ -3,7 +3,10 @@ use vox_render::upscaling::*;
 #[test]
 fn native_no_scaling() {
     assert_eq!(UpscaleQuality::Native.scale_factor(), 1.0);
-    assert_eq!(UpscaleQuality::Native.internal_resolution(1920, 1080), (1920, 1080));
+    assert_eq!(
+        UpscaleQuality::Native.internal_resolution(1920, 1080),
+        (1920, 1080)
+    );
 }
 
 #[test]
@@ -15,8 +18,14 @@ fn performance_halves_resolution() {
 
 #[test]
 fn performance_multiplier_increases() {
-    assert!(UpscaleQuality::Performance.performance_multiplier() > UpscaleQuality::Quality.performance_multiplier());
-    assert!(UpscaleQuality::UltraPerformance.performance_multiplier() > UpscaleQuality::Performance.performance_multiplier());
+    assert!(
+        UpscaleQuality::Performance.performance_multiplier()
+            > UpscaleQuality::Quality.performance_multiplier()
+    );
+    assert!(
+        UpscaleQuality::UltraPerformance.performance_multiplier()
+            > UpscaleQuality::Performance.performance_multiplier()
+    );
 }
 
 #[test]

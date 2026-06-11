@@ -5,9 +5,13 @@ use serde::{Deserialize, Serialize};
 pub enum MaterialNodeV2 {
     // ── Input nodes ──────────────────────────────────────────────
     /// Constant scalar value.
-    Constant { value: f32 },
+    Constant {
+        value: f32,
+    },
     /// Constant spectral (8-band) value.
-    ConstantSpectral { bands: [f32; 8] },
+    ConstantSpectral {
+        bands: [f32; 8],
+    },
     /// UV texture coordinates.
     TextureCoord,
     /// World-space position.
@@ -50,27 +54,40 @@ pub enum MaterialNodeV2 {
         base: Box<MaterialNodeV2>,
         exponent: f32,
     },
-    Metallic { value: f32 },
-    Roughness { value: f32 },
+    Metallic {
+        value: f32,
+    },
+    Roughness {
+        value: f32,
+    },
     Emission {
         input: Box<MaterialNodeV2>,
         intensity: f32,
     },
-    Opacity { value: f32 },
+    Opacity {
+        value: f32,
+    },
     SubsurfaceScattering {
         color: Box<MaterialNodeV2>,
         radius: f32,
     },
 
     // ── Noise / procedural ───────────────────────────────────────
-    PerlinNoise { scale: f32, octaves: u32 },
-    VoronoiNoise { scale: f32 },
+    PerlinNoise {
+        scale: f32,
+        octaves: u32,
+    },
+    VoronoiNoise {
+        scale: f32,
+    },
     Checkerboard {
         scale: f32,
         color_a: Box<MaterialNodeV2>,
         color_b: Box<MaterialNodeV2>,
     },
-    Gradient { direction: [f32; 3] },
+    Gradient {
+        direction: [f32; 3],
+    },
 
     // ── Utility ──────────────────────────────────────────────────
     Remap {
@@ -271,8 +288,9 @@ impl MaterialNodeV2 {
             }
             Self::Gradient { direction } => {
                 let p = ctx.world_position;
-                let len_sq =
-                    direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2];
+                let len_sq = direction[0] * direction[0]
+                    + direction[1] * direction[1]
+                    + direction[2] * direction[2];
                 if len_sq < 1e-10 {
                     0.0
                 } else {
@@ -298,7 +316,11 @@ impl MaterialNodeV2 {
                     to_min + t * (to_max - to_min)
                 }
             }
-            Self::SmoothStep { edge0, edge1, input } => {
+            Self::SmoothStep {
+                edge0,
+                edge1,
+                input,
+            } => {
                 let x = input.evaluate_f32(ctx);
                 let range = edge1 - edge0;
                 if range.abs() < 1e-10 {
@@ -539,9 +561,7 @@ mod tests {
 
     #[test]
     fn spectral_multiply_works() {
-        let a = MaterialNodeV2::ConstantSpectral {
-            bands: [0.5; 8],
-        };
+        let a = MaterialNodeV2::ConstantSpectral { bands: [0.5; 8] };
         let b = MaterialNodeV2::ConstantSpectral {
             bands: [0.4, 0.6, 0.8, 1.0, 0.2, 0.3, 0.7, 0.9],
         };

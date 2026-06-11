@@ -35,7 +35,12 @@ impl GpuTimers {
     /// Build a harness for `pairs` begin/end slots, gated on the GRANTED device
     /// features. If `features` lacks `TIMESTAMP_QUERY`, this is exactly
     /// [`Self::disabled`] — no query set, no buffers, no panic.
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, features: wgpu::Features, pairs: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        features: wgpu::Features,
+        pairs: u32,
+    ) -> Self {
         let pairs = pairs.max(1);
         if !features.contains(wgpu::Features::TIMESTAMP_QUERY) || pairs == 0 {
             return Self::disabled();
@@ -107,6 +112,39 @@ impl GpuTimers {
         })
     }
 
+    /// `timestamp_writes` writing ONLY the begin index of `slot` — the opening
+    /// half of a span covering MULTIPLE compute passes. Pair with
+    /// [`Self::compute_writes_end`] on the closing pass (additive M3.2 helper:
+    /// the GPU budget walk is ~35 small dispatches measured as ONE span).
+    pub fn compute_writes_begin(
+        &self,
+        slot: u32,
+    ) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
+        let qs = self.query_set.as_ref()?;
+        if !self.enabled || slot >= self.pairs {
+            return None;
+        }
+        Some(wgpu::ComputePassTimestampWrites {
+            query_set: qs,
+            beginning_of_pass_write_index: Some(slot * 2),
+            end_of_pass_write_index: None,
+        })
+    }
+
+    /// `timestamp_writes` writing ONLY the end index of `slot` — the closing
+    /// half of a multi-pass span opened by [`Self::compute_writes_begin`].
+    pub fn compute_writes_end(&self, slot: u32) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
+        let qs = self.query_set.as_ref()?;
+        if !self.enabled || slot >= self.pairs {
+            return None;
+        }
+        Some(wgpu::ComputePassTimestampWrites {
+            query_set: qs,
+            beginning_of_pass_write_index: None,
+            end_of_pass_write_index: Some(slot * 2 + 1),
+        })
+    }
+
     /// `timestamp_writes` for a render pass measuring `slot` (begin → end).
     pub fn render_writes(&self, slot: u32) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
         let qs = self.query_set.as_ref()?;
@@ -126,9 +164,11 @@ impl GpuTimers {
         if !self.enabled {
             return;
         }
-        let (Some(qs), Some(resolve), Some(readback)) =
-            (self.query_set.as_ref(), self.resolve_buf.as_ref(), self.readback_buf.as_ref())
-        else {
+        let (Some(qs), Some(resolve), Some(readback)) = (
+            self.query_set.as_ref(),
+            self.resolve_buf.as_ref(),
+            self.readback_buf.as_ref(),
+        ) else {
             return;
         };
         let count = self.pairs * 2;
@@ -186,8 +226,14 @@ mod tests {
     fn disabled_timer_is_inert_and_never_panics() {
         let t = GpuTimers::disabled();
         assert!(!t.is_enabled(), "disabled timer must report disabled");
-        assert!(t.compute_writes(0).is_none(), "no compute writes when disabled");
-        assert!(t.render_writes(0).is_none(), "no render writes when disabled");
+        assert!(
+            t.compute_writes(0).is_none(),
+            "no compute writes when disabled"
+        );
+        assert!(
+            t.render_writes(0).is_none(),
+            "no render writes when disabled"
+        );
         // resolve_ms needs a device; covered by the GPU-gated relight test. Here we
         // assert the pure no-GPU surface degrades to None without a query set.
         assert_eq!(t.pairs, 0);

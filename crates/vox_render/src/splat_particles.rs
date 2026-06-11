@@ -7,8 +7,8 @@
 //! `vox_audio::synthesize_impact` with `particle.spectral` to get impact audio.
 
 use glam;
-use vox_core::types::GaussianSplat;
 use half::f16;
+use vox_core::types::GaussianSplat;
 
 /// Configuration for a single emitter instance.
 #[derive(Debug, Clone)]
@@ -47,7 +47,9 @@ impl Default for EmitterConfig {
             max_lifetime: 2.0,
             base_opacity: 200,
             scale: [0.05, 0.05, 0.05],
-            spectral: [0.0, 0.0, 0.0, 0.0, 0.5, 0.8, 0.9, 0.3, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05, 0.02], // fire-ish
+            spectral: [
+                0.0, 0.0, 0.0, 0.0, 0.5, 0.8, 0.9, 0.3, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05, 0.02,
+            ], // fire-ish
             emit_rate: 30.0,
             max_particles: 256,
             gravity: -9.8,
@@ -72,9 +74,8 @@ impl SplatParticle {
     pub fn to_splat(&self) -> GaussianSplat {
         let t = (self.remaining / self.lifetime).clamp(0.0, 1.0);
         let opacity = (self.base_opacity as f32 * t) as u8;
-        let spectral: [u16; 16] = std::array::from_fn(|i| {
-            f16::from_f32(self.spectral[i].clamp(0.0, 1.0)).to_bits()
-        });
+        let spectral: [u16; 16] =
+            std::array::from_fn(|i| f16::from_f32(self.spectral[i].clamp(0.0, 1.0)).to_bits());
         GaussianSplat::volume(
             self.position,
             self.scale,
@@ -136,7 +137,9 @@ impl SplatEmitter {
             let particle = self.spawn_particle();
             self.particles.push(particle);
         }
-        if self.emit_accum > self.config.emit_rate { self.emit_accum = 0.0; }
+        if self.emit_accum > self.config.emit_rate {
+            self.emit_accum = 0.0;
+        }
     }
 
     /// Collect current particles as `GaussianSplat` for injection into scene.
@@ -144,7 +147,9 @@ impl SplatEmitter {
         self.particles.iter().map(|p| p.to_splat()).collect()
     }
 
-    pub fn live_count(&self) -> usize { self.particles.len() }
+    pub fn live_count(&self) -> usize {
+        self.particles.len()
+    }
 
     fn spawn_particle(&mut self) -> SplatParticle {
         let spread = self.config.velocity_spread;
@@ -185,7 +190,9 @@ impl EmitterConfig {
             max_lifetime: 2.5,
             base_opacity: 180,
             scale: [0.08, 0.08, 0.08],
-            spectral: [0.0, 0.0, 0.0, 0.0, 0.3, 0.8, 1.0, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.08, 0.05, 0.02],
+            spectral: [
+                0.0, 0.0, 0.0, 0.0, 0.3, 0.8, 1.0, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.08, 0.05, 0.02,
+            ],
             emit_rate: 40.0,
             max_particles: 300,
             gravity: -2.0,
@@ -202,7 +209,9 @@ impl EmitterConfig {
             max_lifetime: 0.4,
             base_opacity: 230,
             scale: [0.02, 0.02, 0.02],
-            spectral: [1.0, 0.8, 0.5, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            spectral: [
+                1.0, 0.8, 0.5, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
             emit_rate: 80.0,
             max_particles: 150,
             gravity: -9.8,
@@ -219,7 +228,9 @@ impl EmitterConfig {
             max_lifetime: 1.5,
             base_opacity: 200,
             scale: [0.1, 0.1, 0.1],
-            spectral: [0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.4, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1],
+            spectral: [
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.4, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1,
+            ],
             emit_rate: 15.0,
             max_particles: 80,
             gravity: -9.8,
@@ -240,7 +251,10 @@ mod tests {
         });
         emitter.tick(0.2); // expect ~20 particles
         assert!(emitter.live_count() > 0, "should have particles after tick");
-        assert!(emitter.live_count() <= 50, "should not exceed max_particles");
+        assert!(
+            emitter.live_count() <= 50,
+            "should not exceed max_particles"
+        );
     }
 
     #[test]
@@ -256,7 +270,10 @@ mod tests {
         let count_before = emitter.live_count();
         assert!(count_before > 0, "should have spawned particles");
         emitter.tick(0.2);
-        assert!(emitter.died_this_frame.len() > 0, "particles should have died");
+        assert!(
+            emitter.died_this_frame.len() > 0,
+            "particles should have died"
+        );
         assert!(emitter.died_this_frame.len() <= count_before);
     }
 
@@ -273,7 +290,10 @@ mod tests {
         };
         let splat = p.to_splat();
         assert!(splat.opacity() < 200, "opacity should decrease with age");
-        assert!(splat.opacity() >= 95, "at half lifetime, opacity should be ~100");
+        assert!(
+            splat.opacity() >= 95,
+            "at half lifetime, opacity should be ~100"
+        );
     }
 
     #[test]
@@ -304,7 +324,9 @@ mod tests {
 
     #[test]
     fn died_this_frame_has_correct_spectral() {
-        let spectral = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0f32];
+        let spectral = [
+            0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0f32,
+        ];
         let mut emitter = SplatEmitter::new(EmitterConfig {
             emit_rate: 100.0,
             max_particles: 10,
@@ -313,11 +335,17 @@ mod tests {
             spectral,
             ..Default::default()
         });
-        emitter.tick(0.02);  // spawn particles with remaining = 0.01
-        emitter.tick(0.02);  // integrate: remaining = -0.01, particles die
-        assert!(!emitter.died_this_frame.is_empty(), "particles should have died");
+        emitter.tick(0.02); // spawn particles with remaining = 0.01
+        emitter.tick(0.02); // integrate: remaining = -0.01, particles die
+        assert!(
+            !emitter.died_this_frame.is_empty(),
+            "particles should have died"
+        );
         for dead_spectral in &emitter.died_this_frame {
-            assert_eq!(*dead_spectral, spectral, "spectral should match emitter config");
+            assert_eq!(
+                *dead_spectral, spectral,
+                "spectral should match emitter config"
+            );
         }
     }
 }

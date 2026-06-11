@@ -30,9 +30,12 @@ impl TileManager {
 
         // Mark far tiles as Evicting then remove
         let r = self.active_radius;
-        let to_evict: Vec<TileCoord> = self.tiles.keys().copied().filter(|t| {
-            (t.x - camera_tile.x).abs() > r || (t.z - camera_tile.z).abs() > r
-        }).collect();
+        let to_evict: Vec<TileCoord> = self
+            .tiles
+            .keys()
+            .copied()
+            .filter(|t| (t.x - camera_tile.x).abs() > r || (t.z - camera_tile.z).abs() > r)
+            .collect();
         for t in to_evict {
             self.tiles.remove(&t);
         }
@@ -66,12 +69,14 @@ impl Default for TileManager {
     }
 }
 
-use vox_data::vxm::{VxmFile, VxmError};
+use vox_data::vxm::{VxmError, VxmFile};
 
 pub struct AsyncAssetLoader;
 
 impl AsyncAssetLoader {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     pub async fn load_from_bytes(&self, bytes: &[u8]) -> Result<VxmFile, VxmError> {
         let bytes = bytes.to_vec();
@@ -96,8 +101,8 @@ impl Default for AsyncAssetLoader {
 // Spectral codec integration — splat upload path
 // ---------------------------------------------------------------------------
 
-use vox_data::spectral_codec::SpectralCodec;
 use vox_core::types::GaussianSplat;
+use vox_data::spectral_codec::SpectralCodec;
 
 /// Splat upload path: applies spectral codec (encode → decode) to each splat's
 /// spectral bands during upload, providing neural compression with < 0.15 per-band error.
@@ -116,9 +121,8 @@ impl SplatUploadPath {
     /// This acts as a compression step — 16 bands → 4 latent → 16 bands.
     pub fn process_splat(&self, splat: &GaussianSplat) -> GaussianSplat {
         // Decode f16 stored-as-u16 spectral values to f32
-        let spectral_f32: [f32; 16] = std::array::from_fn(|b| {
-            half::f16::from_bits(splat.spectral()[b]).to_f32()
-        });
+        let spectral_f32: [f32; 16] =
+            std::array::from_fn(|b| half::f16::from_bits(splat.spectral()[b]).to_f32());
 
         // Encode to 4-element latent, then decode back to 16 bands
         let latent = self.codec.encode(&spectral_f32);
@@ -153,7 +157,11 @@ mod tests {
     fn tile_manager_returns_newly_active_tiles_on_first_update() {
         let mut tm = TileManager::with_radius(1);
         let newly = tm.update_camera(TileCoord { x: 0, z: 0 });
-        assert_eq!(newly.len(), 9, "first update should activate 9 tiles (3x3 grid)");
+        assert_eq!(
+            newly.len(),
+            9,
+            "first update should activate 9 tiles (3x3 grid)"
+        );
     }
 
     #[test]
@@ -161,7 +169,10 @@ mod tests {
         let mut tm = TileManager::with_radius(1);
         tm.update_camera(TileCoord { x: 0, z: 0 });
         let newly = tm.update_camera(TileCoord { x: 0, z: 0 });
-        assert!(newly.is_empty(), "second call at same position should yield no new tiles");
+        assert!(
+            newly.is_empty(),
+            "second call at same position should yield no new tiles"
+        );
     }
 
     #[test]
@@ -208,7 +219,12 @@ mod tests {
             let orig = half::f16::from_bits(splat.spectral()[b]).to_f32();
             let proc = half::f16::from_bits(processed.spectral()[b]).to_f32();
             let err = (proc - orig).abs();
-            assert!(err < 0.15, "band {} upload codec error {:.4} exceeds tolerance", b, err);
+            assert!(
+                err < 0.15,
+                "band {} upload codec error {:.4} exceeds tolerance",
+                b,
+                err
+            );
         }
     }
 }

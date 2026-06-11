@@ -48,7 +48,7 @@ use vox_core::spectral::{Illuminant, SpectralBands};
 use vox_core::types::GaussianSplat;
 
 use spectra_gaussian_render::renderer::{
-    project_gaussian, Gaussian3D, GaussianCamera, ALPHA_THRESHOLD, TRANSMITTANCE_THRESHOLD,
+    ALPHA_THRESHOLD, Gaussian3D, GaussianCamera, TRANSMITTANCE_THRESHOLD, project_gaussian,
 };
 
 use crate::gpu::software_rasteriser::build_gaussian_camera;
@@ -215,11 +215,7 @@ fn clip_triangle_near(tri: [[f32; 3]; 3], near: f32) -> Vec<[f32; 3]> {
     let intersect = |a: &[f32; 3], b: &[f32; 3]| -> [f32; 3] {
         // Parametric crossing of the near plane along a->b in cam_z.
         let t = (near - a[2]) / (b[2] - a[2]);
-        [
-            a[0] + t * (b[0] - a[0]),
-            a[1] + t * (b[1] - a[1]),
-            near,
-        ]
+        [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), near]
     };
     let mut out: Vec<[f32; 3]> = Vec::with_capacity(4);
     for i in 0..3 {
@@ -681,13 +677,7 @@ mod tests {
     }
 
     /// Sum of all band energy in a screen region.
-    fn region_band_sums(
-        fb: &SpectralFramebuffer,
-        x0: u32,
-        y0: u32,
-        x1: u32,
-        y1: u32,
-    ) -> [f32; 16] {
+    fn region_band_sums(fb: &SpectralFramebuffer, x0: u32, y0: u32, x1: u32, y1: u32) -> [f32; 16] {
         let mut sums = [0.0f32; 16];
         for y in y0..y1 {
             for x in x0..x1 {
@@ -840,7 +830,10 @@ mod tests {
             right > 5 * left.max(1),
             "splat should be visible mostly on the uncovered right half: left={left} right={right}"
         );
-        assert!(right > 20, "uncovered half should have many splat pixels: {right}");
+        assert!(
+            right > 20,
+            "uncovered half should have many splat pixels: {right}"
+        );
     }
 
     /// Depth correctness: at a pixel where both a near mesh and a farther splat
@@ -916,8 +909,16 @@ mod tests {
 
         // Front: both red (band 11, from uncovered mesh edge + splat-over) and
         // blue (band 3) present.
-        assert!(f[11] > 0.5, "mesh red band must be present (front): {}", f[11]);
-        assert!(f[3] > 1.0, "splat blue band must be present (front): {}", f[3]);
+        assert!(
+            f[11] > 0.5,
+            "mesh red band must be present (front): {}",
+            f[11]
+        );
+        assert!(
+            f[3] > 1.0,
+            "splat blue band must be present (front): {}",
+            f[3]
+        );
         // Behind: the splat is occluded by the wall over the wall area, so blue
         // is strictly smaller than when the splat is in front.
         assert!(
@@ -940,11 +941,7 @@ mod tests {
         let il = illum();
 
         let hostile = HybridMesh {
-            positions: vec![
-                [0.0, 0.0, 0.0],
-                [f32::NAN, 1.0, 0.0],
-                [1.0, 0.0, 0.0],
-            ],
+            positions: vec![[0.0, 0.0, 0.0], [f32::NAN, 1.0, 0.0], [1.0, 0.0, 0.0]],
             // First triangle references index 99 (OOB); second has a NaN vertex.
             indices: vec![0, 1, 99, 0, 1, 2],
             reflectance: single_band_f32(11, 1.0),
@@ -970,7 +967,11 @@ mod tests {
         assert_eq!(stats.skipped_nonfinite, 1, "one NaN triangle expected");
         // The splat still renders fine — frame is not poisoned.
         let sums = region_band_sums(&fb, 24, 24, 40, 40);
-        assert!(sums[3] > 0.5, "splat should still render: band3={}", sums[3]);
+        assert!(
+            sums[3] > 0.5,
+            "splat should still render: band3={}",
+            sums[3]
+        );
     }
 
     /// End-to-end proof: a procedural cube above a splat ground carpet. Render,
@@ -1017,7 +1018,10 @@ mod tests {
             &mut fb,
         );
         assert_eq!(stats.warnings(), 0, "clean cube scene must not warn");
-        assert!(stats.triangles_drawn >= 6, "cube faces should draw: {stats:?}");
+        assert!(
+            stats.triangles_drawn >= 6,
+            "cube faces should draw: {stats:?}"
+        );
 
         // Count lit pixels and which signature dominates.
         let mut lit = 0usize;
@@ -1039,8 +1043,14 @@ mod tests {
         }
         eprintln!("cube_over_carpet: lit={lit} red(cube)={red_px} blue(carpet)={blue_px}");
         assert!(lit > 200, "expected many lit pixels, got {lit}");
-        assert!(red_px > 30, "cube (red) signature must be present: {red_px}");
-        assert!(blue_px > 30, "carpet (blue) signature must be present: {blue_px}");
+        assert!(
+            red_px > 30,
+            "cube (red) signature must be present: {red_px}"
+        );
+        assert!(
+            blue_px > 30,
+            "carpet (blue) signature must be present: {blue_px}"
+        );
     }
 
     /// Build an axis-aligned cube of half-extent `h` centred at `c` with a single
@@ -1110,7 +1120,10 @@ mod tests {
         // never over empty background the big splat also overlaps).
         let mut fb_m = SpectralFramebuffer::new(W, H);
         render_hybrid(
-            &HybridScene { meshes: vec![tri.clone()], splats: &[] },
+            &HybridScene {
+                meshes: vec![tri.clone()],
+                splats: &[],
+            },
             &cam,
             &il,
             &mut fb_m,
@@ -1229,7 +1242,12 @@ mod tests {
                 Vec3::new(0.0, 0.0, -10.0),
                 Vec3::Y,
             ),
-            proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, W as f32 / H as f32, 0.1, 500.0),
+            proj: Mat4::perspective_rh(
+                std::f32::consts::FRAC_PI_4,
+                W as f32 / H as f32,
+                0.1,
+                500.0,
+            ),
         };
         let il = illum();
 
@@ -1309,16 +1327,16 @@ mod tests {
     fn clip_polygon_far_trims_past_far_vertex_instead_of_dropping() {
         let far = 100.0f32;
         // Triangle: two verts at cam_z=50 (inside), one at cam_z=150 (past far).
-        let poly = [
-            [-10.0, 0.0, 50.0],
-            [10.0, 0.0, 50.0],
-            [0.0, 0.0, 150.0],
-        ];
+        let poly = [[-10.0, 0.0, 50.0], [10.0, 0.0, 50.0], [0.0, 0.0, 150.0]];
         let out = clip_polygon_far(&poly, far);
 
         // Old behaviour would discard the whole polygon downstream; the clip must
         // instead yield a quad (4 verts): the 2 inside verts + 2 boundary crossings.
-        assert_eq!(out.len(), 4, "far clip must produce a 4-vertex quad, got {out:?}");
+        assert_eq!(
+            out.len(),
+            4,
+            "far clip must produce a 4-vertex quad, got {out:?}"
+        );
 
         // Every output vertex must satisfy cam_z <= far (with the crossings sitting
         // EXACTLY on the plane at cam_z == 100).
@@ -1329,7 +1347,10 @@ mod tests {
                 on_plane += 1;
             }
         }
-        assert_eq!(on_plane, 2, "exactly two new vertices must lie on the far plane");
+        assert_eq!(
+            on_plane, 2,
+            "exactly two new vertices must lie on the far plane"
+        );
 
         // The crossing from [10,0,50]->[0,0,150] hits far at t=(100-50)/(150-50)=0.5,
         // i.e. x = 10 + 0.5*(0-10) = 5.0, and the other at x = -5.0.

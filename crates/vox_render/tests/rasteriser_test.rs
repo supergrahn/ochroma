@@ -1,11 +1,17 @@
-use vox_core::types::GaussianSplat;
+use glam::{Mat4, Vec3};
 use vox_core::spectral::Illuminant;
+use vox_core::types::GaussianSplat;
+use vox_render::gpu::software_rasteriser::{Framebuffer, SoftwareRasteriser};
 use vox_render::spectral::RenderCamera;
-use vox_render::gpu::software_rasteriser::{SoftwareRasteriser, Framebuffer};
-use glam::{Vec3, Mat4};
 
 fn make_test_splat(pos: [f32; 3]) -> GaussianSplat {
-    GaussianSplat::volume(pos, [0.5, 0.5, 0.5], glam::Quat::IDENTITY, 255, [15360u16; 16])
+    GaussianSplat::volume(
+        pos,
+        [0.5, 0.5, 0.5],
+        glam::Quat::IDENTITY,
+        255,
+        [15360u16; 16],
+    )
 }
 
 #[test]
@@ -41,9 +47,15 @@ fn two_splats_at_different_positions_both_render() {
         proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 100.0),
     };
     let fb = rasteriser.render(&splats, &camera, &Illuminant::d65(), None);
-    let left_has_colour = fb.pixels.iter().enumerate()
+    let left_has_colour = fb
+        .pixels
+        .iter()
+        .enumerate()
         .any(|(i, p)| (i % 128) < 64 && (p[0] > 0 || p[1] > 0 || p[2] > 0));
-    let right_has_colour = fb.pixels.iter().enumerate()
+    let right_has_colour = fb
+        .pixels
+        .iter()
+        .enumerate()
         .any(|(i, p)| (i % 128) >= 64 && (p[0] > 0 || p[1] > 0 || p[2] > 0));
     assert!(left_has_colour, "Left splat should produce pixels");
     assert!(right_has_colour, "Right splat should produce pixels");

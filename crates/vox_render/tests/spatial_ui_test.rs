@@ -11,7 +11,12 @@ fn ray_hits_panel_directly() {
 
 #[test]
 fn ray_misses_panel() {
-    let panel = SpatialPanel::new(1, Vec3::new(0.0, 2.0, -5.0), [1.0, 1.0], PanelContent::Chart);
+    let panel = SpatialPanel::new(
+        1,
+        Vec3::new(0.0, 2.0, -5.0),
+        [1.0, 1.0],
+        PanelContent::Chart,
+    );
     // Ray going away from the panel.
     let t = panel.ray_intersect(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0));
     assert!(t.is_none());

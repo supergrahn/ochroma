@@ -2,7 +2,7 @@ use glam::{Mat4, Quat, Vec3};
 
 pub mod blend_tree;
 pub use blend_tree::{
-    apply_pose, AnimClip, BlendNode, BlendTree, JointPose, Pose, ANIM_JOINT_COUNT,
+    ANIM_JOINT_COUNT, AnimClip, BlendNode, BlendTree, JointPose, Pose, apply_pose,
 };
 
 /// A single bone in a skeleton hierarchy.
@@ -89,7 +89,10 @@ impl AnimationClip {
     }
 
     pub fn add_keyframe(&mut self, bone_id: u8, keyframe: Keyframe) {
-        self.bone_keyframes.entry(bone_id).or_default().push(keyframe);
+        self.bone_keyframes
+            .entry(bone_id)
+            .or_default()
+            .push(keyframe);
     }
 
     /// Sample the transform for a bone at a given time using linear interpolation.
@@ -100,7 +103,11 @@ impl AnimationClip {
         }
         if keyframes.len() == 1 {
             let kf = &keyframes[0];
-            return Some(Mat4::from_scale_rotation_translation(kf.scale, kf.rotation, kf.position));
+            return Some(Mat4::from_scale_rotation_translation(
+                kf.scale,
+                kf.rotation,
+                kf.position,
+            ));
         }
 
         // Find the two keyframes surrounding `time`.
@@ -229,18 +236,19 @@ impl AnimationPlayer {
 
         // Blend with target if active.
         if let Some(ref target_state) = self.blend_target
-            && let Some(target_clip) = self.clips.get(target_state.clip_index) {
-                for &bone_id in target_clip.bone_keyframes.keys() {
-                    if let Some(target_m) = target_clip.sample(bone_id, target_state.time) {
-                        let blended = if let Some(&primary_m) = pose.get(&bone_id) {
-                            lerp_mat4(primary_m, target_m, self.blend_factor)
-                        } else {
-                            target_m
-                        };
-                        pose.insert(bone_id, blended);
-                    }
+            && let Some(target_clip) = self.clips.get(target_state.clip_index)
+        {
+            for &bone_id in target_clip.bone_keyframes.keys() {
+                if let Some(target_m) = target_clip.sample(bone_id, target_state.time) {
+                    let blended = if let Some(&primary_m) = pose.get(&bone_id) {
+                        lerp_mat4(primary_m, target_m, self.blend_factor)
+                    } else {
+                        target_m
+                    };
+                    pose.insert(bone_id, blended);
                 }
             }
+        }
 
         pose
     }

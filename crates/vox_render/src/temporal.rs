@@ -78,12 +78,10 @@ impl TemporalAccumulator {
                     let alpha = self.blend_alpha;
                     let prev = self.history[prev_i];
                     for b in 0..16 {
-                        self.history[i][b] =
-                            prev[b] * (1.0 - alpha) + current_spectral[b] * alpha;
+                        self.history[i][b] = prev[b] * (1.0 - alpha) + current_spectral[b] * alpha;
                     }
                     self.history_depth[i] = current_depth;
-                    self.frame_count[i] =
-                        (self.frame_count[prev_i] + 1).min(self.max_accumulation);
+                    self.frame_count[i] = (self.frame_count[prev_i] + 1).min(self.max_accumulation);
                 }
             }
         }
@@ -150,7 +148,10 @@ mod tests {
 
         ta.accumulate(&fb);
         let result = ta.get(0, 0);
-        assert_eq!(result, [0.5; 16], "first frame should equal input (no history)");
+        assert_eq!(
+            result, [0.5; 16],
+            "first frame should equal input (no history)"
+        );
     }
 
     #[test]

@@ -386,9 +386,7 @@ impl RigidStateMachine {
             for transition in &state.transitions {
                 let should_fire = match &transition.condition {
                     TransitionCondition::AfterTime(t) => self.time >= *t,
-                    TransitionCondition::OnTrigger(event) => {
-                        self.pending_triggers.contains(event)
-                    }
+                    TransitionCondition::OnTrigger(event) => self.pending_triggers.contains(event),
                     TransitionCondition::OnBool(name, value) => {
                         self.bool_params.get(name).copied().unwrap_or(false) == *value
                     }

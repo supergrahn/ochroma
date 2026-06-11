@@ -122,8 +122,7 @@ impl SpectralPhysics {
         let resonance_hz =
             SpectralResonanceProfile::from_spectral(&Self::decode(spectral)).resonance_hz;
 
-        let planes =
-            SpectralResonanceFracture::compute_planes(impact_pos, impulse_ns, spectral);
+        let planes = SpectralResonanceFracture::compute_planes(impact_pos, impulse_ns, spectral);
         let fractured = !planes.is_empty();
 
         // Crack surfaces: the primary planes, plus brittleness-driven secondary
@@ -207,8 +206,8 @@ mod tests {
     /// low total energy. Characteristic of a transparent crystalline solid.
     fn glass_spectral() -> [u16; 16] {
         [
-            60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000,
-            100, 60000, 100, 60000, 100,
+            60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100,
+            60000, 100,
         ]
     }
 
@@ -315,8 +314,7 @@ mod tests {
         let band0_before = splat.spectral_f32(0);
         assert!(band0_before > 0.1, "glass band 0 should start bright");
 
-        let result =
-            SpectralPhysics::apply_impact_to_splat(&mut splat, Vec3::ZERO, 200_000.0);
+        let result = SpectralPhysics::apply_impact_to_splat(&mut splat, Vec3::ZERO, 200_000.0);
         assert!(result.fractured, "hard hit on glass must fracture");
 
         let band0_after = splat.spectral_f32(0);
@@ -333,8 +331,7 @@ mod tests {
         let mut splat = glass_splat();
         let band0_before = splat.spectral_f32(0);
 
-        let result =
-            SpectralPhysics::apply_impact_to_splat(&mut splat, Vec3::ZERO, 0.00001);
+        let result = SpectralPhysics::apply_impact_to_splat(&mut splat, Vec3::ZERO, 0.00001);
         assert!(!result.fractured, "tiny impulse must not fracture");
 
         let band0_after = splat.spectral_f32(0);

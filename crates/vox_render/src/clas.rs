@@ -5,31 +5,41 @@ use vox_core::types::GaussianSplat;
 #[derive(Debug, Clone)]
 pub struct SplatCluster {
     pub id: u32,
-    pub splat_indices: Vec<u32>,    // indices into global splat array
+    pub splat_indices: Vec<u32>, // indices into global splat array
     pub aabb_min: Vec3,
     pub aabb_max: Vec3,
-    pub center: Vec3,               // centroid
+    pub center: Vec3, // centroid
     pub lod_level: u8,
-    pub total_opacity: f32,         // sum of opacities (for LOD culling)
+    pub total_opacity: f32, // sum of opacities (for LOD culling)
 }
 
 impl SplatCluster {
-    pub fn splat_count(&self) -> usize { self.splat_indices.len() }
+    pub fn splat_count(&self) -> usize {
+        self.splat_indices.len()
+    }
 
-    pub fn aabb_size(&self) -> Vec3 { self.aabb_max - self.aabb_min }
+    pub fn aabb_size(&self) -> Vec3 {
+        self.aabb_max - self.aabb_min
+    }
 
     /// Test if a point is inside the cluster's AABB.
     pub fn contains_point(&self, point: Vec3) -> bool {
-        point.x >= self.aabb_min.x && point.x <= self.aabb_max.x
-            && point.y >= self.aabb_min.y && point.y <= self.aabb_max.y
-            && point.z >= self.aabb_min.z && point.z <= self.aabb_max.z
+        point.x >= self.aabb_min.x
+            && point.x <= self.aabb_max.x
+            && point.y >= self.aabb_min.y
+            && point.y <= self.aabb_max.y
+            && point.z >= self.aabb_min.z
+            && point.z <= self.aabb_max.z
     }
 
     /// Test AABB-AABB intersection.
     pub fn intersects_aabb(&self, other_min: Vec3, other_max: Vec3) -> bool {
-        self.aabb_min.x <= other_max.x && self.aabb_max.x >= other_min.x
-            && self.aabb_min.y <= other_max.y && self.aabb_max.y >= other_min.y
-            && self.aabb_min.z <= other_max.z && self.aabb_max.z >= other_min.z
+        self.aabb_min.x <= other_max.x
+            && self.aabb_max.x >= other_min.x
+            && self.aabb_min.y <= other_max.y
+            && self.aabb_max.y >= other_min.y
+            && self.aabb_min.z <= other_max.z
+            && self.aabb_max.z >= other_min.z
     }
 
     /// Test ray-AABB intersection. Returns (hit, t_near, t_far).
@@ -51,7 +61,9 @@ impl SplatCluster {
 /// Build clusters from a splat array using spatial grid partitioning.
 /// target_size: desired number of splats per cluster (64-256).
 pub fn build_clusters(splats: &[GaussianSplat], target_size: usize) -> Vec<SplatCluster> {
-    if splats.is_empty() { return Vec::new(); }
+    if splats.is_empty() {
+        return Vec::new();
+    }
 
     // Compute scene AABB
     let mut scene_min = Vec3::splat(f32::MAX);
@@ -71,7 +83,11 @@ pub fn build_clusters(splats: &[GaussianSplat], target_size: usize) -> Vec<Splat
 
     if non_degenerate == 0 {
         // All splats at same point — one cluster
-        return vec![make_cluster(0, splats, &(0..splats.len() as u32).collect::<Vec<_>>())];
+        return vec![make_cluster(
+            0,
+            splats,
+            &(0..splats.len() as u32).collect::<Vec<_>>(),
+        )];
     }
 
     // Grid cell size: target cluster_count = splats.len() / target_size
@@ -81,15 +97,29 @@ pub fn build_clusters(splats: &[GaussianSplat], target_size: usize) -> Vec<Splat
         1 => cluster_count.ceil() as usize,
         2 => cluster_count.sqrt().ceil() as usize,
         _ => cluster_count.cbrt().ceil() as usize,
-    }.max(1);
+    }
+    .max(1);
     let cell_size = Vec3::new(
-        if scene_size.x > 1e-6 { scene_size.x / cells_per_axis as f32 } else { 1.0 },
-        if scene_size.y > 1e-6 { scene_size.y / cells_per_axis as f32 } else { 1.0 },
-        if scene_size.z > 1e-6 { scene_size.z / cells_per_axis as f32 } else { 1.0 },
+        if scene_size.x > 1e-6 {
+            scene_size.x / cells_per_axis as f32
+        } else {
+            1.0
+        },
+        if scene_size.y > 1e-6 {
+            scene_size.y / cells_per_axis as f32
+        } else {
+            1.0
+        },
+        if scene_size.z > 1e-6 {
+            scene_size.z / cells_per_axis as f32
+        } else {
+            1.0
+        },
     );
 
     // Assign splats to grid cells
-    let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<u32>> = std::collections::HashMap::new();
+    let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<u32>> =
+        std::collections::HashMap::new();
 
     for (i, s) in splats.iter().enumerate() {
         let p = Vec3::from(s.position()) - scene_min;
@@ -141,7 +171,11 @@ fn make_cluster(id: u32, splats: &[GaussianSplat], indices: &[u32]) -> SplatClus
         total_opacity += s.opacity() as f32 / 255.0;
     }
 
-    let center = if indices.is_empty() { Vec3::ZERO } else { center_sum / indices.len() as f32 };
+    let center = if indices.is_empty() {
+        Vec3::ZERO
+    } else {
+        center_sum / indices.len() as f32
+    };
 
     SplatCluster {
         id,
@@ -157,14 +191,27 @@ fn make_cluster(id: u32, splats: &[GaussianSplat], indices: &[u32]) -> SplatClus
 /// BVH node over clusters.
 #[derive(Debug, Clone)]
 pub enum ClusterBVHNode {
-    Leaf { cluster_id: u32 },
-    Internal { aabb_min: Vec3, aabb_max: Vec3, left: Box<ClusterBVHNode>, right: Box<ClusterBVHNode> },
+    Leaf {
+        cluster_id: u32,
+    },
+    Internal {
+        aabb_min: Vec3,
+        aabb_max: Vec3,
+        left: Box<ClusterBVHNode>,
+        right: Box<ClusterBVHNode>,
+    },
 }
 
 /// Build a BVH over clusters using median split.
 pub fn build_cluster_bvh(clusters: &[SplatCluster]) -> Option<ClusterBVHNode> {
-    if clusters.is_empty() { return None; }
-    if clusters.len() == 1 { return Some(ClusterBVHNode::Leaf { cluster_id: clusters[0].id }); }
+    if clusters.is_empty() {
+        return None;
+    }
+    if clusters.len() == 1 {
+        return Some(ClusterBVHNode::Leaf {
+            cluster_id: clusters[0].id,
+        });
+    }
 
     // Find overall AABB
     let mut aabb_min = Vec3::splat(f32::MAX);
@@ -176,13 +223,26 @@ pub fn build_cluster_bvh(clusters: &[SplatCluster]) -> Option<ClusterBVHNode> {
 
     // Split along longest axis
     let size = aabb_max - aabb_min;
-    let axis = if size.x >= size.y && size.x >= size.z { 0 }
-        else if size.y >= size.z { 1 } else { 2 };
+    let axis = if size.x >= size.y && size.x >= size.z {
+        0
+    } else if size.y >= size.z {
+        1
+    } else {
+        2
+    };
 
     let mut sorted: Vec<&SplatCluster> = clusters.iter().collect();
     sorted.sort_by(|a, b| {
-        let ca = match axis { 0 => a.center.x, 1 => a.center.y, _ => a.center.z };
-        let cb = match axis { 0 => b.center.x, 1 => b.center.y, _ => b.center.z };
+        let ca = match axis {
+            0 => a.center.x,
+            1 => a.center.y,
+            _ => a.center.z,
+        };
+        let cb = match axis {
+            0 => b.center.x,
+            1 => b.center.y,
+            _ => b.center.z,
+        };
         ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal)
     });
 
@@ -195,7 +255,10 @@ pub fn build_cluster_bvh(clusters: &[SplatCluster]) -> Option<ClusterBVHNode> {
 
     match (left, right) {
         (Some(l), Some(r)) => Some(ClusterBVHNode::Internal {
-            aabb_min, aabb_max, left: Box::new(l), right: Box::new(r),
+            aabb_min,
+            aabb_max,
+            left: Box::new(l),
+            right: Box::new(r),
         }),
         (Some(n), None) | (None, Some(n)) => Some(n),
         (None, None) => None,
@@ -230,7 +293,11 @@ pub fn compute_stats(clusters: &[SplatCluster], bvh: &Option<ClusterBVHNode>) ->
     ClusterStats {
         total_splats: total,
         cluster_count: clusters.len(),
-        avg_splats_per_cluster: if clusters.is_empty() { 0.0 } else { total as f32 / clusters.len() as f32 },
+        avg_splats_per_cluster: if clusters.is_empty() {
+            0.0
+        } else {
+            total as f32 / clusters.len() as f32
+        },
         min_splats_per_cluster: min,
         max_splats_per_cluster: max,
         bvh_depth: bvh.as_ref().map(bvh_depth).unwrap_or(0),

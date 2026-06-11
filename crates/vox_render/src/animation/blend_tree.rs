@@ -54,7 +54,11 @@ impl JointPose {
     };
 
     pub fn new(translation: Vec3, rotation: Quat, scale: f32) -> Self {
-        Self { translation, rotation, scale }
+        Self {
+            translation,
+            rotation,
+            scale,
+        }
     }
 
     /// Linear/spherical blend between two joint poses. Rotation uses shortest-arc
@@ -86,7 +90,9 @@ pub struct Pose {
 impl Pose {
     /// Rest pose with `count` identity joints.
     pub fn rest(count: usize) -> Self {
-        Self { joints: vec![JointPose::IDENTITY; count] }
+        Self {
+            joints: vec![JointPose::IDENTITY; count],
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -117,7 +123,8 @@ impl Pose {
             let add = &additive.joints[i];
             out.joints[i] = JointPose {
                 translation: base.translation + add.translation * weight,
-                rotation: (shortest_arc_slerp(Quat::IDENTITY, add.rotation, weight) * base.rotation)
+                rotation: (shortest_arc_slerp(Quat::IDENTITY, add.rotation, weight)
+                    * base.rotation)
                     .normalize(),
                 scale: base.scale * (1.0 + (add.scale - 1.0) * weight),
             };
@@ -160,7 +167,12 @@ pub struct AnimClip {
 
 impl AnimClip {
     pub fn new(name: impl Into<String>, duration: f32, joint_count: usize) -> Self {
-        Self { name: name.into(), duration, joint_count, keyframes: Vec::new() }
+        Self {
+            name: name.into(),
+            duration,
+            joint_count,
+            keyframes: Vec::new(),
+        }
     }
 
     /// Push a keyframe. Caller is responsible for ascending `time`.
@@ -248,9 +260,17 @@ pub enum BlendNode {
     Clip(usize),
     /// 1D blend of two children by `params[param]` clamped to `[0, 1]`
     /// (0 → `low`, 1 → `high`).
-    Blend1D { param: usize, low: Box<BlendNode>, high: Box<BlendNode> },
+    Blend1D {
+        param: usize,
+        low: Box<BlendNode>,
+        high: Box<BlendNode>,
+    },
     /// Additive layer: `base` plus `additive`'s delta scaled by `params[param]`.
-    Additive { param: usize, base: Box<BlendNode>, additive: Box<BlendNode> },
+    Additive {
+        param: usize,
+        base: Box<BlendNode>,
+        additive: Box<BlendNode>,
+    },
 }
 
 /// A blend tree over a shared clip set. Deterministic: identical
@@ -264,7 +284,11 @@ pub struct BlendTree {
 
 impl BlendTree {
     pub fn new(clips: Vec<AnimClip>, root: BlendNode, joint_count: usize) -> Self {
-        Self { clips, root, joint_count }
+        Self {
+            clips,
+            root,
+            joint_count,
+        }
     }
 
     /// Sample the tree at `time` (seconds, per-clip looping) under `params`.
@@ -285,7 +309,11 @@ impl BlendTree {
                 let b = self.sample_node(high, time, params);
                 Pose::blend(&a, &b, t)
             }
-            BlendNode::Additive { param, base, additive } => {
+            BlendNode::Additive {
+                param,
+                base,
+                additive,
+            } => {
                 let w = params.get(*param).clamp(0.0, 1.0);
                 let base = self.sample_node(base, time, params);
                 let add = self.sample_node(additive, time, params);
@@ -334,7 +362,11 @@ pub fn apply_pose(
                 continue;
             }
             let jidx = skin.joint_indices[k] as usize;
-            let jpose = pose.joints.get(jidx).copied().unwrap_or(JointPose::IDENTITY);
+            let jpose = pose
+                .joints
+                .get(jidx)
+                .copied()
+                .unwrap_or(JointPose::IDENTITY);
 
             // Position contribution (full skinning matrix on the bind position).
             new_pos += w * jpose.to_matrix().transform_point3(bind);
@@ -541,8 +573,14 @@ mod tests {
 
     #[test]
     fn slerp_blend_is_45_degrees() {
-        let a = JointPose { rotation: Quat::IDENTITY, ..JointPose::IDENTITY };
-        let b = JointPose { rotation: rot_z(90.0), ..JointPose::IDENTITY };
+        let a = JointPose {
+            rotation: Quat::IDENTITY,
+            ..JointPose::IDENTITY
+        };
+        let b = JointPose {
+            rotation: rot_z(90.0),
+            ..JointPose::IDENTITY
+        };
         let mid = JointPose::blend(&a, &b, 0.5);
         let angle = quat_angle(mid.rotation);
         assert!((angle - 45.0).abs() < 0.5, "expected ~45deg, got {angle}");
@@ -558,7 +596,10 @@ mod tests {
             for j in 0..walk.joint_count {
                 let da = (a.joints[j].translation - b.joints[j].translation).length();
                 let dr = 1.0 - a.joints[j].rotation.dot(b.joints[j].rotation).abs();
-                assert!(da < 1e-5, "joint {j} translation loop mismatch at t={t}: {da}");
+                assert!(
+                    da < 1e-5,
+                    "joint {j} translation loop mismatch at t={t}: {da}"
+                );
                 assert!(dr < 1e-5, "joint {j} rotation loop mismatch at t={t}: {dr}");
             }
         }
@@ -593,7 +634,10 @@ mod tests {
         apply_pose(&pose, &skins, &mut splats, &[bind]);
         let p = Vec3::from(splats[0].position());
         let expected = Vec3::new(1.0, 0.0, 2.0);
-        assert!((p - expected).length() < 1e-5, "got {p:?}, expected {expected:?}");
+        assert!(
+            (p - expected).length() < 1e-5,
+            "got {p:?}, expected {expected:?}"
+        );
     }
 
     #[test]

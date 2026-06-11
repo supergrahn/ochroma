@@ -1,8 +1,8 @@
 //! Biome system — spectral material definitions for terrain regions.
 //! BiomeDef specifies what spectral Gaussian Splats look like in a given biome.
 
-use vox_core::types::GaussianSplat;
 use half::f16;
+use vox_core::types::GaussianSplat;
 
 /// Climate zone for biome classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,10 +30,21 @@ pub struct SpectralBiomeProfile {
 
 impl SpectralBiomeProfile {
     /// Apply this profile's spectral values to a splat, with optional variance.
-    pub fn apply_to_splat(&self, splat: &mut GaussianSplat, is_vegetation: bool, variation_seed: u32) {
-        let base = if is_vegetation { &self.vegetation_spectral } else { &self.ground_spectral };
+    pub fn apply_to_splat(
+        &self,
+        splat: &mut GaussianSplat,
+        is_vegetation: bool,
+        variation_seed: u32,
+    ) {
+        let base = if is_vegetation {
+            &self.vegetation_spectral
+        } else {
+            &self.ground_spectral
+        };
         // Deterministic per-splat variation using LCG hash
-        let hash = variation_seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        let hash = variation_seed
+            .wrapping_mul(1664525)
+            .wrapping_add(1013904223);
         let noise = (hash as f32 / u32::MAX as f32 - 0.5) * self.spectral_variance;
         for (b, &base_val) in base.iter().enumerate() {
             let val = (base_val + noise).clamp(0.0, 1.0);
@@ -112,7 +123,9 @@ pub struct BiomeClassifier {
 }
 
 impl BiomeClassifier {
-    pub fn new(biomes: Vec<BiomeDef>) -> Self { Self { biomes } }
+    pub fn new(biomes: Vec<BiomeDef>) -> Self {
+        Self { biomes }
+    }
 
     /// Classify a world position into a biome index.
     /// `temperature` in Celsius, `rainfall` in mm/year.

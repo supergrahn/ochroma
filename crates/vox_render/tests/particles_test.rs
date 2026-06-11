@@ -1,5 +1,5 @@
-use vox_render::particles::{ParticleSystem, ParticleEmitter};
 use glam::Vec3;
+use vox_render::particles::{ParticleEmitter, ParticleSystem};
 
 #[test]
 fn emitter_produces_particles() {
@@ -19,7 +19,9 @@ fn particles_die_after_lifetime() {
 
     // Remove emitter so no new ones spawn
     sys.emitters.clear();
-    for _ in 0..100 { sys.tick(0.1); } // 10 seconds
+    for _ in 0..100 {
+        sys.tick(0.1);
+    } // 10 seconds
     assert_eq!(sys.particle_count(), 0, "All particles should have expired");
 }
 
@@ -27,7 +29,9 @@ fn particles_die_after_lifetime() {
 fn max_particles_respected() {
     let mut sys = ParticleSystem::new(10);
     sys.add_emitter(ParticleEmitter::smoke(Vec3::ZERO));
-    for _ in 0..100 { sys.tick(0.1); }
+    for _ in 0..100 {
+        sys.tick(0.1);
+    }
     assert!(sys.particle_count() <= 10);
 }
 

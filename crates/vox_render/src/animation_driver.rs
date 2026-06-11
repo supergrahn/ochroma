@@ -3,11 +3,11 @@
 //! Bridges `vox_data::gltf_animation` (skeleton + evaluate + skin) into a single
 //! struct the renderer can call once per frame to get updated splat positions.
 
+use crate::gpu::blend_skinning_compute::BlendSkinningCompute;
+use crate::gpu::skinning_compute::{GpuJointTransform, SkinningCompute};
 use glam::Mat4;
 use vox_core::types::GaussianSplat;
-use vox_data::gltf_animation::{evaluate_animation, skin_splats, GltfAnimation, GltfSkeleton};
-use crate::gpu::skinning_compute::{GpuJointTransform, SkinningCompute};
-use crate::gpu::blend_skinning_compute::BlendSkinningCompute;
+use vox_data::gltf_animation::{GltfAnimation, GltfSkeleton, evaluate_animation, skin_splats};
 use wgpu;
 
 /// Drives animation on a set of splats each frame.
@@ -45,11 +45,18 @@ pub struct AnimStateMachine {
 
 impl AnimStateMachine {
     pub fn new(start: usize) -> Self {
-        Self { current: start, next: None, blend: 0.0, transition_duration: 0.2 }
+        Self {
+            current: start,
+            next: None,
+            blend: 0.0,
+            transition_duration: 0.2,
+        }
     }
 
     pub fn transition_to(&mut self, target: usize) {
-        if self.current == target { return; }
+        if self.current == target {
+            return;
+        }
         self.next = Some(target);
         self.blend = 0.0;
     }
@@ -201,12 +208,19 @@ impl AnimationDriver {
     /// Advance animation time and dispatch GPU skinning compute pass.
     /// Returns `true` if the dispatch was issued, `false` if no GPU skinning is configured
     /// or no animations are loaded.
-    pub fn tick_gpu(&mut self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, dt: f32) -> bool {
+    pub fn tick_gpu(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        dt: f32,
+    ) -> bool {
         let gpu = match &self.gpu_skinning {
             Some(g) => g,
             None => return false,
         };
-        if self.animations.is_empty() { return false; }
+        if self.animations.is_empty() {
+            return false;
+        }
 
         self.time += dt * self.speed;
         let anim = &self.animations[self.current_animation];
@@ -215,15 +229,21 @@ impl AnimationDriver {
         }
 
         let transforms = evaluate_animation(&self.skeleton, anim, self.time);
-        let inverse_binds: Vec<glam::Mat4> = self.skeleton.joints.iter()
+        let inverse_binds: Vec<glam::Mat4> = self
+            .skeleton
+            .joints
+            .iter()
             .map(|j| j.inverse_bind_matrix)
             .collect();
 
-        let joint_transforms: Vec<GpuJointTransform> = transforms.iter()
+        let joint_transforms: Vec<GpuJointTransform> = transforms
+            .iter()
             .zip(inverse_binds.iter())
             .map(|(world_t, inv_bind)| {
                 let skin = *world_t * *inv_bind;
-                GpuJointTransform { skin_matrix: skin.to_cols_array_2d() }
+                GpuJointTransform {
+                    skin_matrix: skin.to_cols_array_2d(),
+                }
             })
             .collect();
 
@@ -245,7 +265,9 @@ impl AnimationDriver {
             Some(g) => g,
             None => return false,
         };
-        if self.animations.is_empty() { return false; }
+        if self.animations.is_empty() {
+            return false;
+        }
 
         self.time += dt * self.speed;
 
@@ -262,12 +284,16 @@ impl AnimationDriver {
             self.time
         };
 
-        let inv_binds: Vec<glam::Mat4> = self.skeleton.joints.iter()
+        let inv_binds: Vec<glam::Mat4> = self
+            .skeleton
+            .joints
+            .iter()
             .map(|j| j.inverse_bind_matrix)
             .collect();
 
         let cur_transforms = evaluate_animation(&self.skeleton, cur_anim, cur_time);
-        let pose0: Vec<GpuJointTransform> = cur_transforms.iter()
+        let pose0: Vec<GpuJointTransform> = cur_transforms
+            .iter()
             .zip(inv_binds.iter())
             .map(|(t, inv)| GpuJointTransform {
                 skin_matrix: (*t * *inv).to_cols_array_2d(),
@@ -275,7 +301,8 @@ impl AnimationDriver {
             .collect();
 
         let next_transforms = evaluate_animation(&self.skeleton, next_anim, cur_time);
-        let pose1: Vec<GpuJointTransform> = next_transforms.iter()
+        let pose1: Vec<GpuJointTransform> = next_transforms
+            .iter()
             .zip(inv_binds.iter())
             .map(|(t, inv)| GpuJointTransform {
                 skin_matrix: (*t * *inv).to_cols_array_2d(),
@@ -385,13 +412,7 @@ mod tests {
         let skel = build_synthetic_skeleton(&["root", "tip"]);
         let mut driver = AnimationDriver::new(skel, vec![]);
 
-        let clip_a = build_synthetic_animation(
-            "rest",
-            0,
-            1.0,
-            Quat::IDENTITY,
-            Quat::IDENTITY,
-        );
+        let clip_a = build_synthetic_animation("rest", 0, 1.0, Quat::IDENTITY, Quat::IDENTITY);
         let clip_b = build_synthetic_animation(
             "rot90",
             0,
@@ -421,12 +442,24 @@ mod tests {
 
         // Endpoints are 0° and +90°.
         assert!(ang_a.abs() < 1e-3, "ang_a should be ~0, got {ang_a}");
-        assert!((ang_b - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "ang_b should be ~90deg, got {ang_b}");
+        assert!(
+            (ang_b - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "ang_b should be ~90deg, got {ang_b}"
+        );
         // Slerp midpoint must be ~+45° — strictly between, differing from BOTH ends.
         let quarter = std::f32::consts::FRAC_PI_4;
-        assert!((ang_mid - quarter).abs() < 1e-3, "midpoint angle should be ~45deg, got {ang_mid}");
-        assert!((ang_mid - ang_a).abs() > 1e-2, "mid must differ from endpoint A");
-        assert!((ang_mid - ang_b).abs() > 1e-2, "mid must differ from endpoint B");
+        assert!(
+            (ang_mid - quarter).abs() < 1e-3,
+            "midpoint angle should be ~45deg, got {ang_mid}"
+        );
+        assert!(
+            (ang_mid - ang_a).abs() > 1e-2,
+            "mid must differ from endpoint A"
+        );
+        assert!(
+            (ang_mid - ang_b).abs() > 1e-2,
+            "mid must differ from endpoint B"
+        );
 
         // And the translation of the tip joint (rotated by root) must also be a
         // real blend: tip lies at root-relative (0,1,0). At 0° its world is
@@ -440,11 +473,23 @@ mod tests {
         let (bx, by) = tip_xy(&pose_b[1]);
         let (mx, my) = tip_xy(&mid[1]);
         // Endpoints: A=(0,1), B=(-1,0).
-        assert!((ax - 0.0).abs() < 1e-3 && (ay - 1.0).abs() < 1e-3, "tip A=({ax},{ay})");
-        assert!((bx + 1.0).abs() < 1e-3 && by.abs() < 1e-3, "tip B=({bx},{by})");
+        assert!(
+            (ax - 0.0).abs() < 1e-3 && (ay - 1.0).abs() < 1e-3,
+            "tip A=({ax},{ay})"
+        );
+        assert!(
+            (bx + 1.0).abs() < 1e-3 && by.abs() < 1e-3,
+            "tip B=({bx},{by})"
+        );
         // Midpoint (-sin45, cos45) ≈ (-0.707, 0.707) — strictly between both.
-        assert!(mx < ax - 1e-2 && mx > bx + 1e-2, "mid x must lie strictly between: a={ax} m={mx} b={bx}");
-        assert!(my < ay - 1e-2 && my > by + 1e-2, "mid y must lie strictly between: a={ay} m={my} b={by}");
+        assert!(
+            mx < ax - 1e-2 && mx > bx + 1e-2,
+            "mid x must lie strictly between: a={ax} m={mx} b={bx}"
+        );
+        assert!(
+            my < ay - 1e-2 && my > by + 1e-2,
+            "mid y must lie strictly between: a={ay} m={my} b={by}"
+        );
     }
 
     #[test]

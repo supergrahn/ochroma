@@ -19,7 +19,10 @@ fn assign_splats_to_correct_tiles() {
 
     // The center tile should have the splat
     let _center_tile = &tiles[tiles.len() / 2];
-    assert!(!tiles.iter().all(|t| t.splat_indices.is_empty()), "Some tile should have the splat");
+    assert!(
+        !tiles.iter().all(|t| t.splat_indices.is_empty()),
+        "Some tile should have the splat"
+    );
     assert_eq!(dispatch.last_frame_stats.splats_rendered, 1);
 }
 
@@ -47,7 +50,11 @@ fn large_radius_splat_spans_multiple_tiles() {
     dispatch.assign_splats_to_tiles(&mut tiles, &positions);
 
     let tiles_with_splat = tiles.iter().filter(|t| !t.splat_indices.is_empty()).count();
-    assert!(tiles_with_splat > 4, "Large splat should span multiple tiles: {}", tiles_with_splat);
+    assert!(
+        tiles_with_splat > 4,
+        "Large splat should span multiple tiles: {}",
+        tiles_with_splat
+    );
 }
 
 #[test]
@@ -62,5 +69,8 @@ fn stats_track_correctly() {
 
     assert_eq!(dispatch.last_frame_stats.total_splats_in_scene, 50);
     assert!(dispatch.last_frame_stats.splats_rendered > 0);
-    assert_eq!(dispatch.last_frame_stats.tiles_processed, tiles.len() as u32);
+    assert_eq!(
+        dispatch.last_frame_stats.tiles_processed,
+        tiles.len() as u32
+    );
 }

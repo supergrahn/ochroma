@@ -1,7 +1,7 @@
 //! Multi-viewport support: single, quad-split, horizontal, vertical layouts.
 
-use glam::{Vec3, Mat4};
 use crate::spectral::RenderCamera;
+use glam::{Mat4, Vec3};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewportType {
@@ -51,7 +51,12 @@ impl Viewport {
                         Vec3::Z,
                     ),
                     proj: Mat4::orthographic_rh(
-                        -half * aspect, half * aspect, -half, half, 0.1, 500.0,
+                        -half * aspect,
+                        half * aspect,
+                        -half,
+                        half,
+                        0.1,
+                        500.0,
                     ),
                 }
             }
@@ -65,7 +70,12 @@ impl Viewport {
                         Vec3::Y,
                     ),
                     proj: Mat4::orthographic_rh(
-                        -half * aspect, half * aspect, -half, half, 0.1, 500.0,
+                        -half * aspect,
+                        half * aspect,
+                        -half,
+                        half,
+                        0.1,
+                        500.0,
                     ),
                 }
             }
@@ -79,7 +89,12 @@ impl Viewport {
                         Vec3::Y,
                     ),
                     proj: Mat4::orthographic_rh(
-                        -half * aspect, half * aspect, -half, half, 0.1, 500.0,
+                        -half * aspect,
+                        half * aspect,
+                        -half,
+                        half,
+                        0.1,
+                        500.0,
                     ),
                 }
             }
@@ -141,8 +156,12 @@ impl ViewportLayout {
             LayoutMode::Single => {
                 self.viewports.push(Viewport {
                     viewport_type: ViewportType::Perspective,
-                    x: 0, y: 0, width: w, height: h,
-                    active: true, camera: cam,
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                    active: true,
+                    camera: cam,
                 });
             }
             LayoutMode::QuadSplit => {
@@ -150,49 +169,81 @@ impl ViewportLayout {
                 let hh = h / 2;
                 self.viewports.push(Viewport {
                     viewport_type: ViewportType::Perspective,
-                    x: 0, y: 0, width: hw, height: hh,
-                    active: true, camera: cam.clone(),
+                    x: 0,
+                    y: 0,
+                    width: hw,
+                    height: hh,
+                    active: true,
+                    camera: cam.clone(),
                 });
                 self.viewports.push(Viewport {
                     viewport_type: ViewportType::Top,
-                    x: hw, y: 0, width: w - hw, height: hh,
-                    active: false, camera: cam.clone(),
+                    x: hw,
+                    y: 0,
+                    width: w - hw,
+                    height: hh,
+                    active: false,
+                    camera: cam.clone(),
                 });
                 self.viewports.push(Viewport {
                     viewport_type: ViewportType::Front,
-                    x: 0, y: hh, width: hw, height: h - hh,
-                    active: false, camera: cam.clone(),
+                    x: 0,
+                    y: hh,
+                    width: hw,
+                    height: h - hh,
+                    active: false,
+                    camera: cam.clone(),
                 });
                 self.viewports.push(Viewport {
                     viewport_type: ViewportType::Right,
-                    x: hw, y: hh, width: w - hw, height: h - hh,
-                    active: false, camera: cam,
+                    x: hw,
+                    y: hh,
+                    width: w - hw,
+                    height: h - hh,
+                    active: false,
+                    camera: cam,
                 });
             }
             LayoutMode::HorizontalSplit => {
                 let hw = w / 2;
                 self.viewports.push(Viewport {
                     viewport_type: ViewportType::Perspective,
-                    x: 0, y: 0, width: hw, height: h,
-                    active: true, camera: cam.clone(),
+                    x: 0,
+                    y: 0,
+                    width: hw,
+                    height: h,
+                    active: true,
+                    camera: cam.clone(),
                 });
                 self.viewports.push(Viewport {
                     viewport_type: ViewportType::Top,
-                    x: hw, y: 0, width: w - hw, height: h,
-                    active: false, camera: cam,
+                    x: hw,
+                    y: 0,
+                    width: w - hw,
+                    height: h,
+                    active: false,
+                    camera: cam,
                 });
             }
             LayoutMode::VerticalSplit => {
                 let hh = h / 2;
                 self.viewports.push(Viewport {
                     viewport_type: ViewportType::Perspective,
-                    x: 0, y: 0, width: w, height: hh,
-                    active: true, camera: cam.clone(),
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: hh,
+                    active: true,
+                    camera: cam.clone(),
                 });
                 self.viewports.push(Viewport {
                     viewport_type: ViewportType::Front,
-                    x: 0, y: hh, width: w, height: h - hh,
-                    active: false, camera: cam,
+                    x: 0,
+                    y: hh,
+                    width: w,
+                    height: h - hh,
+                    active: false,
+                    camera: cam,
                 });
             }
         }
@@ -260,11 +311,21 @@ mod tests {
         for vp in &layout.viewports {
             let cam = vp.to_render_camera();
             // Matrices should not be NaN or zero
-            let view_cols = [cam.view.x_axis, cam.view.y_axis, cam.view.z_axis, cam.view.w_axis];
+            let view_cols = [
+                cam.view.x_axis,
+                cam.view.y_axis,
+                cam.view.z_axis,
+                cam.view.w_axis,
+            ];
             for col in &view_cols {
                 assert!(!col.x.is_nan() && !col.y.is_nan() && !col.z.is_nan() && !col.w.is_nan());
             }
-            let proj_cols = [cam.proj.x_axis, cam.proj.y_axis, cam.proj.z_axis, cam.proj.w_axis];
+            let proj_cols = [
+                cam.proj.x_axis,
+                cam.proj.y_axis,
+                cam.proj.z_axis,
+                cam.proj.w_axis,
+            ];
             for col in &proj_cols {
                 assert!(!col.x.is_nan() && !col.y.is_nan() && !col.z.is_nan() && !col.w.is_nan());
             }

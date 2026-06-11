@@ -285,10 +285,7 @@ fn state_machine_after_time_condition() {
     let mut sm = RigidStateMachine::new("intro");
 
     let mut intro_clip = RigidClip::new("intro", 2.0, false);
-    intro_clip.keyframes = vec![
-        RigidKeyframe::identity(0.0),
-        RigidKeyframe::identity(2.0),
-    ];
+    intro_clip.keyframes = vec![RigidKeyframe::identity(0.0), RigidKeyframe::identity(2.0)];
 
     let mut main_clip = RigidClip::new("main", 1.0, true);
     main_clip.keyframes = vec![RigidKeyframe::identity(0.0)];

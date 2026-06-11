@@ -20,10 +20,7 @@ fn camera_path_interpolation() {
     cam.add_keyframe(2.0, Vec3::new(10.0, 0.0, 0.0), Vec3::NEG_Z, 45.0);
     cam.playback_time = 1.0; // midpoint
     let (pos, _, fov) = cam.evaluate().unwrap();
-    assert!(
-        pos.x > 0.0 && pos.x < 10.0,
-        "Should interpolate position"
-    );
+    assert!(pos.x > 0.0 && pos.x < 10.0, "Should interpolate position");
     assert!(fov > 45.0 && fov < 60.0, "Should interpolate FOV");
 }
 

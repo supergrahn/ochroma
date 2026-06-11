@@ -161,7 +161,7 @@ impl DofPass {
         // For simplicity this stub binds the same buffer for both lo and hi
         // as a placeholder; real integration should supply split buffers.
         let pixel_count = (width * height) as u64;
-        let half_size   = pixel_count * std::mem::size_of::<[f32; 4]>() as u64;
+        let half_size = pixel_count * std::mem::size_of::<[f32; 4]>() as u64;
 
         let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
         // Depth is passed as a texture; we create a temporary storage buffer

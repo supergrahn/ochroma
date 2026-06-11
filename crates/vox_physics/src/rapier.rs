@@ -140,11 +140,7 @@ impl RapierPhysicsWorld {
     }
 
     /// Add a static sphere collider.
-    pub fn add_static_sphere(
-        &mut self,
-        position: [f32; 3],
-        radius: f32,
-    ) -> ColliderHandle {
+    pub fn add_static_sphere(&mut self, position: [f32; 3], radius: f32) -> ColliderHandle {
         let collider = ColliderBuilder::ball(radius)
             .translation(vector![position[0], position[1], position[2]])
             .build();
@@ -319,10 +315,18 @@ impl RapierPhysicsWorld {
         self.collider_set.len()
     }
 
-    pub fn rigid_body_set(&self) -> &RigidBodySet { &self.rigid_body_set }
-    pub fn rigid_body_set_mut(&mut self) -> &mut RigidBodySet { &mut self.rigid_body_set }
-    pub fn collider_set(&self) -> &ColliderSet { &self.collider_set }
-    pub fn query_pipeline(&self) -> &QueryPipeline { &self.query_pipeline }
+    pub fn rigid_body_set(&self) -> &RigidBodySet {
+        &self.rigid_body_set
+    }
+    pub fn rigid_body_set_mut(&mut self) -> &mut RigidBodySet {
+        &mut self.rigid_body_set
+    }
+    pub fn collider_set(&self) -> &ColliderSet {
+        &self.collider_set
+    }
+    pub fn query_pipeline(&self) -> &QueryPipeline {
+        &self.query_pipeline
+    }
 }
 
 impl Default for RapierPhysicsWorld {

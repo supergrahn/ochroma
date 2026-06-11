@@ -1,4 +1,4 @@
-use glam::{Vec3, Mat4};
+use glam::{Mat4, Vec3};
 use vox_render::frustum::Frustum;
 
 #[test]

@@ -1,8 +1,8 @@
 //! GI cache — stores baked spectral irradiance, applies it at render time.
 
 use crate::gi_baker::BakedGi;
-use vox_core::types::GaussianSplat;
 use half::f16;
+use vox_core::types::GaussianSplat;
 
 pub struct GiCache {
     gi: BakedGi,
@@ -18,9 +18,14 @@ impl GiCache {
     /// GI irradiance added into their spectral bands.
     /// Panics if `splats.len() != gi.irradiance.len()`.
     pub fn apply(&self, splats: &[GaussianSplat]) -> Vec<GaussianSplat> {
-        assert_eq!(splats.len(), self.gi.irradiance.len(),
-            "GiCache was baked for a different number of splats");
-        splats.iter().zip(self.gi.irradiance.iter())
+        assert_eq!(
+            splats.len(),
+            self.gi.irradiance.len(),
+            "GiCache was baked for a different number of splats"
+        );
+        splats
+            .iter()
+            .zip(self.gi.irradiance.iter())
             .map(|(s, irr)| {
                 let mut out = *s;
                 for (band, &irr_val) in irr.iter().enumerate() {
@@ -42,7 +47,13 @@ mod tests {
 
     fn make_splat(spectral_val: f32) -> GaussianSplat {
         let f16_val = half::f16::from_f32(spectral_val).to_bits();
-        GaussianSplat::volume([0.0, 0.0, 0.0], [0.1, 0.1, 0.1], glam::Quat::IDENTITY, 200, [f16_val; 16])
+        GaussianSplat::volume(
+            [0.0, 0.0, 0.0],
+            [0.1, 0.1, 0.1],
+            glam::Quat::IDENTITY,
+            200,
+            [f16_val; 16],
+        )
     }
 
     #[test]
@@ -66,7 +77,10 @@ mod tests {
         cache.blend = 0.0;
         let result = cache.apply(&[splat]);
         let band0 = half::f16::from_bits(result[0].spectral()[0]).to_f32();
-        assert!((band0 - 0.5).abs() < 0.02, "blend=0 should leave spectral unchanged");
+        assert!(
+            (band0 - 0.5).abs() < 0.02,
+            "blend=0 should leave spectral unchanged"
+        );
     }
 
     #[test]

@@ -63,7 +63,10 @@ impl GpuSorter {
             cache: None,
         });
 
-        Self { pipeline, bind_group_layout }
+        Self {
+            pipeline,
+            bind_group_layout,
+        }
     }
 
     /// Sort entries on the GPU. Returns sorted buffer.
@@ -73,20 +76,27 @@ impl GpuSorter {
         queue: &wgpu::Queue,
         entries: &[SortEntry],
     ) -> Vec<SortEntry> {
-        if entries.len() <= 1 { return entries.to_vec(); }
+        if entries.len() <= 1 {
+            return entries.to_vec();
+        }
 
         // Pad to next power of 2
         let n = entries.len().next_power_of_two();
         let mut padded = entries.to_vec();
         while padded.len() < n {
-            padded.push(SortEntry { depth: f32::MAX, index: u32::MAX });
+            padded.push(SortEntry {
+                depth: f32::MAX,
+                index: u32::MAX,
+            });
         }
 
         // Create GPU buffer
         let data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sort_data"),
             contents: bytemuck::cast_slice(&padded),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
         });
 
         // Bitonic sort passes
@@ -104,8 +114,14 @@ impl GpuSorter {
                     label: Some("sort_bg"),
                     layout: &self.bind_group_layout,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: data_buffer.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: param_buffer.as_entire_binding() },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: data_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: param_buffer.as_entire_binding(),
+                        },
                     ],
                 });
 

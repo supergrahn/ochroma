@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use vox_physics::pbf::{PbfFluidSim, WATER_SPECTRAL};
 
 fn bench_pbf_cpu_1k(c: &mut Criterion) {

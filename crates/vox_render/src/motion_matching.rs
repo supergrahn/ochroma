@@ -62,12 +62,7 @@ impl Default for MotionDatabase {
     }
 }
 
-fn compute_match_cost(
-    pose: &MotionPose,
-    velocity: Vec3,
-    facing: Vec3,
-    trajectory: &[Vec3],
-) -> f32 {
+fn compute_match_cost(pose: &MotionPose, velocity: Vec3, facing: Vec3, trajectory: &[Vec3]) -> f32 {
     let vel_cost = pose.root_velocity.distance(velocity) * 1.0;
     let facing_cost = (1.0 - pose.root_facing.dot(facing).max(0.0)) * 2.0;
     let traj_cost: f32 = pose
@@ -145,11 +140,7 @@ impl PoseDatabase {
     /// Feature layout:
     ///   [vel_x, vel_z, dir_x, dir_z, foot_l.x, foot_l.z, foot_r.x, foot_r.z, hip_vel_y]
     pub fn build_feature(pose: &DatabasePose) -> [f32; 9] {
-        let root_vel = pose
-            .joint_velocities
-            .first()
-            .copied()
-            .unwrap_or(Vec3::ZERO);
+        let root_vel = pose.joint_velocities.first().copied().unwrap_or(Vec3::ZERO);
         let traj0 = pose.trajectory[0];
 
         let foot_l = if pose.joint_positions.len() > LEFT_FOOT_JOINT {
@@ -164,14 +155,7 @@ impl PoseDatabase {
         };
 
         [
-            root_vel.x,
-            root_vel.z,
-            traj0.x,
-            traj0.z,
-            foot_l.x,
-            foot_l.z,
-            foot_r.x,
-            foot_r.z,
+            root_vel.x, root_vel.z, traj0.x, traj0.z, foot_l.x, foot_l.z, foot_r.x, foot_r.z,
             root_vel.y,
         ]
     }
@@ -339,11 +323,7 @@ impl PoseDatabaseBuilder {
             let trajectory: [Vec3; 4] = std::array::from_fn(|i| {
                 let tp = (t + traj_offsets[i]).min(duration);
                 let pts = eval(tp);
-                if pts.is_empty() {
-                    Vec3::ZERO
-                } else {
-                    pts[0]
-                }
+                if pts.is_empty() { Vec3::ZERO } else { pts[0] }
             });
 
             // Foot contacts.
@@ -486,9 +466,9 @@ impl MotionMatcher {
     /// Query the database for the best-matching pose and advance the blender.
     /// Returns the index of the matched `DatabasePose`.
     pub fn query(&mut self, desired_feature: [f32; 9], dt: f32) -> usize {
-        let next_idx = self
-            .db
-            .nearest_continuing(self.current_pose_idx, &desired_feature, self.phase_lambda);
+        let next_idx =
+            self.db
+                .nearest_continuing(self.current_pose_idx, &desired_feature, self.phase_lambda);
 
         let target_positions = self.db.poses[next_idx].joint_positions.clone();
 

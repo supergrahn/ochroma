@@ -26,17 +26,13 @@ impl SpectralResonanceFracture {
             return Vec::new();
         }
         let mean = total_energy / 16.0;
-        let variance: f32 =
-            profile.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() / 16.0;
+        let variance: f32 = profile.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() / 16.0;
         let regularity = (1.0 - (variance * 4.0).clamp(0.0, 1.0)).clamp(0.0, 1.0);
-        let num_planes =
-            ((impulse_ns / threshold).sqrt() * 3.0).clamp(1.0, 8.0) as usize;
+        let num_planes = ((impulse_ns / threshold).sqrt() * 3.0).clamp(1.0, 8.0) as usize;
         let mut planes = Vec::with_capacity(num_planes);
         for k in 0..num_planes {
-            let angle =
-                (k as f32) * std::f32::consts::TAU / (num_planes as f32);
-            let raw_normal =
-                Vec3::new(angle.cos(), 0.3 * regularity, angle.sin()).normalize();
+            let angle = (k as f32) * std::f32::consts::TAU / (num_planes as f32);
+            let raw_normal = Vec3::new(angle.cos(), 0.3 * regularity, angle.sin()).normalize();
             let normal = if regularity > 0.7 {
                 snap_to_axis(raw_normal)
             } else {
@@ -44,7 +40,11 @@ impl SpectralResonanceFracture {
             };
             let curvature = 1.0 - regularity;
             let origin = impact_pos + normal * 0.05;
-            planes.push(FracturePlane { origin, normal, curvature });
+            planes.push(FracturePlane {
+                origin,
+                normal,
+                curvature,
+            });
         }
         planes
     }
@@ -89,8 +89,8 @@ mod tests {
     }
     fn glass_spectral() -> [u16; 16] {
         [
-            60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000,
-            100, 60000, 100, 60000, 100,
+            60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100, 60000, 100,
+            60000, 100,
         ]
     }
 
@@ -98,14 +98,20 @@ mod tests {
     fn low_impulse_produces_no_planes() {
         let planes =
             SpectralResonanceFracture::compute_planes(Vec3::ZERO, 0.001, &metal_spectral());
-        assert!(planes.is_empty(), "impulse below threshold must produce 0 planes");
+        assert!(
+            planes.is_empty(),
+            "impulse below threshold must produce 0 planes"
+        );
     }
 
     #[test]
     fn high_impulse_produces_planes() {
         let planes =
             SpectralResonanceFracture::compute_planes(Vec3::ZERO, 100.0, &metal_spectral());
-        assert!(!planes.is_empty(), "strong impact must produce fracture planes");
+        assert!(
+            !planes.is_empty(),
+            "strong impact must produce fracture planes"
+        );
     }
 
     #[test]

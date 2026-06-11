@@ -2,17 +2,8 @@ use glam::{Mat4, Vec3};
 use vox_render::gizmos::{Axis, GizmoDelta, GizmoMode, GizmoRenderer};
 
 fn test_view_proj() -> Mat4 {
-    let view = Mat4::look_at_rh(
-        Vec3::new(0.0, 5.0, 10.0),
-        Vec3::ZERO,
-        Vec3::Y,
-    );
-    let proj = Mat4::perspective_rh(
-        std::f32::consts::FRAC_PI_4,
-        16.0 / 9.0,
-        0.1,
-        1000.0,
-    );
+    let view = Mat4::look_at_rh(Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, Vec3::Y);
+    let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 16.0 / 9.0, 0.1, 1000.0);
     proj * view
 }
 
@@ -55,7 +46,10 @@ fn hit_test_returns_none_far_from_arrows() {
     let entity_pos = Vec3::ZERO;
     // Corner of screen - far from any arrow
     let result = gizmo.hit_test(0.0, 0.0, entity_pos, vp, W, H);
-    assert!(result.is_none(), "expected None far from arrows, got {result:?}");
+    assert!(
+        result.is_none(),
+        "expected None far from arrows, got {result:?}"
+    );
 }
 
 #[test]
@@ -108,7 +102,10 @@ fn rotate_mode_drag_rotates_not_translates() {
 
     // A rotate drag must NOT collapse to identity — it must actually rotate.
     let angle = rot.to_axis_angle().1;
-    assert!(angle.abs() > 1e-3, "rotate drag must produce a real angle, got {angle}");
+    assert!(
+        angle.abs() > 1e-3,
+        "rotate drag must produce a real angle, got {angle}"
+    );
 
     // The rotation must actually move a probe vector. Rotating about the Y axis
     // (active axis) leaves +Y fixed but moves +X off-axis.
@@ -119,7 +116,11 @@ fn rotate_mode_drag_rotates_not_translates() {
         "rotation must displace an off-axis point, got displacement={displacement} (moved={moved:?})"
     );
     // And it should NOT behave like a translation: convenience translation() is zero.
-    assert_eq!(result.translation(), Vec3::ZERO, "rotate must not translate");
+    assert_eq!(
+        result.translation(),
+        Vec3::ZERO,
+        "rotate must not translate"
+    );
 }
 
 #[test]
@@ -143,10 +144,20 @@ fn scale_mode_drag_scales_not_translates() {
         (scale.x - 1.0).abs() > 1e-2,
         "scale drag must change X scale factor, got {scale:?}"
     );
-    assert!((scale.y - 1.0).abs() < 1e-6, "Y scale must stay 1.0, got {scale:?}");
-    assert!((scale.z - 1.0).abs() < 1e-6, "Z scale must stay 1.0, got {scale:?}");
+    assert!(
+        (scale.y - 1.0).abs() < 1e-6,
+        "Y scale must stay 1.0, got {scale:?}"
+    );
+    assert!(
+        (scale.z - 1.0).abs() < 1e-6,
+        "Z scale must stay 1.0, got {scale:?}"
+    );
     // Dragging right (positive projection) grows the axis.
-    assert!(scale.x > 1.0, "rightward drag should enlarge X, got {}", scale.x);
+    assert!(
+        scale.x > 1.0,
+        "rightward drag should enlarge X, got {}",
+        scale.x
+    );
     // And it must NOT behave like a translation.
     assert_eq!(result.translation(), Vec3::ZERO, "scale must not translate");
 }

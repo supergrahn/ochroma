@@ -120,10 +120,22 @@ impl SkinningCompute {
             label: Some("skinning_bind_group"),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: base_splat_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: joint_binding_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: joint_transform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: skinned_splat_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: base_splat_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: joint_binding_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: joint_transform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: skinned_splat_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -154,7 +166,11 @@ impl SkinningCompute {
     }
 
     pub fn update_joints(&self, queue: &wgpu::Queue, joint_transforms: &[GpuJointTransform]) {
-        queue.write_buffer(&self.joint_transform_buffer, 0, bytemuck::cast_slice(joint_transforms));
+        queue.write_buffer(
+            &self.joint_transform_buffer,
+            0,
+            bytemuck::cast_slice(joint_transforms),
+        );
     }
 
     pub fn dispatch(&self, encoder: &mut wgpu::CommandEncoder) {
@@ -174,8 +190,7 @@ mod tests {
     #[test]
     fn skinning_wgsl_shader_compiles() {
         let source = include_str!("skinning.wgsl");
-        let module = naga::front::wgsl::parse_str(source)
-            .expect("WGSL parse error");
+        let module = naga::front::wgsl::parse_str(source).expect("WGSL parse error");
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::empty(),

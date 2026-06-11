@@ -133,8 +133,7 @@ impl FractureSystem {
 
         for (splat_idx, mut splat) in splats.into_iter().enumerate() {
             // World position: assembly_position + splat local offset (position field)
-            let world_pos = assembly_position
-                + Vec3::from(splat.position());
+            let world_pos = assembly_position + Vec3::from(splat.position());
 
             // Radial velocity from impact point
             let radial_dir = (world_pos - impact_point).normalize_or_zero();
@@ -150,8 +149,8 @@ impl FractureSystem {
             spectral_shift_on_break(&mut splat);
 
             // Lifetime: 3.0 + pseudo-rand(0..2) using a different seed
-            let lifetime_seed = ((idx * 22695477 + splat_idx * 1664525 + 1013904223) & 0xFFFF) as f32
-                / 65535.0;
+            let lifetime_seed =
+                ((idx * 22695477 + splat_idx * 1664525 + 1013904223) & 0xFFFF) as f32 / 65535.0;
             let lifetime = 3.0 + lifetime_seed * 2.0;
 
             let particle = if let Some(mut pooled) = self.particle_pool.pop() {
@@ -190,8 +189,7 @@ impl SplatAssembly {
             return Vec::new();
         }
         let spectral = self.mean_spectral_profile();
-        let planes =
-            SpectralResonanceFracture::compute_planes(impact_pos, impulse_ns, &spectral);
+        let planes = SpectralResonanceFracture::compute_planes(impact_pos, impulse_ns, &spectral);
         if !planes.is_empty() {
             self.health -= impulse_ns;
             if self.health <= 0.0 {
@@ -381,7 +379,10 @@ mod tests {
         let idx = sys.add_assembly(asm);
         sys.apply_impact(idx, 100.0, Vec3::new(1.0, 0.0, 0.0));
 
-        assert!(!sys.particles.is_empty(), "Need at least one particle to test age");
+        assert!(
+            !sys.particles.is_empty(),
+            "Need at least one particle to test age"
+        );
         let age_before = sys.particles[0].age;
 
         sys.step(0.1);

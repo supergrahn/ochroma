@@ -47,19 +47,15 @@ impl IKChain {
             // Forward pass: start from end effector
             *self.joint_positions.last_mut().unwrap() = self.target;
             for i in (0..self.joint_positions.len() - 1).rev() {
-                let dir =
-                    (self.joint_positions[i] - self.joint_positions[i + 1]).normalize();
-                self.joint_positions[i] =
-                    self.joint_positions[i + 1] + dir * self.joint_lengths[i];
+                let dir = (self.joint_positions[i] - self.joint_positions[i + 1]).normalize();
+                self.joint_positions[i] = self.joint_positions[i + 1] + dir * self.joint_lengths[i];
             }
 
             // Backward pass: start from root (constrain root to original position)
             self.joint_positions[0] = root;
             for i in 0..self.joint_positions.len() - 1 {
-                let dir =
-                    (self.joint_positions[i + 1] - self.joint_positions[i]).normalize();
-                self.joint_positions[i + 1] =
-                    self.joint_positions[i] + dir * self.joint_lengths[i];
+                let dir = (self.joint_positions[i + 1] - self.joint_positions[i]).normalize();
+                self.joint_positions[i + 1] = self.joint_positions[i] + dir * self.joint_lengths[i];
             }
 
             // Apply pole vector constraint after backward pass
@@ -142,8 +138,7 @@ pub fn solve_two_bone_ik(
     let target_dist = root.distance(target).min(upper_len + lower_len - 0.001);
 
     // Law of cosines for the mid joint angle
-    let cos_angle = ((upper_len * upper_len + lower_len * lower_len
-        - target_dist * target_dist)
+    let cos_angle = ((upper_len * upper_len + lower_len * lower_len - target_dist * target_dist)
         / (2.0 * upper_len * lower_len))
         .clamp(-1.0, 1.0);
     let mid_angle = std::f32::consts::PI - cos_angle.acos();
@@ -175,8 +170,7 @@ pub fn two_bone_ik(
     pole: Vec3,
 ) -> (Vec3, Vec3) {
     let d = (tip_target - root).length().min(l0 + l1 - 1e-4);
-    let cos_angle_mid =
-        ((l0 * l0 + l1 * l1 - d * d) / (2.0 * l0 * l1)).clamp(-1.0, 1.0);
+    let cos_angle_mid = ((l0 * l0 + l1 * l1 - d * d) / (2.0 * l0 * l1)).clamp(-1.0, 1.0);
     let _angle_mid = cos_angle_mid.acos();
 
     let root_to_target = (tip_target - root).normalize();
@@ -201,9 +195,7 @@ pub fn two_bone_ik(
     let cos_root = ((d * d + l0 * l0 - l1 * l1) / (2.0 * d * l0)).clamp(-1.0, 1.0);
     let angle_root = cos_root.acos();
 
-    let mid = root
-        + root_to_target * l0 * angle_root.cos()
-        + perp * l0 * angle_root.sin();
+    let mid = root + root_to_target * l0 * angle_root.cos() + perp * l0 * angle_root.sin();
     let tip = root + root_to_target * d;
 
     (mid, tip)
@@ -286,12 +278,7 @@ impl FootPlacement {
         }
     }
 
-    fn sdf_march<F: Fn(Vec3) -> f32>(
-        &self,
-        start: Vec3,
-        dir: Vec3,
-        sdf: &F,
-    ) -> Option<Vec3> {
+    fn sdf_march<F: Fn(Vec3) -> f32>(&self, start: Vec3, dir: Vec3, sdf: &F) -> Option<Vec3> {
         let mut pos = start;
         for _ in 0..self.max_steps {
             let d = sdf(pos);

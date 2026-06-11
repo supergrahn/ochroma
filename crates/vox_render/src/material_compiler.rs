@@ -48,41 +48,75 @@ pub const N_BANDS: usize = 16;
 pub enum BsdfNode {
     // ── Spectral / band inputs ───────────────────────────────────────────────
     /// Per-band constant reflectance/emission (the 16-band light currency).
-    SpectralConstant { spd: [f32; N_BANDS] },
+    SpectralConstant {
+        spd: [f32; N_BANDS],
+    },
     /// Smits-style RGB→16-band upliftment, evaluated self-contained (no
     /// vox_data dependency). Produces a smooth reflectance that integrates back
     /// to roughly the source RGB.
-    RgbUplift { rgb: [f32; 3] },
+    RgbUplift {
+        rgb: [f32; 3],
+    },
     /// Planck blackbody emitter at `kelvin`, normalised so its peak band == 1.0.
-    BlackbodyEmitter { kelvin: f32 },
+    BlackbodyEmitter {
+        kelvin: f32,
+    },
     /// The current band's centre wavelength (nm) as a scalar — enables
     /// iridescence / band-dependent math.
     Wavelength,
     /// `cos_theta` (the view/normal cosine) as a scalar, for angle-dependent math.
     CosTheta,
     /// A plain scalar constant broadcast to every band.
-    Scalar { value: f32 },
+    Scalar {
+        value: f32,
+    },
 
     // ── Arithmetic ───────────────────────────────────────────────────────────
-    Add { a: NodeId, b: NodeId },
-    Multiply { a: NodeId, b: NodeId },
+    Add {
+        a: NodeId,
+        b: NodeId,
+    },
+    Multiply {
+        a: NodeId,
+        b: NodeId,
+    },
     /// Linear interpolation `a*(1-factor) + b*factor`.
-    Mix { a: NodeId, b: NodeId, factor: f32 },
+    Mix {
+        a: NodeId,
+        b: NodeId,
+        factor: f32,
+    },
     /// Scale by a constant.
-    Scale { input: NodeId, factor: f32 },
+    Scale {
+        input: NodeId,
+        factor: f32,
+    },
     /// `1.0 - input`, clamped to keep reflectance physical.
-    Invert { input: NodeId },
+    Invert {
+        input: NodeId,
+    },
     /// Clamp to `[min, max]`.
-    Clamp { input: NodeId, min: f32, max: f32 },
+    Clamp {
+        input: NodeId,
+        min: f32,
+        max: f32,
+    },
 
     // ── BSDF / Substrate ─────────────────────────────────────────────────────
     /// Schlick Fresnel reflectance from a base reflectance at normal incidence:
     /// `base + (1 - base) * (1 - cos_theta)^power`.
-    Fresnel { base: NodeId, power: f32 },
+    Fresnel {
+        base: NodeId,
+        power: f32,
+    },
     /// Substrate-style layering: a coat over a base, blended per band by a
     /// Schlick Fresnel weight (`f0` at normal incidence, → 1 at grazing).
     /// `result = base*(1-w) + coat*w`, `w = f0 + (1-f0)*(1-cos_theta)^5`.
-    Layer { coat: NodeId, base: NodeId, f0: f32 },
+    Layer {
+        coat: NodeId,
+        base: NodeId,
+        f0: f32,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -181,11 +215,7 @@ fn planck_relative(lambda_nm: f32, kelvin: f32) -> f32 {
     let a = 2.0 * H * C * C / lambda_m.powf(5.0);
     let x = H * C / (lambda_m * KB * t);
     let denom = x.exp() - 1.0;
-    if denom <= 0.0 {
-        0.0
-    } else {
-        a / denom
-    }
+    if denom <= 0.0 { 0.0 } else { a / denom }
 }
 
 /// Peak Planck value across the 16 bands, for normalisation.
@@ -382,10 +412,9 @@ impl MaterialDag {
             BsdfNode::Invert { input } => {
                 (1.0 - self.eval_node(*input, band, lambda_nm, cos_theta, cache)).clamp(0.0, 1.0)
             }
-            BsdfNode::Clamp { input, min, max } => {
-                self.eval_node(*input, band, lambda_nm, cos_theta, cache)
-                    .clamp(*min, *max)
-            }
+            BsdfNode::Clamp { input, min, max } => self
+                .eval_node(*input, band, lambda_nm, cos_theta, cache)
+                .clamp(*min, *max),
             BsdfNode::Fresnel { base, power } => {
                 let b = self.eval_node(*base, band, lambda_nm, cos_theta, cache);
                 b + (1.0 - b) * (1.0 - cos_theta).clamp(0.0, 1.0).powf(*power)
@@ -503,9 +532,7 @@ impl MaterialDag {
         if uses_blackbody {
             out.push_str(&Self::wgsl_blackbody_helper());
         }
-        out.push_str(
-            "fn material_eval(band: u32, lambda_nm: f32, cos_theta: f32) -> f32 {\n",
-        );
+        out.push_str("fn material_eval(band: u32, lambda_nm: f32, cos_theta: f32) -> f32 {\n");
         out.push_str(&body);
         out.push_str("}\n");
         Ok(out)
@@ -567,9 +594,14 @@ impl MaterialDag {
                     },
                 )
             }
-            BsdfNode::Scale { input, factor } => {
-                (is_const[*input], if is_const[*input] { cv(*input) * factor } else { 0.0 })
-            }
+            BsdfNode::Scale { input, factor } => (
+                is_const[*input],
+                if is_const[*input] {
+                    cv(*input) * factor
+                } else {
+                    0.0
+                },
+            ),
             BsdfNode::Invert { input } => (
                 is_const[*input],
                 if is_const[*input] {
@@ -654,9 +686,8 @@ impl MaterialDag {
             BsdfNode::Layer { coat, base, f0 } => {
                 // w = f0 + (1-f0)*(1-cosθ)^5, result = base*(1-w) + coat*w.
                 let f0s = wgsl_f32(*f0)?;
-                let wexpr = format!(
-                    "({f0s} + (1.0 - {f0s}) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0))"
-                );
+                let wexpr =
+                    format!("({f0s} + (1.0 - {f0s}) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0))");
                 format!(
                     "{base} * (1.0 - {w}) + {coat} * {w}",
                     base = op(*base)?,
@@ -787,9 +818,17 @@ mod tests {
         // nodes: 0 = RgbUplift(red), 1 = SpectralConstant(dim grey), 2 = Layer
         let dag = MaterialDag {
             nodes: vec![
-                BsdfNode::RgbUplift { rgb: [1.0, 0.0, 0.0] },
-                BsdfNode::SpectralConstant { spd: [0.18; N_BANDS] },
-                BsdfNode::Layer { coat: 0, base: 1, f0: 0.04 },
+                BsdfNode::RgbUplift {
+                    rgb: [1.0, 0.0, 0.0],
+                },
+                BsdfNode::SpectralConstant {
+                    spd: [0.18; N_BANDS],
+                },
+                BsdfNode::Layer {
+                    coat: 0,
+                    base: 1,
+                    f0: 0.04,
+                },
             ],
             output: 2,
         };
@@ -857,19 +896,35 @@ mod tests {
         // 4:Scale(2 by 3-ish)  5:Wavelength  6:Fresnel(2)  7:Mix(4,6)
         let dag = MaterialDag {
             nodes: vec![
-                BsdfNode::RgbUplift { rgb: [0.7, 0.2, 0.1] },
+                BsdfNode::RgbUplift {
+                    rgb: [0.7, 0.2, 0.1],
+                },
                 BsdfNode::SpectralConstant {
                     spd: [
                         0.1, 0.12, 0.14, 0.16, 0.2, 0.25, 0.3, 0.35, 0.4, 0.42, 0.44, 0.45, 0.46,
                         0.46, 0.47, 0.47,
                     ],
                 },
-                BsdfNode::Layer { coat: 0, base: 1, f0: 0.04 },
+                BsdfNode::Layer {
+                    coat: 0,
+                    base: 1,
+                    f0: 0.04,
+                },
                 BsdfNode::Scalar { value: 0.8 },
-                BsdfNode::Scale { input: 2, factor: 0.9 },
+                BsdfNode::Scale {
+                    input: 2,
+                    factor: 0.9,
+                },
                 BsdfNode::Wavelength,
-                BsdfNode::Fresnel { base: 2, power: 5.0 },
-                BsdfNode::Mix { a: 4, b: 6, factor: 0.3 },
+                BsdfNode::Fresnel {
+                    base: 2,
+                    power: 5.0,
+                },
+                BsdfNode::Mix {
+                    a: 4,
+                    b: 6,
+                    factor: 0.3,
+                },
             ],
             output: 7,
         };
@@ -881,7 +936,9 @@ mod tests {
                 && !wgsl.contains("()[band]"),
             "emitted WGSL contains a placeholder:\n{wgsl}"
         );
-        assert!(wgsl.contains("fn material_eval(band: u32, lambda_nm: f32, cos_theta: f32) -> f32"));
+        assert!(
+            wgsl.contains("fn material_eval(band: u32, lambda_nm: f32, cos_theta: f32) -> f32")
+        );
 
         let parsed = naga::front::wgsl::parse_str(&wgsl);
         let module = parsed.unwrap_or_else(|e| panic!("naga parse failed: {e:?}\n{wgsl}"));
@@ -903,8 +960,14 @@ mod tests {
         // node 0 references node 1, node 1 references node 0 -> cycle.
         let dag = MaterialDag {
             nodes: vec![
-                BsdfNode::Scale { input: 1, factor: 0.5 },
-                BsdfNode::Scale { input: 0, factor: 0.5 },
+                BsdfNode::Scale {
+                    input: 1,
+                    factor: 0.5,
+                },
+                BsdfNode::Scale {
+                    input: 0,
+                    factor: 0.5,
+                },
             ],
             output: 0,
         };
@@ -922,11 +985,17 @@ mod tests {
     #[test]
     fn unknown_ref_is_rejected() {
         let dag = MaterialDag {
-            nodes: vec![BsdfNode::Scale { input: 99, factor: 0.5 }],
+            nodes: vec![BsdfNode::Scale {
+                input: 99,
+                factor: 0.5,
+            }],
             output: 0,
         };
         match dag.validate() {
-            Err(MaterialCompileError::UnknownRef { node: 0, referenced: 99 }) => {}
+            Err(MaterialCompileError::UnknownRef {
+                node: 0,
+                referenced: 99,
+            }) => {}
             other => panic!("expected UnknownRef error, got {other:?}"),
         }
     }
@@ -1018,7 +1087,9 @@ mod tests {
     #[test]
     fn rgb_uplift_blue_is_blue_dominant() {
         let dag = MaterialDag {
-            nodes: vec![BsdfNode::RgbUplift { rgb: [0.0, 0.0, 1.0] }],
+            nodes: vec![BsdfNode::RgbUplift {
+                rgb: [0.0, 0.0, 1.0],
+            }],
             output: 0,
         };
         let spd = dag.eval_cpu_spd(1.0);

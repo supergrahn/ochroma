@@ -24,9 +24,15 @@ fn solid_color_unchanged() {
 fn noisy_image_gets_smoother() {
     // Create a checkerboard-like noisy pattern with small color differences
     // (bilateral filter preserves strong edges, so we use subtle noise)
-    let mut pixels: Vec<[u8; 4]> = (0..64).map(|i| {
-        if (i / 8 + i % 8) % 2 == 0 { [135, 135, 135, 255] } else { [120, 120, 120, 255] }
-    }).collect();
+    let mut pixels: Vec<[u8; 4]> = (0..64)
+        .map(|i| {
+            if (i / 8 + i % 8) % 2 == 0 {
+                [135, 135, 135, 255]
+            } else {
+                [120, 120, 120, 255]
+            }
+        })
+        .collect();
 
     let before_variance = compute_variance(&pixels);
     let mut denoiser = SpectralDenoiser::new(0.8);
@@ -34,10 +40,17 @@ fn noisy_image_gets_smoother() {
     denoiser.denoise(&mut pixels, 8, 8);
     let after_variance = compute_variance(&pixels);
 
-    assert!(after_variance < before_variance, "Denoising should reduce variance");
+    assert!(
+        after_variance < before_variance,
+        "Denoising should reduce variance"
+    );
 }
 
 fn compute_variance(pixels: &[[u8; 4]]) -> f32 {
     let mean: f32 = pixels.iter().map(|p| p[0] as f32).sum::<f32>() / pixels.len() as f32;
-    pixels.iter().map(|p| (p[0] as f32 - mean).powi(2)).sum::<f32>() / pixels.len() as f32
+    pixels
+        .iter()
+        .map(|p| (p[0] as f32 - mean).powi(2))
+        .sum::<f32>()
+        / pixels.len() as f32
 }

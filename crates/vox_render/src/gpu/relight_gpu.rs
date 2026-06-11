@@ -389,11 +389,8 @@ impl GpuRelight {
                 baked: std::array::from_fn(|b| s.spectral_f32(b)),
             })
             .collect();
-        self.queue.write_buffer(
-            &self.splat_buffer,
-            0,
-            bytemuck::cast_slice(&gpu_splats),
-        );
+        self.queue
+            .write_buffer(&self.splat_buffer, 0, bytemuck::cast_slice(&gpu_splats));
 
         let params = RelightParams {
             target_spd: *target_spd,
@@ -508,11 +505,7 @@ impl GpuRelight {
         &self.adapter_name
     }
 
-    fn map_read(
-        &self,
-        buffer: &wgpu::Buffer,
-        bytes: u64,
-    ) -> Result<Vec<u8>, GpuRelightError> {
+    fn map_read(&self, buffer: &wgpu::Buffer, bytes: u64) -> Result<Vec<u8>, GpuRelightError> {
         let slice = buffer.slice(..bytes);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |res| {
@@ -533,7 +526,7 @@ impl GpuRelight {
 mod tests {
     use super::*;
     use crate::relight::{
-        relight_scene, CieIlluminant, IlluminantSpec, PresetIlluminant, RelightSettings,
+        CieIlluminant, IlluminantSpec, PresetIlluminant, RelightSettings, relight_scene,
     };
 
     /// Weight of the sky-ambient FILL term — must equal the oracle's private
@@ -544,7 +537,7 @@ mod tests {
     use crate::spectral_atmosphere::SpectralAtmosphere;
     use glam::Quat;
     use half::f16;
-    use vox_data::spectral_capture::{forward_rgb, LightSpd};
+    use vox_data::spectral_capture::{LightSpd, forward_rgb};
 
     const BANDS: usize = 16;
 
@@ -660,7 +653,10 @@ mod tests {
         use crate::gpu::gpu_timing::GpuTimers;
         let t = GpuTimers::disabled();
         assert!(!t.is_enabled(), "disabled timer reports disabled");
-        assert!(t.compute_writes(0).is_none(), "disabled timer writes nothing");
+        assert!(
+            t.compute_writes(0).is_none(),
+            "disabled timer writes nothing"
+        );
 
         let n = 256u32;
         let Some(gpu) = try_gpu(n) else {
@@ -730,7 +726,10 @@ mod tests {
                     }
                 }
             }
-            eprintln!("[gpu_relight] target={} max|Δ/band|={max_dev:e}", target.name());
+            eprintln!(
+                "[gpu_relight] target={} max|Δ/band|={max_dev:e}",
+                target.name()
+            );
             if max_dev > global_max_dev {
                 global_max_dev = max_dev;
             }
@@ -809,7 +808,10 @@ mod tests {
             .expect("gpu relight");
         let stored_b4 = out[0].spectral_f32(4);
         eprintln!("[gpu_relight] bright-band stored b4 = {stored_b4}");
-        assert!(stored_b4.is_finite(), "stored b4 must be finite, got {stored_b4}");
+        assert!(
+            stored_b4.is_finite(),
+            "stored b4 must be finite, got {stored_b4}"
+        );
         assert_eq!(stored_b4, f16_max(), "stored b4 must be clamped to f16 max");
 
         // Cross-check the GPU equals the CPU oracle on this exact clamp scene.
@@ -820,7 +822,11 @@ mod tests {
         .with_sky_ambient(false)
         .with_shadows(false);
         let (cpu_out, _r) = relight_scene(&splats, &settings);
-        assert_eq!(cpu_out[0].spectral_f32(4), stored_b4, "GPU clamp must equal CPU clamp");
+        assert_eq!(
+            cpu_out[0].spectral_f32(4),
+            stored_b4,
+            "GPU clamp must equal CPU clamp"
+        );
     }
 
     /// Metamerism survives the GPU round-trip + f16 store: two intrinsic bases
@@ -847,7 +853,8 @@ mod tests {
                             alt[j] = (alt[j] + aj).min(1.0);
                             alt[k] = (alt[k] + ak).min(1.0);
                             let an = forward_rgb(&alt, &neutral);
-                            let nd: f32 = (0..3).map(|c| (an[c] - rn[c]).powi(2)).sum::<f32>().sqrt();
+                            let nd: f32 =
+                                (0..3).map(|c| (an[c] - rn[c]).powi(2)).sum::<f32>().sqrt();
                             if nd < 0.01 {
                                 let rc = forward_rgb(&base, &cool);
                                 let ac = forward_rgb(&alt, &cool);
@@ -956,9 +963,16 @@ mod tests {
             .relight(&splats, &ref_spd, &target_spd, &earth_ambient(), 1e-3)
             .expect_err("oversized relight must return an error, not abort");
         match err {
-            GpuRelightError::ExceedsDeviceLimits { what, requested, limit } => {
+            GpuRelightError::ExceedsDeviceLimits {
+                what,
+                requested,
+                limit,
+            } => {
                 assert_eq!(what, "splat_buffer (scene exceeds max_splats)");
-                assert!(requested > limit, "requested {requested} must exceed limit {limit}");
+                assert!(
+                    requested > limit,
+                    "requested {requested} must exceed limit {limit}"
+                );
             }
             other => panic!("expected ExceedsDeviceLimits, got {other:?}"),
         }

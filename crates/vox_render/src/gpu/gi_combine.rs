@@ -2,12 +2,12 @@
 //!
 //! Binds the GI radiance storage buffer DIRECTLY as input and the tiled
 //! renderer's persistent splat buffer as read-write output, on ONE shared
-//! `wgpu::Device`, and folds the GI-lit radiance's first 8 spectral bands into
-//! each splat's `spectral[0..8]` field — entirely on-device, with NO CPU
+//! `wgpu::Device`, and folds the GI-lit radiance into each splat's eight
+//! pair-averaged spectral bins — entirely on-device, with NO CPU
 //! readback between the GI compute pass and the rasterizer. This is the wedge
 //! that kills the per-frame GI `poll(Wait)` on the resident path.
 //!
-//! The fold f16-quantizes each band to be BIT-IDENTICAL to the readback oracle
+//! The fold f16-quantizes each packed bin to be BIT-IDENTICAL to the readback oracle
 //! (`GpuGi::step` → `gaussian_splat_to_gpu_full`, which stores
 //! `half::f16::from_f32(v)` and decodes it back). See `gi_combine.wgsl`: the
 //! WGSL `quantize_f16` copies the validated round-to-nearest-even `f32_to_f16_rne`
@@ -117,7 +117,12 @@ impl GiCombinePass {
         if splat_count == 0 {
             return;
         }
-        let params = CombineParams { count: splat_count, _pad0: 0, _pad1: 0, _pad2: 0 };
+        let params = CombineParams {
+            count: splat_count,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+        };
         let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("gi_combine_params"),
             contents: bytemuck::bytes_of(&params),
@@ -128,9 +133,18 @@ impl GiCombinePass {
             label: Some("gi_combine_bg"),
             layout: &self.bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: gi_radiance_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: splat_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gi_radiance_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: splat_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: params_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -163,7 +177,10 @@ mod tests {
         }))?;
         let info = adapter.get_info();
         if crate::gpu::adapter::ensure_hardware(&info).is_err() {
-            eprintln!("[gi_combine test] software adapter ({}) — skipping", info.name);
+            eprintln!(
+                "[gi_combine test] software adapter ({}) — skipping",
+                info.name
+            );
             return None;
         }
         let (device, queue) = pollster::block_on(adapter.request_device(
@@ -180,25 +197,27 @@ mod tests {
     }
 
     /// The fold must write `splat.spectral[0..8]` EXACTLY equal to the readback
-    /// oracle's f16 round-trip of `radiance[i][0..8]`, and leave the rest of the
-    /// splat (bands beyond 8 — here the opacity/position fields) untouched.
+    /// oracle's f16 round-trip of adjacent pair-averaged radiance, and leave the
+    /// rest of the splat (bands beyond 8 — here the opacity/position fields)
+    /// untouched.
     #[test]
-    fn gi_combine_writes_first_8_bands_f16_quantized() {
-        let Some((device, queue)) = try_device() else { return };
+    fn gi_combine_writes_pair_averaged_bins_f16_quantized() {
+        let Some((device, queue)) = try_device() else {
+            return;
+        };
 
         const N: u32 = 4;
         // Distinct, non-power-of-two radiance values per (splat, band) so the f16
         // round-trip is non-trivial (exercises round-to-nearest-even, not just
-        // exactly-representable values). Bands 8..15 are deliberately bright so a
-        // bug that folded them into spectral[0..8] would show.
+        // exactly-representable values). High bands are deliberately bright so a
+        // bug that drops them from the pair bins would show.
         let mut radiance = vec![[0.0f32; 16]; N as usize];
         for i in 0..N as usize {
             for b in 0..16 {
                 radiance[i][b] = 0.01 + (i as f32) * 0.137 + (b as f32) * 0.0231;
             }
         }
-        let radiance_flat: Vec<f32> =
-            radiance.iter().flat_map(|r| r.iter().copied()).collect();
+        let radiance_flat: Vec<f32> = radiance.iter().flat_map(|r| r.iter().copied()).collect();
 
         // Splats pre-seeded with a recognizable sentinel in spectral + a known
         // opacity, so we can assert the fold touches ONLY spectral[0..8].
@@ -227,8 +246,9 @@ mod tests {
         });
 
         let pass = GiCombinePass::new(&device);
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("gi_combine_test") });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gi_combine_test"),
+        });
         pass.dispatch(&device, &mut encoder, &radiance_buf, &splat_buf, N);
         encoder.copy_buffer_to_buffer(
             &splat_buf,
@@ -245,7 +265,10 @@ mod tests {
             let _ = tx.send(r);
         });
         device.poll(wgpu::Maintain::Wait);
-        assert!(matches!(rx.recv(), Ok(Ok(()))), "readback map must succeed on real hardware");
+        assert!(
+            matches!(rx.recv(), Ok(Ok(()))),
+            "readback map must succeed on real hardware"
+        );
 
         let out: Vec<GpuSplatFull> = {
             let data = slice.get_mapped_range();
@@ -253,13 +276,13 @@ mod tests {
         };
         readback.unmap();
 
-        // Assert EXACT bit-equality against the oracle f16 round-trip for bands
-        // 0..8, and that the fold left opacity/position untouched.
+        // Assert EXACT bit-equality against the oracle f16 round-trip for the
+        // eight pair bins, and that the fold left opacity/position untouched.
         let mut max_abs = 0.0f32;
         for i in 0..N as usize {
             for b in 0..8 {
-                let expected =
-                    half::f16::from_bits(half::f16::from_f32(radiance[i][b]).to_bits()).to_f32();
+                let v = (radiance[i][b * 2] + radiance[i][b * 2 + 1]) * 0.5;
+                let expected = half::f16::from_bits(half::f16::from_f32(v).to_bits()).to_f32();
                 let got = out[i].spectral[b];
                 let d = (got - expected).abs();
                 if d > max_abs {
@@ -274,7 +297,8 @@ mod tests {
             }
             // Untouched fields: opacity preserved, position preserved.
             assert_eq!(
-                out[i].opacity_color[3], 0.5 + 0.1 * i as f32,
+                out[i].opacity_color[3],
+                0.5 + 0.1 * i as f32,
                 "fold must not touch opacity (splat {i})"
             );
             assert_eq!(
@@ -286,6 +310,9 @@ mod tests {
         eprintln!(
             "[gi_combine] N={N} max_abs(spectral - f16_oracle)={max_abs:e} (bit-identical required)"
         );
-        assert_eq!(max_abs, 0.0, "fold must be bit-identical to the f16 readback oracle");
+        assert_eq!(
+            max_abs, 0.0,
+            "fold must be bit-identical to the f16 readback oracle"
+        );
     }
 }

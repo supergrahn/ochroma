@@ -1,5 +1,5 @@
-use vox_render::atmosphere::*;
 use glam::Vec3;
+use vox_render::atmosphere::*;
 
 #[test]
 fn sky_is_blue_overhead() {
@@ -16,7 +16,10 @@ fn sunset_is_red() {
     let sun_dir = Vec3::new(1.0, 0.05, 0.0).normalize();
     let color = compute_sky_color(sun_dir, sun_dir, &params);
     // At sunset, Mie scattering dominates -> warm colours
-    assert!(color[0] > 0.0 || color[1] > 0.0, "Sunset should have warm tones");
+    assert!(
+        color[0] > 0.0 || color[1] > 0.0,
+        "Sunset should have warm tones"
+    );
 }
 
 #[test]
@@ -29,12 +32,18 @@ fn fog_increases_with_distance() {
 #[test]
 fn god_rays_strongest_toward_sun() {
     let toward_sun = compute_god_ray_intensity(
-        Vec3::ZERO, Vec3::new(0.0, 0.3, -1.0).normalize(),
-        Vec3::new(0.0, 0.3, -1.0).normalize(), 50.0, 16,
+        Vec3::ZERO,
+        Vec3::new(0.0, 0.3, -1.0).normalize(),
+        Vec3::new(0.0, 0.3, -1.0).normalize(),
+        50.0,
+        16,
     );
     let away_from_sun = compute_god_ray_intensity(
-        Vec3::ZERO, Vec3::new(0.0, 0.3, 1.0).normalize(),
-        Vec3::new(0.0, 0.3, -1.0).normalize(), 50.0, 16,
+        Vec3::ZERO,
+        Vec3::new(0.0, 0.3, 1.0).normalize(),
+        Vec3::new(0.0, 0.3, -1.0).normalize(),
+        50.0,
+        16,
     );
     assert!(toward_sun > away_from_sun, "God rays stronger toward sun");
 }
