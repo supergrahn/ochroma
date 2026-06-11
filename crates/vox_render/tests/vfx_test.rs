@@ -8,7 +8,10 @@ fn fire_effect_produces_particles_after_tick() {
     assert_eq!(inst.particle_count(), 0);
     // Tick enough to emit at 40/s
     inst.tick(0.1);
-    assert!(inst.particle_count() > 0, "fire should emit particles after tick");
+    assert!(
+        inst.particle_count() > 0,
+        "fire should emit particles after tick"
+    );
 }
 
 #[test]
@@ -50,7 +53,11 @@ fn particles_die_after_lifetime() {
     inst.effect.emitters[0].rate = 0.0;
     inst.tick(0.2);
     inst.tick(0.2);
-    assert_eq!(inst.particle_count(), 0, "particles should die after lifetime");
+    assert_eq!(
+        inst.particle_count(),
+        0,
+        "particles should die after lifetime"
+    );
 }
 
 #[test]
@@ -133,11 +140,23 @@ fn prebuilt_effects_have_reasonable_defaults() {
 
     for effect in &effects {
         assert!(!effect.name.is_empty(), "effect must have a name");
-        assert!(!effect.emitters.is_empty(), "effect {} must have emitters", effect.name);
+        assert!(
+            !effect.emitters.is_empty(),
+            "effect {} must have emitters",
+            effect.name
+        );
 
         for emitter in &effect.emitters {
-            assert!(emitter.max_particles > 0, "{}: max_particles must be > 0", effect.name);
-            assert!(emitter.lifetime.min > 0.0, "{}: lifetime.min must be > 0", effect.name);
+            assert!(
+                emitter.max_particles > 0,
+                "{}: max_particles must be > 0",
+                effect.name
+            );
+            assert!(
+                emitter.lifetime.min > 0.0,
+                "{}: lifetime.min must be > 0",
+                effect.name
+            );
             assert!(
                 emitter.lifetime.max >= emitter.lifetime.min,
                 "{}: lifetime.max must be >= min",
@@ -178,8 +197,5 @@ fn rain_effect_particles_move_downward() {
 
     // Rain particles should have moved below spawn height
     let below_spawn = splats.iter().filter(|s| s.position()[1] < 50.0).count();
-    assert!(
-        below_spawn > 0,
-        "rain particles should move downward"
-    );
+    assert!(below_spawn > 0, "rain particles should move downward");
 }

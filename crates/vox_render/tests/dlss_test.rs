@@ -44,8 +44,11 @@ fn frame_generation_produces_intermediate() {
     assert!(gen2.is_some());
     let intermediate = gen2.unwrap();
     // Should be approximately halfway between frame1 (0) and frame2 (200)
-    assert!(intermediate[0][0] > 50 && intermediate[0][0] < 150,
-        "Intermediate should blend: got {}", intermediate[0][0]);
+    assert!(
+        intermediate[0][0] > 50 && intermediate[0][0] < 150,
+        "Intermediate should blend: got {}",
+        intermediate[0][0]
+    );
 }
 
 #[test]

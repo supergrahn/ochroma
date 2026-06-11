@@ -1,10 +1,8 @@
 //! egui window for the material node graph editor.
 //! Uses OchrGraph (crucible-core backend) + NodeGraphWidget (egui rendering).
 
-use vox_nodes::{OchrGraph, NodeId};
-use vox_nodes::mat_nodes::{
-    FloatConstNode, MaterialOutputNode, MultiplyNode, AddNode,
-};
+use vox_nodes::mat_nodes::{AddNode, FloatConstNode, MaterialOutputNode, MultiplyNode};
+use vox_nodes::{NodeId, OchrGraph};
 use vox_ui::node_graph_widget::{NodeGraphWidget, VisualPin, VisualPinType};
 
 pub struct MaterialEditorUi {
@@ -32,17 +30,25 @@ impl MaterialEditorUi {
         self.name = "New Material".to_string();
 
         let roughness_id = self.graph.add_node(
-            "Roughness", Box::new(FloatConstNode::new(0.5)), [80.0, 60.0],
+            "Roughness",
+            Box::new(FloatConstNode::new(0.5)),
+            [80.0, 60.0],
         );
         let metallic_id = self.graph.add_node(
-            "Metallic", Box::new(FloatConstNode::new(0.0)), [80.0, 170.0],
+            "Metallic",
+            Box::new(FloatConstNode::new(0.0)),
+            [80.0, 170.0],
         );
-        let output_id = self.graph.add_node(
-            "Output", Box::new(MaterialOutputNode), [320.0, 110.0],
-        );
+        let output_id = self
+            .graph
+            .add_node("Output", Box::new(MaterialOutputNode), [320.0, 110.0]);
 
-        let _ = self.graph.connect(roughness_id, "out", output_id, "roughness");
-        let _ = self.graph.connect(metallic_id,  "out", output_id, "metallic");
+        let _ = self
+            .graph
+            .connect(roughness_id, "out", output_id, "roughness");
+        let _ = self
+            .graph
+            .connect(metallic_id, "out", output_id, "metallic");
         let _ = self.graph.graph.cook();
         self.sync_widget();
     }
@@ -66,26 +72,66 @@ impl MaterialEditorUi {
                     }
                     "Multiply" | "Add" => {
                         vn.inputs = vec![
-                            VisualPin { name: "a".into(), pin_type: VisualPinType::Float, connected: false },
-                            VisualPin { name: "b".into(), pin_type: VisualPinType::Float, connected: false },
+                            VisualPin {
+                                name: "a".into(),
+                                pin_type: VisualPinType::Float,
+                                connected: false,
+                            },
+                            VisualPin {
+                                name: "b".into(),
+                                pin_type: VisualPinType::Float,
+                                connected: false,
+                            },
                         ];
-                        vn.outputs = vec![VisualPin { name: "out".into(), pin_type: VisualPinType::Float, connected: false }];
+                        vn.outputs = vec![VisualPin {
+                            name: "out".into(),
+                            pin_type: VisualPinType::Float,
+                            connected: false,
+                        }];
                         vn.color = [80, 55, 110];
                         vn.size = [130.0, 80.0];
                     }
                     "OneMinus" => {
-                        vn.inputs  = vec![VisualPin { name: "input".into(), pin_type: VisualPinType::Float, connected: false }];
-                        vn.outputs = vec![VisualPin { name: "out".into(),   pin_type: VisualPinType::Float, connected: false }];
+                        vn.inputs = vec![VisualPin {
+                            name: "input".into(),
+                            pin_type: VisualPinType::Float,
+                            connected: false,
+                        }];
+                        vn.outputs = vec![VisualPin {
+                            name: "out".into(),
+                            pin_type: VisualPinType::Float,
+                            connected: false,
+                        }];
                         vn.color = [80, 55, 110];
                         vn.size = [130.0, 60.0];
                     }
                     "MaterialOutput" => {
                         vn.inputs = vec![
-                            VisualPin { name: "base_r".into(),    pin_type: VisualPinType::Float, connected: false },
-                            VisualPin { name: "base_g".into(),    pin_type: VisualPinType::Float, connected: false },
-                            VisualPin { name: "base_b".into(),    pin_type: VisualPinType::Float, connected: false },
-                            VisualPin { name: "roughness".into(), pin_type: VisualPinType::Float, connected: false },
-                            VisualPin { name: "metallic".into(),  pin_type: VisualPinType::Float, connected: false },
+                            VisualPin {
+                                name: "base_r".into(),
+                                pin_type: VisualPinType::Float,
+                                connected: false,
+                            },
+                            VisualPin {
+                                name: "base_g".into(),
+                                pin_type: VisualPinType::Float,
+                                connected: false,
+                            },
+                            VisualPin {
+                                name: "base_b".into(),
+                                pin_type: VisualPinType::Float,
+                                connected: false,
+                            },
+                            VisualPin {
+                                name: "roughness".into(),
+                                pin_type: VisualPinType::Float,
+                                connected: false,
+                            },
+                            VisualPin {
+                                name: "metallic".into(),
+                                pin_type: VisualPinType::Float,
+                                connected: false,
+                            },
                         ];
                         vn.color = [140, 55, 55];
                         vn.size = [160.0, 175.0];
@@ -102,7 +148,9 @@ impl MaterialEditorUi {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
-        if !self.open { return; }
+        if !self.open {
+            return;
+        }
 
         egui::Window::new("Material Editor")
             .default_size([950.0, 560.0])
@@ -122,7 +170,8 @@ impl MaterialEditorUi {
                     if ui.button("+ Float").clicked() {
                         let n = self.graph.graph.node_count() as f32;
                         let _ = self.graph.add_node(
-                            "Float", Box::new(FloatConstNode::new(1.0)),
+                            "Float",
+                            Box::new(FloatConstNode::new(1.0)),
                             [50.0 + n * 20.0, 50.0 + n * 20.0],
                         );
                         let _ = self.graph.graph.cook();
@@ -131,7 +180,8 @@ impl MaterialEditorUi {
                     if ui.button("+ Multiply").clicked() {
                         let n = self.graph.graph.node_count() as f32;
                         let _ = self.graph.add_node(
-                            "Multiply", Box::new(MultiplyNode),
+                            "Multiply",
+                            Box::new(MultiplyNode),
                             [200.0 + n * 10.0, 50.0],
                         );
                         let _ = self.graph.graph.cook();
@@ -140,7 +190,9 @@ impl MaterialEditorUi {
                     if ui.button("+ Add").clicked() {
                         let n = self.graph.graph.node_count() as f32;
                         let _ = self.graph.add_node(
-                            "Add", Box::new(AddNode), [200.0 + n * 10.0, 100.0],
+                            "Add",
+                            Box::new(AddNode),
+                            [200.0 + n * 10.0, 100.0],
                         );
                         let _ = self.graph.graph.cook();
                         self.sync_widget();
@@ -150,7 +202,9 @@ impl MaterialEditorUi {
                     }
                 });
 
-                if self.name.is_empty() { return; }
+                if self.name.is_empty() {
+                    return;
+                }
                 ui.separator();
 
                 let actions = self.widget.show_egui(ui);
@@ -164,10 +218,17 @@ impl MaterialEditorUi {
                         NodeGraphAction::NodeSelected { id } => {
                             self.selected_node = Some(NodeId(id));
                         }
-                        NodeGraphAction::ConnectionCreated { from_node, from_pin, to_node, to_pin } => {
+                        NodeGraphAction::ConnectionCreated {
+                            from_node,
+                            from_pin,
+                            to_node,
+                            to_pin,
+                        } => {
                             let _ = self.graph.connect(
-                                NodeId(from_node), &from_pin,
-                                NodeId(to_node),   &to_pin,
+                                NodeId(from_node),
+                                &from_pin,
+                                NodeId(to_node),
+                                &to_pin,
                             );
                             let _ = self.graph.graph.cook();
                             self.sync_widget();
@@ -185,7 +246,9 @@ impl MaterialEditorUi {
 }
 
 impl Default for MaterialEditorUi {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

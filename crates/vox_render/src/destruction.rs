@@ -42,14 +42,16 @@ pub fn generate_debris(
     debris_count: usize,
     seed: u64,
 ) -> Vec<GaussianSplat> {
-    use rand::prelude::*;
-    use rand::SeedableRng;
     use half::f16;
+    use rand::SeedableRng;
+    use rand::prelude::*;
 
     let mut rng = StdRng::seed_from_u64(seed);
     let debris_spd: [u16; 16] = {
-        let v = [0.15f32, 0.15, 0.18, 0.20, 0.20, 0.20, 0.18, 0.16,
-                 0.15, 0.15, 0.18, 0.20, 0.20, 0.20, 0.18, 0.16];
+        let v = [
+            0.15f32, 0.15, 0.18, 0.20, 0.20, 0.20, 0.18, 0.16, 0.15, 0.15, 0.18, 0.20, 0.20, 0.20,
+            0.18, 0.16,
+        ];
         std::array::from_fn(|i| f16::from_f32(v[i]).to_bits())
     };
 

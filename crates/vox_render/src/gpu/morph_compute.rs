@@ -6,13 +6,13 @@ use wgpu;
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct GpuSplatDelta {
-    pub splat_index: u32,    // 4
+    pub splat_index: u32,     // 4
     pub d_position: [f32; 3], // 12
-    pub d_scale: [f32; 3],   // 12
+    pub d_scale: [f32; 3],    // 12
     pub _pad0: f32,           // 4
     pub d_spectral: [u16; 8], // 16
     pub _pad1: [u32; 4],      // 16
-    // Total: 4 + 12 + 12 + 4 + 16 + 16 = 64 bytes
+                              // Total: 4 + 12 + 12 + 4 + 16 + 16 = 64 bytes
 }
 
 /// Target offset range in the delta buffer.
@@ -151,7 +151,10 @@ impl MorphComputePass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: true,
         });
-        params_buf.slice(..).get_mapped_range_mut().copy_from_slice(&uniform_data);
+        params_buf
+            .slice(..)
+            .get_mapped_range_mut()
+            .copy_from_slice(&uniform_data);
         params_buf.unmap();
 
         let offsets_bytes: &[u8] = bytemuck::cast_slice(offsets.as_slice());
@@ -161,18 +164,36 @@ impl MorphComputePass {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: true,
         });
-        offsets_buf.slice(..).get_mapped_range_mut().copy_from_slice(offsets_bytes);
+        offsets_buf
+            .slice(..)
+            .get_mapped_range_mut()
+            .copy_from_slice(offsets_bytes);
         offsets_buf.unmap();
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("morph_compute_bg"),
             layout: &self.bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: base_splat_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: delta_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: offsets_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: output_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: base_splat_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: delta_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: output_buf.as_entire_binding(),
+                },
             ],
         });
 

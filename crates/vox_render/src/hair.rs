@@ -3,8 +3,8 @@
 //! HairSplatGenerator: converts strands to GaussianSplats for EWA rendering.
 
 use glam::Vec3;
-use vox_core::types::GaussianSplat;
 use half::f16;
+use vox_core::types::GaussianSplat;
 
 /// A single hair strand with physics state and spectral colour.
 pub struct HairStrand {
@@ -53,8 +53,14 @@ impl HairStrand {
     /// Based on d'Eon et al. absorption model.
     pub fn compute_spectral_melanin(eumelanin_density: f32, pheomelanin_density: f32) -> [f32; 16] {
         // Absorption coefficient spectra per unit density
-        const A_EU: [f32; 16] = [0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50, 0.45, 0.40, 0.38, 0.35, 0.33, 0.31, 0.30];
-        const A_PH: [f32; 16] = [0.80, 0.75, 0.70, 0.60, 0.50, 0.35, 0.20, 0.12, 0.05, 0.035, 0.02, 0.015, 0.010, 0.005, 0.002, 0.0];
+        const A_EU: [f32; 16] = [
+            0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50, 0.45, 0.40, 0.38, 0.35, 0.33,
+            0.31, 0.30,
+        ];
+        const A_PH: [f32; 16] = [
+            0.80, 0.75, 0.70, 0.60, 0.50, 0.35, 0.20, 0.12, 0.05, 0.035, 0.02, 0.015, 0.010, 0.005,
+            0.002, 0.0,
+        ];
 
         let mut result = [0.0f32; 16];
         for b in 0..16 {
@@ -142,7 +148,9 @@ pub struct HairSplatGenerator {
 
 impl HairSplatGenerator {
     pub fn new() -> Self {
-        Self { splats_per_strand: 4 }
+        Self {
+            splats_per_strand: 4,
+        }
     }
 
     /// Convert a HairStrand to GaussianSplats.
@@ -207,7 +215,10 @@ pub struct HairLodRadius {
 
 impl Default for HairLodRadius {
     fn default() -> Self {
-        Self { full_sim: 5.0, rigid: 20.0 }
+        Self {
+            full_sim: 5.0,
+            rigid: 20.0,
+        }
     }
 }
 
@@ -219,7 +230,10 @@ pub struct HairGroom {
 
 impl HairGroom {
     pub fn new() -> Self {
-        Self { strands: Vec::new(), lod_radius: HairLodRadius::default() }
+        Self {
+            strands: Vec::new(),
+            lod_radius: HairLodRadius::default(),
+        }
     }
 
     pub fn add_strand(&mut self, strand: HairStrand) {

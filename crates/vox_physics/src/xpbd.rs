@@ -202,7 +202,8 @@ impl SoftBody {
                 } => {
                     // Simple shape matching: pull each particle toward its rest
                     // position (relative to the group centroid).
-                    if particle_indices.len() != rest_positions.len() || particle_indices.is_empty() {
+                    if particle_indices.len() != rest_positions.len() || particle_indices.is_empty()
+                    {
                         continue;
                     }
 

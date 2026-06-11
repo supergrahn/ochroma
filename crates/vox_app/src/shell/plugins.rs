@@ -226,12 +226,10 @@ impl EditorPlugin for CruciblePlugin {
 /// The tab id of the Forge generator-graph editor.
 pub const FORGE_TAB: &str = "forge.canvas";
 
-/// The REAL Forge generator command names, read from
-/// `~/src/aetherspectra/forge/crates/forge-cli/src/cmd/` (each exposes
-/// `run(json) -> Result<ForgeVolume, String>`). The design's Forge wave wraps
-/// these as one synthesized node per domain; here they drive the canvas labels +
-/// the `forge.generate_*` palette commands. Categories are passed (not RGB) so
-/// headers/wires color by role through the host tokens.
+/// The Forge generator command names exposed by the standalone Forge workspace
+/// at `~/src/forge`. The CLI now also exposes a JSON manifest/run envelope for
+/// hosts that want discovery instead of direct Rust path deps; this in-process
+/// plugin keeps the same labels for the editor canvas and palette commands.
 ///
 /// `(command_name, friendly_title, NodeCategory)`. Forge generators are spatial
 /// world-builders, so they color `Spatial` (matching host terrain nodes) —

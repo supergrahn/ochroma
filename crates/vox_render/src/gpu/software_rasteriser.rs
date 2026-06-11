@@ -2,13 +2,13 @@ use glam::Vec4;
 use half::f16;
 use rayon::prelude::*;
 use vox_core::spectral::{
-    linear_to_srgb_gamma, spectral_to_xyz, xyz_to_srgb, Illuminant, SpectralBands,
+    Illuminant, SpectralBands, linear_to_srgb_gamma, spectral_to_xyz, xyz_to_srgb,
 };
 use vox_core::types::GaussianSplat;
 
 use spectra_gaussian_render::renderer::{
-    project_gaussian, Gaussian3D, GaussianCamera, ProjectedGaussian, ALPHA_THRESHOLD,
-    TRANSMITTANCE_THRESHOLD,
+    ALPHA_THRESHOLD, Gaussian3D, GaussianCamera, ProjectedGaussian, TRANSMITTANCE_THRESHOLD,
+    project_gaussian,
 };
 
 use crate::shadows::ShadowMapper;
@@ -193,11 +193,7 @@ impl SoftwareRasteriser {
                         splat.position()[1],
                         splat.position()[2],
                     );
-                    if sm.is_in_shadow(wp, 0.005) {
-                        0.3
-                    } else {
-                        1.0
-                    }
+                    if sm.is_in_shadow(wp, 0.005) { 0.3 } else { 1.0 }
                 } else {
                     1.0
                 };
@@ -263,9 +259,7 @@ impl SoftwareRasteriser {
                         let dx = px as f32 + 0.5 - cx;
                         // Q = conic·[dx,dy]; power = -0.5*Q.
                         let power = -0.5
-                            * (conic[0] * dx * dx
-                                + 2.0 * conic[1] * dx * dy
-                                + conic[2] * dy * dy);
+                            * (conic[0] * dx * dx + 2.0 * conic[1] * dx * dy + conic[2] * dy * dy);
                         if power > 0.0 {
                             continue;
                         }
@@ -323,7 +317,12 @@ impl SoftwareRasteriser {
         let mut projected: Vec<ProjectedSplat> = splats
             .iter()
             .filter_map(|splat| {
-                let pos = Vec4::new(splat.position()[0], splat.position()[1], splat.position()[2], 1.0);
+                let pos = Vec4::new(
+                    splat.position()[0],
+                    splat.position()[1],
+                    splat.position()[2],
+                    1.0,
+                );
                 let clip = vp * pos;
 
                 // Cull behind camera
@@ -336,7 +335,10 @@ impl SoftwareRasteriser {
                 let ndc_z = clip.z / clip.w;
 
                 // Frustum cull (with generous margin for large splats)
-                if !(-2.0..=2.0).contains(&ndc_x) || !(-2.0..=2.0).contains(&ndc_y) || !(-1.0..=1.0).contains(&ndc_z) {
+                if !(-2.0..=2.0).contains(&ndc_x)
+                    || !(-2.0..=2.0).contains(&ndc_y)
+                    || !(-1.0..=1.0).contains(&ndc_z)
+                {
                     return None;
                 }
 
@@ -367,9 +369,19 @@ impl SoftwareRasteriser {
                 let opacity = {
                     let base = splat.opacity() as f32 / 255.0;
                     let shadow_factor = if let Some(sm) = shadow_mapper {
-                        let world_pos = glam::Vec3::new(splat.position()[0], splat.position()[1], splat.position()[2]);
-                        if sm.is_in_shadow(world_pos, 0.005) { 0.3 } else { 1.0 }
-                    } else { 1.0 };
+                        let world_pos = glam::Vec3::new(
+                            splat.position()[0],
+                            splat.position()[1],
+                            splat.position()[2],
+                        );
+                        if sm.is_in_shadow(world_pos, 0.005) {
+                            0.3
+                        } else {
+                            1.0
+                        }
+                    } else {
+                        1.0
+                    };
                     base * shadow_factor
                 };
 
@@ -387,7 +399,11 @@ impl SoftwareRasteriser {
             .collect();
 
         // 4: Sort back-to-front (farthest first)
-        projected.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
+        projected.sort_by(|a, b| {
+            b.depth
+                .partial_cmp(&a.depth)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // 5: Rasterise each projected splat as 2D Gaussian
         for ps in &projected {
@@ -689,8 +705,8 @@ mod tests {
             std::array::from_fn(|i| f16::from_bits(splat.spectral()[i]).to_f32());
         let dx = pg.screen_pos[0] - (pg.screen_pos[0].round());
         let dy = pg.screen_pos[1] - (pg.screen_pos[1].round());
-        let power = -0.5
-            * (pg.conic[0] * dx * dx + 2.0 * pg.conic[1] * dx * dy + pg.conic[2] * dy * dy);
+        let power =
+            -0.5 * (pg.conic[0] * dx * dx + 2.0 * pg.conic[1] * dx * dy + pg.conic[2] * dy * dy);
         let alpha = (splat.opacity() as f32 / 255.0) * power.exp();
         let band3 = alpha * spectral[3];
         let band10 = alpha * spectral[10];

@@ -90,10 +90,11 @@ impl LevelStreamingManager {
             self.levels[idx].priority = rank as u32;
 
             match &self.levels[idx].state {
-                LevelState::Unloaded if dist <= self.load_distance
-                    && self.loaded_count() < self.max_loaded => {
-                        self.levels[idx].state = LevelState::Loading;
-                    }
+                LevelState::Unloaded
+                    if dist <= self.load_distance && self.loaded_count() < self.max_loaded =>
+                {
+                    self.levels[idx].state = LevelState::Loading;
+                }
                 LevelState::Loading => {
                     // Simulate instant load for CPU-side logic
                     self.levels[idx].state = LevelState::Loaded { splat_count: 0 };

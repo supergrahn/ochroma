@@ -2,7 +2,7 @@
 //! its CPU oracle on real hardware. Skips gracefully on a no-GPU / software-only
 //! lane so CI stays green.
 
-use vox_render::gpu::tile_range_build::{cpu_tile_ranges, TileRangeBuildPass};
+use vox_render::gpu::tile_range_build::{TileRangeBuildPass, cpu_tile_ranges};
 use wgpu::util::DeviceExt;
 
 fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -66,7 +66,14 @@ fn tile_range_matches_cpu_oracle() {
     let pass = TileRangeBuildPass::new(&device);
     let mut encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("enc") });
-    pass.dispatch(&device, &mut encoder, &keys, &ranges, sorted.len() as u32, num_tiles);
+    pass.dispatch(
+        &device,
+        &mut encoder,
+        &keys,
+        &ranges,
+        sorted.len() as u32,
+        num_tiles,
+    );
     encoder.copy_buffer_to_buffer(&ranges, 0, &readback, 0, ranges_bytes);
     queue.submit(Some(encoder.finish()));
 
@@ -87,7 +94,10 @@ fn tile_range_matches_cpu_oracle() {
     eprintln!("[tile_range_build_test] gpu={gpu:?} cpu={cpu:?}");
 
     // Bit-exact vs the oracle AND the hand-worked literal.
-    assert_eq!(gpu, cpu, "GPU tile ranges must match the CPU oracle exactly");
+    assert_eq!(
+        gpu, cpu,
+        "GPU tile ranges must match the CPU oracle exactly"
+    );
     assert_eq!(
         gpu,
         vec![[0, 2], [0, 0], [2, 5], [0, 0], [0, 0], [5, 6]],

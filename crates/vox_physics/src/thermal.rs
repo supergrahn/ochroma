@@ -48,8 +48,7 @@ impl ThermalEmitter {
                 let dist_sq = (pos - src_pos).length_squared();
                 if dist_sq < r2_limit {
                     let attenuation = 1.0 - (dist_sq / r2_limit).sqrt();
-                    self.heat[i] =
-                        (self.heat[i] + power * attenuation * 0.1).clamp(0.0, 1.0);
+                    self.heat[i] = (self.heat[i] + power * attenuation * 0.1).clamp(0.0, 1.0);
                 }
             }
         }

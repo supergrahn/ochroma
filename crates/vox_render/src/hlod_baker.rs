@@ -29,8 +29,7 @@ impl HLODBaker {
             .map(|(level_idx, spec)| {
                 let k = (cell_splats.len() / spec.reduction_factor as usize).max(1);
                 let clustered = Self::kmeans_cluster(cell_splats, k, 50);
-                let coverage_error =
-                    Self::compute_coverage_error(&clustered, cell_splats, 1000.0);
+                let coverage_error = Self::compute_coverage_error(&clustered, cell_splats, 1000.0);
                 HLODLevel {
                     level: level_idx as u32,
                     splats: clustered,
@@ -77,7 +76,10 @@ impl HLODBaker {
 
             let candidate_count = d2.len() as u64;
             lcg = lcg_next(lcg);
-            let pick = ((i as u64).wrapping_mul(1_664_525).wrapping_add(1_013_904_223) ^ lcg)
+            let pick = ((i as u64)
+                .wrapping_mul(1_664_525)
+                .wrapping_add(1_013_904_223)
+                ^ lcg)
                 % candidate_count;
             centroids.push(splats[d2[pick as usize].1]);
         }
@@ -141,7 +143,9 @@ impl HLODBaker {
 // --- Helpers ---
 
 fn lcg_next(state: u64) -> u64 {
-    state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407)
+    state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407)
 }
 
 fn nearest_centroid(s: &GaussianSplat, centroids: &[GaussianSplat]) -> usize {
@@ -263,7 +267,13 @@ mod tests {
 
     fn make_splat(x: f32, y: f32, z: f32, spectral_val: f32, opacity: u8) -> GaussianSplat {
         let spec_bits = f16::from_f32(spectral_val.clamp(0.0, 1.0)).to_bits();
-        GaussianSplat::volume([x, y, z], [0.1; 3], glam::Quat::IDENTITY, opacity, [spec_bits; 16])
+        GaussianSplat::volume(
+            [x, y, z],
+            [0.1; 3],
+            glam::Quat::IDENTITY,
+            opacity,
+            [spec_bits; 16],
+        )
     }
 
     fn make_splats_grid(n: usize) -> Vec<GaussianSplat> {
@@ -279,11 +289,17 @@ mod tests {
     #[test]
     fn hlod_baker_bake_reduces_splats() {
         let splats = make_splats_grid(1000);
-        let levels = vec![HLODSpec { reduction_factor: 64 }];
+        let levels = vec![HLODSpec {
+            reduction_factor: 64,
+        }];
         let result = HLODBaker::bake_cell(&splats, &levels);
         assert_eq!(result.len(), 1);
         // k = 1000 / 64 = 15, .max(1) = 15; so ≤ 16 splats
-        assert!(result[0].splats.len() <= 16, "got {} splats", result[0].splats.len());
+        assert!(
+            result[0].splats.len() <= 16,
+            "got {} splats",
+            result[0].splats.len()
+        );
     }
 
     #[test]
@@ -293,13 +309,21 @@ mod tests {
         let splats: Vec<GaussianSplat> = (0..50)
             .map(|i| make_splat(i as f32, 0.0, 0.0, target, 200))
             .collect();
-        let levels = vec![HLODSpec { reduction_factor: 5 }];
+        let levels = vec![HLODSpec {
+            reduction_factor: 5,
+        }];
         let result = HLODBaker::bake_cell(&splats, &levels);
         for s in &result[0].splats {
             let spec = unpack_spectral(s);
             for b in 0..16 {
                 let diff = (spec[b] - target).abs();
-                assert!(diff < 0.02, "spectral[{}] = {} expected ~{}", b, spec[b], target);
+                assert!(
+                    diff < 0.02,
+                    "spectral[{}] = {} expected ~{}",
+                    b,
+                    spec[b],
+                    target
+                );
             }
         }
     }
@@ -307,7 +331,9 @@ mod tests {
     #[test]
     fn hlod_baker_single_splat() {
         let splats = vec![make_splat(1.0, 2.0, 3.0, 0.5, 128)];
-        let levels = vec![HLODSpec { reduction_factor: 1 }];
+        let levels = vec![HLODSpec {
+            reduction_factor: 1,
+        }];
         let result = HLODBaker::bake_cell(&splats, &levels);
         assert_eq!(result[0].splats.len(), 1);
         let s = &result[0].splats[0];
@@ -320,8 +346,12 @@ mod tests {
     fn hlod_baker_two_levels() {
         let splats = make_splats_grid(500);
         let levels = vec![
-            HLODSpec { reduction_factor: 10 },
-            HLODSpec { reduction_factor: 100 },
+            HLODSpec {
+                reduction_factor: 10,
+            },
+            HLODSpec {
+                reduction_factor: 100,
+            },
         ];
         let result = HLODBaker::bake_cell(&splats, &levels);
         assert_eq!(result.len(), 2);
@@ -348,13 +378,20 @@ mod tests {
             make_splat(1.0, 0.0, 0.0, 0.6, 150),
         ];
         // reduction_factor=1 → k=2 for 2 splats; also try factor=1 on 1 splat.
-        let levels = vec![HLODSpec { reduction_factor: 1 }];
+        let levels = vec![HLODSpec {
+            reduction_factor: 1,
+        }];
         let result = HLODBaker::bake_cell(&splats, &levels);
         assert!(!result[0].splats.is_empty());
 
         // Explicitly request more k than splats via bake_cell with a 1-splat input.
         let one = vec![make_splat(0.0, 0.0, 0.0, 0.5, 200)];
-        let result2 = HLODBaker::bake_cell(&one, &[HLODSpec { reduction_factor: 1 }]);
+        let result2 = HLODBaker::bake_cell(
+            &one,
+            &[HLODSpec {
+                reduction_factor: 1,
+            }],
+        );
         assert_eq!(result2[0].splats.len(), 1);
 
         // Direct call with k > splats.

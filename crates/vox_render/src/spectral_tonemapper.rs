@@ -1,24 +1,26 @@
-use crate::spectral_framebuffer::SpectralFramebuffer;
 use crate::species_view::SpeciesView;
-use vox_core::spectral::{spectral_to_xyz, xyz_to_srgb, linear_to_srgb_gamma, SpectralBands, Illuminant};
+use crate::spectral_framebuffer::SpectralFramebuffer;
+use vox_core::spectral::{
+    Illuminant, SpectralBands, linear_to_srgb_gamma, spectral_to_xyz, xyz_to_srgb,
+};
 
 /// Tone mapping operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToneMapOperator {
-    None,    // Linear clamp
+    None,     // Linear clamp
     Reinhard, // x / (1 + x)
-    ACES,    // Academy Color Encoding System
-    Filmic,  // Uncharted 2 filmic curve
+    ACES,     // Academy Color Encoding System
+    Filmic,   // Uncharted 2 filmic curve
 }
 
 /// Settings for the tone mapper.
 #[derive(Debug, Clone)]
 pub struct ToneMapSettings {
     pub operator: ToneMapOperator,
-    pub exposure: f32,     // EV adjustment (1.0 = neutral)
-    pub white_point: f32,  // Brightest value that maps to white
-    pub gamma: f32,        // Display gamma (2.2 for sRGB)
-    pub saturation: f32,   // 0 = greyscale, 1 = normal, >1 = boosted
+    pub exposure: f32,    // EV adjustment (1.0 = neutral)
+    pub white_point: f32, // Brightest value that maps to white
+    pub gamma: f32,       // Display gamma (2.2 for sRGB)
+    pub saturation: f32,  // 0 = greyscale, 1 = normal, >1 = boosted
     /// If Some, remap spectral data through species sensitivity before tonemapping.
     pub species_view: Option<SpeciesView>,
 }
@@ -148,7 +150,12 @@ mod cie_tests {
         let [x, y, z] = spectral_to_xyz(&spd);
         // x̄ at 580nm = 0.74300, ȳ = 0.86800, z̄ ≈ 0
         println!("580nm: x={:.4}, y={:.4}, z={:.4}", x, y, z);
-        assert!(x > y * 0.5, "580nm should have strong X: x={:.4}, y={:.4}", x, y);
+        assert!(
+            x > y * 0.5,
+            "580nm should have strong X: x={:.4}, y={:.4}",
+            x,
+            y
+        );
         assert!(z < 0.01, "580nm should have near-zero Z: z={:.4}", z);
     }
 
@@ -167,8 +174,16 @@ mod cie_tests {
         let spd = [1.0f32; 16];
         let [x, y, z] = spectral_to_xyz(&spd);
         let ratio_xy = (x / (y + 1e-6)).max(y / (x + 1e-6));
-        println!("flat SPD: x={:.3}, y={:.3}, z={:.3}, ratio_xy={:.3}", x, y, z, ratio_xy);
-        assert!(ratio_xy < 5.0, "flat SPD X/Y ratio too extreme: x={:.3}, y={:.3}", x, y);
+        println!(
+            "flat SPD: x={:.3}, y={:.3}, z={:.3}, ratio_xy={:.3}",
+            x, y, z, ratio_xy
+        );
+        assert!(
+            ratio_xy < 5.0,
+            "flat SPD X/Y ratio too extreme: x={:.3}, y={:.3}",
+            x,
+            y
+        );
     }
 }
 

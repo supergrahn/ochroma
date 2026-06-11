@@ -5,8 +5,12 @@ fn vegetation_transmits_red_more_than_blue() {
     let profile = SubsurfaceProfile::vegetation();
     let transmitted = profile.spectral_shift(1.0);
     // Red/NIR bands (index 6,7) should transmit more than blue (index 0,1)
-    assert!(transmitted.0[6] > transmitted.0[0],
-        "Red should transmit more than blue through leaves: red={}, blue={}", transmitted.0[6], transmitted.0[0]);
+    assert!(
+        transmitted.0[6] > transmitted.0[0],
+        "Red should transmit more than blue through leaves: red={}, blue={}",
+        transmitted.0[6],
+        transmitted.0[0]
+    );
 }
 
 #[test]
@@ -15,7 +19,11 @@ fn thicker_material_transmits_less() {
     let thin = profile.spectral_shift(0.1);
     let thick = profile.spectral_shift(1.0);
     for i in 0..8 {
-        assert!(thin.0[i] >= thick.0[i], "Thicker material should transmit less at band {}", i);
+        assert!(
+            thin.0[i] >= thick.0[i],
+            "Thicker material should transmit less at band {}",
+            i
+        );
     }
 }
 

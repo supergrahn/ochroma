@@ -6,14 +6,14 @@ use glam::Vec3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum CollisionLayer {
-    Default    = 0b00000001,
-    Player     = 0b00000010,
-    Enemy      = 0b00000100,
-    Terrain    = 0b00001000,
+    Default = 0b00000001,
+    Player = 0b00000010,
+    Enemy = 0b00000100,
+    Terrain = 0b00001000,
     Projectile = 0b00010000,
-    Trigger    = 0b00100000,
-    Fluid      = 0b01000000,
-    Debris     = 0b10000000,
+    Trigger = 0b00100000,
+    Fluid = 0b01000000,
+    Debris = 0b10000000,
 }
 
 /// Bitmask filter controlling which layers collide.
@@ -56,7 +56,13 @@ pub struct RaycastHit {
 
 /// Physics query interface.
 pub trait PhysicsQuery {
-    fn raycast(&self, origin: Vec3, direction: Vec3, max_dist: f32, mask: u32) -> Option<RaycastHit>;
+    fn raycast(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_dist: f32,
+        mask: u32,
+    ) -> Option<RaycastHit>;
     fn sphere_overlap(&self, center: Vec3, radius: f32, mask: u32) -> Vec<u32>;
     fn spectral_raycast(&self, origin: Vec3, direction: Vec3, max_dist: f32) -> Option<RaycastHit>;
 }
@@ -87,7 +93,13 @@ impl LayeredPhysicsWorld {
 
 impl PhysicsQuery for LayeredPhysicsWorld {
     /// Slab test against all AABB bodies filtered by mask.
-    fn raycast(&self, origin: Vec3, direction: Vec3, max_dist: f32, mask: u32) -> Option<RaycastHit> {
+    fn raycast(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_dist: f32,
+        mask: u32,
+    ) -> Option<RaycastHit> {
         // Normalize direction; if zero-length return None
         let dir_len = direction.length();
         if dir_len < 1e-10 {
@@ -109,23 +121,35 @@ impl PhysicsQuery for LayeredPhysicsWorld {
 
             // Per-axis t values (avoid div-by-zero with large sentinel)
             let inv_dir = Vec3::new(
-                if dir.x.abs() > 1e-10 { 1.0 / dir.x } else { f32::INFINITY },
-                if dir.y.abs() > 1e-10 { 1.0 / dir.y } else { f32::INFINITY },
-                if dir.z.abs() > 1e-10 { 1.0 / dir.z } else { f32::INFINITY },
+                if dir.x.abs() > 1e-10 {
+                    1.0 / dir.x
+                } else {
+                    f32::INFINITY
+                },
+                if dir.y.abs() > 1e-10 {
+                    1.0 / dir.y
+                } else {
+                    f32::INFINITY
+                },
+                if dir.z.abs() > 1e-10 {
+                    1.0 / dir.z
+                } else {
+                    f32::INFINITY
+                },
             );
 
             let t1 = (aabb_min - origin) * inv_dir;
             let t2 = (aabb_max - origin) * inv_dir;
 
             let t_near_x = t1.x.min(t2.x);
-            let t_far_x  = t1.x.max(t2.x);
+            let t_far_x = t1.x.max(t2.x);
             let t_near_y = t1.y.min(t2.y);
-            let t_far_y  = t1.y.max(t2.y);
+            let t_far_y = t1.y.max(t2.y);
             let t_near_z = t1.z.min(t2.z);
-            let t_far_z  = t1.z.max(t2.z);
+            let t_far_z = t1.z.max(t2.z);
 
             let t_near = t_near_x.max(t_near_y).max(t_near_z);
-            let t_far  = t_far_x.min(t_far_y).min(t_far_z);
+            let t_far = t_far_x.min(t_far_y).min(t_far_z);
 
             if t_near > t_far || t_far < 0.0 {
                 continue; // miss

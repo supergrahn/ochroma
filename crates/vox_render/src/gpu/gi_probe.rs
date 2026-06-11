@@ -10,9 +10,9 @@ use wgpu::util::DeviceExt;
 pub struct SpectralProbe {
     /// radiance[face][band]
     pub radiance: [[f32; 8]; 6], // 192 bytes
-    pub last_updated: u32,       // 4 bytes
-    pub world_pos: [f32; 3],     // 12 bytes
-    // total: 208 bytes — no padding needed
+    pub last_updated: u32, // 4 bytes
+    pub world_pos: [f32; 3], // 12 bytes
+                           // total: 208 bytes — no padding needed
 }
 
 /// GPU-layout probe for std430 upload.
@@ -319,37 +319,34 @@ impl GiProbePass {
             dims: [1, 1, 1],
             _pad: 0,
         };
-        let sdf_params_buf =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("gi_probe_sdf_params"),
-                contents: bytemuck::bytes_of(&sdf_params),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
+        let sdf_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gi_probe_sdf_params"),
+            contents: bytemuck::bytes_of(&sdf_params),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
 
-        let bind_group =
-            device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("gi_probe_bind_group"),
-                    layout: &self.bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: params_buf.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: self.gpu_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: sdf_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: sdf_params_buf.as_entire_binding(),
-                        },
-                    ],
-                });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gi_probe_bind_group"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: sdf_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: sdf_params_buf.as_entire_binding(),
+                },
+            ],
+        });
 
         let workgroup_count = (candidates.len() * 6) as u32;
         {

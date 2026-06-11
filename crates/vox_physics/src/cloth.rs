@@ -107,8 +107,8 @@ impl ClothSimulation {
             }
             let velocity = particle.position - particle.prev_position;
             particle.prev_position = particle.position;
-            particle.position += velocity * (1.0 - self.damping)
-                + (self.gravity + particle.acceleration) * dt * dt;
+            particle.position +=
+                velocity * (1.0 - self.damping) + (self.gravity + particle.acceleration) * dt * dt;
             particle.acceleration = Vec3::ZERO;
         }
 

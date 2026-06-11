@@ -2,9 +2,9 @@
 //! SplatDelta includes d_spectral[8] for per-band emission changes.
 //! MorphComputePass: GPU compute that applies up to 16 active targets.
 
-use vox_core::types::GaussianSplat;
 use half::f16;
 use std::sync::Arc;
+use vox_core::types::GaussianSplat;
 
 /// Per-splat delta for a morph target. Sparse — only changed splats stored.
 #[derive(Debug, Clone)]
@@ -49,7 +49,10 @@ pub struct MorphTarget {
 
 impl MorphTarget {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), deltas: Vec::new() }
+        Self {
+            name: name.into(),
+            deltas: Vec::new(),
+        }
     }
 
     pub fn add_delta(&mut self, delta: SplatDelta) {
@@ -82,12 +85,20 @@ impl MorphTargetSet {
         let mut result = (*self.base_splats).clone();
 
         for (target_idx, target) in self.targets.iter().enumerate() {
-            let w = if target_idx < weights.len() { weights[target_idx] } else { 0.0 };
-            if w < 1e-5 { continue; }
+            let w = if target_idx < weights.len() {
+                weights[target_idx]
+            } else {
+                0.0
+            };
+            if w < 1e-5 {
+                continue;
+            }
 
             for delta in &target.deltas {
                 let idx = delta.splat_index as usize;
-                if idx >= result.len() { continue; }
+                if idx >= result.len() {
+                    continue;
+                }
 
                 let splat = &mut result[idx];
                 {
@@ -119,8 +130,16 @@ impl MorphTargetSet {
     /// `name`: morph target name.
     /// `base` and `deformed` must be the same length.
     /// Only splats with meaningful changes are included (pos change > 1e-4 or spectral change > 0.001).
-    pub fn compute_diff(name: impl Into<String>, base: &[GaussianSplat], deformed: &[GaussianSplat]) -> MorphTarget {
-        assert_eq!(base.len(), deformed.len(), "base and deformed splat arrays must have equal length");
+    pub fn compute_diff(
+        name: impl Into<String>,
+        base: &[GaussianSplat],
+        deformed: &[GaussianSplat],
+    ) -> MorphTarget {
+        assert_eq!(
+            base.len(),
+            deformed.len(),
+            "base and deformed splat arrays must have equal length"
+        );
         let mut target = MorphTarget::new(name);
 
         for (i, (b, d)) in base.iter().zip(deformed.iter()).enumerate() {
@@ -144,7 +163,9 @@ impl MorphTargetSet {
                 let bv = f16::from_bits(b.spectral()[band]).to_f32();
                 let dv = f16::from_bits(d.spectral()[band]).to_f32();
                 let diff = dv - bv;
-                if diff.abs() > 0.001 { spec_changed = true; }
+                if diff.abs() > 0.001 {
+                    spec_changed = true;
+                }
                 *ds_val = f16::from_f32(diff).to_bits();
             }
 
@@ -247,6 +268,10 @@ mod tests {
         let target = MorphTargetSet::compute_diff("spec_diff", &base, &deformed);
         assert_eq!(target.deltas.len(), 1);
         let d_spec = target.deltas[0].d_spectral_f32();
-        assert!(d_spec[3].abs() > 0.001, "expected nonzero spectral delta at band 3, got {}", d_spec[3]);
+        assert!(
+            d_spec[3].abs() > 0.001,
+            "expected nonzero spectral delta at band 3, got {}",
+            d_spec[3]
+        );
     }
 }

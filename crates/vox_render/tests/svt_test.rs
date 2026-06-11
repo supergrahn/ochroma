@@ -3,7 +3,11 @@ use vox_render::svt::*;
 #[test]
 fn touch_and_load_tile() {
     let mut cache = TileCache::new(10);
-    let id = TileId { x: 0, y: 0, mip_level: 0 };
+    let id = TileId {
+        x: 0,
+        y: 0,
+        mip_level: 0,
+    };
     cache.touch(id);
     assert_eq!(cache.tile_count(), 1);
     assert!(!cache.is_loaded(id));
@@ -14,9 +18,21 @@ fn touch_and_load_tile() {
 #[test]
 fn evicts_lru_when_over_budget() {
     let mut cache = TileCache::new(2);
-    let t0 = TileId { x: 0, y: 0, mip_level: 0 };
-    let t1 = TileId { x: 1, y: 0, mip_level: 0 };
-    let t2 = TileId { x: 2, y: 0, mip_level: 0 };
+    let t0 = TileId {
+        x: 0,
+        y: 0,
+        mip_level: 0,
+    };
+    let t1 = TileId {
+        x: 1,
+        y: 0,
+        mip_level: 0,
+    };
+    let t2 = TileId {
+        x: 2,
+        y: 0,
+        mip_level: 0,
+    };
     cache.touch(t0);
     cache.touch(t1);
     cache.touch(t2);
@@ -29,9 +45,21 @@ fn evicts_lru_when_over_budget() {
 #[test]
 fn touch_refreshes_access_order() {
     let mut cache = TileCache::new(2);
-    let t0 = TileId { x: 0, y: 0, mip_level: 0 };
-    let t1 = TileId { x: 1, y: 0, mip_level: 0 };
-    let t2 = TileId { x: 2, y: 0, mip_level: 0 };
+    let t0 = TileId {
+        x: 0,
+        y: 0,
+        mip_level: 0,
+    };
+    let t1 = TileId {
+        x: 1,
+        y: 0,
+        mip_level: 0,
+    };
+    let t2 = TileId {
+        x: 2,
+        y: 0,
+        mip_level: 0,
+    };
     cache.touch(t0);
     cache.touch(t1);
     cache.touch(t0); // refresh t0

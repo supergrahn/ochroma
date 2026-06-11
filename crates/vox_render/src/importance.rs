@@ -128,11 +128,7 @@ fn spectral_cosine(a: &GaussianSplat, b: &GaussianSplat) -> f32 {
         nb += vb * vb;
     }
     let denom = (na.sqrt()) * (nb.sqrt());
-    if denom <= 1e-12 {
-        0.0
-    } else {
-        dot / denom
-    }
+    if denom <= 1e-12 { 0.0 } else { dot / denom }
 }
 
 /// Uniform spatial hash grid over splat centroids for O(1)-amortized neighbor
@@ -229,7 +225,11 @@ pub fn importance_scores(splats: &[GaussianSplat]) -> Vec<f32> {
     // non-finite and the grid keys meaningless. `.max(1e-3)` floors both the
     // median and the final cell, and SpatialGrid::build floors `cell` again.
     let median = sizes[n / 2];
-    let median_extent = if median.is_finite() { median.max(1e-3) } else { 1e-3 };
+    let median_extent = if median.is_finite() {
+        median.max(1e-3)
+    } else {
+        1e-3
+    };
     let cell = (median_extent * 4.0).max(1e-3);
 
     let grid = SpatialGrid::build(splats, cell);
@@ -665,12 +665,19 @@ mod tests {
         // counted-similar tally is K or K-1 — both strongly suppressed. The point is
         // the work is bounded, not that the approximation is uniform.)
         assert!(scores.iter().all(|s| s.is_finite()), "all scores finite");
-        assert!(scores.iter().all(|s| *s > 0.0), "all scores positive (opaque, energetic splats)");
+        assert!(
+            scores.iter().all(|s| *s > 0.0),
+            "all scores positive (opaque, energetic splats)"
+        );
         // The redundancy cap bounds the down-weight: with K=64 similar neighbors the
         // weight is 1/(1+0.5*K) ~= 0.03, far below an isolated splat's 1.0 — proving
         // the cluster is still suppressed, just in O(n·K) not O(n²).
         let min_w = 1.0 / (1.0 + REDUNDANCY_WEIGHT * MAX_NEIGHBOR_CANDIDATES as f32);
-        println!("[co_located_splats_complete_quickly] n={n} elapsed={elapsed:?} score[0]={} score[last]={} (suppressed; min redundancy ~{min_w:.3})", scores[0], scores[n - 1]);
+        println!(
+            "[co_located_splats_complete_quickly] n={n} elapsed={elapsed:?} score[0]={} score[last]={} (suppressed; min redundancy ~{min_w:.3})",
+            scores[0],
+            scores[n - 1]
+        );
         // Bound is an order-of-magnitude discriminator, not a benchmark: the capped
         // O(n·K) path runs ~2.2s in debug on this scene; the O(n²) regression this
         // guards (50k² pair evaluations) takes minutes. The original 2s bound sat
@@ -701,6 +708,9 @@ mod tests {
         }
         let scores = importance_scores(&splats);
         assert_eq!(scores.len(), 1000);
-        assert!(scores.iter().all(|s| s.is_finite()), "all scores finite on degenerate scene");
+        assert!(
+            scores.iter().all(|s| s.is_finite()),
+            "all scores finite on degenerate scene"
+        );
     }
 }

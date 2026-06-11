@@ -44,7 +44,9 @@ impl Default for CameraSettings {
 pub struct TimeStep(pub f32);
 
 impl Default for TimeStep {
-    fn default() -> Self { Self(1.0 / 60.0) }
+    fn default() -> Self {
+        Self(1.0 / 60.0)
+    }
 }
 
 // ── Systems ────────────────────────────────────────────────────────────────
@@ -64,7 +66,11 @@ fn projected_pixels(distance: f32, fov_y: f32, screen_height: f32) -> f32 {
 pub fn lod_select_system(
     camera: Res<CameraSettings>,
     mut crossfade: ResMut<LodCrossfadeManager>,
-    mut query: Query<(Entity, &vox_core::ecs::TransformComponent, &mut vox_core::ecs::LodStateComponent)>,
+    mut query: Query<(
+        Entity,
+        &vox_core::ecs::TransformComponent,
+        &mut vox_core::ecs::LodStateComponent,
+    )>,
 ) {
     for (entity, transform, mut lod_state) in query.iter_mut() {
         let distance = (transform.position - camera.position).length();
@@ -102,10 +108,7 @@ pub fn lod_crossfade_system(
 
 /// Convert camera world position to a TileCoord and call TileManager::update_camera
 /// to activate the surrounding tile grid and evict distant tiles.
-pub fn tile_streaming_system(
-    camera: Res<CameraSettings>,
-    mut tile_manager: ResMut<TileManager>,
-) {
+pub fn tile_streaming_system(camera: Res<CameraSettings>, mut tile_manager: ResMut<TileManager>) {
     let world_coord = WorldCoord::from_absolute(
         camera.position.x as f64,
         camera.position.y as f64,
@@ -128,7 +131,11 @@ pub struct LodStreamingPlugin {
 }
 
 impl Default for LodStreamingPlugin {
-    fn default() -> Self { Self { transition_duration: 0.5 } }
+    fn default() -> Self {
+        Self {
+            transition_duration: 0.5,
+        }
+    }
 }
 
 impl bevy_app::Plugin for LodStreamingPlugin {
@@ -142,7 +149,12 @@ impl bevy_app::Plugin for LodStreamingPlugin {
         app.insert_resource(TileManager::new());
         app.add_systems(
             bevy_app::Update,
-            (lod_select_system, lod_crossfade_system, tile_streaming_system).chain(),
+            (
+                lod_select_system,
+                lod_crossfade_system,
+                tile_streaming_system,
+            )
+                .chain(),
         );
     }
 }
@@ -172,22 +184,34 @@ mod tests {
         cam.position = Vec3::ZERO;
         cam.screen_height = 2160.0; // 4K: projected_pixels(10m, 45°, 2160) ≈ 260px → LOD 0
         world.insert_resource(cam);
-        world.insert_resource(LodCrossfadeManager { transitions: vec![], transition_duration: 0.5 });
+        world.insert_resource(LodCrossfadeManager {
+            transitions: vec![],
+            transition_duration: 0.5,
+        });
 
-        let entity = world.spawn((
-            vox_core::ecs::TransformComponent {
-                position: Vec3::new(0.0, 0.0, 10.0),
-                ..Default::default()
-            },
-            vox_core::ecs::LodStateComponent::default(),
-        )).id();
+        let entity = world
+            .spawn((
+                vox_core::ecs::TransformComponent {
+                    position: Vec3::new(0.0, 0.0, 10.0),
+                    ..Default::default()
+                },
+                vox_core::ecs::LodStateComponent::default(),
+            ))
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(lod_select_system);
         schedule.run(&mut world);
 
-        let lod = world.entity(entity).get::<vox_core::ecs::LodStateComponent>().unwrap();
-        assert_eq!(lod.current_level, 0, "10 m away should be LOD 0, got {}", lod.current_level);
+        let lod = world
+            .entity(entity)
+            .get::<vox_core::ecs::LodStateComponent>()
+            .unwrap();
+        assert_eq!(
+            lod.current_level, 0,
+            "10 m away should be LOD 0, got {}",
+            lod.current_level
+        );
     }
 
     #[test]
@@ -196,28 +220,43 @@ mod tests {
         let mut cam = CameraSettings::default();
         cam.position = Vec3::ZERO;
         world.insert_resource(cam);
-        world.insert_resource(LodCrossfadeManager { transitions: vec![], transition_duration: 0.5 });
+        world.insert_resource(LodCrossfadeManager {
+            transitions: vec![],
+            transition_duration: 0.5,
+        });
 
-        let entity = world.spawn((
-            vox_core::ecs::TransformComponent {
-                position: Vec3::new(0.0, 0.0, 500.0),
-                ..Default::default()
-            },
-            vox_core::ecs::LodStateComponent::default(),
-        )).id();
+        let entity = world
+            .spawn((
+                vox_core::ecs::TransformComponent {
+                    position: Vec3::new(0.0, 0.0, 500.0),
+                    ..Default::default()
+                },
+                vox_core::ecs::LodStateComponent::default(),
+            ))
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(lod_select_system);
         schedule.run(&mut world);
 
-        let lod = world.entity(entity).get::<vox_core::ecs::LodStateComponent>().unwrap();
-        assert_eq!(lod.current_level, 3, "500 m away should be LOD 3, got {}", lod.current_level);
+        let lod = world
+            .entity(entity)
+            .get::<vox_core::ecs::LodStateComponent>()
+            .unwrap();
+        assert_eq!(
+            lod.current_level, 3,
+            "500 m away should be LOD 3, got {}",
+            lod.current_level
+        );
     }
 
     #[test]
     fn crossfade_progresses_over_ticks() {
         let mut world = World::new();
-        world.insert_resource(LodCrossfadeManager { transitions: vec![], transition_duration: 1.0 });
+        world.insert_resource(LodCrossfadeManager {
+            transitions: vec![],
+            transition_duration: 1.0,
+        });
         world.insert_resource(TimeStep(0.1));
         world.insert_resource(CameraSettings {
             position: Vec3::ZERO,
@@ -226,13 +265,18 @@ mod tests {
         });
 
         // Spawn a far entity so lod_select picks LOD 3
-        let entity = world.spawn((
-            vox_core::ecs::TransformComponent {
-                position: Vec3::new(0.0, 0.0, 500.0),
-                ..Default::default()
-            },
-            vox_core::ecs::LodStateComponent { current_level: 0, crossfade: 0.0 },
-        )).id();
+        let entity = world
+            .spawn((
+                vox_core::ecs::TransformComponent {
+                    position: Vec3::new(0.0, 0.0, 500.0),
+                    ..Default::default()
+                },
+                vox_core::ecs::LodStateComponent {
+                    current_level: 0,
+                    crossfade: 0.0,
+                },
+            ))
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems((lod_select_system, lod_crossfade_system).chain());
@@ -240,7 +284,10 @@ mod tests {
         // Run once — lod_select requests 0→3 transition; lod_crossfade advances it by 0.1 s
         schedule.run(&mut world);
 
-        let lod = world.entity(entity).get::<vox_core::ecs::LodStateComponent>().unwrap();
+        let lod = world
+            .entity(entity)
+            .get::<vox_core::ecs::LodStateComponent>()
+            .unwrap();
         assert!(
             lod.crossfade > 0.0 && lod.crossfade <= 1.0,
             "crossfade should be in (0, 1], got {}",
@@ -264,7 +311,12 @@ mod tests {
         let tm = world.resource::<TileManager>();
         let active = tm.active_tiles();
         // Camera at (0,0,0) → tile (0,0). Default active_radius=1 → 3×3=9 tiles.
-        assert_eq!(active.len(), 9, "Expected 3×3 tile grid, got {}", active.len());
+        assert_eq!(
+            active.len(),
+            9,
+            "Expected 3×3 tile grid, got {}",
+            active.len()
+        );
     }
 
     #[test]

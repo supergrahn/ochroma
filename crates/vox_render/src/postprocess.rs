@@ -34,7 +34,13 @@ impl PostProcessPipeline {
     /// Apply all enabled post-processing effects in order.
     pub fn apply(&self, pixels: &mut [[f32; 4]], width: usize, height: usize) {
         if self.bloom_enabled {
-            apply_bloom(pixels, width, height, self.bloom_threshold, self.bloom_intensity);
+            apply_bloom(
+                pixels,
+                width,
+                height,
+                self.bloom_threshold,
+                self.bloom_intensity,
+            );
         }
         apply_tone_mapping(pixels, self.tone_mapping);
         if self.vignette_enabled {
@@ -238,12 +244,7 @@ pub fn apply_bloom(
 }
 
 /// Apply a vignette effect, darkening pixels based on distance from center.
-pub fn apply_vignette(
-    pixels: &mut [[f32; 4]],
-    width: usize,
-    height: usize,
-    strength: f32,
-) {
+pub fn apply_vignette(pixels: &mut [[f32; 4]], width: usize, height: usize, strength: f32) {
     let cx = width as f32 * 0.5;
     let cy = height as f32 * 0.5;
     let max_dist = (cx * cx + cy * cy).sqrt();
@@ -308,7 +309,11 @@ pub struct GpuPostProcessPipeline {
 fn make_hdr_texture(device: &wgpu::Device, width: u32, height: u32, label: &str) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -390,11 +395,23 @@ impl GpuPostProcessPipeline {
             } else if i == 0 {
                 (input_view, &self.pong_view)
             } else if i == n - 1 {
-                let src = if i % 2 == 1 { &self.pong_view } else { &self.ping_view };
+                let src = if i % 2 == 1 {
+                    &self.pong_view
+                } else {
+                    &self.ping_view
+                };
                 (src, output_view)
             } else {
-                let src = if i % 2 == 1 { &self.pong_view } else { &self.ping_view };
-                let tgt = if i % 2 == 1 { &self.ping_view } else { &self.pong_view };
+                let src = if i % 2 == 1 {
+                    &self.pong_view
+                } else {
+                    &self.ping_view
+                };
+                let tgt = if i % 2 == 1 {
+                    &self.ping_view
+                } else {
+                    &self.pong_view
+                };
                 (src, tgt)
             };
 
@@ -455,7 +472,12 @@ mod graph_wiring_tests {
                 let s = (x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663)) as u32;
                 let f = |k: u32| ((s.wrapping_mul(k) >> 8) & 0xFFFF) as f32 / 65_535.0;
                 // Scale into [0, 3): plenty of pixels exceed the 1.0 threshold.
-                img[y * W + x] = [f(2_654_435_761) * 3.0, f(40_503) * 3.0, f(2_246_822_519) * 3.0, 1.0];
+                img[y * W + x] = [
+                    f(2_654_435_761) * 3.0,
+                    f(40_503) * 3.0,
+                    f(2_246_822_519) * 3.0,
+                    1.0,
+                ];
             }
         }
         img

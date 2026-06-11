@@ -2,56 +2,55 @@
 //! 4 compute passes per frame: predict → neighbors → solve → integrate.
 //! Density constraint: λᵢ = −Cᵢ / (∇Cᵢ² + ε),  Cᵢ = ρᵢ/ρ₀ − 1
 
+use crate::sdf::SdfColliderSet;
 use bytemuck::{Pod, Zeroable};
+use glam::Vec3;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct PbfParticle {
-    pub position:      [f32; 3],
-    pub density:       f32,
+    pub position: [f32; 3],
+    pub density: f32,
     pub predicted_pos: [f32; 3],
-    pub lambda:        f32,
-    pub velocity:      [f32; 3],
-    pub pressure:      f32,
-    pub spectral:      [f32; 16],
+    pub lambda: f32,
+    pub velocity: [f32; 3],
+    pub pressure: f32,
+    pub spectral: [f32; 16],
 }
 
 pub struct PbfGpuBuffers {
-    pub particle_buf:  wgpu::Buffer,
-    pub neighbor_buf:  wgpu::Buffer,
-    pub params_buf:    wgpu::Buffer,
+    pub particle_buf: wgpu::Buffer,
+    pub neighbor_buf: wgpu::Buffer,
+    pub params_buf: wgpu::Buffer,
     pub max_particles: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct PbfParams {
-    pub dt:             f32,
-    pub rest_density:   f32,
-    pub smoothing_h:    f32,
-    pub epsilon:        f32,
+    pub dt: f32,
+    pub rest_density: f32,
+    pub smoothing_h: f32,
+    pub epsilon: f32,
     pub particle_count: u32,
-    pub max_neighbors:  u32,
-    pub _pad:           [u32; 2],
+    pub max_neighbors: u32,
+    pub _pad: [u32; 2],
 }
 
 pub struct PbfFluidSim {
     pub particles: Vec<PbfParticle>,
-    pub params:    PbfParams,
-    pub gpu:       Option<PbfGpuBuffers>,
+    pub params: PbfParams,
+    pub gpu: Option<PbfGpuBuffers>,
 }
 
 pub const WATER_SPECTRAL: [f32; 16] = [
-    0.1, 0.8, 0.9, 0.3, 0.1, 0.05, 0.02, 0.01,
-    0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01,
+    0.1, 0.8, 0.9, 0.3, 0.1, 0.05, 0.02, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01,
 ];
 pub const BLOOD_SPECTRAL: [f32; 16] = [
-    0.0, 0.0, 0.01, 0.05, 0.2, 0.6, 0.4, 0.1,
-    0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.02, 0.01,
+    0.0, 0.0, 0.01, 0.05, 0.2, 0.6, 0.4, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.02, 0.01,
 ];
 pub const LAVA_SPECTRAL: [f32; 16] = [
-    0.0, 0.0, 0.02, 0.1, 0.4, 0.8, 1.0, 1.0,
-    0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60,
+    0.0, 0.0, 0.02, 0.1, 0.4, 0.8, 1.0, 1.0, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60,
 ];
 
 impl PbfFluidSim {
@@ -85,6 +84,14 @@ impl PbfFluidSim {
     }
 
     pub fn cpu_step(&mut self) {
+        self.cpu_step_internal(None);
+    }
+
+    pub fn cpu_step_with_sdf(&mut self, colliders: &SdfColliderSet) {
+        self.cpu_step_internal(Some(colliders));
+    }
+
+    fn cpu_step_internal(&mut self, sdf_colliders: Option<&SdfColliderSet>) {
         let dt = self.params.dt;
         let h = self.params.smoothing_h;
         let rho0 = self.params.rest_density;
@@ -171,6 +178,14 @@ impl PbfFluidSim {
             p.predicted_pos[0] += deltas[i][0];
             p.predicted_pos[1] += deltas[i][1];
             p.predicted_pos[2] += deltas[i][2];
+
+            if let Some(colliders) = sdf_colliders {
+                let predicted = Vec3::from_array(p.predicted_pos);
+                if let Some(contact) = colliders.project_point(predicted, 0.0) {
+                    p.predicted_pos = contact.projected_point.to_array();
+                }
+            }
+
             // Ground plane clamp
             if p.predicted_pos[1] < 0.0 {
                 p.predicted_pos[1] = 0.0;
@@ -190,8 +205,7 @@ impl PbfFluidSim {
 
     pub fn upload_to_gpu(&mut self, device: &wgpu::Device, max_particles: u32) {
         let particle_bytes = max_particles as u64 * std::mem::size_of::<PbfParticle>() as u64;
-        let neighbor_bytes =
-            max_particles as u64 * (self.params.max_neighbors as u64 + 1) * 4;
+        let neighbor_bytes = max_particles as u64 * (self.params.max_neighbors as u64 + 1) * 4;
         let particle_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pbf_particles"),
             size: particle_bytes.max(64),
@@ -235,11 +249,7 @@ impl PbfFluidSim {
         };
         self.params.particle_count = self.particles.len() as u32;
         queue.write_buffer(&gpu.params_buf, 0, bytemuck::bytes_of(&self.params));
-        queue.write_buffer(
-            &gpu.particle_buf,
-            0,
-            bytemuck::cast_slice(&self.particles),
-        );
+        queue.write_buffer(&gpu.particle_buf, 0, bytemuck::cast_slice(&self.particles));
         let count = self.params.particle_count;
         let workgroups = count.div_ceil(64);
         for pipeline in [
@@ -248,11 +258,10 @@ impl PbfFluidSim {
             &pipelines.solve,
             &pipelines.integrate,
         ] {
-            let mut pass =
-                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("pbf_pass"),
-                    timestamp_writes: None,
-                });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("pbf_pass"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &pipelines.bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
@@ -261,10 +270,10 @@ impl PbfFluidSim {
 }
 
 pub struct PbfPipelines {
-    pub predict:    wgpu::ComputePipeline,
-    pub neighbors:  wgpu::ComputePipeline,
-    pub solve:      wgpu::ComputePipeline,
-    pub integrate:  wgpu::ComputePipeline,
+    pub predict: wgpu::ComputePipeline,
+    pub neighbors: wgpu::ComputePipeline,
+    pub solve: wgpu::ComputePipeline,
+    pub integrate: wgpu::ComputePipeline,
     pub bind_group: wgpu::BindGroup,
 }
 
@@ -275,6 +284,45 @@ pub struct PbfPipelines {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sdf::{SdfAssetId, SdfVolume, SdfVolumeDesc};
+    use glam::Quat;
+    use std::sync::Arc;
+
+    fn pbf_test_box_colliders() -> SdfColliderSet {
+        let resolution = [13, 13, 13];
+        let voxel_size = 0.25;
+        let origin = Vec3::splat(-1.5);
+        let half_extents = Vec3::splat(1.0);
+        let mut distances = Vec::new();
+
+        for z in 0..resolution[2] {
+            for y in 0..resolution[1] {
+                for x in 0..resolution[0] {
+                    let p = origin + Vec3::new(x as f32, y as f32, z as f32) * voxel_size;
+                    let q = p.abs() - half_extents;
+                    let distance = q.max(Vec3::ZERO).length() + q.x.max(q.y.max(q.z)).min(0.0);
+                    distances.push(distance);
+                }
+            }
+        }
+
+        let volume = Arc::new(
+            SdfVolume::from_f32_grid(
+                SdfVolumeDesc {
+                    resolution,
+                    origin,
+                    voxel_size,
+                    narrow_band: 1.5,
+                },
+                distances,
+            )
+            .unwrap(),
+        );
+
+        let mut colliders = SdfColliderSet::new();
+        colliders.add_instance(SdfAssetId(1), volume, Vec3::ZERO, Quat::IDENTITY, 1.0);
+        colliders
+    }
 
     #[test]
     fn pbf_particle_size_aligned() {
@@ -320,6 +368,24 @@ mod tests {
         assert!(
             sim.particles[0].position[1] >= 0.0,
             "particle must not go below ground plane"
+        );
+    }
+
+    #[test]
+    fn cpu_step_with_sdf_projects_particle_out_of_solid() {
+        let colliders = pbf_test_box_colliders();
+        let mut sim = PbfFluidSim::new(1000.0, 0.15);
+        sim.params.dt = 1.0 / 240.0;
+        sim.spawn([0.9, 0.5, 0.0], [0.0; 3], WATER_SPECTRAL);
+
+        sim.cpu_step_with_sdf(&colliders);
+
+        let position = Vec3::from_array(sim.particles[0].position);
+        let sample = colliders.sample_world(position).unwrap();
+        assert!(
+            sample.signed_distance >= -0.02,
+            "particle should be projected near/outside the SDF surface: pos={position:?} sdf={}",
+            sample.signed_distance
         );
     }
 

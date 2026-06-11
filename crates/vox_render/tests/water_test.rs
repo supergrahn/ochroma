@@ -1,5 +1,5 @@
-use vox_render::water::*;
 use glam::Vec3;
+use vox_render::water::*;
 
 #[test]
 fn river_generates_splats() {
@@ -15,7 +15,9 @@ fn wave_animation_changes_height() {
     let splats_t0 = river.generate_splats(0.0);
     let splats_t1 = river.generate_splats(1.0);
     // Heights should differ due to wave animation
-    let differs = splats_t0.iter().zip(splats_t1.iter())
+    let differs = splats_t0
+        .iter()
+        .zip(splats_t1.iter())
         .any(|(a, b)| (a.position()[1] - b.position()[1]).abs() > 0.001);
     assert!(differs, "Wave animation should change heights over time");
 }
@@ -24,7 +26,10 @@ fn wave_animation_changes_height() {
 fn fresnel_higher_at_grazing_angle() {
     let perpendicular = WaterSurface::fresnel(Vec3::Y, 1.33);
     let grazing = WaterSurface::fresnel(Vec3::new(1.0, 0.05, 0.0).normalize(), 1.33);
-    assert!(grazing > perpendicular, "Fresnel should be higher at grazing angles");
+    assert!(
+        grazing > perpendicular,
+        "Fresnel should be higher at grazing angles"
+    );
 }
 
 #[test]

@@ -5,10 +5,15 @@ const RAYLEIGH_BASE: array<f32, 8> = array<f32, 8>(
     1.0000, 0.7211, 0.5258, 0.3868, 0.2878, 0.2160, 0.1634, 0.1250
 );
 
+// NOTE: pads are three scalars, not vec3 — a vec3 field is 16-byte aligned in
+// WGSL, which would stride FroxelVoxel/VolumetricParams to 64 bytes while the
+// Rust `#[repr(C)]` mirrors in volumetric_pass.rs are exactly 48.
 struct FroxelVoxel {
     scatter: array<f32, 8>,
     transmittance: f32,
-    _pad: vec3<f32>,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
 struct VolumetricParams {
@@ -19,7 +24,9 @@ struct VolumetricParams {
     froxel_width: u32,
     froxel_height: u32,
     froxel_depth: u32,
-    _pad: vec3<u32>,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 struct CameraUniform {
@@ -40,7 +47,7 @@ struct SdfParams {
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 @group(0) @binding(1) var<uniform> vol_params: VolumetricParams;
 @group(0) @binding(2) var<storage, read_write> froxels: array<FroxelVoxel>;
-@group(0) @binding(3) var<storage, read_only> sdf_volume: array<f32>;
+@group(0) @binding(3) var<storage, read> sdf_volume: array<f32>;
 
 fn froxel_idx(x: u32, y: u32, z: u32) -> u32 {
     return x + vol_params.froxel_width * (y + vol_params.froxel_height * z);
@@ -100,7 +107,9 @@ fn scatter_compute(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Transmittance: Beer-Lambert approximation over 1 froxel depth unit.
     let extinction = total_scatter / 8.0 + vol_params.mie_coeff;
     voxel.transmittance = exp(-extinction * 0.5);
-    voxel._pad = vec3(0.0);
+    voxel._pad0 = 0.0;
+    voxel._pad1 = 0.0;
+    voxel._pad2 = 0.0;
 
     froxels[idx] = voxel;
 }

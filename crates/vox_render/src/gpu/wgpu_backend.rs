@@ -173,8 +173,7 @@ impl WgpuBackend {
         // Each pixel is 4 bytes, so bytes_per_row = width * 4, padded up.
         let unpadded_bytes_per_row = width * 4;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row =
-            unpadded_bytes_per_row.div_ceil(align) * align;
+        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
 
         if padded_bytes_per_row == unpadded_bytes_per_row {
             // No padding needed — write directly.
@@ -199,8 +198,7 @@ impl WgpuBackend {
             );
         } else {
             // Build a padded staging buffer row-by-row.
-            let mut padded: Vec<u8> =
-                vec![0u8; (padded_bytes_per_row * height) as usize];
+            let mut padded: Vec<u8> = vec![0u8; (padded_bytes_per_row * height) as usize];
             for row in 0..height as usize {
                 let src_start = row * unpadded_bytes_per_row as usize;
                 let dst_start = row * padded_bytes_per_row as usize;
@@ -262,7 +260,11 @@ impl WgpuBackend {
                     bytes_per_row: Some(unpadded_bytes_per_row),
                     rows_per_image: Some(height),
                 },
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
             );
         } else {
             let mut padded: Vec<u8> = vec![0u8; (padded_bytes_per_row * height) as usize];
@@ -285,7 +287,11 @@ impl WgpuBackend {
                     bytes_per_row: Some(padded_bytes_per_row),
                     rows_per_image: Some(height),
                 },
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
             );
         }
     }

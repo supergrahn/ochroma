@@ -12,7 +12,7 @@
 
 use bevy_ecs::prelude::*;
 use vox_core::ecs::{SplatAssetComponent, TransformComponent, Visible};
-use vox_core::engine_runtime::{transform_splat, RenderBuffer};
+use vox_core::engine_runtime::{RenderBuffer, transform_splat};
 
 // ── System ─────────────────────────────────────────────────────────────────
 
@@ -56,7 +56,13 @@ mod tests {
     use vox_core::types::GaussianSplat;
 
     fn zero_splat() -> GaussianSplat {
-        GaussianSplat::volume([0.0, 0.0, 0.0], [0.1, 0.1, 0.1], Quat::IDENTITY, 255, [0; 16])
+        GaussianSplat::volume(
+            [0.0, 0.0, 0.0],
+            [0.1, 0.1, 0.1],
+            Quat::IDENTITY,
+            255,
+            [0; 16],
+        )
     }
 
     #[test]

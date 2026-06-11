@@ -2,8 +2,8 @@
 //! Each frame: gather emissive radiance from N nearest splats (distance-weighted),
 //! modulate by receiving splat's reflectance, blend into a temporal cache.
 
-use vox_core::types::GaussianSplat;
 use half::f16;
+use vox_core::types::GaussianSplat;
 
 use crate::spectral_atmosphere::SpectralAtmosphere;
 
@@ -183,7 +183,11 @@ impl SpectralRadianceCache {
                 }
             }
             let max_incoming = incoming.iter().copied().fold(f32::EPSILON, f32::max);
-            let scale = if max_incoming > 1.0 { 1.0 / max_incoming } else { 1.0 };
+            let scale = if max_incoming > 1.0 {
+                1.0 / max_incoming
+            } else {
+                1.0
+            };
             for (c, &inc) in self.cache[i].iter_mut().zip(incoming.iter()) {
                 *c = alpha * *c + (1.0 - alpha) * (inc * scale).clamp(0.0, 1.0);
             }
@@ -306,8 +310,7 @@ impl GpuGiPass {
             mapped_at_creation: false,
         });
 
-        let shader =
-            device.create_shader_module(wgpu::include_wgsl!("gpu/spectral_gi_pass.wgsl"));
+        let shader = device.create_shader_module(wgpu::include_wgsl!("gpu/spectral_gi_pass.wgsl"));
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("gi_bgl"),
             entries: &[
@@ -582,10 +585,7 @@ impl GpuGi {
         }
     }
 
-    async fn new_async(
-        max_splats: u32,
-        required_limits: wgpu::Limits,
-    ) -> Result<Self, GpuGiError> {
+    async fn new_async(max_splats: u32, required_limits: wgpu::Limits) -> Result<Self, GpuGiError> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
@@ -665,7 +665,11 @@ impl GpuGi {
     /// which seeds each receiver's `incoming` before the emitter sum (mirroring
     /// `SpectralRadianceCache::set_sky` + the `let mut incoming = sky;` line in
     /// `propagate`).
-    pub fn step(&self, splats: &[GaussianSplat], hour: f32) -> Result<Vec<GaussianSplat>, GpuGiError> {
+    pub fn step(
+        &self,
+        splats: &[GaussianSplat],
+        hour: f32,
+    ) -> Result<Vec<GaussianSplat>, GpuGiError> {
         if splats.is_empty() {
             return Ok(Vec::new());
         }
@@ -829,7 +833,10 @@ mod tests {
         let pos = [0.0, 0.0, 0.0];
         let r_near = gather_radiance(pos, &[near], 10.0);
         let r_far = gather_radiance(pos, &[far], 10.0);
-        assert!(r_near[3] > r_far[3], "near emitter should contribute more than far");
+        assert!(
+            r_near[3] > r_far[3],
+            "near emitter should contribute more than far"
+        );
     }
 
     #[test]
@@ -840,7 +847,12 @@ mod tests {
             temporal_blend(&mut cache, &target, 0.1);
         }
         for (i, &v) in cache.iter().enumerate() {
-            assert!(v > 0.99, "band {} should converge to 1.0 after 100 steps, got {}", i, v);
+            assert!(
+                v > 0.99,
+                "band {} should converge to 1.0 after 100 steps, got {}",
+                i,
+                v
+            );
         }
     }
 
@@ -850,10 +862,12 @@ mod tests {
     fn cache_initialises_empty() {
         let cache = SpectralRadianceCache::new(10);
         assert_eq!(cache.cache.len(), 10);
-        assert!(cache
-            .cache
-            .iter()
-            .all(|c: &[f32; 16]| c.iter().all(|&v| v == 0.0)));
+        assert!(
+            cache
+                .cache
+                .iter()
+                .all(|c: &[f32; 16]| c.iter().all(|&v| v == 0.0))
+        );
     }
 
     #[test]
@@ -876,7 +890,11 @@ mod tests {
         let splat = make_splat([0.0, 0.0, 0.0], 0.1, 200);
         let result = cache.apply(&[splat]);
         let out_val = half::f16::from_bits(result[0].spectral()[0]).to_f32();
-        assert!(out_val > 0.1, "GI should have added to splat spectral (got {})", out_val);
+        assert!(
+            out_val > 0.1,
+            "GI should have added to splat spectral (got {})",
+            out_val
+        );
     }
 
     #[test]
@@ -891,18 +909,14 @@ mod tests {
     fn splat_with_normal(pos: [f32; 3], n: [f32; 3]) -> GaussianSplat {
         let nv = glam::Vec3::from(n).normalize();
         // Any vector not parallel to nv.
-        let helper = if nv.x.abs() < 0.9 { glam::Vec3::X } else { glam::Vec3::Y };
+        let helper = if nv.x.abs() < 0.9 {
+            glam::Vec3::X
+        } else {
+            glam::Vec3::Y
+        };
         let u = nv.cross(helper).normalize(); // u ⟂ n
-        let v = nv.cross(u).normalize();       // v ⟂ n, and u × v = n
-        GaussianSplat::surface(
-            pos,
-            u.into(),
-            v.into(),
-            0.1,
-            0.1,
-            255,
-            [0u16; 16],
-        )
+        let v = nv.cross(u).normalize(); // v ⟂ n, and u × v = n
+        GaussianSplat::surface(pos, u.into(), v.into(), 0.1, 0.1, 255, [0u16; 16])
     }
 
     #[test]
@@ -920,8 +934,16 @@ mod tests {
         // Sanity: the constructed normals point where we expect.
         let n_up = up.normal();
         let n_hz = horizon.normal();
-        assert!(n_up[1] > 0.99, "zenith splat normal should point up, got {:?}", n_up);
-        assert!(n_hz[1] < 0.2, "horizon splat normal should be near-horizontal, got {:?}", n_hz);
+        assert!(
+            n_up[1] > 0.99,
+            "zenith splat normal should point up, got {:?}",
+            n_up
+        );
+        assert!(
+            n_hz[1] < 0.2,
+            "horizon splat normal should be near-horizontal, got {:?}",
+            n_hz
+        );
 
         let mut cache = SpectralRadianceCache::new(0);
         cache.alpha = 0.0; // new sky value replaces fully — no temporal damping
@@ -954,7 +976,8 @@ mod tests {
         assert!(
             r_zenith[0] > r_zenith[15],
             "zenith should be violet-dominant: b0={} b15={}",
-            r_zenith[0], r_zenith[15]
+            r_zenith[0],
+            r_zenith[15]
         );
         let zenith_blue_ratio = r_zenith[0] / (r_zenith[15] + 1e-6);
         let horizon_blue_ratio = r_horizon[0] / (r_horizon[15] + 1e-6);
@@ -1030,12 +1053,18 @@ mod tests {
         let out = gpu.step(&scene, 12.0).expect("gpu step");
         // Receiver band energies must be lifted off zero (DIRECTION matches CPU).
         let any_lit = (0..16).any(|b| receiver_band(&out, b) > 1e-3);
-        assert!(any_lit, "receiver must be lit by the emitter, got {:?}",
-            (0..16).map(|b| receiver_band(&out, b)).collect::<Vec<_>>());
+        assert!(
+            any_lit,
+            "receiver must be lit by the emitter, got {:?}",
+            (0..16).map(|b| receiver_band(&out, b)).collect::<Vec<_>>()
+        );
 
         // Emitter stays bright (unchanged-or-similar): it was already saturated.
         let emitter_b8 = f16::from_bits(out[0].spectral()[8]).to_f32();
-        assert!(emitter_b8 > 0.9, "emitter should stay bright, got {emitter_b8}");
+        assert!(
+            emitter_b8 > 0.9,
+            "emitter should stay bright, got {emitter_b8}"
+        );
     }
 
     #[test]
@@ -1044,9 +1073,15 @@ mod tests {
         // Dim emitter (emit=0.2) so incoming stays below the normalization knee
         // (1.0) at all three distances and the inverse-square falloff is visible
         // rather than clamped — matches the CPU propagate normalization.
-        let r05 = gpu.step(&emitter_receiver_scene_emit(0.5, 0.2), 12.0).expect("step");
-        let r10 = gpu.step(&emitter_receiver_scene_emit(1.0, 0.2), 12.0).expect("step");
-        let r20 = gpu.step(&emitter_receiver_scene_emit(2.0, 0.2), 12.0).expect("step");
+        let r05 = gpu
+            .step(&emitter_receiver_scene_emit(0.5, 0.2), 12.0)
+            .expect("step");
+        let r10 = gpu
+            .step(&emitter_receiver_scene_emit(1.0, 0.2), 12.0)
+            .expect("step");
+        let r20 = gpu
+            .step(&emitter_receiver_scene_emit(2.0, 0.2), 12.0)
+            .expect("step");
 
         // Use a band that is not saturated at all three distances; band 8.
         let v05 = receiver_band(&r05, 8);
@@ -1064,15 +1099,24 @@ mod tests {
         let Some(gpu) = try_gpu(64) else { return };
         // Two receivers at different distances in one scene.
         let emitter = GaussianSplat::volume(
-            [0.0, 0.0, 0.0], [0.2, 0.2, 0.2], glam::Quat::IDENTITY, 255,
+            [0.0, 0.0, 0.0],
+            [0.2, 0.2, 0.2],
+            glam::Quat::IDENTITY,
+            255,
             [f16::from_f32(1.0).to_bits(); 16],
         );
         let near = GaussianSplat::volume(
-            [0.4, 0.0, 0.0], [0.2, 0.2, 0.2], glam::Quat::IDENTITY, 10,
+            [0.4, 0.0, 0.0],
+            [0.2, 0.2, 0.2],
+            glam::Quat::IDENTITY,
+            10,
             [f16::from_f32(0.0).to_bits(); 16],
         );
         let far = GaussianSplat::volume(
-            [3.0, 0.0, 0.0], [0.2, 0.2, 0.2], glam::Quat::IDENTITY, 10,
+            [3.0, 0.0, 0.0],
+            [0.2, 0.2, 0.2],
+            glam::Quat::IDENTITY,
+            10,
             [f16::from_f32(0.0).to_bits(); 16],
         );
         let out = gpu.step(&[emitter, near, far], 12.0).expect("step");
@@ -1277,7 +1321,10 @@ mod tests {
         // Use local GPU: skip on the llvmpipe software rasteriser too, not just
         // on a missing adapter — the shared-device proof must run on real hardware.
         if crate::gpu::adapter::ensure_hardware(&info).is_err() {
-            eprintln!("[{label}] software adapter ({}) — skipping GPU test", info.name);
+            eprintln!(
+                "[{label}] software adapter ({}) — skipping GPU test",
+                info.name
+            );
             return None;
         }
         let (device, queue) = pollster::block_on(adapter.request_device(
@@ -1305,11 +1352,15 @@ mod tests {
     /// SAME WGSL on the SAME hardware, so any divergence would be a real defect.
     #[test]
     fn gpu_gi_new_with_context_matches_standalone() {
-        let Some(ctx) = try_gpu_context("gpu_context_test") else { return };
+        let Some(ctx) = try_gpu_context("gpu_context_test") else {
+            return;
+        };
 
         // Standalone own-device GpuGi (the validated twin's constructor) — skip
         // together if this box has no adapter (try_gpu_context already returned).
-        let Some(standalone) = try_gpu(1024) else { return };
+        let Some(standalone) = try_gpu(1024) else {
+            return;
+        };
 
         // Shared-device GpuGi on the supplied context — NO new Instance::new.
         let shared = GpuGi::new_with_context(&ctx, 1024);
@@ -1333,7 +1384,9 @@ mod tests {
         assert!(
             lit,
             "shared-device GI must light the receiver, got {:?}",
-            (0..16).map(|b| receiver_band(&out_shared, b)).collect::<Vec<_>>()
+            (0..16)
+                .map(|b| receiver_band(&out_shared, b))
+                .collect::<Vec<_>>()
         );
 
         let mut max_delta = 0.0f32;
@@ -1393,7 +1446,11 @@ mod tests {
                 wgpu::TexelCopyTextureInfo {
                     texture: tex,
                     mip_level: 0,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::TexelCopyBufferInfo {
@@ -1404,7 +1461,11 @@ mod tests {
                         rows_per_image: Some(height),
                     },
                 },
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
             );
         }
         queue.submit(Some(enc.finish()));
@@ -1415,7 +1476,10 @@ mod tests {
             let _ = tx.send(r);
         });
         device.poll(wgpu::Maintain::Wait);
-        assert!(matches!(rx.recv(), Ok(Ok(()))), "proof readback map must succeed");
+        assert!(
+            matches!(rx.recv(), Ok(Ok(()))),
+            "proof readback map must succeed"
+        );
 
         let total = (width * height) as usize;
         let mut out = Vec::with_capacity(total);
@@ -1431,8 +1495,14 @@ mod tests {
                     let b0 = layer0_off + y * row_floats + x * 4;
                     let b1 = layer1_off + y * row_floats + x * 4;
                     let px = [
-                        floats[b0], floats[b0 + 1], floats[b0 + 2], floats[b0 + 3],
-                        floats[b1], floats[b1 + 1], floats[b1 + 2], floats[b1 + 3],
+                        floats[b0],
+                        floats[b0 + 1],
+                        floats[b0 + 2],
+                        floats[b0 + 3],
+                        floats[b1],
+                        floats[b1 + 1],
+                        floats[b1 + 2],
+                        floats[b1 + 3],
                     ];
                     if px.iter().any(|&v| v != 0.0) {
                         lit += 1;
@@ -1451,9 +1521,9 @@ mod tests {
     /// "The resident result is bit-identical to the readback oracle" is proven at
     /// the GI -> raster HANDOFF BUFFER — the splat buffer `splat_raster` reads.
     /// The resident path binds the GI radiance buffer DIRECTLY as input to
-    /// [`GiCombinePass`], which folds `radiance[i][0..8]` into
-    /// `splat_buf[i].spectral[0..8]` (f16-quantized via `quantize_f16` =
-    /// `f32_to_f16_rne`) with ZERO CPU readback. The READBACK ORACLE runs the SAME
+    /// [`GiCombinePass`], which folds 16-band `radiance[i]` into eight adjacent
+    /// pair bins in `splat_buf[i].spectral[0..8]` (f16-quantized via
+    /// `quantize_f16` = `f32_to_f16_rne`) with ZERO CPU readback. The READBACK ORACLE runs the SAME
     /// GI via the verbatim CPU-Vec path ([`GpuGi::step`]) and re-packs the GI-lit
     /// splats through `gaussian_splat_to_gpu_full` — exactly what
     /// `TiledSplatRenderer::new` uploads. The two splat buffers must be
@@ -1476,13 +1546,15 @@ mod tests {
     fn resident_gi_seam_matches_readback_oracle() {
         use crate::gpu::gi_combine::GiCombinePass;
         use crate::gpu::resident_gi_raster::ResidentGiRaster;
-        use crate::gpu::splat_buffer::{gaussian_splat_to_gpu_full, GpuSplatFull};
+        use crate::gpu::splat_buffer::{GpuSplatFull, gaussian_splat_to_gpu_full};
         use wgpu::util::DeviceExt;
 
         const W: u32 = 256;
         const H: u32 = 256;
 
-        let Some(ctx) = try_gpu_context("resident_gi_seam") else { return };
+        let Some(ctx) = try_gpu_context("resident_gi_seam") else {
+            return;
+        };
         let device = ctx.device();
         let queue = ctx.queue();
 
@@ -1566,7 +1638,10 @@ mod tests {
             let _ = tx.send(r);
         });
         device.poll(wgpu::Maintain::Wait);
-        assert!(matches!(rx.recv(), Ok(Ok(()))), "seam readback map must succeed");
+        assert!(
+            matches!(rx.recv(), Ok(Ok(()))),
+            "seam readback map must succeed"
+        );
         let resident_splats: Vec<GpuSplatFull> = {
             let d = slice.get_mapped_range();
             bytemuck::cast_slice::<u8, GpuSplatFull>(&d).to_vec()
@@ -1591,7 +1666,7 @@ mod tests {
             "GI must light the receivers off their dark floor (anti-vacuous), got {lit_count}"
         );
 
-        // Bit-identity at the GI->raster handoff buffer (spectral[0..8]).
+        // Bit-identity at the GI->raster handoff buffer (8 packed spectral bins).
         let mut max_abs = 0.0f32;
         for i in 0..n {
             for b in 0..8 {
@@ -1610,13 +1685,14 @@ mod tests {
         let res_tex = resident.render_frame(&cam, hour).expect("resident render");
         // IMPORTANT: render_frame reuses ONE output texture, so we must copy the
         // result to a host Vec BEFORE the next render overwrites it.
-        let (res_px_a, lit_px) =
-            read_spectral_layers(ctx.device(), ctx.queue(), &res_tex, W, H);
+        let (res_px_a, lit_px) = read_spectral_layers(ctx.device(), ctx.queue(), &res_tex, W, H);
 
         // Honest measurement of the frozen-chain raster nondeterminism that makes a
         // texture-level <1e-6 bound impossible: render the SAME resident frame again
         // and report the per-pixel delta (expected ~1.0 over thousands of pixels).
-        let res_tex2 = resident.render_frame(&cam, hour).expect("resident render 2");
+        let res_tex2 = resident
+            .render_frame(&cam, hour)
+            .expect("resident render 2");
         let (res_px_b, _) = read_spectral_layers(ctx.device(), ctx.queue(), &res_tex2, W, H);
         let mut raster_max = 0.0f32;
         let mut raster_diff_px = 0usize;
@@ -1642,7 +1718,10 @@ mod tests {
             res_px_a.len()
         );
 
-        assert!(lit_px > 200, "resident raster must light >200 pixels (anti-vacuous), got {lit_px}");
+        assert!(
+            lit_px > 200,
+            "resident raster must light >200 pixels (anti-vacuous), got {lit_px}"
+        );
         assert!(
             max_abs < 1e-6,
             "resident GI->raster SEAM must be bit-identical to the readback oracle: max_abs={max_abs:e}"
@@ -1713,7 +1792,11 @@ mod tests {
         // Emitter at origin with band 3 = 1.0 (visible green), receiver at 0.5m
         let emitter = SplatGiEntry {
             position: [0.0, 0.0, 0.0],
-            emissive: { let mut e = [0.0f32; 16]; e[3] = 1.0; e },
+            emissive: {
+                let mut e = [0.0f32; 16];
+                e[3] = 1.0;
+                e
+            },
             reflectance: [0.5; 16],
         };
         let probe_pos = [0.5, 0.0, 0.0];

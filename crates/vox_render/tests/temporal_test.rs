@@ -1,5 +1,5 @@
-use vox_render::temporal::TemporalAccumulator;
 use vox_render::spectral_framebuffer::SpectralFramebuffer;
+use vox_render::temporal::TemporalAccumulator;
 
 #[test]
 fn first_frame_equals_current() {

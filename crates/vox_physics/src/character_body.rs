@@ -4,9 +4,9 @@
 //! The existing math helpers (is_walkable_slope, compute_slope_slide, etc.)
 //! remain in vox_core and are called by game code on top of KCC output.
 
-use rapier3d::prelude::*;
-use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
 use glam::Vec3;
+use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
+use rapier3d::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct CharacterOutput {
@@ -17,7 +17,7 @@ pub struct CharacterOutput {
 
 pub struct CharacterBody {
     pub rigid_body: RigidBodyHandle,
-    pub collider:   ColliderHandle,
+    pub collider: ColliderHandle,
     pub controller: KinematicCharacterController,
     pub half_height: f32,
     pub radius: f32,
@@ -25,11 +25,11 @@ pub struct CharacterBody {
 
 impl CharacterBody {
     pub fn new(
-        position:    Vec3,
+        position: Vec3,
         half_height: f32,
-        radius:      f32,
-        bodies:      &mut RigidBodySet,
-        colliders:   &mut ColliderSet,
+        radius: f32,
+        bodies: &mut RigidBodySet,
+        colliders: &mut ColliderSet,
     ) -> Self {
         let rb = RigidBodyBuilder::kinematic_position_based()
             .translation(vector![position.x, position.y, position.z])
@@ -44,25 +44,31 @@ impl CharacterBody {
             offset: CharacterLength::Absolute(0.01),
             slide: true,
             autostep: Some(CharacterAutostep {
-                max_height:              CharacterLength::Absolute(0.3),
-                min_width:               CharacterLength::Relative(0.5),
-                include_dynamic_bodies:  false,
+                max_height: CharacterLength::Absolute(0.3),
+                min_width: CharacterLength::Relative(0.5),
+                include_dynamic_bodies: false,
             }),
             max_slope_climb_angle: 45_f32.to_radians(),
             min_slope_slide_angle: 50_f32.to_radians(),
             snap_to_ground: Some(CharacterLength::Absolute(0.1)),
             ..Default::default()
         };
-        Self { rigid_body: rb_handle, collider: col_handle, controller, half_height, radius }
+        Self {
+            rigid_body: rb_handle,
+            collider: col_handle,
+            controller,
+            half_height,
+            radius,
+        }
     }
 
     pub fn move_and_slide(
         &self,
         desired_velocity: Vec3,
-        dt:               f32,
-        bodies:           &RigidBodySet,
-        colliders:        &ColliderSet,
-        query_pipeline:   &QueryPipeline,
+        dt: f32,
+        bodies: &RigidBodySet,
+        colliders: &ColliderSet,
+        query_pipeline: &QueryPipeline,
     ) -> CharacterOutput {
         let desired = vector![
             desired_velocity.x * dt,
@@ -74,17 +80,28 @@ impl CharacterBody {
         let filter = QueryFilter::default().exclude_collider(self.collider);
         let mut collisions = Vec::new();
         let movement = self.controller.move_shape(
-            dt, bodies, colliders, query_pipeline,
-            shape.as_ref(), rb.position(), desired, filter,
+            dt,
+            bodies,
+            colliders,
+            query_pipeline,
+            shape.as_ref(),
+            rb.position(),
+            desired,
+            filter,
             |c| collisions.push(c),
         );
-        let ground_normal = collisions.iter()
+        let ground_normal = collisions
+            .iter()
             .filter(|c| c.hit.normal1.y > 0.5)
             .map(|c| Vec3::new(c.hit.normal1.x, c.hit.normal1.y, c.hit.normal1.z))
             .next()
             .unwrap_or(Vec3::Y);
         CharacterOutput {
-            effective_translation: Vec3::new(movement.translation.x, movement.translation.y, movement.translation.z),
+            effective_translation: Vec3::new(
+                movement.translation.x,
+                movement.translation.y,
+                movement.translation.z,
+            ),
             grounded: movement.grounded,
             ground_normal,
         }
@@ -108,18 +125,18 @@ mod tests {
     use super::*;
 
     fn make_world() -> (RigidBodySet, ColliderSet, QueryPipeline) {
-        let mut bodies    = RigidBodySet::new();
-        let colliders     = ColliderSet::new();
-        let qp            = QueryPipeline::new();
+        let mut bodies = RigidBodySet::new();
+        let colliders = ColliderSet::new();
+        let qp = QueryPipeline::new();
         let _ = &mut bodies;
         // Note: floor collider is inserted after creating the struct to avoid borrow issues
         (bodies, colliders, qp)
     }
 
     fn make_world_with_floor() -> (RigidBodySet, ColliderSet, QueryPipeline) {
-        let bodies        = RigidBodySet::new();
+        let bodies = RigidBodySet::new();
         let mut colliders = ColliderSet::new();
-        let qp            = QueryPipeline::new();
+        let qp = QueryPipeline::new();
         let floor = ColliderBuilder::cuboid(10.0, 0.1, 10.0)
             .translation(vector![0.0, -0.1, 0.0])
             .build();
@@ -130,7 +147,13 @@ mod tests {
     #[test]
     fn character_body_creates_without_panic() {
         let (mut bodies, mut colliders, _) = make_world_with_floor();
-        let _cb = CharacterBody::new(Vec3::new(0.0, 2.0, 0.0), 0.8, 0.3, &mut bodies, &mut colliders);
+        let _cb = CharacterBody::new(
+            Vec3::new(0.0, 2.0, 0.0),
+            0.8,
+            0.3,
+            &mut bodies,
+            &mut colliders,
+        );
         assert_eq!(bodies.len(), 1);
         assert_eq!(colliders.len(), 2); // floor + character capsule
     }
@@ -149,27 +172,52 @@ mod tests {
     #[test]
     fn move_and_slide_on_flat_floor_is_grounded() {
         let (mut bodies, mut colliders, mut qp) = make_world_with_floor();
-        let cb = CharacterBody::new(Vec3::new(0.0, 1.0, 0.0), 0.8, 0.3, &mut bodies, &mut colliders);
+        let cb = CharacterBody::new(
+            Vec3::new(0.0, 1.0, 0.0),
+            0.8,
+            0.3,
+            &mut bodies,
+            &mut colliders,
+        );
         qp.update(&colliders);
-        let output = cb.move_and_slide(Vec3::new(0.0, -10.0, 0.0), 1.0 / 60.0, &bodies, &colliders, &qp);
+        let output = cb.move_and_slide(
+            Vec3::new(0.0, -10.0, 0.0),
+            1.0 / 60.0,
+            &bodies,
+            &colliders,
+            &qp,
+        );
         assert!(
             output.grounded || output.effective_translation.y.abs() < 0.2,
-            "expected grounded or minimal Y motion, got translation {:?}", output.effective_translation
+            "expected grounded or minimal Y motion, got translation {:?}",
+            output.effective_translation
         );
     }
 
     #[test]
     fn move_and_slide_on_raised_platform_detects_ground() {
-        let mut bodies    = RigidBodySet::new();
+        let mut bodies = RigidBodySet::new();
         let mut colliders = ColliderSet::new();
-        let mut qp        = QueryPipeline::new();
+        let mut qp = QueryPipeline::new();
         let platform = ColliderBuilder::cuboid(5.0, 0.1, 5.0)
             .translation(vector![0.0, 5.0, 0.0])
             .build();
         colliders.insert(platform);
-        let cb = CharacterBody::new(Vec3::new(0.0, 6.0, 0.0), 0.8, 0.3, &mut bodies, &mut colliders);
+        let cb = CharacterBody::new(
+            Vec3::new(0.0, 6.0, 0.0),
+            0.8,
+            0.3,
+            &mut bodies,
+            &mut colliders,
+        );
         qp.update(&colliders);
-        let output = cb.move_and_slide(Vec3::new(0.0, -10.0, 0.0), 1.0 / 60.0, &bodies, &colliders, &qp);
+        let output = cb.move_and_slide(
+            Vec3::new(0.0, -10.0, 0.0),
+            1.0 / 60.0,
+            &bodies,
+            &colliders,
+            &qp,
+        );
         assert!(
             output.grounded || output.effective_translation.y.abs() < 0.2,
             "BUG: character on raised platform (Y=5) not detected as grounded. translation.y = {}",

@@ -6,7 +6,7 @@
 //!
 //! - **`forge-native` feature ON**: calls the REAL
 //!   `forge_building::generate(BuildingParams)` from the Rust sibling at
-//!   `~/src/aetherspectra/forge` and surfel-samples its triangle mesh into
+//!   `~/src/forge` and surfel-samples its triangle mesh into
 //!   spectral splats. The path deps are OPTIONAL (see vox_app/Cargo.toml) so a
 //!   missing sibling checkout never breaks default/CI builds.
 //! - **feature OFF (default)**: a deterministic built-in PREVIEW building (box

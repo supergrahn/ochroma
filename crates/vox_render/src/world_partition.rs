@@ -1,10 +1,10 @@
 //! World partition system — 3D cell-based streaming for open worlds.
 //! CellCoord is 3D (x, y, z) where y is vertical slab (0=surface, negative=underground, positive=sky).
 
+use glam::{self, Vec3};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
-use glam::{self, Vec3};
 use vox_core::types::GaussianSplat;
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,10 @@ impl Aabb {
             coord.1 as f32 * cell_size,
             coord.2 as f32 * cell_size,
         );
-        Self { min, max: min + Vec3::splat(cell_size) }
+        Self {
+            min,
+            max: min + Vec3::splat(cell_size),
+        }
     }
 
     pub fn center(&self) -> Vec3 {
@@ -71,8 +74,8 @@ impl Aabb {
 #[derive(Debug, Clone)]
 pub struct SplatCompressed {
     pub position: [f32; 3],
-    pub scale:    f32,       // uniform scale (HLOD splats are spherical)
-    pub opacity:  u8,
+    pub scale: f32, // uniform scale (HLOD splats are spherical)
+    pub opacity: u8,
     pub spectral: [u16; 16], // f16 bits
 }
 
@@ -116,7 +119,9 @@ pub enum CellLoadState {
     Unloaded,
     /// Async load in progress.
     /// In production, replace with tokio::task::JoinHandle<Result<LoadedCellData, CellLoadError>>.
-    Loading { queued_frame: u64 },
+    Loading {
+        queued_frame: u64,
+    },
     Loaded,
     Evicting,
 }
@@ -156,8 +161,8 @@ impl WorldCell {
 
     pub fn memory_estimate_mb(&self) -> f32 {
         // Each full splat ~80 bytes; each compressed HLOD splat ~32 bytes
-        let full_mb  = self.splat_count as f32 * 80.0 / (1024.0 * 1024.0);
-        let hlod_mb  = self.hlod_splats.len() as f32 * 32.0 / (1024.0 * 1024.0);
+        let full_mb = self.splat_count as f32 * 80.0 / (1024.0 * 1024.0);
+        let hlod_mb = self.hlod_splats.len() as f32 * 32.0 / (1024.0 * 1024.0);
         full_mb + hlod_mb
     }
 }
@@ -167,14 +172,18 @@ impl WorldCell {
 // ---------------------------------------------------------------------------
 
 pub struct LoadRadius {
-    pub inner_r: f32,   // full splats loaded inside this radius
-    pub outer_r: f32,   // unload outside this radius
-    pub hlod_r:  f32,   // HLOD available from inner_r to hlod_r
+    pub inner_r: f32, // full splats loaded inside this radius
+    pub outer_r: f32, // unload outside this radius
+    pub hlod_r: f32,  // HLOD available from inner_r to hlod_r
 }
 
 impl Default for LoadRadius {
     fn default() -> Self {
-        Self { inner_r: 256.0, outer_r: 512.0, hlod_r: 400.0 }
+        Self {
+            inner_r: 256.0,
+            outer_r: 512.0,
+            hlod_r: 400.0,
+        }
     }
 }
 
@@ -224,19 +233,25 @@ impl WorldPartition {
         &self,
         camera_pos: Vec3,
     ) -> (Vec<CellCoord>, Vec<CellCoord>, Vec<CellCoord>) {
-        let mut to_load   = Vec::new();
-        let mut to_hlod   = Vec::new();
+        let mut to_load = Vec::new();
+        let mut to_hlod = Vec::new();
         let mut to_unload = Vec::new();
 
         for (coord, cell) in &self.cells {
             let dist = (cell.bounds.center() - camera_pos).length();
 
             if dist < self.load_radius.inner_r {
-                if !matches!(cell.load_state, CellLoadState::Loaded | CellLoadState::Loading { .. }) {
+                if !matches!(
+                    cell.load_state,
+                    CellLoadState::Loaded | CellLoadState::Loading { .. }
+                ) {
                     to_load.push(*coord);
                 }
             } else if dist < self.load_radius.outer_r {
-                if !matches!(cell.load_state, CellLoadState::Loaded | CellLoadState::Loading { .. }) {
+                if !matches!(
+                    cell.load_state,
+                    CellLoadState::Loaded | CellLoadState::Loading { .. }
+                ) {
                     to_hlod.push(*coord);
                 }
             } else if matches!(cell.load_state, CellLoadState::Loaded) {
@@ -258,15 +273,17 @@ impl WorldPartition {
     /// Mark a cell as loading (queued for async IO).
     pub fn begin_load(&mut self, coord: CellCoord) {
         if let Some(cell) = self.cells.get_mut(&coord) {
-            cell.load_state = CellLoadState::Loading { queued_frame: self.current_frame };
+            cell.load_state = CellLoadState::Loading {
+                queued_frame: self.current_frame,
+            };
         }
     }
 
     /// Mark a cell as loaded (called when async IO completes).
     pub fn complete_load(&mut self, coord: CellCoord, splat_count: u32) {
         if let Some(cell) = self.cells.get_mut(&coord) {
-            cell.load_state   = CellLoadState::Loaded;
-            cell.splat_count  = splat_count;
+            cell.load_state = CellLoadState::Loaded;
+            cell.splat_count = splat_count;
             cell.last_accessed = Instant::now();
             self.loaded_cells.insert(coord);
         }
@@ -283,7 +300,7 @@ impl WorldPartition {
     /// Complete eviction.
     pub fn complete_evict(&mut self, coord: CellCoord) {
         if let Some(cell) = self.cells.get_mut(&coord) {
-            cell.load_state  = CellLoadState::Unloaded;
+            cell.load_state = CellLoadState::Unloaded;
             cell.splat_count = 0;
         }
     }
@@ -353,13 +370,16 @@ pub enum StreamEvent {
 /// Uses f32::to_bits() so the value can be stored in a BinaryHeap without
 /// pulling in the `ordered_float` crate.  Higher priority_bits = higher priority.
 pub struct CellLoadRequest {
-    pub coord:         CellCoord,
+    pub coord: CellCoord,
     pub priority_bits: u32, // f32::to_bits() of priority score
 }
 
 impl CellLoadRequest {
     pub fn new(coord: CellCoord, priority: f32) -> Self {
-        Self { coord, priority_bits: priority.to_bits() }
+        Self {
+            coord,
+            priority_bits: priority.to_bits(),
+        }
     }
 
     pub fn priority(&self) -> f32 {
@@ -368,14 +388,20 @@ impl CellLoadRequest {
 }
 
 impl PartialEq for CellLoadRequest {
-    fn eq(&self, o: &Self) -> bool { self.priority_bits == o.priority_bits }
+    fn eq(&self, o: &Self) -> bool {
+        self.priority_bits == o.priority_bits
+    }
 }
 impl Eq for CellLoadRequest {}
 impl PartialOrd for CellLoadRequest {
-    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) }
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
 }
 impl Ord for CellLoadRequest {
-    fn cmp(&self, o: &Self) -> std::cmp::Ordering { self.priority_bits.cmp(&o.priority_bits) }
+    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+        self.priority_bits.cmp(&o.priority_bits)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -408,7 +434,7 @@ mod tests {
     #[test]
     fn world_partition_register_and_load() {
         let mut wp = WorldPartition::new(128.0);
-        let coord  = CellCoord(0, 0, 0);
+        let coord = CellCoord(0, 0, 0);
         wp.register_cell(coord, PathBuf::from("tile_0_0_0.vxm"));
         assert_eq!(wp.registered_count(), 1);
         assert_eq!(wp.loaded_count(), 0);
@@ -422,7 +448,7 @@ mod tests {
     #[test]
     fn world_partition_eviction() {
         let mut wp = WorldPartition::new(128.0);
-        let coord  = CellCoord(0, 0, 0);
+        let coord = CellCoord(0, 0, 0);
         wp.register_cell(coord, PathBuf::from("tile_0_0_0.vxm"));
         wp.complete_load(coord, 1000);
         assert_eq!(wp.loaded_count(), 1);
@@ -432,7 +458,10 @@ mod tests {
 
         wp.complete_evict(coord);
         assert_eq!(wp.cells[&coord].splat_count, 0);
-        assert!(matches!(wp.cells[&coord].load_state, CellLoadState::Unloaded));
+        assert!(matches!(
+            wp.cells[&coord].load_state,
+            CellLoadState::Unloaded
+        ));
     }
 
     // --- Streaming state -----------------------------------------------------
@@ -440,7 +469,7 @@ mod tests {
     #[test]
     fn world_partition_compute_streaming_nearby() {
         let mut wp = WorldPartition::new(128.0);
-        let coord  = CellCoord(0, 0, 0);
+        let coord = CellCoord(0, 0, 0);
         wp.register_cell(coord, PathBuf::from("tile.vxm"));
 
         // Camera at the cell's center — well within inner_r (256.0 default)
@@ -452,7 +481,7 @@ mod tests {
     #[test]
     fn world_partition_compute_streaming_far() {
         let mut wp = WorldPartition::new(128.0);
-        let coord  = CellCoord(0, 0, 0);
+        let coord = CellCoord(0, 0, 0);
         wp.register_cell(coord, PathBuf::from("tile.vxm"));
         // Mark as already loaded
         wp.complete_load(coord, 500);
@@ -460,7 +489,10 @@ mod tests {
         // Camera very far away — beyond outer_r (512.0 default)
         let camera_pos = Vec3::new(1000.0, 0.0, 0.0);
         let (_to_load, _to_hlod, to_unload) = wp.compute_streaming_state(camera_pos);
-        assert!(to_unload.contains(&coord), "far loaded cell should be in to_unload");
+        assert!(
+            to_unload.contains(&coord),
+            "far loaded cell should be in to_unload"
+        );
     }
 
     // --- Aabb ----------------------------------------------------------------
@@ -488,21 +520,24 @@ mod tests {
             [0u16; 16],
         );
         let compressed = SplatCompressed::from_splat(&original);
-        let recovered  = compressed.to_splat();
+        let recovered = compressed.to_splat();
 
         assert_eq!(recovered.position(), original.position());
-        assert_eq!(recovered.opacity(),  original.opacity());
+        assert_eq!(recovered.opacity(), original.opacity());
     }
 
     // --- GPU memory ----------------------------------------------------------
 
     #[test]
     fn gpu_splat_mb_accumulates() {
-        let mut wp    = WorldPartition::new(128.0);
-        let coord     = CellCoord(0, 0, 0);
+        let mut wp = WorldPartition::new(128.0);
+        let coord = CellCoord(0, 0, 0);
         wp.register_cell(coord, PathBuf::from("tile.vxm"));
         wp.complete_load(coord, 10_000);
-        assert!(wp.gpu_splat_mb() > 0.0, "gpu_splat_mb should be positive after loading");
+        assert!(
+            wp.gpu_splat_mb() > 0.0,
+            "gpu_splat_mb should be positive after loading"
+        );
     }
 
     // --- CellLoadRequest / BinaryHeap ----------------------------------------

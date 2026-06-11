@@ -1,6 +1,6 @@
 //! Animation state machine editor window.
 
-use vox_nodes::{OchrGraph, NodeId};
+use vox_nodes::{NodeId, OchrGraph};
 use vox_ui::node_graph_widget::NodeGraphWidget;
 
 pub struct AnimEditorUi {
@@ -30,7 +30,9 @@ impl AnimEditorUi {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
-        if !self.open { return; }
+        if !self.open {
+            return;
+        }
         egui::Window::new("Animation Editor")
             .default_size([950.0, 560.0])
             .resizable(true)
@@ -53,7 +55,9 @@ impl AnimEditorUi {
 }
 
 impl Default for AnimEditorUi {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

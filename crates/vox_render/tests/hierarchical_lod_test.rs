@@ -3,13 +3,15 @@ use vox_render::hierarchical_lod::*;
 
 fn make_test_splats(count: usize) -> Vec<GaussianSplat> {
     (0..count)
-        .map(|i| GaussianSplat::volume(
-            [i as f32 * 0.5, (i as f32 * 0.3).sin(), 0.0],
-            [0.1, 0.1, 0.1],
-            glam::Quat::IDENTITY,
-            200,
-            [0u16; 16],
-        ))
+        .map(|i| {
+            GaussianSplat::volume(
+                [i as f32 * 0.5, (i as f32 * 0.3).sin(), 0.0],
+                [0.1, 0.1, 0.1],
+                glam::Quat::IDENTITY,
+                200,
+                [0u16; 16],
+            )
+        })
         .collect()
 }
 
@@ -121,7 +123,9 @@ fn taa_accumulation_improves_quality() {
     let mut accumulator = TemporalAccumulator::new(w, h);
 
     // Create a base image.
-    let base: Vec<f32> = (0..pixel_count).map(|i| (i as f32) / pixel_count as f32).collect();
+    let base: Vec<f32> = (0..pixel_count)
+        .map(|i| (i as f32) / pixel_count as f32)
+        .collect();
 
     // Create a noisy version.
     let noisy: Vec<f32> = base
@@ -136,7 +140,10 @@ fn taa_accumulation_improves_quality() {
 
     // Add more samples (closer to base).
     for i in 1..8 {
-        let jitter = [(i as f32 * 0.125).sin() * 0.5, (i as f32 * 0.125).cos() * 0.5];
+        let jitter = [
+            (i as f32 * 0.125).sin() * 0.5,
+            (i as f32 * 0.125).cos() * 0.5,
+        ];
         // Slight variation per sample.
         let sample: Vec<f32> = base
             .iter()
@@ -171,10 +178,7 @@ fn brick_detail_has_mortar_lines() {
     let splats = MicroDetailGenerator::generate_brick_detail(123);
 
     // Mortar line splats should be recessed (negative z or near zero).
-    let mortar_splats: Vec<_> = splats
-        .iter()
-        .filter(|s| s.position()[2] < 0.0)
-        .collect();
+    let mortar_splats: Vec<_> = splats.iter().filter(|s| s.position()[2] < 0.0).collect();
 
     assert!(
         !mortar_splats.is_empty(),
@@ -182,10 +186,7 @@ fn brick_detail_has_mortar_lines() {
     );
 
     // Brick face splats should be raised (positive z).
-    let face_splats: Vec<_> = splats
-        .iter()
-        .filter(|s| s.position()[2] > 0.005)
-        .collect();
+    let face_splats: Vec<_> = splats.iter().filter(|s| s.position()[2] > 0.005).collect();
 
     assert!(
         !face_splats.is_empty(),
@@ -193,8 +194,14 @@ fn brick_detail_has_mortar_lines() {
     );
 
     // The height difference demonstrates mortar lines.
-    let min_z = splats.iter().map(|s| s.position()[2]).fold(f32::MAX, f32::min);
-    let max_z = splats.iter().map(|s| s.position()[2]).fold(f32::MIN, f32::max);
+    let min_z = splats
+        .iter()
+        .map(|s| s.position()[2])
+        .fold(f32::MAX, f32::min);
+    let max_z = splats
+        .iter()
+        .map(|s| s.position()[2])
+        .fold(f32::MIN, f32::max);
     assert!(
         max_z - min_z > 0.01,
         "brick detail should have height variation for mortar, range: {}",
@@ -206,7 +213,10 @@ fn brick_detail_has_mortar_lines() {
 fn lod_chain_preserves_full_count_at_level_0() {
     let splats = make_test_splats(50);
     let chain = generate_lod_chain(&splats);
-    assert_eq!(chain.levels[0].splat_count, 50, "LOD 0 should have all splats");
+    assert_eq!(
+        chain.levels[0].splat_count, 50,
+        "LOD 0 should have all splats"
+    );
 }
 
 #[test]

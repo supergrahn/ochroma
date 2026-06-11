@@ -21,7 +21,10 @@ pub struct TelemetryCollector {
 
 impl TelemetryCollector {
     pub fn new(max_history: usize) -> Self {
-        Self { history: VecDeque::new(), max_history }
+        Self {
+            history: VecDeque::new(),
+            max_history,
+        }
     }
 
     pub fn record(&mut self, metrics: FrameMetrics) {
@@ -32,7 +35,9 @@ impl TelemetryCollector {
     }
 
     pub fn avg_frame_time_ms(&self) -> f32 {
-        if self.history.is_empty() { return 0.0; }
+        if self.history.is_empty() {
+            return 0.0;
+        }
         self.history.iter().map(|m| m.frame_time_ms).sum::<f32>() / self.history.len() as f32
     }
 

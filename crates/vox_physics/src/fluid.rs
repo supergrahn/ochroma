@@ -332,7 +332,7 @@ impl FluidSimulation {
 // SpectralFluid — PBF-backed fluid with per-particle spectral[16]
 // ---------------------------------------------------------------------------
 
-use crate::pbf::{PbfFluidSim, BLOOD_SPECTRAL, LAVA_SPECTRAL, WATER_SPECTRAL};
+use crate::pbf::{BLOOD_SPECTRAL, LAVA_SPECTRAL, PbfFluidSim, WATER_SPECTRAL};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SpectralFluidKind {
@@ -349,7 +349,10 @@ pub struct SpectralFluid {
 
 impl SpectralFluid {
     pub fn new(kind: SpectralFluidKind) -> Self {
-        Self { kind, sim: PbfFluidSim::new(1000.0, 0.1) }
+        Self {
+            kind,
+            sim: PbfFluidSim::new(1000.0, 0.1),
+        }
     }
 
     pub fn spectral_for_kind(kind: SpectralFluidKind) -> [f32; 16] {
@@ -420,7 +423,10 @@ mod spectral_fluid_tests {
         let mut fluid = SpectralFluid::new(SpectralFluidKind::Water);
         fluid.spawn([0.0, 1.0, 0.0], [0.0; 3]);
         let s = &fluid.sim.particles[0].spectral;
-        assert!(s[1] > s[12], "water band 1 (blue) must exceed band 12 (red)");
+        assert!(
+            s[1] > s[12],
+            "water band 1 (blue) must exceed band 12 (red)"
+        );
     }
 
     #[test]
@@ -428,7 +434,10 @@ mod spectral_fluid_tests {
         let mut fluid = SpectralFluid::new(SpectralFluidKind::Blood);
         fluid.spawn([0.0, 1.0, 0.0], [0.0; 3]);
         let s = &fluid.sim.particles[0].spectral;
-        assert!(s[9] > s[0], "blood band 9 (red) must exceed band 0 (violet)");
+        assert!(
+            s[9] > s[0],
+            "blood band 9 (red) must exceed band 0 (violet)"
+        );
     }
 
     #[test]
@@ -454,7 +463,10 @@ mod spectral_fluid_tests {
         }
         fluid.step();
         let mean = fluid.mean_spectral();
-        assert!(mean[2] > 0.0, "water blue band must persist after physics step");
+        assert!(
+            mean[2] > 0.0,
+            "water blue band must persist after physics step"
+        );
     }
 }
 
@@ -479,7 +491,10 @@ mod tests {
         }
 
         let end_y = sim.particles[0].position.y;
-        assert!(end_y < start_y, "particle should fall: {start_y} -> {end_y}");
+        assert!(
+            end_y < start_y,
+            "particle should fall: {start_y} -> {end_y}"
+        );
     }
 
     #[test]
@@ -511,7 +526,10 @@ mod tests {
 
         // Particles should have moved down toward ground
         let avg_y: f32 = sim.particles.iter().map(|p| p.position.y).sum::<f32>() / count as f32;
-        assert!(avg_y < 3.0, "particles should settle downward, avg_y: {avg_y}");
+        assert!(
+            avg_y < 3.0,
+            "particles should settle downward, avg_y: {avg_y}"
+        );
     }
 
     #[test]

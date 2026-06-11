@@ -8,9 +8,9 @@
 //! sample per splat — that is ADDED to the splat's base spectral value
 //! at render time.
 
+use half::f16;
 use rayon::prelude::*;
 use vox_core::types::GaussianSplat;
-use half::f16;
 
 #[derive(Debug, Clone)]
 pub struct GiBakeConfig {
@@ -46,9 +46,7 @@ impl GiBaker {
     }
 
     pub fn bake(&self, splats: &[GaussianSplat]) -> BakedGi {
-        let mut current: Vec<[f32; 16]> = splats.iter()
-            .map(|s| s.spectral_bands_f32())
-            .collect();
+        let mut current: Vec<[f32; 16]> = splats.iter().map(|s| s.spectral_bands_f32()).collect();
 
         for _bounce in 0..self.config.bounces {
             let next: Vec<[f32; 16]> = (0..splats.len())
@@ -58,7 +56,9 @@ impl GiBaker {
             current = next;
         }
 
-        BakedGi { irradiance: current }
+        BakedGi {
+            irradiance: current,
+        }
     }
 
     fn accumulate_irradiance(
@@ -73,13 +73,17 @@ impl GiBaker {
         let mut count = 0usize;
 
         for (j, splat) in splats.iter().enumerate() {
-            if j == target { continue; }
+            if j == target {
+                continue;
+            }
             let sp = splat.position();
             let dx = sp[0] - tp[0];
             let dy = sp[1] - tp[1];
             let dz = sp[2] - tp[2];
-            let dist2 = dx*dx + dy*dy + dz*dz;
-            if dist2 > r2 { continue; }
+            let dist2 = dx * dx + dy * dy + dz * dz;
+            if dist2 > r2 {
+                continue;
+            }
 
             let dist = dist2.sqrt();
             let atten = 1.0 / (1.0 + dist * self.config.falloff);
@@ -89,12 +93,16 @@ impl GiBaker {
                 accum[band] += spectral[j][band] * atten * opacity_w;
             }
             count += 1;
-            if count >= self.config.max_neighbours { break; }
+            if count >= self.config.max_neighbours {
+                break;
+            }
         }
 
         if count > 0 {
             let scale = 1.0 / count as f32;
-            for val in accum.iter_mut() { *val *= scale; }
+            for val in accum.iter_mut() {
+                *val *= scale;
+            }
         }
         accum
     }
@@ -117,7 +125,13 @@ mod tests {
 
     fn make_splat(pos: [f32; 3], spectral_val: f32) -> GaussianSplat {
         let f16_val = half::f16::from_f32(spectral_val).to_bits();
-        GaussianSplat::volume(pos, [0.1, 0.1, 0.1], glam::Quat::IDENTITY, 200, [f16_val; 16])
+        GaussianSplat::volume(
+            pos,
+            [0.1, 0.1, 0.1],
+            glam::Quat::IDENTITY,
+            200,
+            [f16_val; 16],
+        )
     }
 
     #[test]
@@ -137,9 +151,15 @@ mod tests {
             make_splat([0.0, 0.0, 0.0], 0.0),
             make_splat([0.5, 0.0, 0.0], 1.0),
         ];
-        let baker = GiBaker::new(GiBakeConfig { search_radius: 2.0, ..Default::default() });
+        let baker = GiBaker::new(GiBakeConfig {
+            search_radius: 2.0,
+            ..Default::default()
+        });
         let gi = baker.bake(&splats);
-        assert!(gi.irradiance[0][0] > 0.0, "dark splat should receive GI from bright neighbour");
+        assert!(
+            gi.irradiance[0][0] > 0.0,
+            "dark splat should receive GI from bright neighbour"
+        );
     }
 
     #[test]
@@ -148,7 +168,10 @@ mod tests {
             make_splat([0.0, 0.0, 0.0], 0.0),
             make_splat([100.0, 0.0, 0.0], 1.0),
         ];
-        let baker = GiBaker::new(GiBakeConfig { search_radius: 1.0, ..Default::default() });
+        let baker = GiBaker::new(GiBakeConfig {
+            search_radius: 1.0,
+            ..Default::default()
+        });
         let gi = baker.bake(&splats);
         assert_eq!(gi.irradiance[0], [0.0; 16], "far splat should not bleed");
     }
@@ -169,7 +192,10 @@ mod tests {
         let splat = make_splat([0.0, 0.0, 0.0], 0.75);
         let bands = splat.spectral_bands_f32();
         for &b in &bands {
-            assert!((b - 0.75).abs() < 0.01, "f16 round-trip should be within 1%");
+            assert!(
+                (b - 0.75).abs() < 0.01,
+                "f16 round-trip should be within 1%"
+            );
         }
     }
 }

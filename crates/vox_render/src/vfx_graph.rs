@@ -100,7 +100,11 @@ pub enum VfxNode {
     // --- Init stage (run once when a particle is born) ---
     /// Initial velocity: `direction * speed`, perturbed by `spread`
     /// (radians-ish cone half-width in each axis).
-    InitVelocity { direction: [f32; 3], speed: f32, spread: f32 },
+    InitVelocity {
+        direction: [f32; 3],
+        speed: f32,
+        spread: f32,
+    },
     /// Lifetime sampled uniformly in `[min, max]` seconds.
     InitLifetime { min: f32, max: f32 },
     /// Constant initial splat half-axis size.
@@ -203,10 +207,17 @@ impl std::fmt::Display for VfxGraphError {
             VfxGraphError::MultipleSpawn => write!(f, "graph has more than one Spawn node"),
             VfxGraphError::MultipleOutput => write!(f, "graph has more than one Output node"),
             VfxGraphError::EdgeOutOfBounds { edge } => {
-                write!(f, "edge {}->{} references a missing node", edge.from, edge.to)
+                write!(
+                    f,
+                    "edge {}->{} references a missing node",
+                    edge.from, edge.to
+                )
             }
             VfxGraphError::StageMismatch { from, to } => {
-                write!(f, "type mismatch: cannot wire {from:?} stage into {to:?} stage")
+                write!(
+                    f,
+                    "type mismatch: cannot wire {from:?} stage into {to:?} stage"
+                )
             }
             VfxGraphError::Cycle => write!(f, "graph contains a cycle"),
         }
@@ -426,7 +437,11 @@ impl VfxGraphInstance {
 
         for node in &graph.nodes {
             match node {
-                VfxNode::InitVelocity { direction, speed, spread } => {
+                VfxNode::InitVelocity {
+                    direction,
+                    speed,
+                    spread,
+                } => {
                     init_dir = Vec3::from(*direction).normalize_or_zero();
                     init_speed = *speed;
                     init_spread = *spread;
@@ -439,7 +454,10 @@ impl VfxGraphInstance {
                 VfxNode::InitSpectral { emission } => init_spectral = emission.to_spd(),
                 VfxNode::Gravity { accel } => gravity = Vec3::from(*accel),
                 VfxNode::Drag { coefficient } => drag = *coefficient,
-                VfxNode::Turbulence { strength, frequency } => {
+                VfxNode::Turbulence {
+                    strength,
+                    frequency,
+                } => {
                     turbulence_strength = *strength;
                     turbulence_freq = *frequency;
                 }
@@ -463,7 +481,9 @@ impl VfxGraphInstance {
             accumulator: 0.0,
             burst_fired: false,
             // LCG seeding identical in spirit to vfx.rs (avoid a zero state).
-            rng: seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407),
+            rng: seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407),
             time: 0.0,
             max_particles,
             init_dir,
@@ -582,9 +602,8 @@ impl VfxGraphInstance {
             // Spectral fade: scale every band toward `spectral_fade_end`.
             let fade = 1.0 + (self.spectral_fade_end - 1.0) * life_t;
             let spd = self.particles.spectral[i];
-            let spectral: [u16; 16] = std::array::from_fn(|b| {
-                f16::from_f32((spd[b] * fade).clamp(0.0, 1.0)).to_bits()
-            });
+            let spectral: [u16; 16] =
+                std::array::from_fn(|b| f16::from_f32((spd[b] * fade).clamp(0.0, 1.0)).to_bits());
 
             // Size over life.
             let size_scale = 1.0 + (self.size_over_life_end - 1.0) * life_t;
@@ -593,7 +612,11 @@ impl VfxGraphInstance {
             let opacity = (base_opacity * remaining).clamp(0.0, 255.0) as u8;
 
             out.push(GaussianSplat::volume(
-                [self.particles.pos_x[i], self.particles.pos_y[i], self.particles.pos_z[i]],
+                [
+                    self.particles.pos_x[i],
+                    self.particles.pos_y[i],
+                    self.particles.pos_z[i],
+                ],
                 [size, size, size],
                 Quat::IDENTITY,
                 opacity,
@@ -697,10 +720,7 @@ fn turbulence_accel(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
     let xi = (x * 16.0) as i32 as u32;
     let yi = (y * 16.0) as i32 as u32;
     let zi = (z * 16.0) as i32 as u32;
-    let base = xi
-        .wrapping_mul(73856093)
-        ^ yi.wrapping_mul(19349663)
-        ^ zi.wrapping_mul(83492791);
+    let base = xi.wrapping_mul(73856093) ^ yi.wrapping_mul(19349663) ^ zi.wrapping_mul(83492791);
     (
         hash_to_signed(base),
         hash_to_signed(base ^ 0x9E3779B9),
@@ -736,7 +756,11 @@ pub fn blackbody_spd(kelvin: f32) -> [f32; 16] {
     //   B(λ,T) = (2hc²/λ⁵) / (exp(hc/(λ k T)) - 1)
     const HC_OVER_K: f64 = 0.0143877688; // h*c/k_B  (m·K)
     // Sanitise author-controlled kelvin: non-finite -> max, then clamp to range.
-    let kelvin = if kelvin.is_finite() { kelvin } else { BLACKBODY_MAX_K };
+    let kelvin = if kelvin.is_finite() {
+        kelvin
+    } else {
+        BLACKBODY_MAX_K
+    };
     let t = kelvin.clamp(BLACKBODY_MIN_K, BLACKBODY_MAX_K) as f64;
     let mut spd = [0.0f64; 16];
     let mut max = 0.0f64;
@@ -780,13 +804,30 @@ pub fn graph_fire(seed: u64) -> VfxGraph {
     VfxGraph {
         name: "fire".into(),
         nodes: vec![
-            VfxNode::Spawn { rate: 60.0, shape: SpawnShape::Cone { angle_deg: 15.0, radius: 0.2 } },
-            VfxNode::InitVelocity { direction: [0.0, 1.0, 0.0], speed: 2.5, spread: 0.25 },
+            VfxNode::Spawn {
+                rate: 60.0,
+                shape: SpawnShape::Cone {
+                    angle_deg: 15.0,
+                    radius: 0.2,
+                },
+            },
+            VfxNode::InitVelocity {
+                direction: [0.0, 1.0, 0.0],
+                speed: 2.5,
+                spread: 0.25,
+            },
             VfxNode::InitLifetime { min: 0.8, max: 1.6 },
             VfxNode::InitSize { size: 0.12 },
-            VfxNode::InitSpectral { emission: SpectralEmission::Blackbody { kelvin: 1800.0 } },
-            VfxNode::Gravity { accel: [0.0, 0.6, 0.0] }, // hot air buoyancy (rises)
-            VfxNode::Turbulence { strength: 1.5, frequency: 2.0 },
+            VfxNode::InitSpectral {
+                emission: SpectralEmission::Blackbody { kelvin: 1800.0 },
+            },
+            VfxNode::Gravity {
+                accel: [0.0, 0.6, 0.0],
+            }, // hot air buoyancy (rises)
+            VfxNode::Turbulence {
+                strength: 1.5,
+                frequency: 2.0,
+            },
             VfxNode::SpectralFadeOverLife { end_scale: 0.05 },
             VfxNode::SizeOverLife { end_scale: 0.4 },
             VfxNode::Output { base_opacity: 200 },
@@ -800,17 +841,29 @@ pub fn graph_fire(seed: u64) -> VfxGraph {
 /// Fountain — sphere burst-ish spray, gravity pulls it back down, blue-white SPD.
 pub fn graph_fountain(seed: u64) -> VfxGraph {
     let blue_white = [
-        0.85, 0.90, 0.95, 1.00, 0.95, 0.85, 0.75, 0.65, 0.55, 0.50, 0.45, 0.42, 0.40, 0.38, 0.36, 0.34,
+        0.85, 0.90, 0.95, 1.00, 0.95, 0.85, 0.75, 0.65, 0.55, 0.50, 0.45, 0.42, 0.40, 0.38, 0.36,
+        0.34,
     ];
     VfxGraph {
         name: "fountain".into(),
         nodes: vec![
-            VfxNode::Spawn { rate: 80.0, shape: SpawnShape::Sphere { radius: 0.1 } },
-            VfxNode::InitVelocity { direction: [0.0, 1.0, 0.0], speed: 6.0, spread: 0.3 },
+            VfxNode::Spawn {
+                rate: 80.0,
+                shape: SpawnShape::Sphere { radius: 0.1 },
+            },
+            VfxNode::InitVelocity {
+                direction: [0.0, 1.0, 0.0],
+                speed: 6.0,
+                spread: 0.3,
+            },
             VfxNode::InitLifetime { min: 1.0, max: 1.8 },
             VfxNode::InitSize { size: 0.05 },
-            VfxNode::InitSpectral { emission: SpectralEmission::Spd(blue_white) },
-            VfxNode::Gravity { accel: [0.0, -9.81, 0.0] },
+            VfxNode::InitSpectral {
+                emission: SpectralEmission::Spd(blue_white),
+            },
+            VfxNode::Gravity {
+                accel: [0.0, -9.81, 0.0],
+            },
             VfxNode::Drag { coefficient: 0.1 },
             VfxNode::Output { base_opacity: 220 },
         ],
@@ -824,12 +877,23 @@ pub fn graph_smoke(seed: u64) -> VfxGraph {
     VfxGraph {
         name: "smoke".into(),
         nodes: vec![
-            VfxNode::Spawn { rate: 12.0, shape: SpawnShape::Sphere { radius: 0.2 } },
-            VfxNode::InitVelocity { direction: [0.0, 1.0, 0.0], speed: 1.0, spread: 0.4 },
+            VfxNode::Spawn {
+                rate: 12.0,
+                shape: SpawnShape::Sphere { radius: 0.2 },
+            },
+            VfxNode::InitVelocity {
+                direction: [0.0, 1.0, 0.0],
+                speed: 1.0,
+                spread: 0.4,
+            },
             VfxNode::InitLifetime { min: 2.0, max: 3.5 },
             VfxNode::InitSize { size: 0.25 },
-            VfxNode::InitSpectral { emission: SpectralEmission::Spd([0.3; 16]) },
-            VfxNode::Gravity { accel: [0.0, 0.4, 0.0] },
+            VfxNode::InitSpectral {
+                emission: SpectralEmission::Spd([0.3; 16]),
+            },
+            VfxNode::Gravity {
+                accel: [0.0, 0.4, 0.0],
+            },
             VfxNode::Drag { coefficient: 0.5 },
             VfxNode::SpectralFadeOverLife { end_scale: 0.1 },
             VfxNode::SizeOverLife { end_scale: 3.0 },
@@ -893,19 +957,30 @@ mod tests {
     fn blackbody_extreme_kelvin_is_finite_and_normalised() {
         for k in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1e30, 1e9] {
             let spd = blackbody_spd(k);
-            assert!(spd.iter().all(|v| v.is_finite()), "kelvin={k} produced a non-finite band: {spd:?}");
+            assert!(
+                spd.iter().all(|v| v.is_finite()),
+                "kelvin={k} produced a non-finite band: {spd:?}"
+            );
             assert!(
                 spd.iter().all(|&v| (0.0..=1.0).contains(&v)),
                 "kelvin={k} bands out of [0,1]: {spd:?}"
             );
             let peak = spd.iter().copied().fold(0.0f32, f32::max);
-            assert!((peak - 1.0).abs() < 1e-5, "kelvin={k} peak band must be 1.0, got {peak}");
+            assert!(
+                (peak - 1.0).abs() < 1e-5,
+                "kelvin={k} peak band must be 1.0, got {peak}"
+            );
         }
         // Clamping is observable: anything >= BLACKBODY_MAX_K maps to the same SPD.
         let at_max = blackbody_spd(BLACKBODY_MAX_K);
         let over_max = blackbody_spd(1e30);
-        assert_eq!(at_max, over_max, "huge kelvin must clamp to BLACKBODY_MAX_K's SPD");
-        println!("[blackbody_extreme] inf/1e30 -> finite peak-normalised SPD, clamped @ {BLACKBODY_MAX_K}K");
+        assert_eq!(
+            at_max, over_max,
+            "huge kelvin must clamp to BLACKBODY_MAX_K's SPD"
+        );
+        println!(
+            "[blackbody_extreme] inf/1e30 -> finite peak-normalised SPD, clamped @ {BLACKBODY_MAX_K}K"
+        );
     }
 
     #[test]
@@ -927,7 +1002,10 @@ mod tests {
             mv.y,
             mv.z
         );
-        assert!(mv.y > mv.x.abs() && mv.y > mv.z.abs(), "fire mean velocity must be +Y dominant: {mv:?}");
+        assert!(
+            mv.y > mv.x.abs() && mv.y > mv.z.abs(),
+            "fire mean velocity must be +Y dominant: {mv:?}"
+        );
         assert!(mv.y > 0.0, "fire must rise");
 
         // Spectral argmax in red/IR bands for the brightest (youngest) splat.
@@ -937,8 +1015,14 @@ mod tests {
             .max_by(|a, b| band_sum(a).partial_cmp(&band_sum(b)).unwrap())
             .unwrap();
         let am = spectral_argmax(young);
-        println!("fire @1s: brightest splat spectral argmax band={am} ({}nm)", BAND_WAVELENGTHS[am]);
-        assert!(am >= 13, "fire blackbody argmax must be red/IR band>=13, got {am}");
+        println!(
+            "fire @1s: brightest splat spectral argmax band={am} ({}nm)",
+            BAND_WAVELENGTHS[am]
+        );
+        assert!(
+            am >= 13,
+            "fire blackbody argmax must be red/IR band>=13, got {am}"
+        );
 
         // Particle count within spawn-rate*lifetime band.
         // rate=60/s, lifetime in [0.8,1.6] (mean ~1.2) → steady-state ~ 60*1.2=72,
@@ -956,11 +1040,20 @@ mod tests {
         let graph = VfxGraph {
             name: "fade_probe".into(),
             nodes: vec![
-                VfxNode::SpawnBurst { count: 1, shape: SpawnShape::Point },
-                VfxNode::InitVelocity { direction: [0.0, 1.0, 0.0], speed: 0.0, spread: 0.0 },
+                VfxNode::SpawnBurst {
+                    count: 1,
+                    shape: SpawnShape::Point,
+                },
+                VfxNode::InitVelocity {
+                    direction: [0.0, 1.0, 0.0],
+                    speed: 0.0,
+                    spread: 0.0,
+                },
                 VfxNode::InitLifetime { min: 1.0, max: 1.0 },
                 VfxNode::InitSize { size: 0.1 },
-                VfxNode::InitSpectral { emission: SpectralEmission::Spd([0.8; 16]) },
+                VfxNode::InitSpectral {
+                    emission: SpectralEmission::Spd([0.8; 16]),
+                },
                 VfxNode::SpectralFadeOverLife { end_scale: 0.0 },
                 VfxNode::Output { base_opacity: 255 },
             ],
@@ -1004,7 +1097,9 @@ mod tests {
             prev = vy;
         }
         let vy_end = inst.mean_velocity().y;
-        println!("fountain mean vy: start={vy_start:.4} end={vy_end:.4} monotonic_down={monotonic}");
+        println!(
+            "fountain mean vy: start={vy_start:.4} end={vy_end:.4} monotonic_down={monotonic}"
+        );
         assert!(
             vy_end < vy_start,
             "gravity must pull fountain mean vy down: {vy_start} -> {vy_end}"
@@ -1023,7 +1118,11 @@ mod tests {
         }
         let sa = a.emit_splats();
         let sb = b.emit_splats();
-        assert_eq!(sa.len(), sb.len(), "same seed must yield same particle count");
+        assert_eq!(
+            sa.len(),
+            sb.len(),
+            "same seed must yield same particle count"
+        );
         let bytes_a: &[u8] = bytemuck::cast_slice(&sa);
         let bytes_b: &[u8] = bytemuck::cast_slice(&sb);
         println!(
@@ -1032,7 +1131,10 @@ mod tests {
             bytes_a.len(),
             bytes_a == bytes_b
         );
-        assert_eq!(bytes_a, bytes_b, "same seed + same dt sequence must be bit-identical");
+        assert_eq!(
+            bytes_a, bytes_b,
+            "same seed + same dt sequence must be bit-identical"
+        );
     }
 
     /// rand_unit's documented [0,1) contract must hold for every draw — the
@@ -1043,7 +1145,10 @@ mod tests {
             let mut inst = VfxGraphInstance::new(graph_fire(seed), Vec3::ZERO);
             for i in 0..100_000 {
                 let v = inst.rand_unit();
-                assert!((0.0..1.0).contains(&v), "seed {seed} draw {i}: {v} out of [0,1)");
+                assert!(
+                    (0.0..1.0).contains(&v),
+                    "seed {seed} draw {i}: {v} out of [0,1)"
+                );
             }
         }
     }
@@ -1068,8 +1173,13 @@ mod tests {
         let graph = VfxGraph {
             name: "cyclic".into(),
             nodes: vec![
-                VfxNode::Spawn { rate: 1.0, shape: SpawnShape::Point },
-                VfxNode::Gravity { accel: [0.0, -1.0, 0.0] },
+                VfxNode::Spawn {
+                    rate: 1.0,
+                    shape: SpawnShape::Point,
+                },
+                VfxNode::Gravity {
+                    accel: [0.0, -1.0, 0.0],
+                },
                 VfxNode::Output { base_opacity: 255 },
             ],
             // 1 -> 2 -> 1 forms a cycle among Update/Output-ish wiring.
@@ -1085,7 +1195,10 @@ mod tests {
         // Stage check runs before cycle check; a back-edge Output->Update is a
         // StageMismatch. Either error is a valid rejection of this bad graph.
         assert!(
-            matches!(err, VfxGraphError::Cycle | VfxGraphError::StageMismatch { .. }),
+            matches!(
+                err,
+                VfxGraphError::Cycle | VfxGraphError::StageMismatch { .. }
+            ),
             "expected Cycle or StageMismatch, got {err:?}"
         );
     }
@@ -1096,9 +1209,15 @@ mod tests {
         let graph = VfxGraph {
             name: "pure_cycle".into(),
             nodes: vec![
-                VfxNode::Spawn { rate: 1.0, shape: SpawnShape::Point },
+                VfxNode::Spawn {
+                    rate: 1.0,
+                    shape: SpawnShape::Point,
+                },
                 VfxNode::Drag { coefficient: 0.1 },
-                VfxNode::Turbulence { strength: 1.0, frequency: 1.0 },
+                VfxNode::Turbulence {
+                    strength: 1.0,
+                    frequency: 1.0,
+                },
                 VfxNode::Output { base_opacity: 255 },
             ],
             edges: vec![
@@ -1116,7 +1235,10 @@ mod tests {
         let graph = VfxGraph {
             name: "mismatch".into(),
             nodes: vec![
-                VfxNode::Spawn { rate: 1.0, shape: SpawnShape::Point },
+                VfxNode::Spawn {
+                    rate: 1.0,
+                    shape: SpawnShape::Point,
+                },
                 VfxNode::InitSize { size: 0.1 },
                 VfxNode::Output { base_opacity: 255 },
             ],
@@ -1127,7 +1249,10 @@ mod tests {
         println!("type mismatch rejected with: {err}");
         assert_eq!(
             err,
-            VfxGraphError::StageMismatch { from: NodeStage::Output, to: NodeStage::Init }
+            VfxGraphError::StageMismatch {
+                from: NodeStage::Output,
+                to: NodeStage::Init
+            }
         );
     }
 
@@ -1143,7 +1268,10 @@ mod tests {
 
         let no_output = VfxGraph {
             name: "no_output".into(),
-            nodes: vec![VfxNode::Spawn { rate: 1.0, shape: SpawnShape::Point }],
+            nodes: vec![VfxNode::Spawn {
+                rate: 1.0,
+                shape: SpawnShape::Point,
+            }],
             edges: vec![],
             seed: 0,
         };
@@ -1155,7 +1283,10 @@ mod tests {
         let graph = VfxGraph {
             name: "oob".into(),
             nodes: vec![
-                VfxNode::Spawn { rate: 1.0, shape: SpawnShape::Point },
+                VfxNode::Spawn {
+                    rate: 1.0,
+                    shape: SpawnShape::Point,
+                },
                 VfxNode::Output { base_opacity: 255 },
             ],
             edges: vec![VfxEdge { from: 0, to: 99 }],
@@ -1163,7 +1294,9 @@ mod tests {
         };
         assert_eq!(
             graph.validate(),
-            Err(VfxGraphError::EdgeOutOfBounds { edge: VfxEdge { from: 0, to: 99 } })
+            Err(VfxGraphError::EdgeOutOfBounds {
+                edge: VfxEdge { from: 0, to: 99 }
+            })
         );
     }
 
@@ -1171,7 +1304,8 @@ mod tests {
     fn library_effects_validate() {
         for name in ["fire", "fountain", "smoke"] {
             let g = effect_by_name(name, 1).expect("known effect");
-            g.validate().unwrap_or_else(|e| panic!("{name} invalid: {e}"));
+            g.validate()
+                .unwrap_or_else(|e| panic!("{name} invalid: {e}"));
         }
         assert!(effect_by_name("nope", 1).is_none());
     }
@@ -1189,7 +1323,11 @@ mod tests {
             inst.step(1.0 / 60.0);
         }
         let splats = inst.emit_splats();
-        assert!(splats.len() > 20, "need a populated fire, got {}", splats.len());
+        assert!(
+            splats.len() > 20,
+            "need a populated fire, got {}",
+            splats.len()
+        );
 
         let width = 128u32;
         let height = 128u32;
@@ -1233,6 +1371,9 @@ mod tests {
             warm > non_black / 2,
             "warm pixels ({warm}) must dominate lit region ({non_black})"
         );
-        assert!(sum_r > sum_b, "total red ({sum_r}) must exceed total blue ({sum_b})");
+        assert!(
+            sum_r > sum_b,
+            "total red ({sum_r}) must exceed total blue ({sum_b})"
+        );
     }
 }

@@ -186,12 +186,7 @@ impl<'a> LightSampler<'a> {
     }
 
     /// Core WRS / RIS reservoir over the supplied candidate indices.
-    fn reservoir<I>(
-        &self,
-        shade_point: Vec3,
-        candidates: I,
-        rng: &mut Lcg,
-    ) -> Option<LightSample>
+    fn reservoir<I>(&self, shade_point: Vec3, candidates: I, rng: &mut Lcg) -> Option<LightSample>
     where
         I: Iterator<Item = usize>,
     {
@@ -296,8 +291,7 @@ impl LightGrid {
         let cell_size = if lights.is_empty() {
             1.0
         } else {
-            let mean_r: f32 =
-                lights.iter().map(|l| l.radius).sum::<f32>() / lights.len() as f32;
+            let mean_r: f32 = lights.iter().map(|l| l.radius).sum::<f32>() / lights.len() as f32;
             mean_r.max(1e-3)
         };
 
@@ -529,9 +523,15 @@ mod tests {
         let scaled = shade_contribution(&light, shade_point, Vec3::new(0.0, 5.0, 0.0));
 
         // Bit-equal: same direction, length must be irrelevant.
-        assert_eq!(unit, scaled, "non-unit normal must match unit normal exactly");
+        assert_eq!(
+            unit, scaled,
+            "non-unit normal must match unit normal exactly"
+        );
         // And the value is the cosine-enabled (att·1.0) result, not zero/disabled.
-        assert!(unit[0] > 0.0, "cosine-enabled contribution should be positive");
+        assert!(
+            unit[0] > 0.0,
+            "cosine-enabled contribution should be positive"
+        );
     }
 
     /// Grid path estimate matches full path within 3%; relevant_lights is a
@@ -658,7 +658,10 @@ mod tests {
         let mut bright_count = 0;
         for k in 0..1000u64 {
             let s = sampler
-                .sample(Vec3::ZERO, k.wrapping_mul(2862933555777941757).wrapping_add(3))
+                .sample(
+                    Vec3::ZERO,
+                    k.wrapping_mul(2862933555777941757).wrapping_add(3),
+                )
                 .expect("a light should be chosen");
             if s.light_index == 0 {
                 bright_count += 1;

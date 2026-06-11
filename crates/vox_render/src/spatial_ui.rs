@@ -1,4 +1,4 @@
-use glam::{Vec3, Quat};
+use glam::{Quat, Vec3};
 
 /// Content type for a spatial UI panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,7 +99,8 @@ impl SpatialUIManager {
     pub fn add_panel(&mut self, position: Vec3, size: [f32; 2], content: PanelContent) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.panels.push(SpatialPanel::new(id, position, size, content));
+        self.panels
+            .push(SpatialPanel::new(id, position, size, content));
         id
     }
 
@@ -134,23 +135,21 @@ impl SpatialUIManager {
                 continue;
             }
             if let Some(t) = panel.ray_intersect(ray_origin, ray_dir)
-                && (best.is_none() || t < best.unwrap().1) {
-                    best = Some((panel, t));
-                }
+                && (best.is_none() || t < best.unwrap().1)
+            {
+                best = Some((panel, t));
+            }
         }
         best
     }
 
     /// Return the nearest visible panel to a world position.
     pub fn nearest_panel(&self, pos: Vec3) -> Option<&SpatialPanel> {
-        self.panels
-            .iter()
-            .filter(|p| p.visible)
-            .min_by(|a, b| {
-                let da = a.position.distance_squared(pos);
-                let db = b.position.distance_squared(pos);
-                da.partial_cmp(&db).unwrap()
-            })
+        self.panels.iter().filter(|p| p.visible).min_by(|a, b| {
+            let da = a.position.distance_squared(pos);
+            let db = b.position.distance_squared(pos);
+            da.partial_cmp(&db).unwrap()
+        })
     }
 }
 

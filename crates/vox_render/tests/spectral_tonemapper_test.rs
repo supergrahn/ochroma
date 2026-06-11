@@ -1,6 +1,6 @@
-use vox_render::spectral_tonemapper::*;
-use vox_render::spectral_framebuffer::SpectralFramebuffer;
 use vox_core::spectral::Illuminant;
+use vox_render::spectral_framebuffer::SpectralFramebuffer;
+use vox_render::spectral_tonemapper::*;
 
 #[test]
 fn tonemap_empty_framebuffer_is_black() {
@@ -87,7 +87,17 @@ fn hdr_output_preserves_values_above_one() {
 fn different_illuminants_different_output() {
     let mut fb = SpectralFramebuffer::new(1, 1);
     // Non-uniform spectrum so illuminant differences are visible
-    fb.write_sample(0, 0, [0.1, 0.2, 0.8, 0.6, 0.3, 0.9, 0.4, 0.1, 0.5, 0.3, 0.7, 0.2, 0.6, 0.4, 0.8, 0.3], 10.0, [0.0, 1.0, 0.0], 0, [0.5; 16]);
+    fb.write_sample(
+        0,
+        0,
+        [
+            0.1, 0.2, 0.8, 0.6, 0.3, 0.9, 0.4, 0.1, 0.5, 0.3, 0.7, 0.2, 0.6, 0.4, 0.8, 0.3,
+        ],
+        10.0,
+        [0.0, 1.0, 0.0],
+        0,
+        [0.5; 16],
+    );
     let settings = ToneMapSettings::default();
 
     let d65 = tonemap_spectral_framebuffer(&fb, &Illuminant::d65(), &settings);

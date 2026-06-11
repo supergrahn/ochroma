@@ -2,7 +2,13 @@ use vox_render::gpu::shadow_catcher::generate_convex_hull_2d;
 
 #[test]
 fn convex_hull_of_square() {
-    let points = vec![[0.0f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5]];
+    let points = vec![
+        [0.0f32, 0.0],
+        [1.0, 0.0],
+        [1.0, 1.0],
+        [0.0, 1.0],
+        [0.5, 0.5],
+    ];
     let hull = generate_convex_hull_2d(&points);
     assert_eq!(hull.len(), 4);
 }
@@ -37,6 +43,9 @@ fn shadow_mesh_from_splat_positions() {
     assert!(mesh.vertices.len() >= 3);
     assert!(!mesh.indices.is_empty());
     for v in &mesh.vertices {
-        assert!((v[1]).abs() < 0.01, "Shadow catcher verts should be on ground");
+        assert!(
+            (v[1]).abs() < 0.01,
+            "Shadow catcher verts should be on ground"
+        );
     }
 }

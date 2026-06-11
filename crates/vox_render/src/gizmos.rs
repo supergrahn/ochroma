@@ -102,12 +102,7 @@ fn project_to_screen(pos: Vec3, view_proj: Mat4, width: u32, height: u32) -> Opt
 
 /// Compute a world-space arrow length such that the arrow appears roughly
 /// `ARROW_PIXELS` on screen at the given entity depth.
-fn world_arrow_length(
-    entity_pos: Vec3,
-    view_proj: Mat4,
-    width: u32,
-    height: u32,
-) -> f32 {
+fn world_arrow_length(entity_pos: Vec3, view_proj: Mat4, width: u32, height: u32) -> f32 {
     let Some(center) = project_to_screen(entity_pos, view_proj, width, height) else {
         return 1.0;
     };
@@ -116,9 +111,8 @@ fn world_arrow_length(
     let Some(probe_screen) = project_to_screen(probe, view_proj, width, height) else {
         return 1.0;
     };
-    let px_per_unit = ((probe_screen.0 - center.0).powi(2)
-        + (probe_screen.1 - center.1).powi(2))
-        .sqrt();
+    let px_per_unit =
+        ((probe_screen.0 - center.0).powi(2) + (probe_screen.1 - center.1).powi(2)).sqrt();
     if px_per_unit < 0.001 {
         return 1.0;
     }
@@ -172,14 +166,25 @@ fn draw_line_thick(
     pixels: &mut [[u8; 4]],
     width: u32,
     height: u32,
-    x0: i32, y0: i32,
-    x1: i32, y1: i32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
     color: [u8; 4],
     thickness: i32,
 ) {
     for dx in 0..thickness {
         for dy in 0..thickness {
-            draw_line(pixels, width, height, x0 + dx, y0 + dy, x1 + dx, y1 + dy, color);
+            draw_line(
+                pixels,
+                width,
+                height,
+                x0 + dx,
+                y0 + dy,
+                x1 + dx,
+                y1 + dy,
+                color,
+            );
         }
     }
 }
@@ -214,9 +219,36 @@ fn draw_arrowhead(
     let left_y = back_y + py * size;
     let right_x = back_x - px * size;
     let right_y = back_y - py * size;
-    draw_line(pixels, width, height, tip_x as i32, tip_y as i32, left_x as i32, left_y as i32, color);
-    draw_line(pixels, width, height, tip_x as i32, tip_y as i32, right_x as i32, right_y as i32, color);
-    draw_line(pixels, width, height, left_x as i32, left_y as i32, right_x as i32, right_y as i32, color);
+    draw_line(
+        pixels,
+        width,
+        height,
+        tip_x as i32,
+        tip_y as i32,
+        left_x as i32,
+        left_y as i32,
+        color,
+    );
+    draw_line(
+        pixels,
+        width,
+        height,
+        tip_x as i32,
+        tip_y as i32,
+        right_x as i32,
+        right_y as i32,
+        color,
+    );
+    draw_line(
+        pixels,
+        width,
+        height,
+        left_x as i32,
+        left_y as i32,
+        right_x as i32,
+        right_y as i32,
+        color,
+    );
 }
 
 /// Draw a small square at `center` for scale-mode endpoints.
@@ -257,7 +289,9 @@ fn draw_circle(
         let y0 = cy + radius * a0.sin();
         let x1 = cx + radius * a1.cos();
         let y1 = cy + radius * a1.sin();
-        draw_line(pixels, width, height, x0 as i32, y0 as i32, x1 as i32, y1 as i32, color);
+        draw_line(
+            pixels, width, height, x0 as i32, y0 as i32, x1 as i32, y1 as i32, color,
+        );
     }
 }
 
@@ -339,35 +373,129 @@ impl GizmoRenderer {
         };
 
         // Highlight the active axis
-        let x_col = if self.active_axis == Some(Axis::X) { YELLOW } else { RED };
-        let y_col = if self.active_axis == Some(Axis::Y) { YELLOW } else { GREEN };
-        let z_col = if self.active_axis == Some(Axis::Z) { YELLOW } else { BLUE };
+        let x_col = if self.active_axis == Some(Axis::X) {
+            YELLOW
+        } else {
+            RED
+        };
+        let y_col = if self.active_axis == Some(Axis::Y) {
+            YELLOW
+        } else {
+            GREEN
+        };
+        let z_col = if self.active_axis == Some(Axis::Z) {
+            YELLOW
+        } else {
+            BLUE
+        };
 
         match self.mode {
             GizmoMode::Translate => {
                 // Axis lines
-                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, x_end.0 as i32, x_end.1 as i32, x_col, 2);
-                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, y_end.0 as i32, y_end.1 as i32, y_col, 2);
-                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, z_end.0 as i32, z_end.1 as i32, z_col, 2);
+                draw_line_thick(
+                    pixels,
+                    width,
+                    height,
+                    center.0 as i32,
+                    center.1 as i32,
+                    x_end.0 as i32,
+                    x_end.1 as i32,
+                    x_col,
+                    2,
+                );
+                draw_line_thick(
+                    pixels,
+                    width,
+                    height,
+                    center.0 as i32,
+                    center.1 as i32,
+                    y_end.0 as i32,
+                    y_end.1 as i32,
+                    y_col,
+                    2,
+                );
+                draw_line_thick(
+                    pixels,
+                    width,
+                    height,
+                    center.0 as i32,
+                    center.1 as i32,
+                    z_end.0 as i32,
+                    z_end.1 as i32,
+                    z_col,
+                    2,
+                );
                 // Arrowheads
-                draw_arrowhead(pixels, width, height, center.0, center.1, x_end.0, x_end.1, x_col);
-                draw_arrowhead(pixels, width, height, center.0, center.1, y_end.0, y_end.1, y_col);
-                draw_arrowhead(pixels, width, height, center.0, center.1, z_end.0, z_end.1, z_col);
+                draw_arrowhead(
+                    pixels, width, height, center.0, center.1, x_end.0, x_end.1, x_col,
+                );
+                draw_arrowhead(
+                    pixels, width, height, center.0, center.1, y_end.0, y_end.1, y_col,
+                );
+                draw_arrowhead(
+                    pixels, width, height, center.0, center.1, z_end.0, z_end.1, z_col,
+                );
             }
             GizmoMode::Rotate => {
                 // Draw circles around each axis (screen-space approximation)
                 let radius = ((x_end.0 - center.0).powi(2) + (x_end.1 - center.1).powi(2)).sqrt();
                 draw_circle(pixels, width, height, center.0, center.1, radius, x_col);
                 let radius_y = ((y_end.0 - center.0).powi(2) + (y_end.1 - center.1).powi(2)).sqrt();
-                draw_circle(pixels, width, height, center.0, center.1, radius_y * 0.8, y_col);
+                draw_circle(
+                    pixels,
+                    width,
+                    height,
+                    center.0,
+                    center.1,
+                    radius_y * 0.8,
+                    y_col,
+                );
                 let radius_z = ((z_end.0 - center.0).powi(2) + (z_end.1 - center.1).powi(2)).sqrt();
-                draw_circle(pixels, width, height, center.0, center.1, radius_z * 0.6, z_col);
+                draw_circle(
+                    pixels,
+                    width,
+                    height,
+                    center.0,
+                    center.1,
+                    radius_z * 0.6,
+                    z_col,
+                );
             }
             GizmoMode::Scale => {
                 // Lines with cube endpoints
-                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, x_end.0 as i32, x_end.1 as i32, x_col, 2);
-                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, y_end.0 as i32, y_end.1 as i32, y_col, 2);
-                draw_line_thick(pixels, width, height, center.0 as i32, center.1 as i32, z_end.0 as i32, z_end.1 as i32, z_col, 2);
+                draw_line_thick(
+                    pixels,
+                    width,
+                    height,
+                    center.0 as i32,
+                    center.1 as i32,
+                    x_end.0 as i32,
+                    x_end.1 as i32,
+                    x_col,
+                    2,
+                );
+                draw_line_thick(
+                    pixels,
+                    width,
+                    height,
+                    center.0 as i32,
+                    center.1 as i32,
+                    y_end.0 as i32,
+                    y_end.1 as i32,
+                    y_col,
+                    2,
+                );
+                draw_line_thick(
+                    pixels,
+                    width,
+                    height,
+                    center.0 as i32,
+                    center.1 as i32,
+                    z_end.0 as i32,
+                    z_end.1 as i32,
+                    z_col,
+                    2,
+                );
                 draw_cube_endpoint(pixels, width, height, x_end.0, x_end.1, x_col);
                 draw_cube_endpoint(pixels, width, height, y_end.0, y_end.1, y_col);
                 draw_cube_endpoint(pixels, width, height, z_end.0, z_end.1, z_col);
@@ -389,7 +517,10 @@ impl GizmoRenderer {
             framebuffer.len(),
             (width * height * 4) as usize,
             "framebuffer size mismatch: expected {}×{}×4={}, got {}",
-            width, height, width * height * 4, framebuffer.len()
+            width,
+            height,
+            width * height * 4,
+            framebuffer.len()
         );
         // SAFETY: [u8;4] and four consecutive u8 bytes have identical layout (size=4, align=1).
         let pixels: &mut [[u8; 4]] = unsafe {
@@ -421,10 +552,9 @@ impl GizmoRenderer {
         // Find the closest axis within tolerance
         let mut best: Option<(Axis, f32)> = None;
         for (axis, dist) in [(Axis::X, dist_x), (Axis::Y, dist_y), (Axis::Z, dist_z)] {
-            if dist < HIT_TOLERANCE
-                && (best.is_none() || dist < best.unwrap().1) {
-                    best = Some((axis, dist));
-                }
+            if dist < HIT_TOLERANCE && (best.is_none() || dist < best.unwrap().1) {
+                best = Some((axis, dist));
+            }
         }
         best.map(|(a, _)| a)
     }
@@ -480,7 +610,8 @@ impl GizmoRenderer {
         }
 
         // Determine the screen-space direction of this axis
-        let Some(center) = project_to_screen(entity_pos, view_proj, screen_width, screen_height) else {
+        let Some(center) = project_to_screen(entity_pos, view_proj, screen_width, screen_height)
+        else {
             return identity;
         };
         let axis_dir = match axis {
@@ -488,14 +619,20 @@ impl GizmoRenderer {
             Axis::Y => Vec3::Y,
             Axis::Z => Vec3::Z,
         };
-        let Some(axis_end) = project_to_screen(entity_pos + axis_dir, view_proj, screen_width, screen_height) else {
+        let Some(axis_end) = project_to_screen(
+            entity_pos + axis_dir,
+            view_proj,
+            screen_width,
+            screen_height,
+        ) else {
             return identity;
         };
 
         // Screen-space axis direction (normalised)
         let screen_axis_x = axis_end.0 - center.0;
         let screen_axis_y = axis_end.1 - center.1;
-        let screen_axis_len = (screen_axis_x * screen_axis_x + screen_axis_y * screen_axis_y).sqrt();
+        let screen_axis_len =
+            (screen_axis_x * screen_axis_x + screen_axis_y * screen_axis_y).sqrt();
         if screen_axis_len < 0.001 {
             return identity;
         }
@@ -561,17 +698,8 @@ mod tests {
     use super::*;
 
     fn test_view_proj() -> Mat4 {
-        let view = Mat4::look_at_rh(
-            Vec3::new(0.0, 5.0, 10.0),
-            Vec3::ZERO,
-            Vec3::Y,
-        );
-        let proj = Mat4::perspective_rh(
-            std::f32::consts::FRAC_PI_4,
-            16.0 / 9.0,
-            0.1,
-            1000.0,
-        );
+        let view = Mat4::look_at_rh(Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, Vec3::Y);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 16.0 / 9.0, 0.1, 1000.0);
         proj * view
     }
 
@@ -598,7 +726,10 @@ mod tests {
     fn project_to_screen_identity() {
         let vp = Mat4::IDENTITY;
         let result = project_to_screen(Vec3::new(0.0, 0.0, -1.0), vp, 800, 600);
-        assert!(result.is_some(), "identity projection should not be behind camera");
+        assert!(
+            result.is_some(),
+            "identity projection should not be behind camera"
+        );
         let (sx, sy) = result.unwrap();
         assert!((sx - 400.0).abs() < 1.0, "expected sx≈400, got {sx}");
         assert!((sy - 300.0).abs() < 1.0, "expected sy≈300, got {sy}");
@@ -614,15 +745,14 @@ mod tests {
     #[test]
     fn handle_mouse_press_returns_none_when_no_entity() {
         let gizmo = GizmoRenderer::new();
-        let view = Mat4::look_at_rh(
-            Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, Vec3::Y,
-        );
-        let proj = Mat4::perspective_rh(
-            std::f32::consts::FRAC_PI_4, 16.0 / 9.0, 0.1, 1000.0,
-        );
+        let view = Mat4::look_at_rh(Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, Vec3::Y);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 16.0 / 9.0, 0.1, 1000.0);
         let vp = proj * view;
         let result = gizmo.hit_test(0.0, 0.0, Vec3::ZERO, vp, 800, 450);
-        assert!(result.is_none(), "corner click should not hit any axis: {result:?}");
+        assert!(
+            result.is_none(),
+            "corner click should not hit any axis: {result:?}"
+        );
     }
 
     #[test]
@@ -633,6 +763,9 @@ mod tests {
         draw_line_thick(&mut thick, 100, 100, 10, 50, 90, 50, [255, 0, 0, 255], 2);
         let thin_lit = thin.iter().filter(|p| p[0] == 255).count();
         let thick_lit = thick.iter().filter(|p| p[0] == 255).count();
-        assert!(thick_lit > thin_lit, "thick should cover more pixels: thin={thin_lit}, thick={thick_lit}");
+        assert!(
+            thick_lit > thin_lit,
+            "thick should cover more pixels: thin={thin_lit}, thick={thick_lit}"
+        );
     }
 }

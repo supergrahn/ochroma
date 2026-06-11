@@ -10,7 +10,7 @@
 
 use half::f16;
 use rayon::prelude::*;
-use vox_core::spectral::{xyz_to_srgb, Illuminant, SpectralBands};
+use vox_core::spectral::{Illuminant, SpectralBands, xyz_to_srgb};
 use vox_core::types::GaussianSplat;
 
 use crate::spectral::RenderCamera;
@@ -97,11 +97,7 @@ fn ochroma_to_gaussian3d(splat: &GaussianSplat, illuminant: &Illuminant) -> Gaus
     };
     Gaussian3D {
         position: splat.position(),
-        log_scale: [
-            su.max(0.001).ln(),
-            sv.max(0.001).ln(),
-            sw.max(0.001).ln(),
-        ],
+        log_scale: [su.max(0.001).ln(), sv.max(0.001).ln(), sw.max(0.001).ln()],
         rotation: [
             // Ochroma stores [x, y, z, w] as i16; Spectra expects [w, x, y, z] as f32
             splat.rotation_raw()[3] as f32 / 32767.0, // w
@@ -123,9 +119,18 @@ fn ochroma_to_gaussian3d(splat: &GaussianSplat, illuminant: &Illuminant) -> Gaus
 /// Uses the CIE 1931 2° observer weights at the 16 Ochroma band centres (380–755nm, 25nm steps).
 /// This is the unweighted version (no illuminant normalisation) used for testing CIE weight correctness.
 pub fn spectral_to_xyz(spd: &[f32; 16]) -> [f32; 3] {
-    const CIE_X: [f32; 16] = [0.01741, 0.08028, 0.26000, 0.21000, 0.00949, 0.00000, 0.11201, 0.38000, 0.74300, 1.02200, 0.71600, 0.38100, 0.19700, 0.09020, 0.03400, 0.01180];
-    const CIE_Y: [f32; 16] = [0.00039, 0.00232, 0.01998, 0.09520, 0.17399, 0.46600, 0.69500, 0.94500, 0.86800, 0.65100, 0.38100, 0.18000, 0.08000, 0.03300, 0.01200, 0.00400];
-    const CIE_Z: [f32; 16] = [0.08290, 0.38637, 1.29900, 1.24500, 0.45640, 0.05250, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000];
+    const CIE_X: [f32; 16] = [
+        0.01741, 0.08028, 0.26000, 0.21000, 0.00949, 0.00000, 0.11201, 0.38000, 0.74300, 1.02200,
+        0.71600, 0.38100, 0.19700, 0.09020, 0.03400, 0.01180,
+    ];
+    const CIE_Y: [f32; 16] = [
+        0.00039, 0.00232, 0.01998, 0.09520, 0.17399, 0.46600, 0.69500, 0.94500, 0.86800, 0.65100,
+        0.38100, 0.18000, 0.08000, 0.03300, 0.01200, 0.00400,
+    ];
+    const CIE_Z: [f32; 16] = [
+        0.08290, 0.38637, 1.29900, 1.24500, 0.45640, 0.05250, 0.00000, 0.00000, 0.00000, 0.00000,
+        0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000,
+    ];
 
     let x: f32 = spd.iter().zip(CIE_X.iter()).map(|(s, w)| s * w).sum();
     let y: f32 = spd.iter().zip(CIE_Y.iter()).map(|(s, w)| s * w).sum();
@@ -161,11 +166,7 @@ fn splat_to_gaussian3d_band(splat: &GaussianSplat, band: usize) -> Gaussian3D {
         0 => (splat.scale_u(), splat.scale_v(), 1e-4_f32), // 2DGS disk
         _ => (splat.scale_u(), splat.scale_v(), splat.scale_w()), // 3DGS ellipsoid
     };
-    let log_scale = [
-        su.max(1e-6).ln(),
-        sv.max(1e-6).ln(),
-        sw.max(1e-6).ln(),
-    ];
+    let log_scale = [su.max(1e-6).ln(), sv.max(1e-6).ln(), sw.max(1e-6).ln()];
     let rot = splat.rotation_raw();
     let qx = rot[0] as f32 / 32767.0;
     let qy = rot[1] as f32 / 32767.0;
@@ -176,7 +177,13 @@ fn splat_to_gaussian3d_band(splat: &GaussianSplat, band: usize) -> Gaussian3D {
     let opacity = splat.opacity() as f32 / 255.0;
     let intensity = splat.spectral_f32(band.min(15));
     let color = band_to_heatmap(intensity);
-    Gaussian3D { position: splat.position(), log_scale, rotation, color, opacity }
+    Gaussian3D {
+        position: splat.position(),
+        log_scale,
+        rotation,
+        color,
+        opacity,
+    }
 }
 
 /// Render the scene as a false-color heatmap of a single spectral band.
@@ -219,10 +226,9 @@ fn ochroma_to_spectra_camera(cam: &RenderCamera, width: u32, height: u32) -> Spe
     // We negate the third row (Z axis) to convert.
     let cols = cam.view.to_cols_array();
     let view_row_major = [
-        cols[0],  cols[4],  cols[8],  cols[12],
-        cols[1],  cols[5],  cols[9],  cols[13],
-        -cols[2], -cols[6], -cols[10], -cols[14],  // negate Z row
-        cols[3],  cols[7],  cols[11], cols[15],
+        cols[0], cols[4], cols[8], cols[12], cols[1], cols[5], cols[9], cols[13], -cols[2],
+        -cols[6], -cols[10], -cols[14], // negate Z row
+        cols[3], cols[7], cols[11], cols[15],
     ];
 
     let proj_cols = cam.proj.to_cols_array();
@@ -288,10 +294,7 @@ fn compute_cov3d(rotation: &[[f32; 3]; 3], scales: &[f32; 3]) -> [[f32; 3]; 3] {
 }
 
 /// Project a 3D Gaussian to 2D screen space using EWA splatting.
-fn project_gaussian(
-    gaussian: &Gaussian3D,
-    camera: &SpectraCamera,
-) -> Option<ProjectedGaussian> {
+fn project_gaussian(gaussian: &Gaussian3D, camera: &SpectraCamera) -> Option<ProjectedGaussian> {
     let pos = &gaussian.position;
     let vm = &camera.view_matrix;
 
@@ -450,9 +453,11 @@ fn render_cpu_internal(
 
     // Step 3: Sort by tile then depth
     tile_gaussians.sort_by(|a, b| {
-        a.tile_id
-            .cmp(&b.tile_id)
-            .then(a.depth.partial_cmp(&b.depth).unwrap_or(std::cmp::Ordering::Equal))
+        a.tile_id.cmp(&b.tile_id).then(
+            a.depth
+                .partial_cmp(&b.depth)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
     });
 
     // Build per-tile ranges
@@ -503,9 +508,7 @@ fn render_cpu_internal(
                     let pxf = px as f32 + 0.5;
                     let pyf = py as f32 + 0.5;
 
-                    let pixel_shadow = shadow_mask
-                        .map(|m| m[py * w + px])
-                        .unwrap_or(1.0);
+                    let pixel_shadow = shadow_mask.map(|m| m[py * w + px]).unwrap_or(1.0);
 
                     for tg in &tile_gaussians[start..end] {
                         if transmittance < TRANSMITTANCE_THRESHOLD {
@@ -717,7 +720,10 @@ mod tests {
         let cam = make_camera(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 64, 64);
         let r1 = render_with_spectra_u8(&[splat.clone()], &cam, 64, 64, &Illuminant::d65());
         let r2 = render_with_spectra_u8(&[splat], &cam, 64, 64, &Illuminant::d65());
-        assert_eq!(r1, r2, "parallel render must be deterministic across two runs");
+        assert_eq!(
+            r1, r2,
+            "parallel render must be deterministic across two runs"
+        );
     }
 
     #[test]
@@ -727,7 +733,11 @@ mod tests {
             .collect();
         let cam = make_camera(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 128, 128);
         let result = render_with_spectra_u8(&splats, &cam, 128, 128, &Illuminant::d65());
-        assert_eq!(result.len(), 128 * 128, "output must be width×height pixels");
+        assert_eq!(
+            result.len(),
+            128 * 128,
+            "output must be width×height pixels"
+        );
     }
 
     #[test]
@@ -779,9 +789,18 @@ mod tests {
         };
         let pixels_b0 = render_spectral_band_u8(&[splat], &camera, 32, 32, 0);
         let pixels_b7 = render_spectral_band_u8(&[splat], &camera, 32, 32, 7);
-        let sum_b0: u32 = pixels_b0.iter().map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32).sum();
-        let sum_b7: u32 = pixels_b7.iter().map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32).sum();
-        assert_ne!(sum_b0, sum_b7, "band 0 (full) and band 7 (empty) should differ");
+        let sum_b0: u32 = pixels_b0
+            .iter()
+            .map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32)
+            .sum();
+        let sum_b7: u32 = pixels_b7
+            .iter()
+            .map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32)
+            .sum();
+        assert_ne!(
+            sum_b0, sum_b7,
+            "band 0 (full) and band 7 (empty) should differ"
+        );
     }
 
     #[test]
@@ -796,16 +815,30 @@ mod tests {
         );
         let cam = make_camera(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, 32, 32);
         let lit = render_with_spectra_u8_shadowed(
-            &[splat.clone()], &cam, 32, 32, &Illuminant::d65(), None,
+            &[splat.clone()],
+            &cam,
+            32,
+            32,
+            &Illuminant::d65(),
+            None,
         );
         let shadow_mask = vec![0.0f32; 32 * 32];
         let shadowed = render_with_spectra_u8_shadowed(
-            &[splat], &cam, 32, 32, &Illuminant::d65(), Some(&shadow_mask),
+            &[splat],
+            &cam,
+            32,
+            32,
+            &Illuminant::d65(),
+            Some(&shadow_mask),
         );
         let centre = 16 * 32 + 16;
         let lit_lum = lit[centre][0] as u32 + lit[centre][1] as u32 + lit[centre][2] as u32;
-        let shad_lum = shadowed[centre][0] as u32 + shadowed[centre][1] as u32 + shadowed[centre][2] as u32;
-        assert!(shad_lum <= lit_lum, "shadowed pixel must not be brighter than lit");
+        let shad_lum =
+            shadowed[centre][0] as u32 + shadowed[centre][1] as u32 + shadowed[centre][2] as u32;
+        assert!(
+            shad_lum <= lit_lum,
+            "shadowed pixel must not be brighter than lit"
+        );
     }
 
     #[cfg(all(test, feature = "spectra-native"))]
@@ -813,8 +846,10 @@ mod tests {
     fn spectra_backend_system_new_does_not_panic() {
         use crate::spectra_render::native::SpectraBackendSystem;
         // Construction requires GPU — just verify the type and constructors are accessible.
-        let _: fn(u32, u32) -> Result<SpectraBackendSystem, String> = SpectraBackendSystem::realtime;
-        let _: fn(u32, u32) -> Result<SpectraBackendSystem, String> = SpectraBackendSystem::cinematic;
+        let _: fn(u32, u32) -> Result<SpectraBackendSystem, String> =
+            SpectraBackendSystem::realtime;
+        let _: fn(u32, u32) -> Result<SpectraBackendSystem, String> =
+            SpectraBackendSystem::cinematic;
     }
 
     #[cfg(all(test, feature = "spectra-native"))]
@@ -824,8 +859,12 @@ mod tests {
         use spectra_scene_state::CameraLayer;
         use vox_core::types::GaussianSplat;
         // Compile-time check: tick() must accept scene_changed: bool
-        let _: fn(&mut SpectraBackendSystem, &[GaussianSplat], CameraLayer, bool)
-                -> Option<std::sync::Arc<Vec<u8>>> = SpectraBackendSystem::tick;
+        let _: fn(
+            &mut SpectraBackendSystem,
+            &[GaussianSplat],
+            CameraLayer,
+            bool,
+        ) -> Option<std::sync::Arc<Vec<u8>>> = SpectraBackendSystem::tick;
     }
 }
 
@@ -835,9 +874,9 @@ mod tests {
 
 #[cfg(feature = "spectra-native")]
 pub mod native {
-    use bevy_ecs::prelude::*;
     use crate::splat_backend::SpectraRenderBackend;
     use crate::splat_convert::splats_to_scene;
+    use bevy_ecs::prelude::*;
     use spectra_scene_state::CameraLayer;
     use vox_core::types::GaussianSplat;
 
@@ -878,12 +917,12 @@ pub mod native {
         /// the first frame completes.
         pub fn tick(
             &mut self,
-            splats:        &[GaussianSplat],
-            camera:        CameraLayer,
+            splats: &[GaussianSplat],
+            camera: CameraLayer,
             scene_changed: bool,
         ) -> Option<std::sync::Arc<Vec<u8>>> {
-            let needs_rebuild = self.scene_dirty || scene_changed
-                || splats.len() != self.last_splat_count;
+            let needs_rebuild =
+                self.scene_dirty || scene_changed || splats.len() != self.last_splat_count;
             let new_scene = if needs_rebuild {
                 let (w, h) = (self.backend.width(), self.backend.height());
                 Some(splats_to_scene(splats, w, h))
@@ -902,14 +941,22 @@ pub mod native {
             }
 
             let output = self.backend.read_last_output();
-            if output.is_empty() { None } else { Some(output) }
+            if output.is_empty() {
+                None
+            } else {
+                Some(output)
+            }
         }
 
         /// Force scene rebuild on next tick (e.g. after ECS structural change).
-        pub fn mark_dirty(&mut self) { self.scene_dirty = true; }
+        pub fn mark_dirty(&mut self) {
+            self.scene_dirty = true;
+        }
 
         /// Consecutive failure count — caller should fallback to BuiltIn at 3.
-        pub fn fail_count(&self) -> u32 { self.backend.fail_count() }
+        pub fn fail_count(&self) -> u32 {
+            self.backend.fail_count()
+        }
 
         pub fn dimensions(&self) -> (u32, u32) {
             (self.backend.width(), self.backend.height())

@@ -338,15 +338,14 @@ impl ManyLightGpu {
             bind_group_layouts: &[&bgl],
             push_constant_ranges: &[],
         });
-        let sample_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("many_light_sample_pipeline"),
-                layout: Some(&pipeline_layout),
-                module: &shader,
-                entry_point: Some("main"),
-                cache: None,
-                compilation_options: Default::default(),
-            });
+        let sample_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("many_light_sample_pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("main"),
+            cache: None,
+            compilation_options: Default::default(),
+        });
         let lcg_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("many_light_lcg_pipeline"),
             layout: Some(&pipeline_layout),
@@ -424,7 +423,11 @@ impl ManyLightGpu {
         points: &[Vec3],
         seeds: &[u64],
     ) -> Result<Vec<GpuLightSample>, ManyLightGpuError> {
-        assert_eq!(points.len(), seeds.len(), "points and seeds length mismatch");
+        assert_eq!(
+            points.len(),
+            seeds.len(),
+            "points and seeds length mismatch"
+        );
         let n_points = points.len();
         if n_points == 0 {
             return Ok(Vec::new());
@@ -478,8 +481,8 @@ impl ManyLightGpu {
         self.queue.submit(Some(encoder.finish()));
 
         let data = self.map_read(&self.out_readback, copy_bytes)?;
-        let out: Vec<GpuLightSample> = bytemuck::cast_slice::<u8, GpuLightSample>(&data)[..n_points]
-            .to_vec();
+        let out: Vec<GpuLightSample> =
+            bytemuck::cast_slice::<u8, GpuLightSample>(&data)[..n_points].to_vec();
         self.out_readback.unmap();
         Ok(out)
     }
@@ -583,11 +586,7 @@ impl ManyLightGpu {
             .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
     }
 
-    fn map_read(
-        &self,
-        buffer: &wgpu::Buffer,
-        bytes: u64,
-    ) -> Result<Vec<u8>, ManyLightGpuError> {
+    fn map_read(&self, buffer: &wgpu::Buffer, bytes: u64) -> Result<Vec<u8>, ManyLightGpuError> {
         let slice = buffer.slice(..bytes);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |res| {
@@ -699,7 +698,9 @@ mod tests {
     fn lcg_emulation_bit_exact() {
         const SEEDS: usize = 64;
         const DRAWS: u32 = 32;
-        let Some(gpu) = try_gpu(1, SEEDS as u32, DRAWS) else { return };
+        let Some(gpu) = try_gpu(1, SEEDS as u32, DRAWS) else {
+            return;
+        };
 
         let seeds: Vec<u64> = (0..SEEDS as u64)
             .map(|i| {
@@ -758,7 +759,9 @@ mod tests {
                     .wrapping_add(0x1234_5678),
             );
         }
-        let Some(gpu) = try_gpu(lights.len() as u32, points.len() as u32, 1) else { return };
+        let Some(gpu) = try_gpu(lights.len() as u32, points.len() as u32, 1) else {
+            return;
+        };
 
         let cpu = cpu_samples(&lights, &points, &seeds);
         let gpu_out = gpu.sample(&lights, &points, &seeds).expect("gpu sample");
@@ -823,7 +826,9 @@ mod tests {
         let normal = Vec3::ZERO;
         const SAMPLES: usize = 4096;
 
-        let Some(gpu) = try_gpu(lights.len() as u32, SAMPLES as u32, 1) else { return };
+        let Some(gpu) = try_gpu(lights.len() as u32, SAMPLES as u32, 1) else {
+            return;
+        };
 
         // Brute-force reference: Σ over all lights of pure-radiance contribution.
         let reference = brute_force(shade_point, normal, &lights);
@@ -891,7 +896,9 @@ mod tests {
         let seeds: Vec<u64> = (0..128u64)
             .map(|k| k.wrapping_mul(SUBSEED_MUL).wrapping_add(99))
             .collect();
-        let Some(gpu) = try_gpu(lights.len() as u32, points.len() as u32, 1) else { return };
+        let Some(gpu) = try_gpu(lights.len() as u32, points.len() as u32, 1) else {
+            return;
+        };
 
         let a = gpu.sample(&lights, &points, &seeds).expect("dispatch a");
         let b = gpu.sample(&lights, &points, &seeds).expect("dispatch b");
@@ -903,7 +910,11 @@ mod tests {
                 sb.weight.to_bits(),
                 "weight not bit-identical at {i}"
             );
-            assert_eq!(sa.target.to_bits(), sb.target.to_bits(), "target differs at {i}");
+            assert_eq!(
+                sa.target.to_bits(),
+                sb.target.to_bits(),
+                "target differs at {i}"
+            );
             assert_eq!(sa.m, sb.m, "M differs at {i}");
         }
     }
@@ -928,14 +939,19 @@ mod tests {
                 limit,
             } => {
                 assert_eq!(what, "out_buffer (dispatch exceeds max_points)");
-                assert!(requested > limit, "requested {requested} must exceed limit {limit}");
+                assert!(
+                    requested > limit,
+                    "requested {requested} must exceed limit {limit}"
+                );
             }
             other => panic!("expected ExceedsDeviceLimits, got {other:?}"),
         }
         // GPU still usable: a valid dispatch still works (no abort happened).
         let ok_pts = vec![Vec3::ZERO; 2];
         let ok_seeds = vec![1u64, 2u64];
-        let _ = gpu.sample(&lights, &ok_pts, &ok_seeds).expect("valid sample after rejection");
+        let _ = gpu
+            .sample(&lights, &ok_pts, &ok_seeds)
+            .expect("valid sample after rejection");
     }
 
     // --- CPU reference helpers (mirror many_light.rs's private test helpers) ---

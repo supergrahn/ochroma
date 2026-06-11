@@ -1,6 +1,6 @@
 //! VFX node graph editor window.
 
-use vox_nodes::{OchrGraph, NodeId};
+use vox_nodes::{NodeId, OchrGraph};
 use vox_ui::node_graph_widget::NodeGraphWidget;
 
 pub struct VfxEditorUi {
@@ -30,7 +30,9 @@ impl VfxEditorUi {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
-        if !self.open { return; }
+        if !self.open {
+            return;
+        }
         egui::Window::new("VFX Editor")
             .default_size([950.0, 560.0])
             .resizable(true)
@@ -53,7 +55,9 @@ impl VfxEditorUi {
 }
 
 impl Default for VfxEditorUi {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

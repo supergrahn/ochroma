@@ -1,4 +1,4 @@
-use vox_render::lod::{select_lod, LodLevel, reduce_splat_indices};
+use vox_render::lod::{LodLevel, reduce_splat_indices, select_lod};
 
 #[test]
 fn close_distance_selects_full() {

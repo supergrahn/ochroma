@@ -382,8 +382,7 @@ impl PassResources<'_> {
             .unwrap_or_else(|| {
                 panic!(
                     "pass '{}' wrote resource '{}' that has no allocated buffer",
-                    self.pass_name,
-                    "<unknown>"
+                    self.pass_name, "<unknown>"
                 )
             })
             .as_mut_slice()
@@ -531,10 +530,7 @@ mod tests {
         let (mut g_dead, out) = build(true);
         g_dead.execute();
         assert_eq!(g_dead.culled(), &["dead".to_string()]);
-        assert!(!g_dead
-            .execution_trace()
-            .iter()
-            .any(|n| n == "dead"));
+        assert!(!g_dead.execution_trace().iter().any(|n| n == "dead"));
         assert_eq!(g_dead.execution_trace(), &["copy".to_string()]);
         let out_dead = g_dead.take_output(out);
 
@@ -611,12 +607,7 @@ mod tests {
         let phantom = b.create_resource("phantom", desc(1, 1));
         let out = b.create_resource("out", desc(1, 1));
         // Pass reads `phantom` which is neither imported nor written anywhere.
-        b.add_pass(
-            "reader",
-            &[phantom],
-            &[out],
-            Box::new(|_| {}),
-        );
+        b.add_pass("reader", &[phantom], &[out], Box::new(|_| {}));
         let err = b.compile(&[out]).unwrap_err();
         assert_eq!(
             err,
@@ -636,22 +627,42 @@ mod tests {
         let t2 = b.create_resource("t2", desc(1, 1));
         let t3 = b.create_resource("t3", desc(1, 1));
         let out = b.create_resource("out", desc(1, 1));
-        b.add_pass("A", &[], &[t1], Box::new(move |r| {
-            r.write(t1)[0] = [1.0; 4];
-        }));
-        b.add_pass("B", &[t1], &[t2], Box::new(move |r| {
-            let v = r.read(t1)[0];
-            r.write(t2)[0] = v;
-        }));
-        b.add_pass("C", &[t1], &[t3], Box::new(move |r| {
-            let v = r.read(t1)[0];
-            r.write(t3)[0] = v;
-        }));
-        b.add_pass("D", &[t2, t3], &[out], Box::new(move |r| {
-            let a = r.read(t2)[0];
-            let _ = r.read(t3)[0];
-            r.write(out)[0] = a;
-        }));
+        b.add_pass(
+            "A",
+            &[],
+            &[t1],
+            Box::new(move |r| {
+                r.write(t1)[0] = [1.0; 4];
+            }),
+        );
+        b.add_pass(
+            "B",
+            &[t1],
+            &[t2],
+            Box::new(move |r| {
+                let v = r.read(t1)[0];
+                r.write(t2)[0] = v;
+            }),
+        );
+        b.add_pass(
+            "C",
+            &[t1],
+            &[t3],
+            Box::new(move |r| {
+                let v = r.read(t1)[0];
+                r.write(t3)[0] = v;
+            }),
+        );
+        b.add_pass(
+            "D",
+            &[t2, t3],
+            &[out],
+            Box::new(move |r| {
+                let a = r.read(t2)[0];
+                let _ = r.read(t3)[0];
+                r.write(out)[0] = a;
+            }),
+        );
         let mut g = b.compile(&[out]).unwrap();
         g.execute();
         let trace = g.execution_trace();

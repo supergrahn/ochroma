@@ -2,10 +2,10 @@
 //! Avoids per-frame allocation by maintaining a fixed pool of buffer slots.
 //! Double-buffering ensures no GPU stall during cell transitions.
 
-use wgpu;
 use bytemuck::{Pod, Zeroable};
-use vox_core::types::GaussianSplat;
 use half::f16;
+use vox_core::types::GaussianSplat;
+use wgpu;
 
 /// Identifies one buffer slot in the pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -16,9 +16,14 @@ pub struct BufferSlotId(pub u32);
 pub enum SlotState {
     Free,
     /// Being filled by streaming task. `generation` increments on each reuse to detect stale writes.
-    Pending { generation: u32 },
+    Pending {
+        generation: u32,
+    },
     /// Fully uploaded and ready for rendering.
-    Active { generation: u32, splat_count: u32 },
+    Active {
+        generation: u32,
+        splat_count: u32,
+    },
 }
 
 /// A single slot in the pool.
@@ -30,10 +35,18 @@ pub struct BufferSlot {
 }
 
 impl BufferSlot {
-    pub fn is_free(&self) -> bool { matches!(self.state, SlotState::Free) }
-    pub fn is_active(&self) -> bool { matches!(self.state, SlotState::Active { .. }) }
+    pub fn is_free(&self) -> bool {
+        matches!(self.state, SlotState::Free)
+    }
+    pub fn is_active(&self) -> bool {
+        matches!(self.state, SlotState::Active { .. })
+    }
     pub fn splat_count(&self) -> u32 {
-        if let SlotState::Active { splat_count, .. } = self.state { splat_count } else { 0 }
+        if let SlotState::Active { splat_count, .. } = self.state {
+            splat_count
+        } else {
+            0
+        }
     }
 }
 
@@ -49,7 +62,7 @@ impl SplatBufferPool {
     /// Create a pool with `num_slots` slots, each holding up to `max_splats_per_slot` splats.
     /// Each splat is `SPLAT_GPU_BYTES` bytes on GPU (the compact upload format).
     pub fn new(device: &wgpu::Device, num_slots: u32, max_splats_per_slot: u32) -> Self {
-        const SPLAT_GPU_BYTES: u64 = 80;  // matches GpuSplatFull from splat_buffer.rs
+        const SPLAT_GPU_BYTES: u64 = 80; // matches GpuSplatFull from splat_buffer.rs
 
         let mut slots = Vec::with_capacity(num_slots as usize);
         for i in 0..num_slots {
@@ -57,7 +70,9 @@ impl SplatBufferPool {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("splat_pool_slot_{}", i)),
                 size,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::VERTEX,
                 mapped_at_creation: false,
             });
             slots.push(BufferSlot {
@@ -70,47 +85,68 @@ impl SplatBufferPool {
 
         let total_bytes = num_slots as u64 * max_splats_per_slot as u64 * SPLAT_GPU_BYTES;
 
-        Self { slots, max_splats_per_slot, total_bytes }
+        Self {
+            slots,
+            max_splats_per_slot,
+            total_bytes,
+        }
     }
 
     /// Allocate a free slot. Returns None if no free slots.
     pub fn alloc(&mut self) -> Option<BufferSlotId> {
         let slot = self.slots.iter_mut().find(|s| s.is_free())?;
         let next_gen = match slot.state {
-            SlotState::Pending { generation } | SlotState::Active { generation, .. } => generation + 1,
+            SlotState::Pending { generation } | SlotState::Active { generation, .. } => {
+                generation + 1
+            }
             SlotState::Free => 0,
         };
-        slot.state = SlotState::Pending { generation: next_gen };
+        slot.state = SlotState::Pending {
+            generation: next_gen,
+        };
         Some(slot.id)
     }
 
     /// Upload splats to a pending slot and mark it active.
     /// `splats` must be <= max_splats_per_slot.
     pub fn upload(&mut self, queue: &wgpu::Queue, id: BufferSlotId, splats: &[GaussianSplat]) {
-        let slot = self.slots.iter_mut().find(|s| s.id == id).expect("invalid slot id");
+        let slot = self
+            .slots
+            .iter_mut()
+            .find(|s| s.id == id)
+            .expect("invalid slot id");
 
         let count = splats.len().min(slot.max_splats as usize) as u32;
 
         // Convert splats to compact GPU format (80 bytes each, matching GpuSplatFull layout)
-        let gpu_data: Vec<GpuSplatUpload> = splats[..count as usize].iter().map(|s| {
-            let mut spectral = [0.0f32; 16];
-            for (b, val) in spectral.iter_mut().enumerate() {
-                *val = f16::from_bits(s.spectral()[b]).to_f32();
-            }
-            GpuSplatUpload {
-                position: s.position(),
-                scale: [s.scale_u(), s.scale_v(), s.scale_w()],
-                opacity: s.opacity() as f32 / 255.0,
-                _pad0: 0.0,
-                spectral,
-                _pad1: [0.0; 4],
-            }
-        }).collect();
+        let gpu_data: Vec<GpuSplatUpload> = splats[..count as usize]
+            .iter()
+            .map(|s| {
+                let mut spectral = [0.0f32; 16];
+                for (b, val) in spectral.iter_mut().enumerate() {
+                    *val = f16::from_bits(s.spectral()[b]).to_f32();
+                }
+                GpuSplatUpload {
+                    position: s.position(),
+                    scale: [s.scale_u(), s.scale_v(), s.scale_w()],
+                    opacity: s.opacity() as f32 / 255.0,
+                    _pad0: 0.0,
+                    spectral,
+                    _pad1: [0.0; 4],
+                }
+            })
+            .collect();
 
         queue.write_buffer(&slot.buffer, 0, bytemuck::cast_slice(&gpu_data));
 
-        let next_gen = match slot.state { SlotState::Pending { generation } => generation, _ => 0 };
-        slot.state = SlotState::Active { generation: next_gen, splat_count: count };
+        let next_gen = match slot.state {
+            SlotState::Pending { generation } => generation,
+            _ => 0,
+        };
+        slot.state = SlotState::Active {
+            generation: next_gen,
+            splat_count: count,
+        };
     }
 
     /// Free a slot (called when a cell is evicted).
@@ -133,7 +169,8 @@ impl SplatBufferPool {
     /// Memory used by active slots only.
     pub fn active_mb(&self) -> f32 {
         const SPLAT_GPU_BYTES: f32 = 80.0;
-        self.slots.iter()
+        self.slots
+            .iter()
             .filter(|s| s.is_active())
             .map(|s| s.splat_count() as f32 * SPLAT_GPU_BYTES / (1024.0 * 1024.0))
             .sum()
@@ -183,24 +220,40 @@ mod tests {
 
     impl MockPool {
         fn new(n: usize) -> Self {
-            Self { states: vec![SlotState::Free; n], next_gens: vec![0; n] }
+            Self {
+                states: vec![SlotState::Free; n],
+                next_gens: vec![0; n],
+            }
         }
 
         fn alloc(&mut self) -> Option<usize> {
-            let idx = self.states.iter().position(|s| matches!(s, SlotState::Free))?;
+            let idx = self
+                .states
+                .iter()
+                .position(|s| matches!(s, SlotState::Free))?;
             let next_gen = self.next_gens[idx];
-            self.states[idx] = SlotState::Pending { generation: next_gen };
+            self.states[idx] = SlotState::Pending {
+                generation: next_gen,
+            };
             Some(idx)
         }
 
         fn activate(&mut self, idx: usize, splat_count: u32) {
-            let next_gen = match self.states[idx] { SlotState::Pending { generation } => generation, _ => 0 };
-            self.states[idx] = SlotState::Active { generation: next_gen, splat_count };
+            let next_gen = match self.states[idx] {
+                SlotState::Pending { generation } => generation,
+                _ => 0,
+            };
+            self.states[idx] = SlotState::Active {
+                generation: next_gen,
+                splat_count,
+            };
         }
 
         fn free(&mut self, idx: usize) {
             let current_gen = match self.states[idx] {
-                SlotState::Active { generation, .. } | SlotState::Pending { generation } => generation,
+                SlotState::Active { generation, .. } | SlotState::Pending { generation } => {
+                    generation
+                }
                 SlotState::Free => return,
             };
             self.next_gens[idx] = current_gen + 1;
@@ -208,11 +261,17 @@ mod tests {
         }
 
         fn free_count(&self) -> usize {
-            self.states.iter().filter(|s| matches!(s, SlotState::Free)).count()
+            self.states
+                .iter()
+                .filter(|s| matches!(s, SlotState::Free))
+                .count()
         }
 
         fn active_count(&self) -> usize {
-            self.states.iter().filter(|s| matches!(s, SlotState::Active { .. })).count()
+            self.states
+                .iter()
+                .filter(|s| matches!(s, SlotState::Active { .. }))
+                .count()
         }
     }
 
@@ -246,7 +305,10 @@ mod tests {
         assert!(pool.alloc().is_some());
         assert!(pool.alloc().is_some());
         assert!(pool.alloc().is_some());
-        assert!(pool.alloc().is_none(), "should return None when pool is exhausted");
+        assert!(
+            pool.alloc().is_none(),
+            "should return None when pool is exhausted"
+        );
     }
 
     #[test]
@@ -256,7 +318,8 @@ mod tests {
         let total_mb = expected as f32 / (1024.0 * 1024.0);
         assert!(
             (total_mb - 3.0518).abs() < 0.001,
-            "expected ~3.05 MB, got {:.4}", total_mb
+            "expected ~3.05 MB, got {:.4}",
+            total_mb
         );
     }
 
@@ -266,16 +329,27 @@ mod tests {
         let mut pool = MockPool::new(2);
 
         let idx = pool.alloc().unwrap();
-        assert!(matches!(pool.states[idx], SlotState::Pending { generation: 0 }));
+        assert!(matches!(
+            pool.states[idx],
+            SlotState::Pending { generation: 0 }
+        ));
 
         pool.activate(idx, 512);
-        assert!(matches!(pool.states[idx], SlotState::Active { generation: 0, splat_count: 512 }));
+        assert!(matches!(
+            pool.states[idx],
+            SlotState::Active {
+                generation: 0,
+                splat_count: 512
+            }
+        ));
 
         // Freeing and re-allocating increments generation.
         pool.free(idx);
         let idx2 = pool.alloc().unwrap();
         assert_eq!(idx, idx2, "same slot should be reused");
-        assert!(matches!(pool.states[idx2], SlotState::Pending { generation: 1 }),
-            "generation should increment on reuse");
+        assert!(
+            matches!(pool.states[idx2], SlotState::Pending { generation: 1 }),
+            "generation should increment on reuse"
+        );
     }
 }

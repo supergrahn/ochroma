@@ -195,10 +195,9 @@ pub fn preetham_sky(sun_dir: Vec3) -> SkyColors {
         };
     }
 
-    let chi = (4.0 / 9.0 - turbidity / 120.0)
-        * (std::f32::consts::PI - 2.0 * sun_alt.acos()).max(0.0);
-    let zenith_y = ((4.0453 * turbidity - 4.971) * chi.tan()
-        - 0.2155 * turbidity + 2.4192)
+    let chi =
+        (4.0 / 9.0 - turbidity / 120.0) * (std::f32::consts::PI - 2.0 * sun_alt.acos()).max(0.0);
+    let zenith_y = ((4.0453 * turbidity - 4.971) * chi.tan() - 0.2155 * turbidity + 2.4192)
         .max(0.0)
         / PREETHAM_LUMINANCE_SCALE;
 
@@ -216,7 +215,11 @@ pub fn preetham_sky(sun_dir: Vec3) -> SkyColors {
     let sun_b = (0.6 * sun_alt).clamp(0.0, 1.0);
 
     SkyColors {
-        zenith: [zenith_r.clamp(0.0, 1.0), zenith_g.clamp(0.0, 1.0), zenith_b.clamp(0.0, 1.0)],
+        zenith: [
+            zenith_r.clamp(0.0, 1.0),
+            zenith_g.clamp(0.0, 1.0),
+            zenith_b.clamp(0.0, 1.0),
+        ],
         horizon: [horizon_r, horizon_g, horizon_b],
         sun: [sun_r, sun_g, sun_b],
     }
@@ -232,13 +235,19 @@ pub struct SkyModel {
 
 impl SkyModel {
     pub fn new(hour: f32, latitude_deg: f32) -> Self {
-        Self { hour, latitude_deg, time_scale: 1.0 }
+        Self {
+            hour,
+            latitude_deg,
+            time_scale: 1.0,
+        }
     }
 
     pub fn update(&mut self, dt: f32) {
         self.hour += (dt * self.time_scale) / 3600.0;
         self.hour %= 24.0;
-        if self.hour < 0.0 { self.hour += 24.0; }
+        if self.hour < 0.0 {
+            self.hour += 24.0;
+        }
     }
 
     pub fn sun_dir(&self) -> Vec3 {
@@ -261,13 +270,12 @@ pub struct SkyModelResource(pub SkyModel);
 pub struct SkyDeltaTime(pub f32);
 
 impl Default for SkyDeltaTime {
-    fn default() -> Self { Self(1.0 / 60.0) }
+    fn default() -> Self {
+        Self(1.0 / 60.0)
+    }
 }
 
-pub fn sky_update_system(
-    dt: Res<SkyDeltaTime>,
-    mut sky: ResMut<SkyModelResource>,
-) {
+pub fn sky_update_system(dt: Res<SkyDeltaTime>, mut sky: ResMut<SkyModelResource>) {
     sky.0.update(dt.0);
 }
 
@@ -278,13 +286,19 @@ pub struct SkyPlugin {
 
 impl SkyPlugin {
     pub fn new(initial_hour: f32, latitude_deg: f32) -> Self {
-        Self { initial_hour, latitude_deg }
+        Self {
+            initial_hour,
+            latitude_deg,
+        }
     }
 }
 
 impl bevy_app::Plugin for SkyPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        app.insert_resource(SkyModelResource(SkyModel::new(self.initial_hour, self.latitude_deg)));
+        app.insert_resource(SkyModelResource(SkyModel::new(
+            self.initial_hour,
+            self.latitude_deg,
+        )));
         app.insert_resource(SkyDeltaTime::default());
         app.add_systems(bevy_app::Update, sky_update_system);
     }
@@ -298,19 +312,30 @@ mod tests {
     fn sun_direction_noon_is_high() {
         let dir = sun_direction(12.0, 45.0);
         assert!(dir.y > 0.5, "sun at noon should be high; got y={}", dir.y);
-        assert!((dir.length() - 1.0).abs() < 1e-4, "direction should be normalized");
+        assert!(
+            (dir.length() - 1.0).abs() < 1e-4,
+            "direction should be normalized"
+        );
     }
 
     #[test]
     fn sun_direction_midnight_is_below_horizon() {
         let dir = sun_direction(0.0, 45.0);
-        assert!(dir.y < 0.0, "sun at midnight should be below horizon; got y={}", dir.y);
+        assert!(
+            dir.y < 0.0,
+            "sun at midnight should be below horizon; got y={}",
+            dir.y
+        );
     }
 
     #[test]
     fn sun_direction_6am_is_near_horizon() {
         let dir = sun_direction(6.0, 0.0);
-        assert!(dir.y.abs() < 0.3, "sun at 6am equator should be near horizon; got y={}", dir.y);
+        assert!(
+            dir.y.abs() < 0.3,
+            "sun at 6am equator should be near horizon; got y={}",
+            dir.y
+        );
     }
 
     #[test]
@@ -318,10 +343,18 @@ mod tests {
         let dir = sun_direction(12.0, 45.0);
         let colors = preetham_sky(dir);
         for c in &colors.zenith {
-            assert!(*c >= 0.0 && *c <= 1.0, "zenith component {} out of [0,1]", c);
+            assert!(
+                *c >= 0.0 && *c <= 1.0,
+                "zenith component {} out of [0,1]",
+                c
+            );
         }
         for c in &colors.horizon {
-            assert!(*c >= 0.0 && *c <= 1.0, "horizon component {} out of [0,1]", c);
+            assert!(
+                *c >= 0.0 && *c <= 1.0,
+                "horizon component {} out of [0,1]",
+                c
+            );
         }
         for c in &colors.sun {
             assert!(*c >= 0.0 && *c <= 1.0, "sun component {} out of [0,1]", c);
@@ -335,7 +368,8 @@ mod tests {
         assert!(
             colors.horizon[0] > colors.horizon[2],
             "sunset horizon should be redder than blue: r={} b={}",
-            colors.horizon[0], colors.horizon[2]
+            colors.horizon[0],
+            colors.horizon[2]
         );
     }
 
@@ -344,13 +378,26 @@ mod tests {
         // Sun well below horizon — exercises the twilight/night branch.
         let dir = Vec3::new(0.0, -0.8, -0.6); // already unit-length
         let colors = preetham_sky(dir);
-        for (label, arr) in [("zenith", colors.zenith), ("horizon", colors.horizon), ("sun", colors.sun)] {
+        for (label, arr) in [
+            ("zenith", colors.zenith),
+            ("horizon", colors.horizon),
+            ("sun", colors.sun),
+        ] {
             for c in arr {
-                assert!(c >= 0.0 && c <= 1.0, "night {} component {} out of [0,1]", label, c);
+                assert!(
+                    c >= 0.0 && c <= 1.0,
+                    "night {} component {} out of [0,1]",
+                    label,
+                    c
+                );
             }
         }
         // Sun disk should be black at night.
-        assert_eq!(colors.sun, [0.0, 0.0, 0.0], "sun disk should be black at night");
+        assert_eq!(
+            colors.sun,
+            [0.0, 0.0, 0.0],
+            "sun disk should be black at night"
+        );
     }
 
     #[test]
@@ -358,8 +405,17 @@ mod tests {
         // Slightly non-normalised vector must not produce NaN (regression for acos domain).
         let dir = Vec3::new(0.0, 1.05, 0.0); // y > 1.0
         let colors = preetham_sky(dir);
-        for c in colors.zenith.iter().chain(colors.horizon.iter()).chain(colors.sun.iter()) {
-            assert!(c.is_finite(), "preetham_sky produced non-finite value {} for out-of-range input", c);
+        for c in colors
+            .zenith
+            .iter()
+            .chain(colors.horizon.iter())
+            .chain(colors.sun.iter())
+        {
+            assert!(
+                c.is_finite(),
+                "preetham_sky produced non-finite value {} for out-of-range input",
+                c
+            );
         }
     }
 
@@ -367,15 +423,27 @@ mod tests {
     fn sun_direction_equator_at_6am_is_east() {
         // At the equator (lat=0) the sun rises exactly due east at 6 AM.
         let dir = sun_direction(6.0, 0.0);
-        assert!(dir.x > 0.9, "sun at 6am equator should point east (x≈1); got x={}", dir.x);
-        assert!(dir.y.abs() < 0.2, "sun at 6am equator should be near horizon; got y={}", dir.y);
+        assert!(
+            dir.x > 0.9,
+            "sun at 6am equator should point east (x≈1); got x={}",
+            dir.x
+        );
+        assert!(
+            dir.y.abs() < 0.2,
+            "sun at 6am equator should be near horizon; got y={}",
+            dir.y
+        );
     }
 
     #[test]
     fn sky_model_advances_time() {
         let mut model = SkyModel::new(12.0, 45.0);
         model.update(3600.0); // 1 hour in seconds
-        assert!((model.hour - 13.0).abs() < 0.01, "hour should advance by 1; got {}", model.hour);
+        assert!(
+            (model.hour - 13.0).abs() < 0.01,
+            "hour should advance by 1; got {}",
+            model.hour
+        );
     }
 
     #[test]

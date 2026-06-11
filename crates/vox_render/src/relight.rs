@@ -29,8 +29,8 @@ use rayon::prelude::*;
 use vox_core::types::GaussianSplat;
 
 use crate::spectral_atmosphere::SpectralAtmosphere;
-use crate::spectral_gi::{gather_radiance, sun_zenith_for_hour, SplatGiEntry};
-use crate::splat_rt::{transmittance, RtScene};
+use crate::spectral_gi::{SplatGiEntry, gather_radiance, sun_zenith_for_hour};
+use crate::splat_rt::{RtScene, transmittance};
 
 const BANDS: usize = 16;
 
@@ -419,11 +419,7 @@ fn encode_radiance(radiance: &[f32; 16]) -> [u16; 16] {
     let max = f16_max();
     std::array::from_fn(|b| {
         let r = radiance[b];
-        let safe = if r.is_nan() {
-            0.0
-        } else {
-            r.clamp(0.0, max)
-        };
+        let safe = if r.is_nan() { 0.0 } else { r.clamp(0.0, max) };
         f16::from_f32(safe).to_bits()
     })
 }
@@ -706,7 +702,7 @@ pub fn srgb_distance_under(
     reference: &IlluminantSpec,
     illum: &IlluminantSpec,
 ) -> f32 {
-    use vox_data::spectral_capture::{forward_rgb, LightSpd};
+    use vox_data::spectral_capture::{LightSpd, forward_rgb};
     let ref_spd = reference.spd();
     let light = LightSpd(illum.spd());
     let mean_rgb = |group: &[GaussianSplat]| -> [f32; 3] {
@@ -760,7 +756,7 @@ pub fn metamer_divergence(
 /// `relight_breaks_metamers` test validates the property. Called ONCE at plant
 /// time, never per frame (a small fixed search).
 pub fn metamer_demo_pair() -> ([f32; 16], [f32; 16]) {
-    use vox_data::spectral_capture::{forward_rgb, LightSpd};
+    use vox_data::spectral_capture::{LightSpd, forward_rgb};
     let neutral = LightSpd::neutral();
     let cool = LightSpd::cool_led();
     let mut best: Option<([f32; 16], [f32; 16], f32)> = None; // (base, alt, cool_div)
@@ -805,7 +801,7 @@ pub fn metamer_demo_pair() -> ([f32; 16], [f32; 16]) {
 mod tests {
     use super::*;
     use glam::Quat;
-    use vox_data::spectral_capture::{forward_rgb, LightSpd};
+    use vox_data::spectral_capture::{LightSpd, forward_rgb};
 
     /// Bake a 16-band radiance into a volume splat at `pos`.
     fn splat_with_radiance(pos: [f32; 3], radiance: &[f32; 16]) -> GaussianSplat {
@@ -944,8 +940,14 @@ mod tests {
     fn metamer_divergence_matches_forward_rgb() {
         let (base, alt) = metamer_demo_pair();
         let neutral_spd = LightSpd::neutral().0;
-        let group_base = vec![splat_with_radiance([0.0, 0.0, 0.0], &forward_band(&base, &neutral_spd))];
-        let group_alt = vec![splat_with_radiance([0.0, 0.0, 0.0], &forward_band(&alt, &neutral_spd))];
+        let group_base = vec![splat_with_radiance(
+            [0.0, 0.0, 0.0],
+            &forward_band(&base, &neutral_spd),
+        )];
+        let group_alt = vec![splat_with_radiance(
+            [0.0, 0.0, 0.0],
+            &forward_band(&alt, &neutral_spd),
+        )];
 
         let neutral = IlluminantSpec::parse("neutral").unwrap();
         let cool = IlluminantSpec::parse("cool_led").unwrap();
@@ -1073,7 +1075,10 @@ mod tests {
         .with_sky_ambient(false)
         .with_shadows(false);
         let (_out, report) = relight_scene(&splats, &settings);
-        println!("f16 round-trip max error = {:.6}", report.f16_roundtrip_error);
+        println!(
+            "f16 round-trip max error = {:.6}",
+            report.f16_roundtrip_error
+        );
         assert!(
             report.f16_roundtrip_error < 2e-3,
             "f16 round-trip error {} must be < 2e-3",
@@ -1100,14 +1105,18 @@ mod tests {
         }
         assert!(IlluminantSpec::parse("bogus").is_none());
         // Sun is directional; presets are ambient-only.
-        assert!(IlluminantSpec::parse("sun@12")
-            .unwrap()
-            .sun_direction()
-            .is_some());
-        assert!(IlluminantSpec::parse("daylight")
-            .unwrap()
-            .sun_direction()
-            .is_none());
+        assert!(
+            IlluminantSpec::parse("sun@12")
+                .unwrap()
+                .sun_direction()
+                .is_some()
+        );
+        assert!(
+            IlluminantSpec::parse("daylight")
+                .unwrap()
+                .sun_direction()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1129,14 +1138,23 @@ mod tests {
 
         let (out, report) = relight_scene(&splats, &settings);
         let stored_b4 = out[0].spectral_f32(4);
-        println!("stored relit b4 = {stored_b4} (clamped_bands={})", report.clamped_bands);
-        assert!(stored_b4.is_finite(), "stored b4 must be finite, got {stored_b4}");
+        println!(
+            "stored relit b4 = {stored_b4} (clamped_bands={})",
+            report.clamped_bands
+        );
+        assert!(
+            stored_b4.is_finite(),
+            "stored b4 must be finite, got {stored_b4}"
+        );
         assert_eq!(stored_b4, f16_max(), "stored b4 must be clamped to f16 max");
         assert!(report.f16_roundtrip_error.is_finite());
         assert!(report.max_band_delta.is_finite());
         assert!(report.ratio_short_long_before.is_finite());
         assert!(report.ratio_short_long_after.is_finite());
-        assert!(report.clamped_bands > 0, "clamped_bands must count the saturated band");
+        assert!(
+            report.clamped_bands > 0,
+            "clamped_bands must count the saturated band"
+        );
     }
 
     #[test]
@@ -1206,12 +1224,10 @@ mod tests {
         baked[0] = 0.4;
         let splats = vec![splat_with_radiance([0.0, 0.0, 0.0], &baked)];
 
-        let settings = RelightSettings::new(
-            IlluminantSpec::Custom(spd),
-            IlluminantSpec::Custom(spd),
-        )
-        .with_sky_ambient(false)
-        .with_shadows(false);
+        let settings =
+            RelightSettings::new(IlluminantSpec::Custom(spd), IlluminantSpec::Custom(spd))
+                .with_sky_ambient(false)
+                .with_shadows(false);
         let (out, report) = relight_scene(&splats, &settings);
         let mut max_delta = 0.0f32;
         for b in 0..16 {
@@ -1332,7 +1348,10 @@ mod tests {
         )
         .with_shadows(true);
         let (_out, report) = relight_scene(&splats, &settings);
-        println!("rebake {} splats in {:.3} s", report.splat_count, report.rebake_secs);
+        println!(
+            "rebake {} splats in {:.3} s",
+            report.splat_count, report.rebake_secs
+        );
         // DESIGN-VS-REALITY: Appendix A budgets 100k WITH shadows at < 4.0 s
         // single-thread (rayon < 1.0 s × 8). The shipped `splat_rt::transmittance`
         // builds a full hit list per ray (`gather_hits`) BEFORE applying the

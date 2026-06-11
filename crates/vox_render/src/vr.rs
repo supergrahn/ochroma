@@ -1,8 +1,11 @@
-use glam::{Mat4, Vec3, Quat};
+use glam::{Mat4, Quat, Vec3};
 
 /// VR eye.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Eye { Left, Right }
+pub enum Eye {
+    Left,
+    Right,
+}
 
 /// Per-eye view configuration.
 #[derive(Debug, Clone)]
@@ -50,7 +53,13 @@ impl Default for HeadsetState {
 
 impl HeadsetState {
     /// Compute stereo eye views from headset state.
-    pub fn compute_eye_views(&self, near: f32, far: f32, fov_y: f32, aspect: f32) -> (EyeView, EyeView) {
+    pub fn compute_eye_views(
+        &self,
+        near: f32,
+        far: f32,
+        fov_y: f32,
+        aspect: f32,
+    ) -> (EyeView, EyeView) {
         let half_ipd = self.ipd * 0.5;
 
         let left_eye_offset = Vec3::new(-half_ipd, 0.0, 0.0);

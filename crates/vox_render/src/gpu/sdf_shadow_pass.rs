@@ -38,7 +38,11 @@ impl SdfShadowPass {
         width: u32,
         height: u32,
     ) -> Self {
-        let sdf_data_safe = if sdf_data.is_empty() { &[0.0f32] as &[f32] } else { sdf_data };
+        let sdf_data_safe = if sdf_data.is_empty() {
+            &[0.0f32] as &[f32]
+        } else {
+            sdf_data
+        };
 
         let sdf_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sdf_shadow_sdf"),
@@ -130,11 +134,26 @@ impl SdfShadowPass {
             label: Some("sdf_shadow_bind_group"),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: sdf_uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: sdf_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(depth_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 4, resource: shadow_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: sdf_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: sdf_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(depth_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: shadow_buffer.as_entire_binding(),
+                },
             ],
         });
 

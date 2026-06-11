@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use glam;
+use serde::{Deserialize, Serialize};
 use vox_core::types::GaussianSplat;
 
 /// Predefined benchmark scenes.
@@ -51,10 +51,7 @@ impl BenchmarkResult {
     ) -> Self {
         let n = frame_times_ms.len().max(1);
         let avg = frame_times_ms.iter().sum::<f64>() / n as f64;
-        let min = frame_times_ms
-            .iter()
-            .cloned()
-            .fold(f64::INFINITY, f64::min);
+        let min = frame_times_ms.iter().cloned().fold(f64::INFINITY, f64::min);
         let max = frame_times_ms
             .iter()
             .cloned()
@@ -146,7 +143,10 @@ pub fn generate_benchmark_splats(count: usize) -> Vec<GaussianSplat> {
 }
 
 /// Compare baseline results with current results, returning any regressions (>5% slower).
-pub fn compare_results(baseline: &[BenchmarkResult], current: &[BenchmarkResult]) -> Vec<Regression> {
+pub fn compare_results(
+    baseline: &[BenchmarkResult],
+    current: &[BenchmarkResult],
+) -> Vec<Regression> {
     let mut regressions = Vec::new();
 
     for cur in current {

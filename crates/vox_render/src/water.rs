@@ -1,6 +1,6 @@
 use glam::Vec3;
-use vox_core::types::GaussianSplat;
 use half::f16;
+use vox_core::types::GaussianSplat;
 
 /// Water surface properties.
 #[derive(Debug, Clone)]
@@ -45,8 +45,10 @@ impl WaterSurface {
     /// Generate water surface splats with wave animation offset.
     pub fn generate_splats(&self, time: f32) -> Vec<GaussianSplat> {
         let water_spd: [u16; 16] = {
-            let v = [0.01f32, 0.03, 0.08, 0.12, 0.10, 0.06, 0.03, 0.01,
-                     0.01, 0.03, 0.08, 0.12, 0.10, 0.06, 0.03, 0.01];
+            let v = [
+                0.01f32, 0.03, 0.08, 0.12, 0.10, 0.06, 0.03, 0.01, 0.01, 0.03, 0.08, 0.12, 0.10,
+                0.06, 0.03, 0.01,
+            ];
             std::array::from_fn(|i| f16::from_f32(v[i]).to_bits())
         };
 
@@ -62,16 +64,21 @@ impl WaterSurface {
 
                 // Wave displacement
                 let wave_phase = (x * self.wave_frequency + time * self.flow_speed).sin();
-                let wave_phase2 = (z * self.wave_frequency * 0.7 + time * self.flow_speed * 0.5).cos();
-                let y = self.water_level + wave_phase * self.wave_amplitude + wave_phase2 * self.wave_amplitude * 0.5;
+                let wave_phase2 =
+                    (z * self.wave_frequency * 0.7 + time * self.flow_speed * 0.5).cos();
+                let y = self.water_level
+                    + wave_phase * self.wave_amplitude
+                    + wave_phase2 * self.wave_amplitude * 0.5;
 
                 // Fresnel-like opacity: more opaque at steep angles (simplified)
                 let opacity = 180;
 
                 splats.push(GaussianSplat::surface(
                     [x, y, z],
-                    [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
-                    spacing * 0.5, spacing * 0.5,
+                    [1.0, 0.0, 0.0],
+                    [0.0, 0.0, -1.0],
+                    spacing * 0.5,
+                    spacing * 0.5,
                     opacity,
                     water_spd,
                 ));

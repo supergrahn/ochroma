@@ -141,7 +141,11 @@ pub struct ActionUnit {
 
 impl ActionUnit {
     pub fn new(id: u8, name: impl Into<String>) -> Self {
-        Self { id, name: name.into(), weight: 0.0 }
+        Self {
+            id,
+            name: name.into(),
+            weight: 0.0,
+        }
     }
 }
 
@@ -162,13 +166,13 @@ pub struct FacialRig {
 impl FacialRig {
     pub fn new() -> Self {
         let action_units = vec![
-            ActionUnit::new(1,  "AU01_inner_brow_raiser"),
-            ActionUnit::new(2,  "AU02_outer_brow_raiser"),
-            ActionUnit::new(4,  "AU04_brow_lowerer"),
-            ActionUnit::new(5,  "AU05_upper_lid_raiser"),
-            ActionUnit::new(6,  "AU06_cheek_raiser"),
-            ActionUnit::new(7,  "AU07_lid_tightener"),
-            ActionUnit::new(9,  "AU09_nose_wrinkler"),
+            ActionUnit::new(1, "AU01_inner_brow_raiser"),
+            ActionUnit::new(2, "AU02_outer_brow_raiser"),
+            ActionUnit::new(4, "AU04_brow_lowerer"),
+            ActionUnit::new(5, "AU05_upper_lid_raiser"),
+            ActionUnit::new(6, "AU06_cheek_raiser"),
+            ActionUnit::new(7, "AU07_lid_tightener"),
+            ActionUnit::new(9, "AU09_nose_wrinkler"),
             ActionUnit::new(10, "AU10_upper_lip_raiser"),
             ActionUnit::new(11, "AU11_nasolabial_deepener"),
             ActionUnit::new(12, "AU12_lip_corner_puller"),
@@ -207,7 +211,10 @@ impl FacialRig {
             ActionUnit::new(65, "AU65_walleye"),
             ActionUnit::new(66, "AU66_cross_eye"),
         ];
-        Self { action_units, au_to_morph: Vec::new() }
+        Self {
+            action_units,
+            au_to_morph: Vec::new(),
+        }
     }
 
     pub fn set_au(&mut self, au_id: u8, weight: f32) {
@@ -217,23 +224,34 @@ impl FacialRig {
     }
 
     pub fn get_au(&self, au_id: u8) -> f32 {
-        self.action_units.iter().find(|a| a.id == au_id).map(|a| a.weight).unwrap_or(0.0)
+        self.action_units
+            .iter()
+            .find(|a| a.id == au_id)
+            .map(|a| a.weight)
+            .unwrap_or(0.0)
     }
 
     pub fn add_mapping(&mut self, au_id: u8, morph_name: impl Into<String>, influence: f32) {
-        self.au_to_morph.push(AuMorphMapping { au_id, morph_name: morph_name.into(), influence });
+        self.au_to_morph.push(AuMorphMapping {
+            au_id,
+            morph_name: morph_name.into(),
+            influence,
+        });
     }
 
     /// Collapse AU weights into final morph weights.
     /// Returns Vec<(morph_name, weight)> sorted by morph_name.
     pub fn compute_morph_weights(&self) -> Vec<(String, f32)> {
-        let mut morph_weights: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+        let mut morph_weights: std::collections::HashMap<String, f32> =
+            std::collections::HashMap::new();
         for mapping in &self.au_to_morph {
             let au_weight = self.get_au(mapping.au_id);
-            *morph_weights.entry(mapping.morph_name.clone()).or_insert(0.0)
-                += au_weight * mapping.influence;
+            *morph_weights
+                .entry(mapping.morph_name.clone())
+                .or_insert(0.0) += au_weight * mapping.influence;
         }
-        let mut result: Vec<(String, f32)> = morph_weights.into_iter()
+        let mut result: Vec<(String, f32)> = morph_weights
+            .into_iter()
             .map(|(k, v)| (k, v.clamp(0.0, 1.0)))
             .collect();
         result.sort_by(|a, b| a.0.cmp(&b.0));
@@ -253,8 +271,38 @@ impl Default for FacialRig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Phoneme {
-    Silence, P, B, M, F, V, Th, D, T, N, S, Z, Sh, Ch, Jh, G, K, Ng,
-    Ah, Ae, Ey, Ih, Iy, Oh, Ow, Uh, Uw, Er, Aa, Aw, Oy, Ay,
+    Silence,
+    P,
+    B,
+    M,
+    F,
+    V,
+    Th,
+    D,
+    T,
+    N,
+    S,
+    Z,
+    Sh,
+    Ch,
+    Jh,
+    G,
+    K,
+    Ng,
+    Ah,
+    Ae,
+    Ey,
+    Ih,
+    Iy,
+    Oh,
+    Ow,
+    Uh,
+    Uw,
+    Er,
+    Aa,
+    Aw,
+    Oy,
+    Ay,
 }
 
 /// Lightweight phoneme classifier using precomputed MFCC features.
@@ -301,7 +349,9 @@ impl PhonemeClassifier {
     pub fn classify_frame(&mut self, pcm: &[f32]) -> Phoneme {
         let mfcc = self.compute_mfcc(pcm);
         self.frame_buffer.push_back(mfcc);
-        while self.frame_buffer.len() > 3 { self.frame_buffer.pop_front(); }
+        while self.frame_buffer.len() > 3 {
+            self.frame_buffer.pop_front();
+        }
 
         let mut feature = [0.0f32; 39];
         for (frame_idx, frame) in self.frame_buffer.iter().enumerate() {
@@ -317,15 +367,17 @@ impl PhonemeClassifier {
         let n = pcm.len().min(400);
         let mut mfcc = [0.0f32; 13];
 
-        if n == 0 { return mfcc; }
+        if n == 0 {
+            return mfcc;
+        }
 
         let band_size = n / 13;
         for (band, mfcc_val) in mfcc.iter_mut().enumerate() {
             let start = band * band_size;
             let end = (start + band_size).min(n);
             if end > start {
-                let energy: f32 = pcm[start..end].iter().map(|&x| x * x).sum::<f32>()
-                    / (end - start) as f32;
+                let energy: f32 =
+                    pcm[start..end].iter().map(|&x| x * x).sum::<f32>() / (end - start) as f32;
                 *mfcc_val = (energy.max(1e-10)).ln();
             }
         }
@@ -352,18 +404,46 @@ impl PhonemeClassifier {
             logits[i] = sum;
         }
 
-        let best = logits.iter().enumerate()
+        let best = logits
+            .iter()
+            .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(i, _)| i)
             .unwrap_or(0);
 
         const PHONEMES: [Phoneme; 32] = [
-            Phoneme::Silence, Phoneme::P, Phoneme::B, Phoneme::M, Phoneme::F, Phoneme::V,
-            Phoneme::Th, Phoneme::D, Phoneme::T, Phoneme::N, Phoneme::S, Phoneme::Z,
-            Phoneme::Sh, Phoneme::Ch, Phoneme::Jh, Phoneme::G, Phoneme::K, Phoneme::Ng,
-            Phoneme::Ah, Phoneme::Ae, Phoneme::Ey, Phoneme::Ih, Phoneme::Iy, Phoneme::Oh,
-            Phoneme::Ow, Phoneme::Uh, Phoneme::Uw, Phoneme::Er, Phoneme::Aa, Phoneme::Aw,
-            Phoneme::Oy, Phoneme::Ay,
+            Phoneme::Silence,
+            Phoneme::P,
+            Phoneme::B,
+            Phoneme::M,
+            Phoneme::F,
+            Phoneme::V,
+            Phoneme::Th,
+            Phoneme::D,
+            Phoneme::T,
+            Phoneme::N,
+            Phoneme::S,
+            Phoneme::Z,
+            Phoneme::Sh,
+            Phoneme::Ch,
+            Phoneme::Jh,
+            Phoneme::G,
+            Phoneme::K,
+            Phoneme::Ng,
+            Phoneme::Ah,
+            Phoneme::Ae,
+            Phoneme::Ey,
+            Phoneme::Ih,
+            Phoneme::Iy,
+            Phoneme::Oh,
+            Phoneme::Ow,
+            Phoneme::Uh,
+            Phoneme::Uw,
+            Phoneme::Er,
+            Phoneme::Aa,
+            Phoneme::Aw,
+            Phoneme::Oy,
+            Phoneme::Ay,
         ];
         PHONEMES[best]
     }
@@ -387,24 +467,26 @@ impl VisemeTable {
     pub fn default_english() -> Self {
         let mut map = std::collections::HashMap::new();
         map.insert(Phoneme::Silence, vec![]);
-        map.insert(Phoneme::P,  vec![(20u8, 0.5), (24u8, 0.8)]);
-        map.insert(Phoneme::B,  vec![(20u8, 0.5), (24u8, 0.8)]);
-        map.insert(Phoneme::M,  vec![(24u8, 0.9)]);
-        map.insert(Phoneme::F,  vec![(20u8, 0.3), (10u8, 0.4)]);
-        map.insert(Phoneme::V,  vec![(20u8, 0.3), (10u8, 0.4)]);
-        map.insert(Phoneme::D,  vec![(25u8, 0.3), (26u8, 0.2)]);
-        map.insert(Phoneme::T,  vec![(25u8, 0.2)]);
-        map.insert(Phoneme::N,  vec![(25u8, 0.3)]);
+        map.insert(Phoneme::P, vec![(20u8, 0.5), (24u8, 0.8)]);
+        map.insert(Phoneme::B, vec![(20u8, 0.5), (24u8, 0.8)]);
+        map.insert(Phoneme::M, vec![(24u8, 0.9)]);
+        map.insert(Phoneme::F, vec![(20u8, 0.3), (10u8, 0.4)]);
+        map.insert(Phoneme::V, vec![(20u8, 0.3), (10u8, 0.4)]);
+        map.insert(Phoneme::D, vec![(25u8, 0.3), (26u8, 0.2)]);
+        map.insert(Phoneme::T, vec![(25u8, 0.2)]);
+        map.insert(Phoneme::N, vec![(25u8, 0.3)]);
         map.insert(Phoneme::Sh, vec![(22u8, 0.6), (25u8, 0.3)]);
-        map.insert(Phoneme::G,  vec![(26u8, 0.3)]);
-        map.insert(Phoneme::K,  vec![(26u8, 0.3)]);
+        map.insert(Phoneme::G, vec![(26u8, 0.3)]);
+        map.insert(Phoneme::K, vec![(26u8, 0.3)]);
         map.insert(Phoneme::Ah, vec![(26u8, 0.7), (25u8, 0.5)]);
         map.insert(Phoneme::Iy, vec![(20u8, 0.7), (6u8, 0.3)]);
         map.insert(Phoneme::Uw, vec![(20u8, 0.8), (25u8, 0.4)]);
         map.insert(Phoneme::Ow, vec![(22u8, 0.7), (26u8, 0.4)]);
         map.insert(Phoneme::Er, vec![(22u8, 0.4), (26u8, 0.3)]);
         map.insert(Phoneme::Ay, vec![(26u8, 0.5), (20u8, 0.4)]);
-        Self { phoneme_to_au_weights: map }
+        Self {
+            phoneme_to_au_weights: map,
+        }
     }
 }
 
@@ -432,13 +514,16 @@ impl AudioLipSync {
     /// Process one audio frame (25ms PCM) and update the facial rig.
     pub fn process_audio_frame(&mut self, pcm: &[f32]) {
         let phoneme = self.classifier.classify_frame(pcm);
-        let au_weights = self.viseme_table.phoneme_to_au_weights
+        let au_weights = self
+            .viseme_table
+            .phoneme_to_au_weights
             .get(&phoneme)
             .cloned()
             .unwrap_or_default();
 
         for au in &mut self.rig.action_units {
-            let target = au_weights.iter()
+            let target = au_weights
+                .iter()
                 .find(|(id, _)| *id == au.id)
                 .map(|(_, w)| *w)
                 .unwrap_or(0.0);
@@ -458,7 +543,13 @@ impl Default for AudioLipSync {
 // ═════════════════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EmotionState { Neutral, Anger, Sadness, Fear, Joy }
+pub enum EmotionState {
+    Neutral,
+    Anger,
+    Sadness,
+    Fear,
+    Joy,
+}
 
 pub struct SpectralEmotionMapping {
     pub emotion: EmotionState,
@@ -469,12 +560,15 @@ impl SpectralEmotionMapping {
     pub fn for_emotion(emotion: EmotionState) -> Self {
         let bias = match emotion {
             EmotionState::Neutral => [0.0; 8],
-            EmotionState::Anger   => [0.0, 0.0, 0.0, 0.02, 0.03, 0.02, 0.0, 0.0],
-            EmotionState::Joy     => [0.0, 0.0, 0.01, 0.01, 0.01, 0.0, 0.0, 0.0],
-            EmotionState::Fear    => [-0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            EmotionState::Anger => [0.0, 0.0, 0.0, 0.02, 0.03, 0.02, 0.0, 0.0],
+            EmotionState::Joy => [0.0, 0.0, 0.01, 0.01, 0.01, 0.0, 0.0, 0.0],
+            EmotionState::Fear => [-0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             EmotionState::Sadness => [0.0; 8],
         };
-        Self { emotion, spectral_bias: bias }
+        Self {
+            emotion,
+            spectral_bias: bias,
+        }
     }
 
     /// Apply spectral bias to all 8 bands of a splat's spectral values.
@@ -561,7 +655,10 @@ mod tests {
     #[test]
     fn apply_modifies_positions() {
         let mut fc = FacialController::new();
-        fc.add_target("smile", vec![Vec3::new(0.0, 0.1, 0.0), Vec3::new(0.0, 0.2, 0.0)]);
+        fc.add_target(
+            "smile",
+            vec![Vec3::new(0.0, 0.1, 0.0), Vec3::new(0.0, 0.2, 0.0)],
+        );
         fc.set_weight("smile", 1.0);
 
         let base = vec![Vec3::new(1.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 6.0)];
@@ -638,7 +735,11 @@ mod tests {
         rig.add_mapping(12, "smile_morph", 1.0);
         rig.set_au(12, 0.8);
         let weights = rig.compute_morph_weights();
-        let w = weights.iter().find(|(name, _)| name == "smile_morph").map(|(_, w)| *w).unwrap();
+        let w = weights
+            .iter()
+            .find(|(name, _)| name == "smile_morph")
+            .map(|(_, w)| *w)
+            .unwrap();
         assert!((w - 0.8).abs() < 1e-5, "expected ~0.8, got {w}");
     }
 

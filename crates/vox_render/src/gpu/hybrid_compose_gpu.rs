@@ -38,7 +38,7 @@ use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
 
 use spectra_gaussian_render::renderer::{
-    project_gaussian, Gaussian3D, GaussianCamera, ALPHA_THRESHOLD, TRANSMITTANCE_THRESHOLD,
+    ALPHA_THRESHOLD, Gaussian3D, GaussianCamera, TRANSMITTANCE_THRESHOLD, project_gaussian,
 };
 
 use crate::gpu::software_rasteriser::build_gaussian_camera;
@@ -183,7 +183,8 @@ impl HybridComposeGpu {
             .await
             .ok_or(HybridComposeGpuError::NoAdapter)?;
         let info = adapter.get_info();
-        crate::gpu::adapter::ensure_hardware(&info).map_err(|_| HybridComposeGpuError::NoAdapter)?;
+        crate::gpu::adapter::ensure_hardware(&info)
+            .map_err(|_| HybridComposeGpuError::NoAdapter)?;
         let adapter_name = info.name;
         let (device, queue) = adapter
             .request_device(
@@ -360,7 +361,14 @@ impl HybridComposeGpu {
         width: u32,
         height: u32,
     ) -> Result<HybridGpuImage, HybridComposeGpuError> {
-        self.render_lit(scene, camera, illuminant, &SunLight::default(), width, height)
+        self.render_lit(
+            scene,
+            camera,
+            illuminant,
+            &SunLight::default(),
+            width,
+            height,
+        )
     }
 
     /// Render `scene` with an explicit sun light, mirroring
@@ -817,7 +825,7 @@ const _: f32 = TRANSMITTANCE_THRESHOLD;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hybrid_compose::{render_hybrid, render_hybrid_lit, HybridMesh};
+    use crate::hybrid_compose::{HybridMesh, render_hybrid, render_hybrid_lit};
     use crate::spectral_framebuffer::SpectralFramebuffer;
     use glam::{Mat4, Quat, Vec3};
 
@@ -827,7 +835,12 @@ mod tests {
     fn head_on_camera() -> RenderCamera {
         RenderCamera {
             view: Mat4::look_at_rh(Vec3::new(0.0, 0.0, 20.0), Vec3::ZERO, Vec3::Y),
-            proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, W as f32 / H as f32, 0.1, 500.0),
+            proj: Mat4::perspective_rh(
+                std::f32::consts::FRAC_PI_4,
+                W as f32 / H as f32,
+                0.1,
+                500.0,
+            ),
         }
     }
 
@@ -922,7 +935,9 @@ mod tests {
     fn gpu_matches_cpu_occlusion_both_ways() {
         let cam = head_on_camera();
         let il = illum();
-        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else { return };
+        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else {
+            return;
+        };
 
         let wall = quad(0.0, 4.0, single_band_f32(11, 1.0), 7);
 
@@ -955,8 +970,14 @@ mod tests {
             "[occlusion_both_ways] max_abs_dev={max_abs:e} max_rel_dev={max_rel:e} (asserting abs < 1e-4)"
         );
         // Identical f32 math; only the splat exp() and band reads remain — ULP.
-        assert!(max_abs < 1e-4, "max abs band deviation {max_abs:e} exceeds 1e-4");
-        assert!(max_rel < 1e-3, "max rel band deviation {max_rel:e} exceeds 1e-3");
+        assert!(
+            max_abs < 1e-4,
+            "max abs band deviation {max_abs:e} exceeds 1e-4"
+        );
+        assert!(
+            max_rel < 1e-3,
+            "max rel band deviation {max_rel:e} exceeds 1e-3"
+        );
 
         // Sanity: both paths lit something (and the front splat is present).
         let cpu_total: f32 = cpu_f.spectral.iter().flat_map(|p| p.iter()).sum();
@@ -970,15 +991,13 @@ mod tests {
     fn gpu_matches_cpu_perspective_depth() {
         let cam = head_on_camera();
         let il = illum();
-        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else { return };
+        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else {
+            return;
+        };
 
         // Steep triangle apex cam_z~1 -> base cam_z~100 (the oracle's `steep_tri`).
         let tri = HybridMesh {
-            positions: vec![
-                [0.0, 0.0, 19.0],
-                [-30.0, 20.0, -80.0],
-                [30.0, 20.0, -80.0],
-            ],
+            positions: vec![[0.0, 0.0, 19.0], [-30.0, 20.0, -80.0], [30.0, 20.0, -80.0]],
             indices: vec![0, 1, 2],
             reflectance: single_band_f32(11, 1.0),
             object_id: 1,
@@ -1001,8 +1020,14 @@ mod tests {
         eprintln!(
             "[perspective_depth] max_abs_dev={max_abs:e} max_rel_dev={max_rel:e} (asserting abs < 1e-4)"
         );
-        assert!(max_abs < 1e-4, "max abs band deviation {max_abs:e} exceeds 1e-4");
-        assert!(max_rel < 1e-3, "max rel band deviation {max_rel:e} exceeds 1e-3");
+        assert!(
+            max_abs < 1e-4,
+            "max abs band deviation {max_abs:e} exceeds 1e-4"
+        );
+        assert!(
+            max_rel < 1e-3,
+            "max rel band deviation {max_rel:e} exceeds 1e-3"
+        );
 
         // The mesh surface (band 11) must actually be present in the apex region.
         let mesh_energy: f32 = cpu.spectral.iter().map(|p| p[11]).sum();
@@ -1016,7 +1041,12 @@ mod tests {
     fn gpu_matches_cpu_cube_over_carpet() {
         let cam = RenderCamera {
             view: Mat4::look_at_rh(Vec3::new(0.0, 6.0, 18.0), Vec3::ZERO, Vec3::Y),
-            proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, W as f32 / H as f32, 0.1, 500.0),
+            proj: Mat4::perspective_rh(
+                std::f32::consts::FRAC_PI_4,
+                W as f32 / H as f32,
+                0.1,
+                500.0,
+            ),
         };
         let il = illum();
 
@@ -1038,7 +1068,9 @@ mod tests {
             splats: &carpet,
         };
 
-        let Some(gpu) = try_gpu(64, carpet.len() as u32, (W * H) as u32) else { return };
+        let Some(gpu) = try_gpu(64, carpet.len() as u32, (W * H) as u32) else {
+            return;
+        };
 
         let t0 = std::time::Instant::now();
         let mut fb = SpectralFramebuffer::new(W, H);
@@ -1050,14 +1082,22 @@ mod tests {
         let t1 = std::time::Instant::now();
         let g = gpu.render(&scene, &cam, &il, W, H).expect("gpu render");
         let gpu_ms = t1.elapsed().as_secs_f64() * 1e3;
-        eprintln!("[timing] cube+49-splat 64x64: CPU={cpu_ms:.3}ms GPU(incl readback)={gpu_ms:.3}ms");
+        eprintln!(
+            "[timing] cube+49-splat 64x64: CPU={cpu_ms:.3}ms GPU(incl readback)={gpu_ms:.3}ms"
+        );
 
         let (max_abs, max_rel) = measure_dev(&fb, &g);
         eprintln!(
             "[cube_over_carpet] max_abs_dev={max_abs:e} max_rel_dev={max_rel:e} (asserting abs < 1e-4)"
         );
-        assert!(max_abs < 1e-4, "max abs band deviation {max_abs:e} exceeds 1e-4");
-        assert!(max_rel < 1e-3, "max rel band deviation {max_rel:e} exceeds 1e-3");
+        assert!(
+            max_abs < 1e-4,
+            "max abs band deviation {max_abs:e} exceeds 1e-4"
+        );
+        assert!(
+            max_rel < 1e-3,
+            "max rel band deviation {max_rel:e} exceeds 1e-3"
+        );
 
         // Both signatures present (proves real compositing happened, not zeros).
         let red: f32 = g.spectral.iter().map(|p| p[11]).sum();
@@ -1072,7 +1112,9 @@ mod tests {
     fn gpu_is_deterministic() {
         let cam = head_on_camera();
         let il = illum();
-        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else { return };
+        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else {
+            return;
+        };
 
         let wall = quad(0.0, 4.0, single_band_f32(11, 1.0), 7);
         let front = big_splat(8.0, 3, 1.0, 255);
@@ -1096,7 +1138,11 @@ mod tests {
             }
         }
         for (i, (da, db)) in a.depth.iter().zip(b.depth.iter()).enumerate() {
-            assert_eq!(da.to_bits(), db.to_bits(), "depth must be bit-identical at {i}");
+            assert_eq!(
+                da.to_bits(),
+                db.to_bits(),
+                "depth must be bit-identical at {i}"
+            );
         }
     }
 
@@ -1106,7 +1152,9 @@ mod tests {
     fn gpu_depth_matches_cpu() {
         let cam = head_on_camera();
         let il = illum();
-        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else { return };
+        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else {
+            return;
+        };
 
         let mesh = quad(5.0, 4.0, single_band_f32(11, 1.0), 1);
         let splat = big_splat(-5.0, 3, 1.0, 255);
@@ -1140,7 +1188,9 @@ mod tests {
     fn gpu_matches_cpu_thin_triangle_no_over_coverage() {
         let cam = head_on_camera();
         let il = illum();
-        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else { return };
+        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else {
+            return;
+        };
 
         // The sliver spans nearly the full vertical view but only a hair in x, so
         // the per-pixel barycentric step on the long edges is large while the x
@@ -1210,7 +1260,9 @@ mod tests {
     fn gpu_matches_cpu_shared_diagonal_no_holes() {
         let cam = head_on_camera();
         let il = illum();
-        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else { return };
+        let Some(gpu) = try_gpu(64, 4, (W * H) as u32) else {
+            return;
+        };
 
         // A wall straddling the framebuffer centre so its shared diagonal runs
         // across many pixels (the classic hole locus).
@@ -1225,8 +1277,14 @@ mod tests {
         eprintln!(
             "[shared_diagonal] max_abs_dev={max_abs:e} max_rel_dev={max_rel:e} (asserting abs < 1e-4)"
         );
-        assert!(max_abs < 1e-4, "shared-diagonal hole/over-cover: abs {max_abs:e} exceeds 1e-4");
-        assert!(max_rel < 1e-3, "shared-diagonal rel {max_rel:e} exceeds 1e-3");
+        assert!(
+            max_abs < 1e-4,
+            "shared-diagonal hole/over-cover: abs {max_abs:e} exceeds 1e-4"
+        );
+        assert!(
+            max_rel < 1e-3,
+            "shared-diagonal rel {max_rel:e} exceeds 1e-3"
+        );
 
         // The wall must actually be filled (no diagonal hole) — count lit pixels
         // and require a contiguous, fully-covered region (no missing diagonal).
@@ -1236,7 +1294,10 @@ mod tests {
             lit_gpu, lit_cpu,
             "GPU lit-pixel count {lit_gpu} must equal CPU {lit_cpu} (no holes, no over-coverage)"
         );
-        assert!(lit_cpu > 100, "wall must cover a substantial pixel region: {lit_cpu}");
+        assert!(
+            lit_cpu > 100,
+            "wall must cover a substantial pixel region: {lit_cpu}"
+        );
     }
 
     /// DRIFT-PINNING (finding [2]): the GPU module's host-side clip+project prep
@@ -1260,7 +1321,9 @@ mod tests {
         let cam = head_on_camera();
         let il = illum();
         let sun = SunLight::default();
-        let Some(gpu) = try_gpu(256, 4, (W * H) as u32) else { return };
+        let Some(gpu) = try_gpu(256, 4, (W * H) as u32) else {
+            return;
+        };
 
         // Each entry: (name, mesh). One triangle each, chosen to exercise a
         // distinct branch of the clip/project pipeline.
@@ -1343,7 +1406,9 @@ mod tests {
             let mut fb = SpectralFramebuffer::new(W, H);
             render_hybrid_lit(&scene, &cam, &il, &sun, &mut fb);
             // GPU path (host-prep uses the copied clip/project helpers).
-            let g = gpu.render_lit(&scene, &cam, &il, &sun, W, H).expect("gpu render_lit");
+            let g = gpu
+                .render_lit(&scene, &cam, &il, &sun, W, H)
+                .expect("gpu render_lit");
 
             let mut max_depth_rel = 0.0f32;
             let mut diff_pixels = 0usize;
@@ -1483,7 +1548,9 @@ mod tests {
                     }
                 }
             }
-            eprintln!("[{name}] closest-to-zero negative sep_min={worst_sep:e} worst |sep-fma|={worst_fma_diff:e}");
+            eprintln!(
+                "[{name}] closest-to-zero negative sep_min={worst_sep:e} worst |sep-fma|={worst_fma_diff:e}"
+            );
         }
     }
 
@@ -1511,5 +1578,3 @@ mod tests {
         }
     }
 }
-
-

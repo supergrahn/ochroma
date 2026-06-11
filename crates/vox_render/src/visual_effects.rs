@@ -18,7 +18,11 @@ pub fn apply_fog(
     fog_density: f32,
     fog_start: f32,
 ) {
-    let fc = [fog_color[0] as f32, fog_color[1] as f32, fog_color[2] as f32];
+    let fc = [
+        fog_color[0] as f32,
+        fog_color[1] as f32,
+        fog_color[2] as f32,
+    ];
     for (px, &d) in pixels.iter_mut().zip(depth_buffer.iter()) {
         let t = ((d - fog_start) * fog_density).clamp(0.0, 1.0);
         if t <= 0.0 {
@@ -37,12 +41,7 @@ pub fn apply_fog(
 /// normalized distance from the frame centre, clamped to [0,1].
 /// `strength` scales how much the factor attenuates the pixel
 /// (0 = no effect, 1 = full darkening at extreme corners).
-pub fn apply_vignette(
-    pixels: &mut [[u8; 4]],
-    width: u32,
-    height: u32,
-    strength: f32,
-) {
+pub fn apply_vignette(pixels: &mut [[u8; 4]], width: u32, height: u32, strength: f32) {
     if strength <= 0.0 || width == 0 || height == 0 {
         return;
     }
@@ -146,12 +145,7 @@ pub fn apply_ssao(
 /// - `brightness`: 0–2, neutral = 1.0  (multiplies luminance)
 /// - `contrast`:   0–2, neutral = 1.0  (scales around mid-grey 0.5)
 /// - `saturation`: 0–2, neutral = 1.0  (blends toward greyscale at 0)
-pub fn apply_color_grade(
-    pixels: &mut [[u8; 4]],
-    brightness: f32,
-    contrast: f32,
-    saturation: f32,
-) {
+pub fn apply_color_grade(pixels: &mut [[u8; 4]], brightness: f32, contrast: f32, saturation: f32) {
     for px in pixels.iter_mut() {
         let mut r = px[0] as f32 / 255.0;
         let mut g = px[1] as f32 / 255.0;
@@ -235,13 +229,26 @@ impl PostProcessStack {
     /// Order: fog → vignette → SSAO → color grading.
     pub fn apply(&self, pixels: &mut [[u8; 4]], depth: &[f32], width: u32, height: u32) {
         if self.fog_enabled {
-            apply_fog(pixels, depth, self.fog_color, self.fog_density, self.fog_start);
+            apply_fog(
+                pixels,
+                depth,
+                self.fog_color,
+                self.fog_density,
+                self.fog_start,
+            );
         }
         if self.vignette_strength > 0.0 {
             apply_vignette(pixels, width, height, self.vignette_strength);
         }
         if self.ssao_enabled {
-            apply_ssao(pixels, depth, width, height, self.ssao_radius, self.ssao_strength);
+            apply_ssao(
+                pixels,
+                depth,
+                width,
+                height,
+                self.ssao_radius,
+                self.ssao_strength,
+            );
         }
         if self.brightness != 1.0 || self.contrast != 1.0 || self.saturation != 1.0 {
             apply_color_grade(pixels, self.brightness, self.contrast, self.saturation);
@@ -299,7 +306,10 @@ mod tests {
         let corner = pixels[0]; // pixel (0,0)
 
         // Centre should be brighter (less darkened) than corner.
-        assert!(centre[0] > corner[0], "centre {centre:?} should be brighter than corner {corner:?}");
+        assert!(
+            centre[0] > corner[0],
+            "centre {centre:?} should be brighter than corner {corner:?}"
+        );
     }
 
     #[test]
@@ -349,7 +359,10 @@ mod tests {
         let mut pixels = solid([100, 100, 100, 255], 1);
         apply_color_grade(&mut pixels, 2.0, 1.0, 1.0);
         // 100/255 * 2.0 * 255 ≈ 200
-        assert!(pixels[0][0] > 100, "brightness=2.0 should increase pixel value");
+        assert!(
+            pixels[0][0] > 100,
+            "brightness=2.0 should increase pixel value"
+        );
     }
 
     #[test]
@@ -360,7 +373,12 @@ mod tests {
         // Allow ±1 for rounding.
         for ch in 0..3 {
             let diff = (pixels[0][ch] as i16 - before[0][ch] as i16).abs();
-            assert!(diff <= 1, "channel {ch}: expected ~{} got {}", before[0][ch], pixels[0][ch]);
+            assert!(
+                diff <= 1,
+                "channel {ch}: expected ~{} got {}",
+                before[0][ch],
+                pixels[0][ch]
+            );
         }
         assert_eq!(pixels[0][3], before[0][3], "alpha should be unchanged");
     }

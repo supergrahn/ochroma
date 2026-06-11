@@ -78,7 +78,8 @@ impl ARSession {
     pub fn detect_horizontal(&mut self, position: Vec3, extent: [f32; 2]) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.surfaces.push(ARSurface::new_horizontal(id, position, extent));
+        self.surfaces
+            .push(ARSurface::new_horizontal(id, position, extent));
         id
     }
 

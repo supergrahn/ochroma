@@ -26,7 +26,11 @@ pub struct TileCache {
 
 impl TileCache {
     pub fn new(max_tiles: usize) -> Self {
-        Self { max_tiles, tiles: HashMap::new(), access_order: VecDeque::new() }
+        Self {
+            max_tiles,
+            tiles: HashMap::new(),
+            access_order: VecDeque::new(),
+        }
     }
 
     /// Mark a tile as requested/accessed.
@@ -61,8 +65,13 @@ impl TileCache {
         self.tiles.get(&id) == Some(&TileLoadState::Loaded)
     }
 
-    pub fn tile_count(&self) -> usize { self.tiles.len() }
+    pub fn tile_count(&self) -> usize {
+        self.tiles.len()
+    }
     pub fn loaded_count(&self) -> usize {
-        self.tiles.values().filter(|s| **s == TileLoadState::Loaded).count()
+        self.tiles
+            .values()
+            .filter(|s| **s == TileLoadState::Loaded)
+            .count()
     }
 }

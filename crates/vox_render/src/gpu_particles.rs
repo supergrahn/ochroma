@@ -87,8 +87,7 @@ impl GpuParticleSystem {
                 if self.particles.len() >= self.max_total_particles {
                     break;
                 }
-                let lifetime =
-                    (emitter.lifetime_range[0] + emitter.lifetime_range[1]) * 0.5;
+                let lifetime = (emitter.lifetime_range[0] + emitter.lifetime_range[1]) * 0.5;
                 let size = (emitter.size_range[0] + emitter.size_range[1]) * 0.5;
                 self.particles.push(GpuParticle {
                     position: emitter.position,

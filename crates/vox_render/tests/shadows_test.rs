@@ -99,8 +99,14 @@ fn cascade_splits_cover_correct_ranges() {
     assert!((far2 - 500.0).abs() < f32::EPSILON);
 
     // Cascades are contiguous.
-    assert!((far0 - near1).abs() < f32::EPSILON, "Cascade 0 far should equal cascade 1 near");
-    assert!((far1 - near2).abs() < f32::EPSILON, "Cascade 1 far should equal cascade 2 near");
+    assert!(
+        (far0 - near1).abs() < f32::EPSILON,
+        "Cascade 0 far should equal cascade 1 near"
+    );
+    assert!(
+        (far1 - near2).abs() < f32::EPSILON,
+        "Cascade 1 far should equal cascade 2 near"
+    );
 }
 
 #[test]

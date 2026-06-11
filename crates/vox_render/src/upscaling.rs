@@ -99,12 +99,17 @@ pub struct UpscaleManager {
 
 impl UpscaleManager {
     pub fn new(display_width: u32, display_height: u32, quality: UpscaleQuality) -> Self {
-        Self { quality, display_width, display_height }
+        Self {
+            quality,
+            display_width,
+            display_height,
+        }
     }
 
     /// Get the resolution the renderer should use internally.
     pub fn render_resolution(&self) -> (u32, u32) {
-        self.quality.internal_resolution(self.display_width, self.display_height)
+        self.quality
+            .internal_resolution(self.display_width, self.display_height)
     }
 
     /// Upscale a rendered frame from internal to display resolution.
@@ -112,6 +117,12 @@ impl UpscaleManager {
         if self.quality == UpscaleQuality::Native {
             return pixels.to_vec();
         }
-        bilinear_upscale(pixels, src_width, src_height, self.display_width, self.display_height)
+        bilinear_upscale(
+            pixels,
+            src_width,
+            src_height,
+            self.display_width,
+            self.display_height,
+        )
     }
 }

@@ -14,7 +14,7 @@ pub struct ShadowAtlasEntry {
 /// Request to allocate shadow map space for one light.
 pub struct LightShadowRequest {
     pub light_id: u32,
-    pub resolution: u32, // e.g. 512 for point lights, 2048 for directional
+    pub resolution: u32,      // e.g. 512 for point lights, 2048 for directional
     pub is_point_light: bool, // point lights need 6 sub-entries (cube faces)
 }
 
@@ -89,11 +89,7 @@ impl ShadowAtlas {
             if next_x + resolution <= self.atlas_width {
                 let x = next_x;
                 let y = shelf_y;
-                self.shelves[layer] = (
-                    next_x + resolution,
-                    shelf_y,
-                    shelf_height.max(resolution),
-                );
+                self.shelves[layer] = (next_x + resolution, shelf_y, shelf_height.max(resolution));
                 return Some((layer as u32, x, y));
             }
 

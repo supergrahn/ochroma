@@ -23,11 +23,20 @@ pub struct SequenceTrack {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TrackType {
     CameraTransform,
-    EntityTransform { entity_name: String },
-    EntityVisibility { entity_name: String },
+    EntityTransform {
+        entity_name: String,
+    },
+    EntityVisibility {
+        entity_name: String,
+    },
     AudioTrigger,
-    Event { event_name: String },
-    FloatProperty { entity_name: String, property: String },
+    Event {
+        event_name: String,
+    },
+    FloatProperty {
+        entity_name: String,
+        property: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,21 +297,30 @@ mod tests {
     #[test]
     fn test_evaluate_midpoint_interpolation() {
         let mut seq = Sequence::new("test", 10.0);
-        let track = seq.add_track("float_track", TrackType::FloatProperty {
-            entity_name: "light".into(),
-            property: "intensity".into(),
-        });
+        let track = seq.add_track(
+            "float_track",
+            TrackType::FloatProperty {
+                entity_name: "light".into(),
+                property: "intensity".into(),
+            },
+        );
 
-        seq.add_keyframe(track, SequenceKeyframe {
-            time: 0.0,
-            value: KeyframeValue::Float(0.0),
-            interpolation: Interpolation::Linear,
-        });
-        seq.add_keyframe(track, SequenceKeyframe {
-            time: 10.0,
-            value: KeyframeValue::Float(100.0),
-            interpolation: Interpolation::Linear,
-        });
+        seq.add_keyframe(
+            track,
+            SequenceKeyframe {
+                time: 0.0,
+                value: KeyframeValue::Float(0.0),
+                interpolation: Interpolation::Linear,
+            },
+        );
+        seq.add_keyframe(
+            track,
+            SequenceKeyframe {
+                time: 10.0,
+                value: KeyframeValue::Float(100.0),
+                interpolation: Interpolation::Linear,
+            },
+        );
 
         let results = seq.evaluate(5.0);
         assert_eq!(results.len(), 1);
@@ -319,15 +337,18 @@ mod tests {
         let mut seq = Sequence::new("cinematic", 30.0);
         seq.playback_speed = 0.5;
         let cam = seq.add_track("cam", TrackType::CameraTransform);
-        seq.add_keyframe(cam, SequenceKeyframe {
-            time: 0.0,
-            value: KeyframeValue::Transform {
-                position: [0.0, 0.0, 0.0],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: [1.0, 1.0, 1.0],
+        seq.add_keyframe(
+            cam,
+            SequenceKeyframe {
+                time: 0.0,
+                value: KeyframeValue::Transform {
+                    position: [0.0, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+                interpolation: Interpolation::EaseInOut,
             },
-            interpolation: Interpolation::EaseInOut,
-        });
+        );
 
         let json = seq.save_json().unwrap();
         let loaded = Sequence::load_json(&json).unwrap();
@@ -342,25 +363,37 @@ mod tests {
     #[test]
     fn test_muted_track_skipped() {
         let mut seq = Sequence::new("test", 10.0);
-        let t0 = seq.add_track("active", TrackType::FloatProperty {
-            entity_name: "a".into(),
-            property: "x".into(),
-        });
-        let t1 = seq.add_track("muted", TrackType::FloatProperty {
-            entity_name: "b".into(),
-            property: "y".into(),
-        });
+        let t0 = seq.add_track(
+            "active",
+            TrackType::FloatProperty {
+                entity_name: "a".into(),
+                property: "x".into(),
+            },
+        );
+        let t1 = seq.add_track(
+            "muted",
+            TrackType::FloatProperty {
+                entity_name: "b".into(),
+                property: "y".into(),
+            },
+        );
 
-        seq.add_keyframe(t0, SequenceKeyframe {
-            time: 0.0,
-            value: KeyframeValue::Float(1.0),
-            interpolation: Interpolation::Linear,
-        });
-        seq.add_keyframe(t1, SequenceKeyframe {
-            time: 0.0,
-            value: KeyframeValue::Float(2.0),
-            interpolation: Interpolation::Linear,
-        });
+        seq.add_keyframe(
+            t0,
+            SequenceKeyframe {
+                time: 0.0,
+                value: KeyframeValue::Float(1.0),
+                interpolation: Interpolation::Linear,
+            },
+        );
+        seq.add_keyframe(
+            t1,
+            SequenceKeyframe {
+                time: 0.0,
+                value: KeyframeValue::Float(2.0),
+                interpolation: Interpolation::Linear,
+            },
+        );
 
         seq.tracks[t1].muted = true;
 

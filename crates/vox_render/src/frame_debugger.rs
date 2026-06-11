@@ -54,7 +54,8 @@ impl FrameDebugger {
         if !self.recording || self.current_frame.is_none() {
             return;
         }
-        self.phase_stack.push((name.to_string(), std::time::Instant::now()));
+        self.phase_stack
+            .push((name.to_string(), std::time::Instant::now()));
     }
 
     pub fn end_phase(&mut self) {
@@ -133,11 +134,7 @@ impl FrameDebugger {
 
     pub fn fps(&self) -> f32 {
         let avg = self.avg_frame_ms();
-        if avg <= 0.0 {
-            0.0
-        } else {
-            1000.0 / avg
-        }
+        if avg <= 0.0 { 0.0 } else { 1000.0 / avg }
     }
 
     /// Get a summary string for display.

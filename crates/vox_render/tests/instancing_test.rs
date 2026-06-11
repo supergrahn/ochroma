@@ -1,6 +1,6 @@
-use vox_render::gpu::instancing::{InstanceManager, InstanceTransform};
-use glam::{Vec3, Quat};
+use glam::{Quat, Vec3};
 use uuid::Uuid;
+use vox_render::gpu::instancing::{InstanceManager, InstanceTransform};
 
 #[test]
 fn register_and_add_instances() {
@@ -18,7 +18,14 @@ fn total_splats_calculated() {
     let uuid = Uuid::new_v4();
     mgr.register_asset(uuid, 5000);
     for i in 0..100 {
-        mgr.add_instance(uuid, Vec3::new(i as f32, 0.0, 0.0), Quat::IDENTITY, 1.0, i, 0);
+        mgr.add_instance(
+            uuid,
+            Vec3::new(i as f32, 0.0, 0.0),
+            Quat::IDENTITY,
+            1.0,
+            i,
+            0,
+        );
     }
     assert_eq!(mgr.total_splats(), 500_000); // 100 instances x 5000 splats
 }
@@ -29,10 +36,21 @@ fn memory_savings_significant() {
     let uuid = Uuid::new_v4();
     mgr.register_asset(uuid, 100_000); // 100k splats per building
     for i in 0..1000 {
-        mgr.add_instance(uuid, Vec3::new(i as f32 * 10.0, 0.0, 0.0), Quat::IDENTITY, 1.0, i, 0);
+        mgr.add_instance(
+            uuid,
+            Vec3::new(i as f32 * 10.0, 0.0, 0.0),
+            Quat::IDENTITY,
+            1.0,
+            i,
+            0,
+        );
     }
     let ratio = mgr.memory_savings_ratio();
-    assert!(ratio < 0.01, "Instancing 1000x should save >99% memory, ratio={}", ratio);
+    assert!(
+        ratio < 0.01,
+        "Instancing 1000x should save >99% memory, ratio={}",
+        ratio
+    );
 }
 
 #[test]

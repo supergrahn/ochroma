@@ -148,7 +148,11 @@ impl OitAccumulatePass {
         width: u32,
         height: u32,
     ) -> (wgpu::Texture, wgpu::Texture) {
-        let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
 
         let moments_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("oit_moments_tex"),
@@ -202,7 +206,10 @@ impl OitAccumulatePass {
             label: Some("oit_accumulate_bg"),
             layout: &self.bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: camera_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buf.as_entire_binding(),
+                },
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: transparent_splat_buf.as_entire_binding(),
@@ -219,7 +226,10 @@ impl OitAccumulatePass {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(&transmittance_view),
                 },
-                wgpu::BindGroupEntry { binding: 5, resource: params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: params_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -375,7 +385,10 @@ impl OitResolvePass {
                     binding: 3,
                     resource: wgpu::BindingResource::TextureView(&output_view),
                 },
-                wgpu::BindGroupEntry { binding: 4, resource: params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: params_buf.as_entire_binding(),
+                },
             ],
         });
 

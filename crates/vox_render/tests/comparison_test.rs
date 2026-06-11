@@ -1,6 +1,6 @@
 use vox_render::comparison::{
-    compare_engines, godot_profile, ochroma_profile, unreal5_profile, unity_profile,
-    EngineCapability, EngineProfile,
+    EngineCapability, EngineProfile, compare_engines, godot_profile, ochroma_profile,
+    unity_profile, unreal5_profile,
 };
 
 #[test]
@@ -72,9 +72,11 @@ fn profile_creation() {
     assert_eq!(ochroma.name, "Ochroma");
     assert!(ochroma.has_spectral);
     assert!(ochroma.max_triangles_or_splats >= 100_000_000);
-    assert!(ochroma
-        .capabilities
-        .contains(&EngineCapability::GaussianSplatting));
+    assert!(
+        ochroma
+            .capabilities
+            .contains(&EngineCapability::GaussianSplatting)
+    );
 
     let unreal = unreal5_profile();
     assert_eq!(unreal.name, "Unreal Engine 5");

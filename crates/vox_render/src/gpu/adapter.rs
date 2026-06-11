@@ -123,7 +123,10 @@ mod tests {
 
     #[test]
     fn radv_phoenix_is_hardware() {
-        let radv = info("AMD Radeon 780M Graphics (RADV PHOENIX)", wgpu::DeviceType::IntegratedGpu);
+        let radv = info(
+            "AMD Radeon 780M Graphics (RADV PHOENIX)",
+            wgpu::DeviceType::IntegratedGpu,
+        );
         assert!(!is_software(&radv), "RADV iGPU must be treated as hardware");
         // override OFF → a real GPU is always accepted
         assert_eq!(ensure_hardware(&radv), Ok(()));
@@ -151,7 +154,10 @@ mod tests {
     fn name_guard_catches_mislabelled_software() {
         // A driver that mislabels device_type but names itself "software".
         let sw = info("Generic Software Renderer", wgpu::DeviceType::Other);
-        assert!(is_software(&sw), "name-based guard must catch mislabelled software");
+        assert!(
+            is_software(&sw),
+            "name-based guard must catch mislabelled software"
+        );
     }
 
     #[test]
@@ -160,7 +166,9 @@ mod tests {
         // wrong, this regresses loudly. (Honest: asserts a real computed outcome,
         // not is_some().) Skips only if the override is forcing software-only.
         if software_allowed() {
-            eprintln!("[adapter] OCHROMA_ALLOW_SOFTWARE_GPU set — skipping hardware-present assert");
+            eprintln!(
+                "[adapter] OCHROMA_ALLOW_SOFTWARE_GPU set — skipping hardware-present assert"
+            );
             return;
         }
         assert!(
