@@ -827,6 +827,43 @@ impl TiledSplatRenderer {
         &self.transform_buf
     }
 
+    /// Host-upload `splats` into the persistent capacity slots starting at
+    /// `first_slot` (M4 Task 2 — the residual-splat seam): converts via
+    /// [`gaussian_splat_to_gpu_full`] / [`gaussian_splats_to_transforms`] and
+    /// `write_buffer`s into [`Self::splat_buf`] / [`Self::transform_buf`] at
+    /// the slot offsets (`first_slot × 80` / `first_slot × 32` bytes),
+    /// clamping to the allocated capacity (`first_slot ≥ capacity` writes
+    /// nothing). Returns the number of splats written.
+    ///
+    /// Disjointness contract with the expand pass: in a frame that also runs
+    /// [`ExpandDrawsPass::encode_indirect`](crate::gpu::expand_draws::ExpandDrawsPass::encode_indirect)
+    /// (or `encode`), the expand owns slots `< selected` — callers place
+    /// residual splats at `first_slot ≥ selected`, so the queued
+    /// `write_buffer` and the dispatch touch disjoint byte ranges and their
+    /// relative order cannot matter. The caller then calls
+    /// [`Self::set_active_splat_count`]`(selected + returned)` and renders.
+    pub fn upload_splats_at(&self, first_slot: u32, splats: &[GaussianSplat]) -> u32 {
+        let n = (self.capacity.saturating_sub(first_slot) as usize).min(splats.len());
+        if n == 0 {
+            return 0;
+        }
+        let queue = self.ctx.queue();
+        let gpu_splats: Vec<GpuSplatFull> =
+            splats[..n].iter().map(gaussian_splat_to_gpu_full).collect();
+        queue.write_buffer(
+            &self.splat_buf,
+            first_slot as u64 * std::mem::size_of::<GpuSplatFull>() as u64,
+            bytemuck::cast_slice(&gpu_splats),
+        );
+        let transforms = gaussian_splats_to_transforms(&splats[..n]);
+        queue.write_buffer(
+            &self.transform_buf,
+            first_slot as u64 * 32,
+            bytemuck::cast_slice(&transforms),
+        );
+        n as u32
+    }
+
     /// Set how many leading splat slots the next [`Self::render`] draws, clamped
     /// to the allocated capacity (never panics). This is just a field write:
     /// `render()` already rebuilds the assign camera uniform (which carries
@@ -1616,6 +1653,161 @@ mod tests {
         println!(
             "[tiled_no_stale] bright non_black={nb1} then empty non_black=0 \
              (per-frame fill removed)"
+        );
+    }
+
+    /// Copy `bytes` out of `buf` at `offset` (blocking, proof-only readback —
+    /// the expand_draws test technique).
+    fn read_buf(ctx: &GpuContext, buf: &wgpu::Buffer, offset: u64, bytes: u64) -> Vec<u8> {
+        let device = ctx.device();
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("upload_at_test_readback"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("upload_at_test_readback_copy"),
+        });
+        enc.copy_buffer_to_buffer(buf, offset, &readback, 0, bytes);
+        ctx.queue().submit(Some(enc.finish()));
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        device.poll(wgpu::Maintain::Wait);
+        assert!(matches!(rx.recv(), Ok(Ok(()))), "readback map failed");
+        let data = slice.get_mapped_range().to_vec();
+        readback.unmap();
+        data
+    }
+
+    /// M4 TASK 2: `upload_splats_at` writes host residual splats into the
+    /// persistent capacity slots at `first_slot` — slots 3–4 read back as the
+    /// EXACT `gaussian_splat_to_gpu_full` / `gaussian_splats_to_transforms`
+    /// conversion of two real splats, a slot-2 sentinel written beforehand
+    /// survives untouched (disjointness), an over-capacity write clamps to
+    /// the remaining tail and returns the clamped count, and a `first_slot`
+    /// past capacity writes nothing.
+    #[test]
+    fn upload_splats_at_writes_capacity_slots_and_clamps() {
+        let Some(ctx) = try_gpu_context("upload_at") else {
+            return;
+        };
+
+        const CAPACITY: u32 = 8;
+        let renderer = TiledSplatRenderer::new_with_capacity(ctx.clone(), CAPACITY, 64, 64)
+            .expect("new_with_capacity(8, 64x64) fits default device limits");
+        let slot_bytes = std::mem::size_of::<GpuSplatFull>() as u64;
+        const XFORM_BYTES: u64 = 32;
+
+        // Sentinels in slot 2 of BOTH buffers, written before the upload.
+        let splat_sentinel: [f32; 20] = std::array::from_fn(|i| -311.5 - 2.75 * i as f32);
+        let xform_sentinel: [f32; 8] = std::array::from_fn(|i| 901.25 + 13.5 * i as f32);
+        ctx.queue().write_buffer(
+            renderer.splat_buf(),
+            2 * slot_bytes,
+            bytemuck::cast_slice(&splat_sentinel),
+        );
+        ctx.queue().write_buffer(
+            renderer.transform_buf(),
+            2 * XFORM_BYTES,
+            bytemuck::cast_slice(&xform_sentinel),
+        );
+
+        // Two REAL splats with distinct rotations, scales, opacities, spectra.
+        let spd = |base: f32| -> [u16; 16] {
+            std::array::from_fn(|i| f16::from_f32(base + 0.04 * i as f32).to_bits())
+        };
+        let two = [
+            GaussianSplat::volume(
+                [1.5, -2.0, 3.25],
+                [0.4, 0.6, 0.8],
+                Quat::from_rotation_y(0.5),
+                200,
+                spd(0.2),
+            ),
+            GaussianSplat::volume(
+                [-4.0, 5.5, -6.75],
+                [0.9, 0.3, 0.5],
+                Quat::from_rotation_x(-0.3),
+                90,
+                spd(0.45),
+            ),
+        ];
+
+        let wrote = renderer.upload_splats_at(3, &two);
+        assert_eq!(wrote, 2, "both splats fit (slots 3-4 of 8)");
+
+        // Read slots 2..5 back from both buffers.
+        let splat_back = read_buf(&ctx, renderer.splat_buf(), 2 * slot_bytes, 3 * slot_bytes);
+        let xform_back = read_buf(
+            &ctx,
+            renderer.transform_buf(),
+            2 * XFORM_BYTES,
+            3 * XFORM_BYTES,
+        );
+
+        let sentinel_intact = splat_back[..slot_bytes as usize]
+            == *bytemuck::cast_slice::<f32, u8>(&splat_sentinel)
+            && xform_back[..XFORM_BYTES as usize]
+                == *bytemuck::cast_slice::<f32, u8>(&xform_sentinel);
+
+        let want_splats: Vec<GpuSplatFull> = two.iter().map(gaussian_splat_to_gpu_full).collect();
+        let want_xforms = gaussian_splats_to_transforms(&two);
+        let values_ok = splat_back[slot_bytes as usize..]
+            == *bytemuck::cast_slice::<GpuSplatFull, u8>(&want_splats)
+            && xform_back[XFORM_BYTES as usize..]
+                == *bytemuck::cast_slice::<[f32; 4], u8>(&want_xforms);
+
+        // A real converted value, not just bytes: slot 3's opacity must be
+        // the 200/255 conversion and its first spectral bin the f16 pair mean.
+        let got3: GpuSplatFull =
+            *bytemuck::from_bytes(&splat_back[slot_bytes as usize..2 * slot_bytes as usize]);
+        assert_eq!(
+            got3.opacity_color[3].to_bits(),
+            (200.0f32 / 255.0).to_bits(),
+            "slot 3 opacity must be the exact 200/255 conversion"
+        );
+        assert_eq!(
+            got3.spectral[0].to_bits(),
+            want_splats[0].spectral[0].to_bits(),
+            "slot 3 bin 0 must be the exact pair-averaged f16 mean"
+        );
+
+        // Over-capacity: 5 requested at slot 6 → only slots 6-7 fit.
+        let five: Vec<GaussianSplat> = (0..5)
+            .map(|i| {
+                GaussianSplat::volume(
+                    [i as f32, 2.0 * i as f32, -i as f32],
+                    [0.2, 0.2, 0.2],
+                    Quat::IDENTITY,
+                    255,
+                    spd(0.1),
+                )
+            })
+            .collect();
+        let clamped = renderer.upload_splats_at(6, &five);
+        assert_eq!(clamped, 2, "capacity 8 leaves 2 slots past first_slot 6");
+        let tail_back = read_buf(&ctx, renderer.splat_buf(), 6 * slot_bytes, 2 * slot_bytes);
+        let want_tail: Vec<GpuSplatFull> =
+            five[..2].iter().map(gaussian_splat_to_gpu_full).collect();
+        assert_eq!(
+            tail_back,
+            bytemuck::cast_slice::<GpuSplatFull, u8>(&want_tail),
+            "clamped write must carry the first 2 conversions into slots 6-7"
+        );
+
+        // first_slot at/past capacity: nothing written, 0 returned.
+        let past = renderer.upload_splats_at(CAPACITY, &two);
+        assert_eq!(past, 0, "first_slot >= capacity must write nothing");
+
+        assert!(sentinel_intact, "slot-2 sentinels must survive the upload");
+        assert!(values_ok, "slots 3-4 must carry the exact host conversion bytes");
+        println!(
+            "[upload_at] wrote={wrote} at_slot=3 slot2_sentinel=intact values=verified \
+             clamp: requested=5 wrote={clamped} at_tail past_capacity_wrote={past}"
         );
     }
 }
