@@ -28,6 +28,7 @@ pub mod shadow_atlas;
 pub mod shadow_catcher;
 pub mod skinning_compute;
 pub mod software_rasteriser;
+pub mod spectral_present;
 pub mod splat_buffer;
 pub mod splat_raster;
 pub mod splat_rt_gpu;
