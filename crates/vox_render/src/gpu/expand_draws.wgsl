@@ -63,6 +63,19 @@ struct GpuSplatFull {
     spectral1: vec4<f32>,
 }
 
+// Per-instance visual parameters (48 B, matches `InstanceVisualParams`):
+// asset-local componentwise scale (positions AND extents, applied BEFORE the
+// instance quat), an opacity multiplier, and the 8-bin spectral filter split
+// across two vec4s (f0 = bins 0..3, f1 = bins 4..7). Identity entries are
+// bit-transparent: `x * 1.0 == x` for every finite IEEE input, so the math
+// below runs unconditionally — no branch.
+struct InstanceVisual {
+    scale: vec3<f32>,
+    opacity_scale: f32,
+    f0: vec4<f32>,
+    f1: vec4<f32>,
+}
+
 @group(0) @binding(0) var<uniform> params: ExpandParams;
 @group(0) @binding(1) var<storage, read> lib_atoms: array<LibraryAtom>;
 @group(0) @binding(2) var<storage, read> atom_indices: array<u32>;
@@ -71,6 +84,7 @@ struct GpuSplatFull {
 @group(0) @binding(4) var<storage, read> instance_xforms: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read_write> out_splats: array<GpuSplatFull>;
 @group(0) @binding(6) var<storage, read_write> out_transforms: array<vec4<f32>>;
+@group(0) @binding(7) var<storage, read> visuals: array<InstanceVisual>;
 
 // glam Quat::mul_quat (xyzw), instance quat `a` applied AFTER atom quat `b`.
 fn quat_mul(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
@@ -112,8 +126,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let atom = lib_atoms[d.atom_base + atom_indices[d.index_offset + local]];
     let inst_pos = instance_xforms[d.instance * 2u].xyz;
     let inst_quat = instance_xforms[d.instance * 2u + 1u];
+    let vis = visuals[d.instance];
 
-    let world_pos = quat_rotate(inst_quat, atom.pos_opacity.xyz) + inst_pos;
+    // Visual scale is asset-local: applied to the LOCAL position (and the
+    // extents below) BEFORE the instance quat.
+    let local_pos = atom.pos_opacity.xyz * vis.scale;
+    let world_pos = quat_rotate(inst_quat, local_pos) + inst_pos;
     let world_quat = quat_mul(inst_quat, atom.quat);
 
     // Unpack the 8 f16 bins (exact f16→f32; bit-equal to the host round-trip).
@@ -127,11 +145,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     splat.position_depth = vec4<f32>(world_pos, 0.0);
     splat.conic = vec3<f32>(0.0, 0.0, 0.0);
     splat._pad0 = 0.0;
-    splat.opacity_color = vec4<f32>(0.0, 0.0, 0.0, atom.pos_opacity.w * d.opacity_scale);
-    splat.spectral0 = vec4<f32>(s0, s1);
-    splat.spectral1 = vec4<f32>(s2, s3);
+    splat.opacity_color =
+        vec4<f32>(0.0, 0.0, 0.0, atom.pos_opacity.w * d.opacity_scale * vis.opacity_scale);
+    splat.spectral0 = vec4<f32>(s0, s1) * vis.f0;
+    splat.spectral1 = vec4<f32>(s2, s3) * vis.f1;
     out_splats[i] = splat;
 
-    out_transforms[i * 2u] = vec4<f32>(atom.scale.xyz, 0.0);
+    out_transforms[i * 2u] = vec4<f32>(atom.scale.xyz * vis.scale, 0.0);
     out_transforms[i * 2u + 1u] = world_quat;
 }

@@ -98,6 +98,45 @@ pub(crate) struct ExpandDraw {
 
 const _: () = assert!(std::mem::size_of::<ExpandDraw>() == 32);
 
+/// Per-instance visual parameters consumed by `expand_draws.wgsl` at
+/// binding 7 (M4 Task 1) — 48 B POD, one entry per instance slot, uploaded
+/// via [`ExpandDrawsPass::set_instance_visuals`].
+///
+/// * `scale` multiplies the atom-LOCAL position AND the atom extents
+///   componentwise BEFORE the instance quat is applied — asset-local scale
+///   (e.g. a construction-progress y-scale), exact under yaw-only instance
+///   rotations and any uniform-extent atom set.
+/// * `opacity_scale` multiplies the draw's opacity after the LOD crossfade.
+/// * `spectral_filter` multiplies the 8 pair-averaged spectral bins (the
+///   [`gaussian_splat_to_gpu_full`](crate::gpu::splat_buffer::gaussian_splat_to_gpu_full)
+///   binning — bin `i` is the mean of f16 bands `2i` and `2i+1`).
+///
+/// [`Self::IDENTITY`] is BIT-transparent: `x * 1.0 == x` in IEEE 754 for
+/// every finite input, so the identity-initialized buffer leaves the expand
+/// output byte-identical to the pre-visuals pipeline (the M2/M3.2
+/// bit-equality suites are the proof).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, PartialEq, Debug)]
+pub struct InstanceVisualParams {
+    /// Componentwise asset-local scale on atom positions and extents.
+    pub scale: [f32; 3],
+    /// Opacity multiplier (after the draw's LOD crossfade scale).
+    pub opacity_scale: f32,
+    /// Per-bin multiplier on the 8 pair-averaged spectral bins.
+    pub spectral_filter: [f32; 8],
+}
+
+impl InstanceVisualParams {
+    /// The no-op visuals: unit scale, unit opacity, all-pass filter.
+    pub const IDENTITY: Self = Self {
+        scale: [1.0; 3],
+        opacity_scale: 1.0,
+        spectral_filter: [1.0; 8],
+    };
+}
+
+const _: () = assert!(std::mem::size_of::<InstanceVisualParams>() == 48);
+
 /// Host snapshot of one asset's flat-table ranges, taken from the library at
 /// construction so [`ExpandDrawsPass::encode`] can resolve each
 /// `ClusterDraw` to its `(index_offset, len)` without re-borrowing the library.
@@ -133,6 +172,10 @@ pub struct ExpandDrawsPass {
     instance_buf: wgpu::Buffer,
     params_buf: wgpu::Buffer,
 
+    /// Per-instance [`InstanceVisualParams`] (binding 7) — identity-filled at
+    /// construction, rewritten only by [`Self::set_instance_visuals`].
+    visuals_buf: wgpu::Buffer,
+
     assets: Vec<AssetRanges>,
     max_instances: u32,
     budget_cap: u32,
@@ -166,6 +209,9 @@ impl ExpandDrawsPass {
         let draws_bytes =
             (budget_cap as u64 * std::mem::size_of::<ExpandDraw>() as u64).max(32);
         let instances_bytes = (max_instances as u64 * TRANSFORM_SLOT_BYTES).max(32);
+        let visuals_bytes = (max_instances as u64
+            * std::mem::size_of::<InstanceVisualParams>() as u64)
+            .max(48);
 
         let limits = device.limits();
         let max_storage = limits.max_storage_buffer_binding_size as u64;
@@ -175,6 +221,7 @@ impl ExpandDrawsPass {
             ("expand_atom_indices", index_bytes),
             ("expand_draws", draws_bytes),
             ("expand_instances", instances_bytes),
+            ("expand_instance_visuals", visuals_bytes),
         ] {
             if bytes > max_storage {
                 return Err(ExpandDrawsError::ExceedsDeviceLimits {
@@ -241,6 +288,15 @@ impl ExpandDrawsPass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // FULLY identity-initialized: a pass that never calls
+        // `set_instance_visuals` is byte-transparent (`x * 1.0 == x`).
+        let identity_visuals =
+            vec![InstanceVisualParams::IDENTITY; (max_instances as usize).max(1)];
+        let visuals_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("expand_instance_visuals"),
+            contents: bytemuck::cast_slice(&identity_visuals),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
 
         // ── Range snapshot — resolves draws without the library at encode ───
         let assets = (0..library.asset_count() as u32)
@@ -301,6 +357,7 @@ impl ExpandDrawsPass {
                 storage_entry(4, true),  // instance transforms
                 storage_entry(5, false), // out splats (the renderer's splat_buf)
                 storage_entry(6, false), // out transforms (transform_buf)
+                storage_entry(7, true),  // per-instance visual params
             ],
         });
 
@@ -327,12 +384,33 @@ impl ExpandDrawsPass {
             draw_buf,
             instance_buf,
             params_buf,
+            visuals_buf,
             assets,
             max_instances,
             budget_cap,
             draw_scratch: Vec::new(),
             xform_scratch: Vec::new(),
         })
+    }
+
+    /// Upload per-instance [`InstanceVisualParams`] into the persistent
+    /// binding-7 buffer (truncating past `max_instances`), indexed by
+    /// `AtomInstance.instance` order — entry `i` applies to draws whose
+    /// `instance == i`. Instances past `visuals.len()` keep their previous
+    /// contents (identity from construction unless overwritten). Visual scale
+    /// is asset-local — applied to the atom-local position and extents BEFORE
+    /// the instance quat — which matches a pre-rotation (e.g. construction
+    /// height) scale exactly under yaw-only instance rotations.
+    /// [`InstanceVisualParams::IDENTITY`] entries are bit-transparent: the
+    /// expand output is byte-identical to a pass that never called this.
+    pub fn set_instance_visuals(&mut self, visuals: &[InstanceVisualParams]) {
+        let n = visuals.len().min(self.max_instances as usize);
+        if n == 0 {
+            return;
+        }
+        self.ctx
+            .queue()
+            .write_buffer(&self.visuals_buf, 0, bytemuck::cast_slice(&visuals[..n]));
     }
 
     /// Lower an [`InstancedSelection`] into the `ExpandDraw` POD array
@@ -484,6 +562,10 @@ impl ExpandDrawsPass {
                     binding: 6,
                     resource: transform_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.visuals_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -581,6 +663,10 @@ impl ExpandDrawsPass {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: transform_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.visuals_buf.as_entire_binding(),
                 },
             ],
         });
@@ -1249,5 +1335,213 @@ mod tests {
             "indirect-expanded city must rasterize ({non_black} non-black pixels)"
         );
         println!("[resident_expand] indirect render: non_black={non_black}");
+    }
+
+    /// M4 TASK 1: per-instance [`InstanceVisualParams`] through the expand
+    /// path. A y-scale of 0.5 must halve atom-local Y positions AND Y extents
+    /// (identity instance quat ⇒ direct f32 compare; a yawed instance pins the
+    /// scale-BEFORE-rotate order against the glam oracle), a `[0.5; 8]`
+    /// spectral filter must return every bin bit-equal to `0.5 * bin` of the
+    /// untinted run, an 0.75 `opacity_scale` must come back bit-equal to
+    /// `0.75 * opacity`, and an `IDENTITY` entry must leave its instance
+    /// BYTE-equal to a pass that never called `set_instance_visuals` —
+    /// identity is bit-transparent (`x * 1.0 == x`), the no-regression proof.
+    #[test]
+    fn expand_visuals_scale_filter_and_identity_transparency() {
+        let Some(ctx) = try_gpu_context("expand_visuals") else {
+            return;
+        };
+
+        let atoms = synthetic_asset(0x715C_A1E5, 2000, 4.0, 10.0);
+        let lib = Arc::new(AssetAtomLibrary::build(std::slice::from_ref(&atoms), 128));
+        let yaw = Quat::from_rotation_y(0.7);
+        let instances = [
+            AtomInstance::new(0, 0, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+            AtomInstance::new(0, 1, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+            AtomInstance::new(0, 2, [6.0, 0.0, -4.0], [yaw.x, yaw.y, yaw.z, yaw.w]),
+        ];
+        let cam = camera(Vec3::new(3.0, 10.0, 24.0), Vec3::new(3.0, 4.0, 0.0), 1.3);
+
+        let mut selector = InstancedSelector::new(lib.clone());
+        selector.set_instances(&instances);
+        let mut sel = InstancedSelection::new();
+        selector.select(&cam, usize::MAX, &mut sel);
+        let total = sel.atom_count();
+        assert!(total > 0, "visuals scene must select atoms");
+
+        const CAP: u32 = 16_384;
+        let renderer = TiledSplatRenderer::new_with_capacity(ctx.clone(), CAP, W, H)
+            .expect("16k capacity fits default device limits");
+
+        let encode_and_read = |pass: &mut ExpandDrawsPass| -> (Vec<u8>, Vec<u8>) {
+            let mut enc = ctx
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("expand_visuals_encode"),
+                });
+            let n = pass.encode(
+                &mut enc,
+                &sel,
+                &instances,
+                renderer.splat_buf(),
+                renderer.transform_buf(),
+            );
+            ctx.queue().submit(Some(enc.finish()));
+            assert_eq!(n as usize, total, "encode must expand the whole selection");
+            (
+                read_back(&ctx, renderer.splat_buf(), 0, n as u64 * SPLAT_SLOT_BYTES),
+                read_back(
+                    &ctx,
+                    renderer.transform_buf(),
+                    0,
+                    n as u64 * TRANSFORM_SLOT_BYTES,
+                ),
+            )
+        };
+
+        // Baseline: a pass that NEVER calls set_instance_visuals — its
+        // identity-initialized visuals buffer is the pre-change behavior.
+        let mut base_pass =
+            ExpandDrawsPass::new_with_context(&ctx, &lib, 3, CAP).expect("expand pass fits");
+        let (base_splat_bytes, base_xform_bytes) = encode_and_read(&mut base_pass);
+        let base_splats: Vec<GpuSplatFull> =
+            bytemuck::cast_slice::<u8, GpuSplatFull>(&base_splat_bytes).to_vec();
+
+        // Run A: y-scale 0.5 on instances 0 (identity quat) and 2 (yawed),
+        // IDENTITY on instance 1.
+        let half_y = InstanceVisualParams {
+            scale: [1.0, 0.5, 1.0],
+            ..InstanceVisualParams::IDENTITY
+        };
+        let mut pass =
+            ExpandDrawsPass::new_with_context(&ctx, &lib, 3, CAP).expect("expand pass fits");
+        pass.set_instance_visuals(&[half_y, InstanceVisualParams::IDENTITY, half_y]);
+        let (a_splat_bytes, a_xform_bytes) = encode_and_read(&mut pass);
+        let a_splats: &[GpuSplatFull] = bytemuck::cast_slice(&a_splat_bytes);
+        let a_xforms: &[[f32; 4]] = bytemuck::cast_slice(&a_xform_bytes);
+
+        // Run B: 0.5 spectral filter + 0.75 opacity scale on instance 0.
+        pass.set_instance_visuals(&[
+            InstanceVisualParams {
+                opacity_scale: 0.75,
+                spectral_filter: [0.5; 8],
+                ..InstanceVisualParams::IDENTITY
+            },
+            InstanceVisualParams::IDENTITY,
+            InstanceVisualParams::IDENTITY,
+        ]);
+        let (b_splat_bytes, _) = encode_and_read(&mut pass);
+        let b_splats: &[GpuSplatFull] = bytemuck::cast_slice(&b_splat_bytes);
+
+        let packed = lib.packed_atoms();
+        let mut pos_dev = 0.0f32; // instance 0, identity quat
+        let mut extent_dev = 0.0f32;
+        let mut rot_pos_dev = 0.0f32; // instance 2, yawed — order proof
+        let mut bins_exact = true;
+        let mut opacity_exact = true;
+        let mut bytes_equal = true;
+        let mut atoms_per_inst = [0usize; 3];
+        let mut sample_extents = [0.0f32; 3];
+        let mut sample_bins = (0.0f32, 0.0f32);
+        for d in sel.draws() {
+            let base = lib.asset_atom_base(d.asset);
+            let indices = lib.unit_indices(d.asset, d.unit);
+            for (k, &li) in indices.iter().enumerate() {
+                let slot = d.atom_offset as usize + k;
+                let a = &packed[(base + li) as usize];
+                atoms_per_inst[d.instance as usize] += 1;
+                match d.instance {
+                    0 => {
+                        // Identity instance transform ⇒ world == local ⊙ [1, 0.5, 1].
+                        let got = &a_splats[slot];
+                        pos_dev = pos_dev.max((got.position_depth[0] - a.pos_opacity[0]).abs());
+                        pos_dev =
+                            pos_dev.max((got.position_depth[1] - 0.5 * a.pos_opacity[1]).abs());
+                        pos_dev = pos_dev.max((got.position_depth[2] - a.pos_opacity[2]).abs());
+                        let t0 = a_xforms[slot * 2];
+                        extent_dev = extent_dev.max((t0[0] - a.scale[0]).abs());
+                        extent_dev = extent_dev.max((t0[1] - 0.5 * a.scale[1]).abs());
+                        extent_dev = extent_dev.max((t0[2] - a.scale[2]).abs());
+                        if atoms_per_inst[0] == 1 {
+                            sample_extents = [t0[0], t0[1], t0[2]];
+                        }
+                        // Run B oracles, both bit-exact IEEE multiplies.
+                        let got_b = &b_splats[slot];
+                        let base_s = &base_splats[slot];
+                        for c in 0..8 {
+                            if got_b.spectral[c].to_bits()
+                                != (0.5f32 * base_s.spectral[c]).to_bits()
+                            {
+                                bins_exact = false;
+                            }
+                        }
+                        if got_b.opacity_color[3].to_bits()
+                            != (0.75f32 * base_s.opacity_color[3]).to_bits()
+                        {
+                            opacity_exact = false;
+                        }
+                        if atoms_per_inst[0] == 1 {
+                            sample_bins = (base_s.spectral[0], got_b.spectral[0]);
+                        }
+                    }
+                    1 => {
+                        // IDENTITY visuals: byte-equal to the never-set pass.
+                        let sb = slot * SPLAT_SLOT_BYTES as usize;
+                        let xb = slot * TRANSFORM_SLOT_BYTES as usize;
+                        if a_splat_bytes[sb..sb + SPLAT_SLOT_BYTES as usize]
+                            != base_splat_bytes[sb..sb + SPLAT_SLOT_BYTES as usize]
+                            || a_xform_bytes[xb..xb + TRANSFORM_SLOT_BYTES as usize]
+                                != base_xform_bytes[xb..xb + TRANSFORM_SLOT_BYTES as usize]
+                        {
+                            bytes_equal = false;
+                        }
+                    }
+                    2 => {
+                        // Yawed instance: the pinned order is scale on the
+                        // LOCAL position BEFORE the instance quat.
+                        let local = Vec3::new(
+                            a.pos_opacity[0],
+                            0.5 * a.pos_opacity[1],
+                            a.pos_opacity[2],
+                        );
+                        let want = yaw.mul_vec3(local) + Vec3::new(6.0, 0.0, -4.0);
+                        let got = &a_splats[slot];
+                        for c in 0..3 {
+                            rot_pos_dev =
+                                rot_pos_dev.max((got.position_depth[c] - want[c]).abs());
+                        }
+                        let t0 = a_xforms[slot * 2];
+                        extent_dev = extent_dev.max((t0[1] - 0.5 * a.scale[1]).abs());
+                    }
+                    other => panic!("unexpected instance {other}"),
+                }
+            }
+        }
+        assert!(
+            atoms_per_inst.iter().all(|&n| n > 0),
+            "all three instances must contribute atoms, got {atoms_per_inst:?}"
+        );
+
+        println!(
+            "[expand_visuals] y_scale=0.5: pos_dev={pos_dev:e} extent_dev={extent_dev:e} \
+             filter=0.5: bins_exact={bins_exact} identity: bytes_equal={bytes_equal}"
+        );
+        println!(
+            "[expand_visuals] rotated_pos_dev={rot_pos_dev:e} scaled_extents={sample_extents:?} \
+             tinted_bin {:.6}->{:.6} opacity_0.75x_exact={opacity_exact} atoms i0={} i1={} i2={}",
+            sample_bins.0, sample_bins.1, atoms_per_inst[0], atoms_per_inst[1], atoms_per_inst[2]
+        );
+        assert!(pos_dev < 1e-5, "scaled positions deviate {pos_dev:e} (>= 1e-5)");
+        assert!(extent_dev < 1e-5, "scaled extents deviate {extent_dev:e} (>= 1e-5)");
+        assert!(
+            rot_pos_dev < 1e-5,
+            "yawed scale-before-rotate deviates {rot_pos_dev:e} (>= 1e-5)"
+        );
+        assert!(bins_exact, "0.5 spectral filter must be bit-equal to 0.5 * bin");
+        assert!(opacity_exact, "0.75 opacity scale must be bit-equal to 0.75 * opacity");
+        assert!(
+            bytes_equal,
+            "IDENTITY visuals must leave the instance byte-equal to the never-set pass"
+        );
     }
 }
