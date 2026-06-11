@@ -20,6 +20,7 @@ pub mod host;
 pub mod intent;
 pub mod plugins;
 pub mod forge_native;
+pub mod forge_process;
 pub mod crucible_native;
 pub mod play;
 pub mod script_gen;

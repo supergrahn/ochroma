@@ -18,8 +18,23 @@
 //! weakening the asserts.
 //!
 //! Run:  `cargo run --release -p vox_app --bin scale_trial`
+//!
+//! `--instanced [--buildings N] [--gate-ms G]` runs the virtualized-rendering
+//! gate harness (M3): N synthetic buildings instanced from a shared
+//! `AssetAtomLibrary`, GPU-resident select (`select_resident` — the budget
+//! walk runs on device, draws never visit the host) → indirect GPU expand
+//! (`encode_indirect`) → tiled render over a ≥ 120-frame governed orbit at
+//! 1280×720, printing real p50/p99 frame milliseconds, writing
+//! `scale_trial_instanced.png`, and asserting in-binary: p50 ≤ gate
+//! (default 16.6 = the 60 fps target defined on the tomespensin RTX 4070 Ti;
+//! the 780M dev box runs `--gate-ms 33`, its 30 fps tracking floor — the
+//! printed gate line always names tier + adapter), `entry_overflow max=0`,
+//! `gpu_fallbacks=0`, coverage ≥ 25% at ≥ 10,000 buildings, plus the M1/M2
+//! invariants (budget band, truncation on the fallback path, black frame).
+//! Exit 1 with a printed reason on any violation.
 
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Instant;
 
 use glam::{Mat4, Quat, Vec3};
@@ -28,7 +43,13 @@ use half::f16;
 use vox_core::spectral::Illuminant;
 use vox_core::types::GaussianSplat;
 use vox_render::atom_budget::{AtomBudgetSelector, Selection};
+use vox_app::shell::cpu_render;
+use vox_render::atom_instances::{
+    AssetAtomLibrary, AtomInstance, FrameBudgetGovernor, InstancedSelection,
+};
 use vox_render::clas;
+use vox_render::gpu::expand_draws::ExpandDrawsPass;
+use vox_render::gpu::instanced_select_gpu::{InstancedSelectGpu, SelectPath};
 use vox_render::gpu::resident_gi_raster::ResidentGiRaster;
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
 use vox_render::gpu::tiled_splat_renderer::TiledSplatRenderer;
@@ -530,7 +551,582 @@ fn run_gpu_resident(subset: &[GaussianSplat], render_cam: &RenderCamera) -> Exit
     }
 }
 
+// --- Instanced gate harness (`--instanced`, M3) -----------------------------
+//
+// The 60 fps dev-floor gate: GPU select + governed budget + PNG artifact,
+// with p50 ≤ 16.6 ms / overflow / fallback / coverage asserted in-binary.
+
+/// Render resolution for the instanced trial (pinned by the plan).
+const INST_W: u32 = 1280;
+const INST_H: u32 = 720;
+/// Renderer/expand CAPACITY — the fixed upper bound the GPU chain is built
+/// for. M3's `FrameBudgetGovernor` varies the per-frame budget BELOW this;
+/// the capacity itself is unchanged at 1,000,000.
+const INST_BUDGET_CAP: usize = 1_000_000;
+/// Unmeasured settle frames before the measured orbit: the governor converges
+/// on its budget over the same code path before any percentile is recorded.
+const INST_WARMUP: usize = 30;
+/// Distinct synthetic building assets shared (deduplicated) by all instances.
+const INST_ASSETS: usize = 5;
+/// Atoms per building asset (~5,000 per the plan → 10k × 5k = 50M virtual).
+const INST_ASSET_ATOMS: usize = 5000;
+/// Grid spacing between building instances, metres (the proven city-scale
+/// selector-test geometry: 100×100 × 4 m ⇒ ±198 m).
+const INST_SPACING: f32 = 4.0;
+/// Orbit length (the plan requires ≥ 120 measured frames).
+const INST_FRAMES: usize = 120;
+
+/// One deterministic hash-jittered building blob: a box-ish volume of
+/// `INST_ASSET_ATOMS` atoms rooted at the local origin (asset-local space —
+/// instances place it). No RNG crate.
+fn building_asset(asset: usize) -> Vec<GaussianSplat> {
+    let seed = 0xB17D_0000u64 + asset as u64;
+    let half_w = 1.2 + hash01(seed, 100) * 0.6; // footprint half-extents 1.2–1.8 m
+    let half_d = 1.2 + hash01(seed, 101) * 0.6;
+    let height = 8.0 + hash01(seed, 102) * 12.0; // 8–20 m tall
+    let warm = asset % 2 == 0;
+    (0..INST_ASSET_ATOMS)
+        .map(|i| {
+            let key = seed ^ (i as u64).wrapping_mul(0x9E37_79B9);
+            let px = (hash01(key, 1) - 0.5) * 2.0 * half_w;
+            let pz = (hash01(key, 2) - 0.5) * 2.0 * half_d;
+            let py = hash01(key, 3) * height;
+            let op = 160 + (hash_u64(key) % 90) as u8;
+            let level = 0.45 + hash01(key, 4) * 0.4;
+            GaussianSplat::volume(
+                [px, py, pz],
+                [0.3, 0.3, 0.3],
+                Quat::IDENTITY,
+                op,
+                spectral_flat(level, warm),
+            )
+        })
+        .collect()
+}
+
+/// Place `n` building instances on a city-like square grid with deterministic
+/// quarter-turn yaws, assets round-robin (so `virtual = n × INST_ASSET_ATOMS`
+/// exactly when every asset has `INST_ASSET_ATOMS` atoms). Returns the
+/// instances and the grid half-extent in metres (drives the orbit).
+fn building_instances(n: usize) -> (Vec<AtomInstance>, f32) {
+    let side = (n as f32).sqrt().ceil().max(1.0) as usize;
+    let half = (side - 1) as f32 * 0.5;
+    let instances = (0..n)
+        .map(|i| {
+            let gx = (i % side) as f32 - half;
+            let gz = (i / side) as f32 - half;
+            let q = Quat::from_rotation_y((i % 4) as f32 * std::f32::consts::FRAC_PI_2);
+            AtomInstance::new(
+                (i % INST_ASSETS) as u32,
+                i as u32,
+                [gx * INST_SPACING, 0.0, gz * INST_SPACING],
+                [q.x, q.y, q.z, q.w],
+            )
+        })
+        .collect();
+    (instances, half * INST_SPACING)
+}
+
+/// Orbit camera for the measured loop, scaled to the grid: a high ring looking
+/// steeply down just inside itself with a wide FOV — the proven city-scale
+/// selector-test geometry (high + wide ⇒ the < 150 m near disk is almost fully
+/// in frustum ⇒ thousands of cluster-granular instances ⇒ the budget walk can
+/// spend its budget; the oracle walk never promotes ABOVE a cluster's distance
+/// LOD, so saturation must come from instance count, not promotion).
+fn instanced_orbit_camera(frame: usize, grid_half: f32) -> RenderCamera {
+    let altitude = (grid_half * 0.5).clamp(24.0, 100.0);
+    let ring = (grid_half * 0.28).clamp(10.0, 55.0);
+    let ang = frame as f32 / INST_FRAMES as f32 * std::f32::consts::TAU;
+    let eye = Vec3::new(ring * ang.cos(), altitude, ring * ang.sin());
+    // Aim halfway between the orbit ring's ground point and the grid centre:
+    // a steep look-down that keeps the city under the camera on screen.
+    let target = Vec3::new(eye.x * 0.5, 0.0, eye.z * 0.5);
+    RenderCamera {
+        view: Mat4::look_at_rh(eye, target, Vec3::Y),
+        proj: Mat4::perspective_rh(2.2, INST_W as f32 / INST_H as f32, 0.5, 2000.0),
+    }
+}
+
+/// The `--instanced` gate harness: library → instances → ONE
+/// `new_with_capacity` renderer + ONE `ExpandDrawsPass` + ONE
+/// `InstancedSelectGpu` on the shared context → per frame
+/// `select → encode+submit → set_active_splat_count → render`, wall-clocking
+/// the whole span (`raster_gpu_ms` is `None` on this chain — wall IS the
+/// honest measure). The per-frame budget is closed-loop: a
+/// `FrameBudgetGovernor` (14.5 ms setpoint) reads `budget()` before every
+/// select and is fed the full-loop wall ms after every frame, over 30
+/// unmeasured warmup frames and then the ≥ 120 measured ones. The final frame
+/// resolves to sRGB and is written to `scale_trial_instanced.png` (the
+/// human-visible artifact). Exits 1 with a printed reason on ANY gate
+/// violation: p50 > `gate_ms` (default 16.6 — the 60 fps target defined on
+/// the `tomespensin` RTX 4070 Ti; the 780M dev box asserts the 33 ms
+/// tracking floor explicitly via `--gate-ms 33`; the gate line always names
+/// its tier + adapter so no number travels without its hardware context),
+/// `entry_overflow max != 0`, GPU near-pair fallbacks != 0, coverage < 25%
+/// at ≥ 10,000 buildings, or the M1/M2 invariants (selection over the
+/// frame's governed budget, per-frame budget band not met, expand
+/// truncation, a black frame).
+fn run_instanced(buildings: usize, gate_ms: f64, min_budget: usize) -> ExitCode {
+    let Some(ctx) = headless_context() else {
+        println!("[scale_trial] SKIPPED no adapter");
+        return ExitCode::SUCCESS;
+    };
+
+    // --- Cook the shared library + place the instances. --------------------
+    let t_build = Instant::now();
+    let sources: Vec<Vec<GaussianSplat>> = (0..INST_ASSETS).map(building_asset).collect();
+    let library = Arc::new(AssetAtomLibrary::build(&sources, 128));
+    let (instances, grid_half) = building_instances(buildings);
+    let virtual_atoms: usize = instances
+        .iter()
+        .map(|inst| sources[inst.asset() as usize].len())
+        .sum();
+    let library_atoms = library.total_atoms();
+    let build_ms = t_build.elapsed().as_secs_f64() * 1000.0;
+
+    // --- Renderer + expand pass: constructed ONCE at CAPACITY, never
+    // rebuilt — the governed budget moves below this fixed ceiling.
+    let mut renderer = match TiledSplatRenderer::new_with_capacity(
+        ctx.clone(),
+        INST_BUDGET_CAP as u32,
+        INST_W,
+        INST_H,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("[scale_trial] instanced FAIL: renderer construction: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut pass = match ExpandDrawsPass::new_with_context(
+        &ctx,
+        &library,
+        instances.len() as u32,
+        INST_BUDGET_CAP as u32,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("[scale_trial] instanced FAIL: expand pass construction: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // GPU selector on the SAME shared context (one device, zero extra
+    // adapters); 262,144 near units is the pinned pair-band capacity — the
+    // internal CPU fallback stays available but its use FAILS the gate.
+    let mut gpu_sel = match InstancedSelectGpu::new_with_context(
+        &ctx,
+        library.clone(),
+        instances.len() as u32,
+        262_144,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("[scale_trial] instanced FAIL: gpu selector construction: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    gpu_sel.set_instances(&instances);
+
+    println!(
+        "[scale_trial] instanced setup: assets={} library_atoms={} resident={:.1} MiB | instances={} | capacity={} | build {:.1} ms | adapter={}",
+        library.asset_count(),
+        library_atoms,
+        library.resident_bytes() as f64 / (1024.0 * 1024.0),
+        instances.len(),
+        INST_BUDGET_CAP,
+        build_ms,
+        ctx.adapter_name(),
+    );
+
+    // --- The closed-loop orbit: 30 governor-settle warmup frames (nothing
+    // recorded), then the ≥ 120 measured ones. `governor.budget()` feeds
+    // every select; `governor.update(frame_ms)` runs after EVERY frame.
+    let mut governor = FrameBudgetGovernor::new(14.5, 300_000, min_budget, INST_BUDGET_CAP);
+    let mut frame_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut select_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    // M3.1 Task 1 — per-stage spans (u64 µs vecs, p50 via `med_p99`): the
+    // select breakdown (host spans + optional kernel timestamps), the expand
+    // encode+submit span, and the renderer's assign/clear/chain spans.
+    let mut gpu_span_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut k1_gpu_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut k2_gpu_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut walk_gpu_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut pair_build_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut assemble_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut walk_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut expand_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut assign_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut clear_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut chain_us: Vec<u64> = Vec::with_capacity(INST_FRAMES);
+    let mut last_syncs = 0u32;
+    // (budget_used, selected) per MEASURED frame — the 0.9-band invariant is
+    // per-frame now that the budget moves under the governor.
+    let mut frame_budgets: Vec<(usize, usize)> = Vec::with_capacity(INST_FRAMES);
+    let mut last_selected = 0usize;
+    let mut last_budget = governor.budget();
+    let mut overflow_max = 0u32;
+    let mut sel = InstancedSelection::new();
+    let mut last_frame = None;
+
+    for f in 0..(INST_WARMUP + INST_FRAMES) {
+        let measured = f >= INST_WARMUP;
+        let orbit = (if measured { f - INST_WARMUP } else { f }) % INST_FRAMES;
+        let cam = instanced_orbit_camera(orbit, grid_half);
+        let budget_used = governor.budget();
+        let t0 = Instant::now();
+        // M3.2 Task 4 — the resident path: the budget walk runs on device,
+        // draws are emitted GPU-side and consumed by the indirect expand; the
+        // host sees only the 64 B stats block.
+        let (stats, path) = match gpu_sel.select_resident(&cam, budget_used, &mut sel) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("[scale_trial] instanced FAIL: gpu select frame {f}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let breakdown = gpu_sel.last_breakdown();
+        let t_expand = Instant::now();
+        let mut enc = ctx
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("scale_trial_instanced_expand"),
+            });
+        match path {
+            SelectPath::GpuResident => {
+                pass.encode_indirect(
+                    &mut enc,
+                    &gpu_sel,
+                    &instances,
+                    renderer.splat_buf(),
+                    renderer.transform_buf(),
+                );
+                ctx.queue().submit(Some(enc.finish()));
+                renderer.set_active_splat_count(stats.selected as u32);
+            }
+            SelectPath::CpuFallback => {
+                // The host bridge (near-pair overflow): `sel` holds the CPU
+                // twin's selection; route it through the host encode. ANY use
+                // of this branch fails the run via the unchanged
+                // `gpu_fallbacks=0` gate. The M1/M2 truncation check applies
+                // only here — the resident path has no host selection to
+                // compare; its invariants are the per-frame stats-vs-band
+                // checks in the failures vec below.
+                let n = pass.encode(
+                    &mut enc,
+                    &sel,
+                    &instances,
+                    renderer.splat_buf(),
+                    renderer.transform_buf(),
+                );
+                ctx.queue().submit(Some(enc.finish()));
+                renderer.set_active_splat_count(n);
+                if n as usize != sel.atom_count() {
+                    println!(
+                        "[scale_trial] instanced FAIL: expand truncated frame {f}: encoded {} of {} selected atoms",
+                        n,
+                        sel.atom_count()
+                    );
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        let expand_elapsed = t_expand.elapsed();
+        let frame = match renderer.render(&cam) {
+            Ok(fr) => fr,
+            Err(e) => {
+                println!("[scale_trial] instanced FAIL: render frame {f}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let elapsed = t0.elapsed();
+        // The honest full select+expand+render loop wall ms closes the loop —
+        // `raster_gpu_ms` is hard-coded `None` on this chain (frozen passes).
+        governor.update(elapsed.as_secs_f64() as f32 * 1000.0);
+
+        overflow_max = overflow_max.max(renderer.tile_entry_overflow());
+        if measured {
+            frame_us.push(elapsed.as_micros() as u64);
+            select_us.push(stats.select_us);
+            frame_budgets.push((budget_used, stats.selected));
+            last_selected = stats.selected;
+            last_budget = budget_used;
+            // Stage spans for this measured frame (f32 ms → u64 µs).
+            let ms_to_us = |ms: f32| (ms.max(0.0) as f64 * 1000.0) as u64;
+            gpu_span_us.push(ms_to_us(breakdown.gpu_span_ms));
+            if let Some(k1) = breakdown.k1_gpu_ms {
+                k1_gpu_us.push(ms_to_us(k1));
+            }
+            if let Some(k2) = breakdown.k2_gpu_ms {
+                k2_gpu_us.push(ms_to_us(k2));
+            }
+            if let Some(wg) = breakdown.walk_gpu_ms {
+                walk_gpu_us.push(ms_to_us(wg));
+            }
+            pair_build_us.push(ms_to_us(breakdown.pair_build_ms));
+            assemble_us.push(ms_to_us(breakdown.assemble_ms));
+            walk_us.push(ms_to_us(breakdown.walk_ms));
+            expand_us.push(expand_elapsed.as_micros() as u64);
+            assign_us.push(ms_to_us(frame.assign_ms));
+            clear_us.push(ms_to_us(frame.clear_ms));
+            chain_us.push(ms_to_us(frame.wall_ms));
+            last_syncs = breakdown.syncs;
+            last_frame = Some(frame);
+        }
+    }
+
+    // --- Non-black proof + human-visible artifact: final frame only
+    // (readback is proof, not hot path). The PNG goes through the zero-dep
+    // writer (vox_app has no bytemuck/image — `as_flattened` does the cast).
+    let (pixels, non_black) = last_frame
+        .expect("INST_FRAMES > 0")
+        .resolve_to_srgb(&ctx, &Illuminant::d65());
+    let total_px = (INST_W * INST_H) as usize;
+    let pct = non_black as f64 / total_px as f64 * 100.0;
+    let png_path = "scale_trial_instanced.png";
+    if let Err(e) = cpu_render::write_png(png_path, pixels.as_flattened(), INST_W, INST_H) {
+        println!("[scale_trial] instanced FAIL: write {png_path}: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    let (p50_us, p99_us) = med_p99(&mut frame_us);
+    let (sel_p50_us, _) = med_p99(&mut select_us);
+
+    // M3.1 Task 1 — per-stage p50s (ms). `chain` = `TiledFrame::wall_ms`;
+    // `stage_sum` = gpu_span+pair_build+assemble+walk+expand+assign+clear+chain;
+    // the residual `frame − stage_sum` is host encode/validation time, printed
+    // implicitly by the two numbers. k1/k2 are GPU-internal (inside gpu_span),
+    // shown for attribution, NOT summed; "n/a" when timestamps are unavailable.
+    let p50_ms_of = |v: &mut Vec<u64>| med_p99(v).0 as f64 / 1000.0;
+    let gpu_span_p50 = p50_ms_of(&mut gpu_span_us);
+    let pair_build_p50 = p50_ms_of(&mut pair_build_us);
+    let assemble_p50 = p50_ms_of(&mut assemble_us);
+    let walk_p50 = p50_ms_of(&mut walk_us);
+    let expand_p50 = p50_ms_of(&mut expand_us);
+    let assign_p50 = p50_ms_of(&mut assign_us);
+    let clear_p50 = p50_ms_of(&mut clear_us);
+    let chain_p50 = p50_ms_of(&mut chain_us);
+    // 3 decimals on the kernel timestamps: both kernels are µs-scale at small
+    // scenes and a 2-decimal 0.00 would be indistinguishable from a dead query.
+    let k1_p50 = if k1_gpu_us.is_empty() {
+        "n/a".to_string()
+    } else {
+        format!("{:.3}", p50_ms_of(&mut k1_gpu_us))
+    };
+    let k2_p50 = if k2_gpu_us.is_empty() {
+        "n/a".to_string()
+    } else {
+        format!("{:.3}", p50_ms_of(&mut k2_gpu_us))
+    };
+    // The GPU walk span (timestamp slot 2, build_far_units → emit_finalize):
+    // inside gpu_span, attribution-only like k1/k2 — never summed.
+    let walk_gpu_p50 = if walk_gpu_us.is_empty() {
+        "n/a".to_string()
+    } else {
+        format!("{:.3}", p50_ms_of(&mut walk_gpu_us))
+    };
+    let stage_sum_ms = gpu_span_p50
+        + pair_build_p50
+        + assemble_p50
+        + walk_p50
+        + expand_p50
+        + assign_p50
+        + clear_p50
+        + chain_p50;
+
+    println!(
+        "[scale_trial] instanced: {} buildings | library_atoms={} virtual_atoms={} | budget={} selected={} | select+expand+render p50={:.2} ms p99={:.2} ms @ {}x{}",
+        buildings,
+        library_atoms,
+        virtual_atoms,
+        last_budget,
+        last_selected,
+        p50_us as f64 / 1000.0,
+        p99_us as f64 / 1000.0,
+        INST_W,
+        INST_H,
+    );
+    println!(
+        "[scale_trial] instanced detail: select_ms p50={:.2} | gpu_fallbacks={} | entry_overflow max={} | budget_settled={} ema_ms={:.2} | non_black={}/{} ({:.1}%) | png={}",
+        sel_p50_us as f64 / 1000.0,
+        gpu_sel.fallback_count(),
+        overflow_max,
+        governor.budget(),
+        governor.ema_ms(),
+        non_black,
+        total_px,
+        pct,
+        png_path,
+    );
+    let p50_ms_headline = p50_us as f64 / 1000.0;
+    println!(
+        "[scale_trial] instanced stages p50 ms: select[gpu_span={:.2} k1_gpu={} k2_gpu={} walk_gpu={} pair_build={:.2} assemble={:.2} walk={:.2} syncs={}] expand={:.2} assign={:.2} clear={:.2} chain={:.2} | stage_sum={:.2} vs frame={:.2}",
+        gpu_span_p50,
+        k1_p50,
+        k2_p50,
+        walk_gpu_p50,
+        pair_build_p50,
+        assemble_p50,
+        walk_p50,
+        last_syncs,
+        expand_p50,
+        assign_p50,
+        clear_p50,
+        chain_p50,
+        stage_sum_ms,
+        p50_ms_headline,
+    );
+    // M3.2 Task 3 — the honest gate line, printed ALWAYS (pass and fail):
+    // tier + adapter travel with every number so a relaxed run can never
+    // masquerade as the target. 16.6 = 60fps-target (defined on the
+    // tomespensin RTX 4070 Ti, verified there manually); 33.0 = 30fps-floor
+    // (the 780M dev-box tracking floor); anything else prints "custom".
+    let tier = if (gate_ms - 16.6).abs() < 1e-6 {
+        "60fps-target"
+    } else if (gate_ms - 33.0).abs() < 1e-6 {
+        "30fps-floor"
+    } else {
+        "custom"
+    };
+    println!(
+        "[scale_trial] gate: p50={:.2} ms vs gate={:.1} ms (tier={}) adapter={} -> {}",
+        p50_ms_headline,
+        gate_ms,
+        tier,
+        ctx.adapter_name(),
+        if p50_ms_headline <= gate_ms {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+    );
+
+    // --- THE GATE (M3) + the M1/M2 invariants. Milliseconds first: p50 must
+    // clear `gate_ms` ALWAYS (default 16.6 — the 60 fps target gate; the
+    // tier print above names every relaxation). Overflow must be 0 (Task 1's
+    // grow-and-retry self-heals capacity);
+    // GPU near-pair fallbacks must be 0 (the band must fit 262,144 units at
+    // these scenes); coverage ≥ 25% is asserted at ≥ 10,000 buildings only
+    // (design §2 defines the headline criterion at city scale — smaller
+    // scenes print their real pct ungated). The M1/M2 budget checks are PER
+    // MEASURED FRAME against that frame's governed budget: over-budget
+    // always; the 0.9·B floor only in the ≥ 10× virtual regime, where the
+    // selector must be able to spend it. Smaller scenes are scene-limited by
+    // the distance-LOD fractions (the proven walk never promotes a cluster
+    // ABOVE its distance LOD) and print their real (smaller) selected counts
+    // without failing; black-frame stays enforced everywhere. First
+    // offending frame reported, not 120 lines of spam.
+    let mut failures: Vec<String> = Vec::new();
+    let p50_ms = p50_us as f64 / 1000.0;
+    if p50_ms > gate_ms {
+        failures.push(format!(
+            "p50 {:.2} ms > {gate_ms:.1} ms (tier={tier}; select_ms p50={:.2}, rest={:.2}; stages p50: gpu_span={:.2} walk_gpu={walk_gpu_p50} pair_build={:.2} assemble={:.2} walk={:.2} expand={:.2} assign={:.2} clear={:.2} chain={:.2})",
+            p50_ms,
+            sel_p50_us as f64 / 1000.0,
+            p50_ms - sel_p50_us as f64 / 1000.0,
+            gpu_span_p50,
+            pair_build_p50,
+            assemble_p50,
+            walk_p50,
+            expand_p50,
+            assign_p50,
+            clear_p50,
+            chain_p50,
+        ));
+    }
+    // M3.1 Task 1 sanity gate: the stage table must ACCOUNT for the frame —
+    // a stage_sum drifting past 15% of the frame p50 means the instrument is
+    // lying and every later optimization would be judged on bad data.
+    if (stage_sum_ms - p50_ms).abs() > 0.15 * p50_ms {
+        failures.push(format!(
+            "stage_sum {stage_sum_ms:.2} ms not within 15% of frame p50 {p50_ms:.2} ms (per-stage accounting broken)"
+        ));
+    }
+    if overflow_max != 0 {
+        failures.push(format!(
+            "entry_overflow max={overflow_max} (need 0 — grow-and-retry should self-heal)"
+        ));
+    }
+    if gpu_sel.fallback_count() != 0 {
+        failures.push(format!(
+            "gpu fallbacks={} (need 0 — near-pair demand exceeded the 262144-unit band)",
+            gpu_sel.fallback_count(),
+        ));
+    }
+    if buildings >= 10_000 && pct < 25.0 {
+        failures.push(format!(
+            "coverage {pct:.1}% < 25.0% at {buildings} buildings (design §2 headline criterion; see {png_path})"
+        ));
+    }
+    if let Some((i, &(b, s))) = frame_budgets
+        .iter()
+        .enumerate()
+        .find(|&(_, &(b, s))| s > b)
+    {
+        failures.push(format!(
+            "selection over budget: measured frame {i} selected {s} > budget_used {b}"
+        ));
+    }
+    if let Some((i, &(b, s))) = frame_budgets
+        .iter()
+        .enumerate()
+        .find(|&(_, &(b, s))| virtual_atoms >= 10 * b && s < (0.9 * b as f64) as usize)
+    {
+        failures.push(format!(
+            "budget not spent: measured frame {i} selected {s} < 0.9*budget_used = {} (budget_used {b})",
+            (0.9 * b as f64) as usize
+        ));
+    }
+    if non_black == 0 {
+        failures.push("final frame is black (non_black=0)".to_string());
+    }
+    if !failures.is_empty() {
+        eprintln!("[scale_trial] instanced FAIL ({} issue(s)):", failures.len());
+        for f in &failures {
+            eprintln!("[scale_trial]   - {f}");
+        }
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
+    // --- 0. `--instanced` measurement harness (M1/M2) -----------------------
+    // Dispatches BEFORE the legacy 2M-splat scene generation and its
+    // `< 2_000_000` failure gate. `--buildings <N>` takes a value (default
+    // 10,000); the legacy flagless/--gpu-tiled/--gpu-resident paths are
+    // untouched.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--instanced") {
+        let buildings = args
+            .iter()
+            .position(|a| a == "--buildings")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(10_000);
+        // `--gate-ms <f32>` (M3.2 Task 3): the p50 gate threshold. Default
+        // 16.6 = the 60 fps target (defined on the tomespensin RTX 4070 Ti);
+        // the 780M acceptance runs pass `--gate-ms 33` (the 30 fps tracking
+        // floor) EXPLICITLY — the default never weakens, and the printed
+        // gate line names the tier + adapter on every run.
+        let gate_ms = args
+            .iter()
+            .position(|a| a == "--gate-ms")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(16.6);
+        // `--min-budget <usize>` (M3.2 Task 5): the governor's budget floor.
+        // Default 100_000 — UNCHANGED; the flag exists only for the recorded
+        // 50k-vs-100k quality/cost experiment. Any future default change is
+        // the user's decision, made against the numbers recorded in the plan.
+        let min_budget = args
+            .iter()
+            .position(|a| a == "--min-budget")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(100_000);
+        return run_instanced(buildings, gate_ms, min_budget);
+    }
+
     println!("[scale_trial] === Ochroma atom-budget scale trial ===");
 
     // --- 1. Generate ------------------------------------------------------
