@@ -25,7 +25,7 @@
 use bytemuck::{Pod, Zeroable};
 use vox_core::types::GaussianSplat;
 
-use crate::splat_rt::{OrthoCamera, RtScene, BANDS};
+use crate::splat_rt::{BANDS, OrthoCamera, RtScene};
 
 /// We upload the raw 96-byte `GaussianSplat` and decode in-shader, so the
 /// shader's view (`array<u32,24>`) must match the host struct size exactly.
@@ -416,13 +416,7 @@ impl SplatRtGpu {
             pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
         }
         let copy_bytes = pixels as u64 * PIXEL_FLOATS as u64 * 4;
-        encoder.copy_buffer_to_buffer(
-            &self.out_buffer,
-            0,
-            &self.readback_buffer,
-            0,
-            copy_bytes,
-        );
+        encoder.copy_buffer_to_buffer(&self.out_buffer, 0, &self.readback_buffer, 0, copy_bytes);
         self.queue.submit(Some(encoder.finish()));
 
         let slice = self.readback_buffer.slice(..copy_bytes);
@@ -487,9 +481,27 @@ mod tests {
     fn cross_check_scene() -> (RtScene, OrthoCamera, u32) {
         const RES: u32 = 32;
         let splats = vec![
-            GaussianSplat::volume([-0.8, 0.0, 0.0], [0.5, 0.5, 0.5], Quat::IDENTITY, 230, band_spectral(2, 1.0)),
-            GaussianSplat::volume([0.8, 0.0, 0.0], [0.5, 0.5, 0.5], Quat::IDENTITY, 230, band_spectral(8, 1.0)),
-            GaussianSplat::volume([0.0, 0.9, 0.0], [0.5, 0.5, 0.5], Quat::IDENTITY, 230, band_spectral(13, 1.0)),
+            GaussianSplat::volume(
+                [-0.8, 0.0, 0.0],
+                [0.5, 0.5, 0.5],
+                Quat::IDENTITY,
+                230,
+                band_spectral(2, 1.0),
+            ),
+            GaussianSplat::volume(
+                [0.8, 0.0, 0.0],
+                [0.5, 0.5, 0.5],
+                Quat::IDENTITY,
+                230,
+                band_spectral(8, 1.0),
+            ),
+            GaussianSplat::volume(
+                [0.0, 0.9, 0.0],
+                [0.5, 0.5, 0.5],
+                Quat::IDENTITY,
+                230,
+                band_spectral(13, 1.0),
+            ),
         ];
         let eye_z = 5.0f32;
         let half = (std::f32::consts::FRAC_PI_4 * 0.5).tan() * eye_z;
@@ -542,10 +554,7 @@ mod tests {
     }
 
     /// Maximum absolute and relative per-band deviation between two pixel grids.
-    fn measure_dev(
-        cpu: &[[f32; 16]],
-        gpu: &[[f32; PIXEL_FLOATS]],
-    ) -> (f32, f32) {
+    fn measure_dev(cpu: &[[f32; 16]], gpu: &[[f32; PIXEL_FLOATS]]) -> (f32, f32) {
         let mut max_abs = 0.0f32;
         let mut max_rel = 0.0f32;
         for (c, g) in cpu.iter().zip(gpu.iter()) {
@@ -572,7 +581,9 @@ mod tests {
     #[test]
     fn gpu_matches_cpu_cross_check_scene() {
         let (scene, cam, res) = cross_check_scene();
-        let Some(gpu) = try_gpu(scene.splats.len() as u32, res * res) else { return };
+        let Some(gpu) = try_gpu(scene.splats.len() as u32, res * res) else {
+            return;
+        };
 
         let cpu = render_orthographic(&scene, &cam, res, res, 64);
         let g = gpu.render(&scene, &cam, res, res).expect("gpu render");
@@ -604,7 +615,9 @@ mod tests {
     #[test]
     fn gpu_matches_cpu_random_scene() {
         let (scene, cam, res) = random_scene();
-        let Some(gpu) = try_gpu(scene.splats.len() as u32, res * res) else { return };
+        let Some(gpu) = try_gpu(scene.splats.len() as u32, res * res) else {
+            return;
+        };
 
         let t0 = std::time::Instant::now();
         let cpu = render_orthographic(&scene, &cam, res, res, 64);
@@ -668,7 +681,10 @@ mod tests {
             } => {
                 assert_eq!(what, "out_buffer");
                 assert_eq!(requested, 4_000_000u64 * PIXEL_FLOATS as u64 * 4);
-                assert!(requested > limit, "requested {requested} must exceed limit {limit}");
+                assert!(
+                    requested > limit,
+                    "requested {requested} must exceed limit {limit}"
+                );
             }
             other => panic!("expected ExceedsDeviceLimits, got {other:?}"),
         }
@@ -692,19 +708,26 @@ mod tests {
                 limit,
             } => {
                 assert_eq!(what, "out_buffer (render exceeds max_pixels)");
-                assert!(requested > limit, "requested {requested} must exceed limit {limit}");
+                assert!(
+                    requested > limit,
+                    "requested {requested} must exceed limit {limit}"
+                );
             }
             other => panic!("expected ExceedsDeviceLimits, got {other:?}"),
         }
         // The GPU is still usable afterward (no abort): a valid render still works.
-        let _ = gpu.render(&scene, &cam, 4, 4).expect("valid render after rejection");
+        let _ = gpu
+            .render(&scene, &cam, 4, 4)
+            .expect("valid render after rejection");
     }
 
     /// Determinism: two GPU renders of the same scene are bit-identical.
     #[test]
     fn gpu_is_deterministic() {
         let (scene, cam, res) = random_scene();
-        let Some(gpu) = try_gpu(scene.splats.len() as u32, res * res) else { return };
+        let Some(gpu) = try_gpu(scene.splats.len() as u32, res * res) else {
+            return;
+        };
 
         let a = gpu.render(&scene, &cam, res, res).expect("render a");
         let b = gpu.render(&scene, &cam, res, res).expect("render b");

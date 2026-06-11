@@ -1,6 +1,6 @@
 use vox_core::spectral::SpectralBands;
 use vox_render::spectral_shift::{
-    apply_wear_shift, apply_weather_shift, time_of_day_illuminant_blend, WeatherState,
+    WeatherState, apply_wear_shift, apply_weather_shift, time_of_day_illuminant_blend,
 };
 
 fn flat_spd(value: f32) -> SpectralBands {
@@ -8,14 +8,18 @@ fn flat_spd(value: f32) -> SpectralBands {
 }
 
 fn spds_equal(a: &SpectralBands, b: &SpectralBands) -> bool {
-    a.0.iter().zip(b.0.iter()).all(|(x, y)| (x - y).abs() < f32::EPSILON)
+    a.0.iter()
+        .zip(b.0.iter())
+        .all(|(x, y)| (x - y).abs() < f32::EPSILON)
 }
 
 // --- Weather tests ---
 
 #[test]
 fn clear_weather_is_identity() {
-    let base = SpectralBands([0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.72, 0.75, 0.8]);
+    let base = SpectralBands([
+        0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.72, 0.75, 0.8,
+    ]);
     let result = apply_weather_shift(&base, WeatherState::Clear);
     assert!(spds_equal(&base, &result), "Clear should not modify SPD");
 }
@@ -90,20 +94,34 @@ fn snow_boosts_reflectance() {
 
 #[test]
 fn wear_zero_returns_fresh_spd() {
-    let fresh = SpectralBands([0.9, 0.85, 0.8, 0.82, 0.78, 0.75, 0.77, 0.80, 0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.89, 0.9]);
-    let worn = SpectralBands([0.4, 0.38, 0.3, 0.32, 0.33, 0.35, 0.36, 0.38, 0.40, 0.42, 0.43, 0.45, 0.46, 0.47, 0.48, 0.5]);
+    let fresh = SpectralBands([
+        0.9, 0.85, 0.8, 0.82, 0.78, 0.75, 0.77, 0.80, 0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.89, 0.9,
+    ]);
+    let worn = SpectralBands([
+        0.4, 0.38, 0.3, 0.32, 0.33, 0.35, 0.36, 0.38, 0.40, 0.42, 0.43, 0.45, 0.46, 0.47, 0.48, 0.5,
+    ]);
 
     let result = apply_wear_shift(&fresh, &worn, 0.0);
-    assert!(spds_equal(&fresh, &result), "wear=0.0 should return fresh SPD");
+    assert!(
+        spds_equal(&fresh, &result),
+        "wear=0.0 should return fresh SPD"
+    );
 }
 
 #[test]
 fn wear_one_returns_worn_spd() {
-    let fresh = SpectralBands([0.9, 0.85, 0.8, 0.82, 0.78, 0.75, 0.77, 0.80, 0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.89, 0.9]);
-    let worn = SpectralBands([0.4, 0.38, 0.3, 0.32, 0.33, 0.35, 0.36, 0.38, 0.40, 0.42, 0.43, 0.45, 0.46, 0.47, 0.48, 0.5]);
+    let fresh = SpectralBands([
+        0.9, 0.85, 0.8, 0.82, 0.78, 0.75, 0.77, 0.80, 0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.89, 0.9,
+    ]);
+    let worn = SpectralBands([
+        0.4, 0.38, 0.3, 0.32, 0.33, 0.35, 0.36, 0.38, 0.40, 0.42, 0.43, 0.45, 0.46, 0.47, 0.48, 0.5,
+    ]);
 
     let result = apply_wear_shift(&fresh, &worn, 1.0);
-    assert!(spds_equal(&worn, &result), "wear=1.0 should return worn SPD");
+    assert!(
+        spds_equal(&worn, &result),
+        "wear=1.0 should return worn SPD"
+    );
 }
 
 #[test]
@@ -152,8 +170,14 @@ fn wear_clamped_outside_range() {
     let result_neg = apply_wear_shift(&fresh, &worn, -0.5);
     let result_over = apply_wear_shift(&fresh, &worn, 1.5);
 
-    assert!(spds_equal(&fresh, &result_neg), "wear < 0 should clamp to fresh");
-    assert!(spds_equal(&worn, &result_over), "wear > 1 should clamp to worn");
+    assert!(
+        spds_equal(&fresh, &result_neg),
+        "wear < 0 should clamp to fresh"
+    );
+    assert!(
+        spds_equal(&worn, &result_over),
+        "wear > 1 should clamp to worn"
+    );
 }
 
 // --- Time of day tests ---

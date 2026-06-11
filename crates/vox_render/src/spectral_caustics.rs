@@ -8,8 +8,8 @@ use glam::Vec3;
 
 /// Centre wavelength of each spectral band in micrometres (µm).
 pub const BAND_UM: [f32; 16] = [
-    0.380, 0.405, 0.430, 0.455, 0.480, 0.505, 0.530, 0.555,
-    0.580, 0.605, 0.630, 0.655, 0.680, 0.705, 0.730, 0.755,
+    0.380, 0.405, 0.430, 0.455, 0.480, 0.505, 0.530, 0.555, 0.580, 0.605, 0.630, 0.655, 0.680,
+    0.705, 0.730, 0.755,
 ];
 
 /// Cauchy dispersion coefficients for borosilicate glass (N-BK7).
@@ -23,14 +23,22 @@ pub struct CauchyGlass {
 impl CauchyGlass {
     /// N-BK7 borosilicate glass (standard optical glass).
     pub fn n_bk7() -> Self {
-        Self { a: 1.5046, b: 0.00420, c: 0.0 }
+        Self {
+            a: 1.5046,
+            b: 0.00420,
+            c: 0.0,
+        }
     }
 
     /// Custom glass approximated from Abbe number.
     /// `nd`: IOR at 587nm (d-line). `vd`: Abbe number.
     pub fn from_abbe(nd: f32, vd: f32) -> Self {
         let b = (nd - 1.0) / (vd.max(10.0)) * 0.015;
-        Self { a: nd - b / (0.587 * 0.587), b, c: 0.0 }
+        Self {
+            a: nd - b / (0.587 * 0.587),
+            b,
+            c: 0.0,
+        }
     }
 
     /// Compute IOR for a single wavelength in µm.
@@ -91,15 +99,20 @@ impl SpectralCaustics {
 
                 // Fresnel transmittance (simplified, unpolarised)
                 let r_s = ((n_air * cos_i - ior_bands[b] * cos_t)
-                    / (n_air * cos_i + ior_bands[b] * cos_t)).powi(2);
+                    / (n_air * cos_i + ior_bands[b] * cos_t))
+                    .powi(2);
                 let r_p = ((ior_bands[b] * cos_i - n_air * cos_t)
-                    / (ior_bands[b] * cos_i + n_air * cos_t)).powi(2);
+                    / (ior_bands[b] * cos_i + n_air * cos_t))
+                    .powi(2);
                 let reflectance = (r_s + r_p) * 0.5;
                 transmitted[b] *= 1.0 - reflectance;
             }
         }
 
-        SpectralRefraction { directions, transmitted }
+        SpectralRefraction {
+            directions,
+            transmitted,
+        }
     }
 
     /// Compute the angular spread between the shortest and longest wavelength
@@ -138,7 +151,8 @@ mod tests {
         assert!(
             bands[0] > bands[15],
             "violet IOR ({:.4}) should exceed red IOR ({:.4}) — normal dispersion",
-            bands[0], bands[15]
+            bands[0],
+            bands[15]
         );
     }
 
@@ -149,7 +163,8 @@ mod tests {
         println!("N-BK7 at 380nm: {:.4}", n_violet);
         assert!(
             approx_eq(n_violet, 1.530, 0.005),
-            "N-BK7 at 380nm should be ~1.530, got {:.4}", n_violet
+            "N-BK7 at 380nm should be ~1.530, got {:.4}",
+            n_violet
         );
     }
 
@@ -160,7 +175,8 @@ mod tests {
         println!("N-BK7 at 660nm: {:.4}", n_red);
         assert!(
             approx_eq(n_red, 1.513, 0.005),
-            "N-BK7 at 660nm should be ~1.513, got {:.4}", n_red
+            "N-BK7 at 660nm should be ~1.513, got {:.4}",
+            n_red
         );
     }
 
@@ -175,7 +191,9 @@ mod tests {
             if dir.length_squared() > 0.5 {
                 assert!(
                     dir.y < -0.99,
-                    "band {} at normal incidence should go straight through, got {:?}", b, dir
+                    "band {} at normal incidence should go straight through, got {:?}",
+                    b,
+                    dir
                 );
             }
         }
@@ -192,7 +210,8 @@ mod tests {
         println!("chromatic_spread at 45°: {}", spread);
         assert!(
             spread > 0.0,
-            "oblique incidence should produce chromatic spread > 0, got {}", spread
+            "oblique incidence should produce chromatic spread > 0, got {}",
+            spread
         );
     }
 
@@ -206,7 +225,9 @@ mod tests {
         for b in 0..16 {
             assert!(
                 refraction.transmitted[b] >= 0.0 && refraction.transmitted[b] <= 1.0,
-                "band {} transmitted {} out of [0,1]", b, refraction.transmitted[b]
+                "band {} transmitted {} out of [0,1]",
+                b,
+                refraction.transmitted[b]
             );
         }
     }
@@ -223,7 +244,9 @@ mod tests {
         println!("violet x={:.5}, red x={:.5}", x0, x15);
         assert!(
             x0 < x15,
-            "violet (x={:.5}) should refract more than red (x={:.5})", x0, x15
+            "violet (x={:.5}) should refract more than red (x={:.5})",
+            x0,
+            x15
         );
     }
 }

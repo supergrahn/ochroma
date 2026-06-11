@@ -48,17 +48,26 @@ mod tests {
 
     #[test]
     fn cycle_full_to_band0() {
-        assert_eq!(SpectralViewportMode::Full.cycle_next(), SpectralViewportMode::Band(0));
+        assert_eq!(
+            SpectralViewportMode::Full.cycle_next(),
+            SpectralViewportMode::Band(0)
+        );
     }
 
     #[test]
     fn cycle_band7_wraps_to_full() {
-        assert_eq!(SpectralViewportMode::Band(7).cycle_next(), SpectralViewportMode::Full);
+        assert_eq!(
+            SpectralViewportMode::Band(7).cycle_next(),
+            SpectralViewportMode::Full
+        );
     }
 
     #[test]
     fn cycle_band3_to_band4() {
-        assert_eq!(SpectralViewportMode::Band(3).cycle_next(), SpectralViewportMode::Band(4));
+        assert_eq!(
+            SpectralViewportMode::Band(3).cycle_next(),
+            SpectralViewportMode::Band(4)
+        );
     }
 
     #[test]

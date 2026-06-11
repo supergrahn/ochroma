@@ -6,8 +6,8 @@
 //! `0.0`  = horizon (longest path, reddest sky).
 
 pub const BAND_WAVELENGTHS_NM: [f32; 16] = [
-    380.0, 405.0, 430.0, 455.0, 480.0, 505.0, 530.0, 555.0,
-    580.0, 605.0, 630.0, 655.0, 680.0, 705.0, 730.0, 755.0,
+    380.0, 405.0, 430.0, 455.0, 480.0, 505.0, 530.0, 555.0, 580.0, 605.0, 630.0, 655.0, 680.0,
+    705.0, 730.0, 755.0,
 ];
 
 /// Reference Rayleigh scattering cross-section at 550nm [km⁻¹]
@@ -168,7 +168,12 @@ mod tests {
         let atmo = SpectralAtmosphere::earth();
         let r = atmo.sky_radiance(std::f32::consts::FRAC_PI_4, 0.0);
         for (i, &v) in r.iter().enumerate() {
-            assert!(v >= 0.0 && v <= 1.0, "band {} radiance {} out of [0,1]", i, v);
+            assert!(
+                v >= 0.0 && v <= 1.0,
+                "band {} radiance {} out of [0,1]",
+                i,
+                v
+            );
         }
     }
 
@@ -192,7 +197,12 @@ mod tests {
         let atmo = SpectralAtmosphere::earth();
         let irr = atmo.solar_irradiance();
         for (i, &v) in irr.iter().enumerate() {
-            assert!((0.0..=1.0).contains(&v), "band {} irradiance {} out of [0,1]", i, v);
+            assert!(
+                (0.0..=1.0).contains(&v),
+                "band {} irradiance {} out of [0,1]",
+                i,
+                v
+            );
         }
     }
 }

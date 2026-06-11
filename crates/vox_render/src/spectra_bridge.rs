@@ -38,7 +38,10 @@ impl QualityPreset {
     }
 
     pub fn enable_shadows(&self) -> bool {
-        matches!(self, Self::Medium | Self::High | Self::Ultra | Self::Cinematic)
+        matches!(
+            self,
+            Self::Medium | Self::High | Self::Ultra | Self::Cinematic
+        )
     }
 
     pub fn enable_post_processing(&self) -> bool {
@@ -97,17 +100,15 @@ pub struct SpectraProcess {
 impl SpectraProcess {
     pub fn detect() -> Self {
         // Check if Spectra is available at the expected path
-        let spectra_path = PathBuf::from(
-            std::env::var("SPECTRA_PATH").unwrap_or_else(|_| {
-                dirs_next::home_dir()
-                    .map(|h| {
-                        h.join("git/aetherspectra/spectra")
-                            .to_string_lossy()
-                            .into_owned()
-                    })
-                    .unwrap_or_default()
-            }),
-        );
+        let spectra_path = PathBuf::from(std::env::var("SPECTRA_PATH").unwrap_or_else(|_| {
+            dirs_next::home_dir()
+                .map(|h| {
+                    h.join("git/aetherspectra/spectra")
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .unwrap_or_default()
+        }));
 
         let available = spectra_path.join("pyproject.toml").exists();
         if available {

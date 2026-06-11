@@ -128,12 +128,13 @@ impl SpectralFramebuffer {
     /// Memory usage in bytes.
     pub fn memory_bytes(&self) -> usize {
         let count = self.pixel_count();
-        count * (16 * 4 // spectral: 16 f32
+        count
+            * (16 * 4 // spectral: 16 f32
             + 4         // depth: f32
             + 3 * 4     // normals: 3 f32
             + 2 * 4     // motion: 2 f32
             + 4         // object_id: u32
             + 16 * 4    // albedo: 16 f32
-            + 2)        // sample_count: u16
+            + 2) // sample_count: u16
     }
 }

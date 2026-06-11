@@ -193,7 +193,10 @@ fn splat_radius(s: &GaussianSplat) -> f32 {
     let r = if s.is_surface() {
         s.scale_u().abs().max(s.scale_v().abs())
     } else {
-        s.scale_u().abs().max(s.scale_v().abs()).max(s.scale_w().abs())
+        s.scale_u()
+            .abs()
+            .max(s.scale_v().abs())
+            .max(s.scale_w().abs())
     };
     SIGMA_CUTOFF * r
 }
@@ -228,11 +231,7 @@ fn gather_hits(
     bvh: Option<&ClusterBVHNode>,
     out: &mut Vec<RayHit>,
 ) {
-    let inv_dir = Vec3::new(
-        1.0 / dir.x,
-        1.0 / dir.y,
-        1.0 / dir.z,
-    );
+    let inv_dir = Vec3::new(1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z);
 
     match bvh {
         None => {
@@ -275,8 +274,7 @@ fn gather_hits(
                             continue;
                         }
                         for &si in &cluster.splat_indices {
-                            if let Some(h) =
-                                ray_gaussian_hit(origin, dir, &splats[si as usize], si)
+                            if let Some(h) = ray_gaussian_hit(origin, dir, &splats[si as usize], si)
                             {
                                 out.push(h);
                             }
@@ -314,7 +312,14 @@ pub fn trace_ray(
 ) -> (SpectralRadiance, TraceStats) {
     let dir = dir.normalize_or_zero();
     if dir == Vec3::ZERO {
-        return (SpectralRadiance::EMPTY, TraceStats { hits_found: 0, composited: 0, saturated: false });
+        return (
+            SpectralRadiance::EMPTY,
+            TraceStats {
+                hits_found: 0,
+                composited: 0,
+                saturated: false,
+            },
+        );
     }
 
     let mut hits: Vec<RayHit> = Vec::new();
@@ -553,7 +558,11 @@ mod tests {
         // Offset ray by exactly 1σ (= 1.0 here) in x.
         let (offset, _) = scene.trace(Vec3::new(1.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0), 64);
 
-        assert!((center.alpha - base).abs() < 1e-6, "center alpha {}", center.alpha);
+        assert!(
+            (center.alpha - base).abs() < 1e-6,
+            "center alpha {}",
+            center.alpha
+        );
         let ratio = offset.alpha / center.alpha;
         assert!(
             (ratio - (-0.5f32).exp()).abs() < 1e-3,
@@ -620,7 +629,10 @@ mod tests {
             rad_ab.bands, rad_ba.bands,
             "reversing splat order must give bit-identical radiance"
         );
-        assert_eq!(rad_ab.alpha, rad_ba.alpha, "alpha must be order-independent");
+        assert_eq!(
+            rad_ab.alpha, rad_ba.alpha,
+            "alpha must be order-independent"
+        );
     }
 
     /// Transmittance: single splat → 1-a; two splats → (1-a1)(1-a2); degenerate → 1.
@@ -653,7 +665,12 @@ mod tests {
             scene1.bvh.as_ref(),
             64,
         );
-        assert!((t1 - (1.0 - a)).abs() < 1e-6, "single-splat transmittance {} vs {}", t1, 1.0 - a);
+        assert!(
+            (t1 - (1.0 - a)).abs() < 1e-6,
+            "single-splat transmittance {} vs {}",
+            t1,
+            1.0 - a
+        );
 
         // Two splats: product of (1-a) each.
         let scene2 = RtScene::build(vec![s1, s2], 64);
@@ -666,7 +683,12 @@ mod tests {
             64,
         );
         let expected = (1.0 - a) * (1.0 - a);
-        assert!((t2 - expected).abs() < 1e-6, "two-splat transmittance {} vs {}", t2, expected);
+        assert!(
+            (t2 - expected).abs() < 1e-6,
+            "two-splat transmittance {} vs {}",
+            t2,
+            expected
+        );
 
         // Degenerate from==to → 1.0.
         let td = transmittance(
@@ -695,9 +717,20 @@ mod tests {
         }
         let scene = RtScene::build(splats, 256);
         let (_, stats) = scene.trace(Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0), 64);
-        assert!(stats.hits_found >= 64, "all co-located splats are candidates: {}", stats.hits_found);
-        assert!(stats.composited <= 64, "budget must cap composited at 64, got {}", stats.composited);
-        assert_eq!(stats.composited, 64, "with low opacity, exactly the budget is consumed");
+        assert!(
+            stats.hits_found >= 64,
+            "all co-located splats are candidates: {}",
+            stats.hits_found
+        );
+        assert!(
+            stats.composited <= 64,
+            "budget must cap composited at 64, got {}",
+            stats.composited
+        );
+        assert_eq!(
+            stats.composited, 64,
+            "with low opacity, exactly the budget is consumed"
+        );
     }
 
     /// BVH equivalence: brute force (bvh=None) vs BVH on a 200-splat random scene
@@ -737,8 +770,14 @@ mod tests {
         ];
         for (o, d) in rays {
             let (brute, _) = trace_ray(o, d, &scene.splats, &scene.clusters, None, 256);
-            let (bvh, _) =
-                trace_ray(o, d, &scene.splats, &scene.clusters, scene.bvh.as_ref(), 256);
+            let (bvh, _) = trace_ray(
+                o,
+                d,
+                &scene.splats,
+                &scene.clusters,
+                scene.bvh.as_ref(),
+                256,
+            );
             assert_eq!(
                 brute.bands, bvh.bands,
                 "BVH radiance must match brute force bit-for-bit"
@@ -751,9 +790,27 @@ mod tests {
     #[test]
     fn deterministic() {
         let splats = vec![
-            GaussianSplat::volume([0.0, 0.0, 0.0], [1.0, 1.0, 1.0], Quat::IDENTITY, 200, band_spectral(4, 1.0)),
-            GaussianSplat::volume([1.0, 0.0, -1.0], [0.8, 0.8, 0.8], Quat::IDENTITY, 180, band_spectral(9, 1.0)),
-            GaussianSplat::volume([-1.0, 1.0, 1.0], [0.5, 0.5, 0.5], Quat::IDENTITY, 220, band_spectral(12, 1.0)),
+            GaussianSplat::volume(
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+                Quat::IDENTITY,
+                200,
+                band_spectral(4, 1.0),
+            ),
+            GaussianSplat::volume(
+                [1.0, 0.0, -1.0],
+                [0.8, 0.8, 0.8],
+                Quat::IDENTITY,
+                180,
+                band_spectral(9, 1.0),
+            ),
+            GaussianSplat::volume(
+                [-1.0, 1.0, 1.0],
+                [0.5, 0.5, 0.5],
+                Quat::IDENTITY,
+                220,
+                band_spectral(12, 1.0),
+            ),
         ];
         let scene = RtScene::build(splats, 64);
         let o = Vec3::new(0.5, 0.5, 5.0);
@@ -822,7 +879,7 @@ mod tests {
         use crate::spectral::RenderCamera;
         use glam::Mat4;
         use vox_core::spectral::{
-            linear_to_srgb_gamma, spectral_to_xyz, xyz_to_srgb, Illuminant, SpectralBands,
+            Illuminant, SpectralBands, linear_to_srgb_gamma, spectral_to_xyz, xyz_to_srgb,
         };
 
         const RES: u32 = 32;
@@ -831,9 +888,27 @@ mod tests {
         // Three splats arranged in a small triangle facing the camera, each a
         // distinct hot band so the spectral content is non-trivial.
         let splats = vec![
-            GaussianSplat::volume([-0.8, 0.0, 0.0], [0.5, 0.5, 0.5], Quat::IDENTITY, 230, band_spectral(2, 1.0)),
-            GaussianSplat::volume([0.8, 0.0, 0.0], [0.5, 0.5, 0.5], Quat::IDENTITY, 230, band_spectral(8, 1.0)),
-            GaussianSplat::volume([0.0, 0.9, 0.0], [0.5, 0.5, 0.5], Quat::IDENTITY, 230, band_spectral(13, 1.0)),
+            GaussianSplat::volume(
+                [-0.8, 0.0, 0.0],
+                [0.5, 0.5, 0.5],
+                Quat::IDENTITY,
+                230,
+                band_spectral(2, 1.0),
+            ),
+            GaussianSplat::volume(
+                [0.8, 0.0, 0.0],
+                [0.5, 0.5, 0.5],
+                Quat::IDENTITY,
+                230,
+                band_spectral(8, 1.0),
+            ),
+            GaussianSplat::volume(
+                [0.0, 0.9, 0.0],
+                [0.5, 0.5, 0.5],
+                Quat::IDENTITY,
+                230,
+                band_spectral(13, 1.0),
+            ),
         ];
 
         // --- Rasterizer path (head-on, +Z eye looking at origin) ---
