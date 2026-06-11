@@ -2,6 +2,8 @@
 //
 // One workgroup per 16×16 tile. Workgroup size: 256 (16×16).
 // Splats are iterated front-to-back within each tile using pre-sorted indices.
+// tile_assign stores the projected screen-space center in opacity_color.xy, so
+// the pixel loop does not reproject each splat.
 // Output: 4-layer rgba32float texture array holding 8 spectral bands + transmittance.
 
 // ---------------------------------------------------------------------------
@@ -20,7 +22,7 @@ struct GpuSplatFull {
     position_depth: vec4<f32>,        // xyz = world pos, w = view-space depth
     conic:          vec3<f32>,        // EWA conic coefficients
     _pad0:          f32,
-    opacity_color:  vec4<f32>,        // w = opacity (0..1)
+    opacity_color:  vec4<f32>,        // xy = screen center px, w = opacity (0..1)
     spectral:       array<f32, 8>,    // 8 spectral bands
 }
 
@@ -80,18 +82,12 @@ fn main(
 
     if in_bounds {
         let pixel_center = vec2<f32>(f32(px) + 0.5, f32(py) + 0.5);
-        let w = f32(params.width);
-        let h = f32(params.height);
 
         for (var i = start; i < end; i++) {
             let splat_idx = sorted_vals[i];
             let sp = splats[splat_idx];
 
-            // Project splat world position to screen.
-            let clip   = camera.view_proj * vec4<f32>(sp.position_depth.xyz, 1.0);
-            let ndc    = clip.xy / clip.w;
-            let screen = (ndc * 0.5 + 0.5) * vec2<f32>(w, h);
-
+            let screen = sp.opacity_color.xy;
             let dx = pixel_center.x - screen.x;
             let dy = pixel_center.y - screen.y;
 

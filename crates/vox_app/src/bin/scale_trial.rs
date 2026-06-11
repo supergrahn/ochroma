@@ -401,9 +401,11 @@ fn run_gpu_tiled(subset: &[GaussianSplat], render_cam: &RenderCamera) -> ExitCod
         Some(g) => (g, "GPU"),
         None => (frame.wall_ms, "wall"),
     };
+    let entries = renderer.last_entry_count();
+    let entries_per_splat = entries as f64 / subset.len().max(1) as f64;
     println!(
-        "[scale_trial] gpu_tiled raster {:.3} ms {} | subset_splats={} | non_black_px={}/{} ({:.1}%)",
-        ms, label, subset.len(), non_black, total, pct
+        "[scale_trial] gpu_tiled raster {:.3} ms {} | subset_splats={} | tile_entries={} ({:.2}/splat) | non_black_px={}/{} ({:.1}%)",
+        ms, label, subset.len(), entries, entries_per_splat, non_black, total, pct
     );
     if pct > 10.0 {
         ExitCode::SUCCESS
@@ -764,6 +766,8 @@ fn run_instanced(buildings: usize, gate_ms: f64, min_budget: usize) -> ExitCode 
     let mut frame_budgets: Vec<(usize, usize)> = Vec::with_capacity(INST_FRAMES);
     let mut last_selected = 0usize;
     let mut last_budget = governor.budget();
+    let mut last_entries = 0u32;
+    let mut entries_max = 0u32;
     let mut overflow_max = 0u32;
     let mut sel = InstancedSelection::new();
     let mut last_frame = None;
@@ -845,11 +849,14 @@ fn run_instanced(buildings: usize, gate_ms: f64, min_budget: usize) -> ExitCode 
 
         overflow_max = overflow_max.max(renderer.tile_entry_overflow());
         if measured {
+            let entries = renderer.last_entry_count();
+            entries_max = entries_max.max(entries);
             frame_us.push(elapsed.as_micros() as u64);
             select_us.push(stats.select_us);
             frame_budgets.push((budget_used, stats.selected));
             last_selected = stats.selected;
             last_budget = budget_used;
+            last_entries = entries;
             // Stage spans for this measured frame (f32 ms → u64 µs).
             let ms_to_us = |ms: f32| (ms.max(0.0) as f64 * 1000.0) as u64;
             gpu_span_us.push(ms_to_us(breakdown.gpu_span_ms));
@@ -946,10 +953,13 @@ fn run_instanced(buildings: usize, gate_ms: f64, min_budget: usize) -> ExitCode 
         INST_H,
     );
     println!(
-        "[scale_trial] instanced detail: select_ms p50={:.2} | gpu_fallbacks={} | entry_overflow max={} | budget_settled={} ema_ms={:.2} | non_black={}/{} ({:.1}%) | png={}",
+        "[scale_trial] instanced detail: select_ms p50={:.2} | gpu_fallbacks={} | entry_overflow max={} | entries_last={} entries/selected={:.2} entries_max={} | budget_settled={} ema_ms={:.2} | non_black={}/{} ({:.1}%) | png={}",
         sel_p50_us as f64 / 1000.0,
         gpu_sel.fallback_count(),
         overflow_max,
+        last_entries,
+        last_entries as f64 / last_selected.max(1) as f64,
+        entries_max,
         governor.budget(),
         governor.ema_ms(),
         non_black,

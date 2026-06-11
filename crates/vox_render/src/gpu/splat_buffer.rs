@@ -11,7 +11,8 @@ use vox_core::types::GaussianSplat;
 ///   [0..16]  position_depth: xyz = world pos, w = view-space depth (written by tile_assign)
 ///   [16..28] conic: 2D EWA conic coefficients (written by tile_assign)
 ///   [28..32] _pad0
-///   [32..48] opacity_color: w = opacity (0..1), xyz = reserved
+///   [32..48] opacity_color: xy = screen-space center in pixels (written by tile_assign),
+///             z = reserved, w = opacity (0..1)
 ///   [48..80] spectral: 8 spectral bands as f32
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -100,6 +101,7 @@ impl SplatBufferAllocator {
 /// Fields filled here:
 ///   - `position_depth.xyz` = world position; `.w` = 0.0 (tile_assign will fill view-Z)
 ///   - `conic` = [0.0; 3] (tile_assign will compute from scale+quat)
+///   - `opacity_color.xy` = [0.0; 2] (tile_assign will fill screen center)
 ///   - `opacity_color.w` = opacity / 255.0
 ///   - `spectral` = 16-band f16 spectra pair-averaged into 8 f32 bins
 pub fn gaussian_splat_to_gpu_full(s: &GaussianSplat) -> GpuSplatFull {

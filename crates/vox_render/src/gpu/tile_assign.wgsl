@@ -1,8 +1,9 @@
 // tile_assign.wgsl
 // Compute shader: projects Gaussian splats to screen space, computes 2D EWA
-// conic coefficients via the Zwicker 2002 Jacobian projection, and emits
-// (tile_index, depth_bits) key / splat_index value pairs for every tile that
-// the splat's 3-sigma screen-space bounding box overlaps.
+// conic coefficients via the Zwicker 2002 Jacobian projection, caches the
+// screen-space center, and emits (tile_index, depth_bits) key / splat_index
+// value pairs for every tile that the splat's 3-sigma screen-space bounding
+// box overlaps.
 
 const TILE_SIZE: u32 = 16u;
 const MAX_TILES_PER_SPLAT: u32 = 256u;
@@ -32,7 +33,8 @@ struct GpuSplatFull {
     // 2D EWA conic coefficients (written here); _pad unused
     conic: vec3<f32>,
     _pad0: f32,
-    // w = opacity [0..1], xyz reserved
+    // xy = screen-space center in pixels (written here), z reserved,
+    // w = opacity [0..1] (preserved here)
     opacity_color: vec4<f32>,
     // 8 spectral bands
     spectral0: vec4<f32>,
@@ -181,9 +183,12 @@ fn tile_assign(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cov3  = build_cov3(scale_raw, quat_raw);
     let conic = project_cov3_to_conic(cov3, p_view, focal);
 
-    // Write depth and conic back to the splat buffer.
+    // Write depth/conic and cache the pixel-space center for splat_raster.
+    // Preserve opacity_color.w: it remains the authoring opacity.
+    let opacity_color = splats[splat_idx].opacity_color;
     splats[splat_idx].position_depth.w = -p_view.z;   // positive view-space depth
     splats[splat_idx].conic = conic;
+    splats[splat_idx].opacity_color = vec4<f32>(px, py, opacity_color.z, opacity_color.w);
 
     // ── 3-sigma screen bounding box ───────────────────────────────────────────
     // Largest eigenvalue of Σ_2D (approximate via conic inverse).

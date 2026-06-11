@@ -14,30 +14,16 @@
 //! together with persistent buffers, two camera uniforms, and a single
 //! host-count readback between assign and sort.
 //!
-//! ## The Y-flip fix (the load-bearing wiring detail)
+//! ## Screen-center handoff
 //!
-//! The two projection shaders disagree on screen-Y orientation:
-//!   * `tile_assign.wgsl` projects with a Y-FLIP:
-//!     `py = (1 - (ndc.y*0.5+0.5)) * vh`   (NDC +Y up → pixel +Y down)
-//!   * `splat_raster.wgsl` projects with NO Y-flip:
-//!     `screen = (ndc*0.5+0.5) * (w,h)`     (uses ndc.y directly)
-//!
-//! Left unreconciled, a splat is ASSIGNED to the vertically-mirrored tile
-//! relative to where the raster EVALUATES it → coverage collapses to near zero.
-//! The shaders are frozen, so the fix lives in the camera uniforms: the raster
-//! camera's `view_proj` has its **second row negated** (`view_proj.y_row *= -1`),
-//! which makes the raster see `ndc.y' = -ndc.y`, so its
-//! `screen.y = (-ndc.y*0.5+0.5)*h = (1-(ndc.y*0.5+0.5))*h` — byte-for-byte the
-//! same pixel row `tile_assign` used to pick the tile. The `tile_assign` uniform
-//! keeps the canonical (un-negated) `view_proj`. This was confirmed empirically
-//! in `tiled_y_orientation_matches_cpu`: the GPU lit region's centroid
-//! co-locates with the CPU `spectra_render` reference (dy ≈ 4px / 256), which a
-//! mirrored binding would not — coverage MAGNITUDE legitimately differs (the GPU
-//! EWA footprint is tighter than the CPU path), so orientation, not area, is the
-//! invariant asserted.
+//! `tile_assign.wgsl` owns projection and applies the NDC-to-pixel Y flip once,
+//! then stores the pixel center in `GpuSplatFull.opacity_color.xy` while
+//! preserving `opacity_color.w` as opacity. `splat_raster.wgsl` consumes that
+//! cached center inside the per-pixel tile loop, avoiding a matrix projection per
+//! splat/pixel and making tile binning and raster evaluation share the same
+//! screen-space coordinate.
 
 use bytemuck::{Pod, Zeroable};
-use glam::Mat4;
 use vox_core::spectral::{Illuminant, SpectralBands, spectral_to_xyz, xyz_to_srgb};
 use vox_core::types::GaussianSplat;
 
@@ -905,10 +891,7 @@ impl TiledSplatRenderer {
 
     /// The REAL tile-entry count the last [`Self::render`] read back from the
     /// `tile_assign` atomic (the post-grow value when a grow-retry happened).
-    /// Debug/test accessor backing the M3.1 Task-2 persistent-scratch reuse
-    /// proof: two renders over different splat sets must report two different
-    /// nonzero counts through the ONE `assign_bufs` allocation.
-    pub(crate) fn last_entry_count(&self) -> u32 {
+    pub fn last_entry_count(&self) -> u32 {
         self.last_entry_count
     }
 
@@ -937,23 +920,12 @@ impl TiledSplatRenderer {
         }
     }
 
-    /// Build the `splat_raster` camera uniform with the Y-NEGATED `view_proj`
-    /// (second row of the column-major matrix flipped). See the module doc: this
-    /// is the empirically-determined fix that makes the no-Y-flip raster shader
-    /// evaluate each splat at the SAME pixel row `tile_assign` used to bin it.
+    /// Build the `splat_raster` camera uniform. The current raster shader reads
+    /// screen centers cached by `tile_assign` in `opacity_color.xy`; this uniform
+    /// is retained for the stable bind-group ABI and any future view-dependent
+    /// raster work.
     fn raster_camera(&self, camera: &RenderCamera) -> RasterCameraUniform {
-        let mut view_proj = camera.view_proj();
-        // Negate the Y output row of the clip-space transform: row 1 of the
-        // mathematical matrix = element [.][1] of each column (column-major glam).
-        // Flipping it sends ndc.y → -ndc.y in the raster, cancelling the
-        // tile_assign Y-flip so both passes agree on screen-Y.
-        let mut cols = view_proj.to_cols_array();
-        cols[1] = -cols[1]; // col0.y
-        cols[5] = -cols[5]; // col1.y
-        cols[9] = -cols[9]; // col2.y
-        cols[13] = -cols[13]; // col3.y
-        view_proj = Mat4::from_cols_array(&cols);
-
+        let view_proj = camera.view_proj();
         let inv_view = camera.view.inverse();
         RasterCameraUniform {
             view_proj: view_proj.to_cols_array_2d(),
@@ -1226,7 +1198,7 @@ impl TiledSplatRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::{Quat, Vec3};
+    use glam::{Mat4, Quat, Vec3};
     use half::f16;
 
     const W: u32 = 320;
