@@ -441,6 +441,211 @@ pub fn pathtrace_mesh_lit_to_rgba(
     Ok(out)
 }
 
+/// One cooked signed-distance volume to hand to the native SDF-volume primitive.
+///
+/// `distances` are DECODED metres in x-fastest grid order
+/// (`idx = x + nx*(y + ny*z)`), exactly the convention the engine's
+/// `vox_physics::sdf::SdfVolume` and Spectra's `sdf_probe.slang` agree on.
+/// `resolution` is `[nx, ny, nz]`, `origin` the grid corner in the asset's local
+/// frame, `voxel_size` the metres per cell. `narrow_band` is informational here
+/// (the distances are already decoded).
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone)]
+pub struct SdfVolumeInput {
+    pub resolution: [u32; 3],
+    pub origin: [f32; 3],
+    pub voxel_size: f32,
+    pub narrow_band: f32,
+    /// Decoded signed distances in metres, x-fastest, length = nx*ny*nz.
+    pub distances: Vec<f32>,
+}
+
+/// One-shot still: **path-trace ONE building's SDF as a SOLID surface** through
+/// the engine-owned Spectra path tracer's NATIVE SDF-volume primitive (M0).
+///
+/// This is the confetti→wall proof: instead of tessellating splats to flat
+/// camera-facing quads (the lossy `splat_convert`/`splat_backend` bridge), the
+/// path tracer SPHERE-TRACES the instanced SDF atlas in `megakernel.slang` and
+/// returns a continuous filled façade. The volume is uploaded as one SDF
+/// instance with an identity rotation, translated by `position` and uniformly
+/// scaled by `scale`. Shaded with a flat Lambert `albedo` lit by the four-light
+/// rig (full per-atom colour is a later milestone). Returns RGBA8 (`w*h*4`).
+///
+/// Seconds/frame is acceptable — this is a correctness spike, not realtime.
+#[cfg(feature = "spectra-native")]
+#[allow(clippy::too_many_arguments)]
+pub fn pathtrace_sdf_to_rgba(
+    volume: &SdfVolumeInput,
+    position: [f32; 3],
+    scale: f32,
+    albedo: [f32; 3],
+    eye: [f32; 3],
+    target: [f32; 3],
+    fov_y: f32,
+    width: u32,
+    height: u32,
+    spp: u32,
+    rig: &LightRig,
+) -> Result<Vec<u8>, String> {
+    use crate::splat_convert::camera_layer;
+    use spectra_scene_state::{
+        LightLayer, SceneState, SdfInstanceHeader, SdfLayer, SdfVolumeHeader,
+    };
+
+    let expected = (volume.resolution[0] * volume.resolution[1] * volume.resolution[2]) as usize;
+    if volume.distances.len() != expected {
+        return Err(format!(
+            "SDF distances len {} != nx*ny*nz {}",
+            volume.distances.len(),
+            expected
+        ));
+    }
+    if scale <= 0.0 {
+        return Err(format!("SDF instance scale must be > 0, got {scale}"));
+    }
+
+    // World-space AABB of the single instance: the grid's local bounds, scaled +
+    // translated (identity rotation), then padded by the narrow band so the
+    // sphere-trace starts cleanly outside the band.
+    let local_min = volume.origin;
+    let local_max = [
+        volume.origin[0] + (volume.resolution[0] - 1) as f32 * volume.voxel_size,
+        volume.origin[1] + (volume.resolution[1] - 1) as f32 * volume.voxel_size,
+        volume.origin[2] + (volume.resolution[2] - 1) as f32 * volume.voxel_size,
+    ];
+    let pad = volume.narrow_band.max(volume.voxel_size) * scale;
+    let world_aabb_min = [
+        position[0] + local_min[0] * scale - pad,
+        position[1] + local_min[1] * scale - pad,
+        position[2] + local_min[2] * scale - pad,
+    ];
+    let world_aabb_max = [
+        position[0] + local_max[0] * scale + pad,
+        position[1] + local_max[1] * scale + pad,
+        position[2] + local_max[2] * scale + pad,
+    ];
+
+    let sdf = SdfLayer::from_parts(
+        vec![SdfVolumeHeader {
+            asset_id: 1,
+            resolution: volume.resolution,
+            origin: volume.origin,
+            voxel_size: volume.voxel_size,
+            narrow_band: volume.narrow_band,
+            distance_offset: 0,
+            distance_count: volume.distances.len() as u32,
+        }],
+        vec![SdfInstanceHeader {
+            instance_id: 1,
+            asset_id: 1,
+            volume_index: 0,
+            position,
+            rotation_xyzw: [0.0, 0.0, 0.0, 1.0], // identity
+            uniform_scale: scale,
+            world_aabb_min,
+            world_aabb_max,
+        }],
+        volume.distances.clone(),
+    );
+
+    let mut scene = SceneState::new(width, height);
+    scene.sdf = sdf;
+    scene.mark_sdf_changed();
+
+    // Sentinel triangle. The renderer's software BVH/shadow traversal reads a
+    // zeroed dummy `g_bvh_nodes` when a scene has NO triangles, which makes
+    // `trace_shadow` loop forever (node 0 pushes children 0,0 repeatedly) and
+    // hangs the GPU (device lost). One tiny degenerate triangle far below the
+    // building gives the traversal a valid single-leaf tree so it terminates;
+    // it is invisible (out of frame, ~1mm, faces away) and is NOT the rendered
+    // surface — the SDF sphere-trace fills 100% of the visible façade.
+    {
+        use spectra_scene_state::MaterialLayer;
+        let far = [position[0], world_aabb_min[1] - 1000.0, position[2]];
+        scene.geometry.vertex_count = 3;
+        scene.geometry.triangle_count = 1;
+        scene.geometry.positions = vec![
+            far[0],
+            far[1],
+            far[2],
+            far[0] + 0.001,
+            far[1],
+            far[2],
+            far[0],
+            far[1],
+            far[2] + 0.001,
+        ];
+        scene.geometry.normals = vec![0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0];
+        scene.geometry.uvs = vec![0.0; 6];
+        scene.geometry.indices = vec![0, 1, 2];
+        scene.geometry.material_ids = vec![0];
+        scene.materials = MaterialLayer {
+            params: vec![0.0; VULKAN_MATERIAL_FLOATS],
+            spectral_spd: Default::default(),
+            material_count: 1,
+        };
+        scene.mark_geometry_changed();
+        scene.mark_materials_changed();
+    }
+
+    // Four-light rig (sun + sky + camera fill + rim fill), identical structure to
+    // the mesh path so SDF stills match building-review lighting.
+    let sun = glam::Vec3::from(rig.sun_dir).normalize_or_zero();
+    let camera_fill = (glam::Vec3::from(eye) - glam::Vec3::from(target) + glam::Vec3::Y * 0.35)
+        .normalize_or_zero();
+    let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
+    let mut light_data: Vec<f32> = Vec::new();
+    for (dir, color, intensity) in [
+        (sun.to_array(), rig.sun_color, rig.sun_intensity),
+        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
+        (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
+    ] {
+        light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
+    }
+    scene.lights = LightLayer {
+        light_data,
+        light_count: 4,
+    };
+    scene.mark_lights_changed();
+
+    let view = glam::Mat4::look_at_rh(
+        glam::Vec3::from(eye),
+        glam::Vec3::from(target),
+        glam::Vec3::Y,
+    )
+    .to_cols_array();
+    let cam = camera_layer(view, fov_y, width, height);
+    scene.camera = cam.clone();
+
+    let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
+    let mut config = RenderConfig::near_realtime(width, height);
+    config.slang_kernel_dir = resolve_slang_kernel_dir();
+    config.target_spp = spp;
+    let mut renderer = Renderer::new(gpu, config);
+    renderer.set_sdf_albedo(albedo);
+    renderer
+        .load_scene_state(scene)
+        .map_err(|e| format!("load_scene_state: {e:?}"))?;
+    renderer.set_sky_gradient(
+        rig.sky_dome_zenith,
+        rig.sky_dome_horizon,
+        rig.sky_dome_intensity,
+    );
+    renderer.set_camera_view_matrix(cam.view_matrix);
+    renderer.set_view_proj(cam.view_matrix);
+
+    let frame = renderer.render().map_err(|e| format!("render: {e:?}"))?;
+    let n = (frame.width * frame.height) as usize;
+    let mut out = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        for ch in 0..4 {
+            out.push((frame.beauty[i * 4 + ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        }
+    }
+    Ok(out)
+}
+
 /// Build the flat texture atlas arrays for `Renderer::set_texture_atlas`.
 ///
 /// Spectra's `slang/texture_atlas.slang` `TextureDesc` is
@@ -1377,6 +1582,355 @@ mod tests {
             u_dark > 0.8 * u_bright,
             "untextured quad must NOT show the checker asymmetry \
              (max={u_bright:.2}, min={u_dark:.2})"
+        );
+    }
+
+    // ---- M0: native SDF-volume primitive (confetti → wall) ----------------
+
+    /// Minimal dependency-free PNG writer (RGBA8, zlib stored blocks). Mirrors
+    /// vox_app::shell::cpu_render::write_png so the SDF still can be inspected.
+    #[cfg(feature = "spectra-native")]
+    fn write_png_rgba(path: &str, rgba: &[u8], w: u32, h: u32) {
+        use std::io::Write;
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for &b in bytes {
+                crc ^= b as u32;
+                for _ in 0..8 {
+                    let mask = (crc & 1).wrapping_neg();
+                    crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+                }
+            }
+            !crc
+        }
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            let mut crc_in = Vec::with_capacity(4 + data.len());
+            crc_in.extend_from_slice(kind);
+            crc_in.extend_from_slice(data);
+            out.extend_from_slice(&crc32(&crc_in).to_be_bytes());
+        }
+        let mut raw = Vec::with_capacity((w * h * 4 + h) as usize);
+        let stride = (w * 4) as usize;
+        for y in 0..h as usize {
+            raw.push(0u8);
+            raw.extend_from_slice(&rgba[y * stride..(y + 1) * stride]);
+        }
+        // zlib stored blocks (no deflate dependency).
+        let mut comp = vec![0x78u8, 0x01u8];
+        let mut i = 0;
+        while i < raw.len() {
+            let block = (raw.len() - i).min(0xFFFF);
+            let is_last = i + block >= raw.len();
+            comp.push(if is_last { 1 } else { 0 });
+            comp.extend_from_slice(&(block as u16).to_le_bytes());
+            comp.extend_from_slice(&(!(block as u16)).to_le_bytes());
+            comp.extend_from_slice(&raw[i..i + block]);
+            i += block;
+        }
+        let (mut a, mut b) = (1u32, 0u32);
+        for &byte in &raw {
+            a = (a + byte as u32) % 65521;
+            b = (b + a) % 65521;
+        }
+        comp.extend_from_slice(&((b << 16) | a).to_be_bytes());
+
+        let mut png = Vec::new();
+        png.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&w.to_be_bytes());
+        ihdr.extend_from_slice(&h.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        chunk(&mut png, b"IHDR", &ihdr);
+        chunk(&mut png, b"IDAT", &comp);
+        chunk(&mut png, b"IEND", &[]);
+        let mut f = std::fs::File::create(path).expect("create png");
+        f.write_all(&png).expect("write png");
+    }
+
+    /// A pixel is "covered" (part of the rendered building surface) when its
+    /// luma clearly exceeds the dark sky-gradient background. The SDF is lit by
+    /// the sun + fills; the gradient sky is dark-ish at the horizon, so a simple
+    /// luma threshold separates solid surface from sky.
+    #[cfg(feature = "spectra-native")]
+    fn luma(px: &[u8]) -> f32 {
+        0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32
+    }
+
+    /// Solidity = how SOLID (vs confetti) the rendered surface is, independent of
+    /// the building's (non-rectangular) silhouette. For every scanline that
+    /// contains surface pixels, measure the filled fraction within that row's
+    /// span (first→last surface pixel). A continuous wall fills its span ≈ 1.0;
+    /// sparse splat confetti leaves gaps inside the span and scores far lower.
+    /// Returns (mean_span_fill, total_surface_pixels). Rows whose span is shorter
+    /// than `min_span` (slivers / antialias fringe) are ignored.
+    #[cfg(feature = "spectra-native")]
+    fn surface_solidity(rgba: &[u8], w: u32, h: u32, thr: f32, min_span: u32) -> (f64, u64) {
+        let mut sum_fill = 0.0f64;
+        let mut rows = 0u64;
+        let mut total = 0u64;
+        for y in 0..h {
+            let mut first = None;
+            let mut last = 0u32;
+            let mut count = 0u32;
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                if luma(&rgba[i..i + 4]) > thr {
+                    first.get_or_insert(x);
+                    last = x;
+                    count += 1;
+                }
+            }
+            total += count as u64;
+            if let Some(f) = first {
+                let span = last - f + 1;
+                if span >= min_span {
+                    sum_fill += count as f64 / span as f64;
+                    rows += 1;
+                }
+            }
+        }
+        let mean = if rows > 0 { sum_fill / rows as f64 } else { 0.0 };
+        (mean, total)
+    }
+
+    /// M0 ACCEPTANCE: the engine-owned Spectra path tracer renders ONE real
+    /// building's cooked SDF as a SOLID, continuous surface via the NATIVE
+    /// SDF-volume primitive (sphere trace in megakernel.slang) — NOT the lossy
+    /// triangle-quad splat bridge. Loads forge.house.craftsman's cooked 64³-class
+    /// GWN-signed field from atoms.json, renders it, writes a PNG, and asserts
+    /// the façade fills >= 97% of its projected silhouette bounding box (confetti
+    /// would be sparse). Prints the OLD splat-bridge coverage for the same camera
+    /// as the confetti→wall delta.
+    ///
+    /// Run alone (GPU, seconds/frame is fine):
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///   SPECTRA_SLANG_DIR=$HOME/src/spectra/slang SLANG_DIR=$HOME/slang-sdk \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
+    ///     --lib sdf_building_renders_solid_surface -- --nocapture --test-threads=1
+    #[test]
+    fn sdf_building_renders_solid_surface() {
+        use super::{LightRig, SdfVolumeInput, pathtrace_sdf_to_rgba};
+
+        // --- Load the cooked SDF from the civitas craftsman asset ----------
+        let path = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms")
+            .join("forge.house.craftsman.atoms.json");
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse atoms.json");
+        let sdf = &json["sdf"];
+        let res: Vec<u64> = sdf["resolution"]
+            .as_array()
+            .expect("resolution array")
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect();
+        let origin: Vec<f32> = sdf["origin"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap() as f32)
+            .collect();
+        let voxel_size = sdf["voxel_size"].as_f64().unwrap() as f32;
+        let narrow_band = sdf["narrow_band"].as_f64().unwrap() as f32;
+        let snorm: Vec<i64> = sdf["distances_snorm16"]
+            .as_array()
+            .expect("distances_snorm16 array")
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        // Decode snorm16 -> metres, exactly as vox_physics::sdf::from_snorm16_grid.
+        let distances: Vec<f32> = snorm
+            .iter()
+            .map(|&v| {
+                let n = if v as i32 == i16::MIN as i32 {
+                    -1.0
+                } else {
+                    v as f32 / i16::MAX as f32
+                };
+                n.clamp(-1.0, 1.0) * narrow_band
+            })
+            .collect();
+        let resolution = [res[0] as u32, res[1] as u32, res[2] as u32];
+        eprintln!(
+            "[sdf_building] craftsman SDF: res={:?} voxel={voxel_size:.4} band={narrow_band:.4} \
+             n_dist={} negatives(inside)={}",
+            resolution,
+            distances.len(),
+            distances.iter().filter(|d| **d < 0.0).count()
+        );
+        assert!(
+            distances.iter().any(|d| *d < 0.0),
+            "SDF must contain interior (negative) samples — else it is not a solid"
+        );
+
+        let volume = SdfVolumeInput {
+            resolution,
+            origin: [origin[0], origin[1], origin[2]],
+            voxel_size,
+            narrow_band,
+            distances,
+        };
+
+        // --- Camera framing the SDF grid (identity instance transform) -----
+        // Grid world extent (scale 1, position 0): origin .. origin+(res-1)*voxel.
+        let gmin = volume.origin;
+        let gmax = [
+            volume.origin[0] + (resolution[0] - 1) as f32 * voxel_size,
+            volume.origin[1] + (resolution[1] - 1) as f32 * voxel_size,
+            volume.origin[2] + (resolution[2] - 1) as f32 * voxel_size,
+        ];
+        let center = [
+            0.5 * (gmin[0] + gmax[0]),
+            0.5 * (gmin[1] + gmax[1]),
+            0.5 * (gmin[2] + gmax[2]),
+        ];
+        let radius = {
+            let dx = gmax[0] - gmin[0];
+            let dy = gmax[1] - gmin[1];
+            let dz = gmax[2] - gmin[2];
+            0.5 * (dx * dx + dy * dy + dz * dz).sqrt()
+        };
+        // Front-quarter view, eye pulled back ~2.2 radii so the whole building
+        // projects inside the frame.
+        let dist = radius * 2.2;
+        let eye = [
+            center[0] + dist * 0.55,
+            center[1] + dist * 0.35,
+            center[2] + dist * 0.75,
+        ];
+        let (w, h) = (192u32, 192u32);
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        // Dark sky / dark fills so the only lit pixels are the SDF surface — the
+        // coverage gate then cleanly separates solid façade from background. The
+        // SDF's view-facing fill (in megakernel.slang) lights every hit pixel.
+        let rig = LightRig {
+            sun_dir: [0.4, 0.7, 0.55],
+            sun_intensity: 2.0,
+            sky_intensity: 0.0,
+            camera_fill: 0.0,
+            rim_fill: 0.0,
+            sky_dome_intensity: 0.0,
+            sky_dome_zenith: [0.0, 0.0, 0.0],
+            sky_dome_horizon: [0.0, 0.0, 0.0],
+            ..Default::default()
+        };
+
+        let rgba = pathtrace_sdf_to_rgba(
+            &volume,
+            [0.0, 0.0, 0.0],
+            1.0,
+            [0.72, 0.68, 0.60],
+            eye,
+            center,
+            fov_y,
+            w,
+            h,
+            4,
+            &rig,
+        )
+        .expect("SDF render should succeed");
+
+        let out_dir = std::env::temp_dir();
+        let png_path = out_dir.join("ochroma_sdf_craftsman.png");
+        write_png_rgba(png_path.to_str().unwrap(), &rgba, w, h);
+        eprintln!("[sdf_building] wrote {}", png_path.display());
+
+        // --- Solidity: per-row span-fill (handles the non-rectangular house
+        // silhouette). Background is the dark sky; lit pixels are the surface.
+        let thr = 30.0f32; // out of 255 luma
+        let (sdf_coverage, covered) = surface_solidity(&rgba, w, h, thr, 4);
+        assert!(covered > 0, "render is entirely background — SDF never hit");
+
+        // --- OLD splat-bridge coverage for the SAME asset/camera -----------
+        // Build camera-facing quad splats over the SDF surface (one per inside
+        // voxel boundary) and path-trace them through the lossy bridge, so the
+        // confetti→wall delta is printed side by side. Skippable via
+        // OCHROMA_SKIP_SPLAT_COMPARE=1 to iterate on the SDF path alone.
+        let splat_coverage = if std::env::var("OCHROMA_SKIP_SPLAT_COMPARE").is_ok() {
+            f64::NAN
+        } else {
+            use vox_core::types::GaussianSplat;
+            let [nx, ny, nz] = resolution;
+            let mut splats: Vec<GaussianSplat> = Vec::new();
+            let dist_at = |x: u32, y: u32, z: u32| -> f32 {
+                volume.distances[(x + nx * (y + ny * z)) as usize]
+            };
+            // Surface voxels: inside cell adjacent to an outside cell → a splat
+            // at the cell centre. This is the splat sampling the bridge gets.
+            for z in 0..nz {
+                for y in 0..ny {
+                    for x in 0..nx {
+                        if dist_at(x, y, z) >= 0.0 {
+                            continue;
+                        }
+                        let neighbour_outside = [
+                            (x + 1 < nx).then(|| dist_at(x + 1, y, z)),
+                            (x > 0).then(|| dist_at(x - 1, y, z)),
+                            (y + 1 < ny).then(|| dist_at(x, y + 1, z)),
+                            (y > 0).then(|| dist_at(x, y - 1, z)),
+                            (z + 1 < nz).then(|| dist_at(x, y, z + 1)),
+                            (z > 0).then(|| dist_at(x, y, z - 1)),
+                        ]
+                        .iter()
+                        .flatten()
+                        .any(|d| *d >= 0.0);
+                        if !neighbour_outside {
+                            continue;
+                        }
+                        let p = [
+                            volume.origin[0] + x as f32 * voxel_size,
+                            volume.origin[1] + y as f32 * voxel_size,
+                            volume.origin[2] + z as f32 * voxel_size,
+                        ];
+                        splats.push(GaussianSplat::surface(
+                            p,
+                            [voxel_size, 0.0, 0.0],
+                            [0.0, voxel_size, 0.0],
+                            voxel_size,
+                            1.0,
+                            255,
+                            std::array::from_fn(|_| half::f16::from_f32(0.7).to_bits()),
+                        ));
+                    }
+                }
+            }
+            match super::pathtrace_splats_to_rgba(
+                &splats, eye, center, fov_y, w, h, 16, rig.sun_dir,
+            ) {
+                Ok(srgba) => {
+                    let (solidity, sc) = surface_solidity(&srgba, w, h, thr, 4);
+                    let png2 = out_dir.join("ochroma_splat_craftsman.png");
+                    write_png_rgba(png2.to_str().unwrap(), &srgba, w, h);
+                    eprintln!(
+                        "[sdf_building] wrote {} (splat bridge, {sc} surface px)",
+                        png2.display()
+                    );
+                    solidity
+                }
+                Err(e) => {
+                    eprintln!("[sdf_building] splat-bridge render failed: {e}");
+                    f64::NAN
+                }
+            }
+        };
+
+        eprintln!(
+            "[sdf_building] SOLID COVERAGE (per-row span fill — continuous wall ≈ 1.0):\n  \
+             SDF native primitive : {:.4} ({covered} surface px)\n  \
+             OLD splat bridge     : {:.4}   <-- confetti",
+            sdf_coverage, splat_coverage
+        );
+
+        assert!(
+            sdf_coverage >= 0.97,
+            "SDF façade must be a continuous filled surface (span-fill solidity \
+             {:.4} < 0.97). A solid building fills each scanline span; confetti \
+             leaves gaps.",
+            sdf_coverage
         );
     }
 }
