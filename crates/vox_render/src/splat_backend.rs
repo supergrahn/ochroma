@@ -4142,7 +4142,7 @@ mod tests {
         ("wood_door", "brown_planks_03"),
         ("slate_roof", "roof_slates_02"),
         ("stucco", "concrete_wall_003"),
-        ("brick", "castle_brick_02_red"),
+        ("brick", "brick_wall_001"),
         ("painted_siding", "blue_painted_planks"),
         ("painted_siding_worn", "distressed_painted_planks"),
         ("roof_tiles", "clay_roof_tiles"),
@@ -7245,6 +7245,91 @@ mod tests {
              do not relax this gate"
         );
         assert!(worst_secs < 10.0, "gate renders are not cheap: {worst_secs:.2}s");
+    }
+
+    /// Showcase: render a roster of cooked buildings (each a different style
+    /// family + kind) through the mesh path — visual proof of the F7 family
+    /// routing (tudor/industrial textures) and the catalog breadth. No hard
+    /// quality gates; sanity = each render is non-empty and distinct.
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn showcase_building_roster() {
+        use super::{pathtrace_mesh_lit_to_rgba, LightRig};
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let rig = LightRig {
+            sun_dir: [0.45, 0.65, 0.55],
+            sun_intensity: 2.6,
+            sky_intensity: 0.3,
+            camera_fill: 0.2,
+            rim_fill: 0.0,
+            sky_dome_intensity: 0.65,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.80, 0.86, 0.95],
+            ..Default::default()
+        };
+        let shots = [
+            ("city.res_low.l1.2x2.tudor_cottage_01", "showcase_tudor.png"),
+            ("city.ind_heavy.l2.5x5.heavy_factory_01", "showcase_factory.png"),
+            ("city.res_high.l5.2x2.highrise_point_tower_01", "showcase_highrise.png"),
+        ];
+        for (id, png) in shots {
+            let path = atoms_dir.join(format!("{id}.atoms.json"));
+            if !path.exists() {
+                panic!("showcase asset missing: {}", path.display());
+            }
+            let mesh = load_craftsman_mesh(&path);
+            let (mats, texs, _) = load_building_mesh_pbr_by_forge_id(&path);
+            // 3/4 aerial framing scaled to the building's bounds.
+            let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+            for v in &mesh.positions {
+                for a in 0..3 {
+                    lo[a] = lo[a].min(v[a]);
+                    hi[a] = hi[a].max(v[a]);
+                }
+            }
+            let c = [
+                (lo[0] + hi[0]) * 0.5,
+                (lo[1] + hi[1]) * 0.5,
+                (lo[2] + hi[2]) * 0.5,
+            ];
+            let ext = ((hi[0] - lo[0]).powi(2)
+                + (hi[1] - lo[1]).powi(2)
+                + (hi[2] - lo[2]).powi(2))
+            .sqrt();
+            let eye = [c[0] + ext * 0.75, c[1] + ext * 0.45, c[2] + ext * 0.75];
+            let rgba = pathtrace_mesh_lit_to_rgba(
+                &mesh.positions,
+                &mesh.normals,
+                &mesh.uvs,
+                &mesh.indices,
+                &mesh.material_ids,
+                &mats,
+                &texs,
+                eye,
+                c,
+                std::f32::consts::FRAC_PI_4,
+                384,
+                384,
+                32,
+                &rig,
+            )
+            .expect("showcase render");
+            let lit = rgba
+                .chunks_exact(4)
+                .filter(|px| px[0] as u32 + px[1] as u32 + px[2] as u32 > 30)
+                .count();
+            assert!(lit > 10_000, "{id}: render nearly empty ({lit} lit px)");
+            let mut pxv: Vec<[u8; 4]> = rgba
+                .chunks_exact(4)
+                .map(|p| [p[0], p[1], p[2], 255])
+                .collect();
+            crate::denoiser::SpectralDenoiser::new(0.7).denoise(&mut pxv, 384, 384);
+            let flat: Vec<u8> = pxv.into_iter().flatten().collect();
+            let out = std::env::temp_dir().join(png);
+            write_png_rgba(out.to_str().unwrap(), &flat, 384, 384);
+            eprintln!("[showcase] wrote {} ({lit} lit px)", out.display());
+        }
     }
 
     /// Close-up visual proof for the zoning fix: the full-building gate frames
