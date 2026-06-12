@@ -1376,6 +1376,495 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
     Ok(out)
 }
 
+/// Padded world-space AABB of one SDF instance: the rotated/scaled/translated
+/// grid corners, padded by the (scaled) narrow band — the EXACT min/max packed
+/// into the instance header (`SdfInstanceHeader::world_aabb_min/max`), which
+/// the megakernel also reads back as the atom cell grid's anchor. Keeping this
+/// in one place guarantees the grid build, the header, and the kernel's cell
+/// math all use bit-identical values.
+#[cfg(feature = "spectra-native")]
+fn sdf_instance_world_aabb(
+    volume: &SdfVolumeInput,
+    inst: &SdfSceneInstance,
+) -> ([f32; 3], [f32; 3]) {
+    let lmin = volume.origin;
+    let lmax = [
+        volume.origin[0] + (volume.resolution[0] - 1) as f32 * volume.voxel_size,
+        volume.origin[1] + (volume.resolution[1] - 1) as f32 * volume.voxel_size,
+        volume.origin[2] + (volume.resolution[2] - 1) as f32 * volume.voxel_size,
+    ];
+    let q = glam::Quat::from_array(inst.rotation_xyzw).normalize();
+    let pos = glam::Vec3::from(inst.position);
+    let s = inst.uniform_scale;
+    let mut wmin = [f32::INFINITY; 3];
+    let mut wmax = [f32::NEG_INFINITY; 3];
+    for cx in [lmin[0], lmax[0]] {
+        for cy in [lmin[1], lmax[1]] {
+            for cz in [lmin[2], lmax[2]] {
+                let world = pos + q * (glam::Vec3::new(cx, cy, cz) * s);
+                for k in 0..3 {
+                    wmin[k] = wmin[k].min(world[k]);
+                    wmax[k] = wmax[k].max(world[k]);
+                }
+            }
+        }
+    }
+    let pad = volume.narrow_band.max(volume.voxel_size) * s;
+    for k in 0..3 {
+        wmin[k] -= pad;
+        wmax[k] += pad;
+    }
+    (wmin, wmax)
+}
+
+/// One instance's uniform cell grid over its atoms' WORLD positions — the
+/// wave-1 gather accelerator. The megakernel visits the 3×3×3 cell
+/// neighbourhood of a surface hit instead of the instance's full atom range
+/// (~80× fewer atom reads on the cooked craftsman). Built host-side by
+/// [`build_sdf_atom_cell_grid`]; uploaded via `SdfLayer::from_parts_textured`
+/// as `g_sdf_atom_grid_headers` (6 floats/instance) + `g_sdf_atom_cell_table`
+/// (2 floats/cell), with the atom SoA re-ordered cell-sorted so each cell's
+/// atoms are one contiguous `(start, count)` run.
+#[cfg(feature = "spectra-native")]
+struct SdfAtomCellGrid {
+    /// Cells per axis (4..=32 each).
+    dims: [u32; 3],
+    /// World-space cell edge length (metres).
+    cell_size: f32,
+    /// Grid anchor = the instance's padded `world_aabb_min` (the kernel reads
+    /// the same value from the instance header).
+    grid_min: [f32; 3],
+    /// `(start, count)` per cell, x-fastest cell order; `start` is LOCAL to
+    /// the instance's atom range (kernel reads atom `atom_base + start + k`).
+    cell_table: Vec<(u32, u32)>,
+    /// Permutation into cell-sorted order: `order[k]` = original atom index
+    /// placed at sorted slot `k` (stable within a cell).
+    order: Vec<u32>,
+}
+
+#[cfg(feature = "spectra-native")]
+impl SdfAtomCellGrid {
+    /// Clamped cell coordinate of a world-space point (the kernel's cell math).
+    fn cell_coord(&self, p: [f32; 3]) -> [i32; 3] {
+        let mut c = [0i32; 3];
+        for k in 0..3 {
+            let f = ((p[k] - self.grid_min[k]) / self.cell_size).floor() as i32;
+            c[k] = f.clamp(0, self.dims[k] as i32 - 1);
+        }
+        c
+    }
+
+    /// X-fastest linear cell index.
+    fn cell_index(&self, c: [i32; 3]) -> usize {
+        c[0] as usize
+            + self.dims[0] as usize * (c[1] as usize + self.dims[1] as usize * c[2] as usize)
+    }
+
+    /// Number of atoms the kernel's gather visits at world-space point `p`:
+    /// the sum of the 3×3×3 cell-neighbourhood counts (clamped to grid dims).
+    fn neighbourhood_atom_count(&self, p: [f32; 3]) -> u32 {
+        let c = self.cell_coord(p);
+        let mut total = 0u32;
+        for dz in -1i32..=1 {
+            let cz = c[2] + dz;
+            if cz < 0 || cz >= self.dims[2] as i32 {
+                continue;
+            }
+            for dy in -1i32..=1 {
+                let cy = c[1] + dy;
+                if cy < 0 || cy >= self.dims[1] as i32 {
+                    continue;
+                }
+                for dx in -1i32..=1 {
+                    let cx = c[0] + dx;
+                    if cx < 0 || cx >= self.dims[0] as i32 {
+                        continue;
+                    }
+                    total += self.cell_table[self.cell_index([cx, cy, cz])].1;
+                }
+            }
+        }
+        total
+    }
+}
+
+/// Build one instance's atom cell grid over WORLD-space positions.
+///
+/// Cell size = `max(0.5 m, 2 × median nearest-neighbour atom spacing,
+/// min_cell)` — large enough that every atom within the glass detect radius
+/// (`min_cell`, the kernel's `max(voxel_max * 0.6, 0.18)`) AND the K-NN blend
+/// span of a surface hit lies inside the hit's 3×3×3 cell neighbourhood, so
+/// the gridded gather reproduces the linear scan's K-nearest set exactly (the
+/// kernel additionally falls back to the full scan for the rare sparse hits
+/// whose 6-NN span exceeds one cell).
+/// Dims derive from the instance's padded world AABB (`wmin`/`wmax`, the same
+/// values in the instance header the kernel anchors on), clamped to 4³..32³;
+/// the cell grows if 32 cells can't span an axis. The median spacing comes
+/// from a deterministic even-stride sample (≤ 256 atoms, O(sample·n)).
+/// Counting-sort is stable: atoms keep their original relative order within a
+/// cell, so the build is fully deterministic.
+#[cfg(feature = "spectra-native")]
+fn build_sdf_atom_cell_grid(
+    world_positions: &[[f32; 3]],
+    wmin: [f32; 3],
+    wmax: [f32; 3],
+    min_cell: f32,
+) -> SdfAtomCellGrid {
+    let n = world_positions.len();
+    let extent = [
+        (wmax[0] - wmin[0]).max(1.0e-4),
+        (wmax[1] - wmin[1]).max(1.0e-4),
+        (wmax[2] - wmin[2]).max(1.0e-4),
+    ];
+
+    // Median nearest-neighbour spacing from a deterministic sample.
+    let mut cell = 0.5f32.max(min_cell);
+    if n >= 2 {
+        let sample = n.min(256);
+        let stride = (n / sample).max(1);
+        let mut nn: Vec<f32> = Vec::with_capacity(sample);
+        let mut i = 0usize;
+        while i < n && nn.len() < sample {
+            let p = world_positions[i];
+            let mut best = f32::INFINITY;
+            for (j, q) in world_positions.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                let d2 = (q[0] - p[0]) * (q[0] - p[0])
+                    + (q[1] - p[1]) * (q[1] - p[1])
+                    + (q[2] - p[2]) * (q[2] - p[2]);
+                if d2 < best {
+                    best = d2;
+                }
+            }
+            nn.push(best.sqrt());
+            i += stride;
+        }
+        nn.sort_by(|a, b| a.total_cmp(b));
+        cell = (2.0 * nn[nn.len() / 2]).max(0.5).max(min_cell);
+    }
+
+    // Cap the grid at 32 cells per axis: grow the cell until every axis fits.
+    for e in extent {
+        if e / cell > 32.0 {
+            cell = e / 32.0;
+        }
+    }
+
+    let mut dims = [0u32; 3];
+    for k in 0..3 {
+        dims[k] = ((extent[k] / cell).ceil() as u32).clamp(4, 32);
+    }
+
+    let n_cells = dims[0] as usize * dims[1] as usize * dims[2] as usize;
+    let mut grid = SdfAtomCellGrid {
+        dims,
+        cell_size: cell,
+        grid_min: wmin,
+        cell_table: vec![(0u32, 0u32); n_cells],
+        order: vec![0u32; n],
+    };
+
+    // Counting sort: count per cell, prefix-sum starts, stable scatter.
+    let mut atom_cell = vec![0usize; n];
+    for (i, p) in world_positions.iter().enumerate() {
+        let ci = grid.cell_index(grid.cell_coord(*p));
+        atom_cell[i] = ci;
+        grid.cell_table[ci].1 += 1;
+    }
+    let mut acc = 0u32;
+    for entry in grid.cell_table.iter_mut() {
+        entry.0 = acc;
+        acc += entry.1;
+    }
+    let mut next: Vec<u32> = grid.cell_table.iter().map(|e| e.0).collect();
+    for (i, &ci) in atom_cell.iter().enumerate() {
+        grid.order[next[ci] as usize] = i as u32;
+        next[ci] += 1;
+    }
+    grid
+}
+
+/// One-shot still: **path-trace SDF buildings with the CELL-GRID atom gather**
+/// — the wave-1 textured-SDF entry point (Task 1 scaffold; later wave tasks
+/// grow it with per-channel PBR materials, box-UV textures, normal maps and
+/// aperture rects). A thin extension of
+/// [`pathtrace_sdf_scene_with_atoms_to_rgba`]: the SAME scene build, plus a
+/// per-instance uniform cell grid over the atoms' WORLD positions so the
+/// megakernel's k-NN gather visits only the 3×3×3 cell neighbourhood of a hit
+/// (`u_sdf_textured = 1`) instead of scanning the instance's full atom range —
+/// identical K-nearest + glass logic over ~80× fewer atoms, byte-identical
+/// frames (the parity gate `sdf_gather_grid_matches_linear` proves it).
+/// Returns RGBA8 (`w*h*4`).
+#[cfg(feature = "spectra-native")]
+#[allow(clippy::too_many_arguments)]
+pub fn pathtrace_sdf_scene_textured_to_rgba(
+    volumes: &[SdfVolumeInput],
+    instances: &[SdfSceneInstance],
+    atoms_per_instance: &[Vec<SdfSceneAtom>],
+    eye: [f32; 3],
+    target: [f32; 3],
+    fov_y: f32,
+    width: u32,
+    height: u32,
+    spp: u32,
+    rig: &LightRig,
+) -> Result<Vec<u8>, String> {
+    use crate::splat_convert::camera_layer;
+    use spectra_scene_state::{
+        LightLayer, SceneState, SdfInstanceHeader, SdfLayer, SdfVolumeHeader,
+    };
+
+    if volumes.is_empty() {
+        return Err("pathtrace_sdf_scene_textured_to_rgba: no volumes".into());
+    }
+    if instances.is_empty() {
+        return Err("pathtrace_sdf_scene_textured_to_rgba: no instances".into());
+    }
+    if atoms_per_instance.len() != instances.len() {
+        return Err(format!(
+            "atoms_per_instance len {} != instances len {}",
+            atoms_per_instance.len(),
+            instances.len()
+        ));
+    }
+
+    // --- Multi-volume atlas (identical to the M2 entry point). ---------------
+    let mut all_distances: Vec<f32> = Vec::new();
+    let mut volume_headers: Vec<SdfVolumeHeader> = Vec::with_capacity(volumes.len());
+    for (vi, v) in volumes.iter().enumerate() {
+        let expected = (v.resolution[0] * v.resolution[1] * v.resolution[2]) as usize;
+        if v.distances.len() != expected {
+            return Err(format!(
+                "volume {vi}: distances len {} != nx*ny*nz {}",
+                v.distances.len(),
+                expected
+            ));
+        }
+        let distance_offset = all_distances.len() as u32;
+        all_distances.extend_from_slice(&v.distances);
+        volume_headers.push(SdfVolumeHeader {
+            asset_id: (vi as u64) + 1,
+            resolution: v.resolution,
+            origin: v.origin,
+            voxel_size: v.voxel_size,
+            narrow_band: v.narrow_band,
+            distance_offset,
+            distance_count: v.distances.len() as u32,
+        });
+    }
+
+    // The kernel's glass window-detect radius is scene-wide:
+    // max(coarsest world voxel * 0.6, 0.18 m) — see sdf_voxel_extents +
+    // the detect_r site in megakernel.slang. Floor every instance's cell size
+    // at it so a glass atom inside the detect radius is ALWAYS within the
+    // 3x3x3 cell neighbourhood of the hit (exact glass classification).
+    let mut voxel_max_world = 0.0f32;
+    for inst in instances {
+        // Out-of-range volume indices error properly in the main loop below.
+        if let Some(v) = volumes.get(inst.volume_index as usize) {
+            voxel_max_world = voxel_max_world.max(v.voxel_size * inst.uniform_scale);
+        }
+    }
+    let glass_detect_r = (voxel_max_world * 0.6).max(0.18);
+
+    // --- Instances + CELL-SORTED world-space atom SoA + per-instance grid. ---
+    let mut instance_headers: Vec<SdfInstanceHeader> = Vec::with_capacity(instances.len());
+    let mut instance_albedo: Vec<f32> = Vec::with_capacity(instances.len() * 3);
+    let mut atom_positions: Vec<f32> = Vec::new();
+    let mut atom_colors: Vec<f32> = Vec::new();
+    let mut atom_channels: Vec<f32> = Vec::new();
+    let mut instance_atom_range: Vec<f32> = Vec::with_capacity(instances.len() * 2);
+    let mut atom_grid_headers: Vec<f32> = Vec::with_capacity(instances.len() * 6);
+    let mut atom_cell_table: Vec<f32> = Vec::new();
+    let mut scene_min = [f32::INFINITY; 3];
+    let mut scene_max = [f32::NEG_INFINITY; 3];
+    for (ii, inst) in instances.iter().enumerate() {
+        let vol = inst.volume_index as usize;
+        if vol >= volumes.len() {
+            return Err(format!(
+                "instance {ii}: volume_index {vol} out of range (have {} volumes)",
+                volumes.len()
+            ));
+        }
+        if inst.uniform_scale <= 0.0 {
+            return Err(format!(
+                "instance {ii}: uniform_scale must be > 0, got {}",
+                inst.uniform_scale
+            ));
+        }
+        let q = glam::Quat::from_array(inst.rotation_xyzw).normalize();
+        let pos = glam::Vec3::from(inst.position);
+        let s = inst.uniform_scale;
+        let (wmin, wmax) = sdf_instance_world_aabb(&volumes[vol], inst);
+        for k in 0..3 {
+            scene_min[k] = scene_min[k].min(wmin[k]);
+            scene_max[k] = scene_max[k].max(wmax[k]);
+        }
+        instance_headers.push(SdfInstanceHeader {
+            instance_id: (ii as u64) + 1,
+            asset_id: (vol as u64) + 1,
+            volume_index: inst.volume_index,
+            position: inst.position,
+            rotation_xyzw: q.to_array(),
+            uniform_scale: s,
+            world_aabb_min: wmin,
+            world_aabb_max: wmax,
+        });
+        instance_albedo.extend_from_slice(&inst.albedo);
+
+        // World-space atoms (rot*scale*local + pos — the SDF grid transform).
+        let world_pos: Vec<[f32; 3]> = atoms_per_instance[ii]
+            .iter()
+            .map(|a| (pos + q * (glam::Vec3::from(a.position) * s)).to_array())
+            .collect();
+
+        // Per-instance cell grid, anchored at the SAME padded world AABB min
+        // the kernel reads back from the instance header. The atom SoA is
+        // appended in CELL-SORTED order so each cell is one (start,count) run.
+        let grid = build_sdf_atom_cell_grid(&world_pos, wmin, wmax, glass_detect_r);
+        let atom_offset = atom_channels.len() as u32;
+        for &orig in &grid.order {
+            let a = &atoms_per_instance[ii][orig as usize];
+            let wp = world_pos[orig as usize];
+            atom_positions.extend_from_slice(&wp);
+            atom_colors.extend_from_slice(&a.color);
+            atom_channels.push(a.channel as f32);
+        }
+        let atom_count = atom_channels.len() as u32 - atom_offset;
+        instance_atom_range.push(atom_offset as f32);
+        instance_atom_range.push(atom_count as f32);
+
+        // 6-float grid header + this instance's (start,count) cell table.
+        atom_grid_headers.extend_from_slice(&[
+            grid.dims[0] as f32,
+            grid.dims[1] as f32,
+            grid.dims[2] as f32,
+            grid.cell_size,
+            atom_cell_table.len() as f32, // table offset in FLOATS
+            atom_offset as f32,           // atom_base into the SoA
+        ]);
+        for &(start, count) in &grid.cell_table {
+            atom_cell_table.push(start as f32);
+            atom_cell_table.push(count as f32);
+        }
+    }
+
+    let sdf = SdfLayer::from_parts_textured(
+        volume_headers,
+        instance_headers,
+        all_distances,
+        instance_albedo,
+        atom_positions,
+        atom_colors,
+        atom_channels,
+        instance_atom_range,
+        atom_grid_headers,
+        atom_cell_table,
+    );
+
+    let mut scene = SceneState::new(width, height);
+    scene.sdf = sdf;
+    scene.mark_sdf_changed();
+
+    // Sentinel triangle (BVH validity — invisible, see pathtrace_sdf_to_rgba).
+    {
+        use spectra_scene_state::MaterialLayer;
+        let cx = 0.5 * (scene_min[0] + scene_max[0]);
+        let cz = 0.5 * (scene_min[2] + scene_max[2]);
+        let far = [cx, scene_min[1] - 1000.0, cz];
+        scene.geometry.vertex_count = 3;
+        scene.geometry.triangle_count = 1;
+        scene.geometry.positions = vec![
+            far[0],
+            far[1],
+            far[2],
+            far[0] + 0.001,
+            far[1],
+            far[2],
+            far[0],
+            far[1],
+            far[2] + 0.001,
+        ];
+        scene.geometry.normals = vec![0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0];
+        scene.geometry.uvs = vec![0.0; 6];
+        scene.geometry.indices = vec![0, 1, 2];
+        scene.geometry.material_ids = vec![0];
+        scene.materials = MaterialLayer {
+            params: vec![0.0; VULKAN_MATERIAL_FLOATS],
+            spectral_spd: Default::default(),
+            material_count: 1,
+        };
+        scene.mark_geometry_changed();
+        scene.mark_materials_changed();
+    }
+
+    // Four-light rig (identical to the M2 atoms path).
+    let sun = glam::Vec3::from(rig.sun_dir).normalize_or_zero();
+    let camera_fill = (glam::Vec3::from(eye) - glam::Vec3::from(target) + glam::Vec3::Y * 0.35)
+        .normalize_or_zero();
+    let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
+    let mut light_data: Vec<f32> = Vec::new();
+    for (dir, color, intensity) in [
+        (sun.to_array(), rig.sun_color, rig.sun_intensity),
+        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
+        (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
+    ] {
+        light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
+    }
+    scene.lights = LightLayer {
+        light_data,
+        light_count: 4,
+    };
+    scene.mark_lights_changed();
+
+    let view = glam::Mat4::look_at_rh(
+        glam::Vec3::from(eye),
+        glam::Vec3::from(target),
+        glam::Vec3::Y,
+    )
+    .to_cols_array();
+    let cam = camera_layer(view, fov_y, width, height);
+    scene.camera = cam.clone();
+
+    let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
+    let mut config = RenderConfig::near_realtime(width, height);
+    config.slang_kernel_dir = resolve_slang_kernel_dir();
+    config.target_spp = spp;
+    // Glass needs continuation bounces; disable NRC so the refracted ray never
+    // gets short-circuited into the cache at a deep bounce. Keep >= 3 bounces
+    // (camera→glass→behind→...). IDENTICAL to the M2 entry point — the parity
+    // gate compares this path's frames byte-wise against it.
+    config.use_nrc = false;
+    if config.max_bounces < 3 {
+        config.max_bounces = 3;
+    }
+    let mut renderer = Renderer::new(gpu, config);
+    renderer.set_sdf_albedo(instances[0].albedo);
+    renderer
+        .load_scene_state(scene)
+        .map_err(|e| format!("load_scene_state: {e:?}"))?;
+    renderer.set_sky_gradient(
+        rig.sky_dome_zenith,
+        rig.sky_dome_horizon,
+        rig.sky_dome_intensity,
+    );
+    renderer.set_camera_view_matrix(cam.view_matrix);
+    renderer.set_view_proj(cam.view_matrix);
+
+    let frame = renderer.render().map_err(|e| format!("render: {e:?}"))?;
+    let n = (frame.width * frame.height) as usize;
+    let mut out = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        for ch in 0..4 {
+            out.push((frame.beauty[i * 4 + ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        }
+    }
+    Ok(out)
+}
+
 /// Build the flat texture atlas arrays for `Renderer::set_texture_atlas`.
 ///
 /// Spectra's `slang/texture_atlas.slang` `TextureDesc` is
@@ -2962,6 +3451,187 @@ mod tests {
              Either windows are smoothed out of the SDF and the atom gather can't \
              locate them, or the glass hit is terminating opaque instead of \
              transmitting."
+        );
+    }
+
+    /// Wave-1 Task 1 ACCEPTANCE: the cell-grid atom gather is a pure
+    /// acceleration. The SAME craftsman frame rendered through the grid path
+    /// (`pathtrace_sdf_scene_textured_to_rgba`, `u_sdf_textured = 1`,
+    /// gather-only mode: no materials/textures yet, identical flat-blend
+    /// shading) must match the linear-gather oracle
+    /// (`pathtrace_sdf_scene_with_atoms_to_rgba`, `u_sdf_textured = 0`)
+    /// byte-for-byte within 1 LSB, while visiting ~80x fewer atoms per hit.
+    /// The gather cost is host-computed: avg atoms tested per probe = sum of
+    /// the 3x3x3 cell-neighbourhood counts at 1,000 surface points (the atoms
+    /// themselves ARE surface samples).
+    ///
+    /// Run alone (GPU, seconds/frame is fine):
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
+    ///     --lib sdf_gather_grid_matches_linear -- --nocapture --test-threads=1
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn sdf_gather_grid_matches_linear() {
+        use super::{
+            LightRig, SdfSceneInstance, pathtrace_sdf_scene_textured_to_rgba,
+            pathtrace_sdf_scene_with_atoms_to_rgba,
+        };
+
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
+
+        let volume = load_atoms_sdf(&asset_path);
+        let (atoms, raw_glass) = load_atoms_material(&asset_path, false);
+        let n_atoms = atoms.len();
+        eprintln!(
+            "[sdf_gather_grid] craftsman: res={:?} voxel={:.4} atoms={n_atoms} (glass={raw_glass})",
+            volume.resolution, volume.voxel_size
+        );
+
+        // Same placement + camera + rig as the M2 glass test so the frame
+        // exercises facade, roof, trim AND glass-detect gather paths.
+        let ground_y = -volume.origin[1];
+        let instance = SdfSceneInstance {
+            volume_index: 0,
+            position: [
+                -(volume.origin[0]
+                    + (volume.resolution[0] - 1) as f32 * volume.voxel_size * 0.5),
+                ground_y,
+                -(volume.origin[2]
+                    + (volume.resolution[2] - 1) as f32 * volume.voxel_size * 0.5),
+            ],
+            rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+            uniform_scale: 1.0,
+            albedo: [0.7, 0.7, 0.7],
+        };
+        let instances = [instance];
+
+        let (w, h) = (320u32, 320u32);
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        let center = [0.0f32, 4.5, 0.0];
+        let eye = [3.0f32, 6.0, 22.0];
+        let rig = LightRig {
+            sun_dir: [0.3, 0.6, 0.7],
+            sun_intensity: 2.2,
+            sky_intensity: 0.0,
+            camera_fill: 0.0,
+            rim_fill: 0.0,
+            sky_dome_intensity: 1.0,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.80, 0.86, 0.95],
+            ..Default::default()
+        };
+
+        // Linear oracle (M2 entry point, u_sdf_textured = 0: full atom scan).
+        let rgba_linear = pathtrace_sdf_scene_with_atoms_to_rgba(
+            &volume_slice(&volume),
+            &instances,
+            &[atoms.clone()],
+            eye,
+            center,
+            fov_y,
+            w,
+            h,
+            6,
+            &rig,
+        )
+        .expect("linear-gather oracle render should succeed");
+
+        // Grid path (new entry point, u_sdf_textured = 1: 3x3x3 cell gather,
+        // materials empty -> identical flat-blend shading, gather-only mode).
+        let rgba_grid = pathtrace_sdf_scene_textured_to_rgba(
+            &volume_slice(&volume),
+            &instances,
+            &[atoms.clone()],
+            eye,
+            center,
+            fov_y,
+            w,
+            h,
+            6,
+            &rig,
+        )
+        .expect("grid-gather render should succeed");
+
+        let out_dir = std::env::temp_dir();
+        let linear_png = out_dir.join("ochroma_sdf_gather_linear.png");
+        let grid_png = out_dir.join("ochroma_sdf_gather_grid.png");
+        write_png_rgba(linear_png.to_str().unwrap(), &rgba_linear, w, h);
+        write_png_rgba(grid_png.to_str().unwrap(), &rgba_grid, w, h);
+        eprintln!("[sdf_gather_grid] wrote {} (linear oracle)", linear_png.display());
+        eprintln!("[sdf_gather_grid] wrote {} (cell grid)", grid_png.display());
+
+        // --- Parity: byte-wise max |Δrgb| over the whole RGBA frame. ---------
+        assert_eq!(rgba_linear.len(), rgba_grid.len());
+        let mut max_d_bytes = 0u8;
+        let mut diff_px = 0usize;
+        for (i, (a, b)) in rgba_linear.iter().zip(rgba_grid.iter()).enumerate() {
+            let d = a.abs_diff(*b);
+            if d > 0 && i % 4 != 3 {
+                diff_px += 1;
+            }
+            if d > max_d_bytes {
+                max_d_bytes = d;
+            }
+        }
+        let max_drgb = max_d_bytes as f64 / 255.0;
+
+        // --- Gather cost, host-computed from the SAME grid the entry point
+        // uploads: rebuild it over the instance's world-space atoms and sum the
+        // 3x3x3 neighbourhood counts at 1,000 deterministic surface probes. ---
+        let (wmin, wmax) = super::sdf_instance_world_aabb(&volume, &instance);
+        let q = glam::Quat::from_array(instance.rotation_xyzw).normalize();
+        let pos = glam::Vec3::from(instance.position);
+        let s = instance.uniform_scale;
+        let world_pos: Vec<[f32; 3]> = atoms
+            .iter()
+            .map(|a| (pos + q * (glam::Vec3::from(a.position) * s)).to_array())
+            .collect();
+        // Same glass-detect-radius cell floor the entry point applies.
+        let glass_detect_r = (volume.voxel_size * instance.uniform_scale * 0.6).max(0.18);
+        let grid = super::build_sdf_atom_cell_grid(&world_pos, wmin, wmax, glass_detect_r);
+        eprintln!(
+            "[sdf_gather_grid] grid: dims={:?} cell={:.3} m cells={} table={} floats",
+            grid.dims,
+            grid.cell_size,
+            grid.cell_table.len(),
+            grid.cell_table.len() * 2
+        );
+
+        let n_probes = 1000usize;
+        let mut seed: u64 = 0x243F_6A88_85A3_08D3; // fixed -> deterministic probes
+        let mut total_tested: u64 = 0;
+        for _ in 0..n_probes {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let idx = ((seed >> 33) as usize) % n_atoms;
+            total_tested += grid.neighbourhood_atom_count(world_pos[idx]) as u64;
+        }
+        let g_avg = total_tested as f64 / n_probes as f64;
+        let speedup = n_atoms as f64 / g_avg;
+
+        // The acceptance line (real measured values, no constants).
+        eprintln!(
+            "gather: grid={g_avg:.1} atoms/hit (avg) vs linear={n_atoms}, \
+             speedup={speedup:.0}x, max|\u{394}rgb|={max_drgb:.4}"
+        );
+        eprintln!(
+            "[sdf_gather_grid] differing RGB bytes: {diff_px} of {}",
+            (w * h * 3) as usize
+        );
+
+        assert!(
+            speedup >= 20.0,
+            "cell-grid gather must visit >= 20x fewer atoms than the linear scan \
+             (got {speedup:.1}x at {g_avg:.1} atoms/hit vs {n_atoms})"
+        );
+        assert!(
+            max_drgb < 1.0 / 255.0,
+            "grid gather must reproduce the linear-gather frame within 1 LSB \
+             (max|\u{394}rgb| = {max_drgb:.4}, {diff_px} RGB bytes differ). The grid \
+             neighbourhood or cell math is wrong — fix it, don't relax this gate."
         );
     }
 
