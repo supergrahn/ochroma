@@ -750,6 +750,87 @@ pub fn pathtrace_sdf_scene_to_rgba(
     spp: u32,
     rig: &LightRig,
 ) -> Result<Vec<u8>, String> {
+    let (rgba, _report) = pathtrace_sdf_scene_perf(
+        volumes,
+        instances,
+        eye,
+        target,
+        fov_y,
+        width,
+        height,
+        spp,
+        rig,
+        &SdfScenePerfKnobs::default(),
+    )?;
+    Ok(rgba)
+}
+
+/// Perf-harness knobs for [`pathtrace_sdf_scene_perf`]. `Default` reproduces
+/// [`pathtrace_sdf_scene_to_rgba`] exactly (no instrumentation, no overrides).
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone, Default)]
+pub struct SdfScenePerfKnobs {
+    /// `u_sdf_debug_mode`: 0 = normal, 1 = march-stats→film (steps/empty/evals
+    /// in RGB, hit flag in A; skips normal+shading), 2 = skip SDF march.
+    pub debug_mode: i32,
+    /// Disable the post-render denoiser (isolates GPU kernel time).
+    pub disable_denoiser: bool,
+    /// Override `RenderConfig::near_realtime`'s `max_bounces` (default 3).
+    pub max_bounces: Option<u32>,
+    /// Collect per-dispatch kernel timings via `Renderer::timing_sink`.
+    pub collect_kernel_timing: bool,
+    /// Number of `render()` calls on ONE persistent renderer (default/0 = 1).
+    /// Frame 0 pays runtime kernel compilation + lazy GPU allocation; frames
+    /// 1.. are the steady-state cost. `per_kernel_ms` and the march counters
+    /// are reported for the LAST frame only; `frame_times_ms` has every frame.
+    pub frames: u32,
+    /// Force the exhaustive M1 union-AABB march (`u_sdf_march_legacy = 1`)
+    /// instead of the interval-culled march — the A/B baseline.
+    pub legacy_march: bool,
+    /// Strip the pipeline to what an SDF-primary frame actually uses:
+    /// no ReSTIR DI/PT chains, no NRC query, max_bounces = 1.
+    pub lean_pipeline: bool,
+}
+
+/// Per-render measurement report from [`pathtrace_sdf_scene_perf`].
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone, Default)]
+pub struct SdfScenePerfReport {
+    /// Wall-clock `Renderer::render()` time of the LAST frame (includes
+    /// readback + denoiser; frame 0 additionally pays kernel compilation).
+    pub render_time_ms: f64,
+    /// Wall-clock ms of EVERY `render()` call (frame 0 = cold/compile).
+    pub frame_times_ms: Vec<f64>,
+    pub samples_done: u32,
+    /// Raw `(kernel_label, ms)` per dispatch of the LAST frame, in dispatch
+    /// order (empty unless `collect_kernel_timing`).
+    pub per_kernel_ms: Vec<(String, f32)>,
+    /// Tonemapped beauty of the last frame (RGBA f32, clamped [0,1]).
+    pub beauty: Vec<f32>,
+    /// RAW film accumulators (film_r/g/b, divided by samples_done) — the
+    /// unclamped per-ray march counters when `debug_mode == 1`. RGB triplets.
+    pub raw_film: Vec<f32>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Instrumented variant of [`pathtrace_sdf_scene_to_rgba`]: same scene build,
+/// same renderer, plus perf knobs (march-stats debug mode, per-kernel timing,
+/// denoiser/bounce overrides) and a [`SdfScenePerfReport`].
+#[cfg(feature = "spectra-native")]
+#[allow(clippy::too_many_arguments)]
+pub fn pathtrace_sdf_scene_perf(
+    volumes: &[SdfVolumeInput],
+    instances: &[SdfSceneInstance],
+    eye: [f32; 3],
+    target: [f32; 3],
+    fov_y: f32,
+    width: u32,
+    height: u32,
+    spp: u32,
+    rig: &LightRig,
+    knobs: &SdfScenePerfKnobs,
+) -> Result<(Vec<u8>, SdfScenePerfReport), String> {
     use crate::splat_convert::camera_layer;
     use spectra_scene_state::{
         LightLayer, SceneState, SdfInstanceHeader, SdfLayer, SdfVolumeHeader,
@@ -938,7 +1019,24 @@ pub fn pathtrace_sdf_scene_to_rgba(
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
     config.target_spp = spp;
+    if knobs.disable_denoiser {
+        config.denoiser_mode = spectra_renderer::DenoiserMode::None;
+    }
+    if let Some(mb) = knobs.max_bounces {
+        config.max_bounces = mb;
+    }
+    if knobs.lean_pipeline {
+        config.use_restir = false;
+        config.use_nrc = false;
+        config.resample_mode = spectra_renderer::ResampleMode::None;
+        config.max_bounces = knobs.max_bounces.unwrap_or(1);
+    }
     let mut renderer = Renderer::new(gpu, config);
+    renderer.set_sdf_debug_mode(knobs.debug_mode);
+    renderer.sdf_march_legacy = if knobs.legacy_march { 1 } else { 0 };
+    if knobs.collect_kernel_timing {
+        renderer.timing_sink = Some(Vec::new());
+    }
     // Fallback single albedo (used only if the per-instance buffer is absent).
     renderer.set_sdf_albedo(instances[0].albedo);
     renderer
@@ -952,15 +1050,64 @@ pub fn pathtrace_sdf_scene_to_rgba(
     renderer.set_camera_view_matrix(cam.view_matrix);
     renderer.set_view_proj(cam.view_matrix);
 
-    let frame = renderer.render().map_err(|e| format!("render: {e:?}"))?;
+    // Render `frames` times on the SAME renderer: frame 0 pays runtime slangc
+    // kernel compilation + lazy GPU allocation; frames 1.. are steady state.
+    let n_frames = knobs.frames.max(1);
+    let mut frame_times_ms: Vec<f64> = Vec::with_capacity(n_frames as usize);
+    let mut frame = None;
+    for fi in 0..n_frames {
+        // Per-frame timing: only keep the last frame's per-kernel entries.
+        if knobs.collect_kernel_timing {
+            renderer.timing_sink = Some(Vec::new());
+        }
+        let t0 = std::time::Instant::now();
+        let f = renderer.render().map_err(|e| format!("render (frame {fi}): {e:?}"))?;
+        frame_times_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
+        frame = Some(f);
+    }
+    let frame = frame.unwrap();
+
+    // RAW film readback (unclamped counters for debug_mode == 1): beauty goes
+    // through the CPU tonemap which clamps to [0,1], so the march counters can
+    // only be harvested from the film accumulators directly.
     let n = (frame.width * frame.height) as usize;
+    let mut raw_film = vec![0.0f32; n * 3];
+    if let Some(state) = renderer.state.as_ref() {
+        if let (Some(rh), Some(gh), Some(bh)) = (state.film_r, state.film_g, state.film_b) {
+            let mut r = vec![0.0f32; n];
+            let mut g = vec![0.0f32; n];
+            let mut b = vec![0.0f32; n];
+            if renderer.gpu.download_f32(&rh, &mut r).is_ok()
+                && renderer.gpu.download_f32(&gh, &mut g).is_ok()
+                && renderer.gpu.download_f32(&bh, &mut b).is_ok()
+            {
+                let inv = 1.0 / frame.samples_done.max(1) as f32;
+                for i in 0..n {
+                    raw_film[i * 3] = r[i] * inv;
+                    raw_film[i * 3 + 1] = g[i] * inv;
+                    raw_film[i * 3 + 2] = b[i] * inv;
+                }
+            }
+        }
+    }
+
+    let report = SdfScenePerfReport {
+        render_time_ms: *frame_times_ms.last().unwrap(),
+        frame_times_ms,
+        samples_done: frame.samples_done,
+        per_kernel_ms: renderer.timing_sink.take().unwrap_or_default(),
+        beauty: frame.beauty.clone(),
+        raw_film,
+        width: frame.width,
+        height: frame.height,
+    };
     let mut out = Vec::with_capacity(n * 4);
     for i in 0..n {
         for ch in 0..4 {
             out.push((frame.beauty[i * 4 + ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
         }
     }
-    Ok(out)
+    Ok((out, report))
 }
 
 /// One-shot still: **path-trace a CLUSTER of SDF buildings WITH per-surface
@@ -2863,10 +3010,22 @@ mod tests {
     ///   SPECTRA_SLANG_DIR=$HOME/src/spectra/slang SLANG_DIR=$HOME/slang-sdk \
     ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
     ///     --lib sdf_city_block_renders_multiple_solid_buildings -- --nocapture --test-threads=1
+    /// The shared M1 city-block scene: 12 instances over 6 cooked volumes on a
+    /// 3x4 grid, the tight city-builder oblique camera, dark-sky sun rig and
+    /// 320x240 framing. Single source of truth for the M1 milestone test AND
+    /// the perf-breakdown harness so both always measure the same workload.
     #[cfg(feature = "spectra-native")]
-    #[test]
-    fn sdf_city_block_renders_multiple_solid_buildings() {
-        use super::{LightRig, SdfSceneInstance, pathtrace_sdf_scene_to_rgba};
+    #[allow(clippy::type_complexity)]
+    fn city_block_scene() -> (
+        Vec<super::SdfVolumeInput>,
+        Vec<super::SdfSceneInstance>,
+        [f32; 3],      // eye
+        [f32; 3],      // center / look target
+        f32,           // fov_y
+        (u32, u32),    // (w, h)
+        super::LightRig,
+    ) {
+        use super::{LightRig, SdfSceneInstance};
 
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
             .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
@@ -2999,6 +3158,20 @@ mod tests {
             sky_dome_horizon: [0.0, 0.0, 0.0],
             ..Default::default()
         };
+
+        (volumes, instances, eye, center, fov_y, (w, h), rig)
+    }
+
+    /// M1: the multi-instance proof — a CITY BLOCK of buildings, every surface a
+    /// native sphere-traced SDF instance, each building SOLID and per-instance
+    /// coloured, buildings occluding each other correctly.
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn sdf_city_block_renders_multiple_solid_buildings() {
+        use super::pathtrace_sdf_scene_to_rgba;
+
+        let (volumes, instances, eye, center, fov_y, (w, h), rig) = city_block_scene();
+        let n_instances = instances.len();
 
         let t0 = std::time::Instant::now();
         let rgba = pathtrace_sdf_scene_to_rgba(
@@ -3165,6 +3338,305 @@ mod tests {
             total_coverage >= 0.15,
             "building cluster should cover a substantial part of the frame, got \
              {total_coverage:.4}"
+        );
+    }
+
+    /// Aggregate raw per-dispatch timings into (label, count, total_ms) rows,
+    /// sorted by total descending.
+    #[cfg(feature = "spectra-native")]
+    fn aggregate_kernel_ms(raw: &[(String, f32)]) -> Vec<(String, u32, f32)> {
+        let mut map: std::collections::HashMap<String, (u32, f32)> = Default::default();
+        for (label, ms) in raw {
+            let e = map.entry(label.clone()).or_insert((0, 0.0));
+            e.0 += 1;
+            e.1 += *ms;
+        }
+        let mut rows: Vec<(String, u32, f32)> = map
+            .into_iter()
+            .map(|(label, (n, total))| (label, n, total))
+            .collect();
+        rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+        rows
+    }
+
+    /// PERF BREAKDOWN (run explicitly with --ignored): per-kernel + per-cost
+    /// breakdown of the M1 city-block frame on this box. Prints the hard table
+    /// that proves where the seconds go — march vs normal+shade vs everything
+    /// else — plus per-ray march counters (steps, empty-space steps, instance
+    /// evaluations) harvested from the kernel via u_sdf_debug_mode=1.
+    ///
+    /// Run:
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///   SPECTRA_SLANG_DIR=$HOME/src/spectra-perf/slang \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native --release \
+    ///     --lib sdf_city_block_perf_breakdown -- --ignored --nocapture --test-threads=1
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    #[ignore = "perf harness — run explicitly; seconds-per-frame on the iGPU"]
+    fn sdf_city_block_perf_breakdown() {
+        use super::{SdfScenePerfKnobs, pathtrace_sdf_scene_perf};
+
+        let (volumes, instances, eye, center, fov_y, (w, h), rig) = city_block_scene();
+        let _n_inst = instances.len() as f64;
+        let n_px = (w * h) as usize;
+
+        #[derive(Clone, Copy)]
+        struct V {
+            spp: u32,
+            debug: i32,
+            legacy: bool,
+            lean: bool,
+        }
+        let run = |v: V, label: &str| {
+            let knobs = SdfScenePerfKnobs {
+                debug_mode: v.debug,
+                disable_denoiser: true,
+                max_bounces: None,
+                collect_kernel_timing: true,
+                frames: 3,
+                legacy_march: v.legacy,
+                lean_pipeline: v.lean,
+            };
+            let t0 = std::time::Instant::now();
+            let (rgba, report) = pathtrace_sdf_scene_perf(
+                &volumes, &instances, eye, center, fov_y, w, h, v.spp, &rig, &knobs,
+            )
+            .expect("perf render should succeed");
+            let wall_s = t0.elapsed().as_secs_f64();
+            eprintln!(
+                "\n[perf] ===== {label} (spp={} debug={} legacy_march={} lean={}) =====\n\
+                 [perf] frame times ms (f0=cold compile+alloc): {:?}\n\
+                 [perf] steady-state frame = {:.1} ms (wall incl. setup {:.1}s) samples_done={}",
+                v.spp, v.debug, v.legacy, v.lean,
+                report
+                    .frame_times_ms
+                    .iter()
+                    .map(|t| (t * 10.0).round() / 10.0)
+                    .collect::<Vec<_>>(),
+                report.render_time_ms, wall_s, report.samples_done
+            );
+            let rows = aggregate_kernel_ms(&report.per_kernel_ms);
+            let total_kernel_ms: f32 = rows.iter().map(|r| r.2).sum();
+            eprintln!(
+                "[perf] {:<28} {:>5} {:>12} {:>8}",
+                "kernel", "n", "total ms", "share"
+            );
+            for (klabel, n, total) in rows.iter().take(8) {
+                eprintln!(
+                    "[perf] {:<28} {:>5} {:>12.1} {:>7.1}%",
+                    klabel,
+                    n,
+                    total,
+                    100.0 * total / total_kernel_ms
+                );
+            }
+            eprintln!(
+                "[perf] {:<28} {:>5} {:>12.1} {:>7.1}%",
+                "ALL KERNELS",
+                report.per_kernel_ms.len(),
+                total_kernel_ms,
+                100.0
+            );
+            (rgba, report)
+        };
+
+        // March counter harvest from a debug_mode=1 run's raw film:
+        // (marching_rays, steps mean/p99/max, empty mean, evals mean, totals)
+        let harvest = |r: &super::SdfScenePerfReport| {
+            let mut steps: Vec<f32> = Vec::with_capacity(n_px);
+            let mut empty: Vec<f32> = Vec::with_capacity(n_px);
+            let mut evals: Vec<f32> = Vec::with_capacity(n_px);
+            for i in 0..n_px {
+                steps.push(r.raw_film[i * 3]);
+                empty.push(r.raw_film[i * 3 + 1]);
+                evals.push(r.raw_film[i * 3 + 2]);
+            }
+            let sum = |v: &[f32]| v.iter().map(|x| *x as f64).sum::<f64>();
+            let marching = steps.iter().filter(|s| **s > 0.0).count();
+            let mut sorted = steps.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let p99 = sorted[((sorted.len() - 1) as f64 * 0.99) as usize];
+            let max = *sorted.last().unwrap();
+            (
+                marching,
+                sum(&steps) / n_px as f64,         // steps mean (all px)
+                sum(&empty) / n_px as f64,         // empty mean
+                sum(&evals) / n_px as f64,         // evals mean
+                p99 as f64,
+                max as f64,
+                sum(&steps),
+                sum(&evals),
+            )
+        };
+        let shade_ms = |r: &super::SdfScenePerfReport| -> f32 {
+            r.per_kernel_ms
+                .iter()
+                .filter(|(l, _)| l == "shade_megakernel")
+                .map(|(_, ms)| *ms)
+                .sum()
+        };
+        let kernels_total = |r: &super::SdfScenePerfReport| -> f32 {
+            r.per_kernel_ms.iter().map(|(_, ms)| *ms).sum()
+        };
+
+        // ---- The variant matrix (all steady-state, frames=3, denoiser off) --
+        let (_, w2) = run(V { spp: 4, debug: 2, legacy: true,  lean: false }, "W2 no-SDF floor");
+        let (_, w1) = run(V { spp: 4, debug: 1, legacy: true,  lean: false }, "W1 LEGACY march-only");
+        let (w0_rgba, w0) = run(V { spp: 4, debug: 0, legacy: true,  lean: false }, "W0 LEGACY full (M1 baseline)");
+        let (_, a1) = run(V { spp: 4, debug: 1, legacy: false, lean: false }, "A1 FIXA march-only");
+        let (a0_rgba, a0) = run(V { spp: 4, debug: 0, legacy: false, lean: false }, "A0 FIXA full");
+        let (l0_rgba, l0) = run(V { spp: 1, debug: 0, legacy: false, lean: true }, "L0 FIXA+LEAN 1spp (realtime-shaped)");
+        let (_, l1) = run(V { spp: 1, debug: 0, legacy: true,  lean: true }, "L1 LEGACY+LEAN 1spp");
+        // Lean march isolation (single shade dispatch, no ReSTIR noise):
+        let (_, l2) = run(V { spp: 1, debug: 2, legacy: false, lean: true }, "L2 LEAN no-SDF floor");
+        let (_, l1d) = run(V { spp: 1, debug: 1, legacy: true,  lean: true }, "L1d LEGACY+LEAN march-only");
+        let (_, l0d) = run(V { spp: 1, debug: 1, legacy: false, lean: true }, "L0d FIXA+LEAN march-only");
+
+        // ---- Correctness proof: Fix A must render the same city block. ------
+        let out_dir = std::env::temp_dir();
+        write_png_rgba(out_dir.join("ochroma_sdf_perf_legacy.png").to_str().unwrap(), &w0_rgba, w, h);
+        write_png_rgba(out_dir.join("ochroma_sdf_perf_fixa.png").to_str().unwrap(), &a0_rgba, w, h);
+        write_png_rgba(out_dir.join("ochroma_sdf_perf_lean.png").to_str().unwrap(), &l0_rgba, w, h);
+        let mut diff_sum = 0u64;
+        let mut diff_max = 0u8;
+        let mut diff_cnt = 0usize;
+        for i in 0..(n_px * 4) {
+            let d = w0_rgba[i].abs_diff(a0_rgba[i]);
+            diff_sum += d as u64;
+            diff_max = diff_max.max(d);
+            if d > 8 {
+                diff_cnt += 1;
+            }
+        }
+        let thr = 30.0f32;
+        let lit_of = |rgba: &[u8]| {
+            (0..n_px)
+                .filter(|&p| luma(&rgba[p * 4..p * 4 + 4]) > thr)
+                .count()
+        };
+        let (lit_w0, lit_a0, lit_l0) = (lit_of(&w0_rgba), lit_of(&a0_rgba), lit_of(&l0_rgba));
+        eprintln!(
+            "\n[perf] image diff legacy vs fixA: mean={:.3}/255 max={} px>8={}/{} | lit px: legacy={} fixA={} lean1spp={}",
+            diff_sum as f64 / (n_px * 4) as f64, diff_max, diff_cnt, n_px * 4, lit_w0, lit_a0, lit_l0
+        );
+
+        // ---- Counters before/after. -----------------------------------------
+        let (mar_b, st_b, em_b, ev_b, p99_b, max_b, tot_st_b, tot_ev_b) = harvest(&w1);
+        let (mar_a, st_a, em_a, ev_a, p99_a, max_a, tot_st_a, tot_ev_a) = harvest(&a1);
+
+        // March-only isolation in the LEAN pipeline (1 shade dispatch, no
+        // ReSTIR/NRC dispatch noise): debug1 (march, no normal/shade) minus
+        // debug2 (no SDF work at all).
+        let march_b = shade_ms(&l1d) - shade_ms(&l2);
+        let march_a = shade_ms(&l0d) - shade_ms(&l2);
+        let _ = (&w1, &a1); // full-pipeline debug variants (counters only)
+
+        eprintln!("\n[perf] ========== HARD TABLE (320x240, 12 instances; steady-state frame) ==========");
+        eprintln!("[perf] cold frame0 (compile+alloc) ms  : {:.0} (runtime slangc — every fresh Renderer)", w0.frame_times_ms[0]);
+        eprintln!("[perf] steady frame ms                 : LEGACY={:.1}  FIXA={:.1}  FIXA+LEAN(1spp)={:.1}  LEGACY+LEAN={:.1}", w0.render_time_ms, a0.render_time_ms, l0.render_time_ms, l1.render_time_ms);
+        eprintln!("[perf] GPU kernels total ms            : LEGACY={:.1}  FIXA={:.1}  FIXA+LEAN={:.1}  no-SDF floor={:.1}", kernels_total(&w0), kernels_total(&a0), kernels_total(&l0), kernels_total(&w2));
+        eprintln!("[perf] shade_megakernel ms             : LEGACY={:.1}  FIXA={:.1}  LEAN={:.1}  no-SDF={:.1}", shade_ms(&w0), shade_ms(&a0), shade_ms(&l0), shade_ms(&w2));
+        eprintln!("[perf] march-only ms (lean, 1 dispatch) : LEGACY={march_b:.1}  FIXA={march_a:.1}  speedup x{:.1}", march_b / march_a.max(1e-3));
+        eprintln!("[perf] CPU+readback overhead ms        : LEGACY={:.1}  FIXA+LEAN={:.1}", w0.render_time_ms - kernels_total(&w0) as f64, l0.render_time_ms - kernels_total(&l0) as f64);
+        eprintln!("[perf] --- march counters (mean over all px; 55.9% of rays enter the AABB) ---");
+        eprintln!("[perf] steps/ray mean|p99|max          : LEGACY {st_b:.1}|{p99_b:.0}|{max_b:.0}   FIXA {st_a:.1}|{p99_a:.0}|{max_a:.0}");
+        eprintln!("[perf] empty steps/ray mean            : LEGACY {em_b:.1} ({:.1}%)   FIXA {em_a:.1} ({:.1}%)", 100.0 * em_b / st_b.max(1e-9), 100.0 * em_a / st_a.max(1e-9));
+        eprintln!("[perf] instance evals/ray mean         : LEGACY {ev_b:.1}   FIXA {ev_a:.1}   reduction x{:.1}", ev_b / ev_a.max(1e-9));
+        eprintln!("[perf] totals/frame@1spp  steps|evals  : LEGACY {tot_st_b:.2e}|{tot_ev_b:.2e}   FIXA {tot_st_a:.2e}|{tot_ev_a:.2e}");
+        eprintln!("[perf] marching rays                   : LEGACY {mar_b} (union-AABB entrants)  FIXA {mar_a} (instance-AABB entrants)");
+        eprintln!("[perf] ==============================================================================\n");
+
+        // ---- Real-outcome gates. --------------------------------------------
+        assert!(w0.render_time_ms > 0.0 && shade_ms(&w0) > 0.0, "timing sink empty");
+        assert!(mar_b > 0 && tot_st_b > 0.0, "march counters empty — debug mode not wired");
+        assert!(max_b > 16.0, "legacy max steps implausibly low — counters clamped?");
+        // Fix A must visit the same surfaces — the IMAGE is the invariant.
+        // (The marching-ray count legitimately drops: legacy marches every
+        // union-AABB entrant; interval culling only marches rays that enter
+        // at least one instance AABB.)
+        assert!(
+            mar_a > 0 && mar_a <= mar_b,
+            "interval culling should march a subset of legacy rays: {mar_b} -> {mar_a}"
+        );
+        assert!(
+            lit_a0 as f64 >= lit_w0 as f64 * 0.98 && lit_a0 as f64 <= lit_w0 as f64 * 1.02,
+            "Fix A changed lit coverage: {lit_w0} -> {lit_a0}"
+        );
+        assert!(
+            diff_sum as f64 / ((n_px * 4) as f64) < 1.0,
+            "Fix A image diverged from legacy: mean diff {:.3}/255",
+            diff_sum as f64 / (n_px * 4) as f64
+        );
+        // Fix A must actually reduce the work, not just match the image.
+        assert!(
+            ev_a < ev_b * 0.5,
+            "Fix A failed to cut instance evals: {ev_b:.1} -> {ev_a:.1}"
+        );
+    }
+
+    /// 720p PROBE (run explicitly with --ignored): the realtime-shaped frame
+    /// (interval-culled march + lean pipeline, 1 spp) at the design doc's
+    /// contract-point internal resolution, measured on THIS box — the number
+    /// the 4070 Ti projection scales from (no assumed pixel-scaling).
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    #[ignore = "perf harness — run explicitly"]
+    fn sdf_city_block_perf_720p() {
+        use super::{SdfScenePerfKnobs, pathtrace_sdf_scene_perf};
+
+        let (volumes, instances, eye, center, fov_y, _wh, rig) = city_block_scene();
+        let (w, h) = (1280u32, 720u32);
+        let knobs = SdfScenePerfKnobs {
+            debug_mode: 0,
+            disable_denoiser: true,
+            max_bounces: None,
+            collect_kernel_timing: true,
+            frames: 4,
+            legacy_march: false,
+            lean_pipeline: true,
+        };
+        let (rgba, report) = pathtrace_sdf_scene_perf(
+            &volumes, &instances, eye, center, fov_y, w, h, 1, &rig, &knobs,
+        )
+        .expect("720p perf render should succeed");
+        let knobs_legacy = SdfScenePerfKnobs {
+            legacy_march: true,
+            ..knobs.clone()
+        };
+        let (_, report_legacy) = pathtrace_sdf_scene_perf(
+            &volumes, &instances, eye, center, fov_y, w, h, 1, &rig, &knobs_legacy,
+        )
+        .expect("720p legacy perf render should succeed");
+
+        let rows = aggregate_kernel_ms(&report.per_kernel_ms);
+        eprintln!("\n[perf720] ===== 1280x720, 1spp, lean, interval-culled march =====");
+        eprintln!("[perf720] frame times ms: {:?}", report.frame_times_ms.iter().map(|t| (t * 10.0).round() / 10.0).collect::<Vec<_>>());
+        for (label, n, total) in rows.iter() {
+            eprintln!("[perf720] {label:<24} n={n} {total:>8.1} ms");
+        }
+        let kernels: f32 = report.per_kernel_ms.iter().map(|(_, ms)| ms).sum();
+        let kernels_legacy: f32 = report_legacy.per_kernel_ms.iter().map(|(_, ms)| ms).sum();
+        let n_px = (w * h) as usize;
+        let thr = 30.0f32;
+        let lit = (0..n_px)
+            .filter(|&p| luma(&rgba[p * 4..p * 4 + 4]) > thr)
+            .count();
+        eprintln!(
+            "[perf720] steady frame: FIXA+LEAN={:.1} ms (kernels {:.1}) | LEGACY+LEAN={:.1} ms (kernels {:.1}) | lit coverage {:.3}",
+            report.render_time_ms,
+            kernels,
+            report_legacy.render_time_ms,
+            kernels_legacy,
+            lit as f64 / n_px as f64
+        );
+        let png = std::env::temp_dir().join("ochroma_sdf_perf_720p.png");
+        write_png_rgba(png.to_str().unwrap(), &rgba, w, h);
+        eprintln!("[perf720] wrote {}", png.display());
+        assert!(report.render_time_ms > 0.0 && kernels > 0.0);
+        assert!(
+            lit as f64 / n_px as f64 > 0.15,
+            "720p frame lost the city block (lit {:.3})",
+            lit as f64 / n_px as f64
         );
     }
 }
