@@ -3687,59 +3687,38 @@ mod tests {
     #[test]
     fn sdf_gather_grid_matches_linear() {
         use super::{
-            LightRig, SdfSceneInstance, pathtrace_sdf_scene_textured_to_rgba,
-            pathtrace_sdf_scene_with_atoms_to_rgba,
+            pathtrace_sdf_scene_textured_to_rgba, pathtrace_sdf_scene_with_atoms_to_rgba,
         };
 
-        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
-        let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
-
-        let volume = load_atoms_sdf(&asset_path);
-        let (atoms, raw_glass) = load_atoms_material(&asset_path, false);
+        // Shared craftsman harness: the M2 glass test's placement + camera +
+        // rig, so the frame exercises facade, roof, trim AND glass-detect
+        // gather paths.
+        let hz = craftsman_harness();
+        let CraftsmanHarness {
+            ref asset_path,
+            ref volume,
+            ref atoms,
+            raw_glass,
+            instance,
+            eye,
+            center,
+            fov_y,
+            w,
+            h,
+            rig,
+            ..
+        } = hz;
+        let atoms = atoms.clone();
         let n_atoms = atoms.len();
         eprintln!(
             "[sdf_gather_grid] craftsman: res={:?} voxel={:.4} atoms={n_atoms} (glass={raw_glass})",
             volume.resolution, volume.voxel_size
         );
-
-        // Same placement + camera + rig as the M2 glass test so the frame
-        // exercises facade, roof, trim AND glass-detect gather paths.
-        let ground_y = -volume.origin[1];
-        let instance = SdfSceneInstance {
-            volume_index: 0,
-            position: [
-                -(volume.origin[0]
-                    + (volume.resolution[0] - 1) as f32 * volume.voxel_size * 0.5),
-                ground_y,
-                -(volume.origin[2]
-                    + (volume.resolution[2] - 1) as f32 * volume.voxel_size * 0.5),
-            ],
-            rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
-            uniform_scale: 1.0,
-            albedo: [0.7, 0.7, 0.7],
-        };
         let instances = [instance];
-
-        let (w, h) = (320u32, 320u32);
-        let fov_y = std::f32::consts::FRAC_PI_4;
-        let center = [0.0f32, 4.5, 0.0];
-        let eye = [3.0f32, 6.0, 22.0];
-        let rig = LightRig {
-            sun_dir: [0.3, 0.6, 0.7],
-            sun_intensity: 2.2,
-            sky_intensity: 0.0,
-            camera_fill: 0.0,
-            rim_fill: 0.0,
-            sky_dome_intensity: 1.0,
-            sky_dome_zenith: [0.45, 0.62, 0.95],
-            sky_dome_horizon: [0.80, 0.86, 0.95],
-            ..Default::default()
-        };
 
         // Linear oracle (M2 entry point, u_sdf_textured = 0: full atom scan).
         let rgba_linear = pathtrace_sdf_scene_with_atoms_to_rgba(
-            &volume_slice(&volume),
+            &volume_slice(volume),
             &instances,
             &[atoms.clone()],
             eye,
@@ -3756,8 +3735,8 @@ mod tests {
         // materials empty + channel table all -1 -> identical flat-blend
         // shading, gather-only mode).
         let rgba_grid = pathtrace_sdf_scene_textured_to_rgba(
-            &volume_slice(&volume),
-            &[load_forge_uv_params(&asset_path)],
+            &volume_slice(volume),
+            &[load_forge_uv_params(asset_path)],
             &instances,
             &[atoms.clone()],
             &[Vec::new()],
@@ -3804,7 +3783,7 @@ mod tests {
         // --- Gather cost, host-computed from the SAME grid the entry point
         // uploads: rebuild it over the instance's world-space atoms and sum the
         // 3x3x3 neighbourhood counts at 1,000 deterministic surface probes. ---
-        let (wmin, wmax) = super::sdf_instance_world_aabb(&volume, &instance);
+        let (wmin, wmax) = super::sdf_instance_world_aabb(volume, &instance);
         let q = glam::Quat::from_array(instance.rotation_xyzw).normalize();
         let pos = glam::Vec3::from(instance.position);
         let s = instance.uniform_scale;
@@ -3996,6 +3975,1421 @@ mod tests {
             offset_z: depth * 0.5,
             tile_recip: 1.0 / 2.5,
         }
+    }
+
+    /// Shared wave-1 craftsman harness: the cooked SDF + atoms, the M2 glass
+    /// test's placement (base on y=0, centred at the origin) and its exact
+    /// camera/rig, so the parity gate, the textured quality gates and the M2
+    /// glass test all measure the SAME frame.
+    #[cfg(feature = "spectra-native")]
+    struct CraftsmanHarness {
+        asset_path: std::path::PathBuf,
+        volume: super::SdfVolumeInput,
+        atoms: Vec<super::SdfSceneAtom>,
+        raw_glass: usize,
+        instance: super::SdfSceneInstance,
+        eye: [f32; 3],
+        center: [f32; 3],
+        fov_y: f32,
+        w: u32,
+        h: u32,
+        rig: super::LightRig,
+    }
+
+    #[cfg(feature = "spectra-native")]
+    fn craftsman_harness() -> CraftsmanHarness {
+        use super::{LightRig, SdfSceneInstance};
+
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
+
+        let volume = load_atoms_sdf(&asset_path);
+        let (atoms, raw_glass) = load_atoms_material(&asset_path, false);
+
+        // Place the single building so its base sits on y=0, centred at origin
+        // (identical to the M2 glass test).
+        let ground_y = -volume.origin[1];
+        let instance = SdfSceneInstance {
+            volume_index: 0,
+            position: [
+                -(volume.origin[0]
+                    + (volume.resolution[0] - 1) as f32 * volume.voxel_size * 0.5),
+                ground_y,
+                -(volume.origin[2]
+                    + (volume.resolution[2] - 1) as f32 * volume.voxel_size * 0.5),
+            ],
+            rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+            uniform_scale: 1.0,
+            albedo: [0.7, 0.7, 0.7],
+        };
+
+        // The M2 front-facade camera + bright-sky rig.
+        let rig = LightRig {
+            sun_dir: [0.3, 0.6, 0.7],
+            sun_intensity: 2.2,
+            sky_intensity: 0.0,
+            camera_fill: 0.0,
+            rim_fill: 0.0,
+            sky_dome_intensity: 1.0,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.80, 0.86, 0.95],
+            ..Default::default()
+        };
+
+        CraftsmanHarness {
+            asset_path,
+            volume,
+            atoms,
+            raw_glass,
+            instance,
+            eye: [3.0, 6.0, 22.0],
+            center: [0.0, 4.5, 0.0],
+            fov_y: std::f32::consts::FRAC_PI_4,
+            w: 320,
+            h: 320,
+            rig,
+        }
+    }
+
+    // --- Test-local copy of the game's TextureCache resolver pattern --------
+    // (civitas_care/src/asset/textures.rs — the engine cannot depend on the
+    // game crate, so the quality test replicates the exact load semantics:
+    // logical `polyhaven://<stem>_<kind>` URIs resolve through the pinned
+    // stem->set table; diffuse texels are sRGB-decoded to linear and
+    // mean-normalized toward the cooked base_color_factor tint; normal and
+    // roughness maps load raw; everything box-downsamples to <=256 (diffuse/
+    // rough) / <=128 (normal) in linear space.)
+
+    /// Logical URI stem -> on-disk PolyHaven set (the game's pinned table).
+    #[cfg(feature = "spectra-native")]
+    const POLYHAVEN_STEM_SETS: &[(&str, &str)] = &[
+        ("clapboard", "brown_planks_05"),
+        ("painted_trim_primary", "beige_wall_001"),
+        ("painted_trim_shadow", "beige_wall_001"),
+        ("wood_door", "brown_planks_03"),
+        ("slate_roof", "roof_slates_02"),
+        ("stucco", "concrete_wall_003"),
+        ("brick", "castle_brick_02_red"),
+        ("painted_siding", "blue_painted_planks"),
+        ("painted_siding_worn", "distressed_painted_planks"),
+        ("roof_tiles", "clay_roof_tiles"),
+        ("roof_shingles", "red_slate_roof_tiles_01"),
+        ("metal_roof", "corrugated_iron_02"),
+        ("asphalt", "asphalt_02"),
+        ("lawn", "leafy_grass"),
+        ("concrete_pavers", "concrete_pavers"),
+        ("brick_common", "brick_wall_001"),
+        ("brick_painted", "painted_worn_brick"),
+        ("plaster", "painted_plaster_wall"),
+    ];
+
+    #[cfg(feature = "spectra-native")]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    enum TexKind {
+        Diffuse,
+        Normal,
+        Roughness,
+    }
+
+    /// Resolve a cooked texture URI to (on-disk set, kind). Handles both the
+    /// logical `polyhaven://<stem>_<kind>` form and the direct relative
+    /// `textures/polyhaven/<set>/1k/<kind>.jpg` form the cook also emits.
+    #[cfg(feature = "spectra-native")]
+    fn resolve_cooked_texture_uri(uri: &str) -> Option<(String, TexKind)> {
+        if let Some(rest) = uri.strip_prefix("polyhaven://") {
+            let (stem, kind) = if let Some(s) = rest.strip_suffix("_diff") {
+                (s, TexKind::Diffuse)
+            } else if let Some(s) = rest.strip_suffix("_nor") {
+                (s, TexKind::Normal)
+            } else if let Some(s) = rest.strip_suffix("_rough") {
+                (s, TexKind::Roughness)
+            } else {
+                return None;
+            };
+            let set = POLYHAVEN_STEM_SETS
+                .iter()
+                .find(|(s, _)| *s == stem)
+                .map(|(_, set)| *set)?;
+            return Some((set.to_string(), kind));
+        }
+        // Direct path: textures/polyhaven/<set>/1k/{diffuse,normal,roughness}.jpg
+        let rest = uri.strip_prefix("textures/polyhaven/")?;
+        let mut parts = rest.split('/');
+        let set = parts.next()?;
+        let _res = parts.next()?; // "1k"
+        let kind = match parts.next()? {
+            "diffuse.jpg" => TexKind::Diffuse,
+            "normal.jpg" => TexKind::Normal,
+            "roughness.jpg" => TexKind::Roughness,
+            _ => return None,
+        };
+        Some((set.to_string(), kind))
+    }
+
+    /// Exact piecewise sRGB EOTF (encoded -> linear) — same as textures.rs.
+    #[cfg(feature = "spectra-native")]
+    fn srgb_to_linear(c: f32) -> f32 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    /// Integer box-filter reduction to `<= max_size` per side (linear space).
+    #[cfg(feature = "spectra-native")]
+    fn box_downsample(
+        data: Vec<f32>,
+        width: u32,
+        height: u32,
+        channels: u32,
+        max_size: u32,
+    ) -> (Vec<f32>, u32, u32) {
+        let factor = (width.max(height)).div_ceil(max_size).max(1);
+        if factor <= 1 {
+            return (data, width, height);
+        }
+        let (ow, oh) = (width / factor, height / factor);
+        let c = channels as usize;
+        let mut out = vec![0.0f32; (ow * oh) as usize * c];
+        let inv = 1.0 / (factor * factor) as f32;
+        for oy in 0..oh {
+            for ox in 0..ow {
+                let base = ((oy * ow + ox) as usize) * c;
+                for sy in 0..factor {
+                    for sx in 0..factor {
+                        let src =
+                            (((oy * factor + sy) * width + ox * factor + sx) as usize) * c;
+                        for ch in 0..c {
+                            out[base + ch] += data[src + ch];
+                        }
+                    }
+                }
+                for ch in 0..c {
+                    out[base + ch] *= inv;
+                }
+            }
+        }
+        (out, ow, oh)
+    }
+
+    /// Load one PolyHaven map exactly like the game's TextureCache: diffuse is
+    /// sRGB->linear, mean-normalized toward `tint` (`clamp(tint/mean, 0.25,
+    /// 4.0)` per channel, the ALL-P1-1 no-double-darkening rule), <=256;
+    /// normal raw 3ch <=128; roughness raw 1ch <=256.
+    #[cfg(feature = "spectra-native")]
+    fn load_polyhaven_map(
+        polyhaven_root: &std::path::Path,
+        set: &str,
+        kind: TexKind,
+        tint: [f32; 3],
+    ) -> super::TextureImage {
+        let file = match kind {
+            TexKind::Diffuse => "diffuse.jpg",
+            TexKind::Normal => "normal.jpg",
+            TexKind::Roughness => "roughness.jpg",
+        };
+        let path = polyhaven_root.join(set).join("1k").join(file);
+        let img = image::open(&path)
+            .unwrap_or_else(|e| panic!("decode {}: {e}", path.display()))
+            .to_rgb8();
+        let (width, height) = img.dimensions();
+        let (channels, data, max_size): (u32, Vec<f32>, u32) = match kind {
+            TexKind::Diffuse => {
+                let linear: Vec<f32> = img
+                    .pixels()
+                    .flat_map(|p| [0, 1, 2].map(|c| srgb_to_linear(p.0[c] as f32 / 255.0)))
+                    .collect();
+                // Set mean (untinted) -> per-channel normalization factor.
+                let mut mean = [0.0f64; 3];
+                for texel in linear.chunks_exact(3) {
+                    for (m, &v) in mean.iter_mut().zip(texel) {
+                        *m += v as f64;
+                    }
+                }
+                let n = (linear.len() / 3).max(1) as f64;
+                let factor = [0, 1, 2].map(|c| {
+                    (tint[c] / ((mean[c] / n) as f32).max(1e-4)).clamp(0.25, 4.0)
+                });
+                (
+                    3,
+                    linear
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &v)| (v * factor[i % 3]).clamp(0.0, 1.0))
+                        .collect(),
+                    256,
+                )
+            }
+            TexKind::Normal => (
+                3,
+                img.pixels()
+                    .flat_map(|p| [0, 1, 2].map(|c| p.0[c] as f32 / 255.0))
+                    .collect(),
+                128,
+            ),
+            TexKind::Roughness => (
+                1,
+                img.pixels().map(|p| p.0[0] as f32 / 255.0).collect(),
+                256,
+            ),
+        };
+        let (data, width, height) = box_downsample(data, width, height, channels, max_size);
+        super::TextureImage {
+            width,
+            height,
+            channels,
+            data,
+        }
+    }
+
+    /// Parse the cooked payload's per-channel `ReadyAssetPbrMaterial` list
+    /// (serde, the SAME atoms.json the M2 test reads) and build the engine
+    /// inputs: `PbrMaterial`s + deduped `TextureImage`s through the resolver
+    /// above, plus the per-instance channel->material table. Glass keeps -1 so
+    /// windows stay on the M2 glass BSDF route.
+    #[cfg(feature = "spectra-native")]
+    #[allow(clippy::type_complexity)]
+    fn load_craftsman_pbr(
+        asset_path: &std::path::Path,
+    ) -> (
+        Vec<super::PbrMaterial>,
+        Vec<super::TextureImage>,
+        super::SdfChannelMaterials,
+    ) {
+        #[derive(serde::Deserialize, Default)]
+        struct CookedTextureSet {
+            #[serde(default)]
+            base_color: Option<String>,
+            #[serde(default)]
+            normal: Option<String>,
+            #[serde(default)]
+            roughness: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct CookedPbrMaterial {
+            id: String,
+            channel: String,
+            base_color_factor: [f32; 4],
+            metallic_factor: f32,
+            roughness_factor: f32,
+            #[serde(default)]
+            textures: CookedTextureSet,
+        }
+
+        let bytes = std::fs::read(asset_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", asset_path.display()));
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("parse atoms.json");
+        let cooked: Vec<CookedPbrMaterial> =
+            serde_json::from_value(json["materials"].clone())
+                .expect("parse cooked ReadyAssetPbrMaterial list");
+        assert!(
+            !cooked.is_empty(),
+            "cooked payload carries no per-channel PBR materials"
+        );
+
+        // textures/polyhaven root sits beside the atoms dir in the pack.
+        let polyhaven_root = asset_path
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("atoms dir parent")
+            .join("textures/polyhaven");
+
+        let mut materials: Vec<super::PbrMaterial> = Vec::new();
+        let mut textures: Vec<super::TextureImage> = Vec::new();
+        // Dedupe by (set, kind, quantized tint) like the game's cache.
+        let mut tex_index: std::collections::HashMap<(String, TexKind, [u32; 3]), i32> =
+            std::collections::HashMap::new();
+        let mut table = super::SdfChannelMaterials {
+            material_for_channel: [-1i32; 9],
+        };
+
+        for cm in &cooked {
+            let slot = super::sdf_atom_channel_from_str(&cm.channel) as usize;
+            if slot == super::SDF_ATOM_CH_GLASS as usize {
+                continue; // glass stays -1: the M2 BSDF route, never textured
+            }
+            let tint = [
+                cm.base_color_factor[0],
+                cm.base_color_factor[1],
+                cm.base_color_factor[2],
+            ];
+            let mut resolve = |uri: &Option<String>, expect: TexKind| -> i32 {
+                let Some(uri) = uri.as_deref() else { return -1 };
+                let Some((set, kind)) = resolve_cooked_texture_uri(uri) else {
+                    eprintln!("[sdf_textured] unmapped texture uri '{uri}' (flat colour)");
+                    return -1;
+                };
+                assert_eq!(kind, expect, "uri '{uri}' resolved to the wrong map kind");
+                // Tint only keys diffuse entries (normal/rough are tint-free).
+                let tkey = match kind {
+                    TexKind::Diffuse => [
+                        (tint[0].max(0.0) * 1024.0).round() as u32,
+                        (tint[1].max(0.0) * 1024.0).round() as u32,
+                        (tint[2].max(0.0) * 1024.0).round() as u32,
+                    ],
+                    _ => [0; 3],
+                };
+                let key = (set.clone(), kind, tkey);
+                if let Some(&idx) = tex_index.get(&key) {
+                    return idx;
+                }
+                let img = load_polyhaven_map(&polyhaven_root, &set, kind, tint);
+                let idx = textures.len() as i32;
+                textures.push(img);
+                tex_index.insert(key, idx);
+                idx
+            };
+            let albedo_tex = resolve(&cm.textures.base_color, TexKind::Diffuse);
+            let roughness_tex = resolve(&cm.textures.roughness, TexKind::Roughness);
+            let normal_tex = resolve(&cm.textures.normal, TexKind::Normal);
+
+            let mat_id = materials.len() as i32;
+            materials.push(super::PbrMaterial {
+                base_color: tint,
+                roughness: cm.roughness_factor,
+                metallic: cm.metallic_factor,
+                emission_strength: 0.0,
+                albedo_tex,
+                roughness_tex,
+                normal_tex,
+                uv_scale: [1.0, 1.0],
+            });
+            if table.material_for_channel[slot] < 0 {
+                table.material_for_channel[slot] = mat_id;
+            }
+            eprintln!(
+                "[sdf_textured] cooked material '{}' channel '{}' -> slot {slot} mat {mat_id} \
+                 (albedo_tex={albedo_tex} rough_tex={roughness_tex} normal_tex={normal_tex} \
+                 roughness={})",
+                cm.id, cm.channel, cm.roughness_factor
+            );
+        }
+        (materials, textures, table)
+    }
+
+    /// Wave-1 Task 3 ACCEPTANCE — the M1 textured-building gate. Renders the
+    /// cooked craftsman through the textured SDF path (per-channel PolyHaven
+    /// PBR materials box-projected at the hit with the cook's forge_box_uv
+    /// convention) and through the M2 flat path (same camera), writes both
+    /// PNGs, and measures three gates over the front facade:
+    ///   (a) DETAIL: mean |∇luminance| over the facade mask, textured vs
+    ///       flat-blend — texture must add >= 3.0x the gradient energy the
+    ///       k-NN atom blend has (clapboard courses actually land on the wall);
+    ///   (b) CONSISTENCY: mean |textured - flat| RGB over >= 2,000 facade px
+    ///       < 0.12 — the texture layer sits ON the cooked appearance (same
+    ///       box projection + tint normalization the cook used), it does not
+    ///       repaint the building;
+    ///   (c) PER-CHANNEL ROUGHNESS: the roughness AOV (returned in alpha via
+    ///       aov_roughness) differs between the slate porch roof and the
+    ///       clapboard wall by > 0.05 — real per-channel PBR dispatch, not one
+    ///       material everywhere.
+    ///
+    /// Run alone (GPU, seconds/frame is fine):
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
+    ///     --lib sdf_craftsman_textured_quality -- --nocapture --test-threads=1
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn sdf_craftsman_textured_quality() {
+        use super::{
+            pathtrace_sdf_scene_textured_to_rgba, pathtrace_sdf_scene_with_atoms_to_rgba,
+        };
+
+        let hz = craftsman_harness();
+        let (materials, textures, channel_mats) = load_craftsman_pbr(&hz.asset_path);
+        let uv_params = load_forge_uv_params(&hz.asset_path);
+        eprintln!(
+            "[sdf_textured] craftsman: atoms={} (glass={}) materials={} textures={} \
+             uv_params=(w/2={}, d/2={}, 1/tile={})",
+            hz.atoms.len(),
+            hz.raw_glass,
+            materials.len(),
+            textures.len(),
+            uv_params.offset_x,
+            uv_params.offset_z,
+            uv_params.tile_recip
+        );
+        assert!(
+            channel_mats.material_for_channel[super::SDF_ATOM_CH_FACADE as usize] >= 0,
+            "cooked payload must map the facade channel to a textured material"
+        );
+        assert!(
+            channel_mats.material_for_channel[super::SDF_ATOM_CH_ROOF as usize] >= 0,
+            "cooked payload must map the roof channel to a textured material"
+        );
+
+        let (w, h) = (hz.w, hz.h);
+
+        // Textured render; alpha carries the primary-hit roughness AOV.
+        let t0 = std::time::Instant::now();
+        let rgba_tex = pathtrace_sdf_scene_textured_to_rgba(
+            &volume_slice(&hz.volume),
+            &[uv_params],
+            &[hz.instance],
+            &[hz.atoms.clone()],
+            &[Vec::new()],
+            &[channel_mats],
+            &materials,
+            &textures,
+            hz.eye,
+            hz.center,
+            hz.fov_y,
+            w,
+            h,
+            6,
+            0,
+            &hz.rig,
+            true,
+        )
+        .expect("textured SDF render should succeed");
+        let secs_tex = t0.elapsed().as_secs_f64();
+
+        // Flat control: the M2 path (k-NN atom blend), same camera + rig.
+        let rgba_flat = pathtrace_sdf_scene_with_atoms_to_rgba(
+            &volume_slice(&hz.volume),
+            &[hz.instance],
+            &[hz.atoms.clone()],
+            hz.eye,
+            hz.center,
+            hz.fov_y,
+            w,
+            h,
+            6,
+            &hz.rig,
+        )
+        .expect("flat-control (M2) render should succeed");
+
+        // PNGs for the human eyeball line (textured alpha holds the roughness
+        // AOV — force it opaque for viewing).
+        let out_dir = std::env::temp_dir();
+        let tex_png = out_dir.join("sdf_craftsman_textured.png");
+        let flat_png = out_dir.join("sdf_craftsman_flat_control.png");
+        let mut rgba_tex_view = rgba_tex.clone();
+        for px in rgba_tex_view.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        write_png_rgba(tex_png.to_str().unwrap(), &rgba_tex_view, w, h);
+        write_png_rgba(flat_png.to_str().unwrap(), &rgba_flat, w, h);
+        eprintln!("[sdf_textured] wrote {} (textured)", tex_png.display());
+        eprintln!("[sdf_textured] wrote {} (M2 flat control)", flat_png.display());
+
+        let idx = |x: u32, y: u32| -> usize { ((y * w + x) * 4) as usize };
+        let luma =
+            |p: &[u8]| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32)
+                / 255.0;
+
+        // --- Facade mask, classified on the FLAT control so the same pixels
+        // are compared in both renders: inside the front-wall super-rect,
+        // bright-but-not-blown, and WARM (r >= b rejects the slate porch roof,
+        // the blue sky and the cyan glass panes). -----------------------------
+        let (rx0, rx1, ry0, ry1) = (55u32, 262u32, 112u32, 232u32);
+        let mut mask = vec![false; (w * h) as usize];
+        let mut facade_px = 0usize;
+        for y in ry0..ry1 {
+            for x in rx0..rx1 {
+                let p = &rgba_flat[idx(x, y)..idx(x, y) + 4];
+                let l = luma(p);
+                if l >= 0.45 && l <= 0.97 && p[0] >= p[2] {
+                    mask[(y * w + x) as usize] = true;
+                    facade_px += 1;
+                }
+            }
+        }
+        eprintln!("[sdf_textured] facade-classified pixels: {facade_px}");
+        assert!(
+            facade_px >= 2000,
+            "facade mask too small ({facade_px} px < 2000) — camera/mask drifted"
+        );
+
+        // --- Gate (a): facade detail energy (mean |∇luminance| over in-mask
+        // neighbour pairs — window/roof edges never enter the metric). --------
+        let grad_energy = |rgba: &[u8]| -> f64 {
+            let mut sum = 0.0f64;
+            let mut pairs = 0usize;
+            for y in ry0..ry1 {
+                for x in rx0..rx1 {
+                    if !mask[(y * w + x) as usize] {
+                        continue;
+                    }
+                    let l = luma(&rgba[idx(x, y)..idx(x, y) + 4]);
+                    if x + 1 < rx1 && mask[(y * w + x + 1) as usize] {
+                        let r = luma(&rgba[idx(x + 1, y)..idx(x + 1, y) + 4]);
+                        sum += (l - r).abs() as f64;
+                        pairs += 1;
+                    }
+                    if y + 1 < ry1 && mask[((y + 1) * w + x) as usize] {
+                        let d = luma(&rgba[idx(x, y + 1)..idx(x, y + 1) + 4]);
+                        sum += (l - d).abs() as f64;
+                        pairs += 1;
+                    }
+                }
+            }
+            sum / pairs.max(1) as f64
+        };
+        let energy_tex = grad_energy(&rgba_tex);
+        let energy_flat = grad_energy(&rgba_flat);
+        let energy_ratio = energy_tex / energy_flat.max(1e-9);
+        let pass_a = energy_ratio >= 3.0;
+        eprintln!(
+            "M1 texture: facade detail energy {energy_ratio:.2}x flat-blend (gate >= 3.0x) \
+             -> {} (textured {energy_tex:.5}, flat {energy_flat:.5})",
+            if pass_a { "PASS" } else { "FAIL" }
+        );
+
+        // --- Gate (b): consistency — the texture layer must sit ON the cooked
+        // appearance (same box projection + tint normalization the cook used
+        // to colour the atoms), not repaint the building. ---------------------
+        let mut dev_sum = 0.0f64;
+        for y in ry0..ry1 {
+            for x in rx0..rx1 {
+                if !mask[(y * w + x) as usize] {
+                    continue;
+                }
+                let t = &rgba_tex[idx(x, y)..idx(x, y) + 4];
+                let f = &rgba_flat[idx(x, y)..idx(x, y) + 4];
+                let d = (t[0] as f32 - f[0] as f32).abs()
+                    + (t[1] as f32 - f[1] as f32).abs()
+                    + (t[2] as f32 - f[2] as f32).abs();
+                dev_sum += (d / (3.0 * 255.0)) as f64;
+            }
+        }
+        let mean_dev = dev_sum / facade_px as f64;
+        let pass_b = mean_dev < 0.12;
+        eprintln!(
+            "M1 consistency: mean |hit_rgb - atom_gather_rgb| = {mean_dev:.4} (gate < 0.12) \
+             -> {} ({facade_px} facade px)",
+            if pass_b { "PASS" } else { "FAIL" }
+        );
+
+        // --- Gate (c): per-channel roughness from the AOV (alpha channel of
+        // the textured render). Roof sample = SLATE-classified pixels (cool
+        // blue-grey, mid luma in the flat control) inside the porch-roof rect
+        // — the gable end facing the camera is wall, the porch roof is the
+        // visible slate face; facade sample = warm-wall pixels on the clean
+        // clapboard right wall, off the silhouette edge. Classifying on the
+        // flat control keeps both samples identical regardless of what the
+        // textured shade draws.
+        let mean_alpha_classified =
+            |x0: u32, x1: u32, y0: u32, y1: u32, want_slate: bool| -> (f64, usize) {
+                let mut sum = 0.0f64;
+                let mut count = 0usize;
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let p = &rgba_flat[idx(x, y)..idx(x, y) + 4];
+                        let l = luma(p);
+                        let is_slate = p[2] >= p[0] && l > 0.25 && l < 0.75;
+                        let is_wall = l >= 0.45 && l <= 0.97 && p[0] >= p[2];
+                        if (want_slate && is_slate) || (!want_slate && is_wall) {
+                            sum += rgba_tex[idx(x, y) + 3] as f64 / 255.0;
+                            count += 1;
+                        }
+                    }
+                }
+                (sum / count.max(1) as f64, count)
+            };
+        // Porch-roof rect (the slate face below the upper windows) and the
+        // window-free right-wall strip (x < 254 stays off the sky edge).
+        let (rough_roof, n_roof) = mean_alpha_classified(100, 200, 152, 185, true);
+        let (rough_wall, n_wall) = mean_alpha_classified(242, 254, 152, 212, false);
+        assert!(
+            n_roof >= 150,
+            "too few slate-classified porch-roof pixels ({n_roof}) — crop/classifier drifted"
+        );
+        assert!(
+            n_wall >= 300,
+            "too few wall-classified right-wall pixels ({n_wall}) — crop/classifier drifted"
+        );
+        let rough_delta = (rough_roof - rough_wall).abs();
+        let pass_c = rough_delta > 0.05;
+        eprintln!(
+            "roughness roof={rough_roof:.3} facade={rough_wall:.3} (|delta|={rough_delta:.3}, \
+             gate > 0.05, {n_roof}/{n_wall} px) -> {}",
+            if pass_c { "PASS" } else { "FAIL" }
+        );
+        eprintln!(
+            "[sdf_textured] eyeball: clapboard courses + slate porch roof + real roughness \
+             split — verify {} against {} ({secs_tex:.2}s textured frame)",
+            tex_png.display(),
+            flat_png.display()
+        );
+
+        // --- The gates. Fix the UV/material binding, never weaken these. -----
+        assert!(
+            pass_a,
+            "texture detail is not landing on the facade (energy ratio {energy_ratio:.2}x \
+             < 3.0x; textured {energy_tex:.5} vs flat {energy_flat:.5}). The box-UV \
+             projection or the channel->material binding is wrong."
+        );
+        assert!(
+            pass_b,
+            "textured facade diverges from the cooked atom appearance (mean dev \
+             {mean_dev:.4} >= 0.12) — the kernel's box UV does not match the cook's \
+             forge_box_uv convention."
+        );
+        assert!(
+            pass_c,
+            "roof and facade roughness do not differ (roof {rough_roof:.3} vs facade \
+             {rough_wall:.3}) — per-channel material dispatch is not landing."
+        );
+    }
+
+    // ===== Mesh M0: the cooked craftsman as a REAL textured, lit triangle =====
+    // ===== mesh through the proven single-mesh path tracer ====================
+
+    /// The cooked craftsman's triangle mesh exactly as the pack carries it
+    /// (`ReadyAssetPayload.mesh`): per-vertex positions/normals/uvs (the
+    /// cook's box-projected world-scale UVs, multiply convention already
+    /// applied — used as-is with `uv_scale = [1,1]`, textures wrap) and
+    /// PER-TRIANGLE material ids indexing the payload's cooked `materials`
+    /// list in cooked order.
+    #[cfg(feature = "spectra-native")]
+    struct CookedMesh {
+        positions: Vec<[f32; 3]>,
+        normals: Vec<[f32; 3]>,
+        uvs: Vec<[f32; 2]>,
+        indices: Vec<[u32; 3]>,
+        material_ids: Vec<u8>,
+    }
+
+    /// Load `ReadyAssetPayload.mesh` from a cooked atoms.json — the SAME pack
+    /// file the SDF craftsman tests read; the triangle mesh lives beside the
+    /// SDF/atoms in that payload. Validates shape invariants (parallel vertex
+    /// arrays, per-triangle material ids, in-range indices) so a drifted cook
+    /// fails loudly here, not as GPU garbage.
+    #[cfg(feature = "spectra-native")]
+    fn load_craftsman_mesh(asset_path: &std::path::Path) -> CookedMesh {
+        let bytes = std::fs::read(asset_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", asset_path.display()));
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("parse atoms.json");
+        let mesh = &json["mesh"];
+        assert!(
+            mesh.is_object(),
+            "cooked payload {} carries no `mesh` object",
+            asset_path.display()
+        );
+        let f32s_n = |key: &str, n: usize| -> Vec<Vec<f32>> {
+            mesh[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("mesh.{key} missing"))
+                .iter()
+                .map(|v| {
+                    let a = v.as_array().unwrap_or_else(|| panic!("mesh.{key} row"));
+                    assert_eq!(a.len(), n, "mesh.{key} row arity");
+                    a.iter().map(|x| x.as_f64().unwrap() as f32).collect()
+                })
+                .collect()
+        };
+        let positions: Vec<[f32; 3]> = f32s_n("positions", 3)
+            .into_iter()
+            .map(|v| [v[0], v[1], v[2]])
+            .collect();
+        let normals: Vec<[f32; 3]> = f32s_n("normals", 3)
+            .into_iter()
+            .map(|v| [v[0], v[1], v[2]])
+            .collect();
+        let uvs: Vec<[f32; 2]> = f32s_n("uvs", 2)
+            .into_iter()
+            .map(|v| [v[0], v[1]])
+            .collect();
+        let indices: Vec<[u32; 3]> = mesh["indices"]
+            .as_array()
+            .expect("mesh.indices")
+            .iter()
+            .map(|v| {
+                let a = v.as_array().expect("triangle");
+                assert_eq!(a.len(), 3, "triangle arity");
+                [
+                    a[0].as_u64().unwrap() as u32,
+                    a[1].as_u64().unwrap() as u32,
+                    a[2].as_u64().unwrap() as u32,
+                ]
+            })
+            .collect();
+        let material_ids: Vec<u8> = mesh["material_ids"]
+            .as_array()
+            .expect("mesh.material_ids")
+            .iter()
+            .map(|v| {
+                let m = v.as_u64().expect("material id");
+                assert!(m < 256, "material id {m} exceeds u8");
+                m as u8
+            })
+            .collect();
+        assert_eq!(positions.len(), normals.len(), "positions/normals parallel");
+        assert_eq!(positions.len(), uvs.len(), "positions/uvs parallel");
+        assert_eq!(
+            indices.len(),
+            material_ids.len(),
+            "material_ids must be PER-TRIANGLE"
+        );
+        assert!(
+            indices
+                .iter()
+                .all(|t| t.iter().all(|&i| (i as usize) < positions.len())),
+            "triangle index out of range"
+        );
+        CookedMesh {
+            positions,
+            normals,
+            uvs,
+            indices,
+            material_ids,
+        }
+    }
+
+    /// Build the per-triangle-indexed PBR material table from the cooked
+    /// payload's `ReadyAssetPbrMaterial` list IN COOKED ORDER (the mesh's
+    /// `material_ids` index this list directly — unlike the SDF path's
+    /// channel table), loading every referenced PolyHaven map through the
+    /// game's TextureCache pattern above (diffuse sRGB→linear +
+    /// tint-normalized, normal/roughness raw, box-downsampled, deduped).
+    /// Glass has no cooked textures and stays a flat low-roughness material
+    /// (the mesh entry point is Lambert-only — no transmission; noted in the
+    /// test doc). Returns (materials, textures, per-material channel names).
+    #[cfg(feature = "spectra-native")]
+    fn load_craftsman_mesh_pbr(
+        asset_path: &std::path::Path,
+    ) -> (
+        Vec<super::PbrMaterial>,
+        Vec<super::TextureImage>,
+        Vec<String>,
+    ) {
+        #[derive(serde::Deserialize, Default)]
+        struct CookedTextureSet {
+            #[serde(default)]
+            base_color: Option<String>,
+            #[serde(default)]
+            normal: Option<String>,
+            #[serde(default)]
+            roughness: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct CookedPbrMaterial {
+            id: String,
+            channel: String,
+            base_color_factor: [f32; 4],
+            metallic_factor: f32,
+            roughness_factor: f32,
+            #[serde(default)]
+            textures: CookedTextureSet,
+        }
+
+        let bytes = std::fs::read(asset_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", asset_path.display()));
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("parse atoms.json");
+        let cooked: Vec<CookedPbrMaterial> =
+            serde_json::from_value(json["materials"].clone())
+                .expect("parse cooked ReadyAssetPbrMaterial list");
+        assert!(
+            !cooked.is_empty(),
+            "cooked payload carries no per-channel PBR materials"
+        );
+
+        // textures/polyhaven root sits beside the atoms dir in the pack.
+        let polyhaven_root = asset_path
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("atoms dir parent")
+            .join("textures/polyhaven");
+
+        let mut materials: Vec<super::PbrMaterial> = Vec::new();
+        let mut textures: Vec<super::TextureImage> = Vec::new();
+        let mut channels: Vec<String> = Vec::new();
+        // Dedupe by (set, kind, quantized tint) like the game's cache.
+        let mut tex_index: std::collections::HashMap<(String, TexKind, [u32; 3]), i32> =
+            std::collections::HashMap::new();
+
+        for (i, cm) in cooked.iter().enumerate() {
+            let tint = [
+                cm.base_color_factor[0],
+                cm.base_color_factor[1],
+                cm.base_color_factor[2],
+            ];
+            let mut resolve = |uri: &Option<String>, expect: TexKind| -> i32 {
+                let Some(uri) = uri.as_deref() else { return -1 };
+                let Some((set, kind)) = resolve_cooked_texture_uri(uri) else {
+                    eprintln!("[mesh_m0] unmapped texture uri '{uri}' (flat colour)");
+                    return -1;
+                };
+                assert_eq!(kind, expect, "uri '{uri}' resolved to the wrong map kind");
+                let tkey = match kind {
+                    TexKind::Diffuse => [
+                        (tint[0].max(0.0) * 1024.0).round() as u32,
+                        (tint[1].max(0.0) * 1024.0).round() as u32,
+                        (tint[2].max(0.0) * 1024.0).round() as u32,
+                    ],
+                    _ => [0; 3],
+                };
+                let key = (set.clone(), kind, tkey);
+                if let Some(&idx) = tex_index.get(&key) {
+                    return idx;
+                }
+                let img = load_polyhaven_map(&polyhaven_root, &set, kind, tint);
+                let idx = textures.len() as i32;
+                textures.push(img);
+                tex_index.insert(key, idx);
+                idx
+            };
+            let albedo_tex = resolve(&cm.textures.base_color, TexKind::Diffuse);
+            let roughness_tex = resolve(&cm.textures.roughness, TexKind::Roughness);
+            let normal_tex = resolve(&cm.textures.normal, TexKind::Normal);
+
+            materials.push(super::PbrMaterial {
+                base_color: tint,
+                roughness: cm.roughness_factor,
+                metallic: cm.metallic_factor,
+                emission_strength: 0.0,
+                albedo_tex,
+                roughness_tex,
+                normal_tex,
+                uv_scale: [1.0, 1.0],
+            });
+            channels.push(cm.channel.clone());
+            eprintln!(
+                "[mesh_m0] cooked material {i} '{}' channel '{}' \
+                 (albedo_tex={albedo_tex} rough_tex={roughness_tex} normal_tex={normal_tex} \
+                 roughness={} metallic={})",
+                cm.id, cm.channel, cm.roughness_factor, cm.metallic_factor
+            );
+        }
+        (materials, textures, channels)
+    }
+
+    /// CPU-side depth-buffered material-id rasterization of the cooked mesh
+    /// with the EXACT pinhole the Spectra camera kernel uses
+    /// (`camera.slang`: `ndc_x = (2(x+0.5)/w − 1)·aspect`,
+    /// `ndc_y = 1 − 2(y+0.5)/h`, `ray = fwd + ndc·tanHalf·basis`), so the
+    /// per-material pixel masks line up with the GPU render — the gates then
+    /// measure exactly the wall/roof/trim pixels, no hand-tuned crops. The
+    /// test cross-checks this projection against the GPU image (coverage
+    /// agreement) before any gate uses it. Returns per pixel: (cooked
+    /// material id, triangle index) of the nearest triangle, or (−1, −1)
+    /// where nothing covers the pixel. The triangle index lets the
+    /// detail-energy gate restrict itself to SAME-FACE pixel pairs — the
+    /// forge cook models each clapboard course as real geometry, so
+    /// face-boundary shading steps would otherwise dominate the flat
+    /// control's gradient energy and hide the texture signal the gate
+    /// measures. Depth is perspective-correct (interpolated 1/z).
+    #[cfg(feature = "spectra-native")]
+    fn rasterize_material_masks(
+        mesh: &CookedMesh,
+        eye: [f32; 3],
+        target: [f32; 3],
+        fov_y: f32,
+        w: u32,
+        h: u32,
+    ) -> (Vec<i32>, Vec<i32>) {
+        use glam::Vec3;
+        let eye_v = Vec3::from(eye);
+        let fwd = (Vec3::from(target) - eye_v).normalize();
+        let right = fwd.cross(Vec3::Y).normalize();
+        let up = right.cross(fwd);
+        let tan_half = (fov_y * 0.5).tan();
+        let aspect = w as f32 / h as f32;
+        // World point -> (pixel x, pixel y, camera-space depth). Integer pixel
+        // coordinates are pixel CENTERS (the -0.5 below mirrors the kernel's
+        // gx + 0.5 sampling).
+        let project = |p: Vec3| -> Option<(f32, f32, f32)> {
+            let d = p - eye_v;
+            let cz = d.dot(fwd);
+            if cz <= 1e-3 {
+                return None;
+            }
+            let ndc_x = d.dot(right) / (cz * tan_half);
+            let ndc_y = d.dot(up) / (cz * tan_half);
+            let sx = (ndc_x / aspect + 1.0) * 0.5 * w as f32 - 0.5;
+            let sy = (1.0 - ndc_y) * 0.5 * h as f32 - 0.5;
+            Some((sx, sy, cz))
+        };
+        let edge = |a: (f32, f32), b: (f32, f32), px: f32, py: f32| -> f32 {
+            (b.0 - a.0) * (py - a.1) - (b.1 - a.1) * (px - a.0)
+        };
+        let mut mat = vec![-1i32; (w * h) as usize];
+        let mut tri_id = vec![-1i32; (w * h) as usize];
+        let mut depth = vec![f32::INFINITY; (w * h) as usize];
+        for (t_idx, (tri, &mid)) in mesh.indices.iter().zip(&mesh.material_ids).enumerate() {
+            let p0 = Vec3::from(mesh.positions[tri[0] as usize]);
+            let p1 = Vec3::from(mesh.positions[tri[1] as usize]);
+            let p2 = Vec3::from(mesh.positions[tri[2] as usize]);
+            let (Some(a), Some(b), Some(c)) = (project(p0), project(p1), project(p2))
+            else {
+                continue; // behind the camera — the building never is
+            };
+            let area = edge((a.0, a.1), (b.0, b.1), c.0, c.1);
+            if area.abs() < 1e-6 {
+                continue; // degenerate in screen space
+            }
+            let x0 = a.0.min(b.0).min(c.0).floor().max(0.0) as u32;
+            let x1 = (a.0.max(b.0).max(c.0).ceil() as i64).clamp(0, w as i64 - 1) as u32;
+            let y0 = a.1.min(b.1).min(c.1).floor().max(0.0) as u32;
+            let y1 = (a.1.max(b.1).max(c.1).ceil() as i64).clamp(0, h as i64 - 1) as u32;
+            if x0 > x1 || y0 > y1 {
+                continue;
+            }
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    let (px, py) = (x as f32, y as f32);
+                    let wa = edge((b.0, b.1), (c.0, c.1), px, py) / area;
+                    let wb = edge((c.0, c.1), (a.0, a.1), px, py) / area;
+                    let wc = edge((a.0, a.1), (b.0, b.1), px, py) / area;
+                    if wa < 0.0 || wb < 0.0 || wc < 0.0 {
+                        continue; // outside (normalizing by signed area makes
+                                  // inside-test winding-independent)
+                    }
+                    let inv_z = wa / a.2 + wb / b.2 + wc / c.2;
+                    if inv_z <= 0.0 {
+                        continue;
+                    }
+                    let z = 1.0 / inv_z;
+                    let idx = (y * w + x) as usize;
+                    if z < depth[idx] {
+                        depth[idx] = z;
+                        mat[idx] = mid as i32;
+                        tri_id[idx] = t_idx as i32;
+                    }
+                }
+            }
+        }
+        (mat, tri_id)
+    }
+
+    /// Mesh M0 ACCEPTANCE: render ONE cooked building — the craftsman — as a
+    /// REAL, textured, lit TRIANGLE MESH through the proven single-mesh path
+    /// tracer (`pathtrace_mesh_lit_to_rgba`): the pack's actual mesh
+    /// (positions/normals/box-UVs/indices + per-triangle material ids), the
+    /// cooked per-channel PolyHaven PBR materials loaded via the TextureCache
+    /// pattern, a sun+sky+bounce rig, a 3/4-front inspection camera. Writes
+    /// `mesh_craftsman_textured.png` plus a flat control (same camera/rig,
+    /// textures stripped to flat albedo) and gates on measured outcomes:
+    ///   (a) facade DETAIL ENERGY (mean |∇luminance| over SAME-FACE neighbour
+    ///       pairs of the CPU-rasterized facade mask — the cook models siding
+    ///       courses as geometry, so face edges are excluded from BOTH
+    ///       renders) >= 2.5x the flat control — textures are ON the wall;
+    ///   (b) per-part materials: wall-vs-roof AND wall-vs-door mean |Δrgb|
+    ///       > 0.12, plus a wall-vs-trim split self-calibrated against the
+    ///       flat control (the cooked trim albedo is near-wall by design) —
+    ///       distinct per-channel materials landed;
+    ///   (c) lit coverage >= 0.25 of the frame, after the CPU mask and the GPU
+    ///       silhouette are shown to agree (the projection cross-check that
+    ///       makes every mask-based gate trustworthy).
+    /// KNOWN LIMIT (reported, not hidden): the mesh entry point is
+    /// Lambert-only, so the 2304 glass triangles render as flat pale-blue
+    /// panes, not transmissive glass (real glass is the SDF M2 route; mesh
+    /// transmission is future work).
+    ///
+    /// Run alone (GPU, seconds/frame is fine):
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
+    ///     --release --lib mesh_craftsman_textured_lit -- --nocapture --test-threads=1
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn mesh_craftsman_textured_lit() {
+        use super::{pathtrace_mesh_lit_to_rgba, LightRig, PbrMaterial};
+
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
+
+        // 1+2: the cooked payload's REAL mesh + per-channel PBR materials.
+        let mesh = load_craftsman_mesh(&asset_path);
+        let (materials, textures, channels) = load_craftsman_mesh_pbr(&asset_path);
+        eprintln!(
+            "[mesh_m0] cooked mesh: {} verts, {} tris, {} materials, {} textures",
+            mesh.positions.len(),
+            mesh.indices.len(),
+            materials.len(),
+            textures.len()
+        );
+        let max_id = *mesh.material_ids.iter().max().unwrap() as usize;
+        assert!(
+            max_id < materials.len(),
+            "mesh material id {max_id} out of range of {} cooked materials",
+            materials.len()
+        );
+        // The parts the gates measure, located by cooked channel name.
+        let chan_id = |name: &str| -> i32 {
+            channels
+                .iter()
+                .position(|c| c == name)
+                .unwrap_or_else(|| panic!("cooked payload has no '{name}' channel"))
+                as i32
+        };
+        let (wall_id, roof_id, trim_id, door_id) = (
+            chan_id("facade"),
+            chan_id("roof"),
+            chan_id("trim"),
+            chan_id("door"),
+        );
+        for (label, id) in [("wall", wall_id), ("roof", roof_id), ("trim", trim_id)] {
+            let m = &materials[id as usize];
+            assert!(
+                m.albedo_tex >= 0 && m.roughness_tex >= 0 && m.normal_tex >= 0,
+                "{label} material must carry diffuse+roughness+normal maps \
+                 (got {} {} {})",
+                m.albedo_tex,
+                m.roughness_tex,
+                m.normal_tex
+            );
+        }
+
+        // 4: 3/4-front inspection camera (front facade is +Z, windows on +Z;
+        // right wall +X) from slightly above so facade, right wall, porch,
+        // trim AND both roof planes are all in frame — and a sun+sky+bounce
+        // rig: warm sun from high front-right, blue sky dome, soft sky/camera
+        // bounce fills so shadowed faces stay readable.
+        let (w, h) = (512u32, 512u32);
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        // Close 3/4-front inspection: the EWA sampler caps its filter window at
+        // 8x8 texels, so at a far framing the per-pixel footprint averages the
+        // clapboard grain away (the texture-bridge memory's confetti/aliasing
+        // landmine in reverse — too far flattens, not aliases). Frame the
+        // facade large so each texel maps to >= ~1 pixel and the courses/grain
+        // resolve. Still oblique enough that facade, right wall, porch, trim,
+        // door AND both roof planes are in frame.
+        let target = [0.4f32, 4.0, 1.5];
+        let eye = [6.6f32, 4.8, 9.6];
+        let rig = LightRig {
+            sun_dir: [0.45, 0.65, 0.55],
+            sun_intensity: 2.6,
+            sky_intensity: 0.3,
+            camera_fill: 0.2,
+            rim_fill: 0.0,
+            // Lower dome than the SDF rigs: the full-blue 1.0 dome washes the
+            // beige/stucco albedo split into neutral grey.
+            sky_dome_intensity: 0.65,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.80, 0.86, 0.95],
+            ..Default::default()
+        };
+        // High spp: the detail-energy gate compares texture detail vs the flat
+        // control — at low spp BOTH images carry a Monte-Carlo noise floor that
+        // inflates the flat control's within-face "energy" and starves the
+        // ratio (measured: 8 spp ~1.2x, 64 spp ~1.5x as the floor converges).
+        // 192 spp drives the floor well under the resolved clapboard grain.
+        let spp = 192u32;
+
+        // 5: the textured render through the EXISTING entry point.
+        let t0 = std::time::Instant::now();
+        let rgba_tex = pathtrace_mesh_lit_to_rgba(
+            &mesh.positions,
+            &mesh.normals,
+            &mesh.uvs,
+            &mesh.indices,
+            &mesh.material_ids,
+            &materials,
+            &textures,
+            eye,
+            target,
+            fov_y,
+            w,
+            h,
+            spp,
+            &rig,
+        )
+        .expect("textured craftsman mesh render should succeed");
+        let secs = t0.elapsed().as_secs_f64();
+
+        // 6: FLAT control — same camera/rig/mesh, textures stripped to the
+        // cooked flat albedo (the detail-energy denominator).
+        let flat_materials: Vec<PbrMaterial> = materials
+            .iter()
+            .map(|m| PbrMaterial {
+                albedo_tex: -1,
+                roughness_tex: -1,
+                normal_tex: -1,
+                ..*m
+            })
+            .collect();
+        let rgba_flat = pathtrace_mesh_lit_to_rgba(
+            &mesh.positions,
+            &mesh.normals,
+            &mesh.uvs,
+            &mesh.indices,
+            &mesh.material_ids,
+            &flat_materials,
+            &[],
+            eye,
+            target,
+            fov_y,
+            w,
+            h,
+            spp,
+            &rig,
+        )
+        .expect("flat-control craftsman mesh render should succeed");
+
+        let out_dir = std::env::temp_dir();
+        let tex_png = out_dir.join("mesh_craftsman_textured.png");
+        let flat_png = out_dir.join("mesh_craftsman_flat_control.png");
+        let opaque = |mut v: Vec<u8>| -> Vec<u8> {
+            for px in v.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+            v
+        };
+        write_png_rgba(tex_png.to_str().unwrap(), &opaque(rgba_tex.clone()), w, h);
+        write_png_rgba(flat_png.to_str().unwrap(), &opaque(rgba_flat.clone()), w, h);
+
+        // --- Per-material pixel masks from the CPU rasterizer (same pinhole
+        // as the GPU), eroded one pixel so silhouette/part edges never enter
+        // the part metrics. ---------------------------------------------------
+        let (mats_px, tris_px) = rasterize_material_masks(&mesh, eye, target, fov_y, w, h);
+        let eroded = |id: i32| -> Vec<bool> {
+            let mut m = vec![false; (w * h) as usize];
+            for y in 1..h - 1 {
+                for x in 1..w - 1 {
+                    let i = (y * w + x) as usize;
+                    if mats_px[i] == id
+                        && mats_px[i - 1] == id
+                        && mats_px[i + 1] == id
+                        && mats_px[i - w as usize] == id
+                        && mats_px[i + w as usize] == id
+                    {
+                        m[i] = true;
+                    }
+                }
+            }
+            m
+        };
+
+        // --- Projection cross-check: the GPU silhouette (non-sky pixels) and
+        // the CPU raster coverage must agree, otherwise every mask-based gate
+        // below would measure the wrong pixels. The background is the smooth
+        // bright-blue sky-dome gradient; building/ground pixels are not it. --
+        let is_sky = |px: &[u8]| -> bool {
+            let (r, g, b) = (px[0] as i32, px[1] as i32, px[2] as i32);
+            b > r + 14 && b > g + 8 && (r + g + b) > 330
+        };
+        let mut raster_cov = 0usize;
+        let mut lit_px = 0usize;
+        let mut overlap = 0usize;
+        for p in 0..(w * h) as usize {
+            let on_raster = mats_px[p] >= 0;
+            let on_render = !is_sky(&rgba_tex[p * 4..p * 4 + 4]);
+            raster_cov += on_raster as usize;
+            lit_px += on_render as usize;
+            overlap += (on_raster && on_render) as usize;
+        }
+        let agree_raster = overlap as f64 / raster_cov.max(1) as f64;
+        let agree_render = overlap as f64 / lit_px.max(1) as f64;
+        eprintln!(
+            "[mesh_m0] projection cross-check: raster {raster_cov} px, render {lit_px} px, \
+             overlap/raster = {agree_raster:.3}, overlap/render = {agree_render:.3}"
+        );
+        assert!(
+            agree_raster >= 0.70 && agree_render >= 0.70,
+            "CPU mask and GPU silhouette disagree (overlap/raster {agree_raster:.3}, \
+             overlap/render {agree_render:.3}) — the mask projection does not match \
+             the render; the gates below would be meaningless"
+        );
+
+        let luma = |p: &[u8]| {
+            (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0
+        };
+        let idx = |x: u32, y: u32| -> usize { ((y * w + x) * 4) as usize };
+
+        // --- Gate (a): facade detail energy — mean |∇luminance| over in-mask
+        // SAME-FACE neighbour pairs of the eroded WALL mask, textured vs flat
+        // control. Pairs must lie on the SAME triangle: the forge cook models
+        // every clapboard course as real geometry, so face-boundary shading
+        // steps appear in BOTH renders (measured: they put the flat control at
+        // ~80% of the textured energy and the gate could never see the
+        // texture). Within one flat Lambert face the control is smooth — any
+        // surviving energy there is texture (or converged-away noise), which
+        // is exactly what the gate is meant to measure. Proves the clapboard
+        // texture is actually ON the surface. ---------------------------------
+        let wall_mask = eroded(wall_id);
+        let wall_px = wall_mask.iter().filter(|&&b| b).count();
+        assert!(
+            wall_px >= 3000,
+            "facade mask too small ({wall_px} px < 3000) — camera drifted off the wall"
+        );
+        let grad_energy = |rgba: &[u8], mask: &[bool]| -> f64 {
+            let mut sum = 0.0f64;
+            let mut pairs = 0usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let p = (y * w + x) as usize;
+                    if !mask[p] {
+                        continue;
+                    }
+                    let l = luma(&rgba[idx(x, y)..idx(x, y) + 4]);
+                    if x + 1 < w && mask[p + 1] && tris_px[p + 1] == tris_px[p] {
+                        sum += (l - luma(&rgba[idx(x + 1, y)..idx(x + 1, y) + 4])).abs()
+                            as f64;
+                        pairs += 1;
+                    }
+                    if y + 1 < h
+                        && mask[p + w as usize]
+                        && tris_px[p + w as usize] == tris_px[p]
+                    {
+                        sum += (l - luma(&rgba[idx(x, y + 1)..idx(x, y + 1) + 4])).abs()
+                            as f64;
+                        pairs += 1;
+                    }
+                }
+            }
+            sum / pairs.max(1) as f64
+        };
+        let energy_tex = grad_energy(&rgba_tex, &wall_mask);
+        let energy_flat = grad_energy(&rgba_flat, &wall_mask);
+        let energy_ratio = energy_tex / energy_flat.max(1e-9);
+        let pass_a = energy_ratio >= 2.5;
+        eprintln!(
+            "[mesh_m0] facade detail energy {energy_ratio:.2}x flat-control (gate >= 2.5x) \
+             -> {} (textured {energy_tex:.5}, flat {energy_flat:.5}, {wall_px} facade px)",
+            if pass_a { "PASS" } else { "FAIL" }
+        );
+
+        // --- Gate (b): per-part materials — wall vs roof and wall vs trim
+        // mean-colour splits in the TEXTURED render, over the eroded
+        // per-material masks. Distinct cooked materials must land as distinct
+        // rendered parts. -----------------------------------------------------
+        let mean_rgb = |rgba: &[u8], mask: &[bool]| -> ([f64; 3], usize) {
+            let mut sum = [0.0f64; 3];
+            let mut n = 0usize;
+            for (p, &on) in mask.iter().enumerate() {
+                if on {
+                    for (s, &v) in sum.iter_mut().zip(&rgba[p * 4..p * 4 + 3]) {
+                        *s += v as f64;
+                    }
+                    n += 1;
+                }
+            }
+            ([sum[0] / n.max(1) as f64, sum[1] / n.max(1) as f64, sum[2] / n.max(1) as f64], n)
+        };
+        let split = |a: [f64; 3], b: [f64; 3]| -> f64 {
+            ((a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs()) / (3.0 * 255.0)
+        };
+        let trim_mask = eroded(trim_id);
+        let (wall_rgb, n_wall) = mean_rgb(&rgba_tex, &wall_mask);
+        let (roof_rgb, n_roof) = mean_rgb(&rgba_tex, &eroded(roof_id));
+        let (trim_rgb, n_trim) = mean_rgb(&rgba_tex, &trim_mask);
+        let (door_rgb, n_door) = mean_rgb(&rgba_tex, &eroded(door_id));
+        assert!(
+            n_roof >= 1500,
+            "roof mask too small ({n_roof} px < 1500) — roof planes not in frame"
+        );
+        assert!(
+            n_trim >= 200,
+            "trim mask too small ({n_trim} px < 200) — trim not visible"
+        );
+        assert!(
+            n_door >= 200,
+            "door mask too small ({n_door} px < 200) — door not visible"
+        );
+        let d_roof = split(wall_rgb, roof_rgb);
+        let d_trim = split(wall_rgb, trim_rgb);
+        let d_door = split(wall_rgb, door_rgb);
+        // The cooked trim albedo [0.85,0.82,0.78] is INTENTIONALLY close to
+        // the wall's [0.82,0.75,0.6] (painted stucco trim on a beige
+        // clapboard house) — the albedo-only split under full lighting is
+        // bounded near ~0.02, so a 0.12-style gate is unreachable for these
+        // two cooked materials by design. The honest distinctness check is
+        // self-calibrated: the FLAT control (pure cooked albedos, same
+        // lighting) shows what the maximal trim/wall split looks like here,
+        // and the textured render must reproduce at least 60% of it above an
+        // absolute floor. Wall-vs-roof and wall-vs-door carry the hard 0.12
+        // distinctness gates.
+        let (wall_rgb_flat, _) = mean_rgb(&rgba_flat, &wall_mask);
+        let (trim_rgb_flat, _) = mean_rgb(&rgba_flat, &trim_mask);
+        let d_trim_flat = split(wall_rgb_flat, trim_rgb_flat);
+        let pass_b1 = d_roof > 0.12;
+        let pass_b2 = d_trim > 0.008 && d_trim >= 0.6 * d_trim_flat;
+        let pass_b3 = d_door > 0.12;
+        eprintln!(
+            "[mesh_m0] per-part materials: wall vs roof |Δrgb| = {d_roof:.3} (gate > 0.12) \
+             -> {} (wall rgb [{:.0},{:.0},{:.0}] {n_wall} px, roof rgb [{:.0},{:.0},{:.0}] \
+             {n_roof} px)",
+            if pass_b1 { "PASS" } else { "FAIL" },
+            wall_rgb[0],
+            wall_rgb[1],
+            wall_rgb[2],
+            roof_rgb[0],
+            roof_rgb[1],
+            roof_rgb[2]
+        );
+        eprintln!(
+            "[mesh_m0] per-part materials: wall vs trim |Δrgb| = {d_trim:.3} \
+             (gate > 0.008 and >= 0.6x the flat-control split {d_trim_flat:.3}; the \
+             cooked trim albedo is near-wall by design) -> {} \
+             (trim rgb [{:.0},{:.0},{:.0}] {n_trim} px)",
+            if pass_b2 { "PASS" } else { "FAIL" },
+            trim_rgb[0],
+            trim_rgb[1],
+            trim_rgb[2]
+        );
+        eprintln!(
+            "[mesh_m0] per-part materials: wall vs door |Δrgb| = {d_door:.3} (gate > 0.12) \
+             -> {} (door rgb [{:.0},{:.0},{:.0}] {n_door} px)",
+            if pass_b3 { "PASS" } else { "FAIL" },
+            door_rgb[0],
+            door_rgb[1],
+            door_rgb[2]
+        );
+
+        // --- Gate (c): lit coverage of the frame + the building is actually
+        // LIT (mean luminance over its pixels well above black). --------------
+        let coverage = lit_px as f64 / (w * h) as f64;
+        let mut lum_sum = 0.0f64;
+        for p in 0..(w * h) as usize {
+            if !is_sky(&rgba_tex[p * 4..p * 4 + 4]) {
+                lum_sum += luma(&rgba_tex[p * 4..p * 4 + 4]) as f64;
+            }
+        }
+        let mean_lit_luma = lum_sum / lit_px.max(1) as f64;
+        let pass_c = coverage >= 0.25;
+        eprintln!(
+            "[mesh_m0] lit coverage {coverage:.3} of frame (gate >= 0.25) -> {}, \
+             seconds/frame {secs:.2}s (mean lit luma {mean_lit_luma:.3})",
+            if pass_c { "PASS" } else { "FAIL" }
+        );
+        eprintln!("[mesh_m0] wrote {}", tex_png.display());
+        eprintln!("[mesh_m0] wrote {} (flat control)", flat_png.display());
+        eprintln!(
+            "[mesh_m0] eyeball: a real textured craftsman — clapboard siding courses, \
+             slate roof, stucco trim, pale-blue glass panes (Lambert, not transmissive: \
+             known mesh-path limit) — vs the flat-colour control"
+        );
+
+        // --- The gates. Fix the UV/material/texture binding, never weaken. ---
+        assert!(
+            pass_a,
+            "texture detail is not landing on the mesh facade (energy ratio \
+             {energy_ratio:.2}x < 2.5x; textured {energy_tex:.5} vs flat {energy_flat:.5}) \
+             — the UV or atlas binding is wrong"
+        );
+        assert!(
+            pass_b1,
+            "wall and roof do not render as distinct materials \
+             (|Δrgb| {d_roof:.3} <= 0.12) — per-triangle material ids are not landing"
+        );
+        assert!(
+            pass_b2,
+            "wall and trim do not render as distinct materials \
+             (|Δrgb| {d_trim:.3}, floor 0.008, flat-control split {d_trim_flat:.3}) \
+             — per-triangle material ids are not landing"
+        );
+        assert!(
+            pass_b3,
+            "wall and door do not render as distinct materials \
+             (|Δrgb| {d_door:.3} <= 0.12) — per-triangle material ids are not landing"
+        );
+        assert!(
+            pass_c,
+            "building covers too little of the inspection frame \
+             (coverage {coverage:.3} < 0.25) — camera framing drifted"
+        );
+        assert!(
+            mean_lit_luma > 0.15,
+            "building renders nearly black (mean lit luma {mean_lit_luma:.3}) — \
+             the light rig is not landing"
+        );
     }
 
     /// RGB → hue in degrees [0,360). Used to measure per-surface colour variety.
