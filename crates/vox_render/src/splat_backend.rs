@@ -646,6 +646,269 @@ pub fn pathtrace_sdf_to_rgba(
     Ok(out)
 }
 
+/// One world-space placement of an SDF volume in a multi-instance scene (M1).
+///
+/// `volume_index` references the `volumes` slice passed to
+/// [`pathtrace_sdf_scene_to_rgba`] (several instances may share one cooked
+/// field). `position` is the world translation of the volume's local origin,
+/// `uniform_scale` scales the whole field about that origin (rotation is
+/// `rotation_xyzw` as a unit quaternion, identity = `[0,0,0,1]`), and `albedo`
+/// is the instance's flat Lambert colour so a block of buildings is visually
+/// distinct (full per-atom colour is a later milestone).
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone, Copy)]
+pub struct SdfSceneInstance {
+    pub volume_index: u32,
+    pub position: [f32; 3],
+    pub rotation_xyzw: [f32; 4],
+    pub uniform_scale: f32,
+    pub albedo: [f32; 3],
+}
+
+/// One-shot still: **path-trace a CLUSTER of buildings as native SDF instances**
+/// through the engine-owned Spectra path tracer's SDF-volume primitive (M1 —
+/// the multi-instance proof). Extends [`pathtrace_sdf_to_rgba`]'s single
+/// volume/instance to a MULTI-VOLUME atlas (`volumes`: distinct cooked fields,
+/// concatenated with per-volume distance offsets exactly like the SDF pillar's
+/// atlas) and MANY instances (`instances`: each a `(volume_index, world
+/// transform, albedo)`). The megakernel sphere-traces the union of all instance
+/// AABBs and, at every step, takes the min signed distance over all instances —
+/// so the front-most building's surface is the hit and buildings occlude each
+/// other correctly. Returns RGBA8 (`w*h*4`).
+///
+/// SDF-only: no Gaussian intersection, no splat bridge — sphere-traced SDFs are
+/// the single geometry primitive. The one degenerate sentinel triangle (far
+/// below the scene, invisible) only exists to give the software BVH/shadow
+/// traversal a valid single-leaf tree (a zero-triangle scene hangs the GPU);
+/// it is never the rendered surface.
+///
+/// Seconds/frame is acceptable — this is a correctness spike, not realtime.
+#[cfg(feature = "spectra-native")]
+#[allow(clippy::too_many_arguments)]
+pub fn pathtrace_sdf_scene_to_rgba(
+    volumes: &[SdfVolumeInput],
+    instances: &[SdfSceneInstance],
+    eye: [f32; 3],
+    target: [f32; 3],
+    fov_y: f32,
+    width: u32,
+    height: u32,
+    spp: u32,
+    rig: &LightRig,
+) -> Result<Vec<u8>, String> {
+    use crate::splat_convert::camera_layer;
+    use spectra_scene_state::{
+        LightLayer, SceneState, SdfInstanceHeader, SdfLayer, SdfVolumeHeader,
+    };
+
+    if volumes.is_empty() {
+        return Err("pathtrace_sdf_scene_to_rgba: no volumes".into());
+    }
+    if instances.is_empty() {
+        return Err("pathtrace_sdf_scene_to_rgba: no instances".into());
+    }
+
+    // --- Multi-volume atlas: validate each field and lay out the concatenated
+    // distance buffer with per-volume offsets (the SdfAtlasGpu / uploader shape).
+    let mut all_distances: Vec<f32> = Vec::new();
+    let mut volume_headers: Vec<SdfVolumeHeader> = Vec::with_capacity(volumes.len());
+    let mut local_bounds: Vec<([f32; 3], [f32; 3])> = Vec::with_capacity(volumes.len());
+    for (vi, v) in volumes.iter().enumerate() {
+        let expected =
+            (v.resolution[0] * v.resolution[1] * v.resolution[2]) as usize;
+        if v.distances.len() != expected {
+            return Err(format!(
+                "volume {vi}: distances len {} != nx*ny*nz {}",
+                v.distances.len(),
+                expected
+            ));
+        }
+        let distance_offset = all_distances.len() as u32;
+        all_distances.extend_from_slice(&v.distances);
+        volume_headers.push(SdfVolumeHeader {
+            asset_id: (vi as u64) + 1,
+            resolution: v.resolution,
+            origin: v.origin,
+            voxel_size: v.voxel_size,
+            narrow_band: v.narrow_band,
+            distance_offset,
+            distance_count: v.distances.len() as u32,
+        });
+        let lmin = v.origin;
+        let lmax = [
+            v.origin[0] + (v.resolution[0] - 1) as f32 * v.voxel_size,
+            v.origin[1] + (v.resolution[1] - 1) as f32 * v.voxel_size,
+            v.origin[2] + (v.resolution[2] - 1) as f32 * v.voxel_size,
+        ];
+        local_bounds.push((lmin, lmax));
+    }
+
+    // --- Instances: per-instance world AABB (rotated local box corners), header,
+    // and flat albedo. World AABB must enclose the transformed grid so the
+    // megakernel's union-AABB sphere-trace covers every instance.
+    let mut instance_headers: Vec<SdfInstanceHeader> = Vec::with_capacity(instances.len());
+    let mut instance_albedo: Vec<f32> = Vec::with_capacity(instances.len() * 3);
+    let mut scene_min = [f32::INFINITY; 3];
+    let mut scene_max = [f32::NEG_INFINITY; 3];
+    for (ii, inst) in instances.iter().enumerate() {
+        let vol = inst.volume_index as usize;
+        if vol >= volumes.len() {
+            return Err(format!(
+                "instance {ii}: volume_index {vol} out of range (have {} volumes)",
+                volumes.len()
+            ));
+        }
+        if inst.uniform_scale <= 0.0 {
+            return Err(format!(
+                "instance {ii}: uniform_scale must be > 0, got {}",
+                inst.uniform_scale
+            ));
+        }
+        let (lmin, lmax) = local_bounds[vol];
+        let q = glam::Quat::from_array(inst.rotation_xyzw).normalize();
+        let pos = glam::Vec3::from(inst.position);
+        let s = inst.uniform_scale;
+        // Transform all 8 corners (rot * scale * corner + pos) → world AABB.
+        let mut wmin = [f32::INFINITY; 3];
+        let mut wmax = [f32::NEG_INFINITY; 3];
+        for cx in [lmin[0], lmax[0]] {
+            for cy in [lmin[1], lmax[1]] {
+                for cz in [lmin[2], lmax[2]] {
+                    let world = pos + q * (glam::Vec3::new(cx, cy, cz) * s);
+                    for k in 0..3 {
+                        wmin[k] = wmin[k].min(world[k]);
+                        wmax[k] = wmax[k].max(world[k]);
+                    }
+                }
+            }
+        }
+        // Pad by the (scaled) narrow band so the sphere-trace starts cleanly
+        // outside the field's band on entry.
+        let pad = volumes[vol].narrow_band.max(volumes[vol].voxel_size) * s;
+        for k in 0..3 {
+            wmin[k] -= pad;
+            wmax[k] += pad;
+            scene_min[k] = scene_min[k].min(wmin[k]);
+            scene_max[k] = scene_max[k].max(wmax[k]);
+        }
+        instance_headers.push(SdfInstanceHeader {
+            instance_id: (ii as u64) + 1,
+            asset_id: (vol as u64) + 1,
+            volume_index: inst.volume_index,
+            position: inst.position,
+            rotation_xyzw: q.to_array(),
+            uniform_scale: s,
+            world_aabb_min: wmin,
+            world_aabb_max: wmax,
+        });
+        instance_albedo.extend_from_slice(&inst.albedo);
+    }
+
+    let sdf = SdfLayer::from_parts_with_albedo(
+        volume_headers,
+        instance_headers,
+        all_distances,
+        instance_albedo,
+    );
+
+    let mut scene = SceneState::new(width, height);
+    scene.sdf = sdf;
+    scene.mark_sdf_changed();
+
+    // Sentinel triangle (see pathtrace_sdf_to_rgba): one tiny degenerate tri far
+    // below the whole cluster gives the software BVH/shadow traversal a valid
+    // single-leaf tree so it terminates instead of hanging the GPU. Invisible —
+    // the SDF sphere-trace fills the visible façades.
+    {
+        use spectra_scene_state::MaterialLayer;
+        let cx = 0.5 * (scene_min[0] + scene_max[0]);
+        let cz = 0.5 * (scene_min[2] + scene_max[2]);
+        let far = [cx, scene_min[1] - 1000.0, cz];
+        scene.geometry.vertex_count = 3;
+        scene.geometry.triangle_count = 1;
+        scene.geometry.positions = vec![
+            far[0],
+            far[1],
+            far[2],
+            far[0] + 0.001,
+            far[1],
+            far[2],
+            far[0],
+            far[1],
+            far[2] + 0.001,
+        ];
+        scene.geometry.normals = vec![0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0];
+        scene.geometry.uvs = vec![0.0; 6];
+        scene.geometry.indices = vec![0, 1, 2];
+        scene.geometry.material_ids = vec![0];
+        scene.materials = MaterialLayer {
+            params: vec![0.0; VULKAN_MATERIAL_FLOATS],
+            spectral_spd: Default::default(),
+            material_count: 1,
+        };
+        scene.mark_geometry_changed();
+        scene.mark_materials_changed();
+    }
+
+    // Four-light rig, identical structure to pathtrace_sdf_to_rgba / the mesh
+    // path so cluster stills match building-review lighting.
+    let sun = glam::Vec3::from(rig.sun_dir).normalize_or_zero();
+    let camera_fill = (glam::Vec3::from(eye) - glam::Vec3::from(target) + glam::Vec3::Y * 0.35)
+        .normalize_or_zero();
+    let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
+    let mut light_data: Vec<f32> = Vec::new();
+    for (dir, color, intensity) in [
+        (sun.to_array(), rig.sun_color, rig.sun_intensity),
+        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
+        (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
+    ] {
+        light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
+    }
+    scene.lights = LightLayer {
+        light_data,
+        light_count: 4,
+    };
+    scene.mark_lights_changed();
+
+    let view = glam::Mat4::look_at_rh(
+        glam::Vec3::from(eye),
+        glam::Vec3::from(target),
+        glam::Vec3::Y,
+    )
+    .to_cols_array();
+    let cam = camera_layer(view, fov_y, width, height);
+    scene.camera = cam.clone();
+
+    let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
+    let mut config = RenderConfig::near_realtime(width, height);
+    config.slang_kernel_dir = resolve_slang_kernel_dir();
+    config.target_spp = spp;
+    let mut renderer = Renderer::new(gpu, config);
+    // Fallback single albedo (used only if the per-instance buffer is absent).
+    renderer.set_sdf_albedo(instances[0].albedo);
+    renderer
+        .load_scene_state(scene)
+        .map_err(|e| format!("load_scene_state: {e:?}"))?;
+    renderer.set_sky_gradient(
+        rig.sky_dome_zenith,
+        rig.sky_dome_horizon,
+        rig.sky_dome_intensity,
+    );
+    renderer.set_camera_view_matrix(cam.view_matrix);
+    renderer.set_view_proj(cam.view_matrix);
+
+    let frame = renderer.render().map_err(|e| format!("render: {e:?}"))?;
+    let n = (frame.width * frame.height) as usize;
+    let mut out = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        for ch in 0..4 {
+            out.push((frame.beauty[i * 4 + ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        }
+    }
+    Ok(out)
+}
+
 /// Build the flat texture atlas arrays for `Renderer::set_texture_atlas`.
 ///
 /// Spectra's `slang/texture_atlas.slang` `TextureDesc` is
@@ -1931,6 +2194,376 @@ mod tests {
              {:.4} < 0.97). A solid building fills each scanline span; confetti \
              leaves gaps.",
             sdf_coverage
+        );
+    }
+
+    /// Load one cooked atoms.json SDF into a `SdfVolumeInput`, decoding snorm16
+    /// distances to metres exactly as `vox_physics::sdf::from_snorm16_grid`.
+    #[cfg(feature = "spectra-native")]
+    fn load_atoms_sdf(path: &std::path::Path) -> super::SdfVolumeInput {
+        let bytes =
+            std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("parse atoms.json");
+        let sdf = &json["sdf"];
+        let res: Vec<u64> = sdf["resolution"]
+            .as_array()
+            .expect("resolution")
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect();
+        let origin: Vec<f32> = sdf["origin"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap() as f32)
+            .collect();
+        let voxel_size = sdf["voxel_size"].as_f64().unwrap() as f32;
+        let narrow_band = sdf["narrow_band"].as_f64().unwrap() as f32;
+        let snorm: Vec<i64> = sdf["distances_snorm16"]
+            .as_array()
+            .expect("distances_snorm16")
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        let distances: Vec<f32> = snorm
+            .iter()
+            .map(|&v| {
+                let n = if v as i32 == i16::MIN as i32 {
+                    -1.0
+                } else {
+                    v as f32 / i16::MAX as f32
+                };
+                n.clamp(-1.0, 1.0) * narrow_band
+            })
+            .collect();
+        super::SdfVolumeInput {
+            resolution: [res[0] as u32, res[1] as u32, res[2] as u32],
+            origin: [origin[0], origin[1], origin[2]],
+            voxel_size,
+            narrow_band,
+            distances,
+        }
+    }
+
+    /// M1 ACCEPTANCE: the engine-owned Spectra path tracer natively renders a
+    /// CLUSTER of cooked civitas buildings as a small city block — MANY SDF
+    /// instances referencing a MULTI-VOLUME atlas, sphere-traced as solid
+    /// surfaces in megakernel.slang, occluding each other correctly, on flat
+    /// ground. Per-instance flat albedo so buildings are visually distinct.
+    /// Writes a PNG, prints instance count + coverage + seconds, and asserts
+    /// >= 8 instances and that each building's projected footprint is solidly
+    /// filled (high coverage over the footprints — not confetti). All native
+    /// SDF: no quad/triangle fallback for surfaces (only the off-frame sentinel
+    /// triangle for BVH validity).
+    ///
+    /// Run alone (GPU, seconds/frame is fine):
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///   SPECTRA_SLANG_DIR=$HOME/src/spectra/slang SLANG_DIR=$HOME/slang-sdk \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
+    ///     --lib sdf_city_block_renders_multiple_solid_buildings -- --nocapture --test-threads=1
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn sdf_city_block_renders_multiple_solid_buildings() {
+        use super::{LightRig, SdfSceneInstance, pathtrace_sdf_scene_to_rgba};
+
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+
+        // --- Multi-volume atlas: distinct cooked civitas fields. ------------
+        let asset_names = [
+            "forge.house.craftsman",
+            "forge.house.victorian",
+            "city.res_med.l3.3x4.rowhouse_02",
+            "civic.school",
+            "civic.police",
+            "city.res_low.l1.2x2.cottage_01",
+        ];
+        let volumes: Vec<super::SdfVolumeInput> = asset_names
+            .iter()
+            .map(|n| load_atoms_sdf(&atoms_dir.join(format!("{n}.atoms.json"))))
+            .collect();
+        assert!(
+            volumes.iter().all(|v| v.distances.iter().any(|d| *d < 0.0)),
+            "every cooked field must contain interior (negative) samples"
+        );
+        for (n, v) in asset_names.iter().zip(&volumes) {
+            eprintln!(
+                "[sdf_block] volume {n}: res={:?} voxel={:.4} band={:.4}",
+                v.resolution, v.voxel_size, v.narrow_band
+            );
+        }
+
+        // Per-volume horizontal footprint (metres) so we can lay instances out
+        // on a non-overlapping grid (the X/Z extent of the cooked grid).
+        let footprint = |v: &super::SdfVolumeInput| -> (f32, f32) {
+            (
+                (v.resolution[0] - 1) as f32 * v.voxel_size,
+                (v.resolution[2] - 1) as f32 * v.voxel_size,
+            )
+        };
+        // Ground placement: each cooked field's local Y origin is at v.origin[1];
+        // translate so the field's base sits on y=0 (flat ground).
+        let ground_y = |v: &super::SdfVolumeInput| -> f32 { -v.origin[1] };
+
+        // Distinct per-instance albedos (warm/cool variety so buildings read as
+        // separate masses in the PNG).
+        let palette = [
+            [0.78, 0.40, 0.34], // brick red
+            [0.46, 0.58, 0.74], // slate blue
+            [0.80, 0.74, 0.52], // sand
+            [0.55, 0.70, 0.52], // sage
+            [0.74, 0.62, 0.46], // tan
+            [0.62, 0.52, 0.66], // muted violet
+            [0.84, 0.78, 0.66], // cream
+            [0.50, 0.64, 0.68], // teal grey
+        ];
+
+        // --- Block layout: 3 rows x 4 columns = 12 instances on a grid. ------
+        let cols = 4usize;
+        let rows = 3usize;
+        let gap = 6.0f32; // metres between footprints
+        // Column/row pitch from the widest footprint so nothing overlaps.
+        let max_w = volumes
+            .iter()
+            .map(|v| footprint(v).0)
+            .fold(0.0f32, f32::max);
+        let max_d = volumes
+            .iter()
+            .map(|v| footprint(v).1)
+            .fold(0.0f32, f32::max);
+        let pitch_x = max_w + gap;
+        let pitch_z = max_d + gap;
+
+        let mut instances: Vec<SdfSceneInstance> = Vec::new();
+        for r in 0..rows {
+            for c in 0..cols {
+                let idx = r * cols + c;
+                let vol = idx % volumes.len();
+                let v = &volumes[vol];
+                let (fw, fd) = footprint(v);
+                // Cell centre on the grid, then offset so the field's own grid
+                // origin lands such that the building is centred in its cell.
+                let cell_x = (c as f32 - (cols as f32 - 1.0) * 0.5) * pitch_x;
+                let cell_z = (r as f32 - (rows as f32 - 1.0) * 0.5) * pitch_z;
+                let position = [
+                    cell_x - (v.origin[0] + fw * 0.5),
+                    ground_y(v),
+                    cell_z - (v.origin[2] + fd * 0.5),
+                ];
+                instances.push(SdfSceneInstance {
+                    volume_index: vol as u32,
+                    position,
+                    rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+                    uniform_scale: 1.0,
+                    albedo: palette[idx % palette.len()],
+                });
+            }
+        }
+        let n_instances = instances.len();
+        assert!(
+            n_instances >= 8,
+            "need >= 8 instances for the cluster proof, have {n_instances}"
+        );
+
+        // --- Camera: city-builder oblique looking down at the block. ---------
+        // Scene horizontal centre is the origin (grid is symmetric about 0). The
+        // block spans ~(cols-1)*pitch in X and ~(rows-1)*pitch in Z plus one
+        // footprint; frame it tightly so the buildings fill the view.
+        let block_w = (cols as f32 - 1.0) * pitch_x + max_w;
+        let block_d = (rows as f32 - 1.0) * pitch_z + max_d;
+        let center = [0.0f32, 5.0, 0.0];
+        let span = block_w.max(block_d);
+        // Pull in close for a filled frame; a flatter oblique (eye height ~0.5
+        // span) reads as the classic city-builder 3/4 view.
+        let dist = span * 0.62;
+        let eye = [
+            center[0] + dist * 0.55,
+            center[1] + dist * 0.55,
+            center[2] + dist * 0.95,
+        ];
+        let (w, h) = (320u32, 240u32);
+        let fov_y = std::f32::consts::FRAC_PI_4;
+
+        // Dark sky / dark fills so only the lit SDF surfaces register; the SDF's
+        // view-facing fill (megakernel) lights every hit pixel above the sky.
+        let rig = LightRig {
+            sun_dir: [0.4, 0.75, 0.5],
+            sun_intensity: 2.4,
+            sky_intensity: 0.0,
+            camera_fill: 0.0,
+            rim_fill: 0.0,
+            sky_dome_intensity: 0.0,
+            sky_dome_zenith: [0.0, 0.0, 0.0],
+            sky_dome_horizon: [0.0, 0.0, 0.0],
+            ..Default::default()
+        };
+
+        let t0 = std::time::Instant::now();
+        let rgba = pathtrace_sdf_scene_to_rgba(
+            &volumes, &instances, eye, center, fov_y, w, h, 4, &rig,
+        )
+        .expect("SDF cluster render should succeed");
+        let secs = t0.elapsed().as_secs_f64();
+
+        let out_dir = std::env::temp_dir();
+        let png_path = out_dir.join("ochroma_sdf_city_block.png");
+        write_png_rgba(png_path.to_str().unwrap(), &rgba, w, h);
+        eprintln!("[sdf_block] wrote {}", png_path.display());
+
+        // --- Total lit coverage (fraction of frame that is solid building). --
+        let thr = 30.0f32;
+        let lit = (0..(w * h))
+            .filter(|&p| luma(&rgba[(p * 4) as usize..(p * 4 + 4) as usize]) > thr)
+            .count();
+        let total_coverage = lit as f64 / (w * h) as f64;
+
+        // --- Per-instance solidity: project each instance's world AABB to a
+        // screen box, then measure SPAN-FILL within that box (the M0 confetti-vs-
+        // solid metric, localized): for each row in the box, the lit pixels must
+        // fill their span (first→last lit pixel). A SOLID building fills each
+        // scanline span ≈ 1.0; confetti leaves gaps; an absent instance has no
+        // lit pixels at all. This is robust to the oblique view making the
+        // projected 3D-AABB box much larger than the building's silhouette (the
+        // box is mostly corner air, which span-fill correctly ignores).
+        let view = glam::Mat4::look_at_rh(
+            glam::Vec3::from(eye),
+            glam::Vec3::from(center),
+            glam::Vec3::Y,
+        );
+        let aspect = w as f32 / h as f32;
+        let proj = glam::Mat4::perspective_rh(fov_y, aspect, 0.05, 10_000.0);
+        let view_proj = proj * view;
+        let project = |p: glam::Vec3| -> Option<(f32, f32)> {
+            let clip = view_proj * p.extend(1.0);
+            if clip.w <= 1e-4 {
+                return None;
+            }
+            let ndc = clip.truncate() / clip.w;
+            // NDC x in [-1,1] → pixel; y flipped (NDC +y up, pixel +y down).
+            let px = (ndc.x * 0.5 + 0.5) * w as f32;
+            let py = (1.0 - (ndc.y * 0.5 + 0.5)) * h as f32;
+            Some((px, py))
+        };
+
+        let mut solid_instances = 0usize;
+        let mut per_inst_fill: Vec<f64> = Vec::new();
+        for inst in &instances {
+            let v = &volumes[inst.volume_index as usize];
+            let lmin = v.origin;
+            let lmax = [
+                v.origin[0] + (v.resolution[0] - 1) as f32 * v.voxel_size,
+                v.origin[1] + (v.resolution[1] - 1) as f32 * v.voxel_size,
+                v.origin[2] + (v.resolution[2] - 1) as f32 * v.voxel_size,
+            ];
+            let q = glam::Quat::from_array(inst.rotation_xyzw).normalize();
+            let pos = glam::Vec3::from(inst.position);
+            let (mut bx0, mut by0, mut bx1, mut by1) =
+                (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+            let mut any = false;
+            for cx in [lmin[0], lmax[0]] {
+                for cy in [lmin[1], lmax[1]] {
+                    for cz in [lmin[2], lmax[2]] {
+                        let world =
+                            pos + q * (glam::Vec3::new(cx, cy, cz) * inst.uniform_scale);
+                        if let Some((px, py)) = project(world) {
+                            bx0 = bx0.min(px);
+                            by0 = by0.min(py);
+                            bx1 = bx1.max(px);
+                            by1 = by1.max(py);
+                            any = true;
+                        }
+                    }
+                }
+            }
+            if !any {
+                per_inst_fill.push(0.0);
+                continue;
+            }
+            // Clamp the screen box to the frame; span-fill within it per row.
+            let x0 = bx0.floor().clamp(0.0, (w - 1) as f32) as u32;
+            let y0 = by0.floor().clamp(0.0, (h - 1) as f32) as u32;
+            let x1 = bx1.ceil().clamp(0.0, (w - 1) as f32) as u32;
+            let y1 = by1.ceil().clamp(0.0, (h - 1) as f32) as u32;
+            let (mut sum_fill, mut span_rows, mut box_lit) = (0.0f64, 0u64, 0u64);
+            for y in y0..=y1 {
+                let (mut first, mut last, mut count) = (None, 0u32, 0u32);
+                for x in x0..=x1 {
+                    let i = ((y * w + x) * 4) as usize;
+                    if luma(&rgba[i..i + 4]) > thr {
+                        first.get_or_insert(x);
+                        last = x;
+                        count += 1;
+                    }
+                }
+                box_lit += count as u64;
+                if let Some(f) = first {
+                    let span = last - f + 1;
+                    if span >= 3 {
+                        sum_fill += count as f64 / span as f64;
+                        span_rows += 1;
+                    }
+                }
+            }
+            // A building absent from the frame has no lit pixels → fill 0.
+            let fill = if span_rows > 0 && box_lit > 0 {
+                sum_fill / span_rows as f64
+            } else {
+                0.0
+            };
+            per_inst_fill.push(fill);
+            // Solid: the building's scanline spans are well-filled (continuous
+            // walls/roof) AND it actually has surface pixels in the frame.
+            if fill >= 0.80 && box_lit > 20 {
+                solid_instances += 1;
+            }
+        }
+
+        let mean_fill = per_inst_fill.iter().sum::<f64>() / per_inst_fill.len() as f64;
+        eprintln!(
+            "[sdf_block] MULTI-INSTANCE SDF CLUSTER (all native sphere-traced SDF):\n  \
+             instances placed   : {n_instances}\n  \
+             instances solid    : {solid_instances} (per-instance span-fill >= 0.80)\n  \
+             total lit coverage : {:.4} of frame\n  \
+             mean span-fill     : {:.4}\n  \
+             seconds/frame      : {:.2}s\n  \
+             per-instance fill  : {:?}",
+            total_coverage,
+            mean_fill,
+            secs,
+            per_inst_fill
+                .iter()
+                .map(|f| (f * 100.0).round() / 100.0)
+                .collect::<Vec<_>>(),
+        );
+
+        // --- Acceptance gates. ----------------------------------------------
+        assert!(
+            n_instances >= 8,
+            "must render >= 8 SDF instances, placed {n_instances}"
+        );
+        assert!(
+            lit > 0,
+            "frame is entirely background — no SDF surface was hit"
+        );
+        // The cluster must be SOLID: the large majority of placed buildings must
+        // each fill their projected footprint (multiple distinct solid masses,
+        // not one building and not confetti). Allow a couple of edge instances
+        // to be partly clipped by the frame.
+        assert!(
+            solid_instances >= 8,
+            "expected >= 8 buildings to render as SOLID surfaces (per-instance \
+             span-fill >= 0.80), got {solid_instances} (mean span-fill {:.3}). A \
+             solid SDF cluster fills each building's scanline spans; confetti / \
+             missing instances do not.",
+            mean_fill
+        );
+        // And the block must occupy a real chunk of the frame (not a single
+        // building lost in a sea of sky).
+        assert!(
+            total_coverage >= 0.15,
+            "building cluster should cover a substantial part of the frame, got \
+             {total_coverage:.4}"
         );
     }
 }
