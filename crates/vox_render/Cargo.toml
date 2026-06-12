@@ -57,6 +57,10 @@ crucible = ["vox_nodes/crucible"]
 vox_sim = { path = "../vox_sim" }
 vox_terrain = { path = "../vox_terrain" }
 tempfile = "3"
+# JPEG decode for the textured-SDF quality gates (loads the cooked PolyHaven
+# sets exactly like the game's TextureCache: sRGB->linear + tint-normalized
+# diffuse, raw normal/roughness, box-downsampled).
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [dependencies.naga]
 version = "24"
