@@ -6479,6 +6479,526 @@ mod tests {
         );
     }
 
+    /// Signed solid angle of triangle (p0,p1,p2) from `q` (van Oosterom–
+    /// Strackee) — the same oracle the forge seal tests and the cook's GWN
+    /// sign gate use.
+    #[cfg(feature = "spectra-native")]
+    fn tri_solid_angle(q: glam::DVec3, p0: glam::DVec3, p1: glam::DVec3, p2: glam::DVec3) -> f64 {
+        let (a, b, c) = (p0 - q, p1 - q, p2 - q);
+        let (la, lb, lc) = (a.length(), b.length(), c.length());
+        if la < 1e-12 || lb < 1e-12 || lc < 1e-12 {
+            return 0.0;
+        }
+        let det = a.dot(b.cross(c));
+        let denom = la * lb * lc + a.dot(b) * lc + b.dot(c) * la + c.dot(a) * lb;
+        2.0 * det.atan2(denom)
+    }
+
+    /// Generalized winding number of a cooked mesh at `q`.
+    #[cfg(feature = "spectra-native")]
+    fn cooked_gwn(mesh: &CookedMesh, q: glam::DVec3) -> f64 {
+        let mut sum = 0.0;
+        for tri in &mesh.indices {
+            let p0 = glam::DVec3::from(mesh.positions[tri[0] as usize].map(f64::from));
+            let p1 = glam::DVec3::from(mesh.positions[tri[1] as usize].map(f64::from));
+            let p2 = glam::DVec3::from(mesh.positions[tri[2] as usize].map(f64::from));
+            sum += tri_solid_angle(q, p0, p1, p2);
+        }
+        sum / (4.0 * std::f64::consts::PI)
+    }
+
+    /// Replica of the cook's GWN closed gate (`SdfBaker::bake`): 4x4x4
+    /// stratified jittered probes (SplitMix stream 0xC001_BA5E, bit-for-bit),
+    /// |w| in (0.15, 0.85) anywhere => OPEN (Err carries the min fractional
+    /// |w|); otherwise Ok(interior probe count), which must be >= 1 for the
+    /// Closed sign to be provable. This is the gate that decides
+    /// `sign=gwn closed=yes` at recook time.
+    #[cfg(feature = "spectra-native")]
+    fn cooked_probe_gate(mesh: &CookedMesh) -> Result<usize, f32> {
+        struct SplitMix(u64);
+        impl SplitMix {
+            fn unit(&mut self) -> f32 {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^= z >> 31;
+                (z >> 40) as f32 / (1u64 << 24) as f32
+            }
+        }
+        let (mut mn, mut mx) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for p in &mesh.positions {
+            for a in 0..3 {
+                mn[a] = mn[a].min(p[a]);
+                mx[a] = mx[a].max(p[a]);
+            }
+        }
+        let extent = [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]];
+        let mut rng = SplitMix(0xC001_BA5E);
+        let (mut interior, mut min_abs, mut fractional) = (0usize, f32::INFINITY, false);
+        for cz in 0..4u32 {
+            for cy in 0..4u32 {
+                for cx in 0..4u32 {
+                    let u = (cx as f32 + rng.unit()) / 4.0;
+                    let v = (cy as f32 + rng.unit()) / 4.0;
+                    let s = (cz as f32 + rng.unit()) / 4.0;
+                    let q = glam::DVec3::new(
+                        (mn[0] + u * extent[0]) as f64,
+                        (mn[1] + v * extent[1]) as f64,
+                        (mn[2] + s * extent[2]) as f64,
+                    );
+                    let w = cooked_gwn(mesh, q).abs() as f32;
+                    if w < 0.15 {
+                        continue;
+                    }
+                    min_abs = min_abs.min(w);
+                    if w <= 0.85 {
+                        fractional = true;
+                    } else {
+                        interior += 1;
+                    }
+                }
+            }
+        }
+        if fractional {
+            return Err(min_abs);
+        }
+        if interior == 0 {
+            return Err(0.0);
+        }
+        Ok(interior)
+    }
+
+    /// Per-floor-slice skin width profile of a cooked building: max X extent
+    /// of vertical MAT_WALL(0) / MAT_GLASS(2) skin triangles per slice.
+    /// Mullions/cornices/roofs are excluded by material, horizontal sheets by
+    /// normal — what remains IS the massing silhouette the shape gates
+    /// measure. Returns (slice widths, building height).
+    #[cfg(feature = "spectra-native")]
+    fn skin_width_profile(mesh: &CookedMesh, slices: usize) -> (Vec<f32>, f32) {
+        use glam::Vec3;
+        let height = mesh
+            .positions
+            .iter()
+            .map(|p| p[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let mut min_x = vec![f32::INFINITY; slices];
+        let mut max_x = vec![f32::NEG_INFINITY; slices];
+        for (t, tri) in mesh.indices.iter().enumerate() {
+            let m = mesh.material_ids[t];
+            if m != 0 && m != 2 {
+                continue;
+            }
+            let p0 = Vec3::from(mesh.positions[tri[0] as usize]);
+            let p1 = Vec3::from(mesh.positions[tri[1] as usize]);
+            let p2 = Vec3::from(mesh.positions[tri[2] as usize]);
+            let g = (p2 - p0).cross(p1 - p0);
+            if g.length() < 1e-9 || g.normalize().y.abs() > 0.5 {
+                continue; // horizontal sheet (roof cap, underside, plate)
+            }
+            let cy = (p0.y + p1.y + p2.y) / 3.0;
+            let s = ((cy / height) * slices as f32).floor() as usize;
+            if s >= slices {
+                continue;
+            }
+            for p in [p0, p1, p2] {
+                min_x[s] = min_x[s].min(p.x);
+                max_x[s] = max_x[s].max(p.x);
+            }
+        }
+        let widths = (0..slices)
+            .map(|s| {
+                if max_x[s] > min_x[s] {
+                    max_x[s] - min_x[s]
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        (widths, height)
+    }
+
+    /// Count massing volumes from a width profile: a new volume starts where
+    /// the slice width steps by more than 1 m (empty seam slices are skipped).
+    #[cfg(feature = "spectra-native")]
+    fn count_width_plateaus(widths: &[f32]) -> usize {
+        let mut plateaus = 0usize;
+        let mut last: Option<f32> = None;
+        for &w in widths {
+            if w <= 0.0 {
+                continue;
+            }
+            if last.is_none_or(|l| (w - l).abs() > 1.0) {
+                plateaus += 1;
+            }
+            last = Some(w);
+        }
+        plateaus
+    }
+
+    /// Normalized front-silhouette mask of a cooked building: the CPU
+    /// rasterizer (the GPU-cross-checked projection) with a camera fitted so
+    /// every building fills the frame the same way — pairwise mask deltas
+    /// then measure SHAPE, not size.
+    #[cfg(feature = "spectra-native")]
+    fn fitted_silhouette(mesh: &CookedMesh, res: u32) -> Vec<bool> {
+        let (mut mn, mut mx) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for p in &mesh.positions {
+            for a in 0..3 {
+                mn[a] = mn[a].min(p[a]);
+                mx[a] = mx[a].max(p[a]);
+            }
+        }
+        let centre = [
+            (mn[0] + mx[0]) * 0.5,
+            (mn[1] + mx[1]) * 0.5,
+            (mn[2] + mx[2]) * 0.5,
+        ];
+        let half = ((mx[0] - mn[0]).max(mx[1] - mn[1]).max(mx[2] - mn[2])) * 0.5;
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        let dist = half / (fov_y * 0.5).tan() * 1.25;
+        let eye = [centre[0], centre[1], centre[2] + dist];
+        let (mats_px, _) = rasterize_material_masks(mesh, eye, centre, fov_y, res, res);
+        mats_px.iter().map(|&v| v >= 0).collect()
+    }
+
+    /// MASSING-AXIS GATES (grammar §4.2 wave): podium+tower + setback +
+    /// box, all loaded from COOKED payloads (`assets/buildings/massing`,
+    /// cooked by game_asset_cook through the massing-aware forge) and
+    /// measured from geometry, then rendered CHEAP (256² @ 32 spp).
+    ///
+    ///   (volumes) podium_tower stacks exactly 2 skin-width plateaus —
+    ///       podium floors / tower floors / inset / total height measured
+    ///       from the mesh against the payload's own forge_description;
+    ///   (watertight) podium_tower + setback + box all pass the cook's GWN
+    ///       64-probe closed gate (bit-for-bit replica), and the box payload
+    ///       mesh is BYTE-IDENTICAL to the pre-massing cook of the same
+    ///       directive (assets/buildings/curtain_wall, cooked on master);
+    ///   (facade) the tower band is glass-dominant curtain wall with the
+    ///       cooked glass material transmissive (packs MAT_GLASS=3); the
+    ///       podium band is wall-dominant punched window;
+    ///   (shape) pairwise fitted-silhouette deltas between podium_tower,
+    ///       setback and box all exceed 8% — the axis spans 3 distinct
+    ///       shapes;
+    ///   (render) three PNGs, each frame < 10 s.
+    ///
+    /// Cook first (civitas repo, ~/Ochroma/projects/civitas_care):
+    ///   mkdir -p /tmp/massing_src/office && cp assets/source/buildings/office/\
+    ///     {podium_tower_01,setback_tower_01,glass_office_tower_01}.asset.json \
+    ///     /tmp/massing_src/office/ && mkdir -p assets/buildings/massing/textures \
+    ///     && cp -r assets/buildings/forge_starter/textures/polyhaven \
+    ///     assets/buildings/massing/textures/
+    ///   cargo build --release --bin game_asset_cook && \
+    ///   GAME_FORGE_BIN=$HOME/src/forge/target/release/aetherspectra-forge \
+    ///     ./target/release/game_asset_cook --no-starters \
+    ///     --source /tmp/massing_src --output assets/buildings/massing
+    /// Run alone (GPU):
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
+    ///     --profile release-fast --lib forge_massing_podium_tower -- --nocapture --test-threads=1
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn forge_massing_podium_tower() {
+        use super::{pathtrace_mesh_lit_to_rgba, LightRig};
+
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        let massing_atoms = home.join("Ochroma/projects/civitas_care/assets/buildings/massing/atoms");
+        let pt_path = massing_atoms.join("city.office.l8.4x4.podium_tower_01.atoms.json");
+        let sb_path = massing_atoms.join("city.office.l6.3x3.setback_tower_01.atoms.json");
+        let box_path = massing_atoms.join("city.office.l5.3x3.glass_office_tower_01.atoms.json");
+        let box_pre_path = home.join(
+            "Ochroma/projects/civitas_care/assets/buildings/curtain_wall/atoms/\
+             city.office.l5.3x3.glass_office_tower_01.atoms.json",
+        );
+
+        let pt = load_craftsman_mesh(&pt_path);
+        let sb = load_craftsman_mesh(&sb_path);
+        let bx = load_craftsman_mesh(&box_path);
+        let bx_pre = load_craftsman_mesh(&box_pre_path);
+
+        // ── GATE 1: podium_tower volumes / floors / inset / height, measured
+        //    from the cooked mesh against its own forge_description. ─────────
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&pt_path).unwrap()).expect("parse atoms.json");
+        let desc = &json["forge_description"];
+        assert_eq!(desc["massing_mode"].as_str(), Some("podium_tower"));
+        let pf = desc["podium_floors"].as_u64().unwrap() as u32;
+        let tf = desc["tower_floors"].as_u64().unwrap() as u32;
+        let fh = desc["floor_height"].as_f64().unwrap() as f32;
+        let plot_w = desc["footprint"]["width"].as_f64().unwrap() as f32;
+        let floors = desc["floors"].as_u64().unwrap() as u32;
+        assert_eq!(pf + tf, floors, "floor split must tile the height");
+
+        let slices = floors as usize;
+        let (pt_widths, pt_height) = skin_width_profile(&pt, slices);
+        let pt_volumes = count_width_plateaus(&pt_widths);
+        let podium_w: f32 = pt_widths[..pf as usize]
+            .iter()
+            .fold(0.0f32, |m, &w| m.max(w));
+        // Tower width away from the seam slice.
+        let tower_w: f32 = pt_widths[(pf as usize + 1)..]
+            .iter()
+            .filter(|w| **w > 0.0)
+            .fold(0.0f32, |m, &w| m.max(w));
+        let inset_m = (podium_w - tower_w) * 0.5;
+        let inset_pct = 100.0 * inset_m / podium_w;
+        let gate1 = pt_volumes == 2
+            && inset_m > 0.5
+            && tf > pf
+            && (podium_w - plot_w).abs() < 0.1
+            && pt_height >= floors as f32 * fh
+            && pt_height < floors as f32 * fh + 1.0;
+        eprintln!(
+            "[massing] podium_tower volumes: {pt_volumes} (podium {pf} floors, tower {tf} \
+             floors); tower footprint inset = {inset_pct:.1}% of podium ({inset_m:.2} m, \
+             podium {podium_w:.2} m -> tower {tower_w:.2} m) (expect inset>0, tf>pf, total \
+             height {pt_height:.1}m) -> {}",
+            if gate1 { "PASS" } else { "FAIL" }
+        );
+        assert!(
+            gate1,
+            "podium_tower massing wrong: {pt_volumes} volumes, inset {inset_m} m, \
+             pf {pf} tf {tf}, height {pt_height} vs {} floors x {fh} m",
+            floors
+        );
+
+        // ── GATE 2: watertight — the cook's GWN closed gate on all three,
+        //    plus box byte-identity against the pre-massing cook. ────────────
+        let gwn_label = |r: &Result<usize, f32>| match r {
+            Ok(n) => format!("gwn yes ({n} interior probes)"),
+            Err(w) => format!("NO (fractional |w|={w:.3})"),
+        };
+        let pt_gate = cooked_probe_gate(&pt);
+        let sb_gate = cooked_probe_gate(&sb);
+        let bx_gate = cooked_probe_gate(&bx);
+        let identical = pt_eq_mesh(&bx, &bx_pre);
+        let gate2 =
+            pt_gate.is_ok() && sb_gate.is_ok() && bx_gate.is_ok() && identical;
+        eprintln!(
+            "[massing] watertight: podium_tower closed={}, setback closed={}, box-regression \
+             closed={} & byte-identical to pre-massing ({} tris) = {identical} -> {}",
+            gwn_label(&pt_gate),
+            gwn_label(&sb_gate),
+            gwn_label(&bx_gate),
+            bx.indices.len(),
+            if gate2 { "PASS" } else { "FAIL" }
+        );
+        assert!(gate2, "watertight/regression gate failed");
+
+        // ── GATE 3: per-volume facade — transmissive curtain-wall tower over
+        //    a punched podium, measured from band areas + the packed
+        //    material. ─────────────────────────────────────────────────────────
+        let (materials, textures, channels) = load_building_mesh_pbr_by_forge_id(&pt_path);
+        assert_eq!(channels[2], "glass", "forge id 2 must bind the glass channel");
+        let podium_top = pf as f32 * fh;
+        let total_h = floors as f32 * fh;
+        let band_area = |y0: f32, y1: f32| -> (f64, f64) {
+            use glam::Vec3;
+            let (mut glass, mut wall) = (0.0f64, 0.0f64);
+            for (t, tri) in pt.indices.iter().enumerate() {
+                let m = pt.material_ids[t];
+                if m != 0 && m != 2 {
+                    continue;
+                }
+                let p0 = Vec3::from(pt.positions[tri[0] as usize]);
+                let p1 = Vec3::from(pt.positions[tri[1] as usize]);
+                let p2 = Vec3::from(pt.positions[tri[2] as usize]);
+                let g = (p2 - p0).cross(p1 - p0);
+                if g.length() < 1e-9 || g.normalize().y.abs() > 0.5 {
+                    continue;
+                }
+                let cy = (p0.y + p1.y + p2.y) / 3.0;
+                if cy < y0 || cy > y1 {
+                    continue;
+                }
+                let area = (g.length() * 0.5) as f64;
+                if m == 2 {
+                    glass += area;
+                } else {
+                    wall += area;
+                }
+            }
+            (glass, wall)
+        };
+        let (tower_glass, tower_wall) = band_area(podium_top + 1.0, total_h - 1.0);
+        let (podium_glass, podium_wall) = band_area(0.5, podium_top - 0.5);
+        let tower_glass_tris = pt
+            .indices
+            .iter()
+            .zip(&pt.material_ids)
+            .filter(|(tri, m)| {
+                **m == 2 && {
+                    let cy = tri
+                        .iter()
+                        .map(|&i| pt.positions[i as usize][1])
+                        .sum::<f32>()
+                        / 3.0;
+                    cy > podium_top
+                }
+            })
+            .count();
+        let glass_mat = materials[2];
+        let packed = super::pack_vulkan_mesh_material(glass_mat);
+        let gate3 = tower_glass_tris > 0
+            && glass_mat.transmission > 0.0
+            && glass_mat.thin_walled
+            && packed[0].to_bits() == 3
+            && tower_glass > tower_wall
+            && podium_glass < podium_wall * 0.3;
+        eprintln!(
+            "[massing] tower facade = curtain_wall (transmissive glass panels \
+             {} > 0, MAT_GLASS packed, band glass {tower_glass:.0} m^2 > wall \
+             {tower_wall:.0} m^2), podium facade = punched (glass {podium_glass:.0} m^2 << \
+             wall {podium_wall:.0} m^2) -> {}",
+            tower_glass_tris / 2,
+            if gate3 { "PASS" } else { "FAIL" }
+        );
+        assert!(
+            gate3,
+            "per-volume facade wrong: tower glass tris {tower_glass_tris}, transmission {}, \
+             packed {}, tower {tower_glass}/{tower_wall}, podium {podium_glass}/{podium_wall}",
+            glass_mat.transmission,
+            packed[0].to_bits()
+        );
+
+        // ── GATE 4: the axis spans 3 distinct shapes — pairwise fitted-
+        //    silhouette deltas. ───────────────────────────────────────────────
+        let res = 160u32;
+        let masks = [
+            ("podium_tower", fitted_silhouette(&pt, res)),
+            ("setback", fitted_silhouette(&sb, res)),
+            ("box", fitted_silhouette(&bx, res)),
+        ];
+        let mut min_delta = f64::INFINITY;
+        let mut deltas = Vec::new();
+        for i in 0..masks.len() {
+            for j in (i + 1)..masks.len() {
+                let (xor, union) = masks[i]
+                    .1
+                    .iter()
+                    .zip(&masks[j].1)
+                    .fold((0usize, 0usize), |(x, u), (&a, &b)| {
+                        (x + (a != b) as usize, u + (a || b) as usize)
+                    });
+                let delta = xor as f64 / union.max(1) as f64;
+                min_delta = min_delta.min(delta);
+                deltas.push(format!("{} vs {} = {:.1}%", masks[i].0, masks[j].0, delta * 100.0));
+            }
+        }
+        let gate4 = min_delta > 0.08;
+        eprintln!(
+            "[massing] shape distinct: pairwise silhouette delta {} (gate > 8%) -> {}",
+            deltas.join(", "),
+            if gate4 { "PASS" } else { "FAIL" }
+        );
+        assert!(gate4, "silhouettes are not distinct: min delta {min_delta:.3}");
+
+        // ── GATE 5: cheap renders — a human eyeballs glass-on-a-base, the
+        //    ziggurat, and the plain box. ─────────────────────────────────────
+        let (w, h) = (256u32, 256u32);
+        let spp = 32u32;
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        let rig = LightRig {
+            sun_dir: [0.45, 0.65, 0.55],
+            sun_intensity: 2.6,
+            sky_intensity: 0.3,
+            camera_fill: 0.2,
+            rim_fill: 0.0,
+            sky_dome_intensity: 0.65,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.80, 0.86, 0.95],
+            ..Default::default()
+        };
+        let out_dir = std::env::temp_dir();
+        let mut worst_secs = 0.0f64;
+        for (label, mesh, path) in [
+            ("massing_podium_tower", &pt, &pt_path),
+            ("massing_setback", &sb, &sb_path),
+            ("massing_box", &bx, &box_path),
+        ] {
+            let (mats, texs, _) = load_building_mesh_pbr_by_forge_id(path);
+            let max_y = mesh
+                .positions
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::NEG_INFINITY, f32::max);
+            let max_x = mesh
+                .positions
+                .iter()
+                .map(|p| p[0].abs())
+                .fold(0.0f32, f32::max);
+            let half = (max_y * 0.5).max(max_x);
+            let dist = half / (fov_y * 0.5).tan() * 1.35;
+            let dir = glam::Vec3::new(0.8, 0.42, 1.0).normalize();
+            let target = [0.0f32, max_y * 0.48, 0.0];
+            let eye = [
+                target[0] + dir.x * dist,
+                target[1] + dir.y * dist,
+                target[2] + dir.z * dist,
+            ];
+            let t0 = std::time::Instant::now();
+            let rgba = pathtrace_mesh_lit_to_rgba(
+                &mesh.positions,
+                &mesh.normals,
+                &mesh.uvs,
+                &mesh.indices,
+                &mesh.material_ids,
+                &mats,
+                &texs,
+                eye,
+                target,
+                fov_y,
+                w,
+                h,
+                spp,
+                &rig,
+            )
+            .unwrap_or_else(|e| panic!("{label} render failed: {e}"));
+            let secs = t0.elapsed().as_secs_f64();
+            worst_secs = worst_secs.max(secs);
+            let mut rgba = rgba;
+            for px in rgba.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+            let png = out_dir.join(format!("{label}.png"));
+            write_png_rgba(png.to_str().unwrap(), &rgba, w, h);
+            eprintln!("[massing] wrote {} ({secs:.2}s)", png.display());
+        }
+        eprintln!(
+            "[massing] render time {worst_secs:.2}s/frame (< 10s) -> {}",
+            if worst_secs < 10.0 { "PASS" } else { "FAIL" }
+        );
+        eprintln!(
+            "[massing] eyeball: a glass curtain-wall tower seated on a wider punched-window \
+             podium (parapet crown), a three-band stepped ziggurat, and the plain 8-floor box"
+        );
+        assert!(
+            worst_secs < 10.0,
+            "gate renders are not cheap: {worst_secs:.2}s/frame"
+        );
+    }
+
+    /// Exact mesh equality (f32 bit patterns) — the box byte-identity oracle.
+    #[cfg(feature = "spectra-native")]
+    fn pt_eq_mesh(a: &CookedMesh, b: &CookedMesh) -> bool {
+        a.positions.len() == b.positions.len()
+            && a.indices.len() == b.indices.len()
+            && a.material_ids == b.material_ids
+            && a.indices == b.indices
+            && a.positions
+                .iter()
+                .zip(&b.positions)
+                .all(|(p, q)| p.iter().zip(q).all(|(x, y)| x.to_bits() == y.to_bits()))
+            && a.normals
+                .iter()
+                .zip(&b.normals)
+                .all(|(p, q)| p.iter().zip(q).all(|(x, y)| x.to_bits() == y.to_bits()))
+            && a.uvs
+                .iter()
+                .zip(&b.uvs)
+                .all(|(p, q)| p.iter().zip(q).all(|(x, y)| x.to_bits() == y.to_bits()))
+    }
+
     /// RGB → hue in degrees [0,360). Used to measure per-surface colour variety.
     #[cfg(feature = "spectra-native")]
     fn rgb_hue(r: f32, g: f32, b: f32) -> f32 {
