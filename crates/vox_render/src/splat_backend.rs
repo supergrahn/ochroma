@@ -127,6 +127,21 @@ pub fn pathtrace_splats_to_rgba(
 /// is set, the sampled texel REPLACES `base_color`; `roughness_tex` takes its
 /// R channel; `normal_tex` is a tangent-space normal map. `uv_scale`
 /// multiplies mesh UVs before sampling (textures wrap).
+///
+/// `transmission > 0.0` switches the material from opaque Lambert to REAL
+/// transmissive glass (`MAT_GLASS`): the megakernel's `dispatch_sample`
+/// already routes `MAT_GLASS` through the same `sample_glass` BSDF the proven
+/// SDF window path calls directly (`megakernel.slang`:
+/// `sample_glass(wo, n, ior=1.5, rough, absorption=float3(0), depth=1, ...)`)
+/// — no shader change, only the packer's material-type slot. `ior` is the
+/// glass index of refraction (1.5 = architectural glass; ignored while
+/// `transmission == 0.0`). `thin_walled = false` (the default) is the full
+/// refractive path; `thin_walled = true` is the thin-pane branch
+/// (Schlick-Fresnel reflect, else straight-through tinted by `base_color`).
+/// CAVEAT: the megakernel multiplies every bounce by `|n·wi|`; the refractive
+/// branch's pdf cancellation absorbs that at near-normal incidence, but the
+/// thin-walled branch (`f = albedo`, `pdf = 1`) does not, so thin panes lose
+/// ~cos²θ per face at oblique view angles — prefer refractive.
 #[cfg(feature = "spectra-native")]
 #[derive(Debug, Clone, Copy)]
 pub struct PbrMaterial {
@@ -138,6 +153,14 @@ pub struct PbrMaterial {
     pub roughness_tex: i32,
     pub normal_tex: i32,
     pub uv_scale: [f32; 2],
+    /// 0.0 = opaque Lambert (the historical behavior); > 0.0 = transmissive
+    /// `MAT_GLASS`.
+    pub transmission: f32,
+    /// Glass index of refraction; only read when `transmission > 0.0`.
+    pub ior: f32,
+    /// Thin-pane glass vs refractive solid glass; only read when
+    /// `transmission > 0.0`.
+    pub thin_walled: bool,
 }
 
 #[cfg(feature = "spectra-native")]
@@ -152,6 +175,9 @@ impl Default for PbrMaterial {
             roughness_tex: -1,
             normal_tex: -1,
             uv_scale: [1.0, 1.0],
+            transmission: 0.0,
+            ior: 1.5,
+            thin_walled: false,
         }
     }
 }
@@ -409,6 +435,16 @@ pub fn pathtrace_mesh_lit_to_rgba(
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
     config.target_spp = spp;
+    // Transmissive glass needs path DEPTH: a two-faced pane costs two bounces
+    // before the ray even reaches the content behind it. near_realtime's
+    // 3-bounce budget plus the NRC query-at-bounce-3 early exit would render
+    // panes black-by-config. Only scenes that actually contain a transmissive
+    // material pay for the deeper budget — opaque scenes keep the historical
+    // config (and their renders) byte-identical.
+    if materials.iter().any(|m| m.transmission > 0.0) {
+        config.max_bounces = 8;
+        config.use_nrc = false;
+    }
     let mut renderer = Renderer::new(gpu, config);
     renderer
         .load_scene_state(scene)
@@ -2169,18 +2205,40 @@ fn pack_vulkan_directional_light(
 fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
     let mut a = [0.0f32; VULKAN_MATERIAL_FLOATS];
 
-    a[0] = pack_u32(1); // MAT_LAMBERT
+    // `transmission > 0` selects MAT_GLASS (3): dispatch_sample's existing
+    // `case MAT_GLASS` (material_dispatch.slang) refracts/transmits via the
+    // same `sample_glass` BSDF the proven SDF window path calls — no shader
+    // change. Opaque materials keep the historical MAT_LAMBERT (1) packing
+    // byte-for-byte. Slot indices are the Vulkan SPIR-V reflection layout of
+    // `MaterialData` (std430: float3 aligned to 16 bytes), cross-checked
+    // against the slots this packer already proves out on screen (albedo 4-6,
+    // eye colors 44/52, opacity_tex 72, uv_scale 94-95, substrate 144-147).
+    let glass = m.transmission > 0.0;
+    a[0] = pack_u32(if glass { 3 } else { 1 }); // MAT_GLASS : MAT_LAMBERT
     a[4] = m.base_color[0];
     a[5] = m.base_color[1];
     a[6] = m.base_color[2];
     a[7] = m.roughness;
     a[9] = m.metallic;
-    a[10] = 1.5; // ior
+    a[10] = m.ior; // Default is 1.5 — identical to the old hardcoded constant
 
     a[20] = m.base_color[0];
     a[21] = m.base_color[1];
     a[22] = m.base_color[2];
     a[23] = m.emission_strength;
+
+    if glass {
+        // absorption_color (24-26) + absorption_depth (27): the EXACT values
+        // the working SDF glass path passes to sample_glass in
+        // megakernel.slang — `sample_glass(..., float3(0.0f), 1.0f, ...)`:
+        // clear glass, no Beer-Lambert absorption. Replicated field-for-field
+        // so the mesh MAT_GLASS route is parameter-identical to the proven
+        // SDF window route.
+        a[24] = 0.0;
+        a[25] = 0.0;
+        a[26] = 0.0;
+        a[27] = 1.0;
+    }
 
     a[28] = pack_i32(m.albedo_tex);
     a[29] = pack_i32(m.roughness_tex);
@@ -2205,7 +2263,7 @@ fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
     a[60] = pack_u32(0); // light_exclusion_mask
     a[61] = pack_u32(0xFF); // visibility_mask
     a[72] = pack_i32(-1); // opacity_tex
-    a[73] = pack_i32(0); // thin_walled
+    a[73] = pack_i32(if glass && m.thin_walled { 1 } else { 0 }); // thin_walled
 
     a[74] = 1.0; // diffuse_weight
     a[76] = 0.3; // specular_weight
@@ -4356,6 +4414,10 @@ mod tests {
                 roughness_tex,
                 normal_tex,
                 uv_scale: [1.0, 1.0],
+                // SDF path: glass stays opaque here — its windows route
+                // through the dedicated SDF glass branch in the megakernel,
+                // not through MAT_GLASS mesh materials.
+                ..super::PbrMaterial::default()
             });
             if table.material_for_channel[slot] < 0 {
                 table.material_for_channel[slot] = mat_id;
@@ -4848,6 +4910,11 @@ mod tests {
                 roughness_tex,
                 normal_tex,
                 uv_scale: [1.0, 1.0],
+                // Opaque (transmission 0) for EVERY channel including glass:
+                // mesh_craftsman_textured_lit's gates were measured on opaque
+                // panes and stay byte-identical. The glass demo/test flips the
+                // glass channel transmissive locally.
+                ..super::PbrMaterial::default()
             });
             channels.push(cm.channel.clone());
             eprintln!(
@@ -4978,10 +5045,12 @@ mod tests {
     ///   (c) lit coverage >= 0.25 of the frame, after the CPU mask and the GPU
     ///       silhouette are shown to agree (the projection cross-check that
     ///       makes every mask-based gate trustworthy).
-    /// KNOWN LIMIT (reported, not hidden): the mesh entry point is
-    /// Lambert-only, so the 2304 glass triangles render as flat pale-blue
-    /// panes, not transmissive glass (real glass is the SDF M2 route; mesh
-    /// transmission is future work).
+    /// GLASS: this test keeps every channel OPAQUE (the loader's default), so
+    /// its renders and measured gates stay byte-identical to when they were
+    /// established. Real mesh transmission exists now (`PbrMaterial::
+    /// transmission` -> MAT_GLASS) and is gated in
+    /// `mesh_glass_transmits_checkerboard`, which also renders the craftsman
+    /// glass demo.
     ///
     /// Run alone (GPU, seconds/frame is fine):
     ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
@@ -5373,8 +5442,9 @@ mod tests {
         eprintln!("[mesh_m0] wrote {} (flat control)", flat_png.display());
         eprintln!(
             "[mesh_m0] eyeball: a real textured craftsman — clapboard siding courses, \
-             slate roof, stucco trim, pale-blue glass panes (Lambert, not transmissive: \
-             known mesh-path limit) — vs the flat-colour control"
+             slate roof, stucco trim, pale-blue glass panes (opaque BY CHOICE here so \
+             this test's gates stay stable; real transmission is gated in \
+             mesh_glass_transmits_checkerboard) — vs the flat-colour control"
         );
 
         // --- The gates. Fix the UV/material/texture binding, never weaken. ---
@@ -5409,6 +5479,477 @@ mod tests {
             mean_lit_luma > 0.15,
             "building renders nearly black (mean lit luma {mean_lit_luma:.3}) — \
              the light rig is not landing"
+        );
+    }
+
+    /// Mesh GLASS ISOLATION GATE: prove REAL transmission through the mesh
+    /// path tracer on a TRIVIAL, CHEAP scene — a 16x16 emissive checkerboard
+    /// wall at z=0 and a two-faced glass slab (front face z=2.0, back face
+    /// z=1.96) in front of it, camera at z=6 looking straight through the
+    /// slab at the wall. No directional lights, no sky dome: the checker's
+    /// white cells are the ONLY emitters, so any pattern the glass-region
+    /// pixels show is, by construction, content from BEHIND the glass.
+    ///
+    /// Gates (each render 256x256 @ 32 spp — SECONDS, printed):
+    ///   (packing) the glass material packs a[0]=MAT_GLASS(3), a[10]=ior,
+    ///       a[24..27]=absorption_color (0,0,0), a[27]=absorption_depth 1.0,
+    ///       a[73]=thin_walled — the Vulkan MaterialData reflection slots,
+    ///       carrying the EXACT parameter set the proven SDF window path
+    ///       passes to sample_glass in megakernel.slang
+    ///       (`sample_glass(wo, n, 1.5, rough, float3(0.0f), 1.0f, ...)`);
+    ///       `transmission = 0` still packs MAT_LAMBERT with the historical
+    ///       slots untouched;
+    ///   (transmission) Pearson correlation between glass-region pixel
+    ///       luminance and the KNOWN checker parity projected through each
+    ///       pixel's camera ray onto the wall plane — scored against the
+    ///       better of two optical models (ideal-slab straight-through, and
+    ///       the engine's flipped-normal double-"entering" refraction that
+    ///       magnifies the pattern; see the inline comment): transmissive
+    ///       r > 0.5 AND r >= 3x the opaque control's r (identical scene, the
+    ///       glass material's transmission flipped to 0 — its unlit Lambert
+    ///       panes cannot show the wall pattern);
+    ///   (sanity) the directly-visible wall outside the glass correlates
+    ///       r > 0.8 in BOTH renders, so a transmission failure is
+    ///       unambiguously the glass route, not the emissive wall.
+    /// Writes `mesh_glass_checker.png` + `mesh_glass_checker_opaque.png`,
+    /// then ONE craftsman demo render with the cooked glass channel flipped
+    /// transmissive — `mesh_craftsman_glass.png`, eyeball-only, no gate.
+    ///
+    /// Run alone (GPU):
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
+    ///     --release --lib mesh_glass_transmits_checkerboard -- --nocapture --test-threads=1
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn mesh_glass_transmits_checkerboard() {
+        use super::{pathtrace_mesh_lit_to_rgba, LightRig, PbrMaterial};
+
+        // --- Packer layout: the MAT_GLASS slots (CPU-only, instant). --------
+        let glass_mat = PbrMaterial {
+            base_color: [1.0, 1.0, 1.0],
+            roughness: 0.0, // delta glass: clean refraction, f/pdf = 1
+            transmission: 1.0,
+            ior: 1.5,
+            thin_walled: false,
+            ..Default::default()
+        };
+        let packed = super::pack_vulkan_mesh_material(glass_mat);
+        assert_eq!(packed[0].to_bits(), 3, "a[0] must pack MAT_GLASS (3)");
+        assert_eq!(packed[10], 1.5, "a[10] must carry the glass ior");
+        assert_eq!(
+            &packed[24..28],
+            &[0.0, 0.0, 0.0, 1.0],
+            "a[24..28] must carry absorption_color (0,0,0) + absorption_depth \
+             1.0 — the SDF window reference's sample_glass arguments"
+        );
+        assert_eq!(packed[73].to_bits(), 0, "a[73] thin_walled = 0 (refractive)");
+        let packed_thin =
+            super::pack_vulkan_mesh_material(PbrMaterial { thin_walled: true, ..glass_mat });
+        assert_eq!(
+            packed_thin[73].to_bits(),
+            1,
+            "thin_walled = true must land in a[73] (the MaterialData thin_walled slot)"
+        );
+        let packed_opaque = super::pack_vulkan_mesh_material(PbrMaterial::default());
+        assert_eq!(
+            packed_opaque[0].to_bits(),
+            1,
+            "transmission = 0 must still pack MAT_LAMBERT (1)"
+        );
+        assert_eq!(
+            packed_opaque[10], 1.5,
+            "default ior must reproduce the old hardcoded 1.5 byte-for-byte"
+        );
+        assert_eq!(
+            &packed_opaque[24..28],
+            &[0.0; 4],
+            "opaque materials must leave the absorption slots zeroed (historical)"
+        );
+        eprintln!(
+            "[glass] packer: type {} in a[0], ior {} in a[10], absorption \
+             [{},{},{}]/{} in a[24..28], thin_walled {} in a[73]",
+            packed[0].to_bits(),
+            packed[10],
+            packed[24],
+            packed[25],
+            packed[26],
+            packed[27],
+            packed[73].to_bits()
+        );
+
+        // --- The trivial scene: emissive checker wall + glass slab. ---------
+        fn push_quad(
+            mesh: &mut CookedMesh,
+            corners: [[f32; 3]; 4],
+            normal: [f32; 3],
+            mat: u8,
+        ) {
+            let v0 = mesh.positions.len() as u32;
+            for c in corners {
+                mesh.positions.push(c);
+                mesh.normals.push(normal);
+                mesh.uvs.push([0.0, 0.0]);
+            }
+            mesh.indices.push([v0, v0 + 1, v0 + 2]);
+            mesh.indices.push([v0, v0 + 2, v0 + 3]);
+            mesh.material_ids.push(mat);
+            mesh.material_ids.push(mat);
+        }
+        const CELL: f32 = 0.5; // checker cell size (m)
+        const HALF: f32 = 4.0; // wall half-extent (m) -> 16x16 cells
+        let mut scene_mesh = CookedMesh {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            indices: Vec::new(),
+            material_ids: Vec::new(),
+        };
+        let ncell = (2.0 * HALF / CELL) as i32;
+        for cy in 0..ncell {
+            for cx in 0..ncell {
+                let x0 = -HALF + cx as f32 * CELL;
+                let y0 = -HALF + cy as f32 * CELL;
+                push_quad(
+                    &mut scene_mesh,
+                    [
+                        [x0, y0, 0.0],
+                        [x0 + CELL, y0, 0.0],
+                        [x0 + CELL, y0 + CELL, 0.0],
+                        [x0, y0 + CELL, 0.0],
+                    ],
+                    [0.0, 0.0, 1.0],
+                    ((cx + cy) % 2) as u8, // 0 = white EMITTER, 1 = black
+                );
+            }
+        }
+        // Two-faced glass slab: the craftsman panes' topology. Front face
+        // normal +Z (toward camera), back face normal -Z (outward of slab).
+        let (gh, zf, zb) = (0.9f32, 2.0f32, 1.96f32);
+        const GLASS_ID: u8 = 2;
+        push_quad(
+            &mut scene_mesh,
+            [[-gh, -gh, zf], [gh, -gh, zf], [gh, gh, zf], [-gh, gh, zf]],
+            [0.0, 0.0, 1.0],
+            GLASS_ID,
+        );
+        push_quad(
+            &mut scene_mesh,
+            [[-gh, -gh, zb], [-gh, gh, zb], [gh, gh, zb], [gh, -gh, zb]],
+            [0.0, 0.0, -1.0],
+            GLASS_ID,
+        );
+        let materials = [
+            // White checker cell: the scene's ONLY light source. emission
+            // packs base_color * strength (a[20..24]).
+            PbrMaterial {
+                base_color: [1.0, 1.0, 1.0],
+                emission_strength: 3.0,
+                ..Default::default()
+            },
+            // Black checker cell: near-zero albedo, no emission.
+            PbrMaterial {
+                base_color: [0.02, 0.02, 0.02],
+                ..Default::default()
+            },
+            glass_mat,
+        ];
+
+        // --- Camera straight through the slab; lights all OFF. --------------
+        let (w, h) = (256u32, 256u32);
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        let eye = [0.0f32, 0.0, 6.0];
+        let target = [0.0f32, 0.0, 0.0];
+        let rig = LightRig {
+            sun_dir: [0.0, 1.0, 0.0],
+            sun_intensity: 0.0,
+            sky_intensity: 0.0,
+            camera_fill: 0.0,
+            rim_fill: 0.0,
+            sky_dome_intensity: 0.0,
+            ..Default::default()
+        };
+        let spp = 32u32;
+
+        let render = |mats: &[PbrMaterial]| -> (Vec<u8>, f64) {
+            let t0 = std::time::Instant::now();
+            let rgba = pathtrace_mesh_lit_to_rgba(
+                &scene_mesh.positions,
+                &scene_mesh.normals,
+                &scene_mesh.uvs,
+                &scene_mesh.indices,
+                &scene_mesh.material_ids,
+                mats,
+                &[],
+                eye,
+                target,
+                fov_y,
+                w,
+                h,
+                spp,
+                &rig,
+            )
+            .expect("checker-through-glass render should succeed");
+            (rgba, t0.elapsed().as_secs_f64())
+        };
+        let (rgba_t, secs_t) = render(&materials);
+        eprintln!("[glass] render time {secs_t:.2}s (each frame, expect < 10s)");
+        let mut opaque_materials = materials;
+        opaque_materials[GLASS_ID as usize].transmission = 0.0;
+        let (rgba_o, secs_o) = render(&opaque_materials);
+        eprintln!("[glass] render time {secs_o:.2}s (each frame, expect < 10s)");
+
+        let out_dir = std::env::temp_dir();
+        let force_alpha = |mut v: Vec<u8>| -> Vec<u8> {
+            for px in v.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+            v
+        };
+        let t_png = out_dir.join("mesh_glass_checker.png");
+        let o_png = out_dir.join("mesh_glass_checker_opaque.png");
+        write_png_rgba(t_png.to_str().unwrap(), &force_alpha(rgba_t.clone()), w, h);
+        write_png_rgba(o_png.to_str().unwrap(), &force_alpha(rgba_o.clone()), w, h);
+        eprintln!("[glass] wrote {} (transmissive)", t_png.display());
+        eprintln!("[glass] wrote {} (opaque control)", o_png.display());
+
+        // --- Per-pixel ground truth: the same pinhole as the GPU (proven by
+        // the M0 projection cross-check), inverted to a camera ray, hit the
+        // wall plane z=0, read the checker parity. TWO optical models, both
+        // "the pattern behind the glass, transmitted":
+        //   (straight) ideal slab physics — enter+exit refractions cancel,
+        //       the ray continues straight (lateral offset sub-pixel);
+        //   (refracted) the engine's CURRENT model — the megakernel flips
+        //       shading normals toward the ray and `dispatch_sample` passes
+        //       `mat.ior` (not the IOR-stack eta), so BOTH slab faces refract
+        //       as "entering" with eta = 1/ior: the slab is a weak lens that
+        //       MAGNIFIES the pattern (visible in the PNG).
+        // The gate scores against the better-matching model so it certifies
+        // transmission, not one refraction convention. Pixels whose first hit
+        // is the glass slab (CPU rasterizer, eroded 1px) are the glass
+        // region; pixels whose first hit is the wall itself are the
+        // direct-view sanity region. Pixels within 0.04 m of a predicted
+        // checker boundary are excluded (AA tolerance). ----------------------
+        let (mats_px, _tris_px) = rasterize_material_masks(&scene_mesh, eye, target, fov_y, w, h);
+        let eye_v = glam::Vec3::from(eye);
+        let fwd = (glam::Vec3::from(target) - eye_v).normalize();
+        let right = fwd.cross(glam::Vec3::Y).normalize();
+        let up = right.cross(fwd);
+        let tan_half = (fov_y * 0.5).tan();
+        let aspect = w as f32 / h as f32;
+        // Snell refraction of unit `d` through a plane with normal +Z,
+        // ratio eta = n_i/n_t (the sample_glass convention).
+        let refract_z = |d: glam::Vec3, eta: f32| -> glam::Vec3 {
+            let n = glam::Vec3::Z;
+            let cos_i = -n.dot(d); // d points INTO the surface (d.z < 0)
+            let sin2_t = eta * eta * (1.0 - cos_i * cos_i);
+            debug_assert!(sin2_t < 1.0, "no TIR at these angles");
+            let cos_t = (1.0 - sin2_t).sqrt();
+            (d * eta + n * (eta * cos_i - cos_t)).normalize()
+        };
+        // Checker parity at the wall-plane point, None if outside the wall or
+        // within 0.04 m of a cell boundary.
+        let parity_at = |wx: f32, wy: f32| -> Option<f64> {
+            if wx <= -HALF || wx >= HALF || wy <= -HALF || wy >= HALF {
+                return None;
+            }
+            let fx = (wx + HALF) / CELL;
+            let fy = (wy + HALF) / CELL;
+            let frx = fx - fx.floor();
+            let fry = fy - fy.floor();
+            if frx.min(1.0 - frx).min(fry).min(1.0 - fry) * CELL < 0.04 {
+                return None;
+            }
+            let white = ((fx.floor() as i32 + fy.floor() as i32) % 2) == 0;
+            Some(if white { 1.0 } else { 0.0 })
+        };
+        // (pixel, expected) per model.
+        let mut glass_straight: Vec<(usize, f64)> = Vec::new();
+        let mut glass_refracted: Vec<(usize, f64)> = Vec::new();
+        let mut wall_sel: Vec<(usize, f64)> = Vec::new();
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let i = (y * w + x) as usize;
+                let ndc_x = aspect * ((x as f32 + 0.5) * 2.0 / w as f32 - 1.0);
+                let ndc_y = 1.0 - (y as f32 + 0.5) * 2.0 / h as f32;
+                let dir = (fwd + right * (ndc_x * tan_half) + up * (ndc_y * tan_half))
+                    .normalize();
+                if dir.z >= -1e-6 {
+                    continue;
+                }
+                let m = mats_px[i];
+                let eroded = |id: i32| {
+                    mats_px[i - 1] == id
+                        && mats_px[i + 1] == id
+                        && mats_px[i - w as usize] == id
+                        && mats_px[i + w as usize] == id
+                };
+                let at_plane = |origin: glam::Vec3, d: glam::Vec3, z: f32| -> glam::Vec3 {
+                    origin + d * ((z - origin.z) / d.z)
+                };
+                if m == GLASS_ID as i32 && eroded(GLASS_ID as i32) {
+                    // Straight-through model.
+                    let p = at_plane(eye_v, dir, 0.0);
+                    if let Some(e) = parity_at(p.x, p.y) {
+                        glass_straight.push((i, e));
+                    }
+                    // Double-"entering" refraction model (the engine's).
+                    let eta = 1.0 / 1.5;
+                    let p1 = at_plane(eye_v, dir, zf);
+                    let d1 = refract_z(dir, eta);
+                    let p2 = at_plane(p1, d1, zb);
+                    let d2 = refract_z(d1, eta);
+                    let p3 = at_plane(p2, d2, 0.0);
+                    if let Some(e) = parity_at(p3.x, p3.y) {
+                        glass_refracted.push((i, e));
+                    }
+                } else if (m == 0 || m == 1) && eroded(m) {
+                    let p = at_plane(eye_v, dir, 0.0);
+                    if let Some(e) = parity_at(p.x, p.y) {
+                        wall_sel.push((i, e));
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "[glass] regions: {} glass px (straight model) / {} (refracted \
+             model), {} direct-wall px (eroded, boundary-excluded)",
+            glass_straight.len(),
+            glass_refracted.len(),
+            wall_sel.len()
+        );
+        assert!(
+            glass_straight.len() >= 2000 && glass_refracted.len() >= 2000,
+            "glass region too small ({} / {} px) — slab not covering the frame center",
+            glass_straight.len(),
+            glass_refracted.len()
+        );
+        assert!(
+            wall_sel.len() >= 2000,
+            "direct-wall region too small ({} px)",
+            wall_sel.len()
+        );
+
+        // Pearson correlation: measured luminance vs the known checker parity.
+        let pearson = |img: &[u8], sel: &[(usize, f64)]| -> f64 {
+            let n = sel.len() as f64;
+            let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            for &(i, xv) in sel {
+                let yv = 0.2126 * img[i * 4] as f64
+                    + 0.7152 * img[i * 4 + 1] as f64
+                    + 0.0722 * img[i * 4 + 2] as f64;
+                sx += xv;
+                sy += yv;
+                sxx += xv * xv;
+                syy += yv * yv;
+                sxy += xv * yv;
+            }
+            let cov = sxy / n - (sx / n) * (sy / n);
+            let vx = sxx / n - (sx / n) * (sx / n);
+            let vy = syy / n - (sy / n) * (sy / n);
+            if vx <= 1e-12 || vy <= 1e-9 {
+                return 0.0; // constant image: no pattern at all
+            }
+            cov / (vx.sqrt() * vy.sqrt())
+        };
+
+        // Sanity: the emissive wall itself renders the pattern in BOTH
+        // frames — failures below are then unambiguously the glass route.
+        let rw_t = pearson(&rgba_t, &wall_sel);
+        let rw_o = pearson(&rgba_o, &wall_sel);
+        eprintln!(
+            "[glass] direct-wall sanity: r={rw_t:.3} (transmissive frame), \
+             r={rw_o:.3} (opaque frame) (gate both > 0.8)"
+        );
+        assert!(
+            rw_t > 0.8 && rw_o > 0.8,
+            "the emissive checker wall itself does not render (direct-view \
+             r {rw_t:.3}/{rw_o:.3} <= 0.8) — scene/emission problem, not glass"
+        );
+
+        // --- THE gate: the pattern BEHIND the glass shows through ONLY when
+        // the material transmits. r = the better-matching optical model. -----
+        let model_r = |img: &[u8]| -> (f64, f64) {
+            (pearson(img, &glass_straight), pearson(img, &glass_refracted))
+        };
+        let (rt_s, rt_r) = model_r(&rgba_t);
+        let (ro_s, ro_r) = model_r(&rgba_o);
+        let rt = rt_s.max(rt_r);
+        let ro = ro_s.max(ro_r);
+        eprintln!(
+            "[glass] model correlations: transmissive straight={rt_s:.3} \
+             refracted={rt_r:.3}; opaque straight={ro_s:.3} refracted={ro_r:.3}"
+        );
+        let pass = rt > 0.5 && rt >= 3.0 * ro;
+        eprintln!(
+            "[glass] checker-through-glass: transmissive correlation r={rt:.3} vs \
+             opaque r={ro:.3} (gate rt > 0.5 and rt >= 3x ro) -> {}",
+            if pass { "PASS" } else { "FAIL" }
+        );
+        assert!(
+            pass,
+            "checkerboard behind the glass does not show through (transmissive \
+             r {rt:.3}, opaque control r {ro:.3}; need rt > 0.5 and rt >= 3x ro) \
+             — check the MAT_GLASS slot layout in pack_vulkan_mesh_material \
+             (type a[0], ior a[10], absorption a[24..28], thin_walled a[73]) \
+             against material_types.slang's Vulkan reflection layout"
+        );
+
+        // --- ONE craftsman demo render (eyeball-only, no gate): the cooked
+        // glass channel flipped transmissive — the same MAT_GLASS parameters
+        // the gate above just proved. The single allowed slow render. --------
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
+        let mesh = load_craftsman_mesh(&asset_path);
+        let (mut cmats, ctex, channels) = load_craftsman_mesh_pbr(&asset_path);
+        let glass_id = channels
+            .iter()
+            .position(|c| c == "glass")
+            .expect("cooked payload has no 'glass' channel");
+        cmats[glass_id].transmission = 1.0;
+        cmats[glass_id].ior = 1.5;
+        cmats[glass_id].thin_walled = false;
+        // Frontal-low framing: the porch parapet's glazing and the facade
+        // windows fill the view, sky and porch cavity behind them.
+        let (cw, ch) = (512u32, 512u32);
+        let c_target = [0.0f32, 2.6, 0.0];
+        let c_eye = [0.5f32, 2.4, 14.0];
+        let c_rig = LightRig {
+            sun_dir: [0.45, 0.65, 0.55],
+            sun_intensity: 2.6,
+            sky_intensity: 0.3,
+            camera_fill: 0.2,
+            rim_fill: 0.0,
+            sky_dome_intensity: 0.65,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.80, 0.86, 0.95],
+            ..Default::default()
+        };
+        let t0 = std::time::Instant::now();
+        let rgba_demo = pathtrace_mesh_lit_to_rgba(
+            &mesh.positions,
+            &mesh.normals,
+            &mesh.uvs,
+            &mesh.indices,
+            &mesh.material_ids,
+            &cmats,
+            &ctex,
+            c_eye,
+            c_target,
+            fov_y,
+            cw,
+            ch,
+            128,
+            &c_rig,
+        )
+        .expect("craftsman glass demo render should succeed");
+        let demo_png = out_dir.join("mesh_craftsman_glass.png");
+        write_png_rgba(demo_png.to_str().unwrap(), &force_alpha(rgba_demo), cw, ch);
+        eprintln!(
+            "[glass] wrote {} (craftsman demo, glass channel transmissive, \
+             {:.2}s — the one allowed slow render)",
+            demo_png.display(),
+            t0.elapsed().as_secs_f64()
         );
     }
 
