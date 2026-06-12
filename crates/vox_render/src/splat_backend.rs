@@ -7247,6 +7247,141 @@ mod tests {
         assert!(worst_secs < 10.0, "gate renders are not cheap: {worst_secs:.2}s");
     }
 
+    /// Close-up visual proof for the zoning fix: the full-building gate frames
+    /// are only a few pixels wide at 14 m, so the (measured, 14x-noise-floor)
+    /// material change is invisible in those PNGs. This renders ONE window band
+    /// up close with both material tables so a human can actually see the
+    /// brick-tinted frames vs clean trim. No new gates — the measured gates
+    /// live in `forge_facade_materials`; this writes the eyeball evidence.
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn forge_facade_zoning_closeup() {
+        use super::{pathtrace_mesh_lit_to_rgba, LightRig};
+
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
+        let mesh = load_craftsman_mesh(&asset_path);
+
+        let (fixed, ftex, _) = load_building_mesh_pbr_by_forge_id(&asset_path);
+        let (mut wired, wtex, wchan) = load_cooked_pbr_materials(&asset_path);
+        assert_eq!(
+            wchan[4], "ground",
+            "control derivation changed — see forge_facade_materials"
+        );
+        for m in &mut wired {
+            m.transmission = 0.0;
+            m.ior = 1.5;
+            m.thin_walled = false;
+        }
+
+        // Self-aiming close-up: centroid of the FRONT-face window glass (forge
+        // id 2, verts near max-Z), camera pulled straight back from it. No
+        // hand-guessed coordinates — the sanity assert below stays the proof
+        // the window band really is in frame.
+        // Side-wall window (max-X glass): the front facade's windows hide
+        // behind the porch gable, so shoot the +X wall straight-on instead.
+        let mut xmax = f32::NEG_INFINITY;
+        for (t, tri) in mesh.indices.iter().enumerate() {
+            if mesh.material_ids[t] != 2 {
+                continue;
+            }
+            for &vi in tri {
+                xmax = xmax.max(mesh.positions[vi as usize][0]);
+            }
+        }
+        let mut c = [0.0f64; 3];
+        let mut nv = 0usize;
+        for (t, tri) in mesh.indices.iter().enumerate() {
+            if mesh.material_ids[t] != 2 {
+                continue;
+            }
+            for &vi in tri {
+                let p = mesh.positions[vi as usize];
+                if p[0] >= xmax - 0.3 {
+                    for (a, &b) in c.iter_mut().zip(&p) {
+                        *a += b as f64;
+                    }
+                    nv += 1;
+                }
+            }
+        }
+        assert!(nv > 0, "no side-wall glass verts found (id 2 near x={xmax})");
+        let target = [
+            (c[0] / nv as f64) as f32,
+            (c[1] / nv as f64) as f32,
+            (c[2] / nv as f64) as f32,
+        ];
+        let (w, h) = (448u32, 448u32);
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        let eye = [target[0] + 4.5, target[1], target[2]];
+        let rig = LightRig {
+            sun_dir: [0.45, 0.65, 0.55],
+            sun_intensity: 2.6,
+            sky_intensity: 0.3,
+            camera_fill: 0.2,
+            rim_fill: 0.0,
+            sky_dome_intensity: 0.65,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.80, 0.86, 0.95],
+            ..Default::default()
+        };
+        let spp = 48u32;
+        let mut render = |mats: &[super::PbrMaterial], texs: &[super::TextureImage]| -> Vec<u8> {
+            pathtrace_mesh_lit_to_rgba(
+                &mesh.positions,
+                &mesh.normals,
+                &mesh.uvs,
+                &mesh.indices,
+                &mesh.material_ids,
+                mats,
+                texs,
+                eye,
+                target,
+                fov_y,
+                w,
+                h,
+                spp,
+                &rig,
+            )
+            .expect("closeup render should succeed")
+        };
+        let rgba_fix = render(&fixed, &ftex);
+        let rgba_bug = render(&wired, &wtex);
+
+        // Sanity: the window band must actually be in frame (frame material
+        // id 4 present) — otherwise the camera drifted and the PNGs prove
+        // nothing again.
+        let (mats_px, _) = rasterize_material_masks(&mesh, eye, target, fov_y, w, h);
+        let n_frame = mats_px.iter().filter(|&&m| m == 4).count();
+        let n_glass = mats_px.iter().filter(|&&m| m == 2).count();
+        assert!(
+            n_frame >= 800 && n_glass >= 400,
+            "closeup camera missed the window band (frame px {n_frame}, glass px {n_glass})"
+        );
+
+        let out_dir = std::env::temp_dir();
+        // Edge-aware bilateral cleanup so the eyeball PNGs show materials, not
+        // residual sample noise (the measured gates upstream stay raw).
+        let opaque = |v: Vec<u8>| -> Vec<u8> {
+            let mut px: Vec<[u8; 4]> = v
+                .chunks_exact(4)
+                .map(|c| [c[0], c[1], c[2], 255])
+                .collect();
+            crate::denoiser::SpectralDenoiser::new(0.7).denoise(&mut px, w, h);
+            px.into_iter().flatten().collect()
+        };
+        let fix_png = out_dir.join("zoning_closeup_fixed.png");
+        let bug_png = out_dir.join("zoning_closeup_crosswired.png");
+        write_png_rgba(fix_png.to_str().unwrap(), &opaque(rgba_fix), w, h);
+        write_png_rgba(bug_png.to_str().unwrap(), &opaque(rgba_bug), w, h);
+        eprintln!(
+            "[zoning-closeup] wrote {} and {} ({n_frame} frame px, {n_glass} glass px in view)",
+            fix_png.display(),
+            bug_png.display()
+        );
+    }
+
     /// Exact mesh equality (f32 bit patterns) — the box byte-identity oracle.
     #[cfg(feature = "spectra-native")]
     fn pt_eq_mesh(a: &CookedMesh, b: &CookedMesh) -> bool {
