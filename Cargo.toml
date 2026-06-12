@@ -65,6 +65,17 @@ codegen-units = 1
 strip = "symbols"
 panic = "abort"
 
+# Fast iteration profile for the edit→test→render loop. Keeps optimization
+# (opt-level=3 so GPU-orchestration + CPU BVH builds stay quick) but DROPS the
+# link-time optimization + single-codegen-unit that make a `--release` rebuild
+# of a big crate (vox_render + spectra deps) take minutes on every edit. Use
+# `cargo ... --profile release-fast` for test/verification loops; reserve
+# `--release` (full LTO) for shipping builds + final beauty renders only.
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 256
+
 # Dev-profile debuginfo diet: full debuginfo made target/debug regrow ~60G in
 # hours of agent churn (cargo never garbage-collects old artifacts). Workspace
 # code keeps line tables (file:line backtraces still work); dependencies get
