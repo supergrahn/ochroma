@@ -665,6 +665,60 @@ pub struct SdfSceneInstance {
     pub albedo: [f32; 3],
 }
 
+/// One cooked atom's material contribution for the M2 per-surface gather. The
+/// SDF carries massing only; these atoms carry the per-surface channel + colour
+/// AND the window/glass identity. `position` is in the instance's LOCAL space
+/// (the same space as the cooked SDF grid) — [`pathtrace_sdf_scene_with_atoms_to_rgba`]
+/// transforms it to world with the instance's transform. `channel` is the
+/// canonical channel id (see [`SDF_ATOM_CH_GLASS`] etc.) the megakernel
+/// dispatches on; `color` is linear RGB.
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone, Copy)]
+pub struct SdfSceneAtom {
+    pub position: [f32; 3],
+    pub color: [f32; 3],
+    pub channel: u32,
+}
+
+/// Canonical atom-channel ids. MUST match the `ATOM_CH_*` constants in
+/// `slang/megakernel.slang`. Glass routes to the path-traced glass BSDF;
+/// everything else is opaque Lambert shaded with the atom colour.
+#[cfg(feature = "spectra-native")]
+pub const SDF_ATOM_CH_FACADE: u32 = 0;
+#[cfg(feature = "spectra-native")]
+pub const SDF_ATOM_CH_ROOF: u32 = 1;
+#[cfg(feature = "spectra-native")]
+pub const SDF_ATOM_CH_TRIM: u32 = 2;
+#[cfg(feature = "spectra-native")]
+pub const SDF_ATOM_CH_DOOR: u32 = 3;
+#[cfg(feature = "spectra-native")]
+pub const SDF_ATOM_CH_STRUCTURE: u32 = 4;
+#[cfg(feature = "spectra-native")]
+pub const SDF_ATOM_CH_GLASS: u32 = 5;
+#[cfg(feature = "spectra-native")]
+pub const SDF_ATOM_CH_DETAIL: u32 = 6;
+#[cfg(feature = "spectra-native")]
+pub const SDF_ATOM_CH_GROUND: u32 = 7;
+#[cfg(feature = "spectra-native")]
+pub const SDF_ATOM_CH_OTHER: u32 = 8;
+
+/// Map a cooked atom `channel` string (from atoms.json) to a canonical
+/// [`SDF_ATOM_CH_*`] id. Unknown channels fall back to [`SDF_ATOM_CH_OTHER`].
+#[cfg(feature = "spectra-native")]
+pub fn sdf_atom_channel_from_str(s: &str) -> u32 {
+    match s.to_ascii_lowercase().as_str() {
+        "facade" | "wall" => SDF_ATOM_CH_FACADE,
+        "roof" => SDF_ATOM_CH_ROOF,
+        "trim" => SDF_ATOM_CH_TRIM,
+        "door" => SDF_ATOM_CH_DOOR,
+        "structure" => SDF_ATOM_CH_STRUCTURE,
+        "glass" | "window" => SDF_ATOM_CH_GLASS,
+        "detail" => SDF_ATOM_CH_DETAIL,
+        "ground" => SDF_ATOM_CH_GROUND,
+        _ => SDF_ATOM_CH_OTHER,
+    }
+}
+
 /// One-shot still: **path-trace a CLUSTER of buildings as native SDF instances**
 /// through the engine-owned Spectra path tracer's SDF-volume primitive (M1 —
 /// the multi-instance proof). Extends [`pathtrace_sdf_to_rgba`]'s single
@@ -886,6 +940,272 @@ pub fn pathtrace_sdf_scene_to_rgba(
     config.target_spp = spp;
     let mut renderer = Renderer::new(gpu, config);
     // Fallback single albedo (used only if the per-instance buffer is absent).
+    renderer.set_sdf_albedo(instances[0].albedo);
+    renderer
+        .load_scene_state(scene)
+        .map_err(|e| format!("load_scene_state: {e:?}"))?;
+    renderer.set_sky_gradient(
+        rig.sky_dome_zenith,
+        rig.sky_dome_horizon,
+        rig.sky_dome_intensity,
+    );
+    renderer.set_camera_view_matrix(cam.view_matrix);
+    renderer.set_view_proj(cam.view_matrix);
+
+    let frame = renderer.render().map_err(|e| format!("render: {e:?}"))?;
+    let n = (frame.width * frame.height) as usize;
+    let mut out = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        for ch in 0..4 {
+            out.push((frame.beauty[i * 4 + ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        }
+    }
+    Ok(out)
+}
+
+/// One-shot still: **path-trace a CLUSTER of SDF buildings WITH per-surface
+/// material from the cooked atoms** (M2 — the appearance milestone). Extends
+/// [`pathtrace_sdf_scene_to_rgba`] (which gives each building one flat albedo)
+/// by feeding the cooked ATOMS alongside the geometry-only SDF: at a surface hit
+/// the megakernel k-NN-gathers the winning instance's nearest atoms and reads
+/// their channel + colour, so walls/roof/trim show real per-surface COLOUR and
+/// — crucially — **windows render as real path-traced GLASS** (an SDF glass hit
+/// transmits/refracts and continues the path instead of terminating opaque, so
+/// the window is see-through/reflective and the tracer shows what is behind it).
+///
+/// `atoms_per_instance[i]` is the cooked atom list for `instances[i]` in that
+/// instance's LOCAL space (same space as the cooked SDF grid); they are
+/// transformed to world here with the instance's transform. Still SDF-only — no
+/// Gaussian/splat bridge for surfaces. Returns RGBA8 (`w*h*4`).
+#[cfg(feature = "spectra-native")]
+#[allow(clippy::too_many_arguments)]
+pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
+    volumes: &[SdfVolumeInput],
+    instances: &[SdfSceneInstance],
+    atoms_per_instance: &[Vec<SdfSceneAtom>],
+    eye: [f32; 3],
+    target: [f32; 3],
+    fov_y: f32,
+    width: u32,
+    height: u32,
+    spp: u32,
+    rig: &LightRig,
+) -> Result<Vec<u8>, String> {
+    use crate::splat_convert::camera_layer;
+    use spectra_scene_state::{
+        LightLayer, SceneState, SdfInstanceHeader, SdfLayer, SdfVolumeHeader,
+    };
+
+    if volumes.is_empty() {
+        return Err("pathtrace_sdf_scene_with_atoms_to_rgba: no volumes".into());
+    }
+    if instances.is_empty() {
+        return Err("pathtrace_sdf_scene_with_atoms_to_rgba: no instances".into());
+    }
+    if atoms_per_instance.len() != instances.len() {
+        return Err(format!(
+            "atoms_per_instance len {} != instances len {}",
+            atoms_per_instance.len(),
+            instances.len()
+        ));
+    }
+
+    // --- Multi-volume atlas (identical to pathtrace_sdf_scene_to_rgba). -------
+    let mut all_distances: Vec<f32> = Vec::new();
+    let mut volume_headers: Vec<SdfVolumeHeader> = Vec::with_capacity(volumes.len());
+    let mut local_bounds: Vec<([f32; 3], [f32; 3])> = Vec::with_capacity(volumes.len());
+    for (vi, v) in volumes.iter().enumerate() {
+        let expected = (v.resolution[0] * v.resolution[1] * v.resolution[2]) as usize;
+        if v.distances.len() != expected {
+            return Err(format!(
+                "volume {vi}: distances len {} != nx*ny*nz {}",
+                v.distances.len(),
+                expected
+            ));
+        }
+        let distance_offset = all_distances.len() as u32;
+        all_distances.extend_from_slice(&v.distances);
+        volume_headers.push(SdfVolumeHeader {
+            asset_id: (vi as u64) + 1,
+            resolution: v.resolution,
+            origin: v.origin,
+            voxel_size: v.voxel_size,
+            narrow_band: v.narrow_band,
+            distance_offset,
+            distance_count: v.distances.len() as u32,
+        });
+        let lmin = v.origin;
+        let lmax = [
+            v.origin[0] + (v.resolution[0] - 1) as f32 * v.voxel_size,
+            v.origin[1] + (v.resolution[1] - 1) as f32 * v.voxel_size,
+            v.origin[2] + (v.resolution[2] - 1) as f32 * v.voxel_size,
+        ];
+        local_bounds.push((lmin, lmax));
+    }
+
+    // --- Instances + per-atom WORLD-space material buffers. ------------------
+    let mut instance_headers: Vec<SdfInstanceHeader> = Vec::with_capacity(instances.len());
+    let mut instance_albedo: Vec<f32> = Vec::with_capacity(instances.len() * 3);
+    // Flat SoA atom buffers + per-instance [offset, count] ranges (M2).
+    let mut atom_positions: Vec<f32> = Vec::new();
+    let mut atom_colors: Vec<f32> = Vec::new();
+    let mut atom_channels: Vec<f32> = Vec::new();
+    let mut instance_atom_range: Vec<f32> = Vec::with_capacity(instances.len() * 2);
+    let mut scene_min = [f32::INFINITY; 3];
+    let mut scene_max = [f32::NEG_INFINITY; 3];
+    for (ii, inst) in instances.iter().enumerate() {
+        let vol = inst.volume_index as usize;
+        if vol >= volumes.len() {
+            return Err(format!(
+                "instance {ii}: volume_index {vol} out of range (have {} volumes)",
+                volumes.len()
+            ));
+        }
+        if inst.uniform_scale <= 0.0 {
+            return Err(format!(
+                "instance {ii}: uniform_scale must be > 0, got {}",
+                inst.uniform_scale
+            ));
+        }
+        let (lmin, lmax) = local_bounds[vol];
+        let q = glam::Quat::from_array(inst.rotation_xyzw).normalize();
+        let pos = glam::Vec3::from(inst.position);
+        let s = inst.uniform_scale;
+        let mut wmin = [f32::INFINITY; 3];
+        let mut wmax = [f32::NEG_INFINITY; 3];
+        for cx in [lmin[0], lmax[0]] {
+            for cy in [lmin[1], lmax[1]] {
+                for cz in [lmin[2], lmax[2]] {
+                    let world = pos + q * (glam::Vec3::new(cx, cy, cz) * s);
+                    for k in 0..3 {
+                        wmin[k] = wmin[k].min(world[k]);
+                        wmax[k] = wmax[k].max(world[k]);
+                    }
+                }
+            }
+        }
+        let pad = volumes[vol].narrow_band.max(volumes[vol].voxel_size) * s;
+        for k in 0..3 {
+            wmin[k] -= pad;
+            wmax[k] += pad;
+            scene_min[k] = scene_min[k].min(wmin[k]);
+            scene_max[k] = scene_max[k].max(wmax[k]);
+        }
+        instance_headers.push(SdfInstanceHeader {
+            instance_id: (ii as u64) + 1,
+            asset_id: (vol as u64) + 1,
+            volume_index: inst.volume_index,
+            position: inst.position,
+            rotation_xyzw: q.to_array(),
+            uniform_scale: s,
+            world_aabb_min: wmin,
+            world_aabb_max: wmax,
+        });
+        instance_albedo.extend_from_slice(&inst.albedo);
+
+        // Transform this instance's atoms to world space (rot*scale*local + pos),
+        // matching the SDF grid transform, and append to the flat SoA buffers.
+        let atom_offset = atom_channels.len() as u32;
+        for atom in &atoms_per_instance[ii] {
+            let lp = glam::Vec3::from(atom.position);
+            let wp = pos + q * (lp * s);
+            atom_positions.extend_from_slice(&[wp.x, wp.y, wp.z]);
+            atom_colors.extend_from_slice(&atom.color);
+            atom_channels.push(atom.channel as f32);
+        }
+        let atom_count = atom_channels.len() as u32 - atom_offset;
+        instance_atom_range.push(atom_offset as f32);
+        instance_atom_range.push(atom_count as f32);
+    }
+
+    let sdf = SdfLayer::from_parts_with_atoms(
+        volume_headers,
+        instance_headers,
+        all_distances,
+        instance_albedo,
+        atom_positions,
+        atom_colors,
+        atom_channels,
+        instance_atom_range,
+    );
+
+    let mut scene = SceneState::new(width, height);
+    scene.sdf = sdf;
+    scene.mark_sdf_changed();
+
+    // Sentinel triangle (BVH validity — invisible, see pathtrace_sdf_to_rgba).
+    {
+        use spectra_scene_state::MaterialLayer;
+        let cx = 0.5 * (scene_min[0] + scene_max[0]);
+        let cz = 0.5 * (scene_min[2] + scene_max[2]);
+        let far = [cx, scene_min[1] - 1000.0, cz];
+        scene.geometry.vertex_count = 3;
+        scene.geometry.triangle_count = 1;
+        scene.geometry.positions = vec![
+            far[0],
+            far[1],
+            far[2],
+            far[0] + 0.001,
+            far[1],
+            far[2],
+            far[0],
+            far[1],
+            far[2] + 0.001,
+        ];
+        scene.geometry.normals = vec![0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0];
+        scene.geometry.uvs = vec![0.0; 6];
+        scene.geometry.indices = vec![0, 1, 2];
+        scene.geometry.material_ids = vec![0];
+        scene.materials = MaterialLayer {
+            params: vec![0.0; VULKAN_MATERIAL_FLOATS],
+            spectral_spd: Default::default(),
+            material_count: 1,
+        };
+        scene.mark_geometry_changed();
+        scene.mark_materials_changed();
+    }
+
+    // Four-light rig (identical to the M1 cluster path).
+    let sun = glam::Vec3::from(rig.sun_dir).normalize_or_zero();
+    let camera_fill = (glam::Vec3::from(eye) - glam::Vec3::from(target) + glam::Vec3::Y * 0.35)
+        .normalize_or_zero();
+    let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
+    let mut light_data: Vec<f32> = Vec::new();
+    for (dir, color, intensity) in [
+        (sun.to_array(), rig.sun_color, rig.sun_intensity),
+        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
+        (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
+    ] {
+        light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
+    }
+    scene.lights = LightLayer {
+        light_data,
+        light_count: 4,
+    };
+    scene.mark_lights_changed();
+
+    let view = glam::Mat4::look_at_rh(
+        glam::Vec3::from(eye),
+        glam::Vec3::from(target),
+        glam::Vec3::Y,
+    )
+    .to_cols_array();
+    let cam = camera_layer(view, fov_y, width, height);
+    scene.camera = cam.clone();
+
+    let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
+    let mut config = RenderConfig::near_realtime(width, height);
+    config.slang_kernel_dir = resolve_slang_kernel_dir();
+    config.target_spp = spp;
+    // Glass needs continuation bounces; disable NRC so the refracted ray never
+    // gets short-circuited into the cache at a deep bounce. Keep >= 3 bounces
+    // (camera→glass→behind→...).
+    config.use_nrc = false;
+    if config.max_bounces < 3 {
+        config.max_bounces = 3;
+    }
+    let mut renderer = Renderer::new(gpu, config);
     renderer.set_sdf_albedo(instances[0].albedo);
     renderer
         .load_scene_state(scene)
@@ -2243,6 +2563,287 @@ mod tests {
             voxel_size,
             narrow_band,
             distances,
+        }
+    }
+
+    /// Load the cooked ATOMS (position + channel + colour) from an atoms.json
+    /// into `SdfSceneAtom`s in the asset's LOCAL space (same space as the SDF
+    /// grid). `force_glass_opaque` reclassifies glass→facade (the control render
+    /// that proves windows differ from walls). Returns (atoms, raw_glass_count).
+    #[cfg(feature = "spectra-native")]
+    fn load_atoms_material(
+        path: &std::path::Path,
+        force_glass_opaque: bool,
+    ) -> (Vec<super::SdfSceneAtom>, usize) {
+        let bytes =
+            std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("parse atoms.json");
+        let arr = json["atoms"].as_array().expect("atoms array");
+        let mut atoms = Vec::with_capacity(arr.len());
+        let mut glass = 0usize;
+        for a in arr {
+            let p = a["position"].as_array().expect("position");
+            let c = a["color"].as_array().expect("color");
+            let ch_str = a["channel"].as_str().unwrap_or("other");
+            let mut channel = super::sdf_atom_channel_from_str(ch_str);
+            if channel == super::SDF_ATOM_CH_GLASS {
+                glass += 1;
+                if force_glass_opaque {
+                    channel = super::SDF_ATOM_CH_FACADE;
+                }
+            }
+            atoms.push(super::SdfSceneAtom {
+                position: [
+                    p[0].as_f64().unwrap() as f32,
+                    p[1].as_f64().unwrap() as f32,
+                    p[2].as_f64().unwrap() as f32,
+                ],
+                color: [
+                    c[0].as_f64().unwrap() as f32,
+                    c[1].as_f64().unwrap() as f32,
+                    c[2].as_f64().unwrap() as f32,
+                ],
+                channel,
+            });
+        }
+        (atoms, glass)
+    }
+
+    /// M2 ACCEPTANCE: per-surface MATERIAL from the cooked atoms + real GLASS
+    /// windows. The engine-owned Spectra path tracer renders one cooked craftsman
+    /// as a native SDF (geometry only), and at each surface hit k-NN-gathers the
+    /// nearest atoms to recover the per-surface channel + colour — so walls/roof/
+    /// trim show real COLOUR (not one flat albedo), and WINDOWS render as real
+    /// path-traced GLASS (the SDF glass hit transmits/refracts and continues the
+    /// path instead of terminating opaque, so the window is see-through and shows
+    /// the bright sky backdrop behind it). Proven by an A/B render: the same
+    /// scene with glass reclassified as opaque facade. The pixels that DIFFER are
+    /// the glass-classified window pixels, and they get BRIGHTER (sky shows
+    /// through) — a wall cannot. Writes both PNGs, prints the glass-pixel count
+    /// and the colour-variety + transparency verdict.
+    ///
+    /// Run alone (GPU, seconds/frame is fine):
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///   SPECTRA_SLANG_DIR=$HOME/src/spectra/slang SLANG_DIR=$HOME/slang-sdk \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
+    ///     --lib sdf_craftsman_atom_material_and_glass -- --nocapture --test-threads=1
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn sdf_craftsman_atom_material_and_glass() {
+        use super::{
+            pathtrace_sdf_scene_with_atoms_to_rgba, LightRig, SdfSceneInstance,
+        };
+
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
+
+        let volume = load_atoms_sdf(&asset_path);
+        let (atoms, raw_glass) = load_atoms_material(&asset_path, false);
+        let (atoms_opaque, _) = load_atoms_material(&asset_path, true);
+        eprintln!(
+            "[sdf_glass] craftsman: res={:?} voxel={:.4} band={:.4} atoms={} (glass={})",
+            volume.resolution,
+            volume.voxel_size,
+            volume.narrow_band,
+            atoms.len(),
+            raw_glass
+        );
+        assert!(raw_glass > 50, "expected many cooked glass atoms, got {raw_glass}");
+
+        // Place the single building so its base sits on y=0, centred at origin.
+        let ground_y = -volume.origin[1];
+        let instance = SdfSceneInstance {
+            volume_index: 0,
+            position: [
+                -(volume.origin[0]
+                    + (volume.resolution[0] - 1) as f32 * volume.voxel_size * 0.5),
+                ground_y,
+                -(volume.origin[2]
+                    + (volume.resolution[2] - 1) as f32 * volume.voxel_size * 0.5),
+            ],
+            rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+            uniform_scale: 1.0,
+            albedo: [0.7, 0.7, 0.7],
+        };
+        let instances = [instance];
+
+        // Camera: look at the FRONT facade (the cooked windows are on +Z, the
+        // front wall) from slightly above, close enough that windows are large.
+        let (w, h) = (320u32, 320u32);
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        let center = [0.0f32, 4.5, 0.0];
+        let eye = [3.0f32, 6.0, 22.0]; // in front (+Z), slight oblique
+        // Bright distinctive sky so transparent glass (which transmits to the
+        // sky behind) reads visibly brighter than opaque facade.
+        let rig = LightRig {
+            sun_dir: [0.3, 0.6, 0.7],
+            sun_intensity: 2.2,
+            sky_intensity: 0.0,
+            camera_fill: 0.0,
+            rim_fill: 0.0,
+            sky_dome_intensity: 1.0,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.80, 0.86, 0.95],
+            ..Default::default()
+        };
+
+        let t0 = std::time::Instant::now();
+        let rgba = pathtrace_sdf_scene_with_atoms_to_rgba(
+            &volume_slice(&volume),
+            &instances,
+            &[atoms],
+            eye,
+            center,
+            fov_y,
+            w,
+            h,
+            6,
+            &rig,
+        )
+        .expect("SDF atom-material + glass render should succeed");
+        let secs = t0.elapsed().as_secs_f64();
+
+        let rgba_opaque = pathtrace_sdf_scene_with_atoms_to_rgba(
+            &volume_slice(&volume),
+            &instances,
+            &[atoms_opaque],
+            eye,
+            center,
+            fov_y,
+            w,
+            h,
+            6,
+            &rig,
+        )
+        .expect("control (glass→opaque) render should succeed");
+
+        let out_dir = std::env::temp_dir();
+        let glass_png = out_dir.join("ochroma_sdf_craftsman_glass.png");
+        let opaque_png = out_dir.join("ochroma_sdf_craftsman_opaque.png");
+        write_png_rgba(glass_png.to_str().unwrap(), &rgba, w, h);
+        write_png_rgba(opaque_png.to_str().unwrap(), &rgba_opaque, w, h);
+        eprintln!("[sdf_glass] wrote {}", glass_png.display());
+        eprintln!("[sdf_glass] wrote {} (control)", opaque_png.display());
+
+        // The background is the smooth blue SKY DOME gradient (b clearly the max
+        // channel, bright). A pixel is on the BUILDING if it is NOT that bright
+        // blue sky. Glass windows can themselves be dark/blue, but they sit
+        // inside the building silhouette and (critically) DIFFER between the two
+        // renders — the sky is byte-identical between them.
+        let is_sky = |px: &[u8]| -> bool {
+            let (r, g, b) = (px[0] as i32, px[1] as i32, px[2] as i32);
+            b > r + 14 && b > g + 8 && (r + g + b) > 330
+        };
+
+        let mut building_px = 0usize;
+        // --- Colour variety across the building (proves per-surface material,
+        // not one flat albedo): bucket each building pixel's dominant hue and
+        // require several distinct buckets to be well-populated. -------------
+        let mut hue_buckets = [0usize; 12];
+        // --- Glass detection via A/B diff: a WINDOW pixel is a building pixel
+        // whose colour changes meaningfully when glass is enabled vs. when the
+        // glass atoms are reclassified to opaque facade. A wall is byte-identical
+        // between the two renders; only the path-traced glass (transmit/refract/
+        // reflect, blue tint) differs. Here the front windows transmit into the
+        // building's darker interior so they go DARKER than the opaque facade. --
+        let mut glass_pixels = 0usize;
+        let mut glass_diff_sum = 0.0f64;
+        for p in 0..(w * h) as usize {
+            let g = &rgba[p * 4..p * 4 + 4];
+            let o = &rgba_opaque[p * 4..p * 4 + 4];
+            // On the building when the OPAQUE control (no glass holes) is not sky.
+            let on_building = !is_sky(o);
+            if on_building {
+                building_px += 1;
+                let (r, gg, b) = (g[0] as f32, g[1] as f32, g[2] as f32);
+                if r.max(gg).max(b) - r.min(gg).min(b) > 12.0 {
+                    let hue = rgb_hue(r, gg, b); // 0..360
+                    let bucket = ((hue / 30.0) as usize).min(11);
+                    hue_buckets[bucket] += 1;
+                }
+                // Per-channel absolute difference between the two renders.
+                let diff = (g[0] as f32 - o[0] as f32).abs()
+                    + (g[1] as f32 - o[1] as f32).abs()
+                    + (g[2] as f32 - o[2] as f32).abs();
+                if diff > 36.0 {
+                    glass_pixels += 1;
+                    glass_diff_sum += diff as f64;
+                }
+            }
+        }
+
+        let populated_hues = hue_buckets.iter().filter(|&&n| n >= 8).count();
+        let mean_diff = if glass_pixels > 0 {
+            glass_diff_sum / glass_pixels as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[sdf_glass] M2 ATOM MATERIAL + GLASS (all native SDF):\n  \
+             building pixels    : {building_px}\n  \
+             glass-classified px: {glass_pixels} (window pixels that CHANGE when \
+             glass is enabled — path-traced through the pane)\n  \
+             mean glass A/B diff: {mean_diff:.1} (sum |ΔRGB| over the pane pixels)\n  \
+             colour hue buckets : {populated_hues}/12 populated (per-surface colour \
+             variety)\n  \
+             hue histogram      : {hue_buckets:?}\n  \
+             seconds/frame      : {secs:.2}s (x2 renders)",
+        );
+
+        // --- Acceptance gates. ----------------------------------------------
+        assert!(
+            building_px > 5000,
+            "building barely visible ({building_px} px) — camera/placement wrong"
+        );
+        // Walls/roof/trim must show REAL per-surface colour, not one flat albedo:
+        // multiple distinct hue buckets must be populated.
+        assert!(
+            populated_hues >= 3,
+            "expected per-surface colour variety (>= 3 populated hue buckets), got \
+             {populated_hues}. A single flat albedo would fill one bucket."
+        );
+        // WINDOWS must render as GLASS: a real, non-trivial set of building pixels
+        // must be path-traced through the pane (differ from the opaque control).
+        // A purely opaque building would have ZERO such pixels (the two renders
+        // would be byte-identical everywhere on the building).
+        assert!(
+            glass_pixels >= 200,
+            "expected >= 200 glass-classified window pixels (path-traced through \
+             the pane, differing from the opaque-glass control), got {glass_pixels}. \
+             Either windows are smoothed out of the SDF and the atom gather can't \
+             locate them, or the glass hit is terminating opaque instead of \
+             transmitting."
+        );
+    }
+
+    /// Wrap a single SdfVolumeInput in a 1-element slice for the scene API.
+    #[cfg(feature = "spectra-native")]
+    fn volume_slice(v: &super::SdfVolumeInput) -> Vec<super::SdfVolumeInput> {
+        vec![v.clone()]
+    }
+
+    /// RGB → hue in degrees [0,360). Used to measure per-surface colour variety.
+    #[cfg(feature = "spectra-native")]
+    fn rgb_hue(r: f32, g: f32, b: f32) -> f32 {
+        let mx = r.max(g).max(b);
+        let mn = r.min(g).min(b);
+        let d = mx - mn;
+        if d <= 0.0 {
+            return 0.0;
+        }
+        let h = if mx == r {
+            60.0 * (((g - b) / d) % 6.0)
+        } else if mx == g {
+            60.0 * ((b - r) / d + 2.0)
+        } else {
+            60.0 * ((r - g) / d + 4.0)
+        };
+        if h < 0.0 {
+            h + 360.0
+        } else {
+            h
         }
     }
 
