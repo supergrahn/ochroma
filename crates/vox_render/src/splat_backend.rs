@@ -375,6 +375,20 @@ pub fn pathtrace_mesh_lit_to_rgba(
     use crate::splat_convert::camera_layer;
     use spectra_scene_state::{LightLayer, MaterialLayer, SceneState};
 
+    // The kernel indexes `materials[material_id]` directly, so a short (or
+    // slot-ordered-instead-of-forge-id-ordered) material table silently reads
+    // the wrong material — the historical "brick on the window frames" zoning
+    // bug. Trip immediately instead.
+    debug_assert!(
+        materials.len() > material_ids.iter().copied().max().unwrap_or(0) as usize,
+        "material table too short: max material_id {} needs {} materials, got {} \
+         (materials must be indexed by forge channel id — \
+         see load_building_mesh_pbr_by_forge_id)",
+        material_ids.iter().copied().max().unwrap_or(0),
+        material_ids.iter().copied().max().unwrap_or(0) as usize + 1,
+        materials.len()
+    );
+
     let (tex_descs, tex_data) = build_texture_atlas(textures)?;
 
     let mut scene = SceneState::new(width, height);
@@ -4937,31 +4951,6 @@ mod tests {
         (materials, textures, channels)
     }
 
-    /// Build the per-triangle-indexed PBR material table from the cooked
-    /// payload's `ReadyAssetPbrMaterial` list IN COOKED ORDER (the mesh's
-    /// `material_ids` index this list directly — unlike the SDF path's
-    /// channel table). Glass stays a flat low-roughness OPAQUE material here
-    /// — mesh_craftsman_textured_lit's gates were measured on opaque panes
-    /// and stay byte-identical; the glass demo/test flips the glass channel
-    /// transmissive locally, and the cooked-tag path is exercised by
-    /// `load_building_mesh_pbr_by_forge_id`.
-    #[cfg(feature = "spectra-native")]
-    fn load_craftsman_mesh_pbr(
-        asset_path: &std::path::Path,
-    ) -> (
-        Vec<super::PbrMaterial>,
-        Vec<super::TextureImage>,
-        Vec<String>,
-    ) {
-        let (mut materials, textures, channels) = load_cooked_pbr_materials(asset_path);
-        for m in &mut materials {
-            m.transmission = 0.0;
-            m.ior = 1.5;
-            m.thin_walled = false;
-        }
-        (materials, textures, channels)
-    }
-
     /// GENERALIZED cooked-building material loader: a material table indexed
     /// by the FORGE MESH MATERIAL IDS the payload's `mesh.material_ids`
     /// actually carry (forge `facade/extrude.rs`: 0 wall, 1 roof, 2 glass,
@@ -5119,17 +5108,25 @@ mod tests {
     ///   (c) lit coverage >= 0.25 of the frame, after the CPU mask and the GPU
     ///       silhouette are shown to agree (the projection cross-check that
     ///       makes every mask-based gate trustworthy).
-    /// GLASS: this test keeps every channel OPAQUE (the loader's default), so
-    /// its renders and measured gates stay byte-identical to when they were
-    /// established. Real mesh transmission exists now (`PbrMaterial::
-    /// transmission` -> MAT_GLASS) and is gated in
-    /// `mesh_glass_transmits_checkerboard`, which also renders the craftsman
-    /// glass demo.
+    /// MATERIALS: loaded via `load_building_mesh_pbr_by_forge_id` (the single
+    /// canonical mesh-material loader) — the table is indexed by the FORGE
+    /// channel ids the mesh's `material_ids` actually carry, so the window/
+    /// door frames (forge id 4) render the TRIM material, not whatever sat at
+    /// cooked slot 4 (historically ground_concrete with a red-brick diffuse —
+    /// the "brick on the window frames" zoning bug). The wall-vs-trim /
+    /// wall-vs-door thresholds below were RE-BASELINED 2026-06-12 on the
+    /// post-zoning-fix render (trim = stucco, door = wood; they were first
+    /// measured on the cross-wired render where trim was secretly brick and
+    /// door was metal).
+    /// GLASS: the craftsman's cooked glass channel is opaque (transmission 0
+    /// from the cook), so panes render opaque here and the gates stay stable.
+    /// Real mesh transmission is gated in `mesh_glass_transmits_checkerboard`,
+    /// which also renders the craftsman glass demo.
     ///
     /// Run alone (GPU, seconds/frame is fine):
     ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
     ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
-    ///     --release --lib mesh_craftsman_textured_lit -- --nocapture --test-threads=1
+    ///     --profile release-fast --lib mesh_craftsman_textured_lit -- --nocapture --test-threads=1
     #[cfg(feature = "spectra-native")]
     #[test]
     fn mesh_craftsman_textured_lit() {
@@ -5139,9 +5136,10 @@ mod tests {
             .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
         let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
 
-        // 1+2: the cooked payload's REAL mesh + per-channel PBR materials.
+        // 1+2: the cooked payload's REAL mesh + per-FORGE-ID PBR materials
+        // (table index == forge channel id == mesh.material_ids meaning).
         let mesh = load_craftsman_mesh(&asset_path);
-        let (materials, textures, channels) = load_craftsman_mesh_pbr(&asset_path);
+        let (materials, textures, channels) = load_building_mesh_pbr_by_forge_id(&asset_path);
         eprintln!(
             "[mesh_m0] cooked mesh: {} verts, {} tris, {} materials, {} textures",
             mesh.positions.len(),
@@ -5451,19 +5449,24 @@ mod tests {
         let d_door = split(wall_rgb, door_rgb);
         // The cooked trim albedo [0.85,0.82,0.78] is INTENTIONALLY close to
         // the wall's [0.82,0.75,0.6] (painted stucco trim on a beige
-        // clapboard house) — the albedo-only split under full lighting is
-        // bounded near ~0.02, so a 0.12-style gate is unreachable for these
-        // two cooked materials by design. The honest distinctness check is
-        // self-calibrated: the FLAT control (pure cooked albedos, same
-        // lighting) shows what the maximal trim/wall split looks like here,
-        // and the textured render must reproduce at least 60% of it above an
-        // absolute floor. Wall-vs-roof and wall-vs-door carry the hard 0.12
-        // distinctness gates.
+        // clapboard house), so wall-vs-trim stays a self-calibrated check:
+        // the FLAT control (pure cooked albedos, same lighting) shows what
+        // the maximal trim/wall split looks like here, and the textured
+        // render must reproduce at least 60% of it above an absolute floor.
+        // Wall-vs-roof and wall-vs-door carry the hard 0.12 distinctness
+        // gates. RE-BASELINED 2026-06-12 on the post-zoning-fix render
+        // (materials now indexed by FORGE id: trim mask = reveal stucco, door
+        // = wood — they were first measured on the cross-wired render where
+        // "trim" pixels were glass geometry shaded stucco and the door was
+        // detail_metal): measured d_trim 0.057 (flat-control split 0.060),
+        // d_door 0.176 — trim floor pinned at 0.03 (just inside the
+        // measurement, same ~2x margin as the original 0.008 floor), door
+        // keeps the hard 0.12.
         let (wall_rgb_flat, _) = mean_rgb(&rgba_flat, &wall_mask);
         let (trim_rgb_flat, _) = mean_rgb(&rgba_flat, &trim_mask);
         let d_trim_flat = split(wall_rgb_flat, trim_rgb_flat);
         let pass_b1 = d_roof > 0.12;
-        let pass_b2 = d_trim > 0.008 && d_trim >= 0.6 * d_trim_flat;
+        let pass_b2 = d_trim > 0.03 && d_trim >= 0.6 * d_trim_flat;
         let pass_b3 = d_door > 0.12;
         eprintln!(
             "[mesh_m0] per-part materials: wall vs roof |Δrgb| = {d_roof:.3} (gate > 0.12) \
@@ -5479,7 +5482,7 @@ mod tests {
         );
         eprintln!(
             "[mesh_m0] per-part materials: wall vs trim |Δrgb| = {d_trim:.3} \
-             (gate > 0.008 and >= 0.6x the flat-control split {d_trim_flat:.3}; the \
+             (gate > 0.03 and >= 0.6x the flat-control split {d_trim_flat:.3}; the \
              cooked trim albedo is near-wall by design) -> {} \
              (trim rgb [{:.0},{:.0},{:.0}] {n_trim} px)",
             if pass_b2 { "PASS" } else { "FAIL" },
@@ -5536,7 +5539,7 @@ mod tests {
         assert!(
             pass_b2,
             "wall and trim do not render as distinct materials \
-             (|Δrgb| {d_trim:.3}, floor 0.008, flat-control split {d_trim_flat:.3}) \
+             (|Δrgb| {d_trim:.3}, floor 0.03, flat-control split {d_trim_flat:.3}) \
              — per-triangle material ids are not landing"
         );
         assert!(
@@ -5975,7 +5978,7 @@ mod tests {
             .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
         let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
         let mesh = load_craftsman_mesh(&asset_path);
-        let (mut cmats, ctex, channels) = load_craftsman_mesh_pbr(&asset_path);
+        let (mut cmats, ctex, channels) = load_building_mesh_pbr_by_forge_id(&asset_path);
         let glass_id = channels
             .iter()
             .position(|c| c == "glass")
@@ -6976,6 +6979,272 @@ mod tests {
             worst_secs < 10.0,
             "gate renders are not cheap: {worst_secs:.2}s/frame"
         );
+    }
+
+    /// FACADE MATERIALS ACCEPTANCE — part 1: the per-surface zoning fix,
+    /// render-proven on the craftsman.
+    ///
+    /// The historical bug: the mesh's `material_ids` are FORGE channel ids
+    /// (0 wall, 1 roof, 2 glass, 3 reveal, 4 trim, 5 cornice, 6 door), but the
+    /// deleted positional loader fed the cooked SLOT-ordered material list to
+    /// the kernel, so the 1304 window/door FRAME triangles (forge id 4)
+    /// indexed cooked slot 4 = `ground_concrete`, whose diffuse map is
+    /// `castle_brick_02_red` — red-brick mortar lines on every frame. The fix
+    /// is `load_building_mesh_pbr_by_forge_id` (table indexed by forge id).
+    ///
+    /// Gates (each render 256x256 @ 32 spp — CHEAP, seconds):
+    ///   (loader) the forge-id table binds [2]=glass, [3]=[4]=[5]=trim,
+    ///       [6]=door, with one shared trim texture distinct from the facade's;
+    ///       the cooked slot list really does carry "ground" at slot 4 (the
+    ///       cross-wire this fix removes);
+    ///   (was present) the cross-wired control render's frame pixels carry the
+    ///       dark brick-tinted ground material: frame mean |Δrgb| cross-wired
+    ///       vs fixed > 0.10 and the fixed frame is brighter by > 0.10 luma
+    ///       (stucco trim vs the [0.34,0.33,0.30]-tinted brick; measured
+    ///       0.146 / 0.144 against a 0.007 wall noise floor);
+    ///   (absent) the FIXED render's frame mean lands on the trim material's
+    ///       own flat-control mean (|Δrgb| < 0.06 — the mean-normalizing tint
+    ///       makes textured mean == flat mean on the same material) and is
+    ///       closer to the flat TRIM tone than to the flat FACADE tone —
+    ///       the frame is trim-material, not facade-material;
+    ///   (time) every gate render < 10 s.
+    /// Writes `materials_zoning_craftsman.png` (the fixed render) plus the
+    /// cross-wired control for eyeballing.
+    ///
+    /// Run alone (GPU):
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
+    ///     --profile release-fast --lib forge_facade_materials -- --nocapture --test-threads=1
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn forge_facade_materials() {
+        use super::{pathtrace_mesh_lit_to_rgba, LightRig, PbrMaterial};
+
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
+        let mesh = load_craftsman_mesh(&asset_path);
+
+        // FIXED: the canonical forge-id-indexed table. CONTROL: the cooked
+        // slot-ordered list exactly as the deleted positional loader returned
+        // it (transmission stripped) — the cross-wire being proven gone.
+        let (fixed, ftex, fchan) = load_building_mesh_pbr_by_forge_id(&asset_path);
+        let (mut wired, wtex, wchan) = load_cooked_pbr_materials(&asset_path);
+        for m in &mut wired {
+            m.transmission = 0.0;
+            m.ior = 1.5;
+            m.thin_walled = false;
+        }
+
+        // ── Loader-truth gate: forge ids bind their channels; slot 4 of the
+        //    cooked list is the GROUND material the frames used to index. ────
+        assert_eq!(fchan[0], "facade");
+        assert_eq!(fchan[2], "glass", "forge id 2 must bind the glass channel");
+        assert_eq!(fchan[3], "trim", "forge id 3 (reveal) must bind trim");
+        assert_eq!(fchan[4], "trim", "forge id 4 (frames) must bind trim");
+        assert_eq!(fchan[6], "door", "forge id 6 must bind the door channel");
+        assert_eq!(
+            wchan[4], "ground",
+            "cooked slot 4 is no longer the ground material — the historical \
+             cross-wire this test documents has changed shape; re-derive the control"
+        );
+        assert_eq!(
+            fixed[3].albedo_tex, fixed[4].albedo_tex,
+            "reveal and frame must share the one trim texture"
+        );
+        assert_ne!(
+            fixed[4].albedo_tex, fixed[0].albedo_tex,
+            "frame (trim) texture must be distinct from the facade texture"
+        );
+        assert_ne!(
+            fixed[4].albedo_tex, -1,
+            "trim material must carry a real albedo map"
+        );
+        eprintln!(
+            "[materials] loader truth: forge-id table [2]=glass [3]=[4]=[5]=trim [6]=door; \
+             cooked slot 4 = '{}' (the old frames' material, diffuse '{}') -> PASS",
+            wchan[4], "castle_brick_02_red"
+        );
+
+        // ── Frontal window framing (the glass-demo camera): facade windows +
+        //    porch fill the view so the frame strips get real pixel counts. ──
+        let (w, h) = (256u32, 256u32);
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        let target = [0.0f32, 2.6, 0.0];
+        let eye = [0.5f32, 2.4, 14.0];
+        let rig = LightRig {
+            sun_dir: [0.45, 0.65, 0.55],
+            sun_intensity: 2.6,
+            sky_intensity: 0.3,
+            camera_fill: 0.2,
+            rim_fill: 0.0,
+            sky_dome_intensity: 0.65,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.80, 0.86, 0.95],
+            ..Default::default()
+        };
+        let spp = 32u32;
+        let mut worst_secs = 0.0f64;
+        let mut render = |mats: &[PbrMaterial], texs: &[super::TextureImage]| -> Vec<u8> {
+            let t0 = std::time::Instant::now();
+            let rgba = pathtrace_mesh_lit_to_rgba(
+                &mesh.positions,
+                &mesh.normals,
+                &mesh.uvs,
+                &mesh.indices,
+                &mesh.material_ids,
+                mats,
+                texs,
+                eye,
+                target,
+                fov_y,
+                w,
+                h,
+                spp,
+                &rig,
+            )
+            .expect("craftsman zoning render should succeed");
+            worst_secs = worst_secs.max(t0.elapsed().as_secs_f64());
+            rgba
+        };
+        let rgba_fix = render(&fixed, &ftex);
+        let rgba_bug = render(&wired, &wtex);
+        // Flat control on the FIXED table: pure per-forge-id albedos under the
+        // same lighting — the "what does the trim material look like here"
+        // reference the absent-gate compares against.
+        let flat: Vec<PbrMaterial> = fixed
+            .iter()
+            .map(|m| PbrMaterial {
+                albedo_tex: -1,
+                roughness_tex: -1,
+                normal_tex: -1,
+                ..*m
+            })
+            .collect();
+        let rgba_flat = render(&flat, &[]);
+
+        // ── Per-forge-id pixel masks (same pinhole as the GPU). Frame strips
+        //    are narrow at 256², so the frame mask is NOT eroded (the means
+        //    below average hundreds of pixels; both renders share the exact
+        //    same mask, so edge pixels cancel in the comparison). ─────────────
+        let (mats_px, _tris_px) = rasterize_material_masks(&mesh, eye, target, fov_y, w, h);
+        let mask_of = |id: i32| -> Vec<bool> { mats_px.iter().map(|&m| m == id).collect() };
+        let frame_mask = mask_of(4);
+        let wall_mask = mask_of(0);
+        let n_frame = frame_mask.iter().filter(|&&b| b).count();
+        let n_wall = wall_mask.iter().filter(|&&b| b).count();
+        assert!(
+            n_frame >= 150,
+            "frame mask too small ({n_frame} px < 150) — camera drifted off the windows"
+        );
+        assert!(n_wall >= 2000, "wall mask too small ({n_wall} px < 2000)");
+
+        let mean_rgb = |rgba: &[u8], mask: &[bool]| -> [f64; 3] {
+            let mut sum = [0.0f64; 3];
+            let mut n = 0usize;
+            for (p, &on) in mask.iter().enumerate() {
+                if on {
+                    for (s, &v) in sum.iter_mut().zip(&rgba[p * 4..p * 4 + 3]) {
+                        *s += v as f64;
+                    }
+                    n += 1;
+                }
+            }
+            sum.map(|s| s / n.max(1) as f64)
+        };
+        let split = |a: [f64; 3], b: [f64; 3]| -> f64 {
+            ((a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs()) / (3.0 * 255.0)
+        };
+        let luma =
+            |c: [f64; 3]| -> f64 { (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255.0 };
+
+        let f_fix = mean_rgb(&rgba_fix, &frame_mask);
+        let f_bug = mean_rgb(&rgba_bug, &frame_mask);
+        let f_flat = mean_rgb(&rgba_flat, &frame_mask);
+        let w_fix = mean_rgb(&rgba_fix, &wall_mask);
+        let w_bug = mean_rgb(&rgba_bug, &wall_mask);
+        let w_flat = mean_rgb(&rgba_flat, &wall_mask);
+
+        // (was present): the cross-wired frames really were a different,
+        // darker (brick-tinted-ground) material. Measured 2026-06-12 on the
+        // 780M/RADV: |Δrgb| 0.146, Δluma 0.144 against a 0.007 wall noise
+        // floor — gates pinned at 0.10 (>14x the floor).
+        let d_bug_fix = split(f_bug, f_fix);
+        let d_luma = luma(f_fix) - luma(f_bug);
+        let pass_present = d_bug_fix > 0.10 && d_luma > 0.10;
+        // Walls are the SAME facade material in both renders — the fix must
+        // not touch them (render noise only).
+        let d_wall = split(w_bug, w_fix);
+        let pass_wall_same = d_wall < 0.03;
+        // (absent): the fixed frame lands on the trim material's own flat
+        // mean and sits closer to flat-trim than to flat-facade.
+        let d_fix_flat = split(f_fix, f_flat);
+        let d_to_wall = split(f_fix, w_flat);
+        let pass_absent = d_fix_flat < 0.06 && d_fix_flat < d_to_wall;
+        // The number the gate line reports: how far the frame now sits from
+        // the wall in the FIXED render (frames are their own material).
+        let d_wall_frame = split(w_fix, f_fix);
+
+        eprintln!(
+            "[materials] cross-wired control: frame mean rgb [{:.0},{:.0},{:.0}] \
+             (brick-tinted ground) vs fixed [{:.0},{:.0},{:.0}] (trim): \
+             |Δrgb| {d_bug_fix:.3} (gate > 0.10), Δluma {d_luma:.3} (gate > 0.10); \
+             wall unchanged |Δrgb| {d_wall:.3} (gate < 0.03)",
+            f_bug[0], f_bug[1], f_bug[2], f_fix[0], f_fix[1], f_fix[2]
+        );
+        eprintln!(
+            "[materials] fixed frame vs its trim flat-control |Δrgb| {d_fix_flat:.3} \
+             (gate < 0.06); frame-to-flat-trim {d_fix_flat:.3} < frame-to-flat-facade \
+             {d_to_wall:.3} ({n_frame} frame px, {n_wall} wall px)"
+        );
+        let pass_zoning = pass_present && pass_wall_same && pass_absent;
+        eprintln!(
+            "[materials] window/frame region brick-signature ABSENT (was present): \
+             wall-vs-frame |Δrgb| now {d_wall_frame:.3}, frame is trim-material \
+             not facade-material -> {}",
+            if pass_zoning { "PASS" } else { "FAIL" }
+        );
+
+        let out_dir = std::env::temp_dir();
+        let opaque = |mut v: Vec<u8>| -> Vec<u8> {
+            for px in v.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+            v
+        };
+        let fix_png = out_dir.join("materials_zoning_craftsman.png");
+        let bug_png = out_dir.join("materials_zoning_craftsman_crosswired.png");
+        write_png_rgba(fix_png.to_str().unwrap(), &opaque(rgba_fix.clone()), w, h);
+        write_png_rgba(bug_png.to_str().unwrap(), &opaque(rgba_bug.clone()), w, h);
+        eprintln!("[materials] wrote {} (fixed zoning)", fix_png.display());
+        eprintln!(
+            "[materials] wrote {} (cross-wired control — brick frames)",
+            bug_png.display()
+        );
+        eprintln!(
+            "[materials] render time {worst_secs:.2}s/frame (< 10s) -> {}",
+            if worst_secs < 10.0 { "PASS" } else { "FAIL" }
+        );
+
+        assert!(
+            pass_present,
+            "the cross-wired control does not show the historical brick-on-frames \
+             signature (|Δrgb| {d_bug_fix:.3}, Δluma {d_luma:.3}) — the control \
+             no longer reproduces the bug; re-derive it before trusting the fix"
+        );
+        assert!(
+            pass_wall_same,
+            "the zoning fix changed the WALL ({d_wall:.3} >= 0.03) — it must only \
+             re-route non-wall forge ids"
+        );
+        assert!(
+            pass_absent,
+            "the fixed render's frames do not carry the trim material \
+             (frame-vs-flat-trim |Δrgb| {d_fix_flat:.3}, frame-vs-flat-facade \
+             {d_to_wall:.3}) — the loader repoint is wrong; fix it, \
+             do not relax this gate"
+        );
+        assert!(worst_secs < 10.0, "gate renders are not cheap: {worst_secs:.2}s");
     }
 
     /// Exact mesh equality (f32 bit patterns) — the box byte-identity oracle.
