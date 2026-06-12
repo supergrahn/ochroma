@@ -4803,17 +4803,16 @@ mod tests {
         }
     }
 
-    /// Build the per-triangle-indexed PBR material table from the cooked
-    /// payload's `ReadyAssetPbrMaterial` list IN COOKED ORDER (the mesh's
-    /// `material_ids` index this list directly — unlike the SDF path's
-    /// channel table), loading every referenced PolyHaven map through the
-    /// game's TextureCache pattern above (diffuse sRGB→linear +
-    /// tint-normalized, normal/roughness raw, box-downsampled, deduped).
-    /// Glass has no cooked textures and stays a flat low-roughness material
-    /// (the mesh entry point is Lambert-only — no transmission; noted in the
-    /// test doc). Returns (materials, textures, per-material channel names).
+    /// Shared cooked-material loader: parse the payload's
+    /// `ReadyAssetPbrMaterial` list IN COOKED ORDER, loading every referenced
+    /// PolyHaven map through the game's TextureCache pattern above (diffuse
+    /// sRGB→linear + tint-normalized, normal/roughness raw, box-downsampled,
+    /// deduped). HONORS the cooked `transmission`/`ior`/`thin_walled` fields
+    /// (the cook sets them on curtain-wall vision glass; absent fields default
+    /// to the historical opaque values). Returns
+    /// (materials, textures, per-material channel names).
     #[cfg(feature = "spectra-native")]
-    fn load_craftsman_mesh_pbr(
+    fn load_cooked_pbr_materials(
         asset_path: &std::path::Path,
     ) -> (
         Vec<super::PbrMaterial>,
@@ -4829,6 +4828,9 @@ mod tests {
             #[serde(default)]
             roughness: Option<String>,
         }
+        fn default_cooked_ior() -> f32 {
+            1.5
+        }
         #[derive(serde::Deserialize)]
         struct CookedPbrMaterial {
             id: String,
@@ -4838,6 +4840,13 @@ mod tests {
             roughness_factor: f32,
             #[serde(default)]
             textures: CookedTextureSet,
+            /// > 0 = the cook tagged this material REAL transmissive glass.
+            #[serde(default)]
+            transmission: f32,
+            #[serde(default = "default_cooked_ior")]
+            ior: f32,
+            #[serde(default)]
+            thin_walled: bool,
         }
 
         let bytes = std::fs::read(asset_path)
@@ -4910,21 +4919,86 @@ mod tests {
                 roughness_tex,
                 normal_tex,
                 uv_scale: [1.0, 1.0],
-                // Opaque (transmission 0) for EVERY channel including glass:
-                // mesh_craftsman_textured_lit's gates were measured on opaque
-                // panes and stay byte-identical. The glass demo/test flips the
-                // glass channel transmissive locally.
-                ..super::PbrMaterial::default()
+                // The cooked glass tag travels with the material: curtain-wall
+                // vision glass arrives transmissive FROM THE COOK, everything
+                // else keeps the historical opaque defaults.
+                transmission: cm.transmission,
+                ior: cm.ior,
+                thin_walled: cm.thin_walled,
             });
             channels.push(cm.channel.clone());
             eprintln!(
                 "[mesh_m0] cooked material {i} '{}' channel '{}' \
                  (albedo_tex={albedo_tex} rough_tex={roughness_tex} normal_tex={normal_tex} \
-                 roughness={} metallic={})",
-                cm.id, cm.channel, cm.roughness_factor, cm.metallic_factor
+                 roughness={} metallic={} transmission={})",
+                cm.id, cm.channel, cm.roughness_factor, cm.metallic_factor, cm.transmission
             );
         }
         (materials, textures, channels)
+    }
+
+    /// Build the per-triangle-indexed PBR material table from the cooked
+    /// payload's `ReadyAssetPbrMaterial` list IN COOKED ORDER (the mesh's
+    /// `material_ids` index this list directly — unlike the SDF path's
+    /// channel table). Glass stays a flat low-roughness OPAQUE material here
+    /// — mesh_craftsman_textured_lit's gates were measured on opaque panes
+    /// and stay byte-identical; the glass demo/test flips the glass channel
+    /// transmissive locally, and the cooked-tag path is exercised by
+    /// `load_building_mesh_pbr_by_forge_id`.
+    #[cfg(feature = "spectra-native")]
+    fn load_craftsman_mesh_pbr(
+        asset_path: &std::path::Path,
+    ) -> (
+        Vec<super::PbrMaterial>,
+        Vec<super::TextureImage>,
+        Vec<String>,
+    ) {
+        let (mut materials, textures, channels) = load_cooked_pbr_materials(asset_path);
+        for m in &mut materials {
+            m.transmission = 0.0;
+            m.ior = 1.5;
+            m.thin_walled = false;
+        }
+        (materials, textures, channels)
+    }
+
+    /// GENERALIZED cooked-building material loader: a material table indexed
+    /// by the FORGE MESH MATERIAL IDS the payload's `mesh.material_ids`
+    /// actually carry (forge `facade/extrude.rs`: 0 wall, 1 roof, 2 glass,
+    /// 3 reveal, 4 trim, 5 cornice, 6 door), each id bound to the cooked
+    /// material of its CHANNEL — the same forge-id → channel collapse the
+    /// cook's `forge_material_channel` uses for atoms. Cooked
+    /// `transmission`/`ior`/`thin_walled` tags are KEPT, so a curtain-wall
+    /// payload's vision glass (forge id 2 → the cooked "glass" channel
+    /// material) renders transmissive exactly as cooked. Returns
+    /// (materials[forge_id], textures, channel name per forge_id).
+    #[cfg(feature = "spectra-native")]
+    fn load_building_mesh_pbr_by_forge_id(
+        asset_path: &std::path::Path,
+    ) -> (
+        Vec<super::PbrMaterial>,
+        Vec<super::TextureImage>,
+        Vec<String>,
+    ) {
+        let (materials, textures, channels) = load_cooked_pbr_materials(asset_path);
+        let by_channel = |name: &str| -> super::PbrMaterial {
+            let idx = channels
+                .iter()
+                .position(|c| c == name)
+                .unwrap_or_else(|| panic!("cooked payload has no '{name}' channel material"));
+            materials[idx]
+        };
+        // Forge mesh material id -> cooked channel (the cook's
+        // forge_material_channel mapping: reveal/trim/cornice all collapse
+        // onto the trim channel).
+        let forge_channels = ["facade", "roof", "glass", "trim", "trim", "trim", "door"];
+        let table: Vec<super::PbrMaterial> =
+            forge_channels.iter().map(|ch| by_channel(ch)).collect();
+        (
+            table,
+            textures,
+            forge_channels.iter().map(|ch| ch.to_string()).collect(),
+        )
     }
 
     /// CPU-side depth-buffered material-id rasterization of the cooked mesh
@@ -5950,6 +6024,458 @@ mod tests {
              {:.2}s — the one allowed slow render)",
             demo_png.display(),
             t0.elapsed().as_secs_f64()
+        );
+    }
+
+    /// Connected components of one forge material id over 0.1 mm-welded
+    /// vertices — the real measured geometry the curtain-wall grid gates
+    /// count. Returns each component's AABB.
+    #[cfg(feature = "spectra-native")]
+    fn mesh_material_components(mesh: &CookedMesh, mat: u8) -> Vec<([f32; 3], [f32; 3])> {
+        use std::collections::HashMap;
+        let weld: Vec<u64> = {
+            let mut ids: HashMap<[i64; 3], u64> = HashMap::new();
+            mesh.positions
+                .iter()
+                .map(|p| {
+                    let key = [
+                        (p[0] as f64 * 1.0e4).round() as i64,
+                        (p[1] as f64 * 1.0e4).round() as i64,
+                        (p[2] as f64 * 1.0e4).round() as i64,
+                    ];
+                    let next = ids.len() as u64;
+                    *ids.entry(key).or_insert(next)
+                })
+                .collect()
+        };
+        let tris: Vec<usize> = (0..mesh.indices.len())
+            .filter(|&t| mesh.material_ids[t] == mat)
+            .collect();
+        let mut parent: Vec<usize> = (0..tris.len()).collect();
+        fn find(parent: &mut Vec<usize>, mut a: usize) -> usize {
+            while parent[a] != a {
+                parent[a] = parent[parent[a]];
+                a = parent[a];
+            }
+            a
+        }
+        let mut owner: HashMap<u64, usize> = HashMap::new();
+        for (ti, &t) in tris.iter().enumerate() {
+            for &v in &mesh.indices[t] {
+                match owner.get(&weld[v as usize]) {
+                    Some(&other) => {
+                        let (ra, rb) = (find(&mut parent, ti), find(&mut parent, other));
+                        if ra != rb {
+                            parent[ra] = rb;
+                        }
+                    }
+                    None => {
+                        owner.insert(weld[v as usize], ti);
+                    }
+                }
+            }
+        }
+        let mut boxes: HashMap<usize, ([f32; 3], [f32; 3])> = HashMap::new();
+        for (ti, &t) in tris.iter().enumerate() {
+            let root = find(&mut parent, ti);
+            let entry = boxes
+                .entry(root)
+                .or_insert(([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]));
+            for &v in &mesh.indices[t] {
+                let p = mesh.positions[v as usize];
+                for a in 0..3 {
+                    entry.0[a] = entry.0[a].min(p[a]);
+                    entry.1[a] = entry.1[a].max(p[a]);
+                }
+            }
+        }
+        boxes.into_values().collect()
+    }
+
+    /// Mean Sobel gradient-magnitude of luminance over mask pixels whose full
+    /// 3x3 neighbourhood is inside the mask — the facade detail-energy
+    /// measure (edges from mullions/transoms/spandrel-glass alternation),
+    /// silhouette-immune by construction.
+    #[cfg(feature = "spectra-native")]
+    fn masked_sobel_energy(rgba: &[u8], mask: &[bool], w: u32, h: u32) -> f64 {
+        let luma = |i: usize| -> f64 {
+            0.2126 * rgba[i * 4] as f64
+                + 0.7152 * rgba[i * 4 + 1] as f64
+                + 0.0722 * rgba[i * 4 + 2] as f64
+        };
+        let mut sum = 0.0f64;
+        let mut n = 0usize;
+        for y in 1..h - 1 {
+            'px: for x in 1..w - 1 {
+                let i = (y * w + x) as usize;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let j = ((y as i32 + dy) * w as i32 + (x as i32 + dx)) as usize;
+                        if !mask[j] {
+                            continue 'px;
+                        }
+                    }
+                }
+                let l = |dx: i32, dy: i32| {
+                    luma(((y as i32 + dy) * w as i32 + (x as i32 + dx)) as usize)
+                };
+                let gx = (l(1, -1) + 2.0 * l(1, 0) + l(1, 1))
+                    - (l(-1, -1) + 2.0 * l(-1, 0) + l(-1, 1));
+                let gy = (l(-1, 1) + 2.0 * l(0, 1) + l(1, 1))
+                    - (l(-1, -1) + 2.0 * l(0, -1) + l(1, -1));
+                sum += (gx * gx + gy * gy).sqrt();
+                n += 1;
+            }
+        }
+        sum / n.max(1) as f64
+    }
+
+    /// CURTAIN-WALL FACADE GATE (forge facade-axis wave: the glass office).
+    /// Loads the COOKED curtain-wall office tower
+    /// (`city.office.l5.3x3.glass_office_tower_01`, cooked with
+    /// `forge.facade_system: "curtain_wall"` into
+    /// `assets/buildings/curtain_wall`) and verifies the facade family by
+    /// GEOMETRY and by a CHEAP render (256² @ 32 spp — seconds):
+    ///
+    ///   (grid) mullion/transom counts measured as welded connected
+    ///       components of the trim material, cells = Σ_walls
+    ///       (mullions−1)·(transoms−1) — must equal the parametric
+    ///       expectation bays·floors·3 derived from the payload's own
+    ///       forge_description (width/depth/floors/floor_height) and the
+    ///       forge CurtainWallParams default bay width (1.8 m);
+    ///   (glass) vision panes counted from MAT_GLASS triangles == 2·bays·
+    ///       floors, AND the cooked glass material arrives transmissive
+    ///       (transmission > 0, thin_walled) and packs MAT_GLASS(3) —
+    ///       spandrels counted as wall-plane MAT_WALL panels == bays·floors,
+    ///       their material opaque (packs MAT_LAMBERT(1));
+    ///   (energy) facade detail energy — masked Sobel gradient energy of the
+    ///       rendered tower vs a flat Lambert box of the same dimensions,
+    ///       same camera/rig/spp — ratio >= 3.0;
+    ///   (time) each gate render < 10 s.
+    /// Writes `curtain_wall_office.png` + `curtain_wall_flatbox.png`.
+    ///
+    /// Cook first (civitas repo, ~/Ochroma/projects/civitas_care):
+    ///   mkdir -p /tmp/curtain_src/office && cp \
+    ///     assets/source/buildings/office/glass_office_tower_01.asset.json \
+    ///     /tmp/curtain_src/office/ && mkdir -p assets/buildings/curtain_wall/textures \
+    ///     && cp -r assets/buildings/forge_starter/textures/polyhaven \
+    ///     assets/buildings/curtain_wall/textures/
+    ///   cargo build --release --bin game_asset_cook && \
+    ///   GAME_FORGE_BIN=$HOME/src/forge/target/release/aetherspectra-forge \
+    ///     ./target/release/game_asset_cook --no-starters \
+    ///     --source /tmp/curtain_src --output assets/buildings/curtain_wall
+    /// Run alone (GPU):
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
+    ///     --profile release-fast --lib forge_curtain_wall_office -- --nocapture --test-threads=1
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn forge_curtain_wall_office() {
+        use super::{pathtrace_mesh_lit_to_rgba, LightRig, PbrMaterial};
+
+        let atoms_path = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(
+            "Ochroma/projects/civitas_care/assets/buildings/curtain_wall/atoms/\
+             city.office.l5.3x3.glass_office_tower_01.atoms.json",
+        );
+        let mesh = load_craftsman_mesh(&atoms_path);
+        let (materials, textures, channels) = load_building_mesh_pbr_by_forge_id(&atoms_path);
+        assert_eq!(channels[2], "glass", "forge id 2 must bind the glass channel");
+
+        // ── The parametric expectation, from the payload's own cooked
+        //    forge_description — never hardcoded counts. ─────────────────────
+        let json: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&atoms_path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", atoms_path.display())),
+        )
+        .expect("parse atoms.json");
+        let desc = &json["forge_description"];
+        assert_eq!(
+            desc["facade_system"].as_str(),
+            Some("curtain_wall"),
+            "payload was not cooked with facade_system curtain_wall"
+        );
+        let width = desc["footprint"]["width"].as_f64().unwrap() as f32;
+        let depth = desc["footprint"]["depth"].as_f64().unwrap() as f32;
+        let floors = desc["floors"].as_u64().unwrap() as usize;
+        let fh = desc["floor_height"].as_f64().unwrap() as f32;
+        // Forge CurtainWallParams::default().bay_width — the one cross-repo
+        // parametric constant (mullion spacing target).
+        const BAY_WIDTH: f32 = 1.8;
+        let bays_w = (width / BAY_WIDTH).round().max(1.0) as usize;
+        let bays_d = (depth / BAY_WIDTH).round().max(1.0) as usize;
+        let bays_total = 2 * (bays_w + bays_d);
+        let exp_mullions = bays_total + 4; // bays_e + 1 per edge
+        let exp_transoms = 4 * (3 * floors + 1);
+        let exp_cells = 3 * bays_total * floors;
+        let exp_glass = 2 * bays_total * floors;
+        let exp_spandrels = bays_total * floors;
+        let total_h = floors as f32 * fh;
+        let (half_w, half_d) = (width * 0.5, depth * 0.5);
+
+        // ── GATE 1: the mullion/transom grid, measured from welded
+        //    components of the trim material (forge id 4). ───────────────────
+        let trim = mesh_material_components(&mesh, 4);
+        // Per wall: components beyond each footprint plane (members stand
+        // proud of the skin, so their centroids sit outside the plane).
+        let mut per_wall: [(usize, usize); 4] = [(0, 0); 4]; // (mullions, transoms)
+        for (mn, mx) in &trim {
+            let c = [(mn[0] + mx[0]) * 0.5, (mn[1] + mx[1]) * 0.5, (mn[2] + mx[2]) * 0.5];
+            let wall = if c[0] > half_w {
+                0
+            } else if c[0] < -half_w {
+                1
+            } else if c[2] > half_d {
+                2
+            } else if c[2] < -half_d {
+                3
+            } else {
+                panic!("trim component centroid {c:?} is not on any facade plane");
+            };
+            if mx[1] - mn[1] > 1.0 {
+                per_wall[wall].0 += 1; // full-height vertical = mullion
+            } else {
+                per_wall[wall].1 += 1; // thin horizontal run = transom
+            }
+        }
+        let mullions: usize = per_wall.iter().map(|w| w.0).sum();
+        let transoms: usize = per_wall.iter().map(|w| w.1).sum();
+        let cells: usize = per_wall
+            .iter()
+            .map(|&(nv, nt)| nv.saturating_sub(1) * nt.saturating_sub(1))
+            .sum();
+        let grid_pass = mullions == exp_mullions && transoms == exp_transoms && cells == exp_cells;
+        eprintln!(
+            "[curtain] grid: {mullions} mullions x {transoms} transoms = {cells} cells \
+             (expect {exp_cells} == bays*floors*3: {bays_total} bays x {floors} floors x \
+             3 panes_per) -> {}",
+            if grid_pass { "PASS" } else { "FAIL" }
+        );
+        assert!(
+            grid_pass,
+            "curtain-wall grid is not the parametric expectation: \
+             {mullions}/{exp_mullions} mullions, {transoms}/{exp_transoms} transoms, \
+             {cells}/{exp_cells} cells (per-wall {per_wall:?})"
+        );
+
+        // ── GATE 2: vision glass transmissive + spandrels opaque. ────────────
+        let glass_tris = mesh.material_ids.iter().filter(|&&m| m == 2).count();
+        let glass_panels = glass_tris / 2;
+        let glass_mat = materials[2];
+        let packed_glass = super::pack_vulkan_mesh_material(glass_mat);
+        let glass_pass = glass_panels == exp_glass
+            && glass_mat.transmission > 0.0
+            && glass_mat.thin_walled
+            && packed_glass[0].to_bits() == 3;
+        eprintln!(
+            "[curtain] vision glass panels transmissive: {glass_panels} panels, MAT_GLASS -> {}",
+            if glass_pass { "PASS" } else { "FAIL" }
+        );
+        assert!(
+            glass_pass,
+            "vision glass is not cooked transmissive: {glass_panels}/{exp_glass} panels, \
+             transmission {}, thin_walled {}, packed type {} (the cook must tag the \
+             curtain-wall glass channel transmission > 0)",
+            glass_mat.transmission,
+            glass_mat.thin_walled,
+            packed_glass[0].to_bits()
+        );
+        // Spandrels: MAT_WALL (forge id 0) panels lying IN a facade plane
+        // (every vertex within 2 cm of one wall plane, above grade) — the
+        // underside seal and interior proxies live elsewhere.
+        let mut spandrel_tris = 0usize;
+        for (t, tri) in mesh.indices.iter().enumerate() {
+            if mesh.material_ids[t] != 0 {
+                continue;
+            }
+            let pts: Vec<[f32; 3]> = tri.iter().map(|&i| mesh.positions[i as usize]).collect();
+            let in_plane = |f: &dyn Fn(&[f32; 3]) -> f32| pts.iter().all(|p| f(p).abs() < 0.02);
+            let on_facade = in_plane(&|p: &[f32; 3]| p[0] - half_w)
+                || in_plane(&|p: &[f32; 3]| p[0] + half_w)
+                || in_plane(&|p: &[f32; 3]| p[2] - half_d)
+                || in_plane(&|p: &[f32; 3]| p[2] + half_d);
+            let above_grade = pts.iter().map(|p| p[1]).fold(f32::MIN, f32::max) > 0.01;
+            if on_facade && above_grade {
+                spandrel_tris += 1;
+            }
+        }
+        let spandrels = spandrel_tris / 2;
+        let wall_mat = materials[0];
+        let packed_wall = super::pack_vulkan_mesh_material(wall_mat);
+        let spandrel_pass = spandrels == exp_spandrels
+            && wall_mat.transmission == 0.0
+            && packed_wall[0].to_bits() == 1;
+        eprintln!(
+            "[curtain] spandrel panels opaque: {spandrels} -> {}",
+            if spandrel_pass { "PASS" } else { "FAIL" }
+        );
+        assert!(
+            spandrel_pass,
+            "spandrels wrong: {spandrels}/{exp_spandrels} panels, wall transmission {}, \
+             packed type {}",
+            wall_mat.transmission,
+            packed_wall[0].to_bits()
+        );
+
+        // ── GATE 3: facade detail energy vs a flat Lambert box of the same
+        //    dimensions (same camera, rig, resolution, spp). CHEAP renders. ──
+        let (w, h) = (256u32, 256u32);
+        let spp = 32u32;
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        let eye = [26.0f32, 16.0, 34.0];
+        let target = [0.0f32, total_h * 0.45, 0.0];
+        let rig = LightRig {
+            sun_dir: [0.45, 0.65, 0.55],
+            sun_intensity: 2.6,
+            sky_intensity: 0.3,
+            camera_fill: 0.2,
+            rim_fill: 0.0,
+            sky_dome_intensity: 0.65,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.80, 0.86, 0.95],
+            ..Default::default()
+        };
+
+        let t0 = std::time::Instant::now();
+        let rgba_tower = pathtrace_mesh_lit_to_rgba(
+            &mesh.positions,
+            &mesh.normals,
+            &mesh.uvs,
+            &mesh.indices,
+            &mesh.material_ids,
+            &materials,
+            &textures,
+            eye,
+            target,
+            fov_y,
+            w,
+            h,
+            spp,
+            &rig,
+        )
+        .expect("curtain-wall tower render should succeed");
+        let secs_tower = t0.elapsed().as_secs_f64();
+
+        // Flat-box control: the same envelope as ONE Lambert box (the cooked
+        // facade albedo, no textures, no grid, no glass).
+        let mut box_mesh = CookedMesh {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            indices: Vec::new(),
+            material_ids: Vec::new(),
+        };
+        let mut push_quad = |corners: [[f32; 3]; 4], normal: [f32; 3]| {
+            let v0 = box_mesh.positions.len() as u32;
+            for c in corners {
+                box_mesh.positions.push(c);
+                box_mesh.normals.push(normal);
+                box_mesh.uvs.push([0.0, 0.0]);
+            }
+            box_mesh.indices.push([v0, v0 + 1, v0 + 2]);
+            box_mesh.indices.push([v0, v0 + 2, v0 + 3]);
+            box_mesh.material_ids.extend_from_slice(&[0, 0]);
+        };
+        let (hw, hd, th) = (half_w, half_d, total_h);
+        push_quad(
+            [[-hw, 0.0, hd], [hw, 0.0, hd], [hw, th, hd], [-hw, th, hd]],
+            [0.0, 0.0, 1.0],
+        );
+        push_quad(
+            [[hw, 0.0, -hd], [-hw, 0.0, -hd], [-hw, th, -hd], [hw, th, -hd]],
+            [0.0, 0.0, -1.0],
+        );
+        push_quad(
+            [[hw, 0.0, hd], [hw, 0.0, -hd], [hw, th, -hd], [hw, th, hd]],
+            [1.0, 0.0, 0.0],
+        );
+        push_quad(
+            [[-hw, 0.0, -hd], [-hw, 0.0, hd], [-hw, th, hd], [-hw, th, -hd]],
+            [-1.0, 0.0, 0.0],
+        );
+        push_quad(
+            [[-hw, th, hd], [hw, th, hd], [hw, th, -hd], [-hw, th, -hd]],
+            [0.0, 1.0, 0.0],
+        );
+        let box_materials = [PbrMaterial {
+            base_color: wall_mat.base_color,
+            roughness: wall_mat.roughness,
+            ..Default::default()
+        }];
+        let t1 = std::time::Instant::now();
+        let rgba_box = pathtrace_mesh_lit_to_rgba(
+            &box_mesh.positions,
+            &box_mesh.normals,
+            &box_mesh.uvs,
+            &box_mesh.indices,
+            &box_mesh.material_ids,
+            &box_materials,
+            &[],
+            eye,
+            target,
+            fov_y,
+            w,
+            h,
+            spp,
+            &rig,
+        )
+        .expect("flat-box control render should succeed");
+        let secs_box = t1.elapsed().as_secs_f64();
+
+        let coverage_mask = |m: &CookedMesh| -> (Vec<bool>, usize) {
+            let (mats_px, _) = rasterize_material_masks(m, eye, target, fov_y, w, h);
+            let mask: Vec<bool> = mats_px.iter().map(|&v| v >= 0).collect();
+            let n = mask.iter().filter(|&&b| b).count();
+            (mask, n)
+        };
+        let (tower_mask, tower_px) = coverage_mask(&mesh);
+        let (box_mask, box_px) = coverage_mask(&box_mesh);
+        assert!(
+            tower_px > 5000 && box_px > 5000,
+            "camera framing drifted: tower {tower_px} px, box {box_px} px coverage"
+        );
+        let e_tower = masked_sobel_energy(&rgba_tower, &tower_mask, w, h);
+        let e_box = masked_sobel_energy(&rgba_box, &box_mask, w, h);
+        let energy_ratio = e_tower / e_box.max(1e-9);
+        let energy_pass = energy_ratio >= 3.0;
+        eprintln!(
+            "[curtain] facade detail energy {energy_ratio:.2}x a flat-box control \
+             (gate >= 3.0x) -> {} (tower sobel {e_tower:.3}, box sobel {e_box:.3}, \
+             {tower_px}/{box_px} px)",
+            if energy_pass { "PASS" } else { "FAIL" }
+        );
+        eprintln!(
+            "[curtain] render time {secs_tower:.2}s per frame (expect < 10s) \
+             [control {secs_box:.2}s]"
+        );
+
+        let out_dir = std::env::temp_dir();
+        let force_alpha = |mut v: Vec<u8>| -> Vec<u8> {
+            for px in v.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+            v
+        };
+        let tower_png = out_dir.join("curtain_wall_office.png");
+        let box_png = out_dir.join("curtain_wall_flatbox.png");
+        write_png_rgba(tower_png.to_str().unwrap(), &force_alpha(rgba_tower), w, h);
+        write_png_rgba(box_png.to_str().unwrap(), &force_alpha(rgba_box), w, h);
+        eprintln!("[curtain] wrote {} (curtain-wall office)", tower_png.display());
+        eprintln!("[curtain] wrote {} (flat-box control)", box_png.display());
+        eprintln!(
+            "[curtain] eyeball: a glass office tower — vertical mullions + floor-line/\
+             mid-floor transoms gridding every facade, opaque spandrel bands at the \
+             slabs, transmissive vision glass showing the interior plates — vs a \
+             featureless Lambert box"
+        );
+
+        assert!(
+            energy_pass,
+            "the curtain-wall facade does not read as structured vs a plain box \
+             (sobel ratio {energy_ratio:.2}x < 3.0x)"
+        );
+        assert!(
+            secs_tower.min(secs_box) < 10.0,
+            "gate renders are not cheap: {secs_tower:.2}s / {secs_box:.2}s per frame"
         );
     }
 
