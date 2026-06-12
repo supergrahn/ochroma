@@ -7382,6 +7382,378 @@ mod tests {
         );
     }
 
+
+    /// Forge-facade wave 1, Task 1 gate (L/U/T cook unlock): render the cooked
+    /// L-SHAPED walkup (`city.res_med.l3.3x4.lshape_walkup`) through the proven
+    /// mesh path (`pathtrace_mesh_lit_to_rgba` + the cooked-mesh/PBR loaders)
+    /// from a top-down inspection camera and verify the building is REALLY
+    /// non-rectangular:
+    ///   1. GROUND-CAP L PROOF — the cook seals every footprint with an
+    ///      underside cap at y = 0 that follows the footprint polygon, so the
+    ///      cap rasterized into an XZ grid must fill three bbox quadrants and
+    ///      leave one (the L's removed corner) empty. This is measured from
+    ///      the cooked payload itself, never assumed.
+    ///   2. GPU SILHOUETTE GATE — pixels whose camera ray stays inside the
+    ///      void quadrant for every height of the building must read as
+    ///      BACKGROUND in the path-traced image (`void_cov < 0.02`) while the
+    ///      building still fills the frame (`body_cov > 0.25`). Prints
+    ///      `void_corner_empty: <bool>` and writes
+    ///      `lut_lshape_nonrectangular.png` for human inspection.
+    /// Background pixels are classified against the mean of the four frame
+    /// corners (always sky-dome — the building never reaches them), and the
+    /// classifier is cross-checked against the CPU rasterization of the same
+    /// mesh with the same pinhole before any gate uses it.
+    ///
+    /// Run alone (GPU, seconds/frame is fine):
+    ///   SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
+    ///     scripts/build-spectra-native.sh test -p vox_render --features spectra-native \
+    ///     --release --lib forge_facade_lut_lshape -- --nocapture --test-threads=1
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn forge_facade_lut_lshape() {
+        use super::{pathtrace_mesh_lit_to_rgba, LightRig};
+
+        let atoms = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(
+            "Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms/city.res_med.l3.3x4.lshape_walkup.atoms.json",
+        );
+        let mesh = load_craftsman_mesh(&atoms);
+        let (materials, textures, _channels) = load_building_mesh_pbr_by_forge_id(&atoms);
+        eprintln!(
+            "[lut_lshape] cooked mesh: {} verts, {} tris, {} materials, {} textures",
+            mesh.positions.len(),
+            mesh.indices.len(),
+            materials.len(),
+            textures.len()
+        );
+
+        // ---- 1. Ground-cap L proof: rasterize the y≈0 underside cap into an
+        // XZ grid and measure per-quadrant fill. The cap is the cook's seal of
+        // the REAL footprint polygon, so an L cook leaves exactly one bbox
+        // quadrant empty; a rectangular cook fills all four. -----------------
+        let cap_tris: Vec<&[u32; 3]> = mesh
+            .indices
+            .iter()
+            .filter(|tri| {
+                tri.iter()
+                    .all(|&i| mesh.positions[i as usize][1] <= 0.02)
+            })
+            .collect();
+        assert!(
+            !cap_tris.is_empty(),
+            "cooked mesh has no ground cap at y<=0.02 — the seal pass drifted"
+        );
+        let (mut fx0, mut fx1, mut fz0, mut fz1) =
+            (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+        for tri in &cap_tris {
+            for &i in tri.iter() {
+                let p = mesh.positions[i as usize];
+                fx0 = fx0.min(p[0]);
+                fx1 = fx1.max(p[0]);
+                fz0 = fz0.min(p[2]);
+                fz1 = fz1.max(p[2]);
+            }
+        }
+        const GRID: usize = 128;
+        let mut cap_grid = vec![false; GRID * GRID];
+        for tri in &cap_tris {
+            let p: Vec<[f32; 2]> = tri
+                .iter()
+                .map(|&i| {
+                    let q = mesh.positions[i as usize];
+                    [q[0], q[2]]
+                })
+                .collect();
+            let den = (p[1][1] - p[2][1]) * (p[0][0] - p[2][0])
+                + (p[2][0] - p[1][0]) * (p[0][1] - p[2][1]);
+            if den.abs() < 1e-9 {
+                continue;
+            }
+            for gx in 0..GRID {
+                let qx = fx0 + (gx as f32 + 0.5) / GRID as f32 * (fx1 - fx0);
+                for gz in 0..GRID {
+                    let qz = fz0 + (gz as f32 + 0.5) / GRID as f32 * (fz1 - fz0);
+                    let l1 = ((p[1][1] - p[2][1]) * (qx - p[2][0])
+                        + (p[2][0] - p[1][0]) * (qz - p[2][1]))
+                        / den;
+                    let l2 = ((p[2][1] - p[0][1]) * (qx - p[2][0])
+                        + (p[0][0] - p[2][0]) * (qz - p[2][1]))
+                        / den;
+                    let l3 = 1.0 - l1 - l2;
+                    if l1 >= -1e-6 && l2 >= -1e-6 && l3 >= -1e-6 {
+                        cap_grid[gx * GRID + gz] = true;
+                    }
+                }
+            }
+        }
+        let (cx, cz) = ((fx0 + fx1) * 0.5, (fz0 + fz1) * 0.5);
+        // Quadrant fill fractions, cells within 0.4 m of the quadrant border
+        // excluded so shared walls never leak across.
+        let mut quad_fill = [0.0f64; 4];
+        for (q, fill) in quad_fill.iter_mut().enumerate() {
+            let (want_xp, want_zp) = (q & 1 == 1, q & 2 == 2);
+            let (mut inside, mut filled) = (0usize, 0usize);
+            for gx in 0..GRID {
+                let x = fx0 + (gx as f32 + 0.5) / GRID as f32 * (fx1 - fx0);
+                if (x > cx + 0.4) != want_xp || (x - cx).abs() <= 0.4 {
+                    continue;
+                }
+                for gz in 0..GRID {
+                    let z = fz0 + (gz as f32 + 0.5) / GRID as f32 * (fz1 - fz0);
+                    if (z > cz + 0.4) != want_zp || (z - cz).abs() <= 0.4 {
+                        continue;
+                    }
+                    inside += 1;
+                    filled += cap_grid[gx * GRID + gz] as usize;
+                }
+            }
+            *fill = filled as f64 / inside.max(1) as f64;
+        }
+        let void_q = (0..4)
+            .min_by(|&a, &b| quad_fill[a].total_cmp(&quad_fill[b]))
+            .unwrap();
+        let filled_min = (0..4)
+            .filter(|&q| q != void_q)
+            .map(|q| quad_fill[q])
+            .fold(f64::INFINITY, f64::min);
+        eprintln!(
+            "[lut_lshape] ground-cap quadrant fill (x-,z-)/(x+,z-)/(x-,z+)/(x+,z+): \
+             {:.3} {:.3} {:.3} {:.3} -> void quadrant {} (fill {:.3}), other min {:.3}",
+            quad_fill[0], quad_fill[1], quad_fill[2], quad_fill[3], void_q,
+            quad_fill[void_q], filled_min
+        );
+        assert!(
+            quad_fill[void_q] < 0.05 && filled_min > 0.85,
+            "cooked footprint does not read as an L: quadrant fills {quad_fill:?} \
+             (need one ~empty quadrant and three ~full)"
+        );
+
+        // ---- 2. Path-trace top-down and gate the GPU silhouette over the
+        // void quadrant. -------------------------------------------------------
+        let (w, h) = (512u32, 512u32);
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        let eye = [0.0f32, 40.0, 0.1];
+        let target = [0.0f32, 0.0, 0.0];
+        // Bright high dome so the below-horizon background reads clearly
+        // brighter than the dark slate roof — the legacy dome's near-black
+        // brown sat within the classifier's distance of the roof texture.
+        let rig = LightRig {
+            sun_dir: [0.4, 0.8, 0.4],
+            sun_intensity: 2.6,
+            sky_dome_intensity: 1.0,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.85, 0.90, 0.98],
+            ..Default::default()
+        };
+        let t0 = std::time::Instant::now();
+        let rgba = pathtrace_mesh_lit_to_rgba(
+            &mesh.positions,
+            &mesh.normals,
+            &mesh.uvs,
+            &mesh.indices,
+            &mesh.material_ids,
+            &materials,
+            &textures,
+            eye,
+            target,
+            fov_y,
+            w,
+            h,
+            64,
+            &rig,
+        )
+        .expect("L-shape walkup mesh render should succeed");
+        let secs = t0.elapsed().as_secs_f64();
+        let png = std::env::temp_dir().join("lut_lshape_nonrectangular.png");
+        let mut opaque = rgba.clone();
+        for px in opaque.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        write_png_rgba(png.to_str().unwrap(), &opaque, w, h);
+        eprintln!(
+            "[lut_lshape] wrote {} ({secs:.2}s, 64 spp top-down)",
+            png.display()
+        );
+
+        // Diagnostic companion view (NOT gated): a 3/4 view into the removed
+        // corner so a human can inspect how the notch is actually built —
+        // walls, soffit, roof. Written beside the gate PNG.
+        {
+            let (vx, vz) = (
+                if void_q & 1 == 1 { 1.0f32 } else { -1.0 },
+                if void_q & 2 == 2 { 1.0f32 } else { -1.0 },
+            );
+            let eye34 = [vx * 16.0, 12.0, vz * 18.0];
+            let rgba34 = pathtrace_mesh_lit_to_rgba(
+                &mesh.positions,
+                &mesh.normals,
+                &mesh.uvs,
+                &mesh.indices,
+                &mesh.material_ids,
+                &materials,
+                &textures,
+                eye34,
+                [0.0, 4.0, 0.0],
+                fov_y,
+                w,
+                h,
+                64,
+                &rig,
+            )
+            .expect("3/4 diagnostic render should succeed");
+            let mut o = rgba34;
+            for px in o.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+            let png34 = std::env::temp_dir().join("lut_lshape_three_quarter.png");
+            write_png_rgba(png34.to_str().unwrap(), &o, w, h);
+            eprintln!("[lut_lshape] wrote diagnostic 3/4 view {}", png34.display());
+        }
+
+        // GPU silhouette via a MATTE pass: the same mesh/camera rendered with
+        // every material flat WHITE + emissive, no textures — geometry then
+        // reads near-white regardless of sun/shadow while the background
+        // stays the dome, so a luma threshold is an exact GPU silhouette.
+        // (The below-horizon dome cannot be re-coloured through the rig, and
+        // the slate roof texture overlaps it in both luma and hue, so
+        // colour-matching the beauty frame against the frame corners is not
+        // a reliable classifier — measured, not assumed.)
+        let matte_materials: Vec<super::PbrMaterial> = materials
+            .iter()
+            .map(|_| super::PbrMaterial {
+                base_color: [1.0, 1.0, 1.0],
+                roughness: 1.0,
+                metallic: 0.0,
+                emission_strength: 4.0,
+                albedo_tex: -1,
+                roughness_tex: -1,
+                normal_tex: -1,
+                uv_scale: [1.0, 1.0],
+                ..Default::default()
+            })
+            .collect();
+        let rgba_matte = pathtrace_mesh_lit_to_rgba(
+            &mesh.positions,
+            &mesh.normals,
+            &mesh.uvs,
+            &mesh.indices,
+            &mesh.material_ids,
+            &matte_materials,
+            &[],
+            eye,
+            target,
+            fov_y,
+            w,
+            h,
+            64,
+            &rig,
+        )
+        .expect("matte silhouette render should succeed");
+        let matte_luma = |p: usize| -> f64 {
+            0.2126 * rgba_matte[p * 4] as f64
+                + 0.7152 * rgba_matte[p * 4 + 1] as f64
+                + 0.0722 * rgba_matte[p * 4 + 2] as f64
+        };
+        let corners = [
+            0usize,
+            (w - 1) as usize,
+            ((h - 1) * w) as usize,
+            ((h - 1) * w + (w - 1)) as usize,
+        ];
+        let bg_luma = corners.iter().map(|&p| matte_luma(p)).sum::<f64>() / 4.0;
+        assert!(
+            bg_luma < 140.0,
+            "matte background luma {bg_luma:.0} too bright for a clean threshold"
+        );
+        let thr = bg_luma + 60.0;
+        let is_background = |p: usize| -> bool { matte_luma(p) < thr };
+
+        // Cross-check: CPU raster of the same mesh with the same pinhole must
+        // agree with the GPU non-background silhouette.
+        let (mats_px, _tris_px) = rasterize_material_masks(&mesh, eye, target, fov_y, w, h);
+        let (mut raster_cov, mut lit_px, mut overlap) = (0usize, 0usize, 0usize);
+        for p in 0..(w * h) as usize {
+            let on_raster = mats_px[p] >= 0;
+            let on_render = !is_background(p);
+            raster_cov += on_raster as usize;
+            lit_px += on_render as usize;
+            overlap += (on_raster && on_render) as usize;
+        }
+        let agree_raster = overlap as f64 / raster_cov.max(1) as f64;
+        let agree_render = overlap as f64 / lit_px.max(1) as f64;
+        eprintln!(
+            "[lut_lshape] silhouette cross-check: raster {raster_cov} px, render {lit_px} px, \
+             overlap/raster {agree_raster:.3}, overlap/render {agree_render:.3}"
+        );
+        assert!(
+            agree_raster > 0.9 && agree_render > 0.9,
+            "GPU silhouette and CPU raster disagree (agree_raster {agree_raster:.3}, \
+             agree_render {agree_render:.3}) — the background classifier or camera drifted"
+        );
+
+        // The void screen block: pixels whose ray stays inside the void
+        // quadrant (inset 0.45 m, clear of walls/overhang) from the ground to
+        // above the roof — geometry can cover them ONLY by occupying the
+        // removed corner. The ray's XZ track is linear in height, so inside
+        // at y=0 and y=ymax+0.6 means inside throughout.
+        let ymax = mesh
+            .positions
+            .iter()
+            .map(|p| p[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let (qx0, qx1) = if void_q & 1 == 1 { (cx, fx1) } else { (fx0, cx) };
+        let (qz0, qz1) = if void_q & 2 == 2 { (cz, fz1) } else { (fz0, cz) };
+        let inset = 0.45f32;
+        let in_void = |x: f32, z: f32| -> bool {
+            x > qx0 + inset && x < qx1 - inset && z > qz0 + inset && z < qz1 - inset
+        };
+        // Same pinhole as rasterize_material_masks / the camera kernel.
+        let eye_v = glam::Vec3::from(eye);
+        let fwd = (glam::Vec3::from(target) - eye_v).normalize();
+        let right = fwd.cross(glam::Vec3::Y).normalize();
+        let up = right.cross(fwd);
+        let tan_half = (fov_y * 0.5).tan();
+        let aspect = w as f32 / h as f32;
+        let mut void_px = 0usize;
+        let mut void_lit = 0usize;
+        for y in 0..h {
+            for x in 0..w {
+                let ndc_x = (2.0 * (x as f32 + 0.5) / w as f32 - 1.0) * aspect;
+                let ndc_y = 1.0 - 2.0 * (y as f32 + 0.5) / h as f32;
+                let dir = (fwd + (right * ndc_x + up * ndc_y) * tan_half).normalize();
+                if dir.y.abs() < 1e-4 {
+                    continue;
+                }
+                let at = |wy: f32| -> (f32, f32) {
+                    let t = (wy - eye_v.y) / dir.y;
+                    (eye_v.x + dir.x * t, eye_v.z + dir.z * t)
+                };
+                let (x0, z0) = at(0.0);
+                let (x1, z1) = at(ymax + 0.6);
+                if in_void(x0, z0) && in_void(x1, z1) {
+                    void_px += 1;
+                    void_lit += !is_background((y * w + x) as usize) as usize;
+                }
+            }
+        }
+        assert!(
+            void_px >= 500,
+            "void screen block too small ({void_px} px) — camera framing drifted"
+        );
+        let void_cov = void_lit as f64 / void_px as f64;
+        let body_cov = lit_px as f64 / (w * h) as f64;
+        let void_corner_empty = void_cov < 0.02 && body_cov > 0.25;
+        eprintln!(
+            "void_corner_empty: {void_corner_empty}  (void_cov={void_cov:.3} body_cov={body_cov:.3} \
+             void_px={void_px})"
+        );
+        assert!(
+            void_corner_empty,
+            "L void corner not empty in the GPU render: void_cov={void_cov:.3} (need < 0.02), \
+             body_cov={body_cov:.3} (need > 0.25) — see {}",
+            png.display()
+        );
+    }
+
     /// Exact mesh equality (f32 bit patterns) — the box byte-identity oracle.
     #[cfg(feature = "spectra-native")]
     fn pt_eq_mesh(a: &CookedMesh, b: &CookedMesh) -> bool {
