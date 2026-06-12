@@ -4980,9 +4980,26 @@ mod tests {
         // Forge mesh material id -> cooked channel (the cook's
         // forge_material_channel mapping: reveal/trim/cornice all collapse
         // onto the trim channel).
-        let forge_channels = ["facade", "roof", "glass", "trim", "trim", "trim", "door"];
-        let table: Vec<super::PbrMaterial> =
-            forge_channels.iter().map(|ch| by_channel(ch)).collect();
+        let forge_channels =
+            ["facade", "roof", "glass", "trim", "trim", "trim", "door", "glass_lit"];
+        let table: Vec<super::PbrMaterial> = forge_channels
+            .iter()
+            .map(|ch| {
+                if *ch == "glass_lit" {
+                    // Forge id 7 (MAT_GLASS_LIT): the cooked payload carries
+                    // one glass material; lit panes are the glass clone with
+                    // a warm interior glow so a deterministic subset of
+                    // windows reads inhabited instead of dead.
+                    let mut lit = by_channel("glass");
+                    lit.base_color = [1.0, 0.82, 0.58];
+                    lit.emission_strength = 1.6;
+                    lit.transmission = 0.0;
+                    lit
+                } else {
+                    by_channel(ch)
+                }
+            })
+            .collect();
         (
             table,
             textures,
@@ -7245,6 +7262,70 @@ mod tests {
              do not relax this gate"
         );
         assert!(worst_secs < 10.0, "gate renders are not cheap: {worst_secs:.2}s");
+    }
+
+    /// Facade elevations: straight-on front views so the facade composition
+    /// (window stacks, floor hierarchy, casings, trim-zoned roof edges) is
+    /// actually inspectable. Denoised eyeball output, sanity-gated non-empty.
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn facade_elevations() {
+        use super::{pathtrace_mesh_lit_to_rgba, LightRig};
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let rig = LightRig {
+            sun_dir: [0.35, 0.55, 0.75],
+            sun_intensity: 2.4,
+            sky_intensity: 0.35,
+            camera_fill: 0.15,
+            rim_fill: 0.0,
+            sky_dome_intensity: 0.7,
+            sky_dome_zenith: [0.45, 0.62, 0.95],
+            sky_dome_horizon: [0.80, 0.86, 0.95],
+            ..Default::default()
+        };
+        let shots = [
+            ("forge.house.craftsman", "facade_craftsman.png"),
+            ("city.res_low.l1.2x2.tudor_cottage_01", "facade_tudor.png"),
+            ("city.res_high.l5.2x2.highrise_point_tower_01", "facade_highrise.png"),
+            ("city.com_reg.l4.3x4.modern_hotel_block_01", "facade_hotel.png"),
+        ];
+        for (id, png) in shots {
+            let path = atoms_dir.join(format!("{id}.atoms.json"));
+            let mesh = load_craftsman_mesh(&path);
+            let (mats, texs, _) = load_building_mesh_pbr_by_forge_id(&path);
+            let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+            for v in &mesh.positions {
+                for a in 0..3 {
+                    lo[a] = lo[a].min(v[a]);
+                    hi[a] = hi[a].max(v[a]);
+                }
+            }
+            // Straight-on elevation of the +Z (front) facade: pull back far
+            // enough that the larger of width/height fits a 45-degree fov.
+            let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+            let span = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+            let dist = span * 1.25 + (hi[2] - lo[2]) * 0.5;
+            let eye = [c[0], c[1], hi[2] + dist];
+            let rgba = pathtrace_mesh_lit_to_rgba(
+                &mesh.positions, &mesh.normals, &mesh.uvs, &mesh.indices,
+                &mesh.material_ids, &mats, &texs,
+                eye, c, std::f32::consts::FRAC_PI_4, 512, 512, 32, &rig,
+            )
+            .expect("facade render");
+            let lit = rgba
+                .chunks_exact(4)
+                .filter(|px| px[0] as u32 + px[1] as u32 + px[2] as u32 > 30)
+                .count();
+            assert!(lit > 20_000, "{id}: facade render nearly empty ({lit})");
+            let mut pxv: Vec<[u8; 4]> =
+                rgba.chunks_exact(4).map(|p| [p[0], p[1], p[2], 255]).collect();
+            crate::denoiser::SpectralDenoiser::new(0.7).denoise(&mut pxv, 512, 512);
+            let flat: Vec<u8> = pxv.into_iter().flatten().collect();
+            let out = std::env::temp_dir().join(png);
+            write_png_rgba(out.to_str().unwrap(), &flat, 512, 512);
+            eprintln!("[facade] wrote {}", out.display());
+        }
     }
 
     /// Showcase: render a roster of cooked buildings (each a different style
