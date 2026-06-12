@@ -719,6 +719,76 @@ pub fn sdf_atom_channel_from_str(s: &str) -> u32 {
     }
 }
 
+/// Generic optical aperture on an SDF instance (engine-side mirror of a cooked
+/// glass rect; instance-LOCAL space — the same space as the atoms + SDF grid).
+/// Wave-1 Task 6 wires these into rect-anchored glass classification, muntins
+/// and interior mapping; until then [`pathtrace_sdf_scene_textured_to_rgba`]
+/// accepts only EMPTY per-instance lists (non-empty errors explicitly rather
+/// than silently dropping authored windows).
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone, Copy)]
+pub struct SdfApertureRect {
+    pub center: [f32; 3],
+    /// Unit in-plane axis (rect "width" direction).
+    pub right: [f32; 3],
+    /// Unit in-plane axis (rect "height" direction).
+    pub up: [f32; 3],
+    /// Half extents in metres along `right` / `up`.
+    pub half_extents: [f32; 2],
+    /// Forge WindowStyle id (DoubleHung=0, Casement=1, Bay=2, Lancet=3, Sash=4).
+    pub style_id: u32,
+}
+
+/// Per-instance material dispatch for the textured SDF path: channel id
+/// (0..=8, the [`SDF_ATOM_CH_FACADE`]..[`SDF_ATOM_CH_OTHER`] order) -> index
+/// into the `materials` slice passed to
+/// [`pathtrace_sdf_scene_textured_to_rgba`]. `-1` = no PBR material for that
+/// channel: the kernel keeps the flat k-NN atom colour (M2 behaviour), which
+/// is also how glass stays on its BSDF route.
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone, Copy)]
+pub struct SdfChannelMaterials {
+    pub material_for_channel: [i32; 9],
+}
+
+/// Per-volume UV params replicating the cook's `forge_box_uv` convention
+/// (game_asset_cook.rs: `p = [local.x + w/2, local.y, d/2 - local.z]`,
+/// dominant-|normal|-axis plane pick, 1 texture tile per 2.5 m). The megakernel
+/// reproduces that projection EXACTLY at the SDF hit so the texture layer lands
+/// where the cooked atom colours were sampled from (the M1 consistency gate).
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone, Copy)]
+pub struct SdfUvParams {
+    /// `forge_width * 0.5` (metres).
+    pub offset_x: f32,
+    /// `forge_depth * 0.5` (metres).
+    pub offset_z: f32,
+    /// `1.0 / 2.5` — texture tiles per metre.
+    pub tile_recip: f32,
+}
+
+/// Pack the per-instance channel->material table for `g_sdf_channel_material`:
+/// 9 floats per instance, ids verbatim as f32 (-1.0 = keep the atom colour).
+#[cfg(feature = "spectra-native")]
+fn pack_sdf_channel_material_table(channel_materials: &[SdfChannelMaterials]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(channel_materials.len() * 9);
+    for cm in channel_materials {
+        out.extend(cm.material_for_channel.iter().map(|&id| id as f32));
+    }
+    out
+}
+
+/// Pack the per-volume box-UV params for `g_sdf_volume_uv_params`: 4 floats
+/// per volume — `[offset_x, offset_z, tile_recip, 0.0 pad]`.
+#[cfg(feature = "spectra-native")]
+fn pack_sdf_uv_params(uv_params: &[SdfUvParams]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(uv_params.len() * 4);
+    for p in uv_params {
+        out.extend_from_slice(&[p.offset_x, p.offset_z, p.tile_recip, 0.0]);
+    }
+    out
+}
+
 /// One-shot still: **path-trace a CLUSTER of buildings as native SDF instances**
 /// through the engine-owned Spectra path tracer's SDF-volume primitive (M1 —
 /// the multi-instance proof). Extends [`pathtrace_sdf_to_rgba`]'s single
@@ -1586,30 +1656,51 @@ fn build_sdf_atom_cell_grid(
     grid
 }
 
-/// One-shot still: **path-trace SDF buildings with the CELL-GRID atom gather**
-/// — the wave-1 textured-SDF entry point (Task 1 scaffold; later wave tasks
-/// grow it with per-channel PBR materials, box-UV textures, normal maps and
-/// aperture rects). A thin extension of
-/// [`pathtrace_sdf_scene_with_atoms_to_rgba`]: the SAME scene build, plus a
-/// per-instance uniform cell grid over the atoms' WORLD positions so the
-/// megakernel's k-NN gather visits only the 3×3×3 cell neighbourhood of a hit
-/// (`u_sdf_textured = 1`) instead of scanning the instance's full atom range —
-/// identical K-nearest + glass logic over ~80× fewer atoms, byte-identical
-/// frames (the parity gate `sdf_gather_grid_matches_linear` proves it).
-/// Returns RGBA8 (`w*h*4`).
+/// One-shot still: **path-trace SDF buildings with the CELL-GRID atom gather
+/// and per-channel PBR materials** — the wave-1 textured-SDF entry point
+/// (Tasks 1+2; later wave tasks grow it with normal maps and aperture rects).
+/// A thin extension of [`pathtrace_sdf_scene_with_atoms_to_rgba`]: the SAME
+/// scene build, plus
+///   - a per-instance uniform cell grid over the atoms' WORLD positions so the
+///     megakernel's k-NN gather visits only the 3×3×3 cell neighbourhood of a
+///     hit (`u_sdf_textured = 1`) — identical K-nearest + glass logic over
+///     ~80× fewer atoms, byte-identical frames when no materials are supplied
+///     (the parity gate `sdf_gather_grid_matches_linear` proves it);
+///   - per-channel PBR dispatch: `channel_materials[i]` maps each instance's
+///     gather channel (0..=8) to an index into `materials` (-1 = keep the M2
+///     flat atom colour). `materials`/`textures` ride the SAME packing as
+///     [`pathtrace_mesh_textured_to_rgba`] (`set_texture_atlas` AFTER
+///     `load_scene_state` — order matters);
+///   - `uv_params[v]` carries the cook's `forge_box_uv` constants per volume
+///     so the kernel box-projects texture UVs exactly where the cooked atom
+///     colours were sampled (`g_sdf_volume_uv_params`).
+///
+/// `apertures_per_instance` must currently be all-empty (rect-anchored glass
+/// is wave-1 Task 6); `lighting_tier` must be 0 (M2 headlight rig — NEE/GI
+/// tiers are a later task). `aov_roughness` is a debug flag for the quality
+/// gates: when set, the returned RGBA's ALPHA channel carries the primary-hit
+/// roughness AOV (`g_aov_roughness`) instead of coverage. Returns RGBA8
+/// (`w*h*4`).
 #[cfg(feature = "spectra-native")]
 #[allow(clippy::too_many_arguments)]
 pub fn pathtrace_sdf_scene_textured_to_rgba(
     volumes: &[SdfVolumeInput],
+    uv_params: &[SdfUvParams],
     instances: &[SdfSceneInstance],
     atoms_per_instance: &[Vec<SdfSceneAtom>],
+    apertures_per_instance: &[Vec<SdfApertureRect>],
+    channel_materials: &[SdfChannelMaterials],
+    materials: &[PbrMaterial],
+    textures: &[TextureImage],
     eye: [f32; 3],
     target: [f32; 3],
     fov_y: f32,
     width: u32,
     height: u32,
     spp: u32,
+    lighting_tier: u32,
     rig: &LightRig,
+    aov_roughness: bool,
 ) -> Result<Vec<u8>, String> {
     use crate::splat_convert::camera_layer;
     use spectra_scene_state::{
@@ -1629,6 +1720,71 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
             instances.len()
         ));
     }
+    if uv_params.len() != volumes.len() {
+        return Err(format!(
+            "uv_params len {} != volumes len {} (one forge_box_uv param set per volume)",
+            uv_params.len(),
+            volumes.len()
+        ));
+    }
+    if channel_materials.len() != instances.len() {
+        return Err(format!(
+            "channel_materials len {} != instances len {}",
+            channel_materials.len(),
+            instances.len()
+        ));
+    }
+    if apertures_per_instance.len() != instances.len() {
+        return Err(format!(
+            "apertures_per_instance len {} != instances len {}",
+            apertures_per_instance.len(),
+            instances.len()
+        ));
+    }
+    if apertures_per_instance.iter().any(|a| !a.is_empty()) {
+        return Err(
+            "aperture rects are not wired yet (wave-1 Task 6) — pass empty per-instance \
+             lists; refusing to silently drop authored windows"
+                .into(),
+        );
+    }
+    if lighting_tier != 0 {
+        return Err(format!(
+            "lighting_tier {lighting_tier} not wired yet — only tier 0 (the M2 headlight \
+             rig) is implemented in wave 1 Tasks 1-3"
+        ));
+    }
+    // Every channel-material id must index into `materials`, and every material
+    // texture reference must index into `textures` — the kernel trusts these.
+    for (ii, cm) in channel_materials.iter().enumerate() {
+        for (ch, &id) in cm.material_for_channel.iter().enumerate() {
+            if id >= 0 && id as usize >= materials.len() {
+                return Err(format!(
+                    "instance {ii} channel {ch}: material id {id} out of range \
+                     (have {} materials)",
+                    materials.len()
+                ));
+            }
+        }
+    }
+    for (mi, m) in materials.iter().enumerate() {
+        for (label, tex) in [
+            ("albedo_tex", m.albedo_tex),
+            ("roughness_tex", m.roughness_tex),
+            ("normal_tex", m.normal_tex),
+        ] {
+            if tex >= 0 && tex as usize >= textures.len() {
+                return Err(format!(
+                    "material {mi}: {label} {tex} out of range (have {} textures)",
+                    textures.len()
+                ));
+            }
+        }
+    }
+
+    // Texture atlas packing through the SAME helper the mesh path uses
+    // (build first so a malformed TextureImage errors before any GPU work).
+    let (tex_descs, tex_data) = build_texture_atlas(textures)?;
 
     // --- Multi-volume atlas (identical to the M2 entry point). ---------------
     let mut all_distances: Vec<f32> = Vec::new();
@@ -1751,6 +1907,12 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
         }
     }
 
+    // Per-channel material table (9 floats/instance) + per-volume box-UV
+    // params (4 floats/volume) — the buffers the megakernel's textured shade
+    // reads as g_sdf_channel_material / g_sdf_volume_uv_params.
+    let channel_material_table = pack_sdf_channel_material_table(channel_materials);
+    let volume_uv_params = pack_sdf_uv_params(uv_params);
+
     let sdf = SdfLayer::from_parts_textured(
         volume_headers,
         instance_headers,
@@ -1762,6 +1924,8 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
         instance_atom_range,
         atom_grid_headers,
         atom_cell_table,
+        channel_material_table,
+        volume_uv_params,
     );
 
     let mut scene = SceneState::new(width, height);
@@ -1791,10 +1955,28 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
         scene.geometry.uvs = vec![0.0; 6];
         scene.geometry.indices = vec![0, 1, 2];
         scene.geometry.material_ids = vec![0];
-        scene.materials = MaterialLayer {
-            params: vec![0.0; VULKAN_MATERIAL_FLOATS],
-            spectral_spd: Default::default(),
-            material_count: 1,
+        // The PBR materials the channel table indexes (g_materials), packed
+        // exactly like the mesh path's (pack_vulkan_mesh_material, 156-float
+        // Vulkan layout). When the caller supplies none, keep the M2 zeroed
+        // sentinel material so frames stay byte-identical to the atoms path.
+        // The off-frame sentinel triangle references slot 0 either way — it is
+        // invisible, so its material never shades a pixel.
+        scene.materials = if materials.is_empty() {
+            MaterialLayer {
+                params: vec![0.0; VULKAN_MATERIAL_FLOATS],
+                spectral_spd: Default::default(),
+                material_count: 1,
+            }
+        } else {
+            let mut params = Vec::with_capacity(materials.len() * VULKAN_MATERIAL_FLOATS);
+            for m in materials {
+                params.extend_from_slice(&pack_vulkan_mesh_material(*m));
+            }
+            MaterialLayer {
+                params,
+                spectral_spd: Default::default(),
+                material_count: materials.len(),
+            }
         };
         scene.mark_geometry_changed();
         scene.mark_materials_changed();
@@ -1851,6 +2033,14 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
         rig.sky_dome_horizon,
         rig.sky_dome_intensity,
     );
+    // ORDER MATTERS: set_texture_atlas silently no-ops before scene state
+    // exists, so it must come AFTER load_scene_state (the verified-order
+    // landmine — same wiring as pathtrace_mesh_lit_to_rgba).
+    if !textures.is_empty() {
+        renderer
+            .set_texture_atlas(&tex_descs, &tex_data, textures.len() as u32)
+            .map_err(|e| format!("set_texture_atlas: {e:?}"))?;
+    }
     renderer.set_camera_view_matrix(cam.view_matrix);
     renderer.set_view_proj(cam.view_matrix);
 
@@ -1860,6 +2050,30 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
     for i in 0..n {
         for ch in 0..4 {
             out.push((frame.beauty[i * 4 + ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        }
+    }
+    // Debug AOV swap for the quality gates: replace the alpha channel with the
+    // primary-hit roughness AOV (the megakernel writes g_aov_roughness at
+    // u_bounce == 0 for every SDF hit), read straight off the GPU.
+    if aov_roughness {
+        let state = renderer
+            .state
+            .as_ref()
+            .ok_or("aov_roughness: renderer has no state after render")?;
+        let aov = state
+            .aov_gpu
+            .as_ref()
+            .ok_or("aov_roughness: renderer allocated no AOV buffers")?;
+        let handle = aov
+            .get("roughness")
+            .ok_or("aov_roughness: no 'roughness' AOV channel")?;
+        let mut rough = vec![0.0f32; n];
+        renderer
+            .gpu
+            .download_f32(handle, &mut rough)
+            .map_err(|e| format!("aov_roughness readback: {e:?}"))?;
+        for i in 0..n {
+            out[i * 4 + 3] = (rough[i].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
         }
     }
     Ok(out)
@@ -3539,18 +3753,28 @@ mod tests {
         .expect("linear-gather oracle render should succeed");
 
         // Grid path (new entry point, u_sdf_textured = 1: 3x3x3 cell gather,
-        // materials empty -> identical flat-blend shading, gather-only mode).
+        // materials empty + channel table all -1 -> identical flat-blend
+        // shading, gather-only mode).
         let rgba_grid = pathtrace_sdf_scene_textured_to_rgba(
             &volume_slice(&volume),
+            &[load_forge_uv_params(&asset_path)],
             &instances,
             &[atoms.clone()],
+            &[Vec::new()],
+            &[super::SdfChannelMaterials {
+                material_for_channel: [-1i32; 9],
+            }],
+            &[],
+            &[],
             eye,
             center,
             fov_y,
             w,
             h,
             6,
+            0,
             &rig,
+            false,
         )
         .expect("grid-gather render should succeed");
 
@@ -3635,10 +3859,143 @@ mod tests {
         );
     }
 
+    /// Wave-1 Task 2 ACCEPTANCE (CPU-only, no GPU): per-channel material
+    /// packing for the textured SDF path. Builds `SdfChannelMaterials` from a
+    /// hand-rolled cooked-material list (facade -> material 0 with a real
+    /// albedo texture, roof -> material 1, glass -> -1 = keep the M2 BSDF
+    /// route) plus the matching `SdfUvParams`, packs both through the SAME
+    /// host packers `pathtrace_sdf_scene_textured_to_rgba` uploads with, and
+    /// asserts the exact buffer layout and values the megakernel will read:
+    /// `g_sdf_channel_material` is 9 floats/instance with the craftsman's
+    /// facade slot resolving to a material whose `albedo_tex >= 0` and whose
+    /// roughness equals the cooked `roughness_factor`;
+    /// `g_sdf_volume_uv_params` is 4 floats/volume carrying the cook's
+    /// forge_box_uv constants (w/2, d/2, 1/2.5).
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn sdf_channel_material_packing() {
+        use super::{
+            pack_sdf_channel_material_table, pack_sdf_uv_params, PbrMaterial,
+            SdfChannelMaterials, SdfUvParams, SDF_ATOM_CH_FACADE, SDF_ATOM_CH_GLASS,
+            SDF_ATOM_CH_ROOF,
+        };
+
+        // Hand-rolled cooked-material list (the craftsman shape): facade is
+        // material 0 (clapboard, albedo texture 0, cooked roughness 0.6),
+        // roof is material 1 (slate, albedo texture 1, cooked roughness 0.6),
+        // glass stays -1 so the kernel keeps the M2 glass BSDF route.
+        let cooked_facade_roughness = 0.6f32;
+        let cooked_roof_roughness = 0.6f32;
+        let materials = [
+            PbrMaterial {
+                base_color: [0.82, 0.75, 0.60],
+                roughness: cooked_facade_roughness,
+                albedo_tex: 0,
+                roughness_tex: 2,
+                ..Default::default()
+            },
+            PbrMaterial {
+                base_color: [0.25, 0.25, 0.28],
+                roughness: cooked_roof_roughness,
+                albedo_tex: 1,
+                roughness_tex: 3,
+                ..Default::default()
+            },
+        ];
+        let mut table = SdfChannelMaterials {
+            material_for_channel: [-1i32; 9],
+        };
+        table.material_for_channel[SDF_ATOM_CH_FACADE as usize] = 0;
+        table.material_for_channel[SDF_ATOM_CH_ROOF as usize] = 1;
+        // Two instances sharing the table (a block of two craftsman).
+        let per_instance = [table, table];
+
+        let packed = pack_sdf_channel_material_table(&per_instance);
+        eprintln!(
+            "[sdf_channel_packing] packed channel table ({} floats / {} instances):",
+            packed.len(),
+            per_instance.len()
+        );
+        for (ii, inst) in packed.chunks_exact(9).enumerate() {
+            eprintln!("  instance {ii}: {inst:?}");
+        }
+
+        // Layout: exactly 9 floats per instance, ids verbatim (as f32).
+        assert_eq!(
+            packed.len(),
+            9 * per_instance.len(),
+            "channel-material table must be 9 floats per instance"
+        );
+        for inst in packed.chunks_exact(9) {
+            assert_eq!(inst[SDF_ATOM_CH_FACADE as usize], 0.0, "facade slot -> material 0");
+            assert_eq!(inst[SDF_ATOM_CH_ROOF as usize], 1.0, "roof slot -> material 1");
+            assert_eq!(inst[SDF_ATOM_CH_GLASS as usize], -1.0, "glass slot stays -1 (M2 BSDF)");
+        }
+
+        // The facade slot must resolve to a REAL textured material: the id in
+        // the packed table indexes the materials slice, whose entry carries an
+        // atlas albedo texture and the cooked roughness_factor.
+        let facade_id = packed[SDF_ATOM_CH_FACADE as usize] as usize;
+        let facade_mat = &materials[facade_id];
+        eprintln!(
+            "[sdf_channel_packing] facade slot -> material {facade_id}: albedo_tex={} \
+             roughness={} (cooked roughness_factor={cooked_facade_roughness})",
+            facade_mat.albedo_tex, facade_mat.roughness
+        );
+        assert!(
+            facade_mat.albedo_tex >= 0,
+            "facade material must carry a real atlas albedo texture (albedo_tex >= 0)"
+        );
+        assert_eq!(
+            facade_mat.roughness, cooked_facade_roughness,
+            "facade material roughness must equal the cooked roughness_factor"
+        );
+        let roof_id = packed[9 + SDF_ATOM_CH_ROOF as usize] as usize;
+        assert_eq!(
+            materials[roof_id].roughness, cooked_roof_roughness,
+            "roof material roughness must equal the cooked roughness_factor"
+        );
+
+        // UV params: 4 floats per volume, the cook's forge_box_uv constants.
+        let uvp = pack_sdf_uv_params(&[SdfUvParams {
+            offset_x: 9.5 * 0.5,
+            offset_z: 10.5 * 0.5,
+            tile_recip: 1.0 / 2.5,
+        }]);
+        eprintln!("[sdf_channel_packing] packed uv params: {uvp:?}");
+        assert_eq!(uvp.len(), 4, "uv params must be 4 floats per volume");
+        assert_eq!(uvp[0], 4.75, "offset_x = forge_width * 0.5");
+        assert_eq!(uvp[1], 5.25, "offset_z = forge_depth * 0.5");
+        assert_eq!(uvp[2], 0.4, "tile_recip = 1 / 2.5 m per texture tile");
+        assert_eq!(uvp[3], 0.0, "pad slot must be zero");
+    }
+
     /// Wrap a single SdfVolumeInput in a 1-element slice for the scene API.
     #[cfg(feature = "spectra-native")]
     fn volume_slice(v: &super::SdfVolumeInput) -> Vec<super::SdfVolumeInput> {
         vec![v.clone()]
+    }
+
+    /// The cook's forge_box_uv constants for one cooked asset, read from the
+    /// payload's forge_description footprint (`width`/`depth` in metres) —
+    /// `offset_x = w/2`, `offset_z = d/2`, 1 texture tile per 2.5 m. These are
+    /// the SAME constants `game_asset_cook.rs::forge_box_uv` used to sample
+    /// the atom colours, so the kernel's box projection lands texel-exact on
+    /// the cooked appearance.
+    #[cfg(feature = "spectra-native")]
+    fn load_forge_uv_params(path: &std::path::Path) -> super::SdfUvParams {
+        let bytes =
+            std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("parse atoms.json");
+        let fp = &json["forge_description"]["footprint"];
+        let width = fp["width"].as_f64().expect("forge footprint width") as f32;
+        let depth = fp["depth"].as_f64().expect("forge footprint depth") as f32;
+        super::SdfUvParams {
+            offset_x: width * 0.5,
+            offset_z: depth * 0.5,
+            tile_recip: 1.0 / 2.5,
+        }
     }
 
     /// RGB → hue in degrees [0,360). Used to measure per-surface colour variety.
