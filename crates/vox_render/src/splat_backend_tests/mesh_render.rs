@@ -1773,16 +1773,35 @@ use super::super::*;
         let h_total = hi[1] - lo[1];
         let eye = [c[0] - span * 0.55, h_total * 0.35, hi[2] + span * 0.7];
         let target = [c[0], h_total * 0.42, c[2]];
+        // DAYLIGHT KEY/FILL BALANCE: the historical rig flooded the front wall
+        // with a camera-direction fill at intensity 1.0 plus a from-above sky
+        // light at 0.9, which washed the brick to a flat blue-grey and killed
+        // both its red saturation and the normal-map relief. Lean on a strong
+        // directional SUN for crisp shading + the physical sky dome for ambient,
+        // and cut the flat analytic fills right down so the brick reads as a
+        // saturated, directionally-lit surface (and so the OpenPBR grazing
+        // specular + normal relief survive instead of being buried in fill).
         let rig = LightRig {
             sun_dir: [0.45, 0.55, 0.50],
-            sun_intensity: 3.2,
-            sun_radiance: 25.0,
+            sun_color: [1.0, 0.93, 0.82], // warm afternoon sun -> warm brick faces
+            sun_intensity: 5.0,
+            sun_radiance: 30.0,
+            sky_intensity: 0.3, // was default 0.9 — flat top fill
+            camera_fill: 0.18,  // was default 1.0 — the main wash culprit
+            rim_fill: 0.15,     // was default 0.45
             atmosphere_enabled: true,
             atmosphere_turbidity: 2.5,
-            sky_dome_intensity: 0.9,
-            sky_dome_zenith: [0.30, 0.48, 0.85],
-            sky_dome_horizon: [0.80, 0.87, 0.96],
-            look: LookPreset::AcesFilm,
+            // Desaturate + dim the sky dome so its blue ambient stops graying
+            // the warm brick on the sunlit faces (the dome still fills shadows,
+            // just less blue and less strong than the warm key sun).
+            sky_dome_intensity: 0.45,
+            sky_dome_zenith: [0.42, 0.55, 0.78],
+            sky_dome_horizon: [0.82, 0.85, 0.90],
+            // ACES desaturates midtones/highlights hard toward white — on a
+            // dim-albedo red brick lit by a bright neutral sky it crushed the
+            // red to grey ([164,161,158] measured). SoftReview (Reinhard on
+            // luminance, hue-preserving) keeps the brick's chroma.
+            look: LookPreset::SoftReview,
             ..Default::default()
         };
         let (w, h) = (1280u32, 720u32);

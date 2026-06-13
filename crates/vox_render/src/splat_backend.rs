@@ -2512,14 +2512,35 @@ fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
     // `MaterialData` (std430: float3 aligned to 16 bytes), cross-checked
     // against the slots this packer already proves out on screen (albedo 4-6,
     // eye colors 44/52, opacity_tex 72, uv_scale 94-95, substrate 144-147).
+    // Material-type selection by CONTENT (was: hard MAT_LAMBERT for everything).
+    //   transmission > 0      -> MAT_GLASS (3)    : Fresnel reflect/refract dielectric
+    //   metallic   > 0.5      -> MAT_METAL (2)    : Cook-Torrance GGX conductor
+    //   otherwise             -> MAT_OPENPBR (16) : Lambert/Oren diffuse base + a
+    //                                               dielectric GGX specular lobe with
+    //                                               4% (IOR 1.5) Fresnel F0.
+    // OpenPBR (eval_openpbr/sample_openpbr, openpbr.slang) reads ONLY: albedo (4-6),
+    // roughness (7), metallic (9), ior (10), clearcoat_strength (11), sheen_weight (13),
+    // sss_radius (14), thin_film_thickness (56), glass_weight (79), absorption_color
+    // (24-26). The "naive flip washed the brick" regression came from leaving the wrong
+    // slots populated; here every extra OpenPBR lobe weight (clearcoat/sheen/sss/glass/
+    // thin-film) is left at 0 so OpenPBR contributes ONLY diffuse + the subtle 4%
+    // dielectric Fresnel sheen — it does NOT desaturate the albedo.
     let glass = m.transmission > 0.0;
-    a[0] = pack_u32(if glass { 3 } else { 1 }); // MAT_GLASS : MAT_LAMBERT
+    let metal = !glass && m.metallic > 0.5;
+    let mat_type = if glass {
+        3 // MAT_GLASS
+    } else if metal {
+        2 // MAT_METAL
+    } else {
+        16 // MAT_OPENPBR
+    };
+    a[0] = pack_u32(mat_type);
     a[4] = m.base_color[0];
     a[5] = m.base_color[1];
     a[6] = m.base_color[2];
     a[7] = m.roughness;
     a[9] = m.metallic;
-    a[10] = m.ior; // Default is 1.5 — identical to the old hardcoded constant
+    a[10] = m.ior; // 1.5 default -> dielectric F0 = 0.04 (OpenPBR specular IOR)
 
     a[20] = m.base_color[0];
     a[21] = m.base_color[1];

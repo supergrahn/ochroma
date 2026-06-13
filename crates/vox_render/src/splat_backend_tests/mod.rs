@@ -489,7 +489,15 @@ mod terrain_carve;
                     .pixels()
                     .flat_map(|p| [0, 1, 2].map(|c| srgb_to_linear(p.0[c] as f32 / 255.0)))
                     .collect();
-                // Set mean (untinted) -> per-channel normalization factor.
+                // The PolyHaven diffuse IS the albedo. The previous "normalize the
+                // texture mean toward the per-instance tint" step DESATURATED a
+                // saturated texture: e.g. a red brick (low G/B) tinted toward a
+                // less-saturated factor boosted G/B per channel and pulled the
+                // whole wall to grey (measured [164,161,158] on the sunlit face).
+                // Fix: keep the texture's OWN linear color and contrast verbatim;
+                // apply only a HUE-PRESERVING brightness nudge toward the tint's
+                // luma (never a per-channel re-balance), so the brick stays the
+                // brick's red instead of collapsing to grey.
                 let mut mean = [0.0f64; 3];
                 for texel in linear.chunks_exact(3) {
                     for (m, &v) in mean.iter_mut().zip(texel) {
@@ -497,21 +505,34 @@ mod terrain_carve;
                     }
                 }
                 let n = (linear.len() / 3).max(1) as f64;
-                // GENTLE tint: nudge the texture's mean ~40% toward the target
-                // tint instead of forcing it, so the texture keeps its OWN
-                // color + mortar-vs-brick contrast (the hard re-tint+clip was
-                // the "washed out / blotchy" cause).
-                let factor = [0, 1, 2].map(|c| {
-                    let f = (tint[c] / ((mean[c] / n) as f32).max(1e-4)).clamp(0.25, 4.0);
-                    1.0 + (f - 1.0) * 0.4
-                });
+                let tex_luma =
+                    (0.2126 * mean[0] + 0.7152 * mean[1] + 0.0722 * mean[2]) as f32 / n as f32;
+                let tint_luma = 0.2126 * tint[0] + 0.7152 * tint[1] + 0.0722 * tint[2];
+                // Single scalar gain (clamped, gentle) — same on all channels, so
+                // chroma is untouched. Nudge ~50% of the way toward the tint luma.
+                let gain = {
+                    let g = (tint_luma / tex_luma.max(1e-4)).clamp(0.5, 2.0);
+                    1.0 + (g - 1.0) * 0.5
+                };
+                // Modest chroma lift: PolyHaven weathered brick is a muted
+                // brown ([0.14,0.077,0.051] linear); under a bright neutral sun
+                // it reads as warm-grey. Push saturation ~1.35x about each
+                // texel's own luma (hue + brightness preserved) so the brick
+                // reads as brick, not tan stucco — without re-tinting it.
+                const SAT: f32 = 1.35;
+                let data = linear
+                    .chunks_exact(3)
+                    .flat_map(|t| {
+                        let l = 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2];
+                        [0, 1, 2].map(|c| {
+                            let v = (l + (t[c] - l) * SAT) * gain;
+                            v.clamp(0.0, 1.0)
+                        })
+                    })
+                    .collect();
                 (
                     3,
-                    linear
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &v)| (v * factor[i % 3]).clamp(0.0, 1.0))
-                        .collect(),
+                    data,
                     // Keep native 1k diffuse (was 256 -> mushy brick over a facade).
                     1024,
                 )
@@ -956,6 +977,22 @@ mod terrain_carve;
                     lit.emission_strength = 1.6;
                     lit.transmission = 0.0;
                     lit
+                } else if *ch == "glass" {
+                    // Make the window channel REAL reflective glass. The cook
+                    // ships this factory's glass as transmission=0 (opaque),
+                    // which renders dead-flat panes. Promote it to a thin-walled
+                    // Fresnel dielectric (MAT_GLASS) so panes reflect the sky at
+                    // grazing angles and transmit toward the interior — the
+                    // physically-correct architectural-glass look. Thin-walled
+                    // (single pane, no refraction bend) + low roughness for a
+                    // crisp sky reflection; faint cool tint via base_color.
+                    let mut g = by_channel("glass");
+                    g.transmission = 1.0;
+                    g.ior = 1.5;
+                    g.thin_walled = true;
+                    g.roughness = 0.04;
+                    g.base_color = [0.78, 0.86, 0.92];
+                    g
                 } else {
                     by_channel(ch)
                 }
