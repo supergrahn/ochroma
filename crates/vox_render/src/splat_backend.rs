@@ -84,7 +84,13 @@ pub fn pathtrace_splats_to_rgba(
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
-    config.target_spp = spp;
+    // Config-first: spp + the (default ACES/EV-0) look reach the config through
+    // the ONE settings object, not via direct mutation. This removes the
+    // ACES-by-omission anti-pattern — the look is now explicit in settings and
+    // is byte-identical to near_realtime's default tonemap/exposure.
+    let mut settings = rig_to_settings(&LightRig::default(), spp, config.max_bounces);
+    seed_features_from_config(&mut settings, &config);
+    config.apply_settings(&settings);
     let mut renderer = Renderer::new(gpu, config);
 
     let mut scene = splats_to_lit_scene(splats, width, height, eye);
@@ -292,6 +298,91 @@ impl LookPreset {
             LookPreset::Flat => (ToneMapper::None, 0.0),
         }
     }
+
+    /// Resolve to the config-object look (`RenderSettings.look`): the
+    /// `spectra_types::ToneMapper` operator + exposure EV. This is the
+    /// settings-first route — the preset folds into `RenderSettings.look`
+    /// instead of mutating `RenderConfig.tonemap`/`exposure_ev` at the call
+    /// site. The pairs mirror [`LookPreset::resolve`] exactly (Flat → Linear
+    /// is the same "no tonemap" operator), so routing the look through settings
+    /// is byte-identical to the legacy direct mutation.
+    pub fn resolve_settings(self) -> (spectra_renderer::SettingsToneMapper, f32) {
+        use spectra_renderer::SettingsToneMapper as Tm;
+        match self {
+            LookPreset::AcesFilm => (Tm::Aces, 0.0),
+            LookPreset::AcesBright => (Tm::Aces, 1.0),
+            LookPreset::Filmic => (Tm::Filmic, 0.0),
+            LookPreset::SoftReview => (Tm::ReinhardLuma, 0.5),
+            LookPreset::Flat => (Tm::Linear, 0.0),
+        }
+    }
+}
+
+/// Build a [`spectra_renderer::RenderSettings`] from a [`LightRig`] + spp, so a
+/// render request reaches `RenderConfig` through the ONE config object (the
+/// config-first law) instead of mutating the config at the call site.
+///
+/// This carries only the leaves the native still path actually drives:
+///   - `render.spp` ← `spp`
+///   - `look.tonemap.operator` / `look.exposure_ev` ← `rig.look`
+///   - `lighting.*` ← the rig's sun / sky-dome / atmosphere values (the
+///     *values* are applied via the `Renderer::set_*` setters; the
+///     `atmosphere.enabled` toggle reaches the config through `apply_settings`)
+///
+/// The feature flags (`features.restir`, `features.nrc`, …) start at the
+/// `RenderSettings::default()` values; the caller seeds them from the chosen
+/// `RenderConfig` preset before this (see the call sites) and then overrides
+/// per-scene needs (e.g. glass disables NRC) on `settings.features` so the
+/// override still flows through `apply_settings`. `max_bounces` likewise lives
+/// in `settings.render` so deeper-bounce scenes route through settings too.
+#[cfg(feature = "spectra-native")]
+fn rig_to_settings(rig: &LightRig, spp: u32, max_bounces: u32) -> spectra_renderer::RenderSettings {
+    let mut s = spectra_renderer::RenderSettings::default();
+    s.render.spp = spp;
+    s.render.max_bounces = max_bounces;
+    let (op, ev) = rig.look.resolve_settings();
+    s.look.tonemap.operator = op;
+    s.look.exposure_ev = ev;
+    // Lighting values (also fed to the Renderer setters); the toggle drives the
+    // config's use_atmosphere via apply_settings.
+    s.lighting.sun.dir = rig.sun_dir;
+    s.lighting.sun.color = rig.sun_color;
+    s.lighting.sun.intensity = rig.sun_intensity;
+    s.lighting.sun.radiance = rig.sun_radiance;
+    s.lighting.sky_dome.intensity = rig.sky_dome_intensity;
+    s.lighting.sky_dome.zenith = rig.sky_dome_zenith;
+    s.lighting.sky_dome.horizon = rig.sky_dome_horizon;
+    s.lighting.sky_dome.sky_intensity = rig.sky_intensity;
+    s.lighting.sky_dome.camera_fill = rig.camera_fill;
+    s.lighting.sky_dome.rim_fill = rig.rim_fill;
+    s.lighting.atmosphere.enabled = rig.atmosphere_enabled;
+    s.lighting.atmosphere.mie = rig.atmosphere_mie;
+    s.lighting.atmosphere.turbidity = rig.atmosphere_turbidity;
+    s
+}
+
+/// Seed a [`spectra_renderer::RenderSettings`]'s feature flags from a
+/// [`RenderConfig`] preset, so `apply_settings` reproduces that preset's
+/// feature set exactly (byte-identity) before any per-scene override. Without
+/// this, `apply_settings` would clobber `near_realtime`'s `use_restir = true`
+/// with the `RenderSettings` default (`restir = off`).
+#[cfg(feature = "spectra-native")]
+fn seed_features_from_config(
+    s: &mut spectra_renderer::RenderSettings,
+    config: &RenderConfig,
+) {
+    s.features.restir.enabled = config.use_restir;
+    s.features.nrc.enabled = config.use_nrc;
+    s.features.path_guide.enabled = config.use_path_guide;
+    s.features.mnee.enabled = config.use_mnee;
+    s.features.niv.enabled = config.use_niv;
+    s.features.lpe.enabled = config.use_lpe;
+    s.features.photon_map.enabled = config.use_photon_map;
+    s.features.ser.enabled = config.ser_enabled;
+    s.features.spectral.enabled =
+        matches!(config.spectral_mode, spectra_renderer::SpectralMode::Hero4);
+    // Denoiser: the preset's mode is non-None → enabled.
+    s.render.denoiser.enabled = !matches!(config.denoiser_mode, spectra_renderer::DenoiserMode::None);
 }
 
 #[cfg(feature = "spectra-native")]
@@ -570,22 +661,22 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
-    config.target_spp = spp;
-    // Apply the shot LOOK preset (tonemap + exposure) — the engine owns
-    // the operators; the rig carries the chosen preset.
-    let (look_tm, look_ev) = rig.look.resolve();
-    config.tonemap = look_tm;
-    config.exposure_ev = look_ev;
+    // Config-first: spp, the shot LOOK (tonemap + exposure), and the per-scene
+    // bounce/NRC needs all reach the config through the ONE settings object.
     // Transmissive glass needs path DEPTH: a two-faced pane costs two bounces
     // before the ray even reaches the content behind it. near_realtime's
     // 3-bounce budget plus the NRC query-at-bounce-3 early exit would render
     // panes black-by-config. Only scenes that actually contain a transmissive
     // material pay for the deeper budget — opaque scenes keep the historical
     // config (and their renders) byte-identical.
-    if materials.iter().any(|m| m.transmission > 0.0) {
-        config.max_bounces = 8;
-        config.use_nrc = false;
+    let has_glass = materials.iter().any(|m| m.transmission > 0.0);
+    let max_bounces = if has_glass { 8 } else { config.max_bounces };
+    let mut settings = rig_to_settings(rig, spp, max_bounces);
+    seed_features_from_config(&mut settings, &config);
+    if has_glass {
+        settings.features.nrc.enabled = false;
     }
+    config.apply_settings(&settings);
     let mut renderer = Renderer::new(gpu, config);
     renderer
         .load_scene_state(scene)
@@ -812,12 +903,11 @@ pub fn pathtrace_sdf_to_rgba(
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
-    config.target_spp = spp;
-    // Apply the shot LOOK preset (tonemap + exposure) — the engine owns
-    // the operators; the rig carries the chosen preset.
-    let (look_tm, look_ev) = rig.look.resolve();
-    config.tonemap = look_tm;
-    config.exposure_ev = look_ev;
+    // Config-first: spp + the shot LOOK (tonemap + exposure) reach the config
+    // through the ONE settings object, not via direct mutation.
+    let mut settings = rig_to_settings(rig, spp, config.max_bounces);
+    seed_features_from_config(&mut settings, &config);
+    config.apply_settings(&settings);
     let mut renderer = Renderer::new(gpu, config);
     renderer.set_sdf_albedo(albedo);
     renderer
@@ -1284,23 +1374,28 @@ pub fn pathtrace_sdf_scene_perf(
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
-    config.target_spp = spp;
-    // Apply the shot LOOK preset (tonemap + exposure) — the engine owns
-    // the operators; the rig carries the chosen preset.
-    let (look_tm, look_ev) = rig.look.resolve();
-    config.tonemap = look_tm;
-    config.exposure_ev = look_ev;
+    // Config-first: spp, the shot LOOK, and the perf knobs (denoiser/bounces/
+    // lean-pipeline feature toggles) reach the config through the ONE settings
+    // object. `resample_mode` has no settings leaf yet, so the lean-pipeline
+    // branch still sets it directly (the only residual non-settings mutation).
+    let lean_bounces = knobs.max_bounces.unwrap_or(1);
+    let max_bounces = if knobs.lean_pipeline {
+        lean_bounces
+    } else {
+        knobs.max_bounces.unwrap_or(config.max_bounces)
+    };
+    let mut settings = rig_to_settings(rig, spp, max_bounces);
+    seed_features_from_config(&mut settings, &config);
     if knobs.disable_denoiser {
-        config.denoiser_mode = spectra_renderer::DenoiserMode::None;
-    }
-    if let Some(mb) = knobs.max_bounces {
-        config.max_bounces = mb;
+        settings.render.denoiser.enabled = false;
     }
     if knobs.lean_pipeline {
-        config.use_restir = false;
-        config.use_nrc = false;
+        settings.features.restir.enabled = false;
+        settings.features.nrc.enabled = false;
+    }
+    config.apply_settings(&settings);
+    if knobs.lean_pipeline {
         config.resample_mode = spectra_renderer::ResampleMode::None;
-        config.max_bounces = knobs.max_bounces.unwrap_or(1);
     }
     let mut renderer = Renderer::new(gpu, config);
     renderer.set_sdf_debug_mode(knobs.debug_mode);
@@ -1615,19 +1710,14 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
-    config.target_spp = spp;
-    // Apply the shot LOOK preset (tonemap + exposure) — the engine owns
-    // the operators; the rig carries the chosen preset.
-    let (look_tm, look_ev) = rig.look.resolve();
-    config.tonemap = look_tm;
-    config.exposure_ev = look_ev;
-    // Glass needs continuation bounces; disable NRC so the refracted ray never
-    // gets short-circuited into the cache at a deep bounce. Keep >= 3 bounces
-    // (camera→glass→behind→...).
-    config.use_nrc = false;
-    if config.max_bounces < 3 {
-        config.max_bounces = 3;
-    }
+    // Config-first: spp, the shot LOOK, and the glass-path needs (NRC off, >= 3
+    // bounces) reach the config through the ONE settings object. Glass needs
+    // continuation bounces; disable NRC so the refracted ray never gets
+    // short-circuited into the cache at a deep bounce.
+    let mut settings = rig_to_settings(rig, spp, config.max_bounces.max(3));
+    seed_features_from_config(&mut settings, &config);
+    settings.features.nrc.enabled = false;
+    config.apply_settings(&settings);
     let mut renderer = Renderer::new(gpu, config);
     renderer.set_sdf_albedo(instances[0].albedo);
     renderer
@@ -2220,20 +2310,14 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
-    config.target_spp = spp;
-    // Apply the shot LOOK preset (tonemap + exposure) — the engine owns
-    // the operators; the rig carries the chosen preset.
-    let (look_tm, look_ev) = rig.look.resolve();
-    config.tonemap = look_tm;
-    config.exposure_ev = look_ev;
-    // Glass needs continuation bounces; disable NRC so the refracted ray never
-    // gets short-circuited into the cache at a deep bounce. Keep >= 3 bounces
-    // (camera→glass→behind→...). IDENTICAL to the M2 entry point — the parity
-    // gate compares this path's frames byte-wise against it.
-    config.use_nrc = false;
-    if config.max_bounces < 3 {
-        config.max_bounces = 3;
-    }
+    // Config-first: spp, the shot LOOK, and the glass-path needs (NRC off, >= 3
+    // bounces) reach the config through the ONE settings object. IDENTICAL to
+    // the M2 entry point — the parity gate compares this path's frames byte-wise
+    // against it (both now route through `apply_settings` the same way).
+    let mut settings = rig_to_settings(rig, spp, config.max_bounces.max(3));
+    seed_features_from_config(&mut settings, &config);
+    settings.features.nrc.enabled = false;
+    config.apply_settings(&settings);
     let mut renderer = Renderer::new(gpu, config);
     renderer.set_sdf_albedo(instances[0].albedo);
     renderer

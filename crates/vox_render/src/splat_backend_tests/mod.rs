@@ -11,6 +11,7 @@ mod core;
 mod materials;
 mod mesh_render;
 mod perf;
+mod perturbation;
 mod sdf;
 
 
