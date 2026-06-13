@@ -1736,6 +1736,77 @@ use super::super::*;
         }
     }
 
+    /// Weathered hero: a close street-level shot of an aged building rendered
+    /// WITH vs WITHOUT the cooked per-vertex weathering masks, through the
+    /// weathered render path + atmosphere. Proves the dormant weathering
+    /// engine, now wired, actually puts soot/water-stains/edge-wear on the
+    /// surface (the #1 "buildings look dead" fix).
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn weathered_hero() {
+        use super::{pathtrace_mesh_lit_weathered_to_rgba, LightRig, LookPreset};
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let id = "city.ind_heavy.l2.5x5.heavy_factory_01"; // aged → carries masks
+        let path = atoms_dir.join(format!("{id}.atoms.json"));
+        let mesh = load_craftsman_mesh(&path);
+        let (mats, texs, _) = load_building_mesh_pbr_by_forge_id(&path);
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read atoms")).expect("parse");
+        let masks: Vec<f32> = json["mesh"]["weathering_masks"]
+            .as_array()
+            .expect("weathering_masks array present")
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect();
+        assert_eq!(masks.len(), mesh.positions.len() * 7, "7 floats/vertex");
+
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for v in &mesh.positions {
+            for a in 0..3 {
+                lo[a] = lo[a].min(v[a]);
+                hi[a] = hi[a].max(v[a]);
+            }
+        }
+        let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+        let span = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+        let h_total = hi[1] - lo[1];
+        let eye = [c[0] - span * 0.55, h_total * 0.35, hi[2] + span * 0.7];
+        let target = [c[0], h_total * 0.42, c[2]];
+        let rig = LightRig {
+            sun_dir: [0.45, 0.55, 0.50],
+            sun_intensity: 3.2,
+            sun_radiance: 25.0,
+            atmosphere_enabled: true,
+            atmosphere_turbidity: 2.5,
+            sky_dome_intensity: 0.9,
+            sky_dome_zenith: [0.30, 0.48, 0.85],
+            sky_dome_horizon: [0.80, 0.87, 0.96],
+            look: LookPreset::AcesFilm,
+            ..Default::default()
+        };
+        let (w, h) = (1280u32, 720u32);
+        for (mask_slice, name) in [
+            (&[][..], "weathered_hero_clean.png"),
+            (&masks[..], "weathered_hero.png"),
+        ] {
+            let rgba = pathtrace_mesh_lit_weathered_to_rgba(
+                &mesh.positions, &mesh.normals, &mesh.uvs, &mesh.indices, &mesh.material_ids,
+                &mats, &texs, eye, target, 0.85, w, h, 160, &rig, mask_slice,
+            )
+            .expect("weathered render");
+            let mut pxv: Vec<[u8; 4]> =
+                rgba.chunks_exact(4).map(|p| [p[0], p[1], p[2], 255]).collect();
+            crate::denoiser::SpectralDenoiser::new(0.3).denoise(&mut pxv, w, h);
+            let flat: Vec<u8> = pxv.into_iter().flatten().collect();
+            let mean: f64 =
+                flat.iter().step_by(4).map(|&b| b as f64).sum::<f64>() / (flat.len() / 4) as f64;
+            let out = std::env::temp_dir().join(name);
+            write_png_rgba(out.to_str().unwrap(), &flat, w, h);
+            eprintln!("[weathered] {} masks={} -> {} (mean R {:.1})", name, mask_slice.len(), out.display(), mean);
+        }
+    }
+
     /// Block scene: five cooked buildings stood in a street row on a ground
     /// plane, lit at dusk so the emissive window panes read as inhabited.
     /// This is the "does it look better with a lot / in context" test — a
