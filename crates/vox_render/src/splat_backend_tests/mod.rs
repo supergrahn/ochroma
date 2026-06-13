@@ -497,8 +497,13 @@ mod terrain_carve;
                     }
                 }
                 let n = (linear.len() / 3).max(1) as f64;
+                // GENTLE tint: nudge the texture's mean ~40% toward the target
+                // tint instead of forcing it, so the texture keeps its OWN
+                // color + mortar-vs-brick contrast (the hard re-tint+clip was
+                // the "washed out / blotchy" cause).
                 let factor = [0, 1, 2].map(|c| {
-                    (tint[c] / ((mean[c] / n) as f32).max(1e-4)).clamp(0.25, 4.0)
+                    let f = (tint[c] / ((mean[c] / n) as f32).max(1e-4)).clamp(0.25, 4.0);
+                    1.0 + (f - 1.0) * 0.4
                 });
                 (
                     3,
@@ -507,7 +512,8 @@ mod terrain_carve;
                         .enumerate()
                         .map(|(i, &v)| (v * factor[i % 3]).clamp(0.0, 1.0))
                         .collect(),
-                    256,
+                    // Keep native 1k diffuse (was 256 -> mushy brick over a facade).
+                    1024,
                 )
             }
             TexKind::Normal => (
