@@ -441,6 +441,52 @@ impl Default for LightRig {
     }
 }
 
+#[cfg(feature = "spectra-native")]
+impl LightRig {
+    /// The PROVEN photoreal daylight rig — the tamed warm-sun look that turns
+    /// dim-albedo brick/stucco into a saturated, directionally-lit surface
+    /// instead of a flat blue-grey wash. This is the GAME + product/showcase
+    /// default look (NOT [`LightRig::default`], which stays byte-identical to
+    /// the legacy hardcoded rig that many gates pin).
+    ///
+    /// Render-proven in `weathered_hero` (ochroma 1cb9948): vivid red brick
+    /// `[73,41,25]` (R ≈ 3×B), mortar detail, reflective glass. Two coupled
+    /// decisions make it work — DO NOT split them:
+    ///   - **Tamed analytic fills + warm sun + dim/desaturated sky dome.** The
+    ///     legacy rig flooded the wall with a camera-direction fill at 1.0 plus
+    ///     a 0.9 sky fill, washing the brick grey and burying the OpenPBR
+    ///     grazing specular + normal relief. Lean on a strong WARM directional
+    ///     sun (`[1.0,0.93,0.82]`, intensity 5.0) for crisp shading + a quiet
+    ///     sky dome for ambient.
+    ///   - **`LookPreset::SoftReview` (Reinhard-on-luminance), not ACES.** ACES
+    ///     desaturates midtones/highlights hard toward white — on a dim-albedo
+    ///     red brick under a bright sky it crushed the red to grey
+    ///     (`[164,161,158]` measured). SoftReview preserves the brick's chroma.
+    ///
+    /// See `docs/superpowers/specs/2026-06-13-material-rendering-design.md`.
+    pub fn realistic_daylight() -> Self {
+        Self {
+            sun_dir: [0.45, 0.55, 0.50],
+            sun_color: [1.0, 0.93, 0.82], // warm afternoon sun -> warm faces
+            sun_intensity: 5.0,
+            sun_radiance: 30.0,
+            sky_intensity: 0.3, // was default 0.9 — flat top fill
+            camera_fill: 0.18,  // was default 1.0 — the main wash culprit
+            rim_fill: 0.15,     // was default 0.45
+            atmosphere_enabled: true,
+            atmosphere_turbidity: 2.5,
+            // Desaturated + dimmed sky dome: still fills shadows, but its blue
+            // ambient no longer greys the warm sunlit brick faces.
+            sky_dome_intensity: 0.45,
+            sky_dome_zenith: [0.42, 0.55, 0.78],
+            sky_dome_horizon: [0.82, 0.85, 0.90],
+            // Reinhard-on-luma, hue-preserving — keeps the brick's chroma.
+            look: LookPreset::SoftReview,
+            ..Default::default()
+        }
+    }
+}
+
 /// One-shot still: **path-trace a triangle mesh** (positions/normals/uvs/indices
 /// + per-triangle `material_ids` indexing into `materials`) from a camera at
 /// `eye` looking at `target`, lit by a directional sun. For detailed Forge

@@ -1826,6 +1826,88 @@ use super::super::*;
         }
     }
 
+    /// DEFAULT-LOOK RENDER-VERIFY: render the SAME building through
+    /// `LightRig::realistic_daylight()` with NO per-test rig override (no manual
+    /// look/fill/sky tweaks here) and prove the engine's realistic DEFAULT now
+    /// matches `weathered_hero`'s photoreal quality — saturated brick (R clearly
+    /// the dominant channel), not a flat blue-grey wash. This is the gate that
+    /// the proven look is no longer test-only: the constructor carries it.
+    ///
+    /// Writes /tmp/default_daylight.png. Asserts the rendered brick is RED-
+    /// dominant (mean R > mean B by a clear margin) — the exact failure ACES +
+    /// the flooded fills produced (R≈G≈B grey) is what this rejects.
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn default_daylight_is_realistic() {
+        use super::{pathtrace_mesh_lit_weathered_to_rgba, LightRig};
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let id = "city.ind_heavy.l2.5x5.heavy_factory_01";
+        let path = atoms_dir.join(format!("{id}.atoms.json"));
+        let mesh = load_craftsman_mesh(&path);
+        let (mats, texs, _) = load_building_mesh_pbr_by_forge_id(&path);
+
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for v in &mesh.positions {
+            for a in 0..3 {
+                lo[a] = lo[a].min(v[a]);
+                hi[a] = hi[a].max(v[a]);
+            }
+        }
+        let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+        let span = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+        let h_total = hi[1] - lo[1];
+        let eye = [c[0] - span * 0.55, h_total * 0.35, hi[2] + span * 0.7];
+        let target = [c[0], h_total * 0.42, c[2]];
+        // NO inline rig: the DEFAULT realistic daylight rig, unmodified.
+        let rig = LightRig::realistic_daylight();
+        let (w, h) = (1280u32, 720u32);
+        let rgba = pathtrace_mesh_lit_weathered_to_rgba(
+            &mesh.positions, &mesh.normals, &mesh.uvs, &mesh.indices, &mesh.material_ids,
+            &mats, &texs, eye, target, 0.85, w, h, 160, &rig, &[],
+        )
+        .expect("default-daylight render");
+        let mut pxv: Vec<[u8; 4]> =
+            rgba.chunks_exact(4).map(|p| [p[0], p[1], p[2], 255]).collect();
+        crate::denoiser::SpectralDenoiser::new(0.3).denoise(&mut pxv, w, h);
+        let flat: Vec<u8> = pxv.into_iter().flatten().collect();
+        // Measure the BRICK specifically. Exclude (a) the pale blue-grey sky
+        // background, (b) the warm glowing/emissive windows (very bright, near
+        // R≈G≈B white), and (c) the near-black window mullions / deep shadow.
+        // What remains is the lit brick wall — that is where the realistic look
+        // must show its red chroma (ACES + flooded fills crushed it to grey).
+        let (mut sr, mut sg, mut sb, mut n) = (0.0f64, 0.0f64, 0.0f64, 0u64);
+        for p in flat.chunks_exact(4) {
+            let (r, g, b) = (p[0] as f64, p[1] as f64, p[2] as f64);
+            let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            let is_sky = b >= r && b > 60.0 && (b - r) > 8.0; // bluish background
+            let is_window = lum > 150.0; // bright glowing panes
+            let is_dark = lum < 20.0; // mullions / deep shadow
+            if !is_sky && !is_window && !is_dark {
+                sr += r;
+                sg += g;
+                sb += b;
+                n += 1;
+            }
+        }
+        let n = n.max(1) as f64;
+        let (mr, mg, mb) = (sr / n, sg / n, sb / n);
+        let out = std::env::temp_dir().join("default_daylight.png");
+        write_png_rgba(out.to_str().unwrap(), &flat, w, h);
+        eprintln!(
+            "[default_daylight] -> {} (brick mean RGB {:.1},{:.1},{:.1}; R-B {:.1})",
+            out.display(), mr, mg, mb, mr - mb
+        );
+        // Brick is red-dominant under the realistic default. ACES + flooded
+        // fills produced R≈G≈B (grey); this asserts the chroma survived.
+        assert!(
+            mr > mb + 12.0 && mr > mg + 6.0,
+            "default realistic daylight must render RED-dominant brick, not grey: \
+             brick mean RGB {:.1},{:.1},{:.1} (need R > B+12 and R > G+6)",
+            mr, mg, mb
+        );
+    }
+
     /// DYNAMIC weathering scale (Phase 4 VERIFY): render the SAME aged building
     /// at per-instance weathering intensity 0.0 and 1.0 with EVERYTHING else
     /// identical (same mesh, masks, camera, lights, spp, no denoise), and prove
