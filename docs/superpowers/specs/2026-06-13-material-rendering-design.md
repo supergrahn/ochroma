@@ -176,3 +176,23 @@ fn load_polyhaven_map(root: &Path, set: &str, kind: TexKind, tint: [f32;3]) -> T
 - Babylon.js Mastering PBR — Lambert-only misses view-dependent reflection that gives surfaces depth: <https://doc.babylonjs.com/features/featuresDeepDive/materials/using/masterPBR>
 - Chaos/Enscape glass best practices for arch-viz (roughness + IOR + thin-pane vs solid): <https://blog.chaos.com/best-practices-glass-in-architectural-design/>
 - Demofox path-tracing Fresnel + rough refraction + absorption: <https://blog.demofox.org/2020/06/14/casual-shadertoy-path-tracing-3-fresnel-rough-refraction-absorption-orbit-camera/>
+
+---
+## VERIFIED CORRECTION (2026-06-13, render-tested)
+
+Fix #1 ("route opaque → MAT_OPENPBR") was render-tested on the factory: a *naive*
+type-flip (just setting `a[0]=16`, base_color/roughness/metallic packed, everything
+else left default) **washed the brick out** — it went paler/greyer, LOST red
+saturation, and gained no useful Fresnel sheen. Mean R rose (152→160) but the look
+regressed. Reverted; not shipped.
+
+**Conclusion:** OpenPBR is NOT a near-zero type-flip. The uber-shader reads
+specular/coat/sheen/spec-color slots the `pack_vulkan_mesh_material` packer leaves
+unpopulated, and their defaults desaturate the albedo. The real fix #1 must POPULATE
+the OpenPBR parameter slots correctly (base specular weight ~1, coat weight 0, sheen 0,
+specular color white, spec roughness tied to `roughness`) so it adds a *subtle*
+dielectric lobe WITHOUT washing the diffuse — and be render-gated against the
+saturation-preservation test, not just "type changed." Lower-risk alternative to
+evaluate first: keep MAT_LAMBERT but add a thin dielectric specular layer, or use
+MAT_OREN_NAYAR/a Lambert+spec hybrid. The materials push must render-verify each step
+(the naive route looked plausible on paper and regressed in practice).
