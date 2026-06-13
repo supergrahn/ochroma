@@ -1678,6 +1678,240 @@ use super::super::*;
     }
 
 
+    /// Proof that the LookPreset SETTING changes the rendered look: one
+    /// building, one rig, only the preset varies. Fast (512², 32 spp).
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn look_preset_demo() {
+        use super::{pathtrace_mesh_lit_to_rgba, LightRig, LookPreset};
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let path = atoms_dir.join("city.com_reg.l4.3x4.modern_hotel_block_01.atoms.json");
+        let mesh = load_craftsman_mesh(&path);
+        let (mats, texs, _) = load_building_mesh_pbr_by_forge_id(&path);
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for v in &mesh.positions {
+            for a in 0..3 {
+                lo[a] = lo[a].min(v[a]);
+                hi[a] = hi[a].max(v[a]);
+            }
+        }
+        let c = [
+            (lo[0] + hi[0]) * 0.5,
+            (lo[1] + hi[1]) * 0.5,
+            (lo[2] + hi[2]) * 0.5,
+        ];
+        let span = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+        let eye = [c[0] - span * 0.35, c[1], hi[2] + span * 1.2];
+        for (preset, name) in [
+            (LookPreset::Flat, "look_flat.png"),
+            (LookPreset::AcesFilm, "look_aces.png"),
+            (LookPreset::Filmic, "look_filmic.png"),
+            (LookPreset::AcesBright, "look_acesbright.png"),
+        ] {
+            let rig = LightRig {
+                sun_dir: [0.4, 0.62, 0.66],
+                sun_intensity: 3.0,
+                sky_dome_intensity: 0.8,
+                sky_dome_zenith: [0.30, 0.48, 0.85],
+                sky_dome_horizon: [0.80, 0.87, 0.96],
+                look: preset,
+                ..Default::default()
+            };
+            let rgba = pathtrace_mesh_lit_to_rgba(
+                &mesh.positions, &mesh.normals, &mesh.uvs, &mesh.indices, &mesh.material_ids,
+                &mats, &texs, eye, c, 0.9, 512, 512, 32, &rig,
+            )
+            .expect("look render");
+            let mut pxv: Vec<[u8; 4]> =
+                rgba.chunks_exact(4).map(|p| [p[0], p[1], p[2], 255]).collect();
+            crate::denoiser::SpectralDenoiser::new(0.4).denoise(&mut pxv, 512, 512);
+            let flat: Vec<u8> = pxv.into_iter().flatten().collect();
+            let out = std::env::temp_dir().join(name);
+            write_png_rgba(out.to_str().unwrap(), &flat, 512, 512);
+            // Mean luma — proves the preset actually moves the pixels.
+            let mean: f64 = flat.iter().step_by(4).map(|&b| b as f64).sum::<f64>()
+                / (flat.len() / 4) as f64;
+            eprintln!("[look] {:?} -> {} (mean R {:.1})", preset, out.display(), mean);
+        }
+    }
+
+    /// Block scene: five cooked buildings stood in a street row on a ground
+    /// plane, lit at dusk so the emissive window panes read as inhabited.
+    /// This is the "does it look better with a lot / in context" test — a
+    /// building floating in gray void always reads dead; the reference photo
+    /// was a street block. Consumes already-cooked atoms (no recook).
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn block_scene_dusk() {
+        use super::{pathtrace_mesh_lit_to_rgba, LightRig, PbrMaterial};
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        // Dusk: a low warm raking sun + deep-blue sky dome with a sunset
+        // horizon band. Dim ambient so the warm lit panes pop.
+        let rig = LightRig {
+            sun_dir: [0.62, 0.20, 0.45],
+            sun_intensity: 2.1,
+            sky_intensity: 0.22,
+            camera_fill: 0.06,
+            rim_fill: 0.0,
+            sky_dome_intensity: 0.55,
+            sky_dome_zenith: [0.16, 0.20, 0.40],
+            sky_dome_horizon: [0.98, 0.56, 0.34],
+            ..Default::default()
+        };
+        let ids = [
+            "city.office.l6.3x3.setback_tower_01",
+            "city.com_reg.l4.3x4.modern_hotel_block_01",
+            "city.res_med.l3.3x4.rowhouse_01",
+            "city.office.l2.3x3.glass_office_lowrise_01",
+            "city.com_reg.l3.4x4.modern_department_store_01",
+        ];
+
+        let mut positions: Vec<[f32; 3]> = Vec::new();
+        let mut normals: Vec<[f32; 3]> = Vec::new();
+        let mut uvs: Vec<[f32; 2]> = Vec::new();
+        let mut indices: Vec<[u32; 3]> = Vec::new();
+        let mut material_ids: Vec<u8> = Vec::new();
+        let mut materials: Vec<PbrMaterial> = Vec::new();
+        let mut textures = Vec::new();
+
+        let mut cursor_x = 0.0f32;
+        let mut scene_h = 0.0f32;
+        let gap = 1.2f32;
+        for id in ids {
+            let path = atoms_dir.join(format!("{id}.atoms.json"));
+            let mesh = load_craftsman_mesh(&path);
+            let (mats, texs, _) = load_building_mesh_pbr_by_forge_id(&path);
+            let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+            for v in &mesh.positions {
+                for a in 0..3 {
+                    lo[a] = lo[a].min(v[a]);
+                    hi[a] = hi[a].max(v[a]);
+                }
+            }
+            // Seat min-x at the cursor, ground at y=0, front facade (+Z) at z=0.
+            let off = [cursor_x - lo[0], -lo[1], -lo[2]];
+            let vbase = positions.len() as u32;
+            let mbase = materials.len() as u8;
+            let tbase = textures.len() as i32;
+            for v in &mesh.positions {
+                positions.push([v[0] + off[0], v[1] + off[1], v[2] + off[2]]);
+            }
+            normals.extend_from_slice(&mesh.normals);
+            uvs.extend_from_slice(&mesh.uvs);
+            for t in &mesh.indices {
+                indices.push([t[0] + vbase, t[1] + vbase, t[2] + vbase]);
+            }
+            for &m in &mesh.material_ids {
+                material_ids.push(m + mbase);
+            }
+            for mat in &mats {
+                let mut m = mat.clone();
+                if m.albedo_tex >= 0 {
+                    m.albedo_tex += tbase;
+                }
+                if m.roughness_tex >= 0 {
+                    m.roughness_tex += tbase;
+                }
+                if m.normal_tex >= 0 {
+                    m.normal_tex += tbase;
+                }
+                materials.push(m);
+            }
+            textures.extend(texs.iter().cloned());
+            scene_h = scene_h.max(hi[1] - lo[1]);
+            cursor_x += (hi[0] - lo[0]) + gap;
+        }
+        let block_w = cursor_x - gap;
+
+        // Ground plane: dark wet-asphalt quad spanning the block + a street
+        // apron in front (+Z), its own untextured material.
+        let gmat = materials.len() as u8;
+        materials.push(PbrMaterial {
+            base_color: [0.10, 0.10, 0.12],
+            roughness: 0.55,
+            metallic: 0.0,
+            emission_strength: 0.0,
+            albedo_tex: -1,
+            roughness_tex: -1,
+            normal_tex: -1,
+            uv_scale: [1.0, 1.0],
+            transmission: 0.0,
+            ior: 1.5,
+            thin_walled: true,
+        });
+        let g0 = positions.len() as u32;
+        let (gx0, gx1) = (-40.0f32, block_w + 40.0);
+        let (gz0, gz1) = (-60.0f32, 45.0f32);
+        for p in [
+            [gx0, 0.0, gz0],
+            [gx1, 0.0, gz0],
+            [gx1, 0.0, gz1],
+            [gx0, 0.0, gz1],
+        ] {
+            positions.push(p);
+            normals.push([0.0, 1.0, 0.0]);
+            uvs.push([0.0, 0.0]);
+        }
+        indices.push([g0, g0 + 1, g0 + 2]);
+        material_ids.push(gmat);
+        indices.push([g0, g0 + 2, g0 + 3]);
+        material_ids.push(gmat);
+
+        // Bright daylight rig for the high-quality shot (LightRig has no
+        // exposure key, so "brighter" = higher light intensities).
+        let day = LightRig {
+            sun_dir: [0.40, 0.72, 0.55],
+            sun_intensity: 3.4,
+            sky_intensity: 0.50,
+            camera_fill: 0.12,
+            rim_fill: 0.0,
+            sky_dome_intensity: 1.0,
+            sky_dome_zenith: [0.30, 0.48, 0.85],
+            sky_dome_horizon: [0.80, 0.87, 0.96],
+            ..Default::default()
+        };
+
+        // Street-level 3/4 view: eye near eye-height, off to one side, pulled
+        // out into the street; target the block's mid-height centre.
+        let cx = block_w * 0.5;
+        let eye = [cx - block_w * 0.28, scene_h * 0.35, gz1 + block_w * 0.50];
+        let target = [cx + block_w * 0.04, scene_h * 0.40, 0.0];
+
+        // A/B: identical geometry, low-quality (noisy/heavy-denoise/dusk) vs
+        // high-quality (high-spp/light-denoise/bright daylight/720p) — isolates
+        // whether render SETTINGS are the visual-quality throttle.
+        let shots: [(&LightRig, u32, u32, u32, f32, &str); 2] = [
+            (&rig, 768, 432, 40, 0.70, "block_lowq.png"),
+            (&day, 1280, 720, 192, 0.28, "block_hiq.png"),
+        ];
+        for (r, w, h, spp, dn, name) in shots {
+            let rgba = pathtrace_mesh_lit_to_rgba(
+                &positions, &normals, &uvs, &indices, &material_ids, &materials, &textures, eye,
+                target, 0.92, w, h, spp, r,
+            )
+            .expect("block render");
+            let lit = rgba
+                .chunks_exact(4)
+                .filter(|px| px[0] as u32 + px[1] as u32 + px[2] as u32 > 30)
+                .count();
+            assert!(lit > 50_000, "{name}: block scene nearly empty ({lit})");
+            let mut pxv: Vec<[u8; 4]> =
+                rgba.chunks_exact(4).map(|p| [p[0], p[1], p[2], 255]).collect();
+            crate::denoiser::SpectralDenoiser::new(dn).denoise(&mut pxv, w, h);
+            let flat: Vec<u8> = pxv.into_iter().flatten().collect();
+            let out = std::env::temp_dir().join(name);
+            write_png_rgba(out.to_str().unwrap(), &flat, w, h);
+            eprintln!(
+                "[block] {} @ {w}x{h} spp{spp} dn{dn} -> {} ({lit} lit px, {} tris)",
+                name,
+                out.display(),
+                indices.len()
+            );
+        }
+    }
+
     /// Showcase: render a roster of cooked buildings (each a different style
     /// family + kind) through the mesh path — visual proof of the F7 family
     /// routing (tudor/industrial textures) and the catalog breadth. No hard
