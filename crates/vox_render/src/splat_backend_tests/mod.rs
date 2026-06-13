@@ -13,6 +13,7 @@ mod mesh_render;
 mod perf;
 mod perturbation;
 mod sdf;
+mod terrain_carve;
 
 
     use super::SpectraRenderBackend;
