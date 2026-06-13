@@ -240,6 +240,22 @@ pub struct LightRig {
     /// applied to the linear HDR film. Default [`LookPreset::AcesFilm`]
     /// (ACES, EV 0) — byte-identical to the legacy hardcoded behaviour.
     pub look: LookPreset,
+    /// Enable the physical (Bruneton) atmosphere model in the path tracer
+    /// (`Renderer::set_atmosphere`). Default `false` keeps the gradient-sky
+    /// path byte-identical to every legacy render. When `true`, the renderer
+    /// runs the aerial-perspective + in-scatter path and the sun
+    /// (`sun_dir`/`sun_radiance`) is fed through `Renderer::set_sun`.
+    pub atmosphere_enabled: bool,
+    /// Scalar physical-sun radiance for the atmosphere in-scatter path
+    /// (item 2/10). Only consulted when `atmosphere_enabled`. Distinct from
+    /// `sun_intensity`, which scales the cheap directional-light rig.
+    pub sun_radiance: f32,
+    /// Henyey-Greenstein Mie anisotropy for the atmosphere (Earth ≈ 0.76).
+    /// Only consulted when `atmosphere_enabled`.
+    pub atmosphere_mie: f32,
+    /// Atmosphere turbidity (1.0 = clear, 10.0 = very hazy). Only consulted
+    /// when `atmosphere_enabled`.
+    pub atmosphere_turbidity: f32,
 }
 
 /// A named display LOOK = tonemap operator + exposure (EV). The renderer owns
@@ -296,6 +312,12 @@ impl Default for LightRig {
             sky_dome_zenith: [0.15, 0.25, 0.45],
             sky_dome_horizon: [0.7, 0.6, 0.5],
             look: LookPreset::AcesFilm,
+            // Atmosphere OFF by default — every legacy render stays
+            // byte-identical (the renderer leaves u_atmosphere_enabled = 0).
+            atmosphere_enabled: false,
+            sun_radiance: 20.0,
+            atmosphere_mie: 0.76,
+            atmosphere_turbidity: 2.0,
         }
     }
 }
@@ -395,6 +417,12 @@ pub fn pathtrace_mesh_textured_to_rgba(
 /// `rig` instead of being hardcoded — see [`LightRig`]. With
 /// `LightRig { sun_dir, ..Default::default() }` the output is byte-identical
 /// to the legacy entry point. Returns RGBA8 (`w*h*4`). Additive.
+///
+/// **Frozen signature** (documented contract across the facade design docs):
+/// this wrapper delegates to [`pathtrace_mesh_lit_weathered_to_rgba`] with no
+/// per-vertex weathering masks. Because the rig's `atmosphere_enabled` defaults
+/// to `false` and the mask slice is empty, the delegated render is
+/// byte-identical to the legacy behaviour.
 #[cfg(feature = "spectra-native")]
 #[allow(clippy::too_many_arguments)]
 pub fn pathtrace_mesh_lit_to_rgba(
@@ -413,6 +441,47 @@ pub fn pathtrace_mesh_lit_to_rgba(
     spp: u32,
     rig: &LightRig,
 ) -> Result<Vec<u8>, String> {
+    pathtrace_mesh_lit_weathered_to_rgba(
+        positions, normals, uvs, indices, material_ids, materials, textures, eye, target, fov_y,
+        width, height, spp, rig, &[],
+    )
+}
+
+/// One-shot still: **path-trace a textured triangle mesh with an explicit
+/// light rig AND per-vertex weathering masks** (the additive superset of
+/// [`pathtrace_mesh_lit_to_rgba`]).
+///
+/// `weathering_masks` is a flat f32 slice, **7 floats per scene vertex** in
+/// vertex order — channels `[moss, water_stain, paint_chip, rust, soot,
+/// efflorescence, edge_wear]` — uploaded via `Renderer::set_weathering_masks`
+/// and sampled by barycentric interpolation in the megakernel
+/// (`apply_weathering_full`, gated by `u_weathering_enabled`). Pass `&[]` to
+/// disable weathering (byte-identical to the legacy render); a non-empty slice
+/// MUST have length `7 * positions.len()`.
+///
+/// When `rig.atmosphere_enabled` is true, the physical sun + Bruneton
+/// atmosphere are fed to the renderer (`set_sun` / `set_atmosphere`) on top of
+/// the cheap 4-light rig; when false they are left untouched (zero cost,
+/// byte-identical).
+#[cfg(feature = "spectra-native")]
+#[allow(clippy::too_many_arguments)]
+pub fn pathtrace_mesh_lit_weathered_to_rgba(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    uvs: &[[f32; 2]],
+    indices: &[[u32; 3]],
+    material_ids: &[u8],
+    materials: &[PbrMaterial],
+    textures: &[TextureImage],
+    eye: [f32; 3],
+    target: [f32; 3],
+    fov_y: f32,
+    width: u32,
+    height: u32,
+    spp: u32,
+    rig: &LightRig,
+    weathering_masks: &[f32],
+) -> Result<Vec<u8>, String> {
     use crate::splat_convert::camera_layer;
     use spectra_scene_state::{LightLayer, MaterialLayer, SceneState};
 
@@ -429,6 +498,18 @@ pub fn pathtrace_mesh_lit_to_rgba(
         material_ids.iter().copied().max().unwrap_or(0) as usize + 1,
         materials.len()
     );
+
+    // Per-vertex weathering masks must be 7 floats/vertex (or empty to disable).
+    // The kernel samples g_weathering_masks[v*7 + channel]; a short buffer would
+    // read past the end (the dummy-buffer guard only covers the unbound case).
+    if !weathering_masks.is_empty() && weathering_masks.len() != positions.len() * 7 {
+        return Err(format!(
+            "weathering_masks len {} != 7 * vertex_count {} (7 floats/vertex: \
+             moss, water_stain, paint_chip, rust, soot, efflorescence, edge_wear)",
+            weathering_masks.len(),
+            positions.len() * 7
+        ));
+    }
 
     let (tex_descs, tex_data) = build_texture_atlas(textures)?;
 
@@ -517,6 +598,20 @@ pub fn pathtrace_mesh_lit_to_rgba(
         rig.sky_dome_horizon,
         rig.sky_dome_intensity,
     );
+    // Per-vertex weathering masks (item 1). Empty slice → weathering stays off
+    // (legacy byte-identity). Must come after load_scene_state (needs state).
+    if !weathering_masks.is_empty() {
+        renderer
+            .set_weathering_masks(weathering_masks)
+            .map_err(|e| format!("set_weathering_masks: {e:?}"))?;
+    }
+    // Physical sun + atmosphere (item 2). Only when the rig opts in — otherwise
+    // u_atmosphere_enabled stays 0 and the render is byte-identical. The sun
+    // direction is the same TOWARD-sun vector the 4-light rig uses.
+    if rig.atmosphere_enabled {
+        renderer.set_sun(sun.to_array(), rig.sun_radiance);
+        renderer.set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
+    }
     // ORDER MATTERS: set_texture_atlas silently no-ops before scene state
     // exists, so it must come after load_scene_state.
     if !textures.is_empty() {
