@@ -236,6 +236,46 @@ pub struct LightRig {
     pub sky_dome_zenith: [f32; 3],
     /// Sky-dome gradient color at the horizon (linear RGB).
     pub sky_dome_horizon: [f32; 3],
+    /// Display LOOK for this shot: the tonemap operator + exposure preset
+    /// applied to the linear HDR film. Default [`LookPreset::AcesFilm`]
+    /// (ACES, EV 0) — byte-identical to the legacy hardcoded behaviour.
+    pub look: LookPreset,
+}
+
+/// A named display LOOK = tonemap operator + exposure (EV). The renderer owns
+/// the operators (engine `spectra-tonemap`); this enum is the *preset* a
+/// caller/game picks. It is a rendering concept (camera/display look), not a
+/// game concept, so it lives in the engine. The game selects one and persists
+/// it in user settings.
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LookPreset {
+    /// ACES filmic, neutral exposure — the production default.
+    #[default]
+    AcesFilm,
+    /// ACES with +1 EV — brighter, for dim/dusk scenes.
+    AcesBright,
+    /// Filmic (Hejl/Hable-style) — slightly punchier contrast.
+    Filmic,
+    /// Reinhard-on-luminance, +0.5 EV — soft, hue-preserving, for review.
+    SoftReview,
+    /// No tonemap (raw clamped linear) — diagnostics only.
+    Flat,
+}
+
+#[cfg(feature = "spectra-native")]
+impl LookPreset {
+    /// Resolve to the engine knobs (tonemap operator, exposure EV).
+    pub fn resolve(self) -> (spectra_tonemap::ToneMapper, f32) {
+        use spectra_tonemap::ToneMapper;
+        match self {
+            LookPreset::AcesFilm => (ToneMapper::Aces, 0.0),
+            LookPreset::AcesBright => (ToneMapper::Aces, 1.0),
+            LookPreset::Filmic => (ToneMapper::Filmic, 0.0),
+            LookPreset::SoftReview => (ToneMapper::ReinhardLuma, 0.5),
+            LookPreset::Flat => (ToneMapper::None, 0.0),
+        }
+    }
 }
 
 #[cfg(feature = "spectra-native")]
@@ -255,6 +295,7 @@ impl Default for LightRig {
             sky_dome_intensity: 0.5,
             sky_dome_zenith: [0.15, 0.25, 0.45],
             sky_dome_horizon: [0.7, 0.6, 0.5],
+            look: LookPreset::AcesFilm,
         }
     }
 }
@@ -449,6 +490,11 @@ pub fn pathtrace_mesh_lit_to_rgba(
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
     config.target_spp = spp;
+    // Apply the shot LOOK preset (tonemap + exposure) — the engine owns
+    // the operators; the rig carries the chosen preset.
+    let (look_tm, look_ev) = rig.look.resolve();
+    config.tonemap = look_tm;
+    config.exposure_ev = look_ev;
     // Transmissive glass needs path DEPTH: a two-faced pane costs two bounces
     // before the ray even reaches the content behind it. near_realtime's
     // 3-bounce budget plus the NRC query-at-bounce-3 early exit would render
@@ -672,6 +718,11 @@ pub fn pathtrace_sdf_to_rgba(
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
     config.target_spp = spp;
+    // Apply the shot LOOK preset (tonemap + exposure) — the engine owns
+    // the operators; the rig carries the chosen preset.
+    let (look_tm, look_ev) = rig.look.resolve();
+    config.tonemap = look_tm;
+    config.exposure_ev = look_ev;
     let mut renderer = Renderer::new(gpu, config);
     renderer.set_sdf_albedo(albedo);
     renderer
@@ -1139,6 +1190,11 @@ pub fn pathtrace_sdf_scene_perf(
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
     config.target_spp = spp;
+    // Apply the shot LOOK preset (tonemap + exposure) — the engine owns
+    // the operators; the rig carries the chosen preset.
+    let (look_tm, look_ev) = rig.look.resolve();
+    config.tonemap = look_tm;
+    config.exposure_ev = look_ev;
     if knobs.disable_denoiser {
         config.denoiser_mode = spectra_renderer::DenoiserMode::None;
     }
@@ -1465,6 +1521,11 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
     config.target_spp = spp;
+    // Apply the shot LOOK preset (tonemap + exposure) — the engine owns
+    // the operators; the rig carries the chosen preset.
+    let (look_tm, look_ev) = rig.look.resolve();
+    config.tonemap = look_tm;
+    config.exposure_ev = look_ev;
     // Glass needs continuation bounces; disable NRC so the refracted ray never
     // gets short-circuited into the cache at a deep bounce. Keep >= 3 bounces
     // (camera→glass→behind→...).
@@ -2065,6 +2126,11 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
     config.target_spp = spp;
+    // Apply the shot LOOK preset (tonemap + exposure) — the engine owns
+    // the operators; the rig carries the chosen preset.
+    let (look_tm, look_ev) = rig.look.resolve();
+    config.tonemap = look_tm;
+    config.exposure_ev = look_ev;
     // Glass needs continuation bounces; disable NRC so the refracted ray never
     // gets short-circuited into the cache at a deep bounce. Keep >= 3 bounces
     // (camera→glass→behind→...). IDENTICAL to the M2 entry point — the parity

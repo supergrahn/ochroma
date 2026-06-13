@@ -33,6 +33,7 @@ spectra-renderer = { path = "../../../spectra/rust/spectra-renderer", optional =
 spectra-gpu = { path = "../../../spectra/rust/spectra-gpu", optional = true }
 spectra-scene-state = { path = "../../../spectra/rust/spectra-scene-state", optional = true }
 spectra-scene-data = { path = "../../../spectra/rust/spectra-scene-data", optional = true }
+spectra-tonemap = { path = "../../../spectra/rust/spectra-tonemap", optional = true }
 
 [features]
 default = ["crucible"]
@@ -49,6 +50,7 @@ spectra-native = [
     "dep:spectra-gpu",
     "dep:spectra-scene-state",
     "dep:spectra-scene-data",
+    "dep:spectra-tonemap",
     "spectra-gpu/vulkan-backend",
 ]
 crucible = ["vox_nodes/crucible"]
