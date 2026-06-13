@@ -495,6 +495,46 @@ const KNOWN_UNWIRED: &[(&str, &str)] = &[
         "material.default_uv_scale",
         "applies to textured materials; the SDF fixture is untextured flat albedo",
     ),
+    // camera.*: the config's default-camera section feeds a no-explicit-camera
+    // render via RenderConfig::camera_layer_from_settings. This fixture instead
+    // builds its own framing camera (front-quarter view) so the sphere fills the
+    // frame deterministically — so the config camera leaves are not the ones
+    // driving these renders. They are unit-proven to reach a CameraLayer in
+    // spectra-renderer's `default_camera_settings_build_a_camera_layer` /
+    // `camera_override_reaches_layer`; a pixel-delta proof here needs the fixture
+    // to drive its camera from settings.camera instead of the fixed eye.
+    (
+        "camera.position",
+        "default-camera seam (camera_layer_from_settings) is unit-proven in spectra-renderer; this fixture uses its own framing camera",
+    ),
+    (
+        "camera.target",
+        "default-camera seam unit-proven in spectra-renderer; fixture uses its own framing camera",
+    ),
+    (
+        "camera.up",
+        "default-camera seam unit-proven in spectra-renderer; fixture uses its own framing camera",
+    ),
+    (
+        "camera.fov_y_deg",
+        "default-camera seam unit-proven in spectra-renderer; fixture uses its own framing camera",
+    ),
+    (
+        "camera.near",
+        "default-camera seam unit-proven in spectra-renderer; fixture uses its own framing camera",
+    ),
+    (
+        "camera.far",
+        "default-camera seam unit-proven in spectra-renderer; fixture uses its own framing camera",
+    ),
+    (
+        "camera.lens_radius",
+        "DoF lens radius reaches the CameraLayer (unit-proven); the fixture camera is pinhole",
+    ),
+    (
+        "camera.focus_distance",
+        "DoF focus distance reaches the CameraLayer (unit-proven); only used when lens_radius > 0",
+    ),
 ];
 
 /// Enumerate every logical leaf path in the serialized default `RenderSettings`
