@@ -1807,6 +1807,188 @@ use super::super::*;
         }
     }
 
+    /// DYNAMIC weathering scale (Phase 4 VERIFY): render the SAME aged building
+    /// at per-instance weathering intensity 0.0 and 1.0 with EVERYTHING else
+    /// identical (same mesh, masks, camera, lights, spp, no denoise), and prove
+    /// the renderer MULTIPLIES the cooked PATTERN by the per-instance INTENSITY:
+    ///
+    ///   * intensity 1.0 (masks uploaded, `[1;7]`) measurably DIFFERS from
+    ///     intensity 0.0 — so it is a real per-instance scale, not a no-op.
+    ///   * intensity 0.0 (masks uploaded, `[0;7]`) matches the CLEAN render
+    ///     (no masks uploaded at all) within a tight tolerance — so 0 == clean,
+    ///     proving it is a smooth scale anchored at clean, not a binary toggle
+    ///     that merely swaps "weathered vs not".
+    ///
+    /// This is the GPU proof of the 3-layer architecture: cook bakes pattern,
+    /// the sim drives intensity, the renderer applies pattern x intensity.
+    /// Writes /tmp/weathering_dyn_0.png and /tmp/weathering_dyn_1.png.
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn weathering_dynamic() {
+        use super::{pathtrace_mesh_lit_weathered_to_rgba, LightRig, LookPreset};
+        let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+        let id = "city.ind_heavy.l2.5x5.heavy_factory_01"; // aged → carries masks
+        let path = atoms_dir.join(format!("{id}.atoms.json"));
+        let mesh = load_craftsman_mesh(&path);
+        let (mats, texs, _) = load_building_mesh_pbr_by_forge_id(&path);
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read atoms")).expect("parse");
+        let masks: Vec<f32> = json["mesh"]["weathering_masks"]
+            .as_array()
+            .expect("weathering_masks array present")
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect();
+        assert_eq!(masks.len(), mesh.positions.len() * 7, "7 floats/vertex");
+        // The pattern must be non-trivial, or "0 == 1" would pass vacuously.
+        let mask_energy: f32 = masks.iter().sum();
+        assert!(
+            mask_energy > 1.0,
+            "cooked weathering pattern is ~empty (sum {mask_energy:.3}); \
+             the dynamic-scale test would be vacuous"
+        );
+
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for v in &mesh.positions {
+            for a in 0..3 {
+                lo[a] = lo[a].min(v[a]);
+                hi[a] = hi[a].max(v[a]);
+            }
+        }
+        let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+        let span = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+        let h_total = hi[1] - lo[1];
+        let eye = [c[0] - span * 0.55, h_total * 0.35, hi[2] + span * 0.7];
+        let target = [c[0], h_total * 0.42, c[2]];
+
+        // A fixed rig shared by all three renders. weathering_enabled stays
+        // true; only weathering_intensity (the per-instance sim input) varies.
+        let base_rig = LightRig {
+            sun_dir: [0.45, 0.55, 0.50],
+            sun_intensity: 3.2,
+            sun_radiance: 25.0,
+            atmosphere_enabled: true,
+            atmosphere_turbidity: 2.5,
+            sky_dome_intensity: 0.9,
+            sky_dome_zenith: [0.30, 0.48, 0.85],
+            sky_dome_horizon: [0.80, 0.87, 0.96],
+            look: LookPreset::AcesFilm,
+            weathering_enabled: true,
+            ..Default::default()
+        };
+        let (w, h) = (640u32, 360u32);
+        let spp = 64u32;
+
+        // BT.601 luma over every pixel — the headline scalar.
+        let mean_luma = |rgba: &[u8]| -> f64 {
+            let mut s = 0.0;
+            for p in rgba.chunks_exact(4) {
+                s += 0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64;
+            }
+            s / (rgba.len() / 4) as f64
+        };
+        // Cheap order-sensitive content hash (FNV-1a over RGB bytes).
+        let frame_hash = |rgba: &[u8]| -> u64 {
+            let mut hsh = 0xcbf29ce484222325u64;
+            for p in rgba.chunks_exact(4) {
+                for &b in &p[..3] {
+                    hsh ^= b as u64;
+                    hsh = hsh.wrapping_mul(0x100000001b3);
+                }
+            }
+            hsh
+        };
+        // Per-pixel mean-absolute RGB difference (0..255).
+        let mean_abs_diff = |a: &[u8], b: &[u8]| -> f64 {
+            let mut s = 0.0;
+            let mut n = 0.0;
+            for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+                for k in 0..3 {
+                    s += (pa[k] as f64 - pb[k] as f64).abs();
+                    n += 1.0;
+                }
+            }
+            s / n
+        };
+
+        let render = |intensity: [f32; 7], masks: &[f32]| -> Vec<u8> {
+            let rig = LightRig {
+                weathering_intensity: intensity,
+                ..base_rig.clone()
+            };
+            pathtrace_mesh_lit_weathered_to_rgba(
+                &mesh.positions, &mesh.normals, &mesh.uvs, &mesh.indices, &mesh.material_ids,
+                &mats, &texs, eye, target, 0.85, w, h, spp, &rig, masks,
+            )
+            .expect("weathered render")
+        };
+
+        // 0.0: masks UPLOADED but intensity zeroed -> must equal the clean look.
+        let f0 = render([0.0; 7], &masks);
+        // 1.0: full per-instance intensity -> the full baked pattern.
+        let f1 = render([1.0; 7], &masks);
+        // Clean reference: NO masks uploaded at all (the legacy clean path).
+        let f_clean = render([0.0; 7], &[]);
+
+        let (l0, l1, lc) = (mean_luma(&f0), mean_luma(&f1), mean_luma(&f_clean));
+        let luma_delta_0_1 = (l1 - l0).abs();
+        let diff_0_1 = mean_abs_diff(&f0, &f1);
+        let diff_0_clean = mean_abs_diff(&f0, &f_clean);
+        let luma_delta_0_clean = (l0 - lc).abs();
+        let (h0, h1, hc) = (frame_hash(&f0), frame_hash(&f1), frame_hash(&f_clean));
+
+        write_png_rgba(
+            std::env::temp_dir().join("weathering_dyn_0.png").to_str().unwrap(),
+            &f0, w, h,
+        );
+        write_png_rgba(
+            std::env::temp_dir().join("weathering_dyn_1.png").to_str().unwrap(),
+            &f1, w, h,
+        );
+
+        eprintln!(
+            "[weathering_dynamic] luma: i0={l0:.3} i1={l1:.3} clean={lc:.3}\n\
+             [weathering_dynamic] i0 vs i1: luma_delta={luma_delta_0_1:.3} mean_abs_rgb_diff={diff_0_1:.3} hash {h0:#x} vs {h1:#x}\n\
+             [weathering_dynamic] i0 vs clean: luma_delta={luma_delta_0_clean:.4} mean_abs_rgb_diff={diff_0_clean:.4} hash {h0:#x} vs {hc:#x}\n\
+             [weathering_dynamic] wrote /tmp/weathering_dyn_0.png /tmp/weathering_dyn_1.png"
+        );
+
+        // (1) intensity 0 vs 1 must MEASURABLY differ — a real per-instance scale.
+        assert!(
+            h0 != h1,
+            "intensity 0.0 and 1.0 produced byte-identical frames (hash {h0:#x}) \
+             — the per-instance intensity is not reaching the kernel"
+        );
+        assert!(
+            diff_0_1 > 1.0,
+            "intensity 0.0 vs 1.0 mean abs RGB diff {diff_0_1:.3} too small \
+             (expected > 1.0): the weathering pattern is barely scaled by intensity"
+        );
+
+        // (2) intensity 0 must MATCH the clean (no-masks) render within a tight
+        //     tolerance — proving 0 == clean (a smooth scale anchored at clean),
+        //     NOT a binary toggle. Tolerance covers MC/path-tracer sampling
+        //     noise only, and must be far below the 0-vs-1 signal.
+        assert!(
+            diff_0_clean < 0.5,
+            "intensity 0.0 does not match the clean render: mean abs RGB diff \
+             {diff_0_clean:.4} (tol 0.5). 0.0 should zero the masks -> clean surface"
+        );
+        assert!(
+            luma_delta_0_clean < 0.3,
+            "intensity 0.0 luma {l0:.3} differs from clean {lc:.3} by \
+             {luma_delta_0_clean:.4} (tol 0.3) — 0.0 is not clean"
+        );
+        // The 0-vs-1 signal must dominate the 0-vs-clean noise floor by a wide
+        // margin, or "0 == clean" is just "everything is noise".
+        assert!(
+            diff_0_1 > diff_0_clean * 5.0,
+            "weathering signal ({diff_0_1:.3}) does not dominate the 0-vs-clean \
+             noise floor ({diff_0_clean:.4}); cannot claim a smooth scale"
+        );
+    }
+
     /// Block scene: five cooked buildings stood in a street row on a ground
     /// plane, lit at dusk so the emissive window panes read as inhabited.
     /// This is the "does it look better with a lot / in context" test — a

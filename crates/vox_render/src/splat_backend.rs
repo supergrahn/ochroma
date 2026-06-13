@@ -262,6 +262,24 @@ pub struct LightRig {
     /// Atmosphere turbidity (1.0 = clear, 10.0 = very hazy). Only consulted
     /// when `atmosphere_enabled`.
     pub atmosphere_turbidity: f32,
+    /// Master toggle for the DYNAMIC weathering effect — the config law's
+    /// `RenderSettings.features.weathering` surfaced on the rig. When `false`,
+    /// the renderer renders the CLEAN surface even when cooked weathering masks
+    /// are uploaded (`weathering_intensity` is forced to `[0; 7]`). Default
+    /// `true` so the existing weathered render path (upload masks → full
+    /// pattern) stays byte-identical. Only consulted by
+    /// [`pathtrace_mesh_lit_weathered_to_rgba`] and only when masks are present.
+    pub weathering_enabled: bool,
+    /// Per-channel DYNAMIC weathering INTENSITY in `[0, 1]` — how WORN this
+    /// render's geometry is, supplied by the sim from building age + missed
+    /// maintenance (NOT baked at cook). Multiplies the cooked geometry-anchored
+    /// PATTERN per channel in the megakernel: `0.0` for a channel → that channel
+    /// renders identical to the clean surface; `1.0` → the full baked pattern.
+    /// Channel order matches the cooked masks: `[moss, water_stain, paint_chip,
+    /// rust, soot, efflorescence, edge_wear]`. Default `[1.0; 7]` (full pattern)
+    /// so uploading masks without setting intensity reproduces the legacy
+    /// weathered render. Forced to `[0; 7]` when `weathering_enabled` is false.
+    pub weathering_intensity: [f32; 7],
 }
 
 /// A named display LOOK = tonemap operator + exposure (EV). The renderer owns
@@ -358,6 +376,10 @@ fn rig_to_settings(rig: &LightRig, spp: u32, max_bounces: u32) -> spectra_render
     s.lighting.atmosphere.enabled = rig.atmosphere_enabled;
     s.lighting.atmosphere.mie = rig.atmosphere_mie;
     s.lighting.atmosphere.turbidity = rig.atmosphere_turbidity;
+    // The config law's master weathering toggle (off → clean even with masks).
+    // The per-instance INTENSITY itself is applied via set_weathering_intensity
+    // in the weathered render path, not a settings leaf.
+    s.features.weathering.enabled = rig.weathering_enabled;
     s
 }
 
@@ -409,6 +431,12 @@ impl Default for LightRig {
             sun_radiance: 20.0,
             atmosphere_mie: 0.76,
             atmosphere_turbidity: 2.0,
+            // Weathering ON at full per-channel intensity by default → uploading
+            // cooked masks reproduces the legacy weathered render byte-for-byte.
+            // The sim overrides `weathering_intensity` per instance; the config
+            // toggle drives `weathering_enabled`.
+            weathering_enabled: true,
+            weathering_intensity: [1.0; 7],
         }
     }
 }
@@ -695,6 +723,18 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
         renderer
             .set_weathering_masks(weathering_masks)
             .map_err(|e| format!("set_weathering_masks: {e:?}"))?;
+        // DYNAMIC per-instance intensity (Phase 3): the cook baked only the
+        // PATTERN; the sim says how worn THIS geometry is. The renderer
+        // multiplies pattern × intensity. Respect the config master toggle —
+        // when weathering is disabled the effect is forced to 0 (clean) even
+        // though the cooked masks are uploaded. Default rig (enabled + [1.0; 7])
+        // reproduces the legacy full-pattern render byte-for-byte.
+        let intensity = if settings.features.weathering.enabled {
+            rig.weathering_intensity
+        } else {
+            [0.0; 7]
+        };
+        renderer.set_weathering_intensity(intensity);
     }
     // Physical sun + atmosphere (item 2). Only when the rig opts in — otherwise
     // u_atmosphere_enabled stays 0 and the render is byte-identical. The sun
