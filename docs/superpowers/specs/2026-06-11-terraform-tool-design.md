@@ -1,14 +1,14 @@
-# Design: Civitas Care Terraforming Tool (2026-06-11)
+# Design: Urban Horizon Terraforming Tool (2026-06-11)
 
 **Status:** Approved
-**Scope:** A CS2-class terraforming brush (raise/lower/level/smooth) for Civitas Care that edits the game's heightfield terrain at runtime, bundles each drag into ONE replayable `AuthoredAction`, charges kr per moved m³, blocks edits under the built city, and cascades invalidation into the water mask → geodesic childcare coverage field and the terrain render layer.
-**Related:** [Virtualized Splat Rendering design](./2026-06-10-virtualized-splat-rendering-design.md) (M4 is the execution gate), [Game UI Chrome design](./2026-06-10-game-ui-chrome-design.md) (the command spine, tool panel, receipts), `~/Ochroma/projects/civitas_care/docs/specs/map-system.md` (MapTerrain, derive, editor), [engine terrain-editor plan](../plans/2026-03-28-terrain-editor.md) (prior art — NOT the path taken, see §4.1).
+**Scope:** A CS2-class terraforming brush (raise/lower/level/smooth) for Urban Horizon that edits the game's heightfield terrain at runtime, bundles each drag into ONE replayable `AuthoredAction`, charges kr per moved m³, blocks edits under the built city, and cascades invalidation into the water mask → geodesic childcare coverage field and the terrain render layer.
+**Related:** [Virtualized Splat Rendering design](./2026-06-10-virtualized-splat-rendering-design.md) (M4 is the execution gate), [Game UI Chrome design](./2026-06-10-game-ui-chrome-design.md) (the command spine, tool panel, receipts), `~/Ochroma/projects/urban_horizon/docs/specs/map-system.md` (MapTerrain, derive, editor), [engine terrain-editor plan](../plans/2026-03-28-terrain-editor.md) (prior art — NOT the path taken, see §4.1).
 
 ---
 
 ## 1. Problem Statement
 
-- Civitas Care plays on real heightfield maps (`MapTerrain`: heights + the authoritative `CellClass` buildable/water mask) but the player cannot touch the terrain in-game: `MapEditor::sculpt` exists only as the headless map-authoring path (`src/map/editor.rs`), unreachable from the play binary's tool system.
+- Urban Horizon plays on real heightfield maps (`MapTerrain`: heights + the authoritative `CellClass` buildable/water mask) but the player cannot touch the terrain in-game: `MapEditor::sculpt` exists only as the headless map-authoring path (`src/map/editor.rs`), unreachable from the play binary's tool system.
 - Terrain shapes the flagship mechanic — `coverage_field.rs` builds the childcare geodesic field from `terrain.is_water` and water severs care reach — yet the only way to get a river where you want one is to author a whole new map offline.
 - The live game view renders the ground as a flat ray-cast backdrop at y=0 (`city_scene_inner`: "we do NOT splat a ground grid here"); on a real map the heights the sim consults (`sample_y`, slope culling, water barriers) are invisible to the player.
 - Undo is truncate-and-replay over the `AuthoredAction` log, but `rebuilt_with_log` seeds the rebuilt game with the **live** terrain (`fresh.terrain = self.terrain.clone()`, `src/game/mod.rs:1380`) — if terraform strokes mutate terrain and live in the log, every undo would double-apply them. The terrain/log split must be redesigned before any terrain-mutating action can exist.
@@ -17,7 +17,7 @@
 
 ## 2. Done When
 
-Running `cd ~/Ochroma/projects/civitas_care && cargo run --release --bin play -- --shot-terraform terraform_shots` exits 0 and prints, with real non-zero numbers:
+Running `cd ~/Ochroma/projects/urban_horizon && cargo run --release --bin play -- --shot-terraform terraform_shots` exits 0 and prints, with real non-zero numbers:
 
 ```
 [terraform] raise stroke: <S> stamps · <V> m³ · <K> kr · funds <F0> -> <F1>   (S in 5..=200, V > 500, F1 = F0 - K)
@@ -53,7 +53,7 @@ and a human opening `terraform_after.png` sees a hill that is absent in `terrafo
 
 **What the ENGINE has (`~/src/ochroma/crates/vox_terrain`):** a full voxel-SDF terrain stack — `volume.rs` (`TerrainVolume` SDF grid, `sculpt::{add_sphere, remove_sphere, add_ground_plane, add_cliff, add_cave, add_arch}`, `volume_to_splats`), `brushes.rs`/`deform.rs` (brushes over the voxel volume), `scene.rs` (`TerrainScene` facade: volume + material palette + splat-map painting + foliage scatter), `navmesh_bridge.rs` (`extract_from_volume` / `extract_region` NavMesh from the SDF). The 2026-03-28 terrain-editor plan wires that voxel path into the engine editor (`vox_app`). It supports caves, overhangs and arches — none of which a city builder's terraforming needs — and its splat extraction (`volume_to_splats`) is per-surface-voxel with RNG jitter, a different render path from the game's.
 
-**What the GAME has (`~/Ochroma/projects/civitas_care`):** the runtime terrain is heightfield, not voxel. `MapTerrain` (`src/map/terrain.rs`) wraps a `vox_terrain::heightmap::Heightmap` plus the **authoritative** `CellGrid<CellClass>` buildable mask (Buildable / TooSteep / Water / Reserved). Water is represented as `CellClass::Water` in that mask, derived in exactly one place (`src/map/derive.rs::derive_buildable`): a cell is Water if its height `y <= water.sea_level` **or** its centre lies inside a `WaterBody` outline polygon. The game even already owns heightfield **brush math**: `MapEditor::sculpt` (`src/map/editor.rs`) with `HeightBrush { radius, strength }`, smoothstep falloff, and `BrushOp::{Raise(f32), Lower(f32), Flatten(f32), Smooth}` — used today only for offline map authoring.
+**What the GAME has (`~/Ochroma/projects/urban_horizon`):** the runtime terrain is heightfield, not voxel. `MapTerrain` (`src/map/terrain.rs`) wraps a `vox_terrain::heightmap::Heightmap` plus the **authoritative** `CellGrid<CellClass>` buildable mask (Buildable / TooSteep / Water / Reserved). Water is represented as `CellClass::Water` in that mask, derived in exactly one place (`src/map/derive.rs::derive_buildable`): a cell is Water if its height `y <= water.sea_level` **or** its centre lies inside a `WaterBody` outline polygon. The game even already owns heightfield **brush math**: `MapEditor::sculpt` (`src/map/editor.rs`) with `HeightBrush { radius, strength }`, smoothstep falloff, and `BrushOp::{Raise(f32), Lower(f32), Flatten(f32), Smooth}` — used today only for offline map authoring.
 
 **Decision: the game owns the simple heightfield path.** Terraforming reuses the game's existing `MapEditor` sculpt kernel (factored into a shared `src/map/sculpt.rs` so the map editor and the runtime tool cannot drift), edits `MapTerrain` in place, and regionally re-derives the `CellClass` mask. The engine's voxel `TerrainVolume`/`TerrainScene`/navmesh stack is NOT adopted: it solves a different problem (volumetric sculpting for the engine editor), would force a heightfield↔SDF conversion both ways, and its navmesh consumer doesn't exist in the game. Engine crates stay untouched (game-agnostic rule holds — zero engine changes in this design).
 
@@ -126,7 +126,7 @@ Wave 1 **must not start before virtualized M4 (`docs/superpowers/plans/2026-06-1
 
 ## 5. Data Models
 
-All in the game repo (`~/Ochroma/projects/civitas_care`); engine crates untouched.
+All in the game repo (`~/Ochroma/projects/urban_horizon`); engine crates untouched.
 
 ```rust
 // src/game/save.rs — additive serde variant (SAVE_VERSION stays 5, §4.3)

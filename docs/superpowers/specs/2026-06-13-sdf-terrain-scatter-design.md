@@ -13,18 +13,18 @@
 **The terrain must be a TRUE 3D SDF so terraforming can sculpt cliffs (overhangs/vertical faces) and caves (interior voids). A heightfield cannot represent either — it is the wrong authoritative layer.** What exists today is fragmented and 2.5D-shaped:
 
 - **Forge generates terrain as a 2.5D heightfield with an empty SDF slot.** `forge-cli terrain` (`~/src/forge/crates/forge-cli/src/cmd/terrain.rs:55-71`) builds `HeightfieldSpatial` and leaves `sdf: None` (`~/src/forge/crates/volume/src/spatial.rs:30`); nothing populates the `SdfSpatial` the module doc promises (`volume/src/lib.rs:23`). A heightfield is single-valued in Y — it physically cannot carry overhangs or voids.
-- **The only true-3D SDF the codebase cooks is a single DENSE box per asset.** `ready_sdf` (`~/Ochroma/projects/civitas_care/src/bin/game_asset_cook.rs:2909`) emits `ReadyAssetSdfVolume { resolution:[u16;3], origin:[f32;3], voxel_size, narrow_band, sign, distances_snorm16 }` (`~/Ochroma/projects/civitas_care/src/asset/mod.rs:372-383`) — true 3D and narrow-band (±4 voxels, `SDF_GPU_TARGET` `~/.../game_asset_cook.rs:2820`), but a **single 64³-class box sized for a building**, not a sparse paged field over a km-scale map. There is no brick/clipmap paging layer; the GPU samples one dense volume per instance (`megakernel_sdf.slang::sdf_sample_volume_local:96`, one `origin`/`voxel_size`/`distance_offset` per volume header). A dense 3D box over a 4 km map is multi-TB — a non-starter.
+- **The only true-3D SDF the codebase cooks is a single DENSE box per asset.** `ready_sdf` (`~/Ochroma/projects/urban_horizon/src/bin/game_asset_cook.rs:2909`) emits `ReadyAssetSdfVolume { resolution:[u16;3], origin:[f32;3], voxel_size, narrow_band, sign, distances_snorm16 }` (`~/Ochroma/projects/urban_horizon/src/asset/mod.rs:372-383`) — true 3D and narrow-band (±4 voxels, `SDF_GPU_TARGET` `~/.../game_asset_cook.rs:2820`), but a **single 64³-class box sized for a building**, not a sparse paged field over a km-scale map. There is no brick/clipmap paging layer; the GPU samples one dense volume per instance (`megakernel_sdf.slang::sdf_sample_volume_local:96`, one `origin`/`voxel_size`/`distance_offset` per volume header). A dense 3D box over a 4 km map is multi-TB — a non-starter.
 - **Three disjoint terrain code paths exist and none is wired end-to-end from the game.** NDF-chunk sphere-trace (`~/src/spectra/slang/terrain_sdf.slang:70`, gated `g_terrain_enabled` at `megakernel.slang:1342`, **not wired from `crates/vox_render/`**); baked per-building snorm SDF (`splat_backend.rs:776`, fully wired); RTX Mega-Geometry displaced mesh (`~/src/spectra/.../rtxmg/src/terrain.rs`, Python-mirror maturity, not in the resident frame). The displaced-mesh path is heightfield-only by construction (displacement along a base sheet) — caves/overhangs are out of its reach.
 - **GPU CSG already exists and already has the carve/union ops terraform needs.** `sdf_eval.slang` (`~/src/spectra/slang/sdf_eval.slang`) defines `SDFOpGPU` (16 floats/node) with `OP_UNION/OP_SUBTRACT/OP_INTERSECT/OP_SMOOTH_UNION/OP_SMOOTH_SUBTRACT` (`:28-31`) and the combine dispatch `min/max(-)/smooth_*` is implemented (`:127-133`), plus `eval_sdf_tree` (`:88`) and a batch eval compute kernel with central-difference gradients (`eval_sdf_batch:158`). Primitives: ground-plane/sphere/box/capsule/noise-field (`:37-62`). **This is the engine that 3D-CSG terraform brushes map onto** — subtract = carve cave/cliff cut, smooth-union = overhang build-up.
 - **Surface extraction exists but is split between a real GPU path and a stub CPU path.** GPU `marching_cubes.slang` (`~/src/spectra/slang/marching_cubes.slang`) has the full 256-entry edge/tri tables (`g_mc_edge_table`/`g_mc_tri_table:7-8`), edge interpolation (`interp_vertex:55`), and emits a vertex/normal/attribute triangle soup — but it consumes **ASDF octree cells** (`g_cell_centers/g_cell_data`), not our snorm16 bricks. The Rust `spectra-flexicubes` crate (`~/src/spectra/rust/spectra-flexicubes/src/lib.rs`) is advertised as dual marching cubes but is a **SIMPLIFIED STUB**: it fan-triangulates crossing edges from a cell with no proper MC lookup table (`:111-118` comment: *"For a proper implementation we'd use the full MC lookup table"*), takes a single dense `res³` field (`extract:46`), and is not wired to anything game-side (only `spectra-rs` re-exports it). So: a working GPU MC kernel exists for ASDF input; **a brick-input, cliff-edge-preserving extractor for our terrain bricks is net-new** (see §4.3).
-- **The terraform brush edits a heightfield, not an SDF.** `sculpt_heightmap` (`~/Ochroma/projects/civitas_care/src/map/sculpt.rs:73`) → `apply_stamp` (`src/map/terrain.rs:122`) → `rederive_region` (`src/map/derive.rs:43`) bumps a 2D `CellClass` mask + `version`; no SDF is touched and the brush is structurally incapable of overhangs/voids.
+- **The terraform brush edits a heightfield, not an SDF.** `sculpt_heightmap` (`~/Ochroma/projects/urban_horizon/src/map/sculpt.rs:73`) → `apply_stamp` (`src/map/terrain.rs:122`) → `rederive_region` (`src/map/derive.rs:43`) bumps a 2D `CellClass` mask + `version`; no SDF is touched and the brush is structurally incapable of overhangs/voids.
 - **Only one ground texture (`leafy_grass`) and zero scatter models are wired.** `STEM_SETS` (`src/asset/textures.rs:49`) + `PINNED_SETS` (`src/bin/polyhaven_fetch.rs:28`) carry a single ground set; the biome LUT `BIOME_SPECIES_PROBS` (`~/src/spectra/slang/biome_gpu.slang:44-63`) names species slots (oak/beech/grass/...) with no asset behind any slot.
 
 ---
 
 ## 2. Done When
 
-Running `cargo run --bin civitas_care` and entering a fresh temperate map, then dragging the terraform brushes over open ground, produces — in the live window, verifiable by a human at the keyboard:
+Running `cargo run --bin urban_horizon` and entering a fresh temperate map, then dragging the terraform brushes over open ground, produces — in the live window, verifiable by a human at the keyboard:
 
 1. The **Carve (subtract) brush dug horizontally into a hillside leaves a real CAVE**: a human walks/flies the camera *inside* the hill and sees an enclosed void with terrain above, below, and on three sides — i.e. the surface is genuinely multi-valued in Y at that (x,z). (A heightfield cannot produce this; it is the proof the SDF is 3D-authoritative.)
 2. The **Carve brush cutting downward against a raised lip leaves a vertical CLIFF face / overhang** — the cut face is near-vertical and there is terrain that hangs *over* empty space beneath it, again multi-valued in Y.
@@ -48,7 +48,7 @@ A human confirms all five by eye without reading code. (1) and (2) are the load-
 | Dirty-brick re-extract is local | `cargo test -p vox_render extract_dirty_only` carves one brick, asserts re-extraction touches ONLY the dirty brick's chunk vertices (untouched chunks' vertex buffers byte-identical) | `assert!(chunk.dirty)` |
 | Heightfield SEEDS the 3D field | `cargo test -p vox_render seed_field_from_heightmap` asserts `vol.sample(x, h(x,z)+voxel, z) ∈ (0, voxel*1.5)` and `< 0` one voxel below `h(x,z)` for 100 sampled cells | `assert!(vol.distances.iter().any(\|d\|*d!=0.0))` |
 | Biome-gated scatter placement | `cargo test -p vox_render scatter_biome_gate -- --nocapture` prints `trees=0 on Water/Slope/cave, grass>500 on flat temperate` and asserts those counts | `assert!(instances.is_some())` |
-| Default ground texture blend | `cargo run --bin civitas_care` then screenshot diff: flat cell RGB greener than rock cell (G>R on flat, R≈G on slope/cliff) | texture file exists on disk |
+| Default ground texture blend | `cargo run --bin urban_horizon` then screenshot diff: flat cell RGB greener than rock cell (G>R on flat, R≈G on slope/cliff) | texture file exists on disk |
 
 ---
 
@@ -68,7 +68,7 @@ This **extends** the existing docs but **corrects this doc's own first draft**: 
 
 The field is `d(p) = min(d_seed, eval_edits(p))` evaluated/stored as bricks. **No dense 3D box** (a 4 km × vertical-extent dense volume is multi-TB) and **no heightfield-analytic march as the authoritative form** — the field must be free to be multi-valued in Y.
 
-- **Brick = a small dense narrow-band tile in the EXISTING `ReadyAssetSdfVolume` snorm16 format** (`~/Ochroma/projects/civitas_care/src/asset/mod.rs:372-383`: `resolution:[u16;3]`, `origin`, `voxel_size`, `narrow_band`, `sign`, `distances_snorm16`) — the format already cooks true-3D narrow-band volumes (`ready_sdf`, `~/.../game_asset_cook.rs:2909`; `SDF_GPU_TARGET` band = ±4 voxels, `:2820`). A terrain brick is one such volume covering e.g. a 8 m × 8 m × 8 m cube at ~0.25 m voxels (≈32³). Reuse means buildings, props, and terrain residented identically in the GPU SDF atlas and sampled by the SAME shader path (`megakernel_sdf.slang::sdf_sample_volume_local:96`, one header per volume).
+- **Brick = a small dense narrow-band tile in the EXISTING `ReadyAssetSdfVolume` snorm16 format** (`~/Ochroma/projects/urban_horizon/src/asset/mod.rs:372-383`: `resolution:[u16;3]`, `origin`, `voxel_size`, `narrow_band`, `sign`, `distances_snorm16`) — the format already cooks true-3D narrow-band volumes (`ready_sdf`, `~/.../game_asset_cook.rs:2909`; `SDF_GPU_TARGET` band = ±4 voxels, `:2820`). A terrain brick is one such volume covering e.g. a 8 m × 8 m × 8 m cube at ~0.25 m voxels (≈32³). Reuse means buildings, props, and terrain residented identically in the GPU SDF atlas and sampled by the SAME shader path (`megakernel_sdf.slang::sdf_sample_volume_local:96`, one header per volume).
 - **Sparsity is the whole point.** A brick is allocated ONLY if the zero-set passes within `narrow_band` of it. Flat ground → one band layer of bricks. A cave or overhang → the extra bricks the void/lip occupy, nowhere else. This is what makes a 3D field over a km-scale map affordable.
 - **Paging / clipmap** keeps only bricks near the camera (and any region under active sim) GPU-resident, in concentric LOD rings (coarser voxel size per ring). The salvaged `hybrid-atom-sdf-lod-design.md` clipmap tier-selection logic drives ring assignment.
 - **`sign` semantics:** terrain bricks are `ReadyAssetSdfSign::Closed` (`asset/mod.rs:393`) — interior negative distances are authoritative (you can be *inside* the hill, which is exactly what a cave needs). The reserved `Shell` value is not used here.
@@ -77,10 +77,10 @@ The field is `d(p) = min(d_seed, eval_edits(p))` evaluated/stored as bricks. **N
 
 ### 4.3 Seeding the base ground from the heightmap (one-time, not authoritative)
 
-The initial terrain is seeded into the brick field from `MapTerrain`'s heightmap (`~/Ochroma/projects/civitas_care/src/map/terrain.rs:18` `MapTerrain{cell_size, origin, heights:Heightmap}`, `:72-75`). For each brick the seed surface passes through, the cook writes `d(p) = signed distance to the heightmap surface` (negative below `h(x,z)`, positive above) into the brick's snorm16 band:
+The initial terrain is seeded into the brick field from `MapTerrain`'s heightmap (`~/Ochroma/projects/urban_horizon/src/map/terrain.rs:18` `MapTerrain{cell_size, origin, heights:Heightmap}`, `:72-75`). For each brick the seed surface passes through, the cook writes `d(p) = signed distance to the heightmap surface` (negative below `h(x,z)`, positive above) into the brick's snorm16 band:
 
 ```
-GAME (civitas_care)                  ENGINE (vox_render)                 SPECTRA
+GAME (urban_horizon)                  ENGINE (vox_render)                 SPECTRA
 MapTerrain.heights ----seed (once)--> seed_terrain_bricks (NEW)          (substrate)
   (Heightmap, cell_size, origin)        -> sparse narrow-band bricks      sdf_sample_volume_local
   terrain.rs:18,72                          in ReadyAssetSdfVolume fmt     megakernel_sdf.slang:96
@@ -280,17 +280,17 @@ Files: `crates/vox_render/src/splat_backend.rs`, `crates/vox_render/src/gpu/terr
 **Phase 2 — surface extraction → skin → TLAS (caves/overhangs mesh correctly).**
 Net-new brick-input dual-contouring extractor `extract_terrain_skin` (apron overlap for watertight seams); wire extracted chunks as TLAS residents.
 Files: `crates/vox_render/src/gpu/terrain_extract.rs` (new); TLAS wiring in the resident frame builder.
-*Done When:* `cargo test -p vox_render extract_cave_mesh` GREEN — a brick with a carved cave extracts ≥1 downward-facing-roof triangle (normal·(+Y) < −0.3) and is edge-manifold; `cargo run --bin civitas_care` shows the seeded base terrain as a lit, textured mesh skin at ≥60 FPS (title) on the 4070 Ti.
+*Done When:* `cargo test -p vox_render extract_cave_mesh` GREEN — a brick with a carved cave extracts ≥1 downward-facing-roof triangle (normal·(+Y) < −0.3) and is edge-manifold; `cargo run --bin urban_horizon` shows the seeded base terrain as a lit, textured mesh skin at ≥60 FPS (title) on the 4070 Ti.
 
 **Phase 3 — 3D CSG terraform (cliffs + caves, the headline).**
 `apply_terraform_stamp` (subtract/union/smooth via `sdf_eval.slang` ops) writing dirty bricks + edit log; per-stamp band recompute + atlas re-upload + dirty-brick re-extract + single-chunk TLAS refit; replace the heightfield brush in `MapTerrain::apply_stamp`.
-Files: `~/Ochroma/projects/civitas_care/src/map/terrain.rs:122`, `crates/vox_render/src/gpu/terrain_field.rs`, `crates/vox_render/src/gpu/terrain_extract.rs`.
-*Done When:* `cargo test -p vox_render terraform_csg_subtract`, `terraform_csg_overhang`, `terrain_brick_cave_topology`, `extract_dirty_only` all GREEN; and `cargo run --bin civitas_care` Done-When (2)§ acceptance: a human carves a cave into a hillside and flies the camera inside an enclosed void; carves a downward cut and sees a vertical cliff/overhang — both at ≥60 FPS.
+Files: `~/Ochroma/projects/urban_horizon/src/map/terrain.rs:122`, `crates/vox_render/src/gpu/terrain_field.rs`, `crates/vox_render/src/gpu/terrain_extract.rs`.
+*Done When:* `cargo test -p vox_render terraform_csg_subtract`, `terraform_csg_overhang`, `terrain_brick_cave_topology`, `extract_dirty_only` all GREEN; and `cargo run --bin urban_horizon` Done-When (2)§ acceptance: a human carves a cave into a hillside and flies the camera inside an enclosed void; carves a downward cut and sees a vertical cliff/overhang — both at ≥60 FPS.
 
 **Phase 4 — replay + save.**
 Persist the `edit_log`; load = `seed_terrain_bricks` then `replay_edit_log`.
-Files: `~/Ochroma/projects/civitas_care/src/map/` save path, `crates/vox_render/src/gpu/terrain_field.rs`.
-*Done When:* `cargo test -p civitas_care terraform_replay_roundtrip` GREEN — a map with a carved cave saved+loaded reproduces the cave's multi-crossing ray (≥3 zero-set crossings) bit-for-bit vs pre-save.
+Files: `~/Ochroma/projects/urban_horizon/src/map/` save path, `crates/vox_render/src/gpu/terrain_field.rs`.
+*Done When:* `cargo test -p urban_horizon terraform_replay_roundtrip` GREEN — a map with a carved cave saved+loaded reproduces the cave's multi-crossing ray (≥3 zero-set crossings) bit-for-bit vs pre-save.
 
 **Phase 5 — clipmap paging + perf.**
 Concentric LOD rings (coarser voxels outward), camera + sim-active residency; profile dirty-brick edit latency.

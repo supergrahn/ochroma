@@ -6425,6 +6425,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "cudarc",
+ "dirs",
  "hashbrown 0.15.5",
  "rayon",
  "serde",

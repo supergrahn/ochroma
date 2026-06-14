@@ -1,20 +1,20 @@
 # Design: Engine Code Quality Audit — Cross-Repo Remediation Backlog (2026-06-13)
 
 **Status:** Draft
-**Scope:** Codebase-wide quality review across all four Ochroma repos (ochroma engine, spectra renderer, forge geometry, civitas_care game) — synthesizes six audit slices into one prioritized remediation backlog ranked by (risk-reduction + iteration-speed) / effort.
+**Scope:** Codebase-wide quality review across all four Ochroma repos (ochroma engine, spectra renderer, forge geometry, urban_horizon game) — synthesizes six audit slices into one prioritized remediation backlog ranked by (risk-reduction + iteration-speed) / effort.
 **Related:** CLAUDE.md conventions; the recent `splat_backend_tests/` and `game_asset_cook/tests.rs` test-extraction precedent.
 
 ---
 
 ## 1. Problem Statement
 
-Measured 2026-06-13. Totals: ochroma 190,449 LOC; spectra/rust 125,291; spectra/slang 65,255; forge 18,712; civitas_care 57,033. Build cache 7.9 GB across four `target/` dirs (all correctly gitignored).
+Measured 2026-06-13. Totals: ochroma 190,449 LOC; spectra/rust 125,291; spectra/slang 65,255; forge 18,712; urban_horizon 57,033. Build cache 7.9 GB across four `target/` dirs (all correctly gitignored).
 
 Concrete, observable symptoms:
 
 - A plain `cargo build` of `spectra-bin` **cannot build on this AMD box** — `spectra-bin/Cargo.toml:15` defaults to `["cuda","dlss","optix-denoiser","optix-rt","vulkan-backend"]`, demanding CUDA+OptiX+DLSS+Vulkan SDKs simultaneously.
 - The engine crate `vox_data` (game-agnostic by CLAUDE.md rule) contains **city-builder domain code, not just comments** — `asset_catalog.rs:17-20` (`ResidentialBuilding`/`CommercialBuilding`/…), `:52` (`enum BuildingStyle { Victorian, Modern, … }`), `templates.rs:39-48` (a "City Builder" template enumerating "Zoning system", "Citizen simulation", "Traffic simulation"). ~85 game-concept hits across 9 files; ~14 are code-level symbols.
-- Five files exceed 3,700 LOC and concentrate 39% of the civitas_care `src` tree: `game_asset_cook.rs` (5,333 src, not domain-carved), `render_gpu/mod.rs` (5,073), `play.rs` (4,711), `game/mod.rs` (3,758), `hud.rs` (3,115).
+- Five files exceed 3,700 LOC and concentrate 39% of the urban_horizon `src` tree: `game_asset_cook.rs` (5,333 src, not domain-carved), `render_gpu/mod.rs` (5,073), `play.rs` (4,711), `game/mod.rs` (3,758), `hud.rs` (3,115).
 - The test-extraction convention (proven once on `splat_backend` and once on `game_asset_cook`) was **never propagated** — ~277 ochroma + ~248 spectra + ~75 cook files keep tests inline; the worst single case is `shell/mod.rs` carrying ~2,412 test LOC inside a 4,889-line file.
 - **42 forbidden weak `assert!(x.is_some()/is_ok())` tests** (ochroma 18, spectra 24, forge 0, cook ~1-2) violate "every test checks a REAL computed outcome."
 - Lying feature flags: `spectra-renderer/Cargo.toml` declares `restir`/`neural-nrc`/`photon`/`path-guide`/`temporal-denoiser`/`neural-bsdf` as empty `= []` aliases that gate nothing — `--no-default-features` still compiles the full stack.
@@ -26,9 +26,9 @@ Concrete, observable symptoms:
 The remediation is complete when, for the highest-leverage items:
 
 - `cargo build -p spectra-bin --no-default-features --features vulkan-backend` succeeds on the AMD/RADV box without a CUDA/OptiX toolchain, and `cargo build -p spectra-bin` (defaults) also succeeds on the same box.
-- `grep -rn "BuildingStyle\|ResidentialBuilding\|CommercialBuilding" crates/vox_data/src` returns **zero** matches — the city taxonomy lives in `vox_app`/civitas_care instead, and `cargo build -p vox_data` is clean.
+- `grep -rn "BuildingStyle\|ResidentialBuilding\|CommercialBuilding" crates/vox_data/src` returns **zero** matches — the city taxonomy lives in `vox_app`/urban_horizon instead, and `cargo build -p vox_data` is clean.
 - `grep -rn 'assert!([^)]*\.is_some())\|assert!([^)]*\.is_ok())' --include='*.rs'` across all four repos returns **zero** matches in non-borderline sites (the 42 catalogued sites resolved).
-- `wc -l vox_app/src/shell/mod.rs` reports < 2,500 (test mod extracted to `shell/tests/`); `wc -l civitas_care/src/bin/game_asset_cook.rs` reports < 700 (domain-carved into `cook/{recipes,atomize,plot,flora,materials,surfaces,sdf,details,gates}.rs`).
+- `wc -l vox_app/src/shell/mod.rs` reports < 2,500 (test mod extracted to `shell/tests/`); `wc -l urban_horizon/src/bin/game_asset_cook.rs` reports < 700 (domain-carved into `cook/{recipes,atomize,plot,flora,materials,surfaces,sdf,details,gates}.rs`).
 
 A human can verify each line above at the keyboard without reading implementation code.
 
@@ -41,7 +41,7 @@ A human can verify each line above at the keyboard without reading implementatio
 - **Clean axes (all four repos):** `todo!()`/`unimplemented!()` = **0** everywhere. All `target/` dirs correctly gitignored (0 tracked artifacts). Production code paths use `Result`, not `unwrap` (the high unwrap counts cluster in test code). Crate granularity in spectra (84 sharp single-responsibility crates) and forge (well-decomposed, zero warnings, zero dead-code suppressions) is excellent.
 - **The two real breaches:** (1) **engine/game leak** — `vox_data` ships city-builder taxonomy (the only CLAUDE.md hard rule broken in shipped code); (2) **hostile/lying build config** in spectra — defaults that can't build on AMD plus feature flags that gate nothing.
 - **The diffuse debt:** monster files (mostly inflated by inline test mods) and 42 weak assertions. These are *mechanical-safe* once the precedent split is scripted, and they directly buy iteration speed (smaller files compile/navigate faster; real assertions catch regressions the stubs let through).
-- **Per-repo ranking (cleanest → most debt):** forge (cleanest — one god file, no violations) < ochroma-core < spectra (great crates, a few god files + lying flags) < ochroma-render-app (god-object shell) < civitas_care (5 monster files, but it's the game layer so domain concepts are expected).
+- **Per-repo ranking (cleanest → most debt):** forge (cleanest — one god file, no violations) < ochroma-core < spectra (great crates, a few god files + lying flags) < ochroma-render-app (god-object shell) < urban_horizon (5 monster files, but it's the game layer so domain concepts are expected).
 
 ---
 
@@ -62,7 +62,7 @@ Ranking metric: **(risk-reduction + iteration-speed gain) / effort**. Effort: S 
 
 | # | WHAT | WHERE | WHY | EFFORT | Safety |
 |---|------|-------|-----|--------|--------|
-| B1 | Move `Building`/`BuildingStyle`/`ResidentialBuilding`/city-template content out of engine `vox_data` into `vox_app`/civitas_care; replace with a generic `AssetGenerator::Parametric` / data-driven `AssetKind` registry (string tags) | ochroma `vox_data/src/asset_catalog.rs:17-20,30,52,64,107-126,225-328`, `library.rs:6`, `templates.rs:39-48`, `marketplace.rs:27,29` | The **only CLAUDE.md hard rule broken in shipped code** — city-builder taxonomy hardcoded into the foundational engine crate; ~14 code-level symbols across 9 files | L | needs care (semantic; touches asset gen API) |
+| B1 | Move `Building`/`BuildingStyle`/`ResidentialBuilding`/city-template content out of engine `vox_data` into `vox_app`/urban_horizon; replace with a generic `AssetGenerator::Parametric` / data-driven `AssetKind` registry (string tags) | ochroma `vox_data/src/asset_catalog.rs:17-20,30,52,64,107-126,225-328`, `library.rs:6`, `templates.rs:39-48`, `marketplace.rs:27,29` | The **only CLAUDE.md hard rule broken in shipped code** — city-builder taxonomy hardcoded into the foundational engine crate; ~14 code-level symbols across 9 files | L | needs care (semantic; touches asset gen API) |
 
 ### Theme C — Tests-in-Own-Files (mechanical; biggest navigation/compile win)
 

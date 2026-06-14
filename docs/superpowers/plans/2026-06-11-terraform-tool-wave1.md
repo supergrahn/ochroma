@@ -2,20 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use **superpowers:subagent-driven-development** (recommended) or **superpowers:executing-plans** to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **EXECUTION GATE (sequenced honestly):** Tasks 3–6 must not start until **virtualized M4** (`docs/superpowers/plans/2026-06-11-virtualized-m4-game-wiring.md`) has executed and its Done-When prints are demonstrated (`[m4] frame: … path=gpu-resident`, `[scene] renderer constructed 1x`, the `--shot-m4` PNGs). Reasons: the terrain layer rides M4's residual-splat upload path; both waves rewrite `render_gpu/mod.rs` + `bin/play.rs` ownership; pre-M4 a per-stroke scene refresh reconstructs the renderer and makes continuous-apply unusable. **Tasks 1–2 are pure sim (kernel, action, replay/undo) and may run before M4 lands** if schedule demands. Also: a checkpoint-commit agent landed/is landing the current state of both repos — verify `git -C ~/Ochroma/projects/civitas_care status --porcelain` is clean before Task 1. Run in the main repos, never an isolated worktree (the abs-path gotcha).
+> **EXECUTION GATE (sequenced honestly):** Tasks 3–6 must not start until **virtualized M4** (`docs/superpowers/plans/2026-06-11-virtualized-m4-game-wiring.md`) has executed and its Done-When prints are demonstrated (`[m4] frame: … path=gpu-resident`, `[scene] renderer constructed 1x`, the `--shot-m4` PNGs). Reasons: the terrain layer rides M4's residual-splat upload path; both waves rewrite `render_gpu/mod.rs` + `bin/play.rs` ownership; pre-M4 a per-stroke scene refresh reconstructs the renderer and makes continuous-apply unusable. **Tasks 1–2 are pure sim (kernel, action, replay/undo) and may run before M4 lands** if schedule demands. Also: a checkpoint-commit agent landed/is landing the current state of both repos — verify `git -C ~/Ochroma/projects/urban_horizon status --porcelain` is clean before Task 1. Run in the main repos, never an isolated worktree (the abs-path gotcha).
 
-**Goal:** A CS2-style terraforming brush (Raise/Lower/Level/Smooth) in Civitas Care: continuous-apply drag bundled into ONE replayable `AuthoredAction::Terraform`, kr-per-m³ cost through funds, BLOCK-under-the-city guard with the one-source verdict chip, water-mask → childcare-coverage invalidation, a live terrain splat layer, the `--shot-terraform` harness, and a W3 walkthrough.
-**Done When:** `cd ~/Ochroma/projects/civitas_care && cargo run --release --bin play -- --shot-terraform terraform_shots` exits 0 printing `[terraform] raise stroke: <S> stamps · <V> m³ · <K> kr · funds <F0> -> <F1>` (S in 5..=200, V > 500, F1 = F0 − K), `[terraform] flood stroke: water cells flipped <W> · childcare field dirty: true` (W > 0), `[terraform] undo: heights bit-exact to pre-stroke: true · funds restored: true`, and `[terraform] after differs from before on <N> px` (N > 20000) — and writes `terraform_shots/terraform_{before,after,undo}.png` where a human sees a hill appear and disappear. Windowed: arm **Terrain → Raise** on Founders' Vale, drag → visible ground rises, release → status bar prints `Terraformed (Raise) — <V> m³ · <K> kr`, Ctrl+Z prints `Undid: Terraformed (Raise) — <V> m³ · <K> kr` with byte-identical numbers.
+**Goal:** A CS2-style terraforming brush (Raise/Lower/Level/Smooth) in Urban Horizon: continuous-apply drag bundled into ONE replayable `AuthoredAction::Terraform`, kr-per-m³ cost through funds, BLOCK-under-the-city guard with the one-source verdict chip, water-mask → childcare-coverage invalidation, a live terrain splat layer, the `--shot-terraform` harness, and a W3 walkthrough.
+**Done When:** `cd ~/Ochroma/projects/urban_horizon && cargo run --release --bin play -- --shot-terraform terraform_shots` exits 0 printing `[terraform] raise stroke: <S> stamps · <V> m³ · <K> kr · funds <F0> -> <F1>` (S in 5..=200, V > 500, F1 = F0 − K), `[terraform] flood stroke: water cells flipped <W> · childcare field dirty: true` (W > 0), `[terraform] undo: heights bit-exact to pre-stroke: true · funds restored: true`, and `[terraform] after differs from before on <N> px` (N > 20000) — and writes `terraform_shots/terraform_{before,after,undo}.png` where a human sees a hill appear and disappear. Windowed: arm **Terrain → Raise** on Founders' Vale, drag → visible ground rises, release → status bar prints `Terraformed (Raise) — <V> m³ · <K> kr`, Ctrl+Z prints `Undid: Terraformed (Raise) — <V> m³ · <K> kr` with byte-identical numbers.
 **Architecture:** The game-owned heightfield path (engine voxel terrain NOT adopted): the `MapEditor` sculpt kernel is factored into `src/map/sculpt.rs` and shared with a new `MapTerrain::apply_stamp` (kernel edit + regional `CellClass` re-derive + version bump). `CivitasGame` owns the stroke state machine (`begin_stroke`/`stroke_stamp`/`end_stroke`) — spacing-gated stamps mutate terrain continuously, mouse-up logs ONE `AuthoredAction::Terraform{mode, radius, amount, target, stamps, volume_m3, cost_kr}` (SAVE_VERSION **stays 5**, the AddRoad additive-variant precedent). Undo correctness comes from the new `base_terrain` pristine snapshot replacing the live-terrain carry-over in `rebuilt_with_log`.
 **Design Document:** `docs/superpowers/specs/2026-06-11-terraform-tool-design.md`
-**Tech Stack:** Rust (edition 2024), game repo `~/Ochroma/projects/civitas_care` (branch `master`, own repo), engine `~/src/ochroma` untouched. winit 0.30, tiny-skia, serde_json.
-**Build:** `cd ~/Ochroma/projects/civitas_care && cargo build --release` / `cargo test --release` / bin tests `cargo test --release --bin play`.
+**Tech Stack:** Rust (edition 2024), game repo `~/Ochroma/projects/urban_horizon` (branch `master`, own repo), engine `~/src/ochroma` untouched. winit 0.30, tiny-skia, serde_json.
+**Build:** `cd ~/Ochroma/projects/urban_horizon && cargo build --release` / `cargo test --release` / bin tests `cargo test --release --bin play`.
 
 ---
 
 ## IMPORTANT NOTES
 
-- **Repos / commits:** ALL code lands in the GAME repo `~/Ochroma/projects/civitas_care` (its own git repo, branch `master`). Engine crates stay untouched. Each task ends with a real commit, message per house convention ending with the footer line `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
+- **Repos / commits:** ALL code lands in the GAME repo `~/Ochroma/projects/urban_horizon` (its own git repo, branch `master`). Engine crates stay untouched. Each task ends with a real commit, message per house convention ending with the footer line `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - **Verified GAME signatures (code-checked 2026-06-11; code wins over docs):**
   - `HeightBrush { pub radius: f32, pub strength: f32 }`, `HeightBrush::new(radius, strength)`, private `falloff(t)` = smoothstep `s*s*(3-2s)` with `s = 1-t`; `BrushOp { Raise(f32), Lower(f32), Flatten(f32), Smooth }`; `MapEditor::sculpt(&mut self, wx: f32, wz: f32, op: BrushOp)` — all `src/map/editor.rs:22-142`. The kernel iterates cells row-major in the brush AABB, distance-tests against `radius`, weight `falloff(dist/r) * brush.strength`; `Smooth` snapshots `hm.data` first. **This behavior must be preserved bit-for-bit when factored out** (existing editor tests `sculpting_raises_terrain_…` must pass unmodified).
   - `derive_buildable(hm: &Heightmap, water: &WaterMask, max_buildable_slope_deg: f32) -> CellGrid<CellClass>` (`src/map/derive.rs:19`); `SLOPE_BLOCKED_MAX: f32 = 20.0`; a cell is `Water` if `hm.sample(centre) <= water.sea_level` OR centre inside a `WaterBody.outline` polygon, else `TooSteep` over the slope cap, else `Buildable`.
@@ -44,7 +44,7 @@
 
 ## File Map
 
-All paths relative to `~/Ochroma/projects/civitas_care`.
+All paths relative to `~/Ochroma/projects/urban_horizon`.
 
 | Action | Path | Responsibility |
 |--------|------|----------------|
@@ -144,7 +144,7 @@ fn flat_world_refuses_stamps() {
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/Ochroma/projects/civitas_care
+cd ~/Ochroma/projects/urban_horizon
 git add src/map/sculpt.rs src/map/editor.rs src/map/mod.rs src/map/derive.rs src/map/terrain.rs
 git commit -m "feat(terraform): shared sculpt kernel + MapTerrain::apply_stamp with regional re-derive, version counter and water-flip stats
 

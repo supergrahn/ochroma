@@ -21,7 +21,7 @@ This is the dev-floor gate on the 780M; numbers on other machines are recorded m
 
 ## IMPORTANT NOTES
 
-- **Repos / hygiene:** engine `~/src/ochroma` only (branch `blitz/day1-foundation`, uncommitted M3 work present — build on it). **Do NOT run `git commit`** — every task ends "leave uncommitted". Engine crates stay game-agnostic ("buildings" only in the vox_app harness prints). No civitas_care changes.
+- **Repos / hygiene:** engine `~/src/ochroma` only (branch `blitz/day1-foundation`, uncommitted M3 work present — build on it). **Do NOT run `git commit`** — every task ends "leave uncommitted". Engine crates stay game-agnostic ("buildings" only in the vox_app harness prints). No urban_horizon changes.
 - **The measured M3.1 starting state (fresh verify, release, 780M — these ARE the inputs, re-measure nothing before Task 1):** 10k buildings: `p50=67.9 ms` exit 1, select_ms p50 ≈ 33–43, rest ≈ 31, governor railed at min 100,000. 1k buildings: `p50=37.6 ms` exit 1 (CPU-select Task-2 baseline was 38.92 with select 7.94 — GPU select adds net cost at city scale in release). Debug-build in-test select: cpu 233 / gpu 158 ms — **release inverts it** (the CPU walk optimizes; the two-readback latency does not). Tiled chain alone measured **2.2 ms at ~13k splats** — the chain is fast; the tail is overhead. Honesty gates already pass everywhere: `entry_overflow max=0`, `gpu_fallbacks=0`, coverage ~33%.
 - **Where the ~31 ms "rest" goes — code-verified evidence (Task 1 attributes it precisely; Tasks 2–5 remove it):**
   1. **Entry-scratch alloc/free churn:** `TileAssignPass::dispatch` (`gpu/tile_assign.rs:152–168`) creates 3 buffers of `max_tile_entries × 4 B` EVERY call, sized from the CAPACITY-derived `max_tile_entries` — 16M entries at the 1M cap ⇒ **192 MB/frame**; after the 1k-run's in-frame growth to ~25.9M entries ⇒ **~311 MB/frame**. wgpu zero-initializes buffers on first use; the previous frame's set is dropped when `assign` is reassigned next frame and destroyed inside the NEXT `poll(Wait)` — which is the select's `map_read` poll (`gpu/instanced_select_gpu.rs:696`) — so the churn is **misattributed to select_ms**. This is the leading suspect for BOTH the inflated select (43 ms) and the rest.
@@ -197,7 +197,7 @@ The biggest code-verified smell: 192–311 MB of buffer alloc/free PLUS a full p
 - Cross-frame pipelining (select N+1 overlapped with render N) — removes the last syncs, adds one frame of camera latency; M4's call.
 - Any frozen-WGSL change (`tile_assign.wgsl`, `radix_sort.wgsl`, `tile_range_build.wgsl`, `splat_raster.wgsl`), a stable radix sort, HZB occlusion, dirty-instance uploads.
 - Governor retuning, gate-threshold changes, resolution changes — the gate is the gate.
-- Game wiring (M4) and the civitas_care repo.
+- Game wiring (M4) and the urban_horizon repo.
 
 ---
 

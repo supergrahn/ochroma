@@ -20,9 +20,9 @@ use super::super::*;
     fn sdf_building_renders_solid_surface() {
         use super::{LightRig, SdfVolumeInput, pathtrace_sdf_to_rgba};
 
-        // --- Load the cooked SDF from the civitas craftsman asset ----------
+        // --- Load the cooked SDF from the Urban Horizon craftsman asset ----------
         let path = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms")
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms")
             .join("forge.house.craftsman.atoms.json");
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
@@ -267,7 +267,7 @@ use super::super::*;
         };
 
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
 
         let volume = load_atoms_sdf(&asset_path);

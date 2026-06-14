@@ -48,7 +48,7 @@ and `sdf_craftsman_textured.png` passes eyeball: clapboard courses and shingle r
 **Phased Done When per milestone (M3–M5 are later waves; gates fixed now):**
 
 - **M3 — Lighting reads real.** Same test binary, `sdf_block_lighting` test: a 2-building scene prints `contact band luminance -19% vs open facade (gate <= -15%)`, `sun/shade facade ratio 3.4 (gate in [2,6])`, `GI bounce adds +8% in shaded court (gate >= 5%)`, and the A/B PNGs (`L1` NEE-only vs `L2` +1 GI bounce) show a real shadow cast by one building onto the other.
-- **M4 — 100 archetypes, one atlas.** `cd ~/Ochroma/projects/civitas_care && cargo run --release --bin game_asset_cook` cooks ≥ 100 building archetypes printing per-asset `[sdf] <id> ...` lines and a final `[sdf-quality] 100 archetypes: atlas 24.1 MB / 64 MB quota, atoms 36.2 MB, grids 14.8 MB, textures 31.0 MB (34 sets)`; then the ochroma contact-sheet test renders all 100 (10×10 sheet, one instance each) printing `coverage >= 0.97: 100/100` and `distinct pairs (mean |ΔRGB| > 0.04): >= 95%` and writes `sdf_contact_sheet_100.png` where a human can see 100 visibly different, solid, textured buildings.
+- **M4 — 100 archetypes, one atlas.** `cd ~/Ochroma/projects/urban_horizon && cargo run --release --bin game_asset_cook` cooks ≥ 100 building archetypes printing per-asset `[sdf] <id> ...` lines and a final `[sdf-quality] 100 archetypes: atlas 24.1 MB / 64 MB quota, atoms 36.2 MB, grids 14.8 MB, textures 31.0 MB (34 sets)`; then the ochroma contact-sheet test renders all 100 (10×10 sheet, one instance each) printing `coverage >= 0.97: 100/100` and `distinct pairs (mean |ΔRGB| > 0.04): >= 95%` and writes `sdf_contact_sheet_100.png` where a human can see 100 visibly different, solid, textured buildings.
 - **M5 (budget-gated stretch) — true window recesses.** Only if the perf track's budget B affords it (see §4.8): grazing-angle depth AOV inside window reveals differs ≥ 0.05 m from the facade plane, printed.
 
 ---
@@ -180,7 +180,7 @@ Unchanged from the universal renderer: the game cook produces SDF + atoms + per-
 ## 5. Data Models
 
 ```rust
-// ── game cook (civitas_care/src/asset/mod.rs) — cooked payload addition ──────
+// ── game cook (urban_horizon/src/asset/mod.rs) — cooked payload addition ──────
 /// One glass aperture (window/door-light) fitted from the forge glass-zone
 /// triangles at cook. Local space = asset-local (same space as atoms + SDF).
 /// serde-default so v1 payloads load unchanged.
@@ -291,7 +291,7 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
 ```
 
 ```rust
-// ── game cook (civitas_care game_asset_cook.rs) ─────────────────────────────
+// ── game cook (urban_horizon game_asset_cook.rs) ─────────────────────────────
 /// Fit aperture rects from the forge contract's glass-zone triangles.
 /// Deterministic: cluster glass triangles by shared edges, fit oriented rect
 /// (dominant normal, in-plane PCA). Returns asset-local rects.
@@ -314,7 +314,7 @@ fn derive_aperture_rects(mesh: &ForgeMesh, zones: &[ForgeMaterialZone],
 | Aperture-rect glass classification + muntin/bevel detail | glass + opaque branches | `~/src/spectra/slang/megakernel.slang` | point-in-rect first, k-NN radius fallback |
 | Interior box-room shade | glass transmission branch | `~/src/spectra/slang/megakernel.slang` | replaces the hollow continuation; reflection continuation kept budget-gated |
 | NEE shadow trace + GI continuation (tiers) | opaque branch terminate site (line ~1407 today) | `~/src/spectra/slang/megakernel.slang` | `u_sdf_lighting_tier`; reuses next-ray plumbing the M2 glass proved |
-| `derive_aperture_rects` + payload field | cook per-recipe body, beside `ready_sdf` | `~/Ochroma/projects/civitas_care/src/bin/game_asset_cook.rs` + `src/asset/mod.rs` | prints `[apertures] <id>: <n> rects` |
+| `derive_aperture_rects` + payload field | cook per-recipe body, beside `ready_sdf` | `~/Ochroma/projects/urban_horizon/src/bin/game_asset_cook.rs` + `src/asset/mod.rs` | prints `[apertures] <id>: <n> rects` |
 | Per-channel material packing (cooked PBR → `PbrMaterial` + atlas) | textured test/probe harness | `crates/vox_render/src/splat_backend.rs` tests + civitas probe bin | reuses `TextureCache` (downsampled, tint-normalized) |
 | 100-directive cook + contact sheet | `game_asset_cook` + new ochroma test `sdf_contact_sheet_100` | civitas directives dir + `crates/vox_render/src/splat_backend.rs` | M4; prints the §2 ledger |
 

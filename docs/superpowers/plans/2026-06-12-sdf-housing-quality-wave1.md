@@ -7,7 +7,7 @@
 **Architecture:** All kernel work is additive and uniform-gated (`u_sdf_textured`, default 0 ⇒ byte-identical M2 frames) in the megakernel's SDF shade block; host work extends `splat_backend.rs` with a new textured entry point that reuses the GPU-verified texture-atlas bridge (`set_texture_atlas` AFTER `load_scene_state`). The cook gains deterministic aperture-rect derivation from glass-zone triangles. Quality features are per-hit shading costs (≈ +5% of one sphere-trace), never extra rays — see design §4.1 cost table.
 **Design Document:** `docs/superpowers/specs/2026-06-12-sdf-housing-quality-design.md`
 **Tech Stack:** Rust (workspace toolchain), Slang (megakernel, slangc runtime compile), wgpu-independent Vulkan via spectra `GpuBackend`, serde JSON cooked payloads.
-**Build:** `scripts/build-spectra-native.sh build -p vox_render --features spectra-native` (sets SLANG_DIR=~/slang-sdk + LD_LIBRARY_PATH); cook: `cd ~/Ochroma/projects/civitas_care && cargo run --release --bin game_asset_cook`. GPU tests need `SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json` and `--test-threads=1`.
+**Build:** `scripts/build-spectra-native.sh build -p vox_render --features spectra-native` (sets SLANG_DIR=~/slang-sdk + LD_LIBRARY_PATH); cook: `cd ~/Ochroma/projects/urban_horizon && cargo run --release --bin game_asset_cook`. GPU tests need `SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json` and `--test-threads=1`.
 
 ---
 
@@ -22,11 +22,11 @@
   - `SdfLayer::from_parts_with_atoms(volumes, instances, distances, albedo, atom_positions, atom_colors, atom_channels, instance_atom_range) -> SdfLayer` — `~/src/spectra/rust/spectra-scene-state/src/layers.rs:271`. Do not change it; add a sibling.
   - Megakernel: `sdf_gather_atom_material(int inst, float3 world_p, float radius) -> SdfAtomGather{color,channel,is_glass,nearest_d}` (line ~463); SDF shade block at line ~1208 (`u_sdf_render_enabled`); glass routes through `sample_glass(wo, n, ior, rough, float3(0), 1.0, 0.0, u1, u2, u3) -> BSDFSample`; texture fetch is `sample_texture_ewa(g_tex_descs, g_tex_data, u_num_textures, tex_id, uv, ddx_uv, ddy_uv) -> float4` (bilinear sibling exists).
   - Cook UV convention (`game_asset_cook.rs:1711` `forge_box_uv`): `p = [local.x + forge_width*0.5, local.y, forge_depth*0.5 - local.z]`, `s = 1/2.5`; dominant |normal| axis: Y ⇒ `[p.x*s, p.z*s]`, X ⇒ `[p.z*s, p.y*s]`, Z ⇒ `[p.x*s, p.y*s]`. The kernel MUST replicate this exactly (consistency gate depends on it).
-  - Cooked per-channel materials: `ReadyAssetPbrMaterial { id, name, channel: ReadyAssetMaterialChannel, base_color_factor: [f32;4], metallic_factor, roughness_factor, textures: ReadyAssetTextureSet }`; texture URIs resolve via `civitas_care::asset::textures::TextureCache::load(uri, tint)` (downsampled ≤256²/≤128², tint-normalized — use it, do not re-decode JPGs).
+  - Cooked per-channel materials: `ReadyAssetPbrMaterial { id, name, channel: ReadyAssetMaterialChannel, base_color_factor: [f32;4], metallic_factor, roughness_factor, textures: ReadyAssetTextureSet }`; texture URIs resolve via `urban_horizon::asset::textures::TextureCache::load(uri, tint)` (downsampled ≤256²/≤128², tint-normalized — use it, do not re-decode JPGs).
 - All new types use **private fields + accessors ONLY where the design says so**; the `splat_backend.rs` input structs (`SdfUvParams`, `SdfApertureRect`, `SdfChannelMaterials`) are plain-pub input data like the shipped `SdfSceneAtom` — match the file's existing convention.
 - `todo!()` / `unimplemented!()` / empty function bodies are **forbidden** — they fail the task.
 - GPU tests are `#[ignore]`-free but require the Vulkan env; follow the existing `sdf_craftsman_atom_material_and_glass` test (splat_backend.rs:2633) for asset loading, env guards, and PNG writing.
-- Cooked craftsman fixtures: SDF + atoms for `forge.house.craftsman` under `~/Ochroma/projects/civitas_care/assets/buildings/forge_starter/` (atoms: `atoms/…craftsman….atoms.json`); PolyHaven sets under `assets/buildings/forge_starter/textures/polyhaven/<set>/1k/`. The existing M2 test shows the exact loading code — reuse its helpers.
+- Cooked craftsman fixtures: SDF + atoms for `forge.house.craftsman` under `~/Ochroma/projects/urban_horizon/assets/buildings/forge_starter/` (atoms: `atoms/…craftsman….atoms.json`); PolyHaven sets under `assets/buildings/forge_starter/textures/polyhaven/<set>/1k/`. The existing M2 test shows the exact loading code — reuse its helpers.
 
 ---
 
@@ -39,10 +39,10 @@
 | Modify | `~/src/spectra/rust/spectra-scene-upload/src/uploader.rs` | upload + bind the new buffers in `bind_to_map` (mirror M2 atom-buffer pattern) |
 | Modify | `~/src/spectra/rust/spectra-renderer/src/renderer.rs` | set `u_sdf_textured` when the textured buffers are present (mirror `u_sdf_atom_material`) |
 | Modify | `crates/vox_render/src/splat_backend.rs` | cell-grid build, `SdfUvParams`/`SdfApertureRect`/`SdfChannelMaterials`, `pathtrace_sdf_scene_textured_to_rgba`, wave-1 GPU tests |
-| Modify | `~/Ochroma/projects/civitas_care/src/asset/mod.rs` | `ReadyAssetApertureRect` + `ReadyAssetPayload.apertures` (serde-default) |
-| Modify | `~/Ochroma/projects/civitas_care/src/bin/game_asset_cook.rs` | `derive_aperture_rects` from glass-zone triangles + payload wiring + cook print + tests |
+| Modify | `~/Ochroma/projects/urban_horizon/src/asset/mod.rs` | `ReadyAssetApertureRect` + `ReadyAssetPayload.apertures` (serde-default) |
+| Modify | `~/Ochroma/projects/urban_horizon/src/bin/game_asset_cook.rs` | `derive_aperture_rects` from glass-zone triangles + payload wiring + cook print + tests |
 | Test | `crates/vox_render/src/splat_backend.rs` (mod tests) | `sdf_gather_grid_matches_linear`, `sdf_craftsman_textured_quality` (the Done-When gates) |
-| Test | `~/Ochroma/projects/civitas_care/src/bin/game_asset_cook.rs` (mod tests) | `derive_aperture_rects_finds_craftsman_windows` |
+| Test | `~/Ochroma/projects/urban_horizon/src/bin/game_asset_cook.rs` (mod tests) | `derive_aperture_rects_finds_craftsman_windows` |
 
 ---
 
@@ -145,11 +145,11 @@
 ## Task 5: Aperture rects at cook — exact windows from glass-zone triangles
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/asset/mod.rs` (`ReadyAssetApertureRect`, `ReadyAssetPayload.apertures` serde-default)
-- Modify: `~/Ochroma/projects/civitas_care/src/bin/game_asset_cook.rs` (`derive_aperture_rects` + wiring + `[apertures]` print)
+- Modify: `~/Ochroma/projects/urban_horizon/src/asset/mod.rs` (`ReadyAssetApertureRect`, `ReadyAssetPayload.apertures` serde-default)
+- Modify: `~/Ochroma/projects/urban_horizon/src/bin/game_asset_cook.rs` (`derive_aperture_rects` + wiring + `[apertures]` print)
 - Test: cook test `derive_aperture_rects_finds_craftsman_windows`
 
-**Acceptance:** `cd ~/Ochroma/projects/civitas_care && cargo test --bin game_asset_cook derive_aperture_rects_finds_craftsman_windows -- --nocapture` prints `craftsman: <n> aperture rects` with n ≥ 6 and per-rect `<w>x<h> m @ normal (<nx>,<ny>,<nz>)` lines, every half-extent in [0.15, 2.5] m, every normal within 5° of an axis; and `cargo run --release --bin game_asset_cook` prints one `[apertures] <id>: <n> rects` line per asset with glass zones.
+**Acceptance:** `cd ~/Ochroma/projects/urban_horizon && cargo test --bin game_asset_cook derive_aperture_rects_finds_craftsman_windows -- --nocapture` prints `craftsman: <n> aperture rects` with n ≥ 6 and per-rect `<w>x<h> m @ normal (<nx>,<ny>,<nz>)` lines, every half-extent in [0.15, 2.5] m, every normal within 5° of an axis; and `cargo run --release --bin game_asset_cook` prints one `[apertures] <id>: <n> rects` line per asset with glass zones.
 
 **Wiring requirement:** `derive_aperture_rects(mesh, zones, desc)` called from the recipe cook body where `atomize_mesh_triangles` is called (same inputs in scope), result stored on the payload. Stubs = **task failure**.
 

@@ -199,9 +199,24 @@ impl WorldSave {
 
     pub fn entity_count(&self) -> usize { self.entities.len() }
 
-    /// Quick save to default location
+    /// Quick save to default location.
+    ///
+    /// Anchored to the OS data dir (`dirs_next::data_dir()/ochroma/saves`) so a
+    /// shortcut/launcher start (arbitrary CWD) saves to a stable, writable
+    /// location rather than a CWD-relative `saves/` dir. On Windows this is
+    /// `%APPDATA%\ochroma\saves`; on Linux `$XDG_DATA_HOME|~/.local/share`.
+    /// Falls back to `saves/quicksave.json` (the pre-anchor behavior) only if
+    /// the data dir cannot be resolved. The parent dir is created so the write
+    /// succeeds on first save.
     pub fn quick_save_path() -> std::path::PathBuf {
-        std::path::PathBuf::from("saves/quicksave.json")
+        match dirs_next::data_dir() {
+            Some(base) => {
+                let dir = base.join("ochroma").join("saves");
+                std::fs::create_dir_all(&dir).ok();
+                dir.join("quicksave.json")
+            }
+            None => std::path::PathBuf::from("saves/quicksave.json"),
+        }
     }
 
     pub fn from_entities(

@@ -20,7 +20,7 @@
 
 ## IMPORTANT NOTES
 
-- **Repos / hygiene:** engine `~/src/ochroma` only. Engine crates stay game-agnostic ("buildings" only in the vox_app harness prints). No civitas_care changes. No `git commit` — leave everything uncommitted.
+- **Repos / hygiene:** engine `~/src/ochroma` only. Engine crates stay game-agnostic ("buildings" only in the vox_app harness prints). No urban_horizon changes. No `git commit` — leave everything uncommitted.
 - **The measured M3.1 final state (release, 780M/RADV, governor-railed 100k budget — these ARE the inputs, re-measure nothing):**
   - **1k buildings:** `p50=29.16–29.27 ms`, `select_ms p50=5.78–5.81`, stages `select[gpu_span=0.40 ... walk=5.05 syncs=1] expand=0.27 assign=1.58–1.59 clear=0.00 chain=21.31–21.51`.
   - **10k buildings:** `p50=60.63–61.00 ms`, `select_ms p50=35.64–35.85`, stages `select[gpu_span=2.25–2.52 ... assemble=0.85–1.01 walk=32.08–32.51 syncs=1] expand=0.62–0.64 assign=1.26–1.45 clear=0.00 chain=22.40–22.74`.
@@ -238,7 +238,7 @@ Expected: exit code 0; headline `[scale_trial] instanced: 10000 buildings | ... 
 - Zero-sync select (async/frame-late stats readback) and cross-frame pipelining — M4-era; today's 1-sync select already fits the floor.
 - Deleting the host-walk `select()` or its suite — it is the regression bed and the fallback bridge.
 - Lowering the budget floor by default — Task 5 produces the data; the decision is the user's.
-- Game wiring (M4), civitas_care, and anything Spectra.
+- Game wiring (M4), urban_horizon, and anything Spectra.
 
 ---
 

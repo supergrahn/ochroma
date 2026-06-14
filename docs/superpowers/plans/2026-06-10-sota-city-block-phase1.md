@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use **superpowers:subagent-driven-development** (recommended) or **superpowers:executing-plans** to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** One beautiful, technically honest city block: cooked Forge assets render in Spectra with real PBR textures from a clean pipeline, on a dressed lot, with deterministic inspection gates — and the upstream debt that today's texture work exposed is paid off.
-**Done When:** `cd ~/Ochroma/projects/civitas_care && LD_LIBRARY_PATH=$HOME/slang-sdk/lib SPECTRA_SLANG_DIR=$HOME/src/spectra/slang SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json FORGE_PREVIEW_SPP=32 cargo run --release --features spectra --bin forge_pathtrace` writes `renders/spectra/craftsman/{iso,front,side,porch,debug_mat,debug_uv}.png` **and** `renders/spectra/rowhouse/{iso,front,side,porch,debug_mat,debug_uv}.png`, the binary prints `gates: PASS` from the pixel-stat checks, and a human looking at `craftsman/porch.png` sees a panelled door leaf and at `craftsman/iso.png` sees a dressed lot (no loud 12× concrete repeat).
+**Done When:** `cd ~/Ochroma/projects/urban_horizon && LD_LIBRARY_PATH=$HOME/slang-sdk/lib SPECTRA_SLANG_DIR=$HOME/src/spectra/slang SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json FORGE_PREVIEW_SPP=32 cargo run --release --features spectra --bin forge_pathtrace` writes `renders/spectra/craftsman/{iso,front,side,porch,debug_mat,debug_uv}.png` **and** `renders/spectra/rowhouse/{iso,front,side,porch,debug_mat,debug_uv}.png`, the binary prints `gates: PASS` from the pixel-stat checks, and a human looking at `craftsman/porch.png` sees a panelled door leaf and at `craftsman/iso.png` sees a dressed lot (no loud 12× concrete repeat).
 **Architecture:** Keep the proven path — Forge generates triangle meshes + material zones with `polyhaven://` URIs → game cook produces ReadyAssetPayload (mesh + atoms + zones + sockets + SDF) → `vox_render::pathtrace_mesh_textured_to_rgba` renders through Spectra/Vulkan with a flat float atlas. Phase 1 hardens that path (winding, interior proxies, first-frame race), parameterizes lighting, and feeds it more CC0 texture variety via the PolyHaven API. Later SOTA items (virtualized rendering, living instances) get design docs here, full plans after.
 **Design Document:** `docs/superpowers/specs/2026-06-10-virtualized-splat-rendering-design.md`, `docs/superpowers/specs/2026-06-10-living-building-instances-design.md` (produced by Tasks 9–10)
 **Tech Stack:** Rust (workspace toolchains as-is), Spectra Slang→SPIR-V on Vulkan/RADV, wgpu interactive path untouched, PolyHaven public API (CC0), image 0.25
@@ -13,14 +13,14 @@
 
 ## IMPORTANT NOTES
 
-- **Repos:** engine `~/src/ochroma` (branch `blitz/day1-foundation`, uncommitted work present), `~/src/spectra` (git, uncommitted work), `~/src/forge` (**NOT a git repo**), game `~/Ochroma/projects/civitas_care` (git master, uncommitted). **Do NOT run `git commit` anywhere** — the user commits. Template commit steps are replaced by "leave uncommitted".
+- **Repos:** engine `~/src/ochroma` (branch `blitz/day1-foundation`, uncommitted work present), `~/src/spectra` (git, uncommitted work), `~/src/forge` (**NOT a git repo**), game `~/Ochroma/projects/urban_horizon` (git master, uncommitted). **Do NOT run `git commit` anywhere** — the user commits. Template commit steps are replaced by "leave uncommitted".
 - `vox_render::splat_backend` (feature `spectra-native`; game feature `spectra`):
   - `pub fn pathtrace_mesh_textured_to_rgba(positions: &[[f32;3]], normals: &[[f32;3]], uvs: &[[f32;2]], indices: &[[u32;3]], material_ids: &[u8], materials: &[PbrMaterial], textures: &[TextureImage], eye: [f32;3], target: [f32;3], fov_y: f32, width: u32, height: u32, spp: u32, sun_dir: [f32;3]) -> Result<Vec<u8>, String>` — additive changes only; existing callers must keep compiling.
   - `pub struct PbrMaterial { base_color: [f32;3], roughness: f32, metallic: f32, emission_strength: f32, albedo_tex: i32, roughness_tex: i32, normal_tex: i32, uv_scale: [f32;2] }` (+ `Default`).
   - `pub struct TextureImage { width: u32, height: u32, channels: u32, data: Vec<f32> }` — data is **LINEAR**; sRGB decode is the caller's job (diffuse only, never normal/roughness).
   - Vulkan `MaterialData` packing is the 156-float layout in `pack_vulkan_mesh_material`: tex ids at `a[28..=31]`, uv transform at `a[94..=98]`. Do not re-derive; calibration anchors are in the function.
 - Spectra atlas: `Renderer::set_texture_atlas(texture_descs: &[u32], texture_data: &[f32], num_textures: u32)` — descs are `[offset(FLOATS), width, height, channels]`; must be called **after** `load_scene_state` (silent no-op before). Kernel samples via `sample_texture_ewa` (mip-less, 8×8 window cap — keep textures ≤256², normals ≤128²).
-- Game texture cache: `TextureCache::load(&mut self, uri: &str, tint: [f32;3]) -> Option<Arc<TextureData>>` in `civitas_care/src/asset/textures.rs`; mapping table `STEM_SETS` is the single source of truth; diffuse texels are pre-multiplied by zone tint (kernel REPLACES albedo with texel).
+- Game texture cache: `TextureCache::load(&mut self, uri: &str, tint: [f32;3]) -> Option<Arc<TextureData>>` in `urban_horizon/src/asset/textures.rs`; mapping table `STEM_SETS` is the single source of truth; diffuse texels are pre-multiplied by zone tint (kernel REPLACES albedo with texel).
 - Forge UV projection: `forge_mesh::apply_box_projection(mesh, density)` **multiplies** (`uv = pos * density`); 1 tile per 2.5 m ⇒ pass `1.0/2.5`. Called in `generate_asset` (lib.rs), style-agnostic.
 - Forge material ids (per-triangle u8): 0=wall 1=roof 2=glass 3=reveal 4=trim 5=cornice 6=door; ground plane in the harness is 7.
 - Known in-flight fixes (do not re-litigate): megakernel backface pass-through now gated on `MAT_VEGETATION`; EWA wraps UVs; harness warm-up frame absorbs the first-frame compile race until Task 3 lands the real fix.
@@ -38,10 +38,10 @@
 | Modify | `~/src/forge/crates/building/src/wall.rs` / `facade/` | panelled door leaf geometry |
 | Modify | `~/src/spectra/rust/spectra-renderer/src/renderer.rs` | first `render()` waits for kernel compilation (no mismatched fallback frame) |
 | Modify | `~/src/ochroma/crates/vox_render/src/splat_backend.rs` | additive `LightRig` + `pathtrace_mesh_lit_to_rgba` wrapper |
-| Create | `~/Ochroma/projects/civitas_care/src/bin/polyhaven_fetch.rs` | PolyHaven API fetcher, pinned manifest, CC0 |
-| Modify | `~/Ochroma/projects/civitas_care/src/asset/textures.rs` | mapping table expansion for fetched sets |
-| Modify | `~/Ochroma/projects/civitas_care/src/bin/forge_pathtrace.rs` | lot treatment, LightRig use, rowhouse views, `gates: PASS` pixel-stat checks |
-| Modify | `~/Ochroma/projects/civitas_care/src/bin/game_asset_cook.rs` | drop interior-strip workaround once Task 2 lands (keep test) |
+| Create | `~/Ochroma/projects/urban_horizon/src/bin/polyhaven_fetch.rs` | PolyHaven API fetcher, pinned manifest, CC0 |
+| Modify | `~/Ochroma/projects/urban_horizon/src/asset/textures.rs` | mapping table expansion for fetched sets |
+| Modify | `~/Ochroma/projects/urban_horizon/src/bin/forge_pathtrace.rs` | lot treatment, LightRig use, rowhouse views, `gates: PASS` pixel-stat checks |
+| Modify | `~/Ochroma/projects/urban_horizon/src/bin/game_asset_cook.rs` | drop interior-strip workaround once Task 2 lands (keep test) |
 | Create | `~/src/ochroma/docs/superpowers/specs/2026-06-10-virtualized-splat-rendering-design.md` | SOTA item 3 design (metric-led) |
 | Create | `~/src/ochroma/docs/superpowers/specs/2026-06-10-living-building-instances-design.md` | SOTA item 4 design |
 
@@ -110,7 +110,7 @@
 
 ## Task 5: PolyHaven fetcher + mapping expansion
 
-**Files:** Create `~/Ochroma/projects/civitas_care/src/bin/polyhaven_fetch.rs`; modify `src/asset/textures.rs`.
+**Files:** Create `~/Ochroma/projects/urban_horizon/src/bin/polyhaven_fetch.rs`; modify `src/asset/textures.rs`.
 **Acceptance:** `cargo run --bin polyhaven_fetch` → prints one line per pinned set ending `OK (cached)` or `OK (downloaded)`; then `cargo test --lib asset::textures` green including a new test resolving every pinned stem to an on-disk diffuse.
 **Wiring requirement:** pinned manifest (const in the bin) of ~8–12 CC0 sets chosen for the block (painted wood siding, wood shingles/roof tiles, asphalt, grass/lawn, brick variants, plaster, concrete pavers, metal roof); downloads `1k` diffuse/normal/roughness JPGs via `https://api.polyhaven.com/files/<id>` into `assets/buildings/forge_starter/textures/polyhaven/<set>/1k/{diffuse,normal,roughness}.jpg`; idempotent; `STEM_SETS` gains the new stems used by Tasks 7–8. CC0 needs no attribution — still print the license line.
 
@@ -122,7 +122,7 @@
 
 ## Task 7: Lot treatment + lighting pass (game harness)
 
-**Files:** Modify `~/Ochroma/projects/civitas_care/src/bin/forge_pathtrace.rs`.
+**Files:** Modify `~/Ochroma/projects/urban_horizon/src/bin/forge_pathtrace.rs`.
 **Acceptance:** rendered `craftsman/iso.png` ground is a lawn/pavers lot (fetched sets) with no visible 12× repeat; `front.png` mean luma in 110–150 (no white-wash) — printed by the gates of Task 8.
 **Wiring requirement:** ground quad split into lawn + walkway strip to the door socket (two materials, uv_scale ≤4); views use `pathtrace_mesh_lit_to_rgba` with a tuned `LightRig` (lower fills, sun azimuth lighting the front-left corner of the iso view); porch view eye pulled to 5.5 m / 2.1 m height so the leaf + columns frame.
 
@@ -147,7 +147,7 @@
 - Virtualized city rendering (from Task 9 design) — own plan doc.
 - Living building instances (from Task 10 design) — own plan doc.
 - Deep simulation, City UX, AI asset factory (LLM → Forge directives → cook → Spectra validation; `asset_directive_from_llm.rs` already exists as the seed) — sequenced after instances.
-- Asset-audit remediation (ventilation, variation, etc.) — driven by `~/Ochroma/projects/civitas_care/docs/asset_audit_2026-06-10.md` once the audit workflow lands.
+- Asset-audit remediation (ventilation, variation, etc.) — driven by `~/Ochroma/projects/urban_horizon/docs/asset_audit_2026-06-10.md` once the audit workflow lands.
 
 ## Self-Review Checklist
 

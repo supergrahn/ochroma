@@ -1,4 +1,4 @@
-# Handoff prompt — Ochroma / Civitas Care content pipeline
+# Handoff prompt — Ochroma / Urban Horizon content pipeline
 
 You are picking up an in-progress game-engine + city-builder project. Work fast, fix in
 batches (audit a whole class before fixing one symptom), prove changes with cheap measured
@@ -17,7 +17,7 @@ or a measured number), not process narration.
 - `~/src/forge` — procedural building generator (Rust). Branch `fix/remove-siding-slats`
   (tip, ahead of master: slat removal + test re-pin — MERGE this to master first thing).
   108/108 tests green on the tip.
-- `~/Ochroma/projects/civitas_care` — the game. The COOK lives at
+- `~/Ochroma/projects/urban_horizon` — the game. The COOK lives at
   `src/bin/game_asset_cook.rs` (directive JSON → Forge geometry → cooked
   `ReadyAssetPayload`: mesh + atoms + SDF + materials). Branch: `master` (green).
 
@@ -37,7 +37,7 @@ or a measured number), not process narration.
   only — it costs minutes per rebuild). Keep gate renders ≤32 spp ≤256–512²; denoise PNGs
   for eyeballing via `crate::denoiser::SpectralDenoiser` (see `forge_facade_zoning_closeup`).
 - Spectra direct builds need: `SLANG_DIR=$HOME/slang-sdk LD_LIBRARY_PATH=$HOME/slang-sdk/lib BINDGEN_EXTRA_CLANG_ARGS="-isystem /usr/lib/gcc/x86_64-linux-gnu/13/include"`; workspace is `~/src/spectra/rust`. SPIR-V disk cache at `~/.cache/spectra-spirv` (content-hashed, safe).
-- The cook (civitas): `GAME_FORGE_BIN=$HOME/src/forge/target/release/aetherspectra-forge ./target/release/game_asset_cook` (full catalog, ~113 assets, currently GREEN exit=0).
+- The cook (civitas): `GAME_FORGE_BIN=$HOME/src/forge/target/release/forge ./target/release/game_asset_cook` (full catalog, ~113 assets, currently GREEN exit=0).
   No `--only` flag: subset-cook via `--no-starters --source <tmp dir with one directive> --output <tmp>`. Rebuild the forge binary after forge changes
   (`cargo build --release -p forge-cli` in ~/src/forge). NEVER pipe the cook through
   `head`/`grep -m` — SIGPIPE kills it mid-run; redirect to a log file.

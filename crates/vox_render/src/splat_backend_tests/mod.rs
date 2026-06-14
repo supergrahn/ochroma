@@ -283,7 +283,7 @@ mod terrain_carve;
         use super::{LightRig, SdfSceneInstance};
 
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
 
         let volume = load_atoms_sdf(&asset_path);
@@ -336,7 +336,7 @@ mod terrain_carve;
 
 
     // --- Test-local copy of the game's TextureCache resolver pattern --------
-    // (civitas_care/src/asset/textures.rs — the engine cannot depend on the
+    // (urban_horizon/src/asset/textures.rs — the engine cannot depend on the
     // game crate, so the quality test replicates the exact load semantics:
     // logical `polyhaven://<stem>_<kind>` URIs resolve through the pinned
     // stem->set table; diffuse texels are sRGB-decoded to linear and
@@ -1707,7 +1707,7 @@ mod terrain_carve;
 
 
     /// M1 ACCEPTANCE: the engine-owned Spectra path tracer natively renders a
-    /// CLUSTER of cooked civitas buildings as a small city block — MANY SDF
+    /// CLUSTER of cooked Urban Horizon buildings as a small city block — MANY SDF
     /// instances referencing a MULTI-VOLUME atlas, sphere-traced as solid
     /// surfaces in megakernel.slang, occluding each other correctly, on flat
     /// ground. Per-instance flat albedo so buildings are visually distinct.
@@ -1740,9 +1740,9 @@ mod terrain_carve;
         use super::{LightRig, SdfSceneInstance};
 
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
 
-        // --- Multi-volume atlas: distinct cooked civitas fields. ------------
+        // --- Multi-volume atlas: distinct cooked Urban Horizon fields. ------------
         let asset_names = [
             "forge.house.craftsman",
             "forge.house.victorian",

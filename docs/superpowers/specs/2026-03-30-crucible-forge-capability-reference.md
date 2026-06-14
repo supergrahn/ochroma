@@ -595,7 +595,7 @@ h = h00*(1-fu)*(1-fv) + h10*fu*(1-fv) + h01*(1-fu)*fv + h11*fu*fv
 
 ## What It Is
 
-Forge is a **procedural world generation toolkit**: 15 domain-specific crates, each producing a `ForgeVolume` — a unified container for geometry or field data, spectral reflectance, physical properties, and LOD groups. The CLI (`aetherspectra-forge <command> '<json>'`) is the primary interface. Forge creates geometry and simulation data, not rendering or engine infrastructure.
+Forge is a **procedural world generation toolkit**: 15 domain-specific crates, each producing a `ForgeVolume` — a unified container for geometry or field data, spectral reflectance, physical properties, and LOD groups. The CLI (`forge <command> '<json>'`) is the primary interface. Forge creates geometry and simulation data, not rendering or engine infrastructure.
 
 ---
 
@@ -1252,11 +1252,11 @@ pub struct PlotAsset {
 
 ---
 
-## forge-cli (aetherspectra-forge binary)
+## forge-cli (forge binary)
 
 ```bash
-aetherspectra-forge <command> '<json-params>'
-aetherspectra-forge <command> '-'   # stdin
+forge <command> '<json-params>'
+forge <command> '-'   # stdin
 ```
 
 | Command | Output | Domain |

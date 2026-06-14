@@ -1,7 +1,7 @@
 # Design: Ultra-Realism Render Plan — Buildings + Perfect Rendering (2026-06-13)
 
 **Status:** Draft
-**Scope:** One ranked, sequenced implementation plan to take Ochroma building renders from "object-on-turntable, blotchy-gray, flat-prism" to SOTA arch-viz photorealism — synthesizing five dimension surveys (geometry, materials, lighting, pathtracer, refgap) and reconciling them with the existing 6-wave facade-photorealism roadmap. Affects `forge` (geometry), `civitas_care` cook (materials/weathering), `spectra` (kernel + bindings), `ochroma/vox_render` (host wiring, LightRig/LookPreset, denoiser).
+**Scope:** One ranked, sequenced implementation plan to take Ochroma building renders from "object-on-turntable, blotchy-gray, flat-prism" to SOTA arch-viz photorealism — synthesizing five dimension surveys (geometry, materials, lighting, pathtracer, refgap) and reconciling them with the existing 6-wave facade-photorealism roadmap. Affects `forge` (geometry), `urban_horizon` cook (materials/weathering), `spectra` (kernel + bindings), `ochroma/vox_render` (host wiring, LightRig/LookPreset, denoiser).
 **Related:** `facade-photorealism-roadmap.md` (the 6 waves — this plan EXTENDS and RE-SEQUENCES it, does not duplicate); `building-content-pipeline.md`; `hybrid-atom-sdf-lod-direction.md`; `spectra-texture-bridge.md`; `aaa-phase2-resident-frame.md`.
 
 ---
@@ -89,7 +89,7 @@ The net reorder vs. the strict wave sequence: **weathering and the lighting spin
 
 ### 4.3 Engine/game split discipline
 
-Sun/sky/IBL/look knobs live on `LightRig`/`LookPreset` in `vox_render` (rendering concepts — engine-legal). Weathering masks, UV-scale tables, material assignment, and the context/grounding plate (item 11) live in `civitas_care` cook / showcase scene builders (game layer). Forge generators stay game-agnostic (a "storefront" is a facade primitive, not a "business zone"). No building/zoning/traffic concept enters `vox_*`, `spectra-*`, or `forge`.
+Sun/sky/IBL/look knobs live on `LightRig`/`LookPreset` in `vox_render` (rendering concepts — engine-legal). Weathering masks, UV-scale tables, material assignment, and the context/grounding plate (item 11) live in `urban_horizon` cook / showcase scene builders (game layer). Forge generators stay game-agnostic (a "storefront" is a facade primitive, not a "business zone"). No building/zoning/traffic concept enters `vox_*`, `spectra-*`, or `forge`.
 
 ### 4.4 Closed-solid invariant (cross-cutting)
 
@@ -116,7 +116,7 @@ impl LightRig {
 
 pub enum LookPreset { AcesFilm, AcesBright, Filmic, SoftReview, Flat, Dusk, Night } // +Dusk/Night, item 12
 
-// civitas_care/src/asset/mod.rs — ReadyAssetPbrMaterial gains per-material tiling
+// urban_horizon/src/asset/mod.rs — ReadyAssetPbrMaterial gains per-material tiling
 pub struct ReadyAssetPbrMaterial {
     // ...existing...
     uv_scale: [f32; 2],            // item 3 — default [1,1], skip-if-default in serde

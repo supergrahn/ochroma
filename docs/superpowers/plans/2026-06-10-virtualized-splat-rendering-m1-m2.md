@@ -159,7 +159,7 @@
 ## Out of Scope (M3/M4 — future plans)
 
 - The `p50 ≤ 16.6 ms` 60 fps gate, the budget controller, and the GPU instance-scoring port (`AtomBudgetGpu` shared-context twin) — M3, decided from Task 2/5's printed `select_ms`.
-- Game wiring (`SceneRenderer`, HUD, construction counter, civitas_care repo) — M4.
+- Game wiring (`SceneRenderer`, HUD, construction counter, urban_horizon repo) — M4.
 - `scale_trial_instanced.png` and the ≥ 25% coverage check — part of the M3 headline.
 - Imposter crossfade bands, dirty-instance upload tracking, frozen-shader changes, Spectra paths.
 

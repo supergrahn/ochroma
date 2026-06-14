@@ -2,8 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use **superpowers:subagent-driven-development** (recommended) or **superpowers:executing-plans** to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Every developed parcel in Civitas Care becomes a persistent, inspectable `BuildingInstance` — frozen household/job caps, live engine occupancy, an evolving property value, an UnderConstruction → Active → Abandoned state machine driven through the engine's `operational` flag — with replay-exact save/load and a click-to-inspect window in the running game.
-**Done When:** `cd ~/Ochroma/projects/civitas_care && cargo test` is green, **and** `cargo run --release --bin play` → New Game → **Demo** → Start Game → press **Space** 8 times → **Tab** to the **Inspect** category (last in the bottom bar) → left-click a risen Forge house → a window titled `Building — Craftsman House` opens showing exactly six lines in this shape (real values from that lot):
+**Goal:** Every developed parcel in Urban Horizon becomes a persistent, inspectable `BuildingInstance` — frozen household/job caps, live engine occupancy, an evolving property value, an UnderConstruction → Active → Abandoned state machine driven through the engine's `operational` flag — with replay-exact save/load and a click-to-inspect window in the running game.
+**Done When:** `cd ~/Ochroma/projects/urban_horizon && cargo test` is green, **and** `cargo run --release --bin play` → New Game → **Demo** → Start Game → press **Space** 8 times → **Tab** to the **Inspect** category (last in the bottom bar) → left-click a risen Forge house → a window titled `Building — Craftsman House` opens showing exactly six lines in this shape (real values from that lot):
 
 ```
 Asset        Craftsman House  (forge.house.craftsman)
@@ -17,15 +17,15 @@ Zone         Res Low   Level 1
 Pressing **Space** twice and re-clicking the same house shows the `Value` (and/or `Households`) line **changed**; clicking a parcel that developed within the last 2 presses shows `State        Building   N ticks left`; pressing `i` shows a City Information line `Instances         N active · M building · K abandoned` whose three numbers match what is on the ground. A human at the keyboard verifies all of this without reading code.
 **Architecture:** A `Vec`-backed `BuildingRegistry` owned by `CivitasGame` captures the engine building id that `develop_parcels` currently discards, freezes the same seeded numbers the engine capacity already uses, and ticks a deterministic state machine as step 1c of `CivitasGame::tick`. `sector_supply()` / `assessed_value()` keep their exact signatures but read Active instances. Persistence is the existing action-log replay — **no `SAVE_VERSION` bump**; determinism of the registry tick is what makes reload exact. The inspector is a new `BuildTool::Inspect` + `CivitasGame::instance_at` picking + the existing `hud::draw_city_info_window`. State-driven visuals are the LAST task and are **gated on render_gpu ownership release**.
 **Design Document:** `docs/superpowers/specs/2026-06-10-living-building-instances-design.md`
-**Tech Stack:** Rust (workspace toolchain as-is), game repo `~/Ochroma/projects/civitas_care`, engine crates read-only (`vox_sim::buildings` pub fields only)
-**Build:** `cd ~/Ochroma/projects/civitas_care && cargo build && cargo test` (the play binary needs a desktop display)
+**Tech Stack:** Rust (workspace toolchain as-is), game repo `~/Ochroma/projects/urban_horizon`, engine crates read-only (`vox_sim::buildings` pub fields only)
+**Build:** `cd ~/Ochroma/projects/urban_horizon && cargo build && cargo test` (the play binary needs a desktop display)
 
 ---
 
 ## IMPORTANT NOTES
 
-- **OWNERSHIP — DO NOT TOUCH:** `~/Ochroma/projects/civitas_care/src/render_gpu/**` and `src/bin/forge_pathtrace.rs` are **OWNED BY ANOTHER WORKSTREAM right now**. Tasks 1–5 must NOT edit any file under those paths. **Calling** their existing `pub` functions from `play.rs` (`render_gpu::screen_to_ground`, `render_gpu::world_to_screen`, `hud::draw_city_info_window`, `hud::info_window_close_at`, `hud::info_window_contains`) is allowed and required. The design's §4.6 state-driven visuals (`InstanceVisual`, the three `place_ready_asset_*` placers, `city_scene_inner`) are **Task 6, the LAST task, explicitly gated on "render_gpu ownership released"** — everything before it is observable through the inspector window and the `i` info line instead.
-- **Repos / commits:** game `~/Ochroma/projects/civitas_care` (git master, uncommitted work present); engine `~/src/ochroma` is **not edited by this plan at all**. **Do NOT run `git commit` anywhere** — the user commits. Every task's final step is "leave uncommitted".
+- **OWNERSHIP — DO NOT TOUCH:** `~/Ochroma/projects/urban_horizon/src/render_gpu/**` and `src/bin/forge_pathtrace.rs` are **OWNED BY ANOTHER WORKSTREAM right now**. Tasks 1–5 must NOT edit any file under those paths. **Calling** their existing `pub` functions from `play.rs` (`render_gpu::screen_to_ground`, `render_gpu::world_to_screen`, `hud::draw_city_info_window`, `hud::info_window_close_at`, `hud::info_window_contains`) is allowed and required. The design's §4.6 state-driven visuals (`InstanceVisual`, the three `place_ready_asset_*` placers, `city_scene_inner`) are **Task 6, the LAST task, explicitly gated on "render_gpu ownership released"** — everything before it is observable through the inspector window and the `i` info line instead.
+- **Repos / commits:** game `~/Ochroma/projects/urban_horizon` (git master, uncommitted work present); engine `~/src/ochroma` is **not edited by this plan at all**. **Do NOT run `git commit` anywhere** — the user commits. Every task's final step is "leave uncommitted".
 - **Save format:** `SAVE_VERSION` stays **5** (`src/game/save.rs:27`). The registry is **not serialized** — `CivitasGame::replay` rebuilds it exactly because every registry rule is a pure function of replayed state. Hard determinism rules inside `BuildingRegistry`: no RNG, no wall clock, no `HashMap` iteration anywhere; instances are visited in creation (Vec) order. No serde derives on any instance type.
 - Engine types used (read/write of **existing pub fields only**, `~/src/ochroma/crates/vox_sim/src/buildings.rs` — no engine edits):
   - `pub struct Building { pub id: u32, pub building_type: BuildingType, pub position: [f32; 2], pub capacity: u32, pub occupants: u32, pub operational: bool }`
@@ -56,12 +56,12 @@ Pressing **Space** twice and re-clicking the same house shows the `Value` (and/o
 
 | Action | Path | Responsibility |
 |--------|------|----------------|
-| Create | `~/Ochroma/projects/civitas_care/src/instance/mod.rs` | `BuildingInstance`, `InstanceState`, `BuildingRegistry`, constants, `zone_demand_bar`, (Task 6: `InstanceVisual` + `visual_for`), inline tests |
-| Modify | `~/Ochroma/projects/civitas_care/src/lib.rs` | `pub mod instance;` |
-| Modify | `~/Ochroma/projects/civitas_care/src/game/mod.rs` | `instances` field, `develop_parcels` capture, tick step 1c, registry-backed `sector_supply`/`assessed_value`, `instance_at`, test updates + new tests |
-| Modify | `~/Ochroma/projects/civitas_care/src/ui/build_tools.rs` | `BuildTool::Inspect` variant, `tile_label` arm, `("Inspect", …)` appended **last** in `build_categories()` |
-| Modify | `~/Ochroma/projects/civitas_care/src/bin/play.rs` | `inspected` field, inspect click branch, inspector window, Esc/close handling, `Instances …` info line, `thousands` formatter, `place_at` Inspect arm |
-| Modify (GATED, Task 6 only) | `~/Ochroma/projects/civitas_care/src/render_gpu/mod.rs` | `InstanceVisual` applied in `city_scene_inner` + the three `place_ready_asset_*` placers — **only after render_gpu ownership is released** |
+| Create | `~/Ochroma/projects/urban_horizon/src/instance/mod.rs` | `BuildingInstance`, `InstanceState`, `BuildingRegistry`, constants, `zone_demand_bar`, (Task 6: `InstanceVisual` + `visual_for`), inline tests |
+| Modify | `~/Ochroma/projects/urban_horizon/src/lib.rs` | `pub mod instance;` |
+| Modify | `~/Ochroma/projects/urban_horizon/src/game/mod.rs` | `instances` field, `develop_parcels` capture, tick step 1c, registry-backed `sector_supply`/`assessed_value`, `instance_at`, test updates + new tests |
+| Modify | `~/Ochroma/projects/urban_horizon/src/ui/build_tools.rs` | `BuildTool::Inspect` variant, `tile_label` arm, `("Inspect", …)` appended **last** in `build_categories()` |
+| Modify | `~/Ochroma/projects/urban_horizon/src/bin/play.rs` | `inspected` field, inspect click branch, inspector window, Esc/close handling, `Instances …` info line, `thousands` formatter, `place_at` Inspect arm |
+| Modify (GATED, Task 6 only) | `~/Ochroma/projects/urban_horizon/src/render_gpu/mod.rs` | `InstanceVisual` applied in `city_scene_inner` + the three `place_ready_asset_*` placers — **only after render_gpu ownership is released** |
 
 ---
 
@@ -86,11 +86,11 @@ Pressing **Space** twice and re-clicking the same house shows the `Value` (and/o
 ## Task 1: `BuildingRegistry` — instances created at develop time, construction gates the engine
 
 **Files:**
-- Create: `~/Ochroma/projects/civitas_care/src/instance/mod.rs`
-- Modify: `~/Ochroma/projects/civitas_care/src/lib.rs` (add `pub mod instance;` to the alphabetical module list)
-- Modify: `~/Ochroma/projects/civitas_care/src/game/mod.rs` (field + `develop_parcels` + tick step 1c)
+- Create: `~/Ochroma/projects/urban_horizon/src/instance/mod.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/lib.rs` (add `pub mod instance;` to the alphabetical module list)
+- Modify: `~/Ochroma/projects/urban_horizon/src/game/mod.rs` (field + `develop_parcels` + tick step 1c)
 
-**Acceptance:** `cd ~/Ochroma/projects/civitas_care && cargo test --lib instance:: -- --nocapture` → `developing_a_parcel_creates_a_linked_instance` prints `instances: <n>, capacities: [..]` with n ≥ 1 and every capacity > 0; `construction_gates_the_engine_until_build_ticks_elapse` prints `developed at tick <T>, active at tick <T+3>` (L1 house) with `operational` false in between. Full `cargo test` stays green.
+**Acceptance:** `cd ~/Ochroma/projects/urban_horizon && cargo test --lib instance:: -- --nocapture` → `developing_a_parcel_creates_a_linked_instance` prints `instances: <n>, capacities: [..]` with n ≥ 1 and every capacity > 0; `construction_gates_the_engine_until_build_ticks_elapse` prints `developed at tick <T>, active at tick <T+3>` (L1 house) with `operational` false in between. Full `cargo test` stays green.
 
 **Wiring requirement:** `BuildingRegistry::develop` is called from the build pass of `CivitasGame::develop_parcels` (src/game/mod.rs:887–897), capturing the id `self.develop_lot(&lot)` currently discards. `BuildingRegistry::tick` is called from `CivitasGame::tick` as step **1c**, immediately after `self.develop_parcels();` (src/game/mod.rs:636) and before the demographics step. `todo!()` / stubs = **task failure**.
 
@@ -261,7 +261,7 @@ self.instances.tick(
 ## Task 2: Per-tick instance life — occupancy mirror, evolving value, abandonment, recovery
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/instance/mod.rs` (Active/Abandoned arms of `tick` + tests)
+- Modify: `~/Ochroma/projects/urban_horizon/src/instance/mod.rs` (Active/Abandoned arms of `tick` + tests)
 
 **Acceptance:** `cargo test --lib instance:: -- --nocapture` → `occupancy_mirrors_engine_move_ins` prints `occupied <k>/<cap> (engine occupants <k>)` with k > 0; `value_appreciates_with_occupancy` prints `base <b> -> value <v>` with v matching the formula and rising across 2 more occupied ticks; `vacancy_abandons_after_ABANDON_AFTER_ticks` prints the abandon tick with engine `operational == false`; `demand_recovers_an_abandoned_instance` prints the recovery tick with `appreciation == 0.0`. Full `cargo test` green.
 
@@ -315,7 +315,7 @@ InstanceState::Abandoned => {
 ## Task 3: Registry-backed `sector_supply` / `assessed_value` + the shifted-test updates
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/game/mod.rs` (two method bodies, signatures untouched; the named test updates; one new test)
+- Modify: `~/Ochroma/projects/urban_horizon/src/game/mod.rs` (two method bodies, signatures untouched; the named test updates; one new test)
 
 **Acceptance:** `cargo test --lib game:: -- --nocapture` → updated `selected_asset_attributes_drive_live_capacity_cost_and_value` passes with `assessed_value()` equal to Σ `inst.value()` over Active instances (printed); new `supply_starts_at_construction_complete_not_at_develop` prints `developed at tick <D>, first supply at tick <D+5>` (ComReg defaults to a level-3 asset → `build_ticks(3) == 5`). Full `cargo test` green.
 
@@ -366,7 +366,7 @@ pub fn assessed_value(&self) -> f64 {
 ## Task 4: Replay-exact save/load — registry-equality roundtrip, no `SAVE_VERSION` bump
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/game/mod.rs` (one new test beside the save tests)
+- Modify: `~/Ochroma/projects/urban_horizon/src/game/mod.rs` (one new test beside the save tests)
 
 **Acceptance:** `cargo test --lib game::tests::save_roundtrip_reproduces_instances_exactly -- --nocapture` → prints `roundtrip: <n> instances identical (save version 5)` with n ≥ 2 and at least one instance showing `occupants > 0` or `appreciation > 0.0` (printed), proving the equality is non-trivial. `src/game/save.rs` has **zero diff**.
 
@@ -412,9 +412,9 @@ fn save_roundtrip_reproduces_instances_exactly() {
 ## Task 5: Click-to-inspect in the running game — `instance_at`, the Inspect tool, the inspector window, the `Instances` info line
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/game/mod.rs` (`instance_at` + picking test)
-- Modify: `~/Ochroma/projects/civitas_care/src/ui/build_tools.rs` (`Inspect` variant, label, category appended last)
-- Modify: `~/Ochroma/projects/civitas_care/src/bin/play.rs` (everything the Done When shows)
+- Modify: `~/Ochroma/projects/urban_horizon/src/game/mod.rs` (`instance_at` + picking test)
+- Modify: `~/Ochroma/projects/urban_horizon/src/ui/build_tools.rs` (`Inspect` variant, label, category appended last)
+- Modify: `~/Ochroma/projects/urban_horizon/src/bin/play.rs` (everything the Done When shows)
 
 **Acceptance:** `cargo test --lib game::tests::instance_at_picks_the_lot_under_a_point -- --nocapture` prints the picked id + asset id and proves the `None` case; then the plan-level **Done When** sequence in `cargo run --release --bin play` is verified by a human (exact window title `Building — Craftsman House`, six exact-label lines, Value/Households change after 2 Space presses, `Building   N ticks left` on a fresh parcel, `Instances …` line matching the ground).
 
@@ -474,7 +474,7 @@ pub fn instance_at(&self, p: [f32; 2]) -> Option<crate::instance::InstanceId> {
 ```rust
 /// Inspector window content: (title, the six exact lines) for an instance.
 fn inspector(&self, id: u32) -> Option<(String, Vec<String>)> {
-    use civitas_care::instance::InstanceState;
+    use urban_horizon::instance::InstanceState;
     let inst = self.game.instances.get(id)?;
     let lot = &self.game.placed_lots[inst.plan_idx as usize].lots[inst.lot_idx as usize];
     let (name, asset_id) = inst.asset
@@ -532,8 +532,8 @@ fn inspect_click(&mut self, px: f32, py: f32, w: u32, h: u32) {
 > **GATE RELEASED:** the remediation workflow finished and handed `render_gpu/mod.rs` back (it gained socket consumers, per-instance `InstanceVariation`, and vegetation placement). Task 6 was implemented against that current code; the state treatment composes AFTER the variation tint jitter.
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/instance/mod.rs` (`InstanceVisual` + `visual_for` + unit test)
-- Modify: `~/Ochroma/projects/civitas_care/src/render_gpu/mod.rs` (the per-lot branch of `city_scene_inner` ~lines 689–760; the three placers `place_ready_asset_splats` (:1289), `place_ready_asset_sdf_instance` (:1319), `place_ready_asset_mesh_renderables` (:1338))
+- Modify: `~/Ochroma/projects/urban_horizon/src/instance/mod.rs` (`InstanceVisual` + `visual_for` + unit test)
+- Modify: `~/Ochroma/projects/urban_horizon/src/render_gpu/mod.rs` (the per-lot branch of `city_scene_inner` ~lines 689–760; the three placers `place_ready_asset_splats` (:1289), `place_ready_asset_sdf_instance` (:1319), `place_ready_asset_mesh_renderables` (:1338))
 
 **Acceptance:** `cargo test --lib instance::tests::construction_visual_scales_height -- --nocapture` prints the y_scale series (e.g. `ticks_left 3 -> y_scale 0.30, 2 -> 0.53, 1 -> 0.77, active -> 1.00`); then in `cargo run --release --bin play` (Demo, Space pressed once after a parcel develops) the rising house renders at partial height with a grey tint and pops to the full cooked asset when the inspector says `Occupied` — a human sees it.
 

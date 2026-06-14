@@ -319,7 +319,7 @@ impl<G: GpuBackend> Renderer<G> {
 | Streamline DLSS-RR (M4) | `ReconstructBackend::DlssRr` in the frame graph | new `rust/spectra-streamline` crate; guide-buffer packing extends `pack_rgba.slang`/`pack_motion_vectors.slang` | Windows-only; floor uses `spectra-upscale::fsr` + `realtime_denoise.slang` |
 | CLAS / Mega Geometry (M5) | AS-update queue | `optix/clas/clas_builder.cu` (replace stub), or `VK_NV_cluster_acceleration_structure` in `spectra-vulkan` | driver ≥ 572.16 printed in probe header |
 | Governor (M6) | wraps `render_realtime_frame` budget knobs | shared type with the splat path's controller — `crates/vox_render/src/frame_governor.rs` (new, used by both) | §4.8 merge obligation |
-| HUD line | game/probe overlay | probe window + `civitas_care` HUD | same format as splat path: `spectra-rt T ms @ WxH` |
+| HUD line | game/probe overlay | probe window + `urban_horizon` HUD | same format as splat path: `spectra-rt T ms @ WxH` |
 
 ---
 

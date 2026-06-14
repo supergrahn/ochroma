@@ -9,7 +9,7 @@
 **Accept path.** Running
 
 ```bash
-cd ~/Ochroma/projects/civitas_care && \
+cd ~/Ochroma/projects/urban_horizon && \
 LD_LIBRARY_PATH=$HOME/slang-sdk/lib SPECTRA_SLANG_DIR=$HOME/src/spectra/slang \
 SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
 cargo run --release --features spectra --bin asset_factory -- \
@@ -38,7 +38,7 @@ with `<V>`, `<M>`, `<W>` non-zero, attempt count ≤ 4 (more attempts acceptable
 **Reject path (selftest, no LLM run, no GPU).** Running
 
 ```bash
-cd ~/Ochroma/projects/civitas_care && \
+cd ~/Ochroma/projects/urban_horizon && \
 ASSET_FACTORY_SELFTEST=collide cargo run --bin asset_factory -- "any brief"
 ```
 
@@ -54,14 +54,14 @@ and exits 1 — the factory's analog of `FORGE_GATE_SELFTEST=1`. (The same env o
 
 **Architecture:** The LLM emits *directives only* (JSON, one schema — never geometry); the directive is the determinism boundary. Stage chain per attempt: `LlmRunner` (llama-cli `--json-schema-file`, per-attempt `--seed`) → `factory::validate` (serde shape + catalog-aware kill criteria K1–K4) → `factory::cook` (existing `game_asset_cook` subprocess with `--source/--output` + new `--no-starters`, K5/K10) → `qa::pathtrace_gates::gate_views` (the forge_pathtrace gate machinery factored into a lib module, K6) → register (quarantine → `generated/`, full recook, pool-proof, provenance). Single-threaded; every stage a sequential subprocess (LLM and path tracer share the 780M iGPU). Retryable rejects feed their reason **verbatim** into the next prompt; K8 (budget) and K9 (model collapse) are terminal.
 **Design Document:** `docs/superpowers/specs/2026-06-10-ai-asset-factory-design.md`
-**Tech Stack:** Rust edition 2024 (civitas_care), serde/serde_json, image 0.25 (PNG decode in gate tests), sha2 0.10 (new dev-dep, determinism hashes), llama.cpp b9372 (`~/git/llama.cpp/build/bin/llama-cli`) + `~/models/gemma4-e4b.gguf`, Spectra path tracer via `vox_render/spectra-native` (game feature `spectra`).
-**Build:** `cd ~/Ochroma/projects/civitas_care && cargo build` / `cargo test --lib <filter>`. Spectra builds/runs need the env block in **Done When**. Cook subprocess needs Forge + AssemblyPrime discoverable (existing `GAME_FORGE_BIN`/`OCHROMA_FORGE_BIN`, `GAME_ASSEMBLYPRIME_PROJECT`/`OCHROMA_ASSEMBLYPRIME_PROJECT` discovery — already working on this box).
+**Tech Stack:** Rust edition 2024 (urban_horizon), serde/serde_json, image 0.25 (PNG decode in gate tests), sha2 0.10 (new dev-dep, determinism hashes), llama.cpp b9372 (`~/git/llama.cpp/build/bin/llama-cli`) + `~/models/gemma4-e4b.gguf`, Spectra path tracer via `vox_render/spectra-native` (game feature `spectra`).
+**Build:** `cd ~/Ochroma/projects/urban_horizon && cargo build` / `cargo test --lib <filter>`. Spectra builds/runs need the env block in **Done When**. Cook subprocess needs Forge + AssemblyPrime discoverable (existing `GAME_FORGE_BIN`/`OCHROMA_FORGE_BIN`, `GAME_ASSEMBLYPRIME_PROJECT`/`OCHROMA_ASSEMBLYPRIME_PROJECT` discovery — already working on this box).
 
 ---
 
 ## IMPORTANT NOTES
 
-- **Repos:** game `~/Ochroma/projects/civitas_care` (git master, uncommitted), engine `~/src/ochroma` (branch `blitz/day1-foundation`, uncommitted), `~/src/forge` (**NO git**), `~/src/spectra` (git, uncommitted). **Do NOT run `git commit` anywhere** — the user commits. Template commit steps are replaced by **"leave uncommitted"**. This plan touches ONLY `~/Ochroma/projects/civitas_care` (GAME layer); engine crates untouched.
+- **Repos:** game `~/Ochroma/projects/urban_horizon` (git master, uncommitted), engine `~/src/ochroma` (branch `blitz/day1-foundation`, uncommitted), `~/src/forge` (**NO git**), `~/src/spectra` (git, uncommitted). **Do NOT run `git commit` anywhere** — the user commits. Template commit steps are replaced by **"leave uncommitted"**. This plan touches ONLY `~/Ochroma/projects/urban_horizon` (GAME layer); engine crates untouched.
 - **Coordination gates (check before starting the gated tasks):**
   - **Task 8** refactors `src/bin/forge_pathtrace.rs` — the porch-closure agent is releasing that file about now. Do not open it until that track is complete (its plan checked off / no other agent holds the file).
   - **Any `--features spectra` build compiles `vox_render` via the path dep** (`vox_render = { path = "../../../src/ochroma/crates/vox_render" }`). The SDF M1 track (Tasks 1–2 + Group B) is executing in `vox_render` NOW — do not run spectra-feature builds (Task 8 acceptance, Task 11) until it completes. Tasks 1–7, 9, and Task 10's featureless selftest need no spectra build and are not gated.
@@ -82,12 +82,12 @@ and exits 1 — the factory's analog of `FORGE_GATE_SELFTEST=1`. (The same env o
   - Seed bin `asset_directive_from_llm.rs` (210 lines, retired in Task 4): `extract_json_object(text: &str) -> Option<&str>` (balanced-brace, string/escape-aware — move it verbatim WITH its unit test); defaults `DEFAULT_LLAMA_CLI = "/home/tom-espen/git/llama.cpp/build/bin/llama-cli"`, `DEFAULT_MODEL = "/home/tom-espen/models/gemma4-e4b.gguf"`, env overrides `GAME_ASSET_LLAMA_CLI`, `GAME_ASSET_LLM_MODEL` — carry all four over unchanged.
   - `llama-cli` b9372 flags (verified in `--help` today): `-jf, --json-schema-file FILE` (no external `$ref`s allowed), `-s, --seed SEED`, `-n`, `--temp`, `--no-display-prompt`. v1 invocation: `llama-cli -m <model> -p <prompt> --json-schema-file <schema> --seed <s> -n 2600 --temp 0.22 --no-display-prompt`. Keep the schema inside llama.cpp's json-schema→grammar subset: `type/enum/const/required/properties/items/pattern/min*/max*` only, no `$ref`.
 - **New API contracts (implement EXACTLY; design §5/§6 reconciled with code):**
-  - `civitas_care::asset::directive` (Task 1, lifted DTOs): fields stay **`pub`** — these are serde value objects crossing the lib→bin boundary; this is a documented exception to the private-fields house rule. Everything else below uses **private fields + accessors**.
+  - `urban_horizon::asset::directive` (Task 1, lifted DTOs): fields stay **`pub`** — these are serde value objects crossing the lib→bin boundary; this is a documented exception to the private-fields house rule. Everything else below uses **private fields + accessors**.
   - `LlmRunner` enum: `LlamaCli { cli: PathBuf, model: PathBuf, n_predict: u32, temp: f32 }`, `Replay { transcripts: Vec<PathBuf>, cursor: AtomicUsize, seen_prompts: Mutex<Vec<String>> }`. **No `Remote` variant in v1** (deferred with the judge to v2). `LlmRunner::from_env() -> Self`; `generate_directive(&self, prompt: &str, sampling_seed: u64) -> Result<serde_json::Value, LlmError>`; `LlmError { Spawn(String), Status(String), NoJson, Parse(String) }` — every variant maps to K1.
   - `pub fn validate_semantics(directive: &serde_json::Value, catalog: &AssetCatalog) -> Result<(), Vec<Rejection>>` — pure, never panics on hostile input; `Ok(())` means "safe to cook".
   - `Rejection { criterion: KillCriterion, reason: String }` (accessors `criterion()`, `reason()`); `enum KillCriterion { K1, ..., K10 }` with `Display` = `"K1"`..`"K10"`.
   - `pub fn cook_candidate(directive_path: &Path, sandbox: &Path) -> Result<CookedCandidate, String>` — `Err` text goes verbatim into feedback (K5/K10). `CookedCandidate` accessors: `asset_id()`, `atoms_path()`, `atom_count()`, `mesh_verts()`, `walls()`, `directive_path()`, `variant_ids()`.
-  - `pub fn gate_views(payload: &Path, out_dir: &Path, spp: u32) -> Result<Vec<GateStat>, String>` in `civitas_care::qa::pathtrace_gates`, `#[cfg(feature = "spectra")]`; `GateStat` (unconditional type): accessors `view()`, `mean()`, `stds()`, `pass()`, plus `print_line(&self, label_prefix: &str)` reproducing the binary's gate-line format.
+  - `pub fn gate_views(payload: &Path, out_dir: &Path, spp: u32) -> Result<Vec<GateStat>, String>` in `urban_horizon::qa::pathtrace_gates`, `#[cfg(feature = "spectra")]`; `GateStat` (unconditional type): accessors `view()`, `mean()`, `stds()`, `pass()`, plus `print_line(&self, label_prefix: &str)` reproducing the binary's gate-line format.
   - `pub fn register_accepted(candidate: &CookedCandidate, brief: &str, attempts: &[AttemptRecord]) -> Result<RegistrationProof, String>`; `RegistrationProof` accessors `pool_before()`, `pool_after()`, `proof_seed()`, `provenance_path()`.
   - `AttemptRecord { index: u32 /* 1-based */, sampling_seed: u64, directive: Option<Value>, outcome: AttemptOutcome }`; `AttemptOutcome { SchemaReject(Vec<String>), SemanticReject(Vec<Rejection>), CookReject(String), GateFail(Vec<GateStat>), Accepted { asset_id: String } }` (**no `JudgeReject` in v1**); `FactoryOutcome { Accepted { asset_id, attempts, pool_before, pool_after }, Rejected { terminal: KillCriterion, attempts } }`; `ProvenanceRecord { brief, model, llama_build, attempts, accepted_id, gate_stats }` (serde Serialize+Deserialize).
   - `pub fn run_factory(brief: &str, cfg: &FactoryConfig) -> Result<FactoryOutcome, FactoryError>` — `#[cfg(feature = "spectra")]`, blocking, main thread only (iGPU shared by LLM and path tracer; never concurrent). Internally delegates to a featureless `run_loop(brief, cfg, runner, catalog, stages: FactoryStages) -> Result<(FactoryOutcome, Vec<AttemptRecord>), FactoryError>` where `FactoryStages` carries `cook`, `gate`, `register` closures — production passes the real `cook_candidate` / `gate_views` / `register_accepted`; hermetic tests pass canned closures (the assertions stay real: verbatim prompt content, attempt-record outcomes, provenance on disk).
@@ -104,7 +104,7 @@ and exits 1 — the factory's analog of `FORGE_GATE_SELFTEST=1`. (The same env o
 
 ## File Map
 
-| Action | Path (under `~/Ochroma/projects/civitas_care` unless noted) | Responsibility |
+| Action | Path (under `~/Ochroma/projects/urban_horizon` unless noted) | Responsibility |
 |--------|------|----------------|
 | Create | `src/asset/directive.rs` | directive DTOs + `FORGE_CONDITIONS` + `expand_directive_variants`/`merge_patch` lifted from the cook bin; lib tests incl. schema roundtrip |
 | Modify | `src/asset/mod.rs` | register `pub mod directive;` |
@@ -159,9 +159,9 @@ The factory must deserialize and expand directives without owning a copy of the 
 - Modify: `src/asset/mod.rs` (add `pub mod directive;`)
 - Modify: `src/bin/game_asset_cook.rs` (delete moved items, import from the lib)
 
-**Acceptance:** `cd ~/Ochroma/projects/civitas_care && cargo test --lib directive_ -- --nocapture` → prints `rowhouse_01: 2 variants -> ids [city.res_med.l3.3x4.rowhouse_01, …v1, …v2], v2 floors 4 condition Aged`; then `cargo test --bin game_asset_cook condition -- --nocapture` and `cargo test --bin game_asset_cook variant -- --nocapture` stay green with their existing printed values.
+**Acceptance:** `cd ~/Ochroma/projects/urban_horizon && cargo test --lib directive_ -- --nocapture` → prints `rowhouse_01: 2 variants -> ids [city.res_med.l3.3x4.rowhouse_01, …v1, …v2], v2 floors 4 condition Aged`; then `cargo test --bin game_asset_cook condition -- --nocapture` and `cargo test --bin game_asset_cook variant -- --nocapture` stay green with their existing printed values.
 
-**Wiring requirement:** `directive_recipes` in `src/bin/game_asset_cook.rs` calls `civitas_care::asset::directive::expand_directive_variants` (the lib copy — the bin copy is **deleted**, not duplicated). `recipe_from_directive` consumes the lib `AssetDirective` and the lib `FORGE_CONDITIONS`. `todo!()` / empty bodies = **task failure**.
+**Wiring requirement:** `directive_recipes` in `src/bin/game_asset_cook.rs` calls `urban_horizon::asset::directive::expand_directive_variants` (the lib copy — the bin copy is **deleted**, not duplicated). `recipe_from_directive` consumes the lib `AssetDirective` and the lib `FORGE_CONDITIONS`. `todo!()` / empty bodies = **task failure**.
 
 - [x] **Step 1: Write the failing test** — in `src/asset/directive.rs`'s `#[cfg(test)] mod tests`:
 
@@ -192,7 +192,7 @@ fn directive_lib_parses_live_rowhouse_and_expands_variants() {
 
 - [x] **Step 2: Run to verify it fails** — `cargo test --lib directive_ 2>&1 | tail -5` → FAIL: `E0433` (module `asset::directive` does not exist).
 - [x] **Step 3: Implement** — move VERBATIM from `game_asset_cook.rs` into `src/asset/directive.rs`: `AssetDirective`, `DirectiveUsage` (+ `to_asset_use`), `DirectiveGameplay` (+ `to_attributes`), `DirectiveForge`, `DirectivePalette`, `CookedKind`, all serde default fns (`default_condition`, `default_forge_floor_height`, `default_rectangular`, `default_flat_roof`, `default_supporting`, `channels`, `default_window_density_directive`), `FORGE_CONDITIONS`, `DirectiveExpansion`, `expand_directive_variants`, `merge_patch`. Make every struct field and the listed items `pub`. Change `expand_directive_variants` to return `Result<Vec<DirectiveExpansion>, String>` (the same message strings, unwrapped from `CookError`).
-- [x] **Step 4: Wire at exact callsite** — in `game_asset_cook.rs`: delete the moved items; add `use civitas_care::asset::directive::{AssetDirective, CookedKind, DirectiveExpansion, expand_directive_variants, FORGE_CONDITIONS};`; in `directive_recipes`, wrap the lib error: `expand_directive_variants(raw).map_err(CookError::Directive)?`. Existing bin tests (`condition_*`, `*variant*`) keep passing untouched — they prove the lift changed nothing.
+- [x] **Step 4: Wire at exact callsite** — in `game_asset_cook.rs`: delete the moved items; add `use urban_horizon::asset::directive::{AssetDirective, CookedKind, DirectiveExpansion, expand_directive_variants, FORGE_CONDITIONS};`; in `directive_recipes`, wrap the lib error: `expand_directive_variants(raw).map_err(CookError::Directive)?`. Existing bin tests (`condition_*`, `*variant*`) keep passing untouched — they prove the lift changed nothing.
 - [x] **Step 5: Run — verify non-trivial output** — the two acceptance commands above; the lib test prints the three ids and `floors 4 condition Aged` (not defaults).
 - [x] **Step 6: Leave uncommitted** (the user commits).
 
@@ -225,9 +225,9 @@ fn directive_lib_parses_live_rowhouse_and_expands_variants() {
 
 **Acceptance:**
 ```bash
-cd ~/Ochroma/projects/civitas_care && rm -rf /tmp/factory_t3_{src,out} && mkdir -p /tmp/factory_t3_src && \
+cd ~/Ochroma/projects/urban_horizon && rm -rf /tmp/factory_t3_{src,out} && mkdir -p /tmp/factory_t3_src && \
 cp assets/source/buildings/residential/rowhouse_01.asset.json /tmp/factory_t3_src/ && \
-mkdir -p /tmp/factory_t3_out/textures && ln -s ~/Ochroma/projects/civitas_care/assets/buildings/forge_starter/textures/polyhaven /tmp/factory_t3_out/textures/polyhaven && \
+mkdir -p /tmp/factory_t3_out/textures && ln -s ~/Ochroma/projects/urban_horizon/assets/buildings/forge_starter/textures/polyhaven /tmp/factory_t3_out/textures/polyhaven && \
 cargo run --bin game_asset_cook -- --source /tmp/factory_t3_src --output /tmp/factory_t3_out --no-starters
 ```
 → stdout contains exactly **3** `cooked city.res_med.l3.3x4.rowhouse_01` lines (base, `.v1`, `.v2`) with non-zero verts/atoms/walls, **zero** `cooked forge.` / `cooked civic.` lines, **no** `flora:` line, and ends `wrote /tmp/factory_t3_out`.
@@ -333,7 +333,7 @@ cargo run --bin game_asset_cook -- --source /tmp/factory_t3_src --output /tmp/fa
 
 **Acceptance:** (a) `cargo test --lib qa_gate -- --nocapture` → prints per-view stats for the synthetic frames (`black frame: iso mean 0.0 < floor 60 -> FAIL`, `flat grey: front std 0.0/0.0/0.0 < floor 35 -> FAIL` shapes) and `real render craftsman/iso: mean <60..120> std <≥22> -> PASS` (or the printed skip line if the PNG is absent). (b) Binary contract: the Done-When env + `FORGE_PREVIEW_SPP=32 cargo run --release --features spectra --bin forge_pathtrace` prints `gates: PASS`, and the same with `FORGE_GATE_SELFTEST=1` prints `selftest: corrupted craftsman/front buffer…` then `gates: FAIL craftsman/front` and exits 1 — line shapes byte-identical to the pre-refactor binary.
 
-**Wiring requirement:** unconditional in `qa::pathtrace_gates`: `pixel_stats`, `GateBand`, `gate_band(label, view)` (iso/front/side/porch/debug bands moved verbatim, including the craftsman-porch special case and the unknown-view panic), `GATE_HARD_MIN_SPP`, `GateStat` (+ `print_line`), `gates_summary(stats: &[GateStat], spp: u32) -> bool`. Spectra-gated (`#[cfg(feature = "spectra")]`): `review_rig`, `apply_rig_env`, `load_ready_asset_mesh`, `door_anchor`, `with_lot_dressing`, `TextureAtlas`, `ready_textured_materials`, `render_mesh_view`, `grade_preview`, `save_png_rgba`, `camera_for`, `structure_aabb`, `standard_views(mesh, door) -> Vec<InspectionView>` (iso/front/side ONLY — the candidate set), and `gate_views(payload: &Path, out_dir: &Path, spp: u32) -> Result<Vec<GateStat>, String>` (loads payload → dressing → textured materials → renders iso/front/side + a non-gated `debug_mat.png` → stats per view → returns all three GateStats; does NOT print the summary — callers do). `forge_pathtrace.rs` keeps `COOKED_SPECS`, porch views/rig, `print_door_contrast`, contact sheet, the selftest corrupt-one-buffer trick, and the final summary print — but imports every moved item from `civitas_care::qa::pathtrace_gates`. **Its printed contract must not change by one byte.** Stubs = **task failure**.
+**Wiring requirement:** unconditional in `qa::pathtrace_gates`: `pixel_stats`, `GateBand`, `gate_band(label, view)` (iso/front/side/porch/debug bands moved verbatim, including the craftsman-porch special case and the unknown-view panic), `GATE_HARD_MIN_SPP`, `GateStat` (+ `print_line`), `gates_summary(stats: &[GateStat], spp: u32) -> bool`. Spectra-gated (`#[cfg(feature = "spectra")]`): `review_rig`, `apply_rig_env`, `load_ready_asset_mesh`, `door_anchor`, `with_lot_dressing`, `TextureAtlas`, `ready_textured_materials`, `render_mesh_view`, `grade_preview`, `save_png_rgba`, `camera_for`, `structure_aabb`, `standard_views(mesh, door) -> Vec<InspectionView>` (iso/front/side ONLY — the candidate set), and `gate_views(payload: &Path, out_dir: &Path, spp: u32) -> Result<Vec<GateStat>, String>` (loads payload → dressing → textured materials → renders iso/front/side + a non-gated `debug_mat.png` → stats per view → returns all three GateStats; does NOT print the summary — callers do). `forge_pathtrace.rs` keeps `COOKED_SPECS`, porch views/rig, `print_door_contrast`, contact sheet, the selftest corrupt-one-buffer trick, and the final summary print — but imports every moved item from `urban_horizon::qa::pathtrace_gates`. **Its printed contract must not change by one byte.** Stubs = **task failure**.
 
 - [ ] **Step 1: Write the failing tests** — `qa_gate_black_frame_fails` (vec![0u8; 768*768*4] with alpha 255 → for iso/front/side: `mean < band.mean_lo`, stat `pass() == false`; print each), `qa_gate_flat_grey_fails` (all channels 128 → std floors fail every view even though front's mean 128 is in band — the exact wash-detector property; print), `qa_gate_real_render_passes` (decode `assets/buildings/forge_starter/renders/spectra/craftsman/iso.png` with the `image` crate → `pixel_stats` → inside the iso band; `println!("skip: no committed render at <path>")` + return if absent).
 - [ ] **Step 2: Run to verify failure** — `cargo test --lib qa_gate 2>&1 | tail -5` → FAIL: `E0433` (`qa` does not exist).
@@ -367,7 +367,7 @@ cargo run --bin game_asset_cook -- --source /tmp/factory_t3_src --output /tmp/fa
 **Files:**
 - Create: `src/bin/asset_factory.rs`
 
-**Acceptance (hermetic, ungated):** `cd ~/Ochroma/projects/civitas_care && ASSET_FACTORY_SELFTEST=collide cargo run --bin asset_factory -- "any brief"` prints exactly the three reject-path lines from **Done When** and exits 1 (`echo $?` → 1). No LLM started, no GPU touched, no spectra build needed.
+**Acceptance (hermetic, ungated):** `cd ~/Ochroma/projects/urban_horizon && ASSET_FACTORY_SELFTEST=collide cargo run --bin asset_factory -- "any brief"` prints exactly the three reject-path lines from **Done When** and exits 1 (`echo $?` → 1). No LLM started, no GPU touched, no spectra build needed.
 
 **Wiring requirement:** the bin compiles in BOTH feature modes. Featureless: `main` handles ONLY the selftest path (otherwise prints `asset_factory: build with --features spectra for the full loop` and exits 2). With `spectra`: full path calls `factory::run_factory` and prints the accept/reject line sets — the attempt line (`attempt {i}/{budget}: directive {id} (schema-valid, sampling seed {s})`), `semantics: PASS (0 kill criteria)` / `semantics: FAIL — {code} {reason}`, the `cook: cooked {id}  {V} mesh verts -> {M} atoms, {W} walls` echo (values from `CookedCandidate`), gate lines via `GateStat::print_line` with label `{id}/{view}`, `gates: PASS|FAIL`, `judge: skipped (v1)`, `ACCEPTED {id} after {n} attempt(s)`, `registered: pack.json {Zone} L{level} pool {before} -> {after} assets`, `pool-proof: zonable_for({Zone}, {level}, {w} x {d}) selects {id} at seed {k}`, `provenance: {path}`. Selftest path: load `tests/fixtures/factory/collide_directive.json` via `include_str!`, run `validate_semantics` against the REAL `AssetCatalog::load_project_assets()`, print the three lines (the K2 reason comes from the validator, not a hardcoded string — the line is real output of real validation), exit 1. Stubs = **task failure**.
 

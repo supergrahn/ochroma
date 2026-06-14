@@ -84,7 +84,7 @@ pub struct CitySim {
 
 impl CitySim {
     /// Default calendar cadence for the engine's built-in demo city. These are
-    /// the *engine defaults* for the generic [`Calendar`]; the game (civitas_care)
+    /// the *engine defaults* for the generic [`Calendar`]; the game (urban_horizon)
     /// owns the canonical, config-first tuning of the same cadence. Kept here so
     /// the engine's own `CitySim` has one coherent clock and never the old triple
     /// of contradictory per-tick constants.

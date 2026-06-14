@@ -13,6 +13,12 @@ pub struct WgpuBackend {
     /// superset of what was requested). Used to build a live `GpuTimers` for the
     /// present-pass GPU-ms HUD (Spec 08).
     features: wgpu::Features,
+    /// Whether the selected surface/adapter advertises `PresentMode::Mailbox`.
+    /// Fifo is the only wgpu-guaranteed mode; callers that prefer Mailbox (the
+    /// editor's proof-mode present) must fall back to Fifo where Mailbox is
+    /// unsupported (notably some Windows surfaces) rather than configuring an
+    /// unsupported mode.
+    mailbox_supported: bool,
 }
 
 impl WgpuBackend {
@@ -25,9 +31,14 @@ impl WgpuBackend {
     }
 
     async fn new_async(window: Arc<Window>, width: u32, height: u32) -> Result<Self, String> {
-        // Try backends in order: Vulkan → GL → all available
+        // Try backends in order: Vulkan → DX12 → GL → all available.
+        // The explicit DX12 tier (between Vulkan and GL) gives Windows a named,
+        // deterministic Direct3D 12 path before GL can grab a weak adapter. On
+        // Linux `Backends::DX12` yields no adapter, so the per-attempt `continue`
+        // below skips it and the effective order stays Vulkan → GL → all.
         let backend_attempts: &[(&str, wgpu::Backends)] = &[
             ("Vulkan", wgpu::Backends::VULKAN),
+            ("DX12", wgpu::Backends::DX12),
             ("GL", wgpu::Backends::GL),
             ("all", wgpu::Backends::all()),
         ];
@@ -140,6 +151,9 @@ impl WgpuBackend {
 
             eprintln!("[wgpu] Successfully initialised with {name} backend");
             let features = device.features();
+            let mailbox_supported = surface_caps
+                .present_modes
+                .contains(&wgpu::PresentMode::Mailbox);
             return Ok(Self {
                 surface,
                 device,
@@ -148,6 +162,7 @@ impl WgpuBackend {
                 width,
                 height,
                 features,
+                mailbox_supported,
             });
         }
 
@@ -344,5 +359,12 @@ impl WgpuBackend {
     /// Returns a reference to the wgpu surface.
     pub fn surface(&self) -> &wgpu::Surface<'static> {
         &self.surface
+    }
+
+    /// Whether the selected surface advertises `PresentMode::Mailbox`. Callers
+    /// that prefer Mailbox must fall back to the guaranteed `Fifo` mode when this
+    /// is false (some Windows surfaces do not expose Mailbox).
+    pub fn mailbox_supported(&self) -> bool {
+        self.mailbox_supported
     }
 }

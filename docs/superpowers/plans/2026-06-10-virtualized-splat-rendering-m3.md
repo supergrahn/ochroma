@@ -21,7 +21,7 @@ This is the dev-floor gate on the 780M; numbers on other machines (tomespensin) 
 
 ## IMPORTANT NOTES
 
-- **Repos:** engine `~/src/ochroma` only (branch `blitz/day1-foundation`, uncommitted work present). **Do NOT run `git commit`** — the user commits; every task ends "leave uncommitted". No civitas_care changes (game wiring is M4). Engine crates stay game-agnostic: "buildings" appears only in the vox_app harness prints.
+- **Repos:** engine `~/src/ochroma` only (branch `blitz/day1-foundation`, uncommitted work present). **Do NOT run `git commit`** — the user commits; every task ends "leave uncommitted". No urban_horizon changes (game wiring is M4). Engine crates stay game-agnostic: "buildings" appears only in the vox_app harness prints.
 - **Measured M1/M2 reality this plan starts from (recorded in the executed M1–M2 plan, re-verify nothing — these ARE the inputs):** 10k buildings: `p50=72.46 ms p99=118.11`, `select_ms p50=19.56`, `selected=999997`, `non_black=232709/921600 (25.3%)`, `library_atoms=25325`, `entry_overflow max=0`. 1,000 buildings (31 m low orbit): `selected=661776`, `p50=105.14`, **`entry_overflow max=9,857,730`** — demand was 16,000,000 + 9,857,730 = **25,857,730 entries** vs the capacity-derived 16M scratch. In-test release select: 25.575 ms. So M3 must cut both the ~20 ms select AND the ~50 ms 1M-splat render (the governor sheds the latter; the GPU port cuts the former).
 - **Verified existing signatures (code-checked 2026-06-10 against the CURRENT post-M1/M2 sources; code wins over the design doc):**
   - `InstancedSelector::new(Arc<AssetAtomLibrary>)`, `set_instances(&mut self, &[AtomInstance])`, `select(&mut self, camera: &RenderCamera, budget: usize, out: &mut InstancedSelection) -> InstancedStats` (`atom_instances.rs`). `InstancedStats { budget, selected, instances_visible, instances_culled, instances_far, lod_histogram: [usize; 6], select_us }`. `ClusterDraw`/`DrawUnit` are `pub` with `pub` fields; `InstancedSelection` accessors `draws()`, `atom_count()`, field `draws` private (same-crate modules may write it — the `Selection` precedent).
@@ -142,7 +142,7 @@ This is the dev-floor gate on the 780M; numbers on other machines (tomespensin) 
 
 ## Out of Scope (M4 / later)
 
-- Game wiring (`SceneRenderer`, HUD `atoms S/B | frame ms`, the construction counter, civitas_care repo) — M4, gated on this plan.
+- Game wiring (`SceneRenderer`, HUD `atoms S/B | frame ms`, the construction counter, urban_horizon repo) — M4, gated on this plan.
 - Dirty-instance upload tracking, imposter crossfade bands, HZB occlusion, a stable radix sort — design Open Questions, only if Task 4's measured breakdown demands them.
 - Any frozen-WGSL change (`tile_assign.wgsl`, `radix_sort*.wgsl`, `tile_range_build.wgsl`, `splat_raster.wgsl`) and any Spectra path.
 - The all-milestones headline (game HUD at 16.6 while orbiting a saved 10k city) — M4's Done When.

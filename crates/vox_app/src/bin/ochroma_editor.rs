@@ -128,13 +128,34 @@ fn parse_cli() -> Cli {
     cli
 }
 
+/// Resolve a shipped UI asset path. Anchors `rel` (e.g. `assets/ui/...`) to
+/// `$OCHROMA_ASSET_DIR` if set, else the directory of the running executable, so
+/// a shortcut/launcher start (arbitrary CWD) still finds the theme. Falls back
+/// to the bare relative path (the pre-anchor CWD-relative behavior) when neither
+/// the env var nor the exe dir can be resolved.
+fn resolve_asset_path(rel: &str) -> std::path::PathBuf {
+    if let Some(dir) = std::env::var_os("OCHROMA_ASSET_DIR") {
+        return std::path::PathBuf::from(dir).join(rel);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let anchored = exe_dir.join(rel);
+            if anchored.exists() {
+                return anchored;
+            }
+        }
+    }
+    std::path::PathBuf::from(rel)
+}
+
 /// Load the shipped UI tokens (dark by default — same theme as `shell_snapshot`).
 fn load_tokens(light: bool) -> Tokens {
-    if light {
-        Tokens::load("assets/ui/ochroma_light.theme.json").unwrap_or_default()
+    let rel = if light {
+        "assets/ui/ochroma_light.theme.json"
     } else {
-        Tokens::load("assets/ui/ochroma.theme.json").unwrap_or_default()
-    }
+        "assets/ui/ochroma.theme.json"
+    };
+    Tokens::load(resolve_asset_path(rel)).unwrap_or_default()
 }
 
 /// Build a fully-populated `EditorShell` with all three real plugins installed,
@@ -696,12 +717,21 @@ impl ApplicationHandler for EditorHost {
 /// pacing to the display when the compositor cooperates. Called once after
 /// backend creation and again after every resize (which reverts to Fifo).
 fn configure_present_mailbox(backend: &WgpuBackend) {
+    // Mailbox is preferred (keeps frames progressing on Wayland/Xwayland) but is
+    // NOT a wgpu-guaranteed present mode — some Windows surfaces don't expose it,
+    // and configuring an unsupported mode is invalid. Fall back to Fifo (the one
+    // mode wgpu guarantees) where Mailbox is unavailable.
+    let present_mode = if backend.mailbox_supported() {
+        wgpu::PresentMode::Mailbox
+    } else {
+        wgpu::PresentMode::Fifo
+    };
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: backend.surface_format(),
         width: backend.width(),
         height: backend.height(),
-        present_mode: wgpu::PresentMode::Mailbox,
+        present_mode,
         desired_maximum_frame_latency: 2,
         alpha_mode: wgpu::CompositeAlphaMode::Auto,
         view_formats: vec![],
@@ -721,6 +751,11 @@ fn configure_present_mailbox(backend: &WgpuBackend) {
 fn resolve_present_adapter_info() -> wgpu::AdapterInfo {
     let attempts: &[wgpu::Backends] = &[
         wgpu::Backends::VULKAN,
+        // Explicit DX12 tier mirrors WgpuBackend::new_async so the present
+        // adapter is resolved with the SAME backend order on Windows. On Linux
+        // DX12 yields no adapter and the loop falls through, so the effective
+        // order is unchanged.
+        wgpu::Backends::DX12,
         wgpu::Backends::GL,
         wgpu::Backends::all(),
     ];

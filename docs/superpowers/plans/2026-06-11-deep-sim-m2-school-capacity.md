@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use **superpowers:subagent-driven-development** (recommended) or **superpowers:executing-plans** to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land the care-first flagship milestone: schools and healthcare stop being radius booleans — a new `ServiceAccess` pass assigns school seats and clinic/hospital capacity nearest-first with depletion (the `CareSystem` loop, generalized), writes the truth onto the engine's `ServiceBuilding.current_users`, and a full school gates parents off the workforce **exactly** like missing childcare (SchoolChild coverage = after-school slot AND a seat) — with the cause diagnosable on every chrome surface (feed, Statistics, info window, inspector).
-**Done When:** All three, in `~/Ochroma/projects/civitas_care`:
+**Done When:** All three, in `~/Ochroma/projects/urban_horizon`:
 1. `cargo test --lib game::tests::an_overfilled_school_gates_parents_until_seats_open -- --nocapture` prints the tick timeline with real numbers:
    `[school-gate] t=3 seats 500/500 · unplaced 250 · gated 50` → `[school-gate] +PrimarySchool #2` → `[school-gate] t=5 seats 750/1000 · unplaced 0 · gated 0 · parents returned: true`, and `cargo test --lib services_access:: -- --nocapture` prints `[seats] enrolled 5 / 5 seats, unplaced 7, lowest ids seated: true` and `[access] current_users school 5/5 · clinic 3/3 (utilisation 1.00)` (depletion proven on hand-shrunk capacities, not vacuous zeros).
 2. `cargo run --release --bin play -- --shot-school /tmp/school` prints, in order: the gating city's feed line `CRIT School seats full — 250 children unplaced — parents stay home until seats open.`, the Statistics line `School seats      500 / 500   unplaced 250`, then after the second school the live info line `School seats      750 / 1000 enrolled`; then on Demo City the service-inspector block containing `Seats        10 / 500`, the house line `Access       school 0.2 km · health 0.1 km · care GAP`, writes `/tmp/school/school_inspect.png` (the Demo school's window open over the city), exits 0 (exits 1 with a printed reason on any failed inequality).
@@ -11,14 +11,14 @@
 
 **Architecture:** A new tick step **1d.3** runs after the land-value pass (1d.2) and before demographics (2): `services_access::assign` walks school-age children (and all housed residents for health) in citizen-id order, anchored through the M1 `HouseholdRegistry`, assigns each to the nearest in-reach service building with a free slot (squared-Euclidean nearest, ties to the lower index — the exact `CareSystem::assign_slots_with_coverage` pattern), and writes per-building counts onto the **existing pub field** `ServiceBuilding.current_users` — `utilisation()` becomes real with zero engine edits. At step 2b, after the care pass, `CareCoverage::require_seat` removes cover from every SchoolChild holding no seat, so the **unchanged** gate (`worker_is_free_to_work` + the revocation loop) fires for seat shortage exactly as it fires for a missing kindergarten. Reach reuses the tick's existing closure seam: Euclidean circle + water barrier everywhere, upgraded to the geodesic field for schools on real maps (a second reach field mirroring `childcare_field`, rebuilt on school plop). Healthcare counts and informs (land value, info lines, notifications) but never gates — no double jeopardy. Everything is recomputed by action-log replay: no `SAVE_VERSION` bump, no new `AuthoredAction`s, no serialized capacity state.
 **Design Document:** `docs/superpowers/specs/2026-06-10-deep-simulation-design.md` (M2 = §2-M2, §4.3, §4.9 M2 rows, §5, §6; M1 results in `docs/superpowers/plans/2026-06-10-deep-sim-m1.md`)
-**Tech Stack:** Rust (workspace toolchain as-is), game repo `~/Ochroma/projects/civitas_care`. Engine crates (`~/src/ochroma`) **read-only**.
-**Build:** `cd ~/Ochroma/projects/civitas_care && cargo build && cargo test --lib` (the play binary needs a desktop display; `--shot-school` renders offscreen). No spectra features needed.
+**Tech Stack:** Rust (workspace toolchain as-is), game repo `~/Ochroma/projects/urban_horizon`. Engine crates (`~/src/ochroma`) **read-only**.
+**Build:** `cd ~/Ochroma/projects/urban_horizon && cargo build && cargo test --lib` (the play binary needs a desktop display; `--shot-school` renders offscreen). No spectra features needed.
 
 ---
 
 ## IMPORTANT NOTES
 
-- **Repos / commits (house convention — changed from M1):** game `~/Ochroma/projects/civitas_care` (git master). **A checkpoint lands first:** before any M2 edit, commit the repo's current uncommitted baseline (M1 + instances + chrome work) as `checkpoint: pre-deep-sim-M2 baseline` — then every task ends with its own commit. Every commit message ends with the footer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`. Engine repo `~/src/ochroma` is **never edited and never committed** by this plan.
+- **Repos / commits (house convention — changed from M1):** game `~/Ochroma/projects/urban_horizon` (git master). **A checkpoint lands first:** before any M2 edit, commit the repo's current uncommitted baseline (M1 + instances + chrome work) as `checkpoint: pre-deep-sim-M2 baseline` — then every task ends with its own commit. Every commit message ends with the footer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`. Engine repo `~/src/ochroma` is **never edited and never committed** by this plan.
 - **OWNERSHIP GATE (read before starting):** the World-Scale NYC M1 plan (`docs/superpowers/plans/2026-06-10-world-scale-nyc-m1.md`) is executing in cook/play space. Honest file-disjointness check: NYC M1's Group P **modifies `src/game/mod.rs` (`place_real_city`) and `src/bin/play.rs` (StartGame hook, inspector lines, `--nyc-shot`)** — the same two files every M2 task wires through. Disjointness FAILS; therefore **this entire plan executes only after NYC M1 completes** (its modules `src/realcity`, `src/bin/nyc_*` never collide, but the wiring files do). The M2-only modules (`src/services_access`, `care/`, `household/`, `coverage_field.rs`, `land_value/`, `ui/panels.rs`, `notifications/`, `scenario/`) have no other owner. Engine workstreams may transiently break `vox_render`/`vox_sim` builds via the path deps — retry after they land; **never edit `~/src/ochroma` to "fix" the build**, and never run the full `vox_render --lib` suite (documented `resident_gi_seam` flake).
 - **CAPACITY SOURCE (the decision, from code):** seats/capacity come from the **existing engine pub field `ServiceBuilding.capacity`**, set once at plop by `ServiceManager::place_service` (vox_sim/src/services.rs:78–91): PrimarySchool **500 seats / 1000 m**, SecondarySchool **1000 / 2000 m**, Clinic **200 / 1000 m**, Hospital **1000 / 3000 m**. It is already frozen-at-placement by construction (services don't grow), so nothing new to freeze — the `jobs_cap` analogy is satisfied by the engine's own table. **NOT** `CareKind` params (those are care buildings: Kindergarten/AfterSchool/…), **NOT** registry instance caps (schools are plopped services, never zoned instances — M1's park note: zoned Service lots become engine `Building`s, not `ServiceBuilding`s). `CityServiceKind` (game) carries only `build_cost`/`service_type()`.
 - **THE PARENT-GATING MECHANISM (found, mirrored, untouched):** the infant-childcare gate is `CareSystem::worker_is_free_to_work` (care/mod.rs:241–254 — a worker is employable only when **every** dependent in `demo.household_of(worker)` has `coverage.is_covered(dep)`) plus the tick revocation loop (game/mod.rs:840–878 — steps 3/4a/4b: collect gated ids, free the engine building slot, null `employment`/`workplace`, crater `needs.employment`). **M2 changes neither.** The mirror is upstream: `CareCoverage::require_seat` removes seatless SchoolChildren from the private `covered` set at step 2b, so the identical gate fires for seats. `coverage.served`/`unmet()` keep **slot semantics** (the after-school gap) — the seat gap reports separately through `ServiceAccessReport.unplaced_children`, so the two causes can never masquerade as each other (diagnosability requirement).
@@ -44,17 +44,17 @@
 
 | Action | Path | Responsibility |
 |--------|------|----------------|
-| Create | `~/Ochroma/projects/civitas_care/src/services_access/mod.rs` | `AccessKind`, `ServiceAccessReport`, `assign` (nearest-first, seat depletion, `current_users` writes), `has_seat`, in-module tests |
-| Modify | `~/Ochroma/projects/civitas_care/src/lib.rs` | `pub mod services_access;` (alphabetical, between `scenario` and `spatial_field`) |
-| Modify | `~/Ochroma/projects/civitas_care/src/game/mod.rs` | `access` + `school_field`(+dirty) fields, tick step 1d.3, seat intersection at 2b, school-dirty in `place_city_service`/`set_coverage_field`, `rebuild_school_field_if_dirty`, seat-notification call, timeline + replay tests |
-| Modify | `~/Ochroma/projects/civitas_care/src/coverage_field.rs` | `ReachField` rename-by-alias + seed-generic `rebuild_reach` (childcare delegates) |
-| Modify | `~/Ochroma/projects/civitas_care/src/game_mechanics/care/mod.rs` | `CareCoverage::require_seat` (seat∩slot intersection), unit test |
-| Modify | `~/Ochroma/projects/civitas_care/src/land_value/mod.rs` | school/health terms gain the capacity-exhaustion predicate, tests |
-| Modify | `~/Ochroma/projects/civitas_care/src/game_mechanics/notifications/mod.rs` | `seat_notifications` — `School seats full — N children unplaced` (Critical) |
-| Modify | `~/Ochroma/projects/civitas_care/src/ui/panels.rs` | Statistics `School seats` / `Health capacity` lines |
-| Modify | `~/Ochroma/projects/civitas_care/src/scenario/mod.rs` | Demo City school-age mix (printed justification), scenario verification test |
-| Modify | `~/Ochroma/projects/civitas_care/src/command/mod.rs` | `ViewState.inspected_service` field + Esc/one-window handling |
-| Modify | `~/Ochroma/projects/civitas_care/src/bin/play.rs` | info lines, house `Access` line, service-building inspector window, `--shot-school` harness |
+| Create | `~/Ochroma/projects/urban_horizon/src/services_access/mod.rs` | `AccessKind`, `ServiceAccessReport`, `assign` (nearest-first, seat depletion, `current_users` writes), `has_seat`, in-module tests |
+| Modify | `~/Ochroma/projects/urban_horizon/src/lib.rs` | `pub mod services_access;` (alphabetical, between `scenario` and `spatial_field`) |
+| Modify | `~/Ochroma/projects/urban_horizon/src/game/mod.rs` | `access` + `school_field`(+dirty) fields, tick step 1d.3, seat intersection at 2b, school-dirty in `place_city_service`/`set_coverage_field`, `rebuild_school_field_if_dirty`, seat-notification call, timeline + replay tests |
+| Modify | `~/Ochroma/projects/urban_horizon/src/coverage_field.rs` | `ReachField` rename-by-alias + seed-generic `rebuild_reach` (childcare delegates) |
+| Modify | `~/Ochroma/projects/urban_horizon/src/game_mechanics/care/mod.rs` | `CareCoverage::require_seat` (seat∩slot intersection), unit test |
+| Modify | `~/Ochroma/projects/urban_horizon/src/land_value/mod.rs` | school/health terms gain the capacity-exhaustion predicate, tests |
+| Modify | `~/Ochroma/projects/urban_horizon/src/game_mechanics/notifications/mod.rs` | `seat_notifications` — `School seats full — N children unplaced` (Critical) |
+| Modify | `~/Ochroma/projects/urban_horizon/src/ui/panels.rs` | Statistics `School seats` / `Health capacity` lines |
+| Modify | `~/Ochroma/projects/urban_horizon/src/scenario/mod.rs` | Demo City school-age mix (printed justification), scenario verification test |
+| Modify | `~/Ochroma/projects/urban_horizon/src/command/mod.rs` | `ViewState.inspected_service` field + Esc/one-window handling |
+| Modify | `~/Ochroma/projects/urban_horizon/src/bin/play.rs` | info lines, house `Access` line, service-building inspector window, `--shot-school` harness |
 
 ---
 
@@ -75,7 +75,7 @@
 
 ## Pre-flight: checkpoint commit (before Task 1)
 
-- [ ] In `~/Ochroma/projects/civitas_care`: `cargo test --lib 2>&1 | tail -3` green, then
+- [ ] In `~/Ochroma/projects/urban_horizon`: `cargo test --lib 2>&1 | tail -3` green, then
 ```bash
 git add -A && git commit -m "checkpoint: pre-deep-sim-M2 baseline (M1 land value + instances + chrome)
 
@@ -87,11 +87,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ## Task 1: `ServiceAccess` — capacity-aware nearest-first assignment, truthful `current_users`, wired as tick step 1d.3
 
 **Files:**
-- Create: `~/Ochroma/projects/civitas_care/src/services_access/mod.rs`
-- Modify: `~/Ochroma/projects/civitas_care/src/lib.rs`
-- Modify: `~/Ochroma/projects/civitas_care/src/game/mod.rs`
+- Create: `~/Ochroma/projects/urban_horizon/src/services_access/mod.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/lib.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/game/mod.rs`
 
-**Acceptance:** `cd ~/Ochroma/projects/civitas_care && cargo test --lib services_access:: -- --nocapture` → `seats_deplete_nearest_first_in_id_order` prints `[seats] enrolled 5 / 5 seats, unplaced 7, lowest ids seated: true` and `current_users_become_real` prints `[access] current_users school 5/5 · clinic 3/3 (utilisation 1.00)`. Full `cargo test --lib` stays green.
+**Acceptance:** `cd ~/Ochroma/projects/urban_horizon && cargo test --lib services_access:: -- --nocapture` → `seats_deplete_nearest_first_in_id_order` prints `[seats] enrolled 5 / 5 seats, unplaced 7, lowest ids seated: true` and `current_users_become_real` prints `[access] current_users school 5/5 · clinic 3/3 (utilisation 1.00)`. Full `cargo test --lib` stays green.
 
 **Wiring requirement:** `crate::services_access::assign(...)` is called from `CivitasGame::tick` as step **1d.3**, immediately after the 1d.2 `apply_land_values` block (game/mod.rs:783) and before step 2 (:785). `CivitasGame` gains `pub access: crate::services_access::ServiceAccessReport` (init `Default::default()` in `new_small`). `todo!()` / stubs = **task failure**.
 
@@ -171,8 +171,8 @@ self.access = crate::services_access::assign(
 ## Task 2: School geodesic reach — generalize the coverage field, mirror the childcare dirty-rebuild
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/coverage_field.rs`
-- Modify: `~/Ochroma/projects/civitas_care/src/game/mod.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/coverage_field.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/game/mod.rs`
 
 **Acceptance:** `cargo test --lib coverage_field::tests::school_reach_severs_across_water -- --nocapture` prints `[school-field] far bank enrolled 0 (severed), same-bank school enrolled <n> > 0` on a GPU machine (prints the documented `no adapter — skipping` line otherwise), and `cargo test --lib game::tests::school_access_flat_world_matches_barrier_closure -- --nocapture` prints `[school-field] flat-world parity: reports identical (enrolled <n>)` with `n > 0`. Full `cargo test --lib` green.
 
@@ -214,8 +214,8 @@ self.access = crate::services_access::assign(&mut self.sim, &self.households, |i
 ## Task 3: The seat gate — SchoolChild coverage = slot AND seat, parents gated exactly like missing childcare
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/game_mechanics/care/mod.rs`
-- Modify: `~/Ochroma/projects/civitas_care/src/game/mod.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/game_mechanics/care/mod.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/game/mod.rs`
 
 **Acceptance:** `cargo test --lib game::tests::an_overfilled_school_gates_parents_until_seats_open -- --nocapture` prints the tick timeline:
 `[school-gate] t=3 seats 500/500 · unplaced 250 · gated 50` then `[school-gate] +PrimarySchool #2` then `[school-gate] t=5 seats 750/1000 · unplaced 0 · gated 0 · parents returned: true`. And `cargo test --lib care:: -- --nocapture` includes `require_seat_revokes_only_seatless_schoolchildren` printing `revoked 1 of 2 schoolchildren; infant cover untouched; served stays slot-semantics`. Full `cargo test --lib` green; `git diff` shows **zero** changes to `worker_is_free_to_work` or tick steps 3/4a/4b.
@@ -271,7 +271,7 @@ self.coverage.require_seat(&self.demographics, |id| access.has_seat(id));
 ## Task 4: Land value feels seats — exhaustion-aware school/health terms (one-tick lag for free)
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/land_value/mod.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/land_value/mod.rs`
 
 **Acceptance:** `cargo test --lib land_value::tests::seat_exhaustion_drops_the_school_term -- --nocapture` prints `[land_value] school term: free seats lv <a> -> exhausted lv <b> (delta -0.100)` with `a - b == W_SCHOOL` (± 1e-4). Full `cargo test --lib` green (the M1 land-value tests use never-exhausted services — `current_users == 0 < capacity` — and stay byte-identical).
 
@@ -289,9 +289,9 @@ self.coverage.require_seat(&self.demographics, |id| access.has_seat(id));
 ## Task 5: Diagnosable chrome (lib-side) — the seat alert + Statistics lines
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/game_mechanics/notifications/mod.rs`
-- Modify: `~/Ochroma/projects/civitas_care/src/game/mod.rs` (one `notes.extend` line at :915)
-- Modify: `~/Ochroma/projects/civitas_care/src/ui/panels.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/game_mechanics/notifications/mod.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/game/mod.rs` (one `notes.extend` line at :915)
+- Modify: `~/Ochroma/projects/urban_horizon/src/ui/panels.rs`
 
 **Acceptance:** `cargo test --lib notifications::tests::seat_shortage_raises_a_critical_diagnosable_alert -- --nocapture` prints `CRIT School seats full — 250 children unplaced — parents stay home until seats open.` and `slot alert absent: true` (the after-school warning must NOT fire when slots are ample — causes never masquerade); `cargo test --lib panels::tests::stats_lines_carry_seat_and_health_capacity -- --nocapture` prints the two Statistics lines with the live report's numbers embedded. Full `cargo test --lib` green.
 
@@ -326,8 +326,8 @@ pub fn seat_notifications(access: &crate::services_access::ServiceAccessReport) 
 ## Task 6: Scenario balance verification + replay equality — adjust only with printed justification
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/scenario/mod.rs`
-- Modify: `~/Ochroma/projects/civitas_care/src/game/mod.rs` (the replay test)
+- Modify: `~/Ochroma/projects/urban_horizon/src/scenario/mod.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/game/mod.rs` (the replay test)
 
 **Acceptance:** `cargo test --lib scenario:: -- --nocapture` → `m2_scenario_shapes_survive_seats` prints
 `[scenario] founders-vale: students 0 · seats 0 · unplaced 0 · gate untouched (eldercare gap intact)` and
@@ -347,8 +347,8 @@ pub fn seat_notifications(access: &crate::services_access::ServiceAccessReport) 
 ## Task 7: The observable surface — info lines, house Access line, service-building inspector, `--shot-school` proof harness
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/command/mod.rs` (`ViewState.inspected_service`)
-- Modify: `~/Ochroma/projects/civitas_care/src/bin/play.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/command/mod.rs` (`ViewState.inspected_service`)
+- Modify: `~/Ochroma/projects/urban_horizon/src/bin/play.rs`
 
 **Acceptance:** `cargo run --release --bin play -- --shot-school /tmp/school` prints, in order: the overfill city's timeline (`[shot-school] t=3 seats 500/500 · unplaced 250 · gated 50`), the feed line (`CRIT School seats full — 250 children unplaced — parents stay home until seats open.`), the Statistics school line, the post-fix line (`[shot-school] t=5 seats 750/1000 · unplaced 0 · gated 0 · parents returned: true`), the live info line (`School seats      750 / 1000 enrolled`); then on Demo City (Space ×10): the full service-inspector block for the Primary School including `Seats        10 / 500`, one house's inspector block including its `Access       school 0.N km · health 0.N km · care OK|GAP` line, `wrote /tmp/school/school_inspect.png`, exit 0 (exit 1 with a printed reason on any failed inequality). Then the human Done-When pass.
 

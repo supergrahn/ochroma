@@ -1,7 +1,7 @@
 # Design: Deep Simulation (2026-06-10)
 
 **Status:** Draft
-**Scope:** SOTA item 5 — give Civitas Care a deep, observable economy on top of the BuildingInstance registry: persistent households anchored to real houses, a per-lot land-value field that feeds assessed value and taxation, capacity-aware school/healthcare access wired into the care gate, per-instance goods inventory and multi-tenant business programs, flow-based traffic assignment on the player's road graph, and a zoning growth loop that reacts to services and land value. All new code lives in the GAME layer (`~/Ochroma/projects/civitas_care`); engine crates (`~/src/ochroma`) are untouched.
+**Scope:** SOTA item 5 — give Urban Horizon a deep, observable economy on top of the BuildingInstance registry: persistent households anchored to real houses, a per-lot land-value field that feeds assessed value and taxation, capacity-aware school/healthcare access wired into the care gate, per-instance goods inventory and multi-tenant business programs, flow-based traffic assignment on the player's road graph, and a zoning growth loop that reacts to services and land value. All new code lives in the GAME layer (`~/Ochroma/projects/urban_horizon`); engine crates (`~/src/ochroma`) are untouched.
 **Related:** `[Living Building Instances Design](./2026-06-10-living-building-instances-design.md)` (SOTA item 4 — **prerequisite**, in implementation now), `[SOTA City Block Phase 1 Plan](../plans/2026-06-10-sota-city-block-phase1.md)` (sequencing: "Deep simulation … sequenced after instances")
 
 ---
@@ -21,7 +21,7 @@ Honest inventory of today's code. What exists: the RCI demand model (`src/demand
 
 ## 2. Done When
 
-Umbrella: running `cd ~/Ochroma/projects/civitas_care && cargo run --release --bin play`, choosing **New Game → Demo City → Start Game**, and pressing **Space** ~10 times, a human at the keyboard can verify every milestone gate below without reading code. Each milestone is independently shippable in this order.
+Umbrella: running `cd ~/Ochroma/projects/urban_horizon && cargo run --release --bin play`, choosing **New Game → Demo City → Start Game**, and pressing **Space** ~10 times, a human at the keyboard can verify every milestone gate below without reading code. Each milestone is independently shippable in this order.
 
 ### M1 — Land value & anchored households
 

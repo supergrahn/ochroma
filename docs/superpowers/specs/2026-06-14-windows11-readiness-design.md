@@ -64,7 +64,7 @@ Ranked blockers:
 
 ### 4.3 Save/load + paths (default editor)
 
-`world_save.rs` is plain `std::fs` + `serde_json` over `&Path`; `auto_save_path()` already uses `dirs_next::data_dir()` → `%APPDATA%`. Only two CWD-relative paths need anchoring: `quick_save_path()` and the UI theme path. Path construction uses `Path::join` throughout (backslash-correct on Win); no `fs::canonicalize`, no `PermissionsExt`/`set_mode` in the default save/asset IO. `civitas_care` `instanced.rs:413` `PathBuf::from("civitas_data")` is CWD-relative — anchor to exe-dir or `CIVITAS_DATA_DIR` (civitas is not in the portable editor set, but the fix is Linux-safe).
+`world_save.rs` is plain `std::fs` + `serde_json` over `&Path`; `auto_save_path()` already uses `dirs_next::data_dir()` → `%APPDATA%`. Only two CWD-relative paths need anchoring: `quick_save_path()` and the UI theme path. Path construction uses `Path::join` throughout (backslash-correct on Win); no `fs::canonicalize`, no `PermissionsExt`/`set_mode` in the default save/asset IO. `urban_horizon` `instanced.rs:413` `PathBuf::from("civitas_data")` is CWD-relative — anchor to exe-dir or `CIVITAS_DATA_DIR` (civitas is not in the portable editor set, but the fix is Linux-safe).
 
 ### 4.4 spectra-native build path (deferred, Phase B)
 
@@ -268,7 +268,7 @@ If the editor refuses to open on an RDP/headless box (software GPU): `$env:OCHRO
 - `fsr`/FFX on Windows (full MSVC ffx-sys rewrite + `-fshort-wchar`/`spectra_gcc_compat.h`; recommend OFF indefinitely for the editor).
 - The GPU-native viewport replacing the CPU `SoftwareRasteriser` (the editor opens/renders/saves with the CPU rasteriser today; GPU viewport is an enhancement).
 - macOS.
-- `civitas_care` as a full Windows target (it builds vox_render with spectra-native ON; only `ochroma_editor` is in the portable set).
+- `urban_horizon` as a full Windows target (it builds vox_render with spectra-native ON; only `ochroma_editor` is in the portable set).
 
 ---
 

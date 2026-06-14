@@ -1,10 +1,10 @@
 # Design: World-Scale Real City — New York at 1:1 (2026-06-10)
 
 **Status:** Draft — §2.0 scale targets are **normative until user veto** (reviewed 2026-06-10 without objection); amended 2026-06-11: footprints drive INSTANCES, not assets (archetype buckets, per-instance identity, fit-scale)
-**Scope:** Build New York City at real scale inside Civitas Care on the Ochroma engine: real NYC open data (DEM, building footprints, tax lots, streets) ingested into a deterministic snapshot, mapped onto Forge directives + the cooked-asset pipeline, placed at true coordinates, streamed at borough scale, and simulated under tiered sim-LOD — with an M1/M2/M3 Done-When ladder where every rung is a command a human can run.
+**Scope:** Build New York City at real scale inside Urban Horizon on the Ochroma engine: real NYC open data (DEM, building footprints, tax lots, streets) ingested into a deterministic snapshot, mapped onto Forge directives + the cooked-asset pipeline, placed at true coordinates, streamed at borough scale, and simulated under tiered sim-LOD — with an M1/M2/M3 Done-When ladder where every rung is a command a human can run.
 **Related:** `[Virtualized Splat Rendering Design](./2026-06-10-virtualized-splat-rendering-design.md)`, `[Deep Simulation Design](./2026-06-10-deep-simulation-design.md)`, `[Living Building Instances Design](./2026-06-10-living-building-instances-design.md)`, `[SDF Pillar Design](./2026-06-10-sdf-pillar-design.md)`, plan `[World-Scale NYC M1](../plans/2026-06-10-world-scale-nyc-m1.md)`
 
-**Layer rule (CLAUDE.md):** everything NYC-specific (datasets, BIN/BBL, addresses, zoning mapping) lives in `~/Ochroma/projects/civitas_care`. Engine work in this design (M2 streaming) stays game-agnostic: cells, tiles, instances, splats. No engine crate ever learns what a "tax lot" is.
+**Layer rule (CLAUDE.md):** everything NYC-specific (datasets, BIN/BBL, addresses, zoning mapping) lives in `~/Ochroma/projects/urban_horizon`. Engine work in this design (M2 streaming) stays game-agnostic: cells, tiles, instances, splats. No engine crate ever learns what a "tax lot" is.
 
 ---
 
@@ -34,7 +34,7 @@ The working SOTA targets every rung below is calibrated against:
 A three-rung ladder. Each rung is independently observable; a rung is not "done" until its exact command prints its exact output (correctness rungs on the 780M; ms gates on `tomespensin` per the targets above).
 
 **M1 — one real Lower-Manhattan tile (the plan `2026-06-10-world-scale-nyc-m1.md` executes exactly this):**
-`cd ~/Ochroma/projects/civitas_care && cargo run --release --bin play -- --nyc-shot nyc_m1_inspector.png` loads the cooked NYC tile (real 1-ft-DEM terrain; ~1,000 real footprints standing as **instances of ~25–40 cooked Forge archetypes** at true coordinates — **footprints drive instances, not assets**: one hand-tunable directive per shape × size × height bucket, every placement carrying archetype id + fit-scale + its own Address/BIN as per-instance metadata), headlessly clicks a pinned building, writes the PNG, and prints inspector lines including `Address      <a real street address from PLUTO>` and `BIN          1xxxxxx` (a real Manhattan BIN, leading digit 1) plus `latlon       40.72xxxx, -74.00xxxx (Δ <2.0 m vs snapshot)` — the printed lat/lon of the clicked world position matches the snapshot footprint centroid within 2 m, and the identity lines come **from the instance side-table, never from the asset**. The same tile is reachable by a human through the menu: New Game → map `NYC — Lower Manhattan M1` → Start Game → Inspect tool → click any building → the inspector window shows the Address/BIN lines.
+`cd ~/Ochroma/projects/urban_horizon && cargo run --release --bin play -- --nyc-shot nyc_m1_inspector.png` loads the cooked NYC tile (real 1-ft-DEM terrain; ~1,000 real footprints standing as **instances of ~25–40 cooked Forge archetypes** at true coordinates — **footprints drive instances, not assets**: one hand-tunable directive per shape × size × height bucket, every placement carrying archetype id + fit-scale + its own Address/BIN as per-instance metadata), headlessly clicks a pinned building, writes the PNG, and prints inspector lines including `Address      <a real street address from PLUTO>` and `BIN          1xxxxxx` (a real Manhattan BIN, leading digit 1) plus `latlon       40.72xxxx, -74.00xxxx (Δ <2.0 m vs snapshot)` — the printed lat/lon of the clicked world position matches the snapshot footprint centroid within 2 m, and the identity lines come **from the instance side-table, never from the asset**. The same tile is reachable by a human through the menu: New Game → map `NYC — Lower Manhattan M1` → Start Game → Inspect tool → click any building → the inspector window shows the Address/BIN lines.
 
 **M2 — 100k instances, streamed at 60 fps:** `play` on the M2 map (Manhattan plus the facing Brooklyn/Queens waterfront — **~100k real footprints**, the `i` info line `Instances    ~100k` printing the real snapshot count) flies Battery → Inwood (~21 km); a `[stream]` line prints every 2 s shaped `[stream] cells loaded=<L> resident_mb=<M> evicted=<E> instances_visible=<V>` with `M ≤ 2048` (the `SplatBudget` default) for the whole flight and zero black frames; **frame gate: p50 ≤ 16.6 ms over the flight on `tomespensin`** (tier+adapter gate line printed; the 780M runs the identical flight printing its 33 ms tracking floor — M3.2 re-baseline protocol); the district sim tick prints `[sim] tier1 districts=<D> tick_ms=<t>` within the deep-sim budget.
 
@@ -132,7 +132,7 @@ The generator emits `placements.json` per tile: one record per footprint `{bin, 
 ## 5. Data Models
 
 ```rust
-/// civitas_care/src/realcity/mod.rs — all game-layer. Private fields, accessors.
+/// urban_horizon/src/realcity/mod.rs — all game-layer. Private fields, accessors.
 
 /// One dataset item in the pinned snapshot manifest.
 pub struct SnapshotItem {
@@ -177,7 +177,7 @@ pub struct RealBuildingInfo { bin: u64, bbl: u64, address: String, lat: f64, lon
 ## 6. API
 
 ```rust
-// civitas_care/src/realcity/mod.rs
+// urban_horizon/src/realcity/mod.rs
 /// EPSG:2263 (LCC 2SP, NAD83/Long Island, ftUS) from WGS84. Pure, deterministic.
 /// Correctness is gated by the snapshot's own area attribute (§3), not by trust.
 pub fn epsg2263_from_lat_lon(lat: f64, lon: f64) -> [f64; 2];
@@ -191,7 +191,7 @@ pub fn load_tile(path: &Path) -> Result<RealCityTile, String>;
 /// asset pinned, seed = BIN). Pure; does not touch CivitasGame.
 pub fn lot_plans(tile: &RealCityTile) -> Vec<crate::lot::layout::LotPlan>;
 
-// civitas_care/src/game/mod.rs  (M1 — the one gated game-core addition)
+// urban_horizon/src/game/mod.rs  (M1 — the one gated game-core addition)
 /// Push the plans and develop every lot NOW (no demand gate), fast-forwarding
 /// construction by running the registry's own tick loop; returns instance ids
 /// in placement order so the caller can build the RealBuildingInfo side-table.
@@ -210,15 +210,15 @@ pub fn place_real_city(&mut self, plans: Vec<crate::lot::layout::LotPlan>) -> Ve
 
 | Component | Called from | File | Notes |
 |---|---|---|---|
-| `nyc_fetch` snapshot | operator command | `civitas_care/src/bin/nyc_fetch.rs` | curl house pattern; idempotent; manifest-pinned |
-| `epsg2263_from_lat_lon` / `fit_obb` | directive generator | `civitas_care/src/bin/nyc_directives.rs` | snapshot → directives + placements.json |
-| `load_dem_png` (forge, dead today) | tile importer | `civitas_care/src/bin/nyc_tile_import.rs` | first caller; sidecar restores datum |
+| `nyc_fetch` snapshot | operator command | `urban_horizon/src/bin/nyc_fetch.rs` | curl house pattern; idempotent; manifest-pinned |
+| `epsg2263_from_lat_lon` / `fit_obb` | directive generator | `urban_horizon/src/bin/nyc_directives.rs` | snapshot → directives + placements.json |
+| `load_dem_png` (forge, dead today) | tile importer | `urban_horizon/src/bin/nyc_tile_import.rs` | first caller; sidecar restores datum |
 | `import_real` / `Map::save_to_dir` | tile importer | same | map appears in `./civitas_data/maps` |
 | game cook | operator command | `game_asset_cook` (no edits; directives only) | discovers `*.asset.json` recursively |
-| `place_real_city` | `MenuAction::StartGame` arm, after `game.bind_map(&map)` | `civitas_care/src/bin/play.rs` | only when `<map dir>/placements.json` exists |
-| `RealBuildingInfo` lines | `GameView::inspector` | `civitas_care/src/bin/play.rs` | appended when the side-table has the id |
+| `place_real_city` | `MenuAction::StartGame` arm, after `game.bind_map(&map)` | `urban_horizon/src/bin/play.rs` | only when `<map dir>/placements.json` exists |
+| `RealBuildingInfo` lines | `GameView::inspector` | `urban_horizon/src/bin/play.rs` | appended when the side-table has the id |
 | `WorldPartition` (M2) | game streaming driver | engine `vox_render/src/world_partition.rs` + game glue | first production caller; engine stays generic |
-| Sim tiers (M2) | `CivitasGame::tick` deep-sim pass | `civitas_care/src/game/mod.rs` | T1 aggregates authoritative for totals |
+| Sim tiers (M2) | `CivitasGame::tick` deep-sim pass | `urban_horizon/src/game/mod.rs` | T1 aggregates authoritative for totals |
 
 ---
 

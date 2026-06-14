@@ -47,7 +47,7 @@
 | Create | `crates/vox_render/src/bin/flora_probe.rs` | the truth harness: cook → trace → print realism + cost + determinism blocks, write PNG |
 | Modify | `~/src/spectra/slang/megakernel.slang` | add the far-canopy volumetric-shell march tier (card→shell collapse) — owned by Spectra side |
 | Modify | `crates/vox_render/src/gpu/scatter_field.rs` | tree/grass scatter-class emits the `LeafCard` (`MAT_VEGETATION`) primitive, not a Gaussian blade |
-| Modify | `~/Ochroma/projects/civitas_care/src/bin/game_asset_cook.rs` | `cook_flora` calls `vox_data::flora_cook`, not `forge.generate_vegetation` |
+| Modify | `~/Ochroma/projects/urban_horizon/src/bin/game_asset_cook.rs` | `cook_flora` calls `vox_data::flora_cook`, not `forge.generate_vegetation` |
 | Test   | `crates/vox_data/tests/flora_cook_test.rs` | trunk-SDF coverage, leaf-card mapping, PROSPECT spectral, cook determinism |
 | Test   | `crates/vox_render/tests/flora_render_test.rs` | silhouette-gap, translucency, far-shell collapse, alpha-test-ray budget |
 
@@ -238,7 +238,7 @@ fn flora_grass_is_strap_leaf_cards() {
 ## Task 5 (M4): Replace forge in the product cook — deterministic FloraPrime cook, forge demoted to preview
 
 **Files:**
-- Modify: `~/Ochroma/projects/civitas_care/src/bin/game_asset_cook.rs`
+- Modify: `~/Ochroma/projects/urban_horizon/src/bin/game_asset_cook.rs`
 - Test: `crates/vox_data/tests/flora_cook_test.rs`
 
 **Acceptance:** `cargo run --release --bin game_asset_cook -- --flora-only` → prints `flora: oak_tree birch_tree shrub tall_grass via floraprime (sdf+cards) | sha256 deterministic` and the product cook path no longer calls `forge.generate_vegetation`. `cargo test -p vox_data flora_cook_deterministic -- --nocapture` → `sha256(asset_a) == sha256(asset_b)` for seed=42 cooked twice.

@@ -5,7 +5,7 @@
 **Related:**
 - Builds directly on: [Spectra Universal Renderer](./2026-06-12-spectra-universal-renderer-design.md) (SDF-only direction; the M0–M2 ladder this extends), the `hybrid-atom-sdf-lod-direction` memory (SDF is the single runtime geometry primitive).
 - Reuses verbatim: the M2 glass mechanism — `~/src/spectra/slang/megakernel.slang:1266–1338` (SDF glass hit → `sample_glass` → continuation ray that transmits instead of terminating) and `~/src/spectra/slang/brdf_glass.slang` (`sample_glass` :227, `beer_lambert` :77, `fresnel_dielectric`, TIR handling :361–372). PROVEN on the AMD 780M (spectra `1480e2c`, ochroma `160469b`: 1063 see-through window pixels, mean |ΔRGB| 395 vs the opaque control).
-- Couples to: [Terraform Tool Wave 1](../plans/2026-06-11-terraform-tool-wave1.md) (**landed** — `MapTerrain::apply_stamp` → `rederive_region` → `water_flips` → `childcare_field_dirty`, verified in `~/Ochroma/projects/civitas_care/src/map/terrain.rs:122–150` and `derive.rs:43–72`), [Terraform Tool Design](./2026-06-11-terraform-tool-design.md).
+- Couples to: [Terraform Tool Wave 1](../plans/2026-06-11-terraform-tool-wave1.md) (**landed** — `MapTerrain::apply_stamp` → `rederive_region` → `water_flips` → `childcare_field_dirty`, verified in `~/Ochroma/projects/urban_horizon/src/map/terrain.rs:122–150` and `derive.rs:43–72`), [Terraform Tool Design](./2026-06-11-terraform-tool-design.md).
 - Budget contract: the per-frame ray/sample budget **B** is set by the Spectra perf agent's verdict (in flight on the megakernel right now). Every affordance in §4.6 is parameterized on B — nothing here assumes a number that agent hasn't measured. Floor truth: ~9.3 s/frame full-scene on the 780M software sphere-trace; target 1–2 ms on the RTX 4070 Ti ([Spectra Realtime](./2026-06-10-spectra-realtime-design.md)).
 
 ---
@@ -14,7 +14,7 @@
 
 Concrete, observable symptoms (every claim verified against code 2026-06-12):
 
-- **Water today is a flat dark-blue splat carpet — no reflection, no transparency, no waves, no shore.** The game's only water rendering is the terrain splat layer's class tint: `~/Ochroma/projects/civitas_care/src/render_gpu/mod.rs:334/3811` — `let boost = if z.surface_type == "water" { 3.0 } else { 5.0 }`, a darker-blue Gaussian per cell. CS2-class water (even with its screen-space fakes) is strictly ahead of this.
+- **Water today is a flat dark-blue splat carpet — no reflection, no transparency, no waves, no shore.** The game's only water rendering is the terrain splat layer's class tint: `~/Ochroma/projects/urban_horizon/src/render_gpu/mod.rs:334/3811` — `let boost = if z.surface_type == "water" { 3.0 } else { 5.0 }`, a darker-blue Gaussian per cell. CS2-class water (even with its screen-space fakes) is strictly ahead of this.
 - **The sim's water is load-bearing and the picture ignores it.** `CellClass::Water` / `WaterMask { bodies, sea_level }` (`src/map/layers.rs`) gate buildability (`derive.rs::classify_cell` — Water if `hm.sample ≤ sea_level` OR inside a `WaterBody.outline`), sever childcare coverage geodesics (`coverage_field.rs:111` — water cells are 255/impassable), and flood/drain under the landed terraform tool (`apply_stamp` → `rederive_region` returns `water_flips`; `end_stroke` dirties the childcare field). The render reads NONE of this — sim water and picture water are two unrelated artifacts that can silently diverge.
 - **The Spectra SDF runtime has a proven dielectric but no water primitive.** The M2 glass branch (`megakernel.slang:1266–1338`) is exactly water's light transport — a hit that scatters (Fresnel reflect / Snell refract via `sample_glass`) and CONTINUES the path instead of terminating — and `beer_lambert` (`brdf_glass.slang:77`, `T = exp(-σ·d)`) is water's depth absorption, already implemented. But the only SDF geometry the megakernel traces is the baked snorm-volume atlas (`sdf_render_intersect`, up to `MAX_STEPS = 384` trilinear steps per ray, min over ALL instances per step — `megakernel.slang:687–744`). Baking a dynamic water plane into that machinery would be absurd: a flat surface needs ZERO march steps, and a flood edit would re-bake a volume.
 - **Nobody has stated water's ray cost, and it is the budget crux.** Water is the path tracer's most expensive mode: every water sample spawns a continuation ray (transparency does not terminate the path) and raises the required bounce floor from 2 to ≥3 (camera → water → scene → light; M2's host already forces `max_bounces >= 3` for exactly this reason, `splat_backend.rs:1205–1206`). A design that promises "correct reflections of the dynamic city" without per-ray arithmetic against the perf agent's budget B is vapor. §4.6 is that arithmetic.
@@ -53,7 +53,7 @@ and a human looking at `sdf_water_calm.png` sees: a shoreline scene where the wa
 **Game (W3 — the unification still on a real map):**
 
 ```bash
-cd ~/Ochroma/projects/civitas_care && cargo run --release --bin play -- --shot-water water_shots
+cd ~/Ochroma/projects/urban_horizon && cargo run --release --bin play -- --shot-water water_shots
 ```
 
 prints `[water] mask unification: render==sim on 65536/65536 cells (CellClass::Water is THE clip field)`, `[water] tidewater_flats: planes=<N> water cells=<W> shore cells=<S>`, the same `[water] rays: …` accounting line, and writes `water_shots/water_tidewater.png` — the game's actual map water, path-traced, reflecting the game's actual shore buildings. A human verifies all of it without reading code.
@@ -329,7 +329,7 @@ pub fn cook_fluid_shore_fields(
 // resident-frame integration follows the universal renderer's live_update seam later.
 ```
 
-Game side (`~/Ochroma/projects/civitas_care`):
+Game side (`~/Ochroma/projects/urban_horizon`):
 
 ```rust
 /// Build the engine's fluid layer from the game's authoritative water field.
@@ -349,7 +349,7 @@ pub fn build_water_surface_input(terrain: &MapTerrain, water: &WaterMask,
 | Water buffer/uniform upload | the uploader, beside the `sdf_*` packing | `~/src/spectra/rust/spectra-scene-upload/src/uploader.rs` + `rust/spectra-renderer/src/renderer.rs` bind group | the `pack_sdf_volume_headers` precedent |
 | `pathtrace_sdf_scene_with_water_to_rgba` | the engine acceptance tests; the game `--shot-water` harness | `crates/vox_render/src/splat_backend.rs` | mirrors the :982 with-atoms entry; NRC off, bounces ≥ 3 |
 | `heightfield_to_sdf_volume` / `cook_fluid_shore_fields` | inside the with-water entry's callers (test scene build; game cook) | `crates/vox_render/src/splat_backend.rs` | generic grids in/out |
-| `build_water_surface_input` | the `--shot-water` harness; later the live view bridge | `~/Ochroma/projects/civitas_care/src/map/water_fields.rs` (new) + `src/bin/play.rs` | reads `MapTerrain::is_water`/`WaterMask` — the unification seam |
+| `build_water_surface_input` | the `--shot-water` harness; later the live view bridge | `~/Ochroma/projects/urban_horizon/src/map/water_fields.rs` (new) + `src/bin/play.rs` | reads `MapTerrain::is_water`/`WaterMask` — the unification seam |
 | Terraform dirty → field re-cook (v1.5) | `CivitasGame::end_stroke` where `water_flips > 0` (the `childcare_field_dirty` site) | `src/game/mod.rs` → `water_fields.rs` | dirty-AABB re-cook + re-upload; no BLAS, no bake |
 | `WaterFrameReport` counters | read back after every with-water render | `splat_backend.rs` (host) ← `g_water_stats` (device) | printed in every harness run — the budget is observable |
 

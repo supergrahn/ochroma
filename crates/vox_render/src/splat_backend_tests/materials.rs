@@ -42,7 +42,7 @@ use super::super::*;
         use super::{pathtrace_mesh_lit_to_rgba, LightRig, PbrMaterial};
 
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
         let mesh = load_craftsman_mesh(&asset_path);
 
@@ -281,7 +281,7 @@ use super::super::*;
         use super::{pathtrace_mesh_lit_to_rgba, LightRig};
 
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
         let mesh = load_craftsman_mesh(&asset_path);
 

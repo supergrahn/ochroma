@@ -1,8 +1,8 @@
 # Design: SOTA Care-First City Builder — Feature Roadmap (2026-06-13)
 
 **Status:** Draft
-**Scope:** One ranked roadmap turning Civitas Care from a strong-economy-but-shallow-citizen prototype into a SOTA city builder whose differentiator is *care-first wellbeing* — ordered by (player value × differentiation) / effort, dependencies respected, MVP vs later waves marked.
-**Related:** synthesizes 6 domain surveys (simulation, economy, traffic, growth, services_care, ux_meta). All work is GAME-LAYER (`~/Ochroma/projects/civitas_care/src/`) unless explicitly noted as an engine-agnostic primitive in `~/src/ochroma/crates/vox_*`.
+**Scope:** One ranked roadmap turning Urban Horizon from a strong-economy-but-shallow-citizen prototype into a SOTA city builder whose differentiator is *care-first wellbeing* — ordered by (player value × differentiation) / effort, dependencies respected, MVP vs later waves marked.
+**Related:** synthesizes 6 domain surveys (simulation, economy, traffic, growth, services_care, ux_meta). All work is GAME-LAYER (`~/Ochroma/projects/urban_horizon/src/`) unless explicitly noted as an engine-agnostic primitive in `~/src/ochroma/crates/vox_*`.
 
 ---
 
@@ -19,7 +19,7 @@
 
 ## 2. Done When
 
-Running `cargo test -p civitas_care wellbeing_loop_closes -- --nocapture` prints the out-migration delta between a care-and-clinic-covered household and an identical uncovered one, and a human running `cargo run --bin play`, deleting a city's only clinic, sees the **Wellbeing overlay** redden over the affected blocks, a **Critical notification** appear in the bell feed, the **Wellbeing time-series graph** trend downward, and within N ticks **residents out-migrate** — all visible on screen without reading code.
+Running `cargo test -p urban_horizon wellbeing_loop_closes -- --nocapture` prints the out-migration delta between a care-and-clinic-covered household and an identical uncovered one, and a human running `cargo run --bin play`, deleting a city's only clinic, sees the **Wellbeing overlay** redden over the affected blocks, a **Critical notification** appear in the bell feed, the **Wellbeing time-series graph** trend downward, and within N ticks **residents out-migrate** — all visible on screen without reading code.
 
 ---
 

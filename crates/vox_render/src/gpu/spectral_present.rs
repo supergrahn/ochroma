@@ -610,7 +610,7 @@ mod tests {
 
     /// ENGINE-SIDE GPU SMOKE TEST for `SpectralPresenter` (the extracted presenter
     /// the game wraps). Without this, the presenter's correctness was proven only
-    /// TRANSITIVELY by the civitas suite — an engine-only CI run would pass while
+    /// TRANSITIVELY by the Urban Horizon suite — an engine-only CI run would pass while
     /// it was broken. This drives the REAL `present()` path on the 780M and asserts
     /// two computed outcomes, not `is_ok()`:
     ///   (1) a KNOWN SKY scene (zero spectral) → coverage == 0 (nothing passes the

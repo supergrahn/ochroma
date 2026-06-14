@@ -22,6 +22,26 @@ SLANG_DIR = "/home/tom-espen/.local/slang"
 # on this box — only libclang-18.so. Point clang at GCC 13's freestanding
 # headers so `#include <stddef.h>` resolves. Inert for the default build.
 BINDGEN_EXTRA_CLANG_ARGS = "-isystem /usr/lib/gcc/x86_64-linux-gnu/13/include"
+
+# Windows (MSVC) overrides for the optional `spectra-native` feature. These
+# entries take precedence over the global [env] above ONLY when building for a
+# `cfg(windows)` target, so the Linux build is byte-unchanged. Inert for the
+# default build (the spectra-* / slang-sys build scripts that read these are
+# only in the dep graph under --features spectra-native).
+#
+# SLANG_DIR: the slang Windows SDK root (slang.dll + slang.lib + slangc.exe).
+# Convention: install to C:\Users\tom_e\slang. slang-sys' build.rs links
+# `<SLANG_DIR>\lib\slang.lib`; build-spectra-native.ps1 must prepend the slang
+# DLL dir to PATH so slang.dll loads at build + run time.
+#
+# BINDGEN_EXTRA_CLANG_ARGS: cleared on Windows — the Linux GCC `-isystem`
+# freestanding-headers path is meaningless there. On MSVC, bindgen resolves
+# system headers via the Windows SDK / VS toolchain and Vulkan headers via
+# %VULKAN_SDK%\include (the LunarG Vulkan SDK), so no extra clang arg is needed.
+[target.'cfg(windows)'.env]
+SLANG_DIR = "C:\\Users\\tom_e\\slang"
+BINDGEN_EXTRA_CLANG_ARGS = ""
+
 # NOTE on libslang.so at build time: spectra-renderer/spectra-gpu build scripts
 # link libslang.so and are EXECUTED during the build, so the SDK lib dir must be
 # on the RUNTIME loader path. Cargo's [env] table does NOT propagate

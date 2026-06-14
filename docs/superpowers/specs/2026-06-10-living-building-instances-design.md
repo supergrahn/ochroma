@@ -1,14 +1,14 @@
 # Design: Living Building Instances (2026-06-10)
 
 **Status:** Draft
-**Scope:** Give every developed parcel in Civitas Care a persistent, inspectable, simulated building instance — frozen households/jobs capacity, live occupancy read from the engine, an evolving property value, a construction → occupied → abandoned state machine, replay-exact save/load, and a click-to-inspect window in the running game. All new code lives in the GAME layer (`~/Ochroma/projects/civitas_care`); engine crates are untouched.
+**Scope:** Give every developed parcel in Urban Horizon a persistent, inspectable, simulated building instance — frozen households/jobs capacity, live occupancy read from the engine, an evolving property value, a construction → occupied → abandoned state machine, replay-exact save/load, and a click-to-inspect window in the running game. All new code lives in the GAME layer (`~/Ochroma/projects/urban_horizon`); engine crates are untouched.
 **Related:** `[SOTA City Block Phase 1 Plan](../plans/2026-06-10-sota-city-block-phase1.md)` (Task 10), `[Virtualized Splat Rendering Design](./2026-06-10-virtualized-splat-rendering-design.md)` (Task 9, sibling)
 
 ---
 
 ## 1. Problem Statement
 
-Concrete symptoms in today's code (`~/Ochroma/projects/civitas_care`):
+Concrete symptoms in today's code (`~/Ochroma/projects/urban_horizon`):
 
 - **The engine-building link is discarded.** `CivitasGame::develop_lot` (src/game/mod.rs:284) returns the new `vox_sim::buildings::Building` id, and its only caller `develop_parcels` (src/game/mod.rs:893) drops it: `self.develop_lot(&lot);`. Once built, a `PlannedLot` has no way back to its engine building — nothing in the game can answer "who lives in this house?" even though the engine tracks `occupants` per building.
 - **Per-building economics are re-derived from scratch on every read.** `sector_supply()` (src/game/mod.rs:768) recomputes `seeded_range(attrs.households, lot.seed ^ 0xA551_0001)` for every developed lot, and it is called four times per tick (`demand()`, `finances()`, `goods_flow()`, `city_budget()`). There is no place to hang per-building state because the numbers are stateless functions, not instances.
@@ -20,7 +20,7 @@ Concrete symptoms in today's code (`~/Ochroma/projects/civitas_care`):
 
 ## 2. Done When
 
-Running `cd ~/Ochroma/projects/civitas_care && cargo run --release --bin play`, choosing **New Game → any scenario → Start Game**, drawing a Res Low district (Zones → Res Low, click the frontage + corners, right-click to close), and pressing **Space** ~10 times, then:
+Running `cd ~/Ochroma/projects/urban_horizon && cargo run --release --bin play`, choosing **New Game → any scenario → Start Game**, drawing a Res Low district (Zones → Res Low, click the frontage + corners, right-click to close), and pressing **Space** ~10 times, then:
 
 1. **Inspector:** Tab to the new **Inspect** category (last in the bottom bar), left-click a risen house → a window titled `Building — <asset name>` opens showing real per-instance lines in exactly this shape:
 
@@ -97,7 +97,7 @@ No save-schema change; `SAVE_VERSION` stays 5. The save system (src/game/save.rs
 
 ### 4.8 ENGINE/GAME boundary
 
-Everything above lives in `civitas_care`. Engine usage is read/write of **existing** public `vox_sim::buildings::Building` fields (`id`, `capacity`, `occupants`, `operational`, `position`) — the same fields `CivitasGame::tick` already mutates for care-gating (src/game/mod.rs:686–694). No edits to any `~/src/ochroma` crate; `vox_render`/`vox_core` never learn what a household or a property value is.
+Everything above lives in `urban_horizon`. Engine usage is read/write of **existing** public `vox_sim::buildings::Building` fields (`id`, `capacity`, `occupants`, `operational`, `position`) — the same fields `CivitasGame::tick` already mutates for care-gating (src/game/mod.rs:686–694). No edits to any `~/src/ochroma` crate; `vox_render`/`vox_core` never learn what a household or a property value is.
 
 ---
 

@@ -23,7 +23,7 @@ Running
 
 ```bash
 forge-cli run "$(cat assets/blueprints/civic.hospital_demo.bp.json)" --emit asset \
-  && cargo run -p civitas_care --bin game_asset_cook -- --only civic.hospital_demo --sdf-strict
+  && cargo run -p urban_horizon --bin game_asset_cook -- --only civic.hospital_demo --sdf-strict
 ```
 
 produces, on stdout, the lines:

@@ -47,7 +47,7 @@ use super::super::*;
         use super::{pathtrace_mesh_lit_to_rgba, LightRig, PbrMaterial};
 
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
 
         // 1+2: the cooked payload's REAL mesh + per-FORGE-ID PBR materials
@@ -894,7 +894,7 @@ use super::super::*;
         // glass channel flipped transmissive — the same MAT_GLASS parameters
         // the gate above just proved. The single allowed slow render. --------
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let asset_path = atoms_dir.join("forge.house.craftsman.atoms.json");
         let mesh = load_craftsman_mesh(&asset_path);
         let (mut cmats, ctex, channels) = load_building_mesh_pbr_by_forge_id(&asset_path);
@@ -974,14 +974,14 @@ use super::super::*;
     ///   (time) each gate render < 10 s.
     /// Writes `curtain_wall_office.png` + `curtain_wall_flatbox.png`.
     ///
-    /// Cook first (civitas repo, ~/Ochroma/projects/civitas_care):
+    /// Cook first (Urban Horizon repo, ~/Ochroma/projects/urban_horizon):
     ///   mkdir -p /tmp/curtain_src/office && cp \
     ///     assets/source/buildings/office/glass_office_tower_01.asset.json \
     ///     /tmp/curtain_src/office/ && mkdir -p assets/buildings/curtain_wall/textures \
     ///     && cp -r assets/buildings/forge_starter/textures/polyhaven \
     ///     assets/buildings/curtain_wall/textures/
     ///   cargo build --release --bin game_asset_cook && \
-    ///   GAME_FORGE_BIN=$HOME/src/forge/target/release/aetherspectra-forge \
+    ///   GAME_FORGE_BIN=$HOME/src/forge/target/release/forge \
     ///     ./target/release/game_asset_cook --no-starters \
     ///     --source /tmp/curtain_src --output assets/buildings/curtain_wall
     /// Run alone (GPU):
@@ -994,7 +994,7 @@ use super::super::*;
         use super::{pathtrace_mesh_lit_to_rgba, LightRig, PbrMaterial};
 
         let atoms_path = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(
-            "Ochroma/projects/civitas_care/assets/buildings/curtain_wall/atoms/\
+            "Ochroma/projects/urban_horizon/assets/buildings/curtain_wall/atoms/\
              city.office.l5.3x3.glass_office_tower_01.atoms.json",
         );
         let mesh = load_craftsman_mesh(&atoms_path);
@@ -1320,14 +1320,14 @@ use super::super::*;
     ///       shapes;
     ///   (render) three PNGs, each frame < 10 s.
     ///
-    /// Cook first (civitas repo, ~/Ochroma/projects/civitas_care):
+    /// Cook first (Urban Horizon repo, ~/Ochroma/projects/urban_horizon):
     ///   mkdir -p /tmp/massing_src/office && cp assets/source/buildings/office/\
     ///     {podium_tower_01,setback_tower_01,glass_office_tower_01}.asset.json \
     ///     /tmp/massing_src/office/ && mkdir -p assets/buildings/massing/textures \
     ///     && cp -r assets/buildings/forge_starter/textures/polyhaven \
     ///     assets/buildings/massing/textures/
     ///   cargo build --release --bin game_asset_cook && \
-    ///   GAME_FORGE_BIN=$HOME/src/forge/target/release/aetherspectra-forge \
+    ///   GAME_FORGE_BIN=$HOME/src/forge/target/release/forge \
     ///     ./target/release/game_asset_cook --no-starters \
     ///     --source /tmp/massing_src --output assets/buildings/massing
     /// Run alone (GPU):
@@ -1340,12 +1340,12 @@ use super::super::*;
         use super::{pathtrace_mesh_lit_to_rgba, LightRig};
 
         let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
-        let massing_atoms = home.join("Ochroma/projects/civitas_care/assets/buildings/massing/atoms");
+        let massing_atoms = home.join("Ochroma/projects/urban_horizon/assets/buildings/massing/atoms");
         let pt_path = massing_atoms.join("city.office.l8.4x4.podium_tower_01.atoms.json");
         let sb_path = massing_atoms.join("city.office.l6.3x3.setback_tower_01.atoms.json");
         let box_path = massing_atoms.join("city.office.l5.3x3.glass_office_tower_01.atoms.json");
         let box_pre_path = home.join(
-            "Ochroma/projects/civitas_care/assets/buildings/curtain_wall/atoms/\
+            "Ochroma/projects/urban_horizon/assets/buildings/curtain_wall/atoms/\
              city.office.l5.3x3.glass_office_tower_01.atoms.json",
         );
 
@@ -1625,7 +1625,7 @@ use super::super::*;
     fn facade_elevations() {
         use super::{pathtrace_mesh_lit_to_rgba, LightRig};
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let rig = LightRig {
             sun_dir: [0.35, 0.55, 0.75],
             sun_intensity: 2.4,
@@ -1688,7 +1688,7 @@ use super::super::*;
     fn look_preset_demo() {
         use super::{pathtrace_mesh_lit_to_rgba, LightRig, LookPreset};
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let path = atoms_dir.join("city.com_reg.l4.3x4.modern_hotel_block_01.atoms.json");
         let mesh = load_craftsman_mesh(&path);
         let (mats, texs, _) = load_building_mesh_pbr_by_forge_id(&path);
@@ -1748,7 +1748,7 @@ use super::super::*;
     fn weathered_hero() {
         use super::{pathtrace_mesh_lit_weathered_to_rgba, LightRig, LookPreset};
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let id = "city.ind_heavy.l2.5x5.heavy_factory_01"; // aged → carries masks
         let path = atoms_dir.join(format!("{id}.atoms.json"));
         let mesh = load_craftsman_mesh(&path);
@@ -1838,7 +1838,7 @@ use super::super::*;
     fn denoise_lowspp_demo() {
         use super::{pathtrace_mesh_lit_weathered_to_rgba, LightRig, LookPreset};
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let id = "city.ind_heavy.l2.5x5.heavy_factory_01";
         let path = atoms_dir.join(format!("{id}.atoms.json"));
         let mesh = load_craftsman_mesh(&path);
@@ -1902,7 +1902,7 @@ use super::super::*;
     fn spectra_resident_realtime_bench() {
         use super::{spectra_resident_bench, LightRig, LookPreset};
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let id = "city.ind_heavy.l2.5x5.heavy_factory_01";
         let path = atoms_dir.join(format!("{id}.atoms.json"));
         let mesh = load_craftsman_mesh(&path);
@@ -2060,7 +2060,7 @@ use super::super::*;
     fn default_daylight_is_realistic() {
         use super::{pathtrace_mesh_lit_weathered_to_rgba, LightRig};
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let id = "city.ind_heavy.l2.5x5.heavy_factory_01";
         let path = atoms_dir.join(format!("{id}.atoms.json"));
         let mesh = load_craftsman_mesh(&path);
@@ -2146,7 +2146,7 @@ use super::super::*;
     fn weathering_dynamic() {
         use super::{pathtrace_mesh_lit_weathered_to_rgba, LightRig, LookPreset};
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let id = "city.ind_heavy.l2.5x5.heavy_factory_01"; // aged → carries masks
         let path = atoms_dir.join(format!("{id}.atoms.json"));
         let mesh = load_craftsman_mesh(&path);
@@ -2318,7 +2318,7 @@ use super::super::*;
     fn block_scene_dusk() {
         use super::{pathtrace_mesh_lit_to_rgba, LightRig, PbrMaterial};
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         // Dusk: a low warm raking sun + deep-blue sky dome with a sunset
         // horizon band. Dim ambient so the warm lit panes pop.
         let rig = LightRig {
@@ -2495,7 +2495,7 @@ use super::super::*;
     fn showcase_building_roster() {
         use super::{pathtrace_mesh_lit_to_rgba, LightRig};
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let rig = LightRig {
             sun_dir: [0.45, 0.65, 0.55],
             sun_intensity: 2.6,
@@ -2603,7 +2603,7 @@ use super::super::*;
         use super::{pathtrace_mesh_lit_to_rgba, LightRig};
 
         let atoms = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(
-            "Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms/city.res_med.l3.3x4.lshape_walkup.atoms.json",
+            "Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms/city.res_med.l3.3x4.lshape_walkup.atoms.json",
         );
         let mesh = load_craftsman_mesh(&atoms);
         let (materials, textures, _channels) = load_building_mesh_pbr_by_forge_id(&atoms);
@@ -2977,7 +2977,7 @@ use super::super::*;
     fn pom_demo() {
         use super::{pathtrace_mesh_lit_weathered_to_rgba, LightRig};
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let id = "city.ind_heavy.l2.5x5.heavy_factory_01";
         let path = atoms_dir.join(format!("{id}.atoms.json"));
         let mesh = load_craftsman_mesh(&path);
@@ -3233,7 +3233,7 @@ use super::super::*;
     fn cone_step_demo() {
         use super::{pathtrace_mesh_lit_weathered_to_rgba, LightRig};
         let atoms_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Ochroma/projects/civitas_care/assets/buildings/forge_starter/atoms");
+            .join("Ochroma/projects/urban_horizon/assets/buildings/forge_starter/atoms");
         let id = "city.ind_heavy.l2.5x5.heavy_factory_01";
         let path = atoms_dir.join(format!("{id}.atoms.json"));
         let mesh = load_craftsman_mesh(&path);

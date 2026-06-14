@@ -1,14 +1,14 @@
 # Design: AI Asset Factory — LLM Directives, Deterministic Cook, Spectra Gates (2026-06-10)
 
 **Status:** Draft
-**Scope:** A closed-loop asset factory for Civitas Care: a local LLM writes Forge *directives* (JSON only — it never touches geometry), `game_asset_cook` cooks them deterministically, the Spectra path tracer renders and pixel-gates the result, and accepted assets register into the live zonable pools. All new code lives in the GAME layer (`~/Ochroma/projects/civitas_care`); engine crates untouched.
+**Scope:** A closed-loop asset factory for Urban Horizon: a local LLM writes Forge *directives* (JSON only — it never touches geometry), `game_asset_cook` cooks them deterministically, the Spectra path tracer renders and pixel-gates the result, and accepted assets register into the live zonable pools. All new code lives in the GAME layer (`~/Ochroma/projects/urban_horizon`); engine crates untouched.
 **Related:** `[SOTA City Block Phase 1 Plan](../plans/2026-06-10-sota-city-block-phase1.md)` (SOTA item 7, "sequenced after instances"), `[Asset-Audit Remediation Plan](../plans/2026-06-10-asset-audit-remediation.md)` (this design targets the **post-remediation** directive schema: `variants` + `forge.condition`), `[Living Building Instances Design](./2026-06-10-living-building-instances-design.md)` (consumes the same catalog pools)
 
 ---
 
 ## 1. Problem Statement
 
-Concrete symptoms in today's code (`~/Ochroma/projects/civitas_care`):
+Concrete symptoms in today's code (`~/Ochroma/projects/urban_horizon`):
 
 - **The LLM seed is open-loop.** `src/bin/asset_directive_from_llm.rs` shells `llama-cli` (temp 0.22, `-n 1800`), regex-extracts the first balanced JSON object from chatty stdout, checks only that 13 top-level keys *exist*, and writes the result straight into `assets/source/buildings/generated/` — the live directive dir that `load_directive_recipes` scans recursively. A directive with `forge.width: 200.0`, a colliding `asset_id`, or a `gameplay.class` that contradicts its zone lands in the next cook unguarded.
 - **No constrained decoding.** The seed binary asks nicely for JSON in prose (`asset_directive_prompt.md`) and hopes; `llama-cli` on this box supports `--json-schema-file` GBNF-constrained generation (verified in `--help`, build b9372) and nothing uses it. Truncated or malformed output is a hard error with no retry.
@@ -23,7 +23,7 @@ Concrete symptoms in today's code (`~/Ochroma/projects/civitas_care`):
 **Accept path.** Running
 
 ```bash
-cd ~/Ochroma/projects/civitas_care && \
+cd ~/Ochroma/projects/urban_horizon && \
 LD_LIBRARY_PATH=$HOME/slang-sdk/lib SPECTRA_SLANG_DIR=$HOME/src/spectra/slang \
 SPECTRA_BACKEND=vulkan VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json \
 cargo run --release --features spectra --bin asset_factory -- \
@@ -144,7 +144,7 @@ The factory writes the candidate directive to a temp source dir and shells the *
 
 ### 4.6 Render + pixel gates (reuse, not reinvention)
 
-The gate machinery in `forge_pathtrace.rs` — `review_rig()`, `pixel_stats`, `GateBand`/`gate_band`, the PASS/FAIL print contract — is factored into `civitas_care::qa::pathtrace_gates` (lib module, `#[cfg(feature = "spectra")]`); `forge_pathtrace.rs` becomes a thin caller with its `COOKED_SPECS` const and **unchanged output contract** (its calibrated bands, selftest mode, and `gates:` line survive verbatim — this respects the remediation track's read-only contract and happens only after that track releases the file). The factory renders the candidate payload from the sandbox through the same `load_ready_asset_mesh` + `ready_textured_materials` path at spp 32, but only the **style-agnostic views: iso, front, side** (+ `debug_mat` as a non-gated artifact). The porch view is starter-specific and is not rendered for candidates. Bands are reused as-is: they are sanity gates (black / washed / flat frame detectors), not aesthetics — calibrated with margin against converged spp-32 renders, and path-trace noise sits well inside them. Outputs land in `renders/factory/<asset_id>/`.
+The gate machinery in `forge_pathtrace.rs` — `review_rig()`, `pixel_stats`, `GateBand`/`gate_band`, the PASS/FAIL print contract — is factored into `urban_horizon::qa::pathtrace_gates` (lib module, `#[cfg(feature = "spectra")]`); `forge_pathtrace.rs` becomes a thin caller with its `COOKED_SPECS` const and **unchanged output contract** (its calibrated bands, selftest mode, and `gates:` line survive verbatim — this respects the remediation track's read-only contract and happens only after that track releases the file). The factory renders the candidate payload from the sandbox through the same `load_ready_asset_mesh` + `ready_textured_materials` path at spp 32, but only the **style-agnostic views: iso, front, side** (+ `debug_mat` as a non-gated artifact). The porch view is starter-specific and is not rendered for candidates. Bands are reused as-is: they are sanity gates (black / washed / flat frame detectors), not aesthetics — calibrated with margin against converged spp-32 renders, and path-trace noise sits well inside them. Outputs land in `renders/factory/<asset_id>/`.
 
 ### 4.7 Vision judge (v2 — explicitly second iteration)
 
@@ -162,7 +162,7 @@ On accept: (1) the directive file moves from the factory's quarantine (`assets/f
 
 ## 5. Data Models
 
-All in `civitas_care::factory` (GAME layer). Private fields, accessor methods, per house rules.
+All in `urban_horizon::factory` (GAME layer). Private fields, accessor methods, per house rules.
 
 ```rust
 /// Which model backend the factory drives. v1 default: LlamaCli.
@@ -228,41 +228,41 @@ pub enum FactoryOutcome {
 ## 6. API
 
 ```rust
-// civitas_care::factory — orchestrator entry. Blocking; runs every stage as a
+// urban_horizon::factory — orchestrator entry. Blocking; runs every stage as a
 // sequential subprocess. Threading: main thread only (iGPU is shared by the
 // LLM and the path tracer; never run them concurrently).
 pub fn run_factory(brief: &str, cfg: &FactoryConfig) -> Result<FactoryOutcome, FactoryError>;
 
-// civitas_care::factory::llm — one attempt's generation.
+// urban_horizon::factory::llm — one attempt's generation.
 // Errors: spawn/exit failures, no-JSON-in-output, parse failure (all -> K1).
 impl LlmRunner {
     pub fn generate_directive(&self, prompt: &str, sampling_seed: u64)
         -> Result<serde_json::Value, LlmError>;
 }
 
-// civitas_care::factory::validate — schema is enforced by serde deserialization
+// urban_horizon::factory::validate — schema is enforced by serde deserialization
 // of the post-remediation AssetDirective; semantics by the catalog-aware checks.
 // Ok(()) means "safe to cook". Never panics on hostile input.
 pub fn validate_semantics(directive: &serde_json::Value, catalog: &AssetCatalog)
     -> Result<(), Vec<Rejection>>;
 
-// civitas_care::factory::cook — shells `game_asset_cook --source <tmp>
+// urban_horizon::factory::cook — shells `game_asset_cook --source <tmp>
 // --output <sandbox> --no-starters`; parses the printed `cooked …` line.
 pub fn cook_candidate(directive_path: &Path, sandbox: &Path)
     -> Result<CookedCandidate, String>;   // Err -> K5, text verbatim
 
-// civitas_care::qa::pathtrace_gates — factored from forge_pathtrace.rs,
+// urban_horizon::qa::pathtrace_gates — factored from forge_pathtrace.rs,
 // #[cfg(feature = "spectra")], output contract identical to today's binary.
 // Renders iso/front/side at `spp`, writes PNGs under out_dir, gates each view.
 pub fn gate_views(payload: &Path, out_dir: &Path, spp: u32)
     -> Result<Vec<GateStat>, String>;     // any !pass -> K6
 
-// civitas_care::factory::judge — v2 only. Shells llama-mtmd-cli with the
+// urban_horizon::factory::judge — v2 only. Shells llama-mtmd-cli with the
 // mmproj; verdict is schema-constrained JSON parsed into JudgeVerdict.
 pub fn judge_views(renders: &[PathBuf], brief: &str, runner: &LlmRunner)
     -> Result<JudgeVerdict, LlmError>;
 
-// civitas_care::factory::register — move directive out of quarantine, full
+// urban_horizon::factory::register — move directive out of quarantine, full
 // recook, pool-proof sweep, provenance write. Returns before/after pool sizes
 // and the seed at which zonable_for selected the new asset.
 pub fn register_accepted(candidate: &CookedCandidate, brief: &str,
@@ -275,15 +275,15 @@ pub fn register_accepted(candidate: &CookedCandidate, brief: &str,
 
 | Component | Called from | File | Notes |
 |---|---|---|---|
-| `asset_factory` main → `run_factory` | new binary | `~/Ochroma/projects/civitas_care/src/bin/asset_factory.rs` | parses brief + env knobs; prints the Done-When line set |
-| `factory::*` modules | `run_factory` | `~/Ochroma/projects/civitas_care/src/factory/{mod,llm,validate,cook,judge,register}.rs` | new lib modules (GAME layer) |
-| `qa::pathtrace_gates::gate_views` | `run_factory` **and** `forge_pathtrace::run` | `~/Ochroma/projects/civitas_care/src/qa/pathtrace_gates.rs` | factored from forge_pathtrace.rs after the porch-closure track releases it; the binary's printed contract is unchanged |
-| `--no-starters` flag | `config_from_args` + `run` recipe assembly | `~/Ochroma/projects/civitas_care/src/bin/game_asset_cook.rs` (lines 135, 49) | additive; default behavior identical |
-| `asset_directive.schema.json` | `LlmRunner::generate_directive` (`--json-schema-file`) + cook test `directive_schema_roundtrip` | `~/Ochroma/projects/civitas_care/assets/source/prompts/asset_directive.schema.json` | single source of truth; pins post-remediation shape |
-| prompt update (`variants`, `forge.condition`, feedback block) | prompt assembly in `factory::llm` | `~/Ochroma/projects/civitas_care/assets/source/prompts/asset_directive_prompt.md` | extends the existing file |
-| quarantine dir | `run_factory` writes candidates here | `~/Ochroma/projects/civitas_care/assets/factory/candidates/` | outside the cook's scanned `assets/source/buildings` tree |
-| accepted directives + provenance | `register_accepted` | `~/Ochroma/projects/civitas_care/assets/source/buildings/generated/` | the dir the seed binary already targeted; now reachable only via acceptance |
-| `asset_directive_from_llm.rs` retirement | helpers absorbed into `factory::llm`; bin deleted | `~/Ochroma/projects/civitas_care/src/bin/asset_directive_from_llm.rs` | same task that lands `factory::llm` |
+| `asset_factory` main → `run_factory` | new binary | `~/Ochroma/projects/urban_horizon/src/bin/asset_factory.rs` | parses brief + env knobs; prints the Done-When line set |
+| `factory::*` modules | `run_factory` | `~/Ochroma/projects/urban_horizon/src/factory/{mod,llm,validate,cook,judge,register}.rs` | new lib modules (GAME layer) |
+| `qa::pathtrace_gates::gate_views` | `run_factory` **and** `forge_pathtrace::run` | `~/Ochroma/projects/urban_horizon/src/qa/pathtrace_gates.rs` | factored from forge_pathtrace.rs after the porch-closure track releases it; the binary's printed contract is unchanged |
+| `--no-starters` flag | `config_from_args` + `run` recipe assembly | `~/Ochroma/projects/urban_horizon/src/bin/game_asset_cook.rs` (lines 135, 49) | additive; default behavior identical |
+| `asset_directive.schema.json` | `LlmRunner::generate_directive` (`--json-schema-file`) + cook test `directive_schema_roundtrip` | `~/Ochroma/projects/urban_horizon/assets/source/prompts/asset_directive.schema.json` | single source of truth; pins post-remediation shape |
+| prompt update (`variants`, `forge.condition`, feedback block) | prompt assembly in `factory::llm` | `~/Ochroma/projects/urban_horizon/assets/source/prompts/asset_directive_prompt.md` | extends the existing file |
+| quarantine dir | `run_factory` writes candidates here | `~/Ochroma/projects/urban_horizon/assets/factory/candidates/` | outside the cook's scanned `assets/source/buildings` tree |
+| accepted directives + provenance | `register_accepted` | `~/Ochroma/projects/urban_horizon/assets/source/buildings/generated/` | the dir the seed binary already targeted; now reachable only via acceptance |
+| `asset_directive_from_llm.rs` retirement | helpers absorbed into `factory::llm`; bin deleted | `~/Ochroma/projects/urban_horizon/src/bin/asset_directive_from_llm.rs` | same task that lands `factory::llm` |
 
 ---
 

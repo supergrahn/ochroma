@@ -1,6 +1,6 @@
 //! Process boundary for driving standalone Forge as an asset-factory plugin.
 //!
-//! This bridge intentionally talks JSON over `aetherspectra-forge` instead of
+//! This bridge intentionally talks JSON over `forge` instead of
 //! linking Forge crates. The editor can discover generator metadata with
 //! `manifest`, then request an artifact with `run`; Forge decides how to build
 //! it, and Ochroma decides how to import the returned artifact.
@@ -12,7 +12,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const DEFAULT_FORGE_BINARY: &str = "aetherspectra-forge";
+const DEFAULT_FORGE_BINARY: &str = "forge";
 const FORGE_BINARY_ENV: &str = "OCHROMA_FORGE_BIN";
 
 #[derive(Debug, Clone)]

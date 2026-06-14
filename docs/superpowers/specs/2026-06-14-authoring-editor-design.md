@@ -13,7 +13,7 @@ The pieces of an editor exist but do not form a loop. Concretely observable toda
 - `cargo run -p vox_app --bin ochroma_editor` opens a real 1600x900 egui_dock window, but the Viewport is the **CPU** `SoftwareRasteriser` (`crates/vox_app/src/shell/viewport.rs:16,120`) — authoring decisions are made against a different renderer than ships (`engine_runner` GPU spectral pipeline).
 - Editing a node param in the editor **does** live-cook (`apply_param`, `crates/vox_app/src/shell/mod.rs:1008/2125`) but the cooked `SplatizeNode` splats are **never planted into the viewport overlay** — the overlay is fed only by plugin plant paths (`grow_tree`/`raise_terrain`/`generate_building`, drained at `mod.rs:768-780`). So the asset loop's output is invisible.
 - Script hot-reload (`RhaiRuntime`/`ScriptWatcher`/`poll_reload`) runs **only** in `crates/vox_app/src/bin/engine_runner.rs:270,599,2928` — grep across `shell/` and `ochroma_editor.rs` for `RhaiRuntime`/`poll_reload`/`ScriptWatcher` returns nothing. You cannot edit behavior and see it in the editor; you must launch the game binary.
-- City sim balance is **hardcoded in Rust** (`CareKind::params()` match `service.rs:68-106`; dev consts `game/mod.rs:40-53`; thresholds `progression/mod.rs:24-28`). Changing any rule number requires `cargo build`, violating the config-first law. `civitas_care` reads no `balance.toml` (no `toml` dep).
+- City sim balance is **hardcoded in Rust** (`CareKind::params()` match `service.rs:68-106`; dev consts `game/mod.rs:40-53`; thresholds `progression/mod.rs:24-28`). Changing any rule number requires `cargo build`, violating the config-first law. `urban_horizon` reads no `balance.toml` (no `toml` dep).
 - The full spectra-native build chain is slow; there is no fast in-editor preview path for engine/kernel code changes.
 
 ---
@@ -38,14 +38,14 @@ produces `gpu.png` whose Viewport-region pixels come from `TiledSplatRenderer` (
 | Cook-graph sink → viewport overlay | `cargo test -p vox_app sink_plants_overlay` mutates Terrain amplitude, asserts `shell.overlay_len()` changes by exactly the new sink splat count | `assert!(bridge.sink_splat_count() > 0)` — passes without planting |
 | In-editor Play moves entity | `cargo test -p vox_app play_in_editor_moves` runs `PlayController::tick` N frames, asserts entity position delta `> 0.5`, then `stop()` asserts position equals snapshot | `assert!(session.is_some())` |
 | In-editor script hot-reload | `cargo test -p vox_app play_reload_changes_behavior` writes a new `.rhai`, polls reload, asserts the per-frame callback's emitted command differs | `assert!(runtime.poll_reload())` returns bool only |
-| Data-driven balance, no rebuild | `cargo test -p civitas_care balance_capacity_changes_gated` sets `balance.care[NursingHome].capacity = 160`, asserts `CivitasGame::tick` yields fewer `gated_workers` than default | `assert!(balance.is_some())` |
+| Data-driven balance, no rebuild | `cargo test -p urban_horizon balance_capacity_changes_gated` sets `balance.care[NursingHome].capacity = 160`, asserts `CivitasGame::tick` yields fewer `gated_workers` than default | `assert!(balance.is_some())` |
 | LLM text→forge graph (gated) | `cargo test -p vox_app intent_emits_valid_forge_graph --features forge-native,local-llm` asserts emitted graph passes `forge graph::type_check` and rejects an unbounded one | `assert!(action == AddNode)` |
 
 ---
 
 ## 4. Architecture
 
-The spine: **ONE windowed editor process** that hosts the GPU spectral renderer plus the live sim/script loop, so all three edit surfaces feed the SAME viewport. All wiring lives in `vox_app/shell` + `vox_editor` + the game crate `civitas_care` — engine crates (`vox_core`/`vox_data`/`vox_render`) stay game-agnostic and untouched.
+The spine: **ONE windowed editor process** that hosts the GPU spectral renderer plus the live sim/script loop, so all three edit surfaces feed the SAME viewport. All wiring lives in `vox_app/shell` + `vox_editor` + the game crate `urban_horizon` — engine crates (`vox_core`/`vox_data`/`vox_render`) stay game-agnostic and untouched.
 
 ### 4.1 GPU Viewport (closes the fidelity gap)
 
@@ -67,7 +67,7 @@ Route the editor's `PlayController`/`EngineLoop` through the same `rhai.poll_rel
 
 ### 4.5 City Rules as DATA (config-first, game crate)
 
-In `civitas_care/src/balance/mod.rs` introduce one `BalanceConfig` owning every hardcoded number: `HashMap<CareKind, CareParams>` (replacing the `service.rs:68` match), policy coefficients (`policy.rs:39-67`), `CareEconomy` (`game_mechanics/economy/mod.rs:16-26`), dev consts (`game/mod.rs:40-53`), progression thresholds (`progression/mod.rs:24-28`), wellbeing weights. `default()` returns today's exact literals (behavior unchanged until edited). `CareKind::params()` / `CarePolicies::*` become methods taking `&BalanceConfig` — budget for threading it through all **22** `.params()` call sites (`staffing.rs`, `land_value.rs`, `care/mod.rs`, `ui/mod.rs`, `preview.rs`). `BalanceConfig::load(assets/balance.toml)` mirrors `AssetCatalog::load_project_assets` with load-over-default fallback. Generalize the proven live-lever (`UiAction::TogglePolicy`, `command/mod.rs:822` — mutates `game.policies`, next `tick` re-reads) into `UiAction::SetBalance`. **UI note (corrected fantasy):** civitas has **no egui** — the play UI is a hand-rolled tiny-skia + ab_glyph overlay (`src/render/mod.rs:3-36`, `play.rs:1546`). The Balance panel is a hand-built overlay panel with winit pointer hit-testing, modeled on existing tool panels (`play.rs:1944-1975`), **not** an extension of the test-locked `ui/panels.rs` row gatekeeper. Embed a `BalanceConfig` snapshot in `GameSave` (bump `SAVE_VERSION` past 5; `save.rs` already carries `economy: CareEconomy`) so old saves replay under their authored balance; swap balance only at tick boundaries. Hot-reload `balance.toml` via the `vox_script` `poll_reload` pattern (add `toml`+`notify` deps — absent today). Wellbeing/mental-health is genuinely NEW sim state (per-citizen field + feedback), gated behind a what-if re-sim before it ships into the live loop.
+In `urban_horizon/src/balance/mod.rs` introduce one `BalanceConfig` owning every hardcoded number: `HashMap<CareKind, CareParams>` (replacing the `service.rs:68` match), policy coefficients (`policy.rs:39-67`), `CareEconomy` (`game_mechanics/economy/mod.rs:16-26`), dev consts (`game/mod.rs:40-53`), progression thresholds (`progression/mod.rs:24-28`), wellbeing weights. `default()` returns today's exact literals (behavior unchanged until edited). `CareKind::params()` / `CarePolicies::*` become methods taking `&BalanceConfig` — budget for threading it through all **22** `.params()` call sites (`staffing.rs`, `land_value.rs`, `care/mod.rs`, `ui/mod.rs`, `preview.rs`). `BalanceConfig::load(assets/balance.toml)` mirrors `AssetCatalog::load_project_assets` with load-over-default fallback. Generalize the proven live-lever (`UiAction::TogglePolicy`, `command/mod.rs:822` — mutates `game.policies`, next `tick` re-reads) into `UiAction::SetBalance`. **UI note (corrected fantasy):** civitas has **no egui** — the play UI is a hand-rolled tiny-skia + ab_glyph overlay (`src/render/mod.rs:3-36`, `play.rs:1546`). The Balance panel is a hand-built overlay panel with winit pointer hit-testing, modeled on existing tool panels (`play.rs:1944-1975`), **not** an extension of the test-locked `ui/panels.rs` row gatekeeper. Embed a `BalanceConfig` snapshot in `GameSave` (bump `SAVE_VERSION` past 5; `save.rs` already carries `economy: CareEconomy`) so old saves replay under their authored balance; swap balance only at tick boundaries. Hot-reload `balance.toml` via the `vox_script` `poll_reload` pattern (add `toml`+`notify` deps — absent today). Wellbeing/mental-health is genuinely NEW sim state (per-citizen field + feedback), gated behind a what-if re-sim before it ships into the live loop.
 
 ### 4.6 Code / Kernel Edits (honest boundary)
 
@@ -136,7 +136,7 @@ impl PlayController {
 // --- Script host (route existing EngineLoop, do NOT lift engine_runner) ---
 impl EngineLoop { pub fn step_scripts(&mut self); }        // engine_loop.rs:372; rhai poll_reload+on_update
 
-// --- Balance live lever (civitas_care — generalize TogglePolicy) ---
+// --- Balance live lever (urban_horizon — generalize TogglePolicy) ---
 pub enum UiAction { TogglePolicy(PolicyId), SetBalance(BalanceField, f32), /* ... */ }
 // GameApi for scripts (if added): abstract, object-safe, NO vox_sim/CitySim types in signatures
 // — lives in vox_script; concrete impl over CitySim lives in vox_app/vox_sim (no vox_script->vox_sim cycle).
@@ -153,8 +153,8 @@ pub enum UiAction { TogglePolicy(PolicyId), SetBalance(BalanceField, f32), /* ..
 | `OchromaNode::param_descriptors` | inspector build | `crates/vox_app/src/shell/graph_bridge.rs:120-146` | replaces hand-written match |
 | `PlayController` Play/Pause/Stop | toolbar action | `crates/vox_app/src/shell/mod.rs` | feed `session.render_splats` into `GpuViewport` |
 | `EngineLoop::step_scripts` (poll_reload) | PlaySession frame | `crates/vox_app/src/shell/play.rs` | watcher against `assets/scripts/`; tick only while Playing |
-| `BalanceConfig::load` | game init | `civitas_care/src/game/mod.rs` (init) | mirrors `AssetCatalog::load_project_assets` |
-| `UiAction::SetBalance` | hand-rolled Balance overlay panel | `civitas_care/src/play.rs:1944` style | NOT egui; NOT `ui/panels.rs` |
+| `BalanceConfig::load` | game init | `urban_horizon/src/game/mod.rs` (init) | mirrors `AssetCatalog::load_project_assets` |
+| `UiAction::SetBalance` | hand-rolled Balance overlay panel | `urban_horizon/src/play.rs:1944` style | NOT egui; NOT `ui/panels.rs` |
 | forge `blueprint::eval::evaluate` | `BuildingNode::cook` | `vox_editor/src/nodes/building_node.rs` | behind `forge-native`; NEW integration (forge blueprint DAG is not wired today) |
 
 ---
@@ -198,7 +198,7 @@ External and user assets enter the **same** asset loop, not a special case. Impo
 *Done when:* with a Play session running, editing a watched `.rhai` changes the live viewport behavior within a frame, and a deliberate syntax error shows the runtime error in Output Log while last-good behavior keeps running.
 
 **Phase 5 — data-driven balance (config-first).** `BalanceConfig` (default == today's literals); thread `&BalanceConfig` through the 22 `.params()` sites; add `Serialize`/`Deserialize` to `CareParams`; `load(assets/balance.toml)` (+ `toml` dep); `UiAction::SetBalance` + hand-rolled overlay panel; snapshot balance into `GameSave` (bump version).
-*Done when:* `cargo test -p civitas_care balance_capacity_changes_gated` passes (capacity 100→160 yields fewer `gated_workers` from `CivitasGame::tick`), AND editing `balance.toml` and starting a new game yields the new capacity with no Rust change.
+*Done when:* `cargo test -p urban_horizon balance_capacity_changes_gated` passes (capacity 100→160 yields fewer `gated_workers` from `CivitasGame::tick`), AND editing `balance.toml` and starting a new game yields the new capacity with no Rust change.
 
 **Phase 6 — forge BuildingNode + LLM text→graph (gated).** Behind `forge-native`: NEW integration calling `blueprint::eval::evaluate` → `ForgeAsset`/`Mesh` → splats (verify `ForgeAsset` vs `forge_mesh::Mesh` conversion — different types); async/coarse-LOD cook so it stays under interactive budget. Extend `intent.rs` Llm backend to emit a forge `BlueprintGraph` validated by `graph::type_check` before any cook.
 *Done when:* `cargo run --bin ochroma_editor --features forge-native`, add Building node, scrub storeys 2→5 raises sink splat count and the GPU viewport shows the taller building; default build still plants the preview box; `intent_emits_valid_forge_graph` rejects an unbounded LLM graph via `type_check`.
