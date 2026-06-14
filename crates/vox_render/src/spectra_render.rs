@@ -905,6 +905,16 @@ pub mod native {
             })
         }
 
+        /// Render-target width of this viewport's backend (for camera params).
+        pub fn width(&self) -> u32 {
+            self.backend.width()
+        }
+
+        /// Render-target height of this viewport's backend (for camera params).
+        pub fn height(&self) -> u32 {
+            self.backend.height()
+        }
+
         /// Call once per render tick.
         ///
         /// - `splats`        — all GaussianSplat components visible this frame.

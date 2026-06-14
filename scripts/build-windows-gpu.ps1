@@ -23,7 +23,13 @@ param(
     # Optional path to tee full build output to (UTF-8).
     [string]$Log,
     # Slang install dir. Falls back to $env:SLANG_DIR, then C:\Users\<you>\slang.
-    [string]$SlangDir
+    [string]$SlangDir,
+    # Cargo package to build (default: vox_render, the GPU renderer lib).
+    [string]$Package = "vox_render",
+    # Optional binary target to build/run (implies the package that owns it).
+    [string]$Bin,
+    # After building, run the binary (requires -Bin).
+    [switch]$Run
 )
 
 $ErrorActionPreference = "Stop"
@@ -93,7 +99,11 @@ Write-Step "Backend:  cuda (NVIDIA)"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 $cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
-$cargoArgs = @("build", "-p", "vox_render", "--features", "spectra-native")
+# Building vox_app binaries (editor) needs the app's own spectra-native feature;
+# vox_render alone uses vox_render/spectra-native.
+$feature = if ($Package -eq "vox_render") { "spectra-native" } else { "spectra-native" }
+$cargoArgs = @("build", "-p", $Package, "--features", $feature)
+if ($Bin) { $cargoArgs += @("--bin", $Bin) }
 if ($Release) { $cargoArgs += "--release" }
 
 Write-Step ("cargo " + ($cargoArgs -join " "))
@@ -104,4 +114,11 @@ if ($Log) {
 }
 $code = $LASTEXITCODE
 Write-Host ("[build-gpu] BUILD_EXIT=" + $code) -ForegroundColor ($(if ($code -eq 0) { "Green" } else { "Red" }))
+if ($code -eq 0 -and $Run -and $Bin) {
+    $profileDir = if ($Release) { "release" } else { "debug" }
+    $exe = Join-Path $repoRoot ("target\" + $profileDir + "\" + $Bin + ".exe")
+    Write-Step ("Launching " + $exe)
+    & $exe
+    Write-Host ("[build-gpu] RUN_EXIT=" + $LASTEXITCODE)
+}
 exit $code

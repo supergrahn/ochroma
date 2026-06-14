@@ -123,20 +123,22 @@ pub fn spectra_render_system(
 
     let scene_changed = !changed.is_empty();
 
-    // Use view matrix inverse (not view_proj inverse) for direction vectors.
-    // P_inv distorts directions; V_inv maps NDC directions to world space correctly.
-    let inv_view = camera.view.inverse();
-    let fwd = (inv_view * glam::Vec4::new(0.0, 0.0, -1.0, 0.0)).truncate().normalize();
-    let up  = (inv_view * glam::Vec4::new(0.0, 1.0,  0.0, 0.0)).truncate().normalize();
-    let pos = camera.position;
-
+    // CameraLayer (the path-tracer camera) takes view + projection matrices and
+    // the render-target size, not position/forward/up. Derive the projection from
+    // the cached view_proj (proj = VP · V⁻¹) and read the resolution from the
+    // backend's own target so the camera matches the framebuffer.
+    let (w, h) = (backend.width(), backend.height());
+    let proj = camera.view_proj * camera.view.inverse();
     let cam = SpectraCameraParams {
-        position: pos.into(),
-        forward:  fwd.into(),
-        up:       up.into(),
-        fov_y: std::f32::consts::FRAC_PI_4,
-        near:  0.1,
-        far:   1000.0,
+        view_matrix: camera.view.to_cols_array(),
+        proj_matrix: proj.to_cols_array(),
+        fov_y_radians: std::f32::consts::FRAC_PI_4,
+        near: 0.1,
+        far: 1000.0,
+        lens_radius: 0.0,
+        focus_distance: 100.0,
+        width: w,
+        height: h,
     };
 
     if let Some(frame) = backend.tick(&visible.splats, cam, scene_changed) {
