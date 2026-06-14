@@ -18,7 +18,6 @@ use vox_render::animation::{AnimationClip, AnimationPlayer, Bone, Keyframe, Skel
 use vox_render::postprocess::{apply_tone_mapping, PostProcessPipeline, ToneMapping};
 use vox_render::material_graph::{MaterialNode, SpectralMaterialGraph};
 use vox_render::lighting::{sky_color, LightManager, PointLight, SunModel};
-use vox_render::denoiser::SpectralDenoiser;
 use vox_render::lod_crossfade::LodCrossfadeManager;
 use vox_render::water::WaterSurface;
 use vox_render::atmosphere::{compute_fog, compute_god_ray_intensity, compute_sky_color, AtmosphereParams};
@@ -215,12 +214,8 @@ fn main() {
     println!("[{:02}] lighting -- sun_dir={:?}, sky=[{:.2},{:.2},{:.2}], {} point lights",
         count, sun_dir, sky[0], sky[1], sky[2], lights.point_light_count());
 
-    // 11. denoiser
-    let denoiser = SpectralDenoiser::new(0.5);
-    let mut img = vec![[128u8, 128, 128, 255]; 16];
-    denoiser.denoise(&mut img, 4, 4);
-    count += 1;
-    println!("[{:02}] denoiser -- denoised 4x4 image", count);
+    // (denoiser removed — the real spectra À-Trous denoiser runs in the render
+    // pipeline now; the CPU SpectralDenoiser placeholder is gone.)
 
     // 12. lod_crossfade
     let mut crossfade = LodCrossfadeManager::new(0.5);

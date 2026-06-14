@@ -2125,6 +2125,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffx-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.69.5",
+ "filetime",
+ "libc",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "filetime"
 version = "0.2.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6715,9 +6725,12 @@ dependencies = [
 name = "spectra-upscale"
 version = "0.1.0"
 dependencies = [
+ "ash",
+ "ffx-sys",
  "log",
  "serde",
  "spectra-dlss",
+ "spectra-vk-interop",
  "thiserror 2.0.18",
 ]
 
@@ -6730,6 +6743,17 @@ dependencies = [
  "spectra-types",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "spectra-vk-interop"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "cudarc",
+ "ffx-sys",
+ "log",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -7932,6 +7956,7 @@ dependencies = [
  "spectra-scene-data",
  "spectra-scene-state",
  "spectra-tonemap",
+ "spectra-upscale",
  "tempfile",
  "tokio",
  "toml",

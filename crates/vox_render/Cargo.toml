@@ -34,6 +34,7 @@ spectra-gpu = { path = "../../../spectra/rust/spectra-gpu", optional = true }
 spectra-scene-state = { path = "../../../spectra/rust/spectra-scene-state", optional = true }
 spectra-scene-data = { path = "../../../spectra/rust/spectra-scene-data", optional = true }
 spectra-tonemap = { path = "../../../spectra/rust/spectra-tonemap", optional = true }
+spectra-upscale = { path = "../../../spectra/rust/spectra-upscale", optional = true }
 
 [features]
 default = ["crucible"]
@@ -54,6 +55,14 @@ spectra-native = [
     "spectra-gpu/vulkan-backend",
 ]
 crucible = ["vox_nodes/crucible"]
+# fsr: in-process FSR3 upscale stage on the renderer's OWN Vulkan device (no
+# second device, no CUDA). Pulls spectra-upscale's `fsr` feature (FFX SDK FFI).
+# Layered ON TOP of spectra-native — build with `--features spectra-native,fsr`.
+fsr = [
+    "spectra-native",
+    "dep:spectra-upscale",
+    "spectra-upscale/fsr",
+]
 
 [dev-dependencies]
 vox_sim = { path = "../vox_sim" }

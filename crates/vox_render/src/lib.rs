@@ -21,7 +21,6 @@ pub mod spectral_caustics;
 pub mod species_view;
 pub mod vr;
 pub mod upscaling;
-pub mod denoiser;
 pub mod lod_crossfade;
 pub mod lod_ecs;
 pub mod seq_ecs;

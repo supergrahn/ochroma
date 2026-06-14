@@ -158,6 +158,15 @@ pub struct PbrMaterial {
     pub albedo_tex: i32,
     pub roughness_tex: i32,
     pub normal_tex: i32,
+    /// Single-channel height/displacement map id (-1 = off). Drives POM
+    /// (parallax occlusion mapping) in the megakernel — see
+    /// `pack_vulkan_mesh_material` a[31]/a[32]/a[33].
+    pub displacement_tex: i32,
+    /// Relief depth in world-ish UV-height units (~0.02–0.05 m for brick).
+    /// Only read by the kernel when `displacement_tex >= 0`.
+    pub displacement_scale: f32,
+    /// Height value treated as the flat surface plane (0.5 typical).
+    pub displacement_midlevel: f32,
     pub uv_scale: [f32; 2],
     /// 0.0 = opaque Lambert (the historical behavior); > 0.0 = transmissive
     /// `MAT_GLASS`.
@@ -180,6 +189,9 @@ impl Default for PbrMaterial {
             albedo_tex: -1,
             roughness_tex: -1,
             normal_tex: -1,
+            displacement_tex: -1,
+            displacement_scale: 0.0,
+            displacement_midlevel: 0.5,
             uv_scale: [1.0, 1.0],
             transmission: 0.0,
             ior: 1.5,
@@ -735,6 +747,76 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
     let mut config = RenderConfig::near_realtime(width, height);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
+    // A/B escape for denoiser comparison renders: force the denoiser OFF at the
+    // config level (the real lever — seed_features_from_config derives
+    // settings.denoiser.enabled from config.denoiser_mode, so toggling the
+    // settings flag alone gets clobbered). Default path keeps near_realtime's
+    // DenoiserMode::OptiX → the working À-Trous fallback on this box.
+    if std::env::var("OCHROMA_DENOISE_OFF").is_ok() {
+        config.denoiser_mode = spectra_renderer::DenoiserMode::None;
+    }
+    // WT-9 A/B escape: opt into the LEAN shade megakernel so a still parity
+    // render can diff lean-vs-full on identical geometry/camera/spp.
+    if std::env::var("OCHROMA_SHADE_LEAN").as_deref() == Ok("1") {
+        config.prefer_lean_shade = true;
+    }
+    // A/B escape for the relief-march comparison (cone-step vs legacy POM). The
+    // real lever is the ONE config object (RenderConfig::relief_mode). Per AUDIT
+    // WT-6 (2026-06-13) the default is now 0 = POM: cone-step needs a baked cone
+    // channel that only the test loader produces, so cone-step was silently
+    // degrading below POM on single-channel height. This escape lets a render
+    // that DOES supply a 2-channel height+cone map opt into cone-step. 0 = POM,
+    // 1 = cone-step. Absent → near_realtime's default (now POM), byte-identical
+    // for opaque/POM renders. The kernel reads u_relief_mode from this field.
+    if let Ok(v) = std::env::var("OCHROMA_RELIEF_MODE") {
+        if let Ok(m) = v.trim().parse::<i32>() {
+            config.relief_mode = m;
+        }
+    }
+    // AUDIT WT-6 (2026-06-13): cone-step (relief_mode==1) needs a 2-channel
+    // height map (R=height, G=baked relaxed-cone ratio). On a 1-channel map the
+    // cone ratio reads 0 and the march silently degrades to a fixed-step linear
+    // march — WORSE than POM while still paying the tap cost. Two-part guard:
+    //  (1) caller forced a mode (OCHROMA_RELIEF_MODE set): honor it, but if they
+    //      forced cone-step on a 1-channel map, PANIC rather than degrade.
+    //  (2) no forced mode: AUTO-SELECT by the DATA — cone-step only when EVERY
+    //      displacement map carries the cone channel (the test loaders bake it;
+    //      the cooked/game path uploads 1-channel, so it correctly stays on POM
+    //      until the cook bakes the cone ratio). Cone becomes opt-in-by-data:
+    //      correct everywhere, never silently worse than POM.
+    if std::env::var("OCHROMA_RELIEF_MODE").is_ok() {
+        if config.relief_mode == 1 {
+            for (mi, m) in materials.iter().enumerate() {
+                if m.displacement_tex >= 0 {
+                    let ch = textures[m.displacement_tex as usize].channels;
+                    assert!(
+                        ch >= 2,
+                        "OCHROMA_RELIEF_MODE=1 (cone-step) but material {mi}'s \
+                         displacement texture (id {}) is {ch}-channel; cone-step needs \
+                         a 2-channel height+cone map or it degrades below POM. Bake the \
+                         cone ratio into G, or use POM (relief_mode=0). (AUDIT WT-6)",
+                        m.displacement_tex
+                    );
+                }
+            }
+        }
+    } else {
+        let any_disp = materials.iter().any(|m| m.displacement_tex >= 0);
+        let all_cone = materials.iter().all(|m| {
+            m.displacement_tex < 0 || textures[m.displacement_tex as usize].channels >= 2
+        });
+        config.relief_mode = if any_disp && all_cone { 1 } else { 0 };
+    }
+    // Config-first escape for SPECTRAL (Hero4 HWSS). The ONE config object owns
+    // the spectral lever (RenderConfig::spectral_mode; near_realtime defaults to
+    // SpectralMode::Single = spectral OFF). seed_features_from_config derives
+    // settings.features.spectral.enabled = matches!(spectral_mode, Hero4), so
+    // flipping this field is the ONLY way to reach the kernel's spectral path
+    // through the mesh entry. Absent → Single (byte-identical to legacy). This
+    // mirrors the OCHROMA_RELIEF_MODE / OCHROMA_DENOISE_OFF escapes above.
+    if std::env::var("OCHROMA_SPECTRAL").as_deref() == Ok("1") {
+        config.spectral_mode = spectra_renderer::SpectralMode::Hero4;
+    }
     // Config-first: spp, the shot LOOK (tonemap + exposure), and the per-scene
     // bounce/NRC needs all reach the config through the ONE settings object.
     // Transmissive glass needs path DEPTH: a two-faced pane costs two bounces
@@ -745,6 +827,21 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
     // config (and their renders) byte-identical.
     let has_glass = materials.iter().any(|m| m.transmission > 0.0);
     let max_bounces = if has_glass { 8 } else { config.max_bounces };
+    // AUDIT WT-3 A/B escape: OCHROMA_LEAN strips the ReSTIR resampling stack
+    // (DI + GI + temporal/spatial resample) so we can measure whether ReSTIR
+    // earns its cost on the lit-MESH renderer (NRC is already off post-WT-5, so
+    // ReSTIR is the remaining lever). The ONE config object owns the levers:
+    // use_restir / use_restir_gi / resample_mode. We set them BEFORE
+    // seed_features_from_config so seed derives settings.features.restir.enabled
+    // = false and apply_settings stays consistent (use_restir_gi / resample_mode
+    // have no settings leaf, so apply_settings will not clobber them). Absent →
+    // near_realtime's defaults (ReSTIR on), byte-identical to legacy. Mirrors the
+    // OCHROMA_SPECTRAL / OCHROMA_RELIEF_MODE / OCHROMA_DENOISE_OFF escapes above.
+    if std::env::var("OCHROMA_LEAN").as_deref() == Ok("1") {
+        config.use_restir = false;
+        config.use_restir_gi = false;
+        config.resample_mode = spectra_renderer::ResampleMode::None;
+    }
     let mut settings = rig_to_settings(rig, spp, max_bounces);
     seed_features_from_config(&mut settings, &config);
     if has_glass {
@@ -807,6 +904,155 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
         }
     }
     Ok(out)
+}
+
+/// Per-frame timing report from [`spectra_resident_bench`].
+#[cfg(feature = "spectra-native")]
+pub struct ResidentBenchReport {
+    /// First frame (cold: kernel compile + BLAS build + pipeline create).
+    pub cold_ms: f64,
+    /// Steady-state per-frame milliseconds (frames 1..N, renderer resident).
+    pub steady_ms: Vec<f64>,
+    /// Last frame's beauty (RGBA8) for visual inspection.
+    pub beauty: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// RESIDENT real-time Spectra loop: build the renderer + scene + acceleration
+/// structure ONCE, then render `frames` frames reusing all GPU state — the
+/// opposite of the still path (`pathtrace_mesh_lit_*`) which rebuilds everything
+/// per call. Measures steady-state per-frame ms (the real frame budget), with
+/// `width`/`height` as the INTERNAL render resolution and `max_bounces`/`spp`
+/// forced (so we can sweep the real-time levers: low res, capped bounces, 1 spp).
+/// The GPU denoiser runs in `renderer.render()` when the config enables it.
+#[cfg(feature = "spectra-native")]
+#[allow(clippy::too_many_arguments)]
+pub fn spectra_resident_bench(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    uvs: &[[f32; 2]],
+    indices: &[[u32; 3]],
+    material_ids: &[u8],
+    materials: &[PbrMaterial],
+    textures: &[TextureImage],
+    eye: [f32; 3],
+    target: [f32; 3],
+    fov_y: f32,
+    width: u32,
+    height: u32,
+    spp: u32,
+    max_bounces: u32,
+    frames: u32,
+    rig: &LightRig,
+) -> Result<ResidentBenchReport, String> {
+    use crate::splat_convert::camera_layer;
+    use spectra_scene_state::{LightLayer, MaterialLayer, SceneState};
+
+    let (tex_descs, tex_data) = build_texture_atlas(textures)?;
+
+    let mut scene = SceneState::new(width, height);
+    scene.geometry.vertex_count = positions.len();
+    scene.geometry.triangle_count = indices.len();
+    scene.geometry.positions = positions.iter().flat_map(|p| *p).collect();
+    scene.geometry.normals = normals.iter().flat_map(|n| *n).collect();
+    scene.geometry.uvs = uvs.iter().flat_map(|t| *t).collect();
+    scene.geometry.indices = indices.iter().flat_map(|t| *t).collect();
+    scene.geometry.material_ids = material_ids.iter().map(|&m| m as u32).collect();
+
+    let mut params = Vec::with_capacity(materials.len() * VULKAN_MATERIAL_FLOATS);
+    for m in materials {
+        params.extend_from_slice(&pack_vulkan_mesh_material(*m));
+    }
+    scene.materials = MaterialLayer {
+        params,
+        spectral_spd: Default::default(),
+        material_count: materials.len(),
+    };
+
+    let sun = glam::Vec3::from(rig.sun_dir).normalize_or_zero();
+    let camera_fill = (glam::Vec3::from(eye) - glam::Vec3::from(target) + glam::Vec3::Y * 0.35)
+        .normalize_or_zero();
+    let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
+    let mut light_data: Vec<f32> = Vec::new();
+    for (dir, color, intensity) in [
+        (sun.to_array(), rig.sun_color, rig.sun_intensity),
+        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
+        (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
+    ] {
+        light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
+    }
+    scene.lights = LightLayer { light_data, light_count: 4 };
+
+    let view = glam::Mat4::look_at_rh(
+        glam::Vec3::from(eye),
+        glam::Vec3::from(target),
+        glam::Vec3::Y,
+    )
+    .to_cols_array();
+    let cam = camera_layer(view, fov_y, width, height);
+    scene.camera = cam.clone();
+    scene.mark_geometry_changed();
+    scene.mark_materials_changed();
+    scene.mark_lights_changed();
+
+    let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
+    let mut config = RenderConfig::near_realtime(width, height);
+    config.slang_kernel_dir = resolve_slang_kernel_dir();
+    // WT-9: opt into the LEAN shade megakernel (heavy geometry/feature paths
+    // compiled out). Mirrors the FSR bench escape so the still parity render can
+    // A/B lean-vs-full deterministically.
+    if std::env::var("OCHROMA_SHADE_LEAN").as_deref() == Ok("1") {
+        config.prefer_lean_shade = true;
+    }
+    // Real-time lever: FORCE the bounce cap (overrides the glass→8 still-path
+    // bump). NRC + ReSTIR carry indirect past the cap.
+    let mut settings = rig_to_settings(rig, spp, max_bounces);
+    seed_features_from_config(&mut settings, &config);
+    config.apply_settings(&settings);
+    config.max_bounces = max_bounces;
+    let mut renderer = Renderer::new(gpu, config);
+    renderer
+        .load_scene_state(scene)
+        .map_err(|e| format!("load_scene_state: {e:?}"))?;
+    renderer.set_sky_gradient(rig.sky_dome_zenith, rig.sky_dome_horizon, rig.sky_dome_intensity);
+    if rig.atmosphere_enabled {
+        renderer.set_sun(sun.to_array(), rig.sun_radiance);
+        renderer.set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
+    }
+    if !textures.is_empty() {
+        renderer
+            .set_texture_atlas(&tex_descs, &tex_data, textures.len() as u32)
+            .map_err(|e| format!("set_texture_atlas: {e:?}"))?;
+    }
+    renderer.set_camera_view_matrix(cam.view_matrix);
+    renderer.set_view_proj(cam.view_matrix);
+
+    // ---- Resident render loop: re-render reusing all GPU state ----
+    let mut cold_ms = 0.0;
+    let mut steady_ms = Vec::with_capacity(frames.saturating_sub(1) as usize);
+    let mut last_beauty = Vec::new();
+    for f in 0..frames {
+        let t0 = std::time::Instant::now();
+        let frame = renderer.render().map_err(|e| format!("render frame {f}: {e:?}"))?;
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        if f == 0 {
+            cold_ms = ms;
+        } else {
+            steady_ms.push(ms);
+        }
+        if f == frames - 1 {
+            let n = (frame.width * frame.height) as usize;
+            last_beauty = Vec::with_capacity(n * 4);
+            for i in 0..n {
+                for ch in 0..4 {
+                    last_beauty.push((frame.beauty[i * 4 + ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+                }
+            }
+        }
+    }
+    Ok(ResidentBenchReport { cold_ms, steady_ms, beauty: last_beauty, width, height })
 }
 
 /// One cooked signed-distance volume to hand to the native SDF-volume primitive.
@@ -2609,8 +2855,19 @@ fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
     a[28] = pack_i32(m.albedo_tex);
     a[29] = pack_i32(m.roughness_tex);
     a[30] = pack_i32(m.normal_tex);
-    a[31] = pack_i32(-1); // displacement_tex
-    a[33] = 0.5; // displacement_midlevel
+    // POM (parallax occlusion mapping) inputs. a[31]/a[32]/a[33] map to the
+    // MaterialData std430 slots displacement_tex / displacement_scale /
+    // displacement_midlevel (material_types.slang:69-71). Was hard-wired OFF
+    // (a[31] = -1, scale implicitly 0) so the megakernel's POM gate
+    // (`mat.displacement_tex >= 0`) never fired. Now routes the cooked
+    // single-channel height map id + a sensible relief depth.
+    a[31] = pack_i32(m.displacement_tex); // displacement_tex (-1 = off)
+    a[32] = if m.displacement_tex >= 0 {
+        m.displacement_scale
+    } else {
+        0.0
+    }; // displacement_scale (UV-height units; ~0.02–0.05 m brick relief)
+    a[33] = m.displacement_midlevel; // displacement_midlevel (0.5 = surface plane)
     a[41] = 1.0; // hair_tangent.y
 
     a[44] = 0.3;
@@ -2885,6 +3142,562 @@ fn run_render_loop<G: GpuBackend>(
             }
         }
     }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// APPEND-ONLY (2026-06-14): FSR real-time resident bench for the FAST game path.
+//
+// Mirrors `spectra_resident_bench` but folds in the proven low-res -> GPU-denoise
+// -> FSR-upscale pipeline (see spectra's fsr_realtime_pipeline_gpu.rs) entirely
+// on the renderer's OWN Vulkan device — no second device, no CUDA. Builds the
+// renderer + scene + acceleration structure + FSR context ONCE, then runs a
+// resident loop timing each stage. Returns per-stage steady-state ms plus the
+// tonemapped UPSCALED RGBA8 for a viewable PNG.
+//
+// Honors all the existing env escapes (OCHROMA_SPECTRAL / OCHROMA_LEAN /
+// OCHROMA_RELIEF_MODE / OCHROMA_DENOISE_OFF) because it reuses the SAME config
+// seeding path as `pathtrace_mesh_lit_weathered_to_rgba`.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Per-stage timing report from [`spectra_resident_bench_fsr`].
+#[cfg(all(feature = "spectra-native", feature = "fsr"))]
+pub struct FsrBenchReport {
+    /// Cold first frame (kernel compile + BLAS/TLAS build + FSR ctx warmup).
+    pub cold_ms: f64,
+    /// Steady-state END-TO-END ms per frame (render+denoise+pack+FSR), frames 1..N.
+    pub e2e_ms: Vec<f64>,
+    /// Steady-state render+denoise ms (the `renderer.render()` call), frames 1..N.
+    pub render_ms: Vec<f64>,
+    /// Steady-state PACK_RGBA + FSR upscale ms, frames 1..N.
+    pub fsr_ms: Vec<f64>,
+    /// Tonemapped upscaled output, RGBA8, `out_w*out_h*4`.
+    pub upscaled: Vec<u8>,
+    pub out_w: u32,
+    pub out_h: u32,
+    /// Internal render resolution actually used (FSR-derived from output+quality).
+    pub render_w: u32,
+    pub render_h: u32,
+}
+
+/// RESIDENT real-time loop with the FULL game render path: render small (low
+/// internal res) + GPU denoise, pack the denoised SoA film to interleaved RGBA
+/// f32 on the GPU (PACK_RGBA), then FSR3-upscale to `out_w`x`out_h` — all on the
+/// renderer's single Vulkan device. `internal_w`/`internal_h` REQUEST an internal
+/// resolution but the actual internal res is the FSR render size derived from
+/// (output, quality); we pick the FSR quality whose render size is nearest the
+/// request and report what we actually used. Returns the tonemapped upscaled
+/// frame (RGBA8) + per-stage steady-state ms.
+#[cfg(all(feature = "spectra-native", feature = "fsr"))]
+#[allow(clippy::too_many_arguments)]
+pub fn spectra_resident_bench_fsr(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    uvs: &[[f32; 2]],
+    indices: &[[u32; 3]],
+    material_ids: &[u8],
+    materials: &[PbrMaterial],
+    textures: &[TextureImage],
+    eye: [f32; 3],
+    target: [f32; 3],
+    fov_y: f32,
+    out_w: u32,
+    out_h: u32,
+    quality: spectra_upscale::UpscaleQuality,
+    spp: u32,
+    max_bounces: u32,
+    frames: u32,
+    rig: &LightRig,
+) -> Result<FsrBenchReport, String> {
+    use crate::splat_convert::camera_layer;
+    use spectra_gpu::{BindingMap, GpuBackend};
+    use spectra_scene_state::{LightLayer, MaterialLayer, SceneState};
+    use spectra_upscale::fsr::FsrBackend;
+
+    if !FsrBackend::is_available() {
+        return Err("FSR not available in this build (need --features fsr)".into());
+    }
+
+    // FSR-derived internal render resolution for this output + quality.
+    let (render_w, render_h) =
+        spectra_upscale::fsr_render_resolution_for_test((out_w, out_h), quality);
+
+    let (tex_descs, tex_data) = build_texture_atlas(textures)?;
+
+    let mut scene = SceneState::new(render_w, render_h);
+    scene.geometry.vertex_count = positions.len();
+    scene.geometry.triangle_count = indices.len();
+    scene.geometry.positions = positions.iter().flat_map(|p| *p).collect();
+    scene.geometry.normals = normals.iter().flat_map(|n| *n).collect();
+    scene.geometry.uvs = uvs.iter().flat_map(|t| *t).collect();
+    scene.geometry.indices = indices.iter().flat_map(|t| *t).collect();
+    scene.geometry.material_ids = material_ids.iter().map(|&m| m as u32).collect();
+
+    let mut params = Vec::with_capacity(materials.len() * VULKAN_MATERIAL_FLOATS);
+    for m in materials {
+        params.extend_from_slice(&pack_vulkan_mesh_material(*m));
+    }
+    scene.materials = MaterialLayer {
+        params,
+        spectral_spd: Default::default(),
+        material_count: materials.len(),
+    };
+
+    let sun = glam::Vec3::from(rig.sun_dir).normalize_or_zero();
+    let camera_fill = (glam::Vec3::from(eye) - glam::Vec3::from(target) + glam::Vec3::Y * 0.35)
+        .normalize_or_zero();
+    let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
+    let mut light_data: Vec<f32> = Vec::new();
+    for (dir, color, intensity) in [
+        (sun.to_array(), rig.sun_color, rig.sun_intensity),
+        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
+        (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
+    ] {
+        light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
+    }
+    scene.lights = LightLayer { light_data, light_count: 4 };
+
+    let view = glam::Mat4::look_at_rh(
+        glam::Vec3::from(eye),
+        glam::Vec3::from(target),
+        glam::Vec3::Y,
+    )
+    .to_cols_array();
+    let cam = camera_layer(view, fov_y, render_w, render_h);
+    scene.camera = cam.clone();
+    scene.mark_geometry_changed();
+    scene.mark_materials_changed();
+    scene.mark_lights_changed();
+
+    let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
+    let mut config = RenderConfig::near_realtime(render_w, render_h);
+    config.slang_kernel_dir = resolve_slang_kernel_dir();
+    // Honor the SAME env escapes as the still entry so A/Bs (OCHROMA_LEAN etc.)
+    // apply at this FAST config too.
+    if std::env::var("OCHROMA_DENOISE_OFF").is_ok() {
+        config.denoiser_mode = spectra_renderer::DenoiserMode::None;
+    }
+    if std::env::var("OCHROMA_SPECTRAL").as_deref() == Ok("1") {
+        config.spectral_mode = spectra_renderer::SpectralMode::Hero4;
+    }
+    if std::env::var("OCHROMA_LEAN").as_deref() == Ok("1") {
+        config.use_restir = false;
+        config.use_restir_gi = false;
+        config.resample_mode = spectra_renderer::ResampleMode::None;
+    }
+    // WT-9: OCHROMA_SHADE_LEAN=1 opts into the LEAN shade megakernel variant
+    // (SSS / volume / polarization / NRC paths compiled out → fewer spilled
+    // VGPRs, higher occupancy). The renderer's use_lean_shade() predicate still
+    // guards it (NRC/volumes must be off), so this is a no-op when those are on.
+    if std::env::var("OCHROMA_SHADE_LEAN").as_deref() == Ok("1") {
+        config.prefer_lean_shade = true;
+    }
+    // Relief: auto-select by data (cone-step only if every displacement map has a
+    // cone channel; cooked 1-ch -> POM). Mirrors the still path's auto branch.
+    {
+        let any_disp = materials.iter().any(|m| m.displacement_tex >= 0);
+        let all_cone = materials.iter().all(|m| {
+            m.displacement_tex < 0 || textures[m.displacement_tex as usize].channels >= 2
+        });
+        config.relief_mode = if any_disp && all_cone { 1 } else { 0 };
+    }
+    // DEN-02/03/04 A/B knobs (config-first denoiser). OCHROMA_DENOISE_LEGACY=1
+    // forces the OLD single-5×5 behavior (1 pass, no luminance edge-stop) so the
+    // à-trous cascade can be measured against it. OCHROMA_DENOISE_ITERS=N
+    // overrides the cascade pass count.
+    if std::env::var("OCHROMA_DENOISE_LEGACY").as_deref() == Ok("1") {
+        config.denoiser.iterations = 1;
+        // Disable the DEN-03 luminance edge-stop by making its sigma huge so
+        // wl≈1 for all taps — reproduces the pre-DEN-03 weight exactly.
+        config.denoiser.sigma_lum = 1.0e9;
+    }
+    if let Ok(it) = std::env::var("OCHROMA_DENOISE_ITERS") {
+        if let Ok(n) = it.parse::<u32>() {
+            config.denoiser.iterations = n.max(1);
+        }
+    }
+    if let Ok(sl) = std::env::var("OCHROMA_DENOISE_SIGMA_LUM") {
+        if let Ok(v) = sl.parse::<f32>() {
+            config.denoiser.sigma_lum = v;
+        }
+    }
+    // FSR is driven explicitly below on the renderer's device — keep the internal
+    // upscaler null so render() returns native (internal-res) film.
+    config.upscaler_preference = spectra_upscale::UpscalerPreference::ForceNull;
+
+    let mut settings = rig_to_settings(rig, spp, max_bounces);
+    seed_features_from_config(&mut settings, &config);
+    config.apply_settings(&settings);
+    config.max_bounces = max_bounces;
+    let tonemap = config.tonemap;
+    let exposure_ev = config.exposure_ev;
+
+    let mut renderer = Renderer::new(gpu, config);
+    renderer
+        .load_scene_state(scene)
+        .map_err(|e| format!("load_scene_state: {e:?}"))?;
+    renderer.set_sky_gradient(rig.sky_dome_zenith, rig.sky_dome_horizon, rig.sky_dome_intensity);
+    if rig.atmosphere_enabled {
+        renderer.set_sun(sun.to_array(), rig.sun_radiance);
+        renderer.set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
+    }
+    if !textures.is_empty() {
+        renderer
+            .set_texture_atlas(&tex_descs, &tex_data, textures.len() as u32)
+            .map_err(|e| format!("set_texture_atlas: {e:?}"))?;
+    }
+    renderer.set_camera_view_matrix(cam.view_matrix);
+    renderer.set_view_proj(cam.view_matrix);
+
+    // Build FSR on the renderer's OWN device.
+    let mut fsr = {
+        let g = &renderer.gpu;
+        FsrBackend::from_vk(
+            g.vk_device(),
+            g.vk_instance(),
+            g.vk_queue(),
+            g.vk_queue_family_index(),
+            g.vk_physical_device(),
+            g.vk_mem_props(),
+            g.vk_command_pool(),
+            (out_w, out_h),
+            quality,
+        )
+        .map_err(|e| format!("FsrBackend::from_vk: {e:?}"))?
+    };
+    if fsr.render_size() != (render_w, render_h) {
+        return Err(format!(
+            "FSR render size {:?} != renderer internal {}x{}",
+            fsr.render_size(),
+            render_w,
+            render_h
+        ));
+    }
+    // FSR-01/TEMP-03: the renderer runs with upscaler_preference=ForceNull, so
+    // the CAMERA renders UN-jittered. Tell FSR to use jitter (0,0) — ONE source
+    // — instead of advancing its own divergent Halton (which smeared the frame).
+    // OCHROMA_FSR_LEGACY_JITTER=1 restores the BUGGY pre-fix behavior (FSR keeps
+    // advancing its own Halton while the camera is un-jittered) for an A/B.
+    let fsr_legacy_jitter = std::env::var("OCHROMA_FSR_LEGACY_JITTER").as_deref() == Ok("1");
+    if fsr_legacy_jitter {
+        fsr.set_external_jitter(None);
+    } else {
+        fsr.set_external_jitter(Some((0.0, 0.0)));
+    }
+    // FSR-04: plumb the real camera params (the depth/MV interpretation uses
+    // them). near/far mirror the renderer's projection; fov_y is the caller's.
+    // frame_time is updated per-frame below from the measured render delta.
+    fsr.set_camera_params(0.1, 1000.0, fov_y, 16.67);
+
+    // GPU buffers for FSR color input + upscaled output (renderer's device).
+    let color_buf = renderer
+        .gpu
+        .alloc_zeroed_f32((render_w * render_h * 4) as usize)
+        .map_err(|e| format!("alloc color buf: {e:?}"))?;
+    let out_buf = renderer
+        .gpu
+        .alloc_zeroed_f32((out_w * out_h * 4) as usize)
+        .map_err(|e| format!("alloc out buf: {e:?}"))?;
+
+    let mut cold_ms = 0.0;
+    let mut e2e_ms = Vec::with_capacity(frames.saturating_sub(1) as usize);
+    let mut render_ms = Vec::with_capacity(frames.saturating_sub(1) as usize);
+    let mut fsr_ms = Vec::with_capacity(frames.saturating_sub(1) as usize);
+
+    // FSR-03 moving-camera validation (append-only, env-gated): when
+    // OCHROMA_BENCH_CAM_MOTION=1, translate the camera a few world-units per
+    // frame so the megakernel's g_velocity AOV is non-zero. Each frame we set
+    // the new + previous view-proj, dispatch PACK_MOTION_VECTORS to convert the
+    // NDC velocity AOV → PIXEL-space MV, and feed THAT buffer to FSR (instead of
+    // the zero-clear). This exercises the real motion-vector + jitter path.
+    let cam_motion = std::env::var("OCHROMA_BENCH_CAM_MOTION").as_deref() == Ok("1");
+    // Per-frame world-space camera pan (small, keeps the building in frame).
+    let pan_per_frame = glam::Vec3::new(0.6, 0.0, 0.0);
+    let mv_packed_buf = if cam_motion {
+        Some(
+            renderer
+                .gpu
+                .alloc_zeroed_f32((render_w * render_h * 2) as usize)
+                .map_err(|e| format!("alloc mv buf: {e:?}"))?,
+        )
+    } else {
+        None
+    };
+    let mut prev_view_proj: Option<[f32; 16]> = None;
+
+    // STEP-1 PROFILE (env-gated, append-only escape): OCHROMA_PASS_PROFILE=1
+    // turns on the renderer's per-dispatch timing_sink for the LAST frame and
+    // prints a sorted per-pass ms breakdown (camera ray-gen, each shade_and_bounce
+    // bounce, ReSTIR-DI/PT, denoiser, AOV clears) plus PACK_RGBA + FSR. This is
+    // the source of truth for the real dominator. No-op unless the env is set.
+    let pass_profile = std::env::var("OCHROMA_PASS_PROFILE").as_deref() == Ok("1");
+    // SELF-INFLICTED-COST FIX: this resident path reads the denoised film
+    // directly on the GPU (PACK_RGBA → FSR) and ignores `render()`'s returned
+    // FrameOutput.beauty. Tell the renderer to skip its per-frame CPU beauty
+    // download + resolve loop (3 host-visible readbacks + a per-pixel CPU loop).
+    // A/B escape: OCHROMA_KEEP_BEAUTY=1 leaves the old CPU beauty resolve ON for
+    // before/after parity measurement; otherwise we skip it (the fix).
+    let keep_beauty = std::env::var("OCHROMA_KEEP_BEAUTY").as_deref() == Ok("1");
+    unsafe {
+        if keep_beauty {
+            std::env::remove_var("SPECTRA_SKIP_BEAUTY");
+        } else {
+            std::env::set_var("SPECTRA_SKIP_BEAUTY", "1");
+        }
+    }
+    let mut profile_passes: Vec<(String, f32)> = Vec::new();
+    let mut profile_pack_ms = 0.0f64;
+    let mut profile_fsr_ms = 0.0f64;
+
+    for f in 0..frames {
+        let t_all = std::time::Instant::now();
+
+        // Enable per-dispatch timing only for the last (steady-state) frame.
+        let profile_this = pass_profile && f + 1 == frames;
+        if profile_this {
+            renderer.timing_sink = Some(Vec::new());
+        }
+
+        // FSR-03: moving-camera — pan the camera before rendering this frame so
+        // the velocity AOV is non-zero. The renderer auto-latches prev_view_proj
+        // at frame end, so we only set the CURRENT view each frame.
+        if cam_motion {
+            let off = pan_per_frame * (f as f32);
+            let new_eye = glam::Vec3::from(eye) + off;
+            let new_view = glam::Mat4::look_at_rh(
+                new_eye,
+                glam::Vec3::from(target) + off,
+                glam::Vec3::Y,
+            )
+            .to_cols_array();
+            renderer.set_camera_view_matrix(new_view);
+            renderer.set_view_proj(new_view);
+            prev_view_proj = Some(new_view);
+        }
+
+        // 1. render (low-res) + GPU denoise.
+        let t_r = std::time::Instant::now();
+        renderer.render().map_err(|e| format!("render frame {f}: {e:?}"))?;
+        let r_ms = t_r.elapsed().as_secs_f64() * 1000.0;
+
+        // FSR-03: bridge the real velocity AOV → pixel-space MV → FSR. Skip
+        // frame 0 (no previous frame; prev_view_proj just latched). Dispatch
+        // PACK_MOTION_VECTORS into mv_packed_buf and hand it to FSR so the next
+        // upscale uses REAL motion vectors instead of the zero-clear.
+        if cam_motion && f > 0 && !fsr_legacy_jitter {
+            if let (Some(mvbuf), Some(_)) = (mv_packed_buf, prev_view_proj) {
+                if let Some(mv_id) = renderer.kernels.get(
+                    spectra_renderer::kernel_set::names::PACK_MOTION_VECTORS,
+                    &mut renderer.gpu,
+                ) {
+                    if let Some(vel) = renderer.state.as_ref().and_then(|s| s.velocity_buf) {
+                        let mut b = BindingMap::with_capacity(2, 3);
+                        b.bind_buffer("g_velocity", vel);
+                        b.bind_buffer("g_mv_packed", mvbuf);
+                        b.set_uniform_u32("u_pixel_count", render_w * render_h);
+                        b.set_uniform_f32("u_mv_scale_x", render_w as f32 * 0.5);
+                        b.set_uniform_f32("u_mv_scale_y", render_h as f32 * 0.5);
+                        renderer
+                            .gpu
+                            .dispatch(mv_id, [render_w * render_h, 1, 1], &b)
+                            .map_err(|e| format!("PACK_MOTION_VECTORS: {e:?}"))?;
+                        if let Some(vk) = renderer.gpu.vk_buffer(&mvbuf) {
+                            fsr.set_motion_vectors(Some(vk));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2+3. PACK_RGBA (denoised SoA -> interleaved RGBA) then FSR upscale.
+        let t_f = std::time::Instant::now();
+        let pack_id = renderer
+            .kernels
+            .get(spectra_renderer::kernel_set::names::PACK_RGBA, &mut renderer.gpu)
+            .ok_or("PACK_RGBA kernel compile failed")?;
+        {
+            let st = renderer.state.as_ref().ok_or("no render state")?;
+            let (rr, gg, bb) = match (st.denoised_r, st.denoised_g, st.denoised_b) {
+                (Some(r), Some(g), Some(b)) => (r, g, b),
+                _ => (
+                    st.film_r.ok_or("no film_r")?,
+                    st.film_g.ok_or("no film_g")?,
+                    st.film_b.ok_or("no film_b")?,
+                ),
+            };
+            let film_w = st.film_w.ok_or("no film_w")?;
+            let mut b = BindingMap::with_capacity(5, 1);
+            b.bind_buffer("g_film_r", rr);
+            b.bind_buffer("g_film_g", gg);
+            b.bind_buffer("g_film_b", bb);
+            b.bind_buffer("g_film_a", film_w);
+            b.bind_buffer("g_rgba", color_buf);
+            b.set_uniform_u32("u_pixel_count", render_w * render_h);
+            renderer
+                .gpu
+                .dispatch(pack_id, [render_w * render_h, 1, 1], &b)
+                .map_err(|e| format!("PACK_RGBA dispatch: {e:?}"))?;
+        }
+        // When profiling, sync after PACK so its GPU time is attributable
+        // separately from the FSR submit.
+        if profile_this {
+            renderer.gpu.synchronize().ok();
+            profile_pack_ms = t_f.elapsed().as_secs_f64() * 1000.0;
+        }
+        let t_fsr = std::time::Instant::now();
+        let cbuf = renderer.gpu.vk_buffer(&color_buf).ok_or("color vk::Buffer")?;
+        let obuf = renderer.gpu.vk_buffer(&out_buf).ok_or("out vk::Buffer")?;
+        fsr.upscale_from_buffers(cbuf, render_w, render_h, obuf, f == 0)
+            .map_err(|e| format!("FSR upscale_from_buffers: {e:?}"))?;
+        if profile_this {
+            renderer.gpu.synchronize().ok();
+            profile_fsr_ms = t_fsr.elapsed().as_secs_f64() * 1000.0;
+            profile_passes = renderer.timing_sink.take().unwrap_or_default();
+        }
+        let f_ms = t_f.elapsed().as_secs_f64() * 1000.0;
+
+        let all_ms = t_all.elapsed().as_secs_f64() * 1000.0;
+
+        if f == 0 {
+            cold_ms = all_ms;
+            // Fail loudly if denoise silently no-op'd.
+            let st = renderer.state.as_ref().ok_or("no render state")?;
+            if !(st.denoised_r.is_some() && st.denoised_g.is_some() && st.denoised_b.is_some())
+                && config_denoise_on()
+            {
+                return Err("GPU DENOISE_FILM did not run — denoised buffers absent".into());
+            }
+        } else {
+            e2e_ms.push(all_ms);
+            render_ms.push(r_ms);
+            fsr_ms.push(f_ms);
+        }
+    }
+
+    // Resident render() calls are done — stop skipping beauty so subsequent
+    // tests (sequential, test-threads=1) see default behavior.
+    unsafe {
+        std::env::remove_var("SPECTRA_SKIP_BEAUTY");
+    }
+
+    // STEP-1 PROFILE print: aggregate identical pass labels (each bounce is
+    // dispatched once per bounce/sample, so we sum per unique label) and print
+    // sorted descending. Camera ray-gen, shade_and_bounce, ReSTIR, denoiser,
+    // AOV clears all carry stable &'static labels from the renderer.
+    if pass_profile {
+        use std::collections::BTreeMap;
+        let mut agg: BTreeMap<String, (f64, u32)> = BTreeMap::new();
+        for (label, ms) in &profile_passes {
+            let e = agg.entry(label.clone()).or_insert((0.0, 0));
+            e.0 += *ms as f64;
+            e.1 += 1;
+        }
+        let mut rows: Vec<(String, f64, u32)> =
+            agg.into_iter().map(|(k, (ms, n))| (k, ms, n)).collect();
+        rows.push(("PACK_RGBA".to_string(), profile_pack_ms, 1));
+        rows.push(("FSR_upscale".to_string(), profile_fsr_ms, 1));
+        rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let total: f64 = rows.iter().map(|r| r.1).sum();
+        eprintln!(
+            "\n[pass-profile] {render_w}x{render_h} spp={spp} bounces={max_bounces} — per-pass ms (last frame), sorted"
+        );
+        eprintln!("[pass-profile] {:<34} {:>9} {:>5} {:>6}", "pass", "ms", "n", "%");
+        eprintln!("[pass-profile] {:-<58}", "");
+        for (label, ms, n) in &rows {
+            let pct = if total > 0.0 { ms / total * 100.0 } else { 0.0 };
+            eprintln!("[pass-profile] {label:<34} {ms:>8.3} {n:>5} {pct:>5.1}%");
+        }
+        eprintln!("[pass-profile] {:-<58}", "");
+        eprintln!("[pass-profile] {:<34} {total:>8.3}       100.0%\n", "TOTAL(gpu-passes)");
+    }
+
+    // Download + tonemap the final upscaled frame for a viewable PNG.
+    let opix = (out_w * out_h) as usize;
+    let mut lin = vec![0.0f32; opix * 4];
+    renderer
+        .gpu
+        .download_f32(&out_buf, &mut lin)
+        .map_err(|e| format!("download out: {e:?}"))?;
+    let mut upscaled = Vec::with_capacity(opix * 4);
+    for i in 0..opix {
+        let tm = tonemap.apply(lin[i * 4], lin[i * 4 + 1], lin[i * 4 + 2], exposure_ev);
+        // COLOR-01: tonemap returns display-referred LINEAR — encode to sRGB
+        // before the u8 quantize (shared helper, formula lives in spectra-tonemap).
+        let srgb = spectra_tonemap::srgb_encode_rgb(tm);
+        for ch in 0..3 {
+            upscaled.push((srgb[ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        }
+        upscaled.push(255);
+    }
+
+    Ok(FsrBenchReport {
+        cold_ms,
+        e2e_ms,
+        render_ms,
+        fsr_ms,
+        upscaled,
+        out_w,
+        out_h,
+        render_w,
+        render_h,
+    })
+}
+
+/// Whether the denoiser is configured ON (respecting the OCHROMA_DENOISE_OFF
+/// escape). Used to gate the "denoise didn't run" assertion in the FSR bench.
+#[cfg(all(feature = "spectra-native", feature = "fsr"))]
+fn config_denoise_on() -> bool {
+    std::env::var("OCHROMA_DENOISE_OFF").is_err()
+}
+
+/// APPEND-ONLY (2026-06-14): WT-1 measurement — build a triangle mesh scene with
+/// hardware ray tracing and report the GPU BLAS+TLAS build time in ms
+/// (`GpuScene::hw_tlas_build_ms`), the real number the upload path records. Loads
+/// the scene ONCE (which triggers the AS build) and reads back the build ms. Also
+/// returns whether the HW TLAS was actually built (false on a sw-only device) so
+/// the caller can mark the result infeasible rather than report a misleading 0.
+#[cfg(feature = "spectra-native")]
+#[allow(clippy::too_many_arguments)]
+pub fn measure_hw_tlas_build_ms(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    uvs: &[[f32; 2]],
+    indices: &[[u32; 3]],
+    material_ids: &[u8],
+) -> Result<(f32, bool, usize), String> {
+    use spectra_scene_state::{MaterialLayer, SceneState};
+
+    let mut scene = SceneState::new(256, 256);
+    scene.geometry.vertex_count = positions.len();
+    scene.geometry.triangle_count = indices.len();
+    scene.geometry.positions = positions.iter().flat_map(|p| *p).collect();
+    scene.geometry.normals = normals.iter().flat_map(|n| *n).collect();
+    scene.geometry.uvs = uvs.iter().flat_map(|t| *t).collect();
+    scene.geometry.indices = indices.iter().flat_map(|t| *t).collect();
+    scene.geometry.material_ids = material_ids.iter().map(|&m| m as u32).collect();
+    // One trivial Lambert material so the upload validates.
+    let mat = PbrMaterial { base_color: [0.6, 0.6, 0.6], roughness: 0.9, ..Default::default() };
+    scene.materials = MaterialLayer {
+        params: pack_vulkan_mesh_material(mat).to_vec(),
+        spectral_spd: Default::default(),
+        material_count: 1,
+    };
+    scene.geometry.material_ids = vec![0u32; indices.len()];
+    scene.mark_geometry_changed();
+    scene.mark_materials_changed();
+
+    let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
+    let mut config = RenderConfig::near_realtime(256, 256);
+    config.slang_kernel_dir = resolve_slang_kernel_dir();
+    let mut renderer = Renderer::new(gpu, config);
+    let hw_active = renderer.hw_rt_active;
+    renderer
+        .load_scene_state(scene)
+        .map_err(|e| format!("load_scene_state: {e:?}"))?;
+    let st = renderer.state.as_ref().ok_or("no render state")?;
+    let gs = st.gpu_scene.as_ref().ok_or("no gpu_scene")?;
+    let built = gs.hw_tlas.is_some();
+    Ok((gs.hw_tlas_build_ms, hw_active && built, indices.len()))
 }
 
 #[cfg(all(test, feature = "spectra-native"))]

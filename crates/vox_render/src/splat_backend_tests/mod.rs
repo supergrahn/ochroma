@@ -374,6 +374,9 @@ mod terrain_carve;
         Diffuse,
         Normal,
         Roughness,
+        /// Single-channel height/displacement map (PolyHaven `displacement.jpg`).
+        /// Loaded linear, native res — drives POM in the megakernel.
+        Height,
     }
 
 
@@ -389,6 +392,8 @@ mod terrain_carve;
                 (s, TexKind::Normal)
             } else if let Some(s) = rest.strip_suffix("_rough") {
                 (s, TexKind::Roughness)
+            } else if let Some(s) = rest.strip_suffix("_disp") {
+                (s, TexKind::Height)
             } else {
                 return None;
             };
@@ -407,6 +412,7 @@ mod terrain_carve;
             "diffuse.jpg" => TexKind::Diffuse,
             "normal.jpg" => TexKind::Normal,
             "roughness.jpg" => TexKind::Roughness,
+            "displacement.jpg" => TexKind::Height,
             _ => return None,
         };
         Some((set.to_string(), kind))
@@ -461,6 +467,86 @@ mod terrain_carve;
         (out, ow, oh)
     }
 
+    /// Build a RELAXED cone-step map from a 1-channel height field (height in
+    /// `[0,1]`, 1 = surface plane, 0 = deepest recess), returning one cone ratio
+    /// per texel in `[0,1]`.
+    ///
+    /// For each texel `t` the cone ratio is the steepest empty cone rising from
+    /// `t` toward the surface that does NOT pierce any higher neighbour:
+    ///   cone[t] = min over all other texels s with height[s] > height[t] of
+    ///             horizontal_dist(s,t) / (height[s] - height[t])
+    /// i.e. `horizontal / vertical` — the cone's slope. A flat-above region gives
+    /// a large ratio (clamped to 1 = open cone, big march step); a tall wall just
+    /// above gives a small ratio (tight cone, small step). The march advances by
+    /// the largest distance that keeps the ray outside this cone, so it never
+    /// overshoots the surface (Policarpo cone step / Dummer relaxed cone step).
+    ///
+    /// RELAXED: we keep the standard min-ratio (allow the cone to just touch the
+    /// surface above) rather than a stricter safety margin — fewer march steps;
+    /// the kernel's `u_cone_relax_bias` and the one-lerp contact refinement absorb
+    /// any over-step from EWA blending.
+    ///
+    /// This is REAL computation over the decoded displacement texels, not a
+    /// placeholder. To stay tractable at 1k it uses a BOUNDED-RADIUS sweep: a
+    /// higher texel `s` constrains `t` only within a horizontal window whose
+    /// radius is set by the max relief depth (`max_depth`, the render-time
+    /// displacement_scale upper bound) — beyond that radius a cone of ratio <= 1
+    /// would have to rise more than the entire relief band to be pierced, so it
+    /// never constrains. Cost is O(n * window^2), not O(n^2).
+    ///
+    /// Horizontal distance is measured in UV-normalized units (texel index /
+    /// dimension) to match the kernel, which marches the UV offset; vertical drop
+    /// is in height units (`[0,1]`). The ratio is clamped to `[0,1]`: 1 means the
+    /// surface above is far/flat enough that the cone is effectively open.
+    #[cfg(feature = "spectra-native")]
+    fn build_relaxed_cone_map(height: &[f32], w: u32, h: u32, max_depth: f32) -> Vec<f32> {
+        let wu = w as usize;
+        let hu = h as usize;
+        assert_eq!(height.len(), wu * hu, "height must be w*h single channel");
+        // Window radius in texels. A higher neighbour s constrains t's cone only
+        // if horiz/vert <= 1, i.e. horiz <= vert <= max_depth (vertical drop can
+        // be at most the relief band). Convert that max horizontal UV distance to
+        // texels. Guard against a degenerate tiny radius.
+        let dim = w.max(h) as f32;
+        let radius = ((max_depth.max(1e-3) * dim).ceil() as i32).clamp(2, dim as i32);
+        let inv_dim = 1.0f32 / dim; // UV per texel (square texels assumed)
+
+        let mut cone = vec![1.0f32; wu * hu]; // start fully open (ratio 1)
+        for ty in 0..hu {
+            for tx in 0..wu {
+                let ti = ty * wu + tx;
+                let ht = height[ti];
+                let mut min_ratio = 1.0f32;
+                let y0 = (ty as i32 - radius).max(0);
+                let y1 = (ty as i32 + radius).min(hu as i32 - 1);
+                let x0 = (tx as i32 - radius).max(0);
+                let x1 = (tx as i32 + radius).min(wu as i32 - 1);
+                for sy in y0..=y1 {
+                    for sx in x0..=x1 {
+                        let si = sy as usize * wu + sx as usize;
+                        let hs = height[si];
+                        if hs <= ht {
+                            continue; // only HIGHER neighbours constrain the cone
+                        }
+                        let dx = (sx - tx as i32) as f32 * inv_dim;
+                        let dy = (sy - ty as i32) as f32 * inv_dim;
+                        let horiz = (dx * dx + dy * dy).sqrt();
+                        let vert = hs - ht;
+                        if vert <= 1e-6 {
+                            continue;
+                        }
+                        let ratio = horiz / vert;
+                        if ratio < min_ratio {
+                            min_ratio = ratio;
+                        }
+                    }
+                }
+                cone[ti] = min_ratio.clamp(0.0, 1.0);
+            }
+        }
+        cone
+    }
+
 
     /// Load one PolyHaven map exactly like the game's TextureCache: diffuse is
     /// sRGB->linear, mean-normalized toward `tint` (`clamp(tint/mean, 0.25,
@@ -477,6 +563,7 @@ mod terrain_carve;
             TexKind::Diffuse => "diffuse.jpg",
             TexKind::Normal => "normal.jpg",
             TexKind::Roughness => "roughness.jpg",
+            TexKind::Height => "displacement.jpg",
         };
         let path = polyhaven_root.join(set).join("1k").join(file);
         let img = image::open(&path)
@@ -549,6 +636,46 @@ mod terrain_carve;
                 img.pixels().map(|p| p.0[0] as f32 / 255.0).collect(),
                 256,
             ),
+            // Height/displacement: single linear channel, kept at native 1k so
+            // the relief march reads crisp mortar gaps (downsampling smears them).
+            // PolyHaven stores it grayscale; take the red channel as height.
+            //
+            // Cone-step needs BOTH height AND a per-texel cone ratio at the same
+            // uv every march iteration. We pack the cone ratio into the G channel
+            // of THIS height texture (R = height, G = relaxed cone ratio) so a
+            // single EWA tap returns both — ZERO new bindings / material slots.
+            // The cone map is REALLY computed from the decoded displacement texels
+            // below (build_relaxed_cone_map), not a placeholder. See the early
+            // return: the Height arm returns a 2-channel TextureImage and does NOT
+            // fall through to the generic 1ch path.
+            TexKind::Height => {
+                let height_1ch: Vec<f32> =
+                    img.pixels().map(|p| p.0[0] as f32 / 255.0).collect();
+                // Downsample the height FIRST (to the final 1k resolution) so the
+                // O(n*window) cone sweep runs over the smaller, final texel grid —
+                // keeps the precompute tractable and the cone map aligned to the
+                // exact texels the kernel samples.
+                let (h_data, w, h) = box_downsample(height_1ch, width, height, 1, 1024);
+                // displacement_scale used at render time is ~0.02-0.08 (UV-height
+                // units). The cone only needs to be conservative within the relief
+                // band; bound the sweep window so we never do full O(n^2). 0.08 of
+                // the texture span is a safe upper bound on how far a cone can run
+                // before the surface above it stops constraining it.
+                let cone = build_relaxed_cone_map(&h_data, w, h, 0.08);
+                debug_assert_eq!(cone.len(), h_data.len());
+                // Interleave R = height, G = cone into a 2-channel buffer.
+                let mut data2 = vec![0.0f32; h_data.len() * 2];
+                for i in 0..h_data.len() {
+                    data2[i * 2] = h_data[i];
+                    data2[i * 2 + 1] = cone[i];
+                }
+                return super::TextureImage {
+                    width: w,
+                    height: h,
+                    channels: 2,
+                    data: data2,
+                };
+            }
         };
         let (data, width, height) = box_downsample(data, width, height, channels, max_size);
         super::TextureImage {
@@ -557,6 +684,50 @@ mod terrain_carve;
             channels,
             data,
         }
+    }
+
+
+    /// Load a PolyHaven displacement/height map for POM, tolerant of where it
+    /// lives. The per-project cooked packs shipped only diffuse/normal/roughness
+    /// (no `displacement.jpg`), but the global PolyHaven cache
+    /// (`~/.cache/aetherspectra/polyhaven/<set>/1k/displacement.jpg`) carries the
+    /// height map. Try the pack root first, then the cache; return `None` (POM
+    /// off for that material) if neither exists — never panic, so a pack without
+    /// height data still renders flat instead of failing the gate.
+    #[cfg(feature = "spectra-native")]
+    fn try_load_height_map(
+        polyhaven_root: &std::path::Path,
+        set: &str,
+    ) -> Option<super::TextureImage> {
+        // Candidate roots in priority order: the pack's own polyhaven dir, then
+        // the shared aetherspectra cache.
+        let cache_root = dirs_next_cache()
+            .map(|c| c.join("aetherspectra/polyhaven"));
+        let roots: Vec<std::path::PathBuf> = std::iter::once(polyhaven_root.to_path_buf())
+            .chain(cache_root)
+            .collect();
+        for root in roots {
+            let path = root.join(set).join("1k").join("displacement.jpg");
+            if path.exists() {
+                return Some(load_polyhaven_map(&root, set, TexKind::Height, [1.0, 1.0, 1.0]));
+            }
+        }
+        None
+    }
+
+
+    /// Resolve the OS cache dir (`$XDG_CACHE_HOME` or `~/.cache`) without pulling
+    /// in an extra crate — just enough for the PolyHaven height fallback.
+    #[cfg(feature = "spectra-native")]
+    fn dirs_next_cache() -> Option<std::path::PathBuf> {
+        if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+            if !xdg.is_empty() {
+                return Some(std::path::PathBuf::from(xdg));
+            }
+        }
+        std::env::var("HOME")
+            .ok()
+            .map(|h| std::path::PathBuf::from(h).join(".cache"))
     }
 
 
@@ -662,6 +833,43 @@ mod terrain_carve;
             let roughness_tex = resolve(&cm.textures.roughness, TexKind::Roughness);
             let normal_tex = resolve(&cm.textures.normal, TexKind::Normal);
 
+            // POM height map: the cooked CookedTextureSet doesn't carry a
+            // displacement URI, but every PolyHaven set on disk ships a
+            // `displacement.jpg` beside diffuse/normal/roughness. Derive the set
+            // from any present map URI and load its height map as a TexKind::Height
+            // texture (linear, native 1k). Deduped on (set, Height) — height is
+            // tint-free so the tint key is [0;3].
+            let displacement_tex = {
+                let set = cm
+                    .textures
+                    .normal
+                    .as_deref()
+                    .or(cm.textures.base_color.as_deref())
+                    .or(cm.textures.roughness.as_deref())
+                    .and_then(resolve_cooked_texture_uri)
+                    .map(|(set, _)| set);
+                match set {
+                    Some(set) => {
+                        let key = (set.clone(), TexKind::Height, [0u32; 3]);
+                        if let Some(&idx) = tex_index.get(&key) {
+                            idx
+                        } else if let Some(img) =
+                            try_load_height_map(&polyhaven_root, &set)
+                        {
+                            let idx = textures.len() as i32;
+                            textures.push(img);
+                            tex_index.insert(key, idx);
+                            idx
+                        } else {
+                            // No height map shipped for this set: POM stays off
+                            // (flat normal-map shading), never a hard failure.
+                            -1
+                        }
+                    }
+                    None => -1,
+                }
+            };
+
             let mat_id = materials.len() as i32;
             materials.push(super::PbrMaterial {
                 base_color: tint,
@@ -671,6 +879,11 @@ mod terrain_carve;
                 albedo_tex,
                 roughness_tex,
                 normal_tex,
+                displacement_tex,
+                // ~3 cm relief reads as real brick/mortar depth at street
+                // distance without over-marching; midlevel 0.5 = surface plane.
+                displacement_scale: if displacement_tex >= 0 { 0.03 } else { 0.0 },
+                displacement_midlevel: 0.5,
                 uv_scale: [1.0, 1.0],
                 // SDF path: glass stays opaque here — its windows route
                 // through the dedicated SDF glass branch in the megakernel,
@@ -683,8 +896,11 @@ mod terrain_carve;
             eprintln!(
                 "[sdf_textured] cooked material '{}' channel '{}' -> slot {slot} mat {mat_id} \
                  (albedo_tex={albedo_tex} rough_tex={roughness_tex} normal_tex={normal_tex} \
-                 roughness={})",
-                cm.id, cm.channel, cm.roughness_factor
+                 disp_tex={displacement_tex} disp_scale={} roughness={})",
+                cm.id,
+                cm.channel,
+                if displacement_tex >= 0 { 0.03 } else { 0.0 },
+                cm.roughness_factor
             );
         }
         (materials, textures, table)
@@ -905,6 +1121,42 @@ mod terrain_carve;
             let roughness_tex = resolve(&cm.textures.roughness, TexKind::Roughness);
             let normal_tex = resolve(&cm.textures.normal, TexKind::Normal);
 
+            // POM height map for opaque facades (glass keeps -1 — windows get no
+            // relief). Derive the PolyHaven set from any present map URI; load
+            // its displacement.jpg as a linear single-channel height texture.
+            let displacement_tex = if cm.transmission > 0.0 {
+                -1
+            } else {
+                let set = cm
+                    .textures
+                    .normal
+                    .as_deref()
+                    .or(cm.textures.base_color.as_deref())
+                    .or(cm.textures.roughness.as_deref())
+                    .and_then(resolve_cooked_texture_uri)
+                    .map(|(set, _)| set);
+                match set {
+                    Some(set) => {
+                        let key = (set.clone(), TexKind::Height, [0u32; 3]);
+                        if let Some(&idx) = tex_index.get(&key) {
+                            idx
+                        } else if let Some(img) =
+                            try_load_height_map(&polyhaven_root, &set)
+                        {
+                            let idx = textures.len() as i32;
+                            textures.push(img);
+                            tex_index.insert(key, idx);
+                            idx
+                        } else {
+                            // No height map shipped for this set: POM stays off
+                            // (flat normal-map shading), never a hard failure.
+                            -1
+                        }
+                    }
+                    None => -1,
+                }
+            };
+
             materials.push(super::PbrMaterial {
                 base_color: tint,
                 roughness: cm.roughness_factor,
@@ -913,6 +1165,10 @@ mod terrain_carve;
                 albedo_tex,
                 roughness_tex,
                 normal_tex,
+                displacement_tex,
+                // ~3 cm relief; midlevel 0.5 = surface plane (POM gate is the id).
+                displacement_scale: if displacement_tex >= 0 { 0.03 } else { 0.0 },
+                displacement_midlevel: 0.5,
                 uv_scale: [1.0, 1.0],
                 // The cooked glass tag travels with the material: curtain-wall
                 // vision glass arrives transmissive FROM THE COOK, everything
@@ -925,8 +1181,13 @@ mod terrain_carve;
             eprintln!(
                 "[mesh_m0] cooked material {i} '{}' channel '{}' \
                  (albedo_tex={albedo_tex} rough_tex={roughness_tex} normal_tex={normal_tex} \
-                 roughness={} metallic={} transmission={})",
-                cm.id, cm.channel, cm.roughness_factor, cm.metallic_factor, cm.transmission
+                 disp_tex={displacement_tex} disp_scale={} roughness={} metallic={} transmission={})",
+                cm.id,
+                cm.channel,
+                if displacement_tex >= 0 { 0.03 } else { 0.0 },
+                cm.roughness_factor,
+                cm.metallic_factor,
+                cm.transmission
             );
         }
         (materials, textures, channels)

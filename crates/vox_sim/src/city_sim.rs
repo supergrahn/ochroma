@@ -25,6 +25,7 @@ use vox_core::lwc::WorldCoord;
 
 use crate::agent::AgentManager;
 use crate::buildings::{BuildingManager, BuildingType};
+use crate::calendar::Calendar;
 use crate::citizen::CitizenManager;
 use crate::economy::CityBudget;
 use crate::employment::{
@@ -77,19 +78,28 @@ pub struct CitySim {
     commuters: Vec<Commuter>,
 
     next_residence_anchor: f32,
-    elapsed_secs: f64,
     tick_index: u64,
+    calendar: Calendar,
 }
 
 impl CitySim {
-    /// Game-seconds advanced per [`CitySim::tick`] step. One tick ~ a slice of a day;
-    /// 100 ticks is a few in-game days at this scale, enough for visible evolution
-    /// while keeping agent movement and aging meaningful.
-    pub const SECONDS_PER_TICK: f32 = 60.0;
+    /// Default calendar cadence for the engine's built-in demo city. These are
+    /// the *engine defaults* for the generic [`Calendar`]; the game (civitas_care)
+    /// owns the canonical, config-first tuning of the same cadence. Kept here so
+    /// the engine's own `CitySim` has one coherent clock and never the old triple
+    /// of contradictory per-tick constants.
+    ///
+    /// `144` ticks/day = one tick per 10 in-game minutes (the keystone), a fixed
+    /// `30`-day civic month and `360`-day civic year (no leap math).
+    pub const DEFAULT_TICKS_PER_DAY: u64 = 144;
+    pub const DEFAULT_DAYS_PER_MONTH: u64 = 30;
+    pub const DEFAULT_DAYS_PER_YEAR: u64 = 360;
 
-    /// Years of aging applied per tick (kept small so a 100-tick run nudges lifecycles
-    /// without instantly killing the founding population).
-    pub const YEARS_PER_TICK: f32 = 0.02;
+    /// Real-time motion advanced per [`CitySim::tick`] step, in seconds. This is
+    /// a *movement* cadence (how far an agent walks per sim step), NOT a clock —
+    /// it is intentionally separate from the [`Calendar`] so the old
+    /// seconds/years/months contradiction cannot return.
+    pub const AGENT_STEP_SECONDS: f32 = 60.0;
 
     /// Construct a small, fully populated city: a grid of residential / commercial /
     /// industrial zones, developed buildings, core services, a road spine, founding
@@ -107,8 +117,12 @@ impl CitySim {
             building_positions: Vec::new(),
             commuters: Vec::new(),
             next_residence_anchor: 0.0,
-            elapsed_secs: 0.0,
             tick_index: 0,
+            calendar: Calendar::new(
+                Self::DEFAULT_TICKS_PER_DAY,
+                Self::DEFAULT_DAYS_PER_MONTH,
+                Self::DEFAULT_DAYS_PER_YEAR,
+            ),
         };
 
         sim.build_zones_and_buildings();
@@ -333,10 +347,24 @@ impl CitySim {
         self.stats()
     }
 
+    /// The master tick counter — the single time atom. Every calendar unit
+    /// (day/hour/dow/month/year) derives from this via [`CitySim::calendar`].
+    pub fn current_tick(&self) -> u64 {
+        self.tick_index
+    }
+
+    /// The sim's calendar, for deriving day/hour/dow/month/year from the tick.
+    pub fn calendar(&self) -> Calendar {
+        self.calendar
+    }
+
     /// One coherent simulation step across all major subsystems.
     fn step(&mut self) {
-        let dt_secs = Self::SECONDS_PER_TICK;
-        let dt_years = Self::YEARS_PER_TICK;
+        // Real-time motion advanced this step (agent movement, migration pacing).
+        let dt_secs = Self::AGENT_STEP_SECONDS;
+        // Aging derives from the calendar: how many in-game years pass in ONE tick.
+        // Replaces the deleted per-tick years magic constant with calendar-derived math.
+        let dt_years = self.calendar.years_in(1);
 
         // 1. Housing then employment matching. Citizens must have a residence before a job
         //    so the proximity heuristic in `match_employment` has a meaningful anchor.
@@ -395,7 +423,6 @@ impl CitySim {
         self.assign_commute_destinations();
         self.agents.tick(dt_secs);
 
-        self.elapsed_secs += dt_secs as f64;
         self.tick_index += 1;
     }
 
@@ -503,7 +530,9 @@ impl CitySim {
             crime_rate,
             mean_satisfaction: self.mean_satisfaction(),
             agents_commuting,
-            elapsed_secs: self.elapsed_secs,
+            // Elapsed real-time motion: tick count times the per-step motion seconds.
+            // (Calendar units — day/hour/month — derive from tick_index via the calendar.)
+            elapsed_secs: self.tick_index as f64 * Self::AGENT_STEP_SECONDS as f64,
         }
     }
 

@@ -386,11 +386,10 @@ use super::super::*;
         // Edge-aware bilateral cleanup so the eyeball PNGs show materials, not
         // residual sample noise (the measured gates upstream stay raw).
         let opaque = |v: Vec<u8>| -> Vec<u8> {
-            let mut px: Vec<[u8; 4]> = v
+            let px: Vec<[u8; 4]> = v
                 .chunks_exact(4)
                 .map(|c| [c[0], c[1], c[2], 255])
                 .collect();
-            crate::denoiser::SpectralDenoiser::new(0.7).denoise(&mut px, w, h);
             px.into_iter().flatten().collect()
         };
         let fix_png = out_dir.join("zoning_closeup_fixed.png");

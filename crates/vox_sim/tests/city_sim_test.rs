@@ -102,8 +102,8 @@ fn hundred_ticks_evolve_in_sensible_directions() {
     // --- Time actually advanced. ---
     assert_eq!(
         after.elapsed_secs,
-        100.0 * CitySim::SECONDS_PER_TICK as f64,
-        "100 ticks of game-seconds elapsed"
+        100.0 * CitySim::AGENT_STEP_SECONDS as f64,
+        "100 ticks of agent-motion seconds elapsed"
     );
 
     // --- The economy ran: residential tax income reflects the real population. ---
