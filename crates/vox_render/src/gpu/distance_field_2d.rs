@@ -619,6 +619,20 @@ pub struct Df2dReadback {
 }
 
 impl Df2dReadback {
+    /// O(1) reachability: does this cell carry a waypoint chain to some seed?
+    /// True iff the cell's parent is set (`!= SENTINEL`) — by JFA correctness a
+    /// non-sentinel parent's chain terminates at a root seed (costs strictly
+    /// decrease, no cycles), so impassable cells and severed pockets read
+    /// `false` without walking the chain. This is the single array read the
+    /// chain-walking `seed_id`/`distance_m` start from; use it when only
+    /// membership (not distance) is needed.
+    pub fn is_reached(&self, x: u32, y: u32) -> bool {
+        if x >= self.size || y >= self.size {
+            return false;
+        }
+        self.parents[(y * self.size + x) as usize] != SENTINEL
+    }
+
     /// Index of the seed (in the slice passed to `encode_from_cells`) whose
     /// waypoint chain reaches this cell; `None` for impassable, unreached,
     /// or out-of-range cells.
