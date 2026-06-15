@@ -19,8 +19,12 @@
 #![cfg(feature = "spectra-native")]
 
 use spectra_gpu::VulkanSlangBackend;
-use spectra_renderer::{FrameOutput, RenderConfig, Renderer};
+use spectra_renderer::{FrameOutput, RenderConfig, RenderSettings, Renderer};
 use spectra_scene_state::{LightLayer, SceneState};
+
+/// Re-export the R31 fidelity tier so the game layer can select a tier through
+/// `vox_render` without depending on `spectra-renderer` directly.
+pub use spectra_renderer::FidelityTier;
 
 use crate::splat_backend::{
     LightRig, VULKAN_LIGHT_FLOATS, pack_vulkan_directional_light, resolve_slang_kernel_dir,
@@ -83,14 +87,69 @@ impl ResidentCityRenderer {
         max_bounces: u32,
         initial: SceneState,
     ) -> Result<Self, String> {
+        // The legacy positional spp/bounces seam, expressed on top of the tier
+        // path: start from Balanced, then force the caller's explicit
+        // spp/bounces. Keeps every existing caller/test byte-compatible while
+        // routing through the single tier-aware construction body.
+        let mut settings = RenderSettings::for_tier(FidelityTier::Balanced);
+        settings.render.spp = spp;
+        settings.render.max_bounces = max_bounces;
+        Self::new_from_settings(width, height, rig, settings, max_bounces, initial)
+    }
+
+    /// Construct ONCE for a [`FidelityTier`] (R31 fidelity ladder). The tier
+    /// deterministically sets the path tracer's cost knobs (spp, bounces,
+    /// spectral, GI/ReSTIR, denoiser) via [`RenderSettings::for_tier`]; the
+    /// `rig`'s lighting/look values are layered in. The path tracer is ALWAYS
+    /// the renderer — the tier only scales its per-frame cost. `width`/`height`
+    /// is the internal render resolution (the caller derives it from
+    /// `tier.internal_max_width()`; FSR upscales to the display on the
+    /// real-time tiers).
+    pub fn new_with_tier(
+        width: u32,
+        height: u32,
+        rig: LightRig,
+        tier: FidelityTier,
+        initial: SceneState,
+    ) -> Result<Self, String> {
+        let settings = RenderSettings::for_tier(tier);
+        let max_bounces = settings.render.max_bounces;
+        Self::new_from_settings(width, height, rig, settings, max_bounces, initial)
+    }
+
+    /// Shared construction body. `tier_settings` carries the cost knobs (spp,
+    /// bounces, spectral, denoiser, restir) which WIN over the rig; the rig's
+    /// lighting/look values are merged in on top. `max_bounces` is forced into
+    /// the config last (it lives outside `apply_settings`'s settings mapping for
+    /// some paths).
+    fn new_from_settings(
+        width: u32,
+        height: u32,
+        rig: LightRig,
+        tier_settings: RenderSettings,
+        max_bounces: u32,
+        initial: SceneState,
+    ) -> Result<Self, String> {
         let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
         let mut config = RenderConfig::near_realtime(width, height);
         config.slang_kernel_dir = resolve_slang_kernel_dir();
         if std::env::var("OCHROMA_SHADE_LEAN").as_deref() == Ok("1") {
             config.prefer_lean_shade = true;
         }
-        let mut settings = rig_to_settings(&rig, spp, max_bounces);
+        // Start from the rig (lighting, look, weathering toggle), seed the
+        // near_realtime feature parity, THEN overlay the tier's cost knobs so
+        // the tier — not the rig and not the base preset — owns spp / bounces /
+        // spectral / ReSTIR / denoiser. This ordering is load-bearing:
+        // rig_to_settings writes spp/bounces, so the tier overwrite must follow.
+        let mut settings = rig_to_settings(&rig, tier_settings.render.spp, max_bounces);
         seed_features_from_config(&mut settings, &config);
+        // Tier wins on the cost knobs.
+        settings.render.spp = tier_settings.render.spp;
+        settings.render.max_bounces = tier_settings.render.max_bounces;
+        settings.render.denoiser = tier_settings.render.denoiser.clone();
+        settings.render.upscaler = tier_settings.render.upscaler.clone();
+        settings.features.spectral = tier_settings.features.spectral.clone();
+        settings.features.restir = tier_settings.features.restir.clone();
         config.apply_settings(&settings);
         config.max_bounces = max_bounces;
 

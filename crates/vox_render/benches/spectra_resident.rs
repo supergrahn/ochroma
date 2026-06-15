@@ -19,6 +19,7 @@ fn main() {
 
 #[cfg(feature = "spectra-native")]
 fn main() {
+    use spectra_renderer::FidelityTier;
     use vox_render::resident_renderer::ResidentCityRenderer;
     use vox_render::splat_backend::LightRig;
 
@@ -41,107 +42,149 @@ fn main() {
         tmp_cache_dir = Some(dir);
     }
 
-    // ── Levers (env-overridable). Default internal res 480x270 is the measured
-    //    RADV/780M real-time point (steady_ms <= 33.0); FSR upscales output. ──
-    let width: u32 = env_u32("RESIDENT_W", 480);
-    let height: u32 = env_u32("RESIDENT_H", 270);
-    let spp: u32 = env_u32("RESIDENT_SPP", 1);
-    let max_bounces: u32 = env_u32("RESIDENT_BOUNCES", 2);
+    // ── R31+R08 fidelity-ladder perf gate. Each tier is a preset of the SAME
+    //    resident path tracer; the tier scales cost (spp/bounces/spectral/GI +
+    //    the internal-resolution cap FSR upscales to display). We measure
+    //    steady_ms PER TIER on the RADV/780M and assert:
+    //      Performance <= 33.0  (the >= 30fps SHIP GATE)
+    //      Performance < Balanced < Beauty  (cost scales with the tier)
+    //    The path tracer is active in all three (we touch mean_luminance). ──
     let frames: u32 = env_u32("RESIDENT_FRAMES", 16);
     let grid: u32 = env_u32("RESIDENT_GRID", 6); // grid×grid city blocks
-
-    let scene = build_city_scene(width, height, grid);
+    let display_w: u32 = env_u32("RESIDENT_DISPLAY_W", 1920);
+    let display_h: u32 = env_u32("RESIDENT_DISPLAY_H", 1080);
     let blocks = grid * grid;
-    eprintln!(
-        "spectra_resident: building city scene — {blocks} blocks, {}x{} internal, spp={spp}, bounces={max_bounces}, frames={frames}",
-        width, height
-    );
 
-    let rig = LightRig::default();
-    let t_cold = std::time::Instant::now();
-    let mut r = match ResidentCityRenderer::new(width, height, rig, spp, max_bounces, scene) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("ResidentCityRenderer::new failed: {e}");
-            // Surface as a hard failure so CI/the gate notices.
-            std::process::exit(1);
-        }
-    };
-    let construct_ms = t_cold.elapsed().as_secs_f64() * 1000.0;
-
-    // ── Frame loop: construct once, stream camera. ──
-    let target = [0.0f32, 4.0, 0.0];
-    let mut cold_ms = 0.0f64;
-    let mut steady: Vec<f64> = Vec::with_capacity(frames.saturating_sub(1) as usize);
-    let proj = perspective(60f32.to_radians(), width as f32 / height as f32, 0.1, 1000.0);
-
-    for f in 0..frames {
-        // Orbit the camera so each frame is a genuine camera-only stream (not a
-        // repeat of the identical view).
-        let theta = 0.35 + (f as f32) * 0.04;
-        let radius = (grid as f32) * 9.0;
-        let eye = [
-            target[0] + radius * theta.cos(),
-            target[1] + radius * 0.45,
-            target[2] + radius * theta.sin(),
-        ];
-        let view = look_at_rh(eye, target, [0.0, 1.0, 0.0]);
-
-        let t0 = std::time::Instant::now();
-        let frame = match r.render_camera(view, proj) {
-            Ok(fo) => fo,
+    // Each tier renders at its own internal resolution: the tier's
+    // internal_max_width cap, aspect-preserved against the display, rounded to
+    // even (mirrors urban_horizon's internal_resolution()). FSR upscales the
+    // real-time tiers to the display; this is exactly the live present path.
+    let measure_tier = |tier: FidelityTier| -> (u32, u32, f64, f64, f64) {
+        let (iw, ih) = internal_resolution(display_w, display_h, tier.internal_max_width());
+        let scene = build_city_scene(iw, ih, grid);
+        eprintln!(
+            "spectra_resident[{}]: {blocks} blocks, {iw}x{ih} internal (cap {}w), frames={frames}",
+            tier.label(),
+            tier.internal_max_width()
+        );
+        let rig = LightRig::default();
+        let t_cold = std::time::Instant::now();
+        let mut r = match ResidentCityRenderer::new_with_tier(iw, ih, rig, tier, scene) {
+            Ok(r) => r,
             Err(e) => {
-                eprintln!("render_camera frame {f} failed: {e}");
+                eprintln!("ResidentCityRenderer::new_with_tier({}) failed: {e}", tier.label());
                 std::process::exit(1);
             }
         };
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        // Touch the output so the optimizer can't elide the render.
-        let lum = frame.mean_luminance();
-        if f == 0 {
-            cold_ms = ms;
-            eprintln!("frame 0 (cold): {ms:.2}ms, mean_luminance={lum:.4}");
-        } else {
-            steady.push(ms);
+        let construct_ms = t_cold.elapsed().as_secs_f64() * 1000.0;
+
+        let target = [0.0f32, 4.0, 0.0];
+        let mut cold_ms = 0.0f64;
+        let mut steady: Vec<f64> = Vec::with_capacity(frames.saturating_sub(1) as usize);
+        let proj = perspective(60f32.to_radians(), iw as f32 / ih as f32, 0.1, 1000.0);
+
+        for f in 0..frames {
+            let theta = 0.35 + (f as f32) * 0.04;
+            let radius = (grid as f32) * 9.0;
+            let eye = [
+                target[0] + radius * theta.cos(),
+                target[1] + radius * 0.45,
+                target[2] + radius * theta.sin(),
+            ];
+            let view = look_at_rh(eye, target, [0.0, 1.0, 0.0]);
+
+            let t0 = std::time::Instant::now();
+            let frame = match r.render_camera(view, proj) {
+                Ok(fo) => fo,
+                Err(e) => {
+                    eprintln!("render_camera[{}] frame {f} failed: {e}", tier.label());
+                    std::process::exit(1);
+                }
+            };
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            // Touch the output — proves the path tracer ran (not bypassed) in
+            // THIS tier and stops the optimizer eliding the render.
+            let lum = frame.mean_luminance();
+            if f == 0 {
+                cold_ms = ms;
+                eprintln!(
+                    "  [{}] frame 0 (cold): {ms:.2}ms, mean_luminance={lum:.4}",
+                    tier.label()
+                );
+                assert!(
+                    lum.is_finite(),
+                    "[{}] path tracer produced non-finite luminance — render is broken/bypassed",
+                    tier.label()
+                );
+            } else {
+                steady.push(ms);
+            }
         }
-    }
+        let steady_ms = median(&mut steady);
+        (iw, ih, construct_ms, cold_ms, steady_ms)
+    };
+
+    // Deterministic tier order: cheapest → most expensive.
+    let (perf_iw, perf_ih, perf_construct, perf_cold, perf_steady) =
+        measure_tier(FidelityTier::Performance);
+    let (bal_iw, bal_ih, _bal_construct, _bal_cold, bal_steady) =
+        measure_tier(FidelityTier::Balanced);
+    let (bea_iw, bea_ih, _bea_construct, _bea_cold, bea_steady) =
+        measure_tier(FidelityTier::Beauty);
 
     // Clean up the isolated SPIR-V cache (best-effort).
     if let Some(dir) = tmp_cache_dir.take() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    let steady_ms = median(&mut steady);
-    let ratio = if cold_ms > 0.0 {
-        steady_ms / cold_ms
-    } else {
-        f64::INFINITY
-    };
-
     // ── Report (parsed by the gate). ──
-    println!("construct_ms: {construct_ms:.2}");
-    println!("cold_ms: {cold_ms:.2}");
-    println!("steady_ms: {steady_ms:.2}");
-    println!("steady/cold ratio: {ratio:.4} (target < 0.1)");
-    println!(
-        "PASS_REUSE: {}",
-        steady_ms < cold_ms * 0.1
-    );
-    println!("PASS_REALTIME_33ms: {}", steady_ms <= 33.0);
+    println!("--- R31 fidelity ladder steady_ms on RADV/780M ---");
+    println!("Performance steady_ms: {perf_steady:.2}  (internal {perf_iw}x{perf_ih})");
+    println!("Balanced    steady_ms: {bal_steady:.2}  (internal {bal_iw}x{bal_ih})");
+    println!("Beauty      steady_ms: {bea_steady:.2}  (internal {bea_iw}x{bea_ih})");
+    println!("construct_ms (Performance): {perf_construct:.2}");
+    println!("cold_ms (Performance): {perf_cold:.2}");
 
-    // Hard-fail the bench if the resident proof or the real-time bar is missed,
-    // so the gate cannot pass on a rebuild-every-frame regression.
-    if !(steady_ms < cold_ms * 0.1) {
+    let reuse_ok = perf_steady < perf_cold * 0.1;
+    let realtime_ok = perf_steady <= 33.0;
+    let scales_ok = perf_steady < bal_steady && bal_steady < bea_steady;
+    println!("PASS_REUSE: {reuse_ok}");
+    println!("PASS_REALTIME_33ms: {realtime_ok}");
+    println!("PASS_COST_SCALES: {scales_ok}");
+
+    // Hard-fail so the gate cannot pass on a regression.
+    if !reuse_ok {
         eprintln!(
-            "FAIL: steady_ms ({steady_ms:.2}) not < cold_ms*0.1 ({:.2}) — renderer is rebuilding per frame",
-            cold_ms * 0.1
+            "FAIL: Performance steady_ms ({perf_steady:.2}) not < cold_ms*0.1 ({:.2}) — renderer is rebuilding per frame",
+            perf_cold * 0.1
         );
         std::process::exit(2);
     }
-    if steady_ms > 33.0 {
-        eprintln!("FAIL: steady_ms ({steady_ms:.2}) > 33.0 — misses the 780M real-time bar");
+    if !realtime_ok {
+        eprintln!("FAIL: Performance steady_ms ({perf_steady:.2}) > 33.0 — misses the 780M real-time SHIP GATE");
         std::process::exit(3);
     }
+    if !scales_ok {
+        eprintln!(
+            "FAIL: cost does not scale with tier — Performance({perf_steady:.2}) < Balanced({bal_steady:.2}) < Beauty({bea_steady:.2}) violated"
+        );
+        std::process::exit(4);
+    }
+    println!("PERF_OK");
+}
+
+/// Internal render resolution for a tier: cap width at `max_w`, preserve the
+/// display aspect, round to even. Mirrors urban_horizon's `internal_resolution`
+/// so the bench measures the same internal-res lever the live present path uses
+/// (FSR upscales internal → display on the real-time tiers).
+#[cfg(feature = "spectra-native")]
+fn internal_resolution(display_w: u32, display_h: u32, max_w: u32) -> (u32, u32) {
+    let display_w = display_w.max(2);
+    let display_h = display_h.max(2);
+    let iw = display_w.min(max_w).max(2);
+    let scale = iw as f32 / display_w as f32;
+    let ih = ((display_h as f32 * scale).round() as u32).max(2);
+    (iw & !1, ih & !1)
 }
 
 // ─────────────────────────── helpers ───────────────────────────
