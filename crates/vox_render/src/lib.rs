@@ -112,6 +112,11 @@ pub use resident_renderer::{ResidentCityRenderer, SceneDelta};
 // view matrix + FOV); the old `spectra_renderer::CameraParams` type was removed.
 #[cfg(feature = "spectra-native")]
 pub use spectra_scene_state::CameraLayer as SpectraCameraParams;
+/// Re-export the native scene-state type so downstream crates (the game's live
+/// frame seam) can name the type returned by the instanced-scene builder without
+/// taking a direct dependency on `spectra-scene-state`.
+#[cfg(feature = "spectra-native")]
+pub use spectra_scene_state::SceneState;
 
 pub use cine::{Channel, FrameRate, Interp, Key};
 pub use cine::{BokehShape, CameraSequence, CinePose, CinematicConfig, FocusMode};

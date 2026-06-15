@@ -222,6 +222,17 @@ impl ResidentCityRenderer {
             .map_err(|e| format!("render: {e:?}"))
     }
 
+    /// A fully-reused [`SceneDelta`] (`rebuilt == 0`, `reused == 1`): the report
+    /// for a frame where the caller determined the scene was unchanged and chose
+    /// NOT to re-upload it. Lets the live seam prove camera-only moves rebuild no
+    /// BLASes without forcing a redundant `set_scene`.
+    pub fn reused_delta(&self) -> SceneDelta {
+        SceneDelta {
+            layers_rebuilt: 0,
+            layers_reused: 1,
+        }
+    }
+
     /// The light rig driving this renderer.
     pub fn rig(&self) -> &LightRig {
         &self.rig
