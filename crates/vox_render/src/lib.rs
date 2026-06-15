@@ -60,6 +60,7 @@ pub mod temporal;
 pub mod dlss;
 pub mod shadows;
 pub mod rigid_animation;
+pub mod skinning;
 pub mod gizmos;
 pub mod visual_effects;
 pub mod ik;
