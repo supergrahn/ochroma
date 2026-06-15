@@ -56,7 +56,7 @@ pub struct SpectraRenderBackend {
 /// `../../../spectra/...` path deps in Cargo.toml). Returns `None` if neither
 /// exists (the renderer then falls back to temp_dir and produces blank frames).
 #[cfg(feature = "spectra-native")]
-fn resolve_slang_kernel_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn resolve_slang_kernel_dir() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     if let Ok(d) = std::env::var("SPECTRA_SLANG_DIR") {
         let p = PathBuf::from(d);

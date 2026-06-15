@@ -35,6 +35,7 @@ pub mod atmosphere;
 pub mod water;
 pub mod subsurface;
 pub mod cinematic;
+pub mod cine;
 pub mod web_renderer;
 pub mod spatial_ui;
 pub mod hand_tracking;
@@ -107,3 +108,10 @@ pub mod splat_backend;
 // view matrix + FOV); the old `spectra_renderer::CameraParams` type was removed.
 #[cfg(feature = "spectra-native")]
 pub use spectra_scene_state::CameraLayer as SpectraCameraParams;
+
+pub use cine::{Channel, FrameRate, Interp, Key};
+pub use cine::{BokehShape, CameraSequence, CinePose, CinematicConfig, FocusMode};
+#[cfg(feature = "spectra-native")]
+pub use cine::{
+    beauty_to_rgba8, render_cine_frame, write_png, write_png16, CINE_BASE_SEED,
+};

@@ -10,12 +10,18 @@
 
 mod channel;
 #[cfg(feature = "spectra-native")]
+mod export;
+#[cfg(feature = "spectra-native")]
 mod pose_adapt;
 mod rotation;
 mod sequence;
 mod spline;
 
 pub use channel::{Channel, FrameRate, Interp, Key};
+#[cfg(feature = "spectra-native")]
+pub use export::{
+    beauty_to_rgba8, render_cine_frame, write_png, write_png16, CINE_BASE_SEED,
+};
 #[cfg(feature = "spectra-native")]
 pub use pose_adapt::CineOrbit;
 pub use rotation::QuatTrack;

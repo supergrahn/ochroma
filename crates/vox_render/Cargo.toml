@@ -35,6 +35,9 @@ spectra-scene-state = { path = "../../../spectra/rust/spectra-scene-state", opti
 spectra-scene-data = { path = "../../../spectra/rust/spectra-scene-data", optional = true }
 spectra-tonemap = { path = "../../../spectra/rust/spectra-tonemap", optional = true }
 spectra-upscale = { path = "../../../spectra/rust/spectra-upscale", optional = true }
+# PNG encode for deterministic cinematic frame export (cine::export::write_png).
+# Optional + pulled by `spectra-native` so non-spectra builds stay lean.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
 [features]
 default = ["crucible"]
@@ -52,6 +55,7 @@ spectra-native = [
     "dep:spectra-scene-state",
     "dep:spectra-scene-data",
     "dep:spectra-tonemap",
+    "dep:image",
     "spectra-gpu/vulkan-backend",
 ]
 crucible = ["vox_nodes/crucible"]
@@ -68,6 +72,8 @@ fsr = [
 vox_sim = { path = "../vox_sim" }
 vox_terrain = { path = "../vox_terrain" }
 tempfile = "3"
+# Determinism digest for the cinematic-export gate (cine_export_deterministic).
+sha2 = "0.10"
 # JPEG decode for the textured-SDF quality gates (loads the cooked PolyHaven
 # sets exactly like the game's TextureCache: sRGB->linear + tint-normalized
 # diffuse, raw normal/roughness, box-downsampled).

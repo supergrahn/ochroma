@@ -8356,6 +8356,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2",
  "spectra-gaussian-render",
  "spectra-gpu",
  "spectra-renderer",
