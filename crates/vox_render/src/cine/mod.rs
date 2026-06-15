@@ -25,5 +25,8 @@ pub use export::{
 #[cfg(feature = "spectra-native")]
 pub use pose_adapt::CineOrbit;
 pub use rotation::QuatTrack;
-pub use sequence::{BokehShape, CameraSequence, CinePose, CinematicConfig, FocusMode};
+pub use sequence::{
+    eye_from_framing, BokehShape, CameraSequence, CineFraming, CinePose, CinematicConfig,
+    FocusMode, KeyRef,
+};
 pub use spline::{ArcLengthLut, Spline3};

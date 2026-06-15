@@ -111,6 +111,7 @@ pub use spectra_scene_state::CameraLayer as SpectraCameraParams;
 
 pub use cine::{Channel, FrameRate, Interp, Key};
 pub use cine::{BokehShape, CameraSequence, CinePose, CinematicConfig, FocusMode};
+pub use cine::{eye_from_framing, CineFraming, KeyRef};
 #[cfg(feature = "spectra-native")]
 pub use cine::{
     beauty_to_rgba8, render_cine_frame, write_png, write_png16, CINE_BASE_SEED,

@@ -18,6 +18,7 @@ pub mod cpu_render;
 pub mod graph_bridge;
 pub mod host;
 pub mod intent;
+pub mod panels;
 pub mod plugins;
 pub mod forge_native;
 pub mod forge_process;
@@ -59,6 +60,7 @@ pub enum PanelId {
     NodeGraph,
     Content,
     Output,
+    Sequencer,
 }
 
 impl PanelId {
@@ -71,6 +73,7 @@ impl PanelId {
             PanelId::NodeGraph => "Node Graph",
             PanelId::Content => "Content",
             PanelId::Output => "Output Log",
+            PanelId::Sequencer => "Sequencer",
         }
     }
     pub fn icon(self) -> &'static str {
@@ -81,6 +84,7 @@ impl PanelId {
             PanelId::NodeGraph => icon::NODE_GRAPH,
             PanelId::Content => icon::FOLDER,
             PanelId::Output => icon::CONSOLE,
+            PanelId::Sequencer => icon::CAMERA,
         }
     }
 }
@@ -459,6 +463,9 @@ pub struct EditorShell {
     /// Output Log lines appended at runtime (e.g. a content-browser asset load),
     /// shown beneath the static engine banner in the Output Log tab.
     pub output_log: Vec<String>,
+    /// The Sequencer tab's cinematic timeline state (authored `CameraSequence`,
+    /// playhead, transport, and a drained offline-render request).
+    pub sequencer: panels::sequencer::SequencerState,
     /// Monotonic UI frame counter, bumped once per `ui()`. Used to coalesce a
     /// continuous inspector drag (many per-frame value changes) into ONE undo
     /// entry: see [`EditorShell::record_inspector_edit`].
@@ -519,6 +526,19 @@ const DUP_OFFSET: [f32; 3] = [2.0, 0.0, 0.0];
 #[cfg_attr(feature = "spectra", allow(dead_code))]
 const DEFAULT_WORLD_PATH: &str = "project.ochroma_world";
 
+/// A default cinematic for an empty Sequencer tab: a short dolly with a two-key
+/// rack focus and a hexagonal iris, so opening the panel shows a usable timeline.
+fn default_demo_sequence() -> vox_render::CameraSequence {
+    const DEMO: &str = r#"{ "fps":{"num":60,"den":1}, "duration":120,
+        "eye_keys":[[0,[0,0,0]],[30,[1,2,0]],[90,[5,2,0]],[120,[6,0,0]]],
+        "target_keys":[[0,[0,0,0]],[120,[0,0,0]]],
+        "focus_distance":[[0,30.0],[120,8.0]],
+        "aperture_fstop":[[0,2.8]], "focal_length_mm":[[0,50.0]],
+        "fov_y_deg":[[0,45.0]], "bokeh_shape":"Hexagon" }"#;
+    vox_render::CameraSequence::load_json(DEMO)
+        .expect("built-in demo cine JSON is valid")
+}
+
 impl EditorShell {
     /// Build the shell with the standard SOTA layout:
     /// left = World; center-top = Viewport, center-bottom = Node Graph;
@@ -532,9 +552,16 @@ impl EditorShell {
             surface.split_left(NodeIndex::root(), 0.18, vec![B(PanelId::Hierarchy)]);
         // Right: Properties.
         let [center, _right] = surface.split_right(center, 0.78, vec![B(PanelId::Inspector)]);
-        // Bottom: Content + Output Log as a tab group.
-        let [_center, _bottom] =
-            surface.split_below(center, 0.72, vec![B(PanelId::Content), B(PanelId::Output)]);
+        // Bottom: Content + Output Log + Sequencer as a tab group.
+        let [_center, _bottom] = surface.split_below(
+            center,
+            0.72,
+            vec![
+                B(PanelId::Content),
+                B(PanelId::Output),
+                B(PanelId::Sequencer),
+            ],
+        );
 
         let last_command_flag = Rc::new(RefCell::new(false));
         let requests: Rc<RefCell<Vec<ShellRequest>>> = Rc::new(RefCell::new(Vec::new()));
@@ -564,6 +591,7 @@ impl EditorShell {
             assistant_log: Vec::new(),
             content: ContentPanel::new(ContentPanel::default_root()),
             output_log: Vec::new(),
+            sequencer: panels::sequencer::SequencerState::new(default_demo_sequence()),
             frame: 0,
             last_inspector_edit: None,
             intent_backend: intent::IntentBackend::from_env(),
@@ -878,6 +906,7 @@ impl EditorShell {
             content_action: &mut content_action,
             play_state: self.play_state,
             sim_tick: self.sim_tick,
+            sequencer: &mut self.sequencer,
         };
         let dock_style = DockStyle::from_egui(ctx.style().as_ref());
         DockArea::new(&mut self.dock)
@@ -2218,6 +2247,9 @@ struct ShellViewer<'a> {
     /// The live simulation tick, shown in the viewport transport badge while
     /// running/paused.
     sim_tick: u64,
+    /// The Sequencer tab's cinematic timeline state (borrowed from the shell so
+    /// scrubbing/keys persist across frames).
+    sequencer: &'a mut panels::sequencer::SequencerState,
 }
 
 impl egui_dock::TabViewer for ShellViewer<'_> {
@@ -2244,6 +2276,7 @@ impl egui_dock::TabViewer for ShellViewer<'_> {
             TabKind::Builtin(PanelId::NodeGraph) => self.node_graph(ui),
             TabKind::Builtin(PanelId::Content) => self.content(ui),
             TabKind::Builtin(PanelId::Output) => self.output(ui),
+            TabKind::Builtin(PanelId::Sequencer) => self.sequencer_tab(ui),
             TabKind::Plugin(id) => self.plugin_tab_ui(ui, &id.clone()),
         }
     }
@@ -2512,6 +2545,15 @@ impl ShellViewer<'_> {
         for line in self.output_log {
             ui.label(egui::RichText::new(line).monospace());
         }
+    }
+
+    /// The Sequencer tab: the cinematic timeline. Scrubbing moves the playhead;
+    /// **Render Sequence** stages an offline-render request the shell drains.
+    fn sequencer_tab(&mut self, ui: &mut egui::Ui) {
+        // No live viewport orbit is threaded here yet (engine stays game-agnostic
+        // about the orbit source); pass None so the timeline/transport drive the
+        // authored sequence directly.
+        let _view = panels::sequencer::ui(ui, self.sequencer, None);
     }
 
     /// Find a plugin tab declaration by its tab id.
