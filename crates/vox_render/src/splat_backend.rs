@@ -865,16 +865,18 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
         });
         config.relief_mode = if any_disp && all_cone { 1 } else { 0 };
     }
-    // Config-first escape for SPECTRAL (Hero4 HWSS). The ONE config object owns
-    // the spectral lever (RenderConfig::spectral_mode; near_realtime defaults to
-    // SpectralMode::Single = spectral OFF). seed_features_from_config derives
-    // settings.features.spectral.enabled = matches!(spectral_mode, Hero4), so
-    // flipping this field is the ONLY way to reach the kernel's spectral path
-    // through the mesh entry. Absent → Single (byte-identical to legacy). This
-    // mirrors the OCHROMA_RELIEF_MODE / OCHROMA_DENOISE_OFF escapes above.
-    if std::env::var("OCHROMA_SPECTRAL").as_deref() == Ok("1") {
-        config.spectral_mode = spectra_renderer::SpectralMode::Hero4;
-    }
+    // R14 "realize spectral": the headline differentiator is now ON by default
+    // on this path. The ONE config object owns the lever
+    // (RenderConfig::spectral_mode); seed_features_from_config derives
+    // settings.features.spectral.enabled = matches!(spectral_mode, Hero4), which
+    // drives u_hwss_enabled into the kernel so surfaces shade per hero
+    // wavelength (R(λ)·L(λ)) instead of the legacy luminance smear. The cheap
+    // single-wavelength tier remains reachable via OCHROMA_SPECTRAL=0 (noted for
+    // the R31 fidelity-tier work).
+    config.spectral_mode = match std::env::var("OCHROMA_SPECTRAL").as_deref() {
+        Ok("0") => spectra_renderer::SpectralMode::Single,
+        _ => spectra_renderer::SpectralMode::Hero4,
+    };
     // Config-first: spp, the shot LOOK (tonemap + exposure), and the per-scene
     // bounce/NRC needs all reach the config through the ONE settings object.
     // Transmissive glass needs path DEPTH: a two-faced pane costs two bounces
@@ -1339,6 +1341,48 @@ pub struct SdfSceneInstance {
     pub rotation_xyzw: [f32; 4],
     pub uniform_scale: f32,
     pub albedo: [f32; 3],
+    /// R14 "realize spectral": per-instance 8-band spectral REFLECTANCE SPD
+    /// (reflectance at 380,437,494,551,608,665,722,780 nm). This is the REAL
+    /// material response the megakernel integrates per hero wavelength
+    /// (radiance(λ) = R(λ)·L(λ)) so the surface shifts colour under different
+    /// illuminants. Build it from an authored 16-band engine SPD via
+    /// [`SdfSceneInstance::with_bands16`] (resampled 16→8, NOT RGB-upsampled),
+    /// or leave the default — the default is the Smits upsample of `albedo`,
+    /// which is still genuinely per-wavelength (a smooth reflectance), never the
+    /// flat luminance smear the legacy path used.
+    pub reflectance_spd: [f32; 8],
+}
+
+#[cfg(feature = "spectra-native")]
+impl SdfSceneInstance {
+    /// Construct from flat albedo, deriving the reflectance SPD via the Smits
+    /// (1999) RGB→reflectance upsample (real per-band reflectance, the honest
+    /// fallback when no authored SPD exists).
+    pub fn from_albedo(
+        volume_index: u32,
+        position: [f32; 3],
+        rotation_xyzw: [f32; 4],
+        uniform_scale: f32,
+        albedo: [f32; 3],
+    ) -> Self {
+        Self {
+            volume_index,
+            position,
+            rotation_xyzw,
+            uniform_scale,
+            albedo,
+            reflectance_spd: crate::spectral_response::reflectance_from_rgb(albedo),
+        }
+    }
+
+    /// Attach a REAL authored 16-band reflectance SPD (the engine's USGS grid,
+    /// `vox_core::spectral::BAND_WAVELENGTHS`), resampled 16→8 onto the GPU grid.
+    /// This is the metameric-capable path: two distinct 16-band SPDs that match
+    /// under one illuminant diverge under another.
+    pub fn with_bands16(mut self, bands16: &[f32; 16]) -> Self {
+        self.reflectance_spd = crate::spectral_response::reflectance_from_bands16(bands16);
+        self
+    }
 }
 
 /// One cooked atom's material contribution for the M2 per-surface gather. The
@@ -1629,6 +1673,8 @@ pub fn pathtrace_sdf_scene_perf(
     // megakernel's union-AABB sphere-trace covers every instance.
     let mut instance_headers: Vec<SdfInstanceHeader> = Vec::with_capacity(instances.len());
     let mut instance_albedo: Vec<f32> = Vec::with_capacity(instances.len() * 3);
+    // R14: per-instance 8-band reflectance SPD (real spectral response).
+    let mut instance_spd: Vec<f32> = Vec::with_capacity(instances.len() * 8);
     let mut scene_min = [f32::INFINITY; 3];
     let mut scene_max = [f32::NEG_INFINITY; 3];
     for (ii, inst) in instances.iter().enumerate() {
@@ -1683,14 +1729,16 @@ pub fn pathtrace_sdf_scene_perf(
             world_aabb_max: wmax,
         });
         instance_albedo.extend_from_slice(&inst.albedo);
+        instance_spd.extend_from_slice(&inst.reflectance_spd);
     }
 
-    let sdf = SdfLayer::from_parts_with_albedo(
+    let mut sdf = SdfLayer::from_parts_with_albedo(
         volume_headers,
         instance_headers,
         all_distances,
         instance_albedo,
     );
+    sdf.instance_reflectance_spd = instance_spd;
 
     let mut scene = SceneState::new(width, height);
     scene.sdf = sdf;
@@ -1949,6 +1997,7 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
     // --- Instances + per-atom WORLD-space material buffers. ------------------
     let mut instance_headers: Vec<SdfInstanceHeader> = Vec::with_capacity(instances.len());
     let mut instance_albedo: Vec<f32> = Vec::with_capacity(instances.len() * 3);
+    let mut instance_spd: Vec<f32> = Vec::with_capacity(instances.len() * 8);
     // Flat SoA atom buffers + per-instance [offset, count] ranges (M2).
     let mut atom_positions: Vec<f32> = Vec::new();
     let mut atom_colors: Vec<f32> = Vec::new();
@@ -2005,6 +2054,7 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
             world_aabb_max: wmax,
         });
         instance_albedo.extend_from_slice(&inst.albedo);
+        instance_spd.extend_from_slice(&inst.reflectance_spd);
 
         // Transform this instance's atoms to world space (rot*scale*local + pos),
         // matching the SDF grid transform, and append to the flat SoA buffers.
@@ -2021,7 +2071,7 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
         instance_atom_range.push(atom_count as f32);
     }
 
-    let sdf = SdfLayer::from_parts_with_atoms(
+    let mut sdf = SdfLayer::from_parts_with_atoms(
         volume_headers,
         instance_headers,
         all_distances,
@@ -2031,6 +2081,7 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
         atom_channels,
         instance_atom_range,
     );
+    sdf.instance_reflectance_spd = instance_spd;
 
     let mut scene = SceneState::new(width, height);
     scene.sdf = sdf;
@@ -2514,6 +2565,7 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
     // --- Instances + CELL-SORTED world-space atom SoA + per-instance grid. ---
     let mut instance_headers: Vec<SdfInstanceHeader> = Vec::with_capacity(instances.len());
     let mut instance_albedo: Vec<f32> = Vec::with_capacity(instances.len() * 3);
+    let mut instance_spd: Vec<f32> = Vec::with_capacity(instances.len() * 8);
     let mut atom_positions: Vec<f32> = Vec::new();
     let mut atom_colors: Vec<f32> = Vec::new();
     let mut atom_channels: Vec<f32> = Vec::new();
@@ -2555,6 +2607,7 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
             world_aabb_max: wmax,
         });
         instance_albedo.extend_from_slice(&inst.albedo);
+        instance_spd.extend_from_slice(&inst.reflectance_spd);
 
         // World-space atoms (rot*scale*local + pos — the SDF grid transform).
         let world_pos: Vec<[f32; 3]> = atoms_per_instance[ii]
@@ -2599,7 +2652,7 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
     let channel_material_table = pack_sdf_channel_material_table(channel_materials);
     let volume_uv_params = pack_sdf_uv_params(uv_params);
 
-    let sdf = SdfLayer::from_parts_textured(
+    let mut sdf = SdfLayer::from_parts_textured(
         volume_headers,
         instance_headers,
         all_distances,
@@ -2613,6 +2666,7 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
         channel_material_table,
         volume_uv_params,
     );
+    sdf.instance_reflectance_spd = instance_spd;
 
     let mut scene = SceneState::new(width, height);
     scene.sdf = sdf;
@@ -3371,9 +3425,12 @@ pub fn spectra_resident_bench_fsr(
     if std::env::var("OCHROMA_DENOISE_OFF").is_ok() {
         config.denoiser_mode = spectra_renderer::DenoiserMode::None;
     }
-    if std::env::var("OCHROMA_SPECTRAL").as_deref() == Ok("1") {
-        config.spectral_mode = spectra_renderer::SpectralMode::Hero4;
-    }
+    // R14: spectral ON by default on the live SDF path; OCHROMA_SPECTRAL=0 drops
+    // to the cheap single-wavelength tier (R31 fidelity tiering).
+    config.spectral_mode = match std::env::var("OCHROMA_SPECTRAL").as_deref() {
+        Ok("0") => spectra_renderer::SpectralMode::Single,
+        _ => spectra_renderer::SpectralMode::Hero4,
+    };
     if std::env::var("OCHROMA_LEAN").as_deref() == Ok("1") {
         config.use_restir = false;
         config.use_restir_gi = false;

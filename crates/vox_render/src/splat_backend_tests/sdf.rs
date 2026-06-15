@@ -297,6 +297,7 @@ use super::super::*;
             rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
             uniform_scale: 1.0,
             albedo: [0.7, 0.7, 0.7],
+            reflectance_spd: crate::spectral_response::reflectance_from_rgb([0.7, 0.7, 0.7]),
         };
         let instances = [instance];
 

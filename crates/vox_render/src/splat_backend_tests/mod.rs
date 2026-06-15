@@ -304,6 +304,7 @@ mod terrain_carve;
             rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
             uniform_scale: 1.0,
             albedo: [0.7, 0.7, 0.7],
+            reflectance_spd: crate::spectral_response::reflectance_from_rgb([0.7, 0.7, 0.7]),
         };
 
         // The M2 front-facade camera + bright-sky rig.
@@ -1829,6 +1830,9 @@ mod terrain_carve;
                     rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
                     uniform_scale: 1.0,
                     albedo: palette[idx % palette.len()],
+                    reflectance_spd: crate::spectral_response::reflectance_from_rgb(
+                        palette[idx % palette.len()],
+                    ),
                 });
             }
         }
