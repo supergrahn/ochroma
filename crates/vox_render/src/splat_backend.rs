@@ -207,6 +207,57 @@ impl Default for PbrMaterial {
     }
 }
 
+/// One per-archetype BLAS description handed to the instanced-scene converter
+/// (Render Keystone T3). Each archetype's Forge mesh becomes ONE BLAS that
+/// every instance naming its `proto_id` shares — the RTX-Mega-Geometry-shaped
+/// "build once, instance many" model, NOT one merged soup.
+///
+/// Geometry is object-space (the instance's world transform is applied by the
+/// TLAS). `aabb` is the REAL per-mesh bound (closes the `scene.rs:64-68`
+/// "same scene-wide AABB to every BLAS" gap). `material_ids` is per-triangle,
+/// indexed by forge channel id (NOT slot order — see the `splat_backend.rs:676`
+/// debug_assert contract).
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone)]
+pub struct BlasDesc {
+    /// Stable key for cross-frame BLAS cache reuse (rigid prototypes never
+    /// rebuilt). Ordered deterministically by the caller.
+    pub proto_id: u64,
+    /// Object-space vertex positions (`[x, y, z]` per vertex).
+    pub positions: Vec<[f32; 3]>,
+    /// Object-space vertex normals (`[nx, ny, nz]` per vertex).
+    pub normals: Vec<[f32; 3]>,
+    /// UV coordinates (`[u, v]` per vertex).
+    pub uvs: Vec<[f32; 2]>,
+    /// Triangle indices (`[i0, i1, i2]` per triangle, into this BLAS's verts).
+    pub indices: Vec<[u32; 3]>,
+    /// Per-triangle material index (forge-channel id ordered). May be empty
+    /// (all triangles default to material 0).
+    pub material_ids: Vec<u8>,
+    /// REAL per-mesh AABB: `(min, max)` object-space corners.
+    pub aabb_min: [f32; 3],
+    pub aabb_max: [f32; 3],
+}
+
+/// One GPU instance record for the instanced TLAS (Render Keystone T3). Names a
+/// prototype BLAS by index and carries its own world transform + per-instance
+/// material id. The material id is the per-instance override the closest-hit
+/// resolves through the instance custom index (design §4.3) — distinct
+/// instances of the SAME BLAS can therefore shade with DIFFERENT materials.
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone, Copy)]
+pub struct InstanceRecordGpu {
+    /// Which `BlasDesc` (by index into the converter's `blas` slice) this
+    /// instance uses.
+    pub proto_index: u32,
+    /// Row-major 4×4 world transform, flat 16 floats (translation in the last
+    /// row, indices 12/13/14 — the `SceneState::instance_transforms` layout).
+    pub transform: [f32; 16],
+    /// Per-instance material id — indexes `g_materials`. The closest-hit reads
+    /// this via the instance custom index.
+    pub material_id: u32,
+}
+
 /// A texture image for the path tracer's flat atlas.
 ///
 /// Row-major, channels interleaved (`data[(y*width + x)*channels + c]`),
@@ -373,7 +424,7 @@ impl LookPreset {
 /// override still flows through `apply_settings`. `max_bounces` likewise lives
 /// in `settings.render` so deeper-bounce scenes route through settings too.
 #[cfg(feature = "spectra-native")]
-fn rig_to_settings(rig: &LightRig, spp: u32, max_bounces: u32) -> spectra_renderer::RenderSettings {
+pub(crate) fn rig_to_settings(rig: &LightRig, spp: u32, max_bounces: u32) -> spectra_renderer::RenderSettings {
     let mut s = spectra_renderer::RenderSettings::default();
     s.render.spp = spp;
     s.render.max_bounces = max_bounces;
@@ -408,7 +459,7 @@ fn rig_to_settings(rig: &LightRig, spp: u32, max_bounces: u32) -> spectra_render
 /// this, `apply_settings` would clobber `near_realtime`'s `use_restir = true`
 /// with the `RenderSettings` default (`restir = off`).
 #[cfg(feature = "spectra-native")]
-fn seed_features_from_config(
+pub(crate) fn seed_features_from_config(
     s: &mut spectra_renderer::RenderSettings,
     config: &RenderConfig,
 ) {
@@ -2747,9 +2798,9 @@ fn build_texture_atlas(textures: &[TextureImage]) -> Result<(Vec<u32>, Vec<f32>)
 }
 
 #[cfg(feature = "spectra-native")]
-const VULKAN_MATERIAL_FLOATS: usize = 156;
+pub(crate) const VULKAN_MATERIAL_FLOATS: usize = 156;
 #[cfg(feature = "spectra-native")]
-const VULKAN_LIGHT_FLOATS: usize = 36;
+pub(crate) const VULKAN_LIGHT_FLOATS: usize = 36;
 
 #[cfg(feature = "spectra-native")]
 fn pack_u32(x: u32) -> f32 {
@@ -2769,7 +2820,7 @@ fn pack_i32(x: i32) -> f32 {
 /// 36 floats / 144 bytes per light. The tight layout shifts direction, color,
 /// and intensity into the wrong fields.
 #[cfg(feature = "spectra-native")]
-fn pack_vulkan_directional_light(
+pub(crate) fn pack_vulkan_directional_light(
     direction: [f32; 3],
     color: [f32; 3],
     intensity: f32,
@@ -2800,7 +2851,7 @@ fn pack_vulkan_directional_light(
 /// Using the tight layout puts albedo/emission in padding slots and renders
 /// later material IDs as black silhouettes.
 #[cfg(feature = "spectra-native")]
-fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
+pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
     let mut a = [0.0f32; VULKAN_MATERIAL_FLOATS];
 
     // `transmission > 0` selects MAT_GLASS (3): dispatch_sample's existing

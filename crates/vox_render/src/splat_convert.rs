@@ -27,6 +27,11 @@
 use spectra_scene_state::{CameraLayer, SceneState};
 use vox_core::types::GaussianSplat;
 
+#[cfg(feature = "spectra-native")]
+use crate::splat_backend::{
+    BlasDesc, InstanceRecordGpu, PbrMaterial, VULKAN_MATERIAL_FLOATS, pack_vulkan_mesh_material,
+};
+
 /// One quad = 4 vertices, 2 triangles (6 indices).
 const VERTS_PER_SPLAT: usize = 4;
 const INDICES_PER_SPLAT: usize = 6;
@@ -275,6 +280,121 @@ pub fn splats_to_lit_scene(
         params,
         spectral_spd: std::collections::HashMap::new(),
         material_count,
+    };
+    scene.mark_geometry_changed();
+    scene.mark_materials_changed();
+    scene
+}
+
+/// Forge meshes + per-instance transforms/materials → an instanced
+/// [`SceneState`] for the resident path tracer (Render Keystone T3).
+///
+/// Replaces the splat-quad/material-0 live path. Each [`BlasDesc`] is one
+/// archetype prototype; each [`InstanceRecordGpu`] names a prototype and
+/// carries its own world transform + per-instance `material_id`. The
+/// per-instance material reaches shading via the TLAS instance custom index
+/// (uploaded as `instance_material_ids`), so two instances of the SAME BLAS
+/// shade with DIFFERENT materials (design §4.3).
+///
+/// Materials are packed with [`pack_vulkan_mesh_material`] — the proven
+/// **156-float Vulkan stride** (`materials.params.len() == materials.len() *
+/// 156`), NEVER the 132-float CUDA `MaterialData` (the "black silhouettes"
+/// landmine). `spectral_spd` populates `MaterialLayer::spectral_spd[material_id]`
+/// with the real 16-band reflectance (empty ⇒ no entry ⇒ white, spectral off).
+///
+/// Geometry: prototype meshes are laid out contiguously into one SceneState
+/// vertex/triangle soup (object-space); the per-instance world transform is
+/// applied by the TLAS at trace time. `width`/`height` set the render target;
+/// the caller fills the real camera before rendering.
+#[cfg(feature = "spectra-native")]
+pub fn meshes_to_instanced_scene(
+    blas: &[BlasDesc],
+    instances: &[InstanceRecordGpu],
+    materials: &[PbrMaterial],
+    spectral_spd: &[(u32, [f32; 16])],
+    width: u32,
+    height: u32,
+) -> SceneState {
+    use spectra_scene_state::MaterialLayer;
+
+    // --- Geometry soup: prototypes laid out contiguously ---
+    // Track each prototype's vertex base so a future per-archetype-BLAS uploader
+    // can recover sub-ranges; today the HW soup proto shares the buffer and the
+    // instance custom index selects the material.
+    let total_verts: usize = blas.iter().map(|b| b.positions.len()).sum();
+    let total_tris: usize = blas.iter().map(|b| b.indices.len()).sum();
+
+    let mut positions: Vec<f32> = Vec::with_capacity(total_verts * 3);
+    let mut normals: Vec<f32> = Vec::with_capacity(total_verts * 3);
+    let mut uvs: Vec<f32> = Vec::with_capacity(total_verts * 2);
+    let mut indices: Vec<u32> = Vec::with_capacity(total_tris * 3);
+    let mut tri_material_ids: Vec<u32> = Vec::with_capacity(total_tris);
+
+    let mut vbase: u32 = 0;
+    for b in blas {
+        debug_assert_eq!(
+            b.positions.len(),
+            b.normals.len(),
+            "BlasDesc positions/normals length mismatch"
+        );
+        for p in &b.positions {
+            positions.extend_from_slice(p);
+        }
+        for n in &b.normals {
+            normals.extend_from_slice(n);
+        }
+        if b.uvs.len() == b.positions.len() {
+            for t in &b.uvs {
+                uvs.extend_from_slice(t);
+            }
+        } else {
+            // Missing UVs → unit zeros (kept length-consistent with positions).
+            uvs.extend(std::iter::repeat(0.0).take(b.positions.len() * 2));
+        }
+        for (ti, tri) in b.indices.iter().enumerate() {
+            indices.extend_from_slice(&[vbase + tri[0], vbase + tri[1], vbase + tri[2]]);
+            // Per-triangle material id (forge channel id ordered); default 0.
+            let mid = b.material_ids.get(ti).copied().unwrap_or(0) as u32;
+            tri_material_ids.push(mid);
+        }
+        vbase += b.positions.len() as u32;
+    }
+
+    // --- Instances: transforms SoA + per-instance material id ---
+    let mut instance_transforms: Vec<f32> = Vec::with_capacity(instances.len() * 16);
+    let mut instance_material_ids: Vec<u32> = Vec::with_capacity(instances.len());
+    for inst in instances {
+        instance_transforms.extend_from_slice(&inst.transform);
+        instance_material_ids.push(inst.material_id);
+    }
+
+    // --- Materials: 156-float Vulkan stride (NEVER 132-float CUDA) ---
+    let mut params: Vec<f32> = Vec::with_capacity(materials.len() * VULKAN_MATERIAL_FLOATS);
+    for m in materials {
+        params.extend_from_slice(&pack_vulkan_mesh_material(*m));
+    }
+
+    // --- Spectral SPD keyed by stable material_id (empty ⇒ white) ---
+    let mut spd_map = std::collections::HashMap::with_capacity(spectral_spd.len());
+    for (mat_id, spd) in spectral_spd {
+        spd_map.insert(*mat_id, *spd);
+    }
+
+    let mut scene = SceneState::new(width, height);
+    scene.geometry.vertex_count = positions.len() / 3;
+    scene.geometry.triangle_count = indices.len() / 3;
+    scene.geometry.positions = positions;
+    scene.geometry.normals = normals;
+    scene.geometry.uvs = uvs;
+    scene.geometry.indices = indices;
+    scene.geometry.material_ids = tri_material_ids;
+    scene.geometry.instance_count = instances.len();
+    scene.geometry.instance_transforms = instance_transforms;
+    scene.geometry.instance_material_ids = instance_material_ids;
+    scene.materials = MaterialLayer {
+        params,
+        spectral_spd: spd_map,
+        material_count: materials.len(),
     };
     scene.mark_geometry_changed();
     scene.mark_materials_changed();

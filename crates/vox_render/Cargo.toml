@@ -82,3 +82,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 [dependencies.naga]
 version = "24"
 features = ["wgsl-in", "wgsl-out"]
+
+# Resident-renderer steady-state witness (Render Keystone T1). Custom main
+# (harness=false) so it prints cold_ms/steady_ms and hard-fails the gate.
+[[bench]]
+name = "spectra_resident"
+harness = false
