@@ -140,17 +140,26 @@ pub fn splats_to_scene(splats: &[GaussianSplat], width: u32, height: u32) -> Sce
 ///
 /// This is the camera type the native renderer consumes (`Renderer::set_camera_view_matrix`
 /// reads `CameraLayer::view_matrix`). Width/height set the target resolution and aspect.
+///
+/// `lens_radius` and `focus_distance` drive the path tracer's **real** depth of
+/// field (`lens_radius == 0.0` is a pinhole; pass `1.0` focus for back-compat).
+/// They are threaded here so the cinematic [`crate::cine::CinePose`] adapter and
+/// gameplay callers share one builder rather than zeroing DoF downstream.
 pub fn camera_layer(
     view_matrix: [f32; 16],
     fov_y_radians: f32,
     width: u32,
     height: u32,
+    lens_radius: f32,
+    focus_distance: f32,
 ) -> CameraLayer {
     let mut cam = CameraLayer::new_default();
     cam.view_matrix = view_matrix;
     cam.fov_y_radians = fov_y_radians;
     cam.width = width;
     cam.height = height;
+    cam.lens_radius = lens_radius;
+    cam.focus_distance = focus_distance;
     cam
 }
 
@@ -370,7 +379,7 @@ mod tests {
         let view = [
             1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -5.0, 1.0,
         ];
-        let cam = camera_layer(view, 0.8, 320, 240);
+        let cam = camera_layer(view, 0.8, 320, 240, 0.0, 1.0);
         assert_eq!(cam.view_matrix, view);
         assert_eq!(cam.fov_y_radians, 0.8);
         assert_eq!(cam.width, 320);

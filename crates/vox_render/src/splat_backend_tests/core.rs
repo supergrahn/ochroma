@@ -89,7 +89,7 @@ use super::super::*;
             glam::Vec3::Y,
         )
         .to_cols_array();
-        let cam = camera_layer(view, std::f32::consts::FRAC_PI_4, w, h);
+        let cam = camera_layer(view, std::f32::consts::FRAC_PI_4, w, h, 0.0, 1.0);
         renderer.set_camera_view_matrix(cam.view_matrix);
         renderer.set_view_proj(cam.view_matrix);
 

@@ -114,7 +114,7 @@ pub fn pathtrace_splats_to_rgba(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
     renderer
         .load_scene_state(scene)
@@ -745,7 +745,7 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
     scene.mark_geometry_changed();
     scene.mark_materials_changed();
@@ -998,7 +998,7 @@ pub fn spectra_resident_bench(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
     scene.mark_geometry_changed();
     scene.mark_materials_changed();
@@ -1236,7 +1236,7 @@ pub fn pathtrace_sdf_to_rgba(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
 
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
@@ -1707,7 +1707,7 @@ pub fn pathtrace_sdf_scene_perf(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
 
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
@@ -2043,7 +2043,7 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
 
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
@@ -2643,7 +2643,7 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
 
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
@@ -3306,7 +3306,7 @@ pub fn spectra_resident_bench_fsr(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, render_w, render_h);
+    let cam = camera_layer(view, fov_y, render_w, render_h, 0.0, 1.0);
     scene.camera = cam.clone();
     scene.mark_geometry_changed();
     scene.mark_materials_changed();
