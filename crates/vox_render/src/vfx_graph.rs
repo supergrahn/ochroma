@@ -1310,6 +1310,9 @@ mod tests {
         assert!(effect_by_name("nope", 1).is_none());
     }
 
+    // Renders through the banned CPU software rasterizer; gated with that stack
+    // so the product (Spectra) build compiles neither.
+    #[cfg(feature = "legacy-raster")]
     #[test]
     fn render_proof_fire_warm_pixels() {
         use crate::gpu::software_rasteriser::SoftwareRasteriser;

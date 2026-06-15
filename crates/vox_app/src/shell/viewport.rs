@@ -12,13 +12,17 @@
 use glam::Quat;
 use vox_core::types::GaussianSplat;
 
-#[cfg(not(feature = "spectra"))]
+// The CPU `SoftwareRasteriser` fallback is the banned software-rasterizer stack:
+// available only when `spectra` is off AND the opt-in `legacy-raster` feature is
+// on. A plain default build (no spectra, no legacy-raster) compiles neither the
+// import nor the fallback; the dispatcher returns a solid dark frame instead.
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 use glam::{Mat4, Vec3};
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 use vox_core::spectral::Illuminant;
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 use vox_render::spectral::RenderCamera;
 
 /// Resolution of the off-screen splat frame uploaded to the viewport texture.
@@ -126,9 +130,17 @@ pub fn render_scene_rgba_with(overlay: &[GaussianSplat]) -> Vec<u8> {
     {
         render_scene_rgba_pathtraced(overlay)
     }
-    #[cfg(not(feature = "spectra"))]
+    #[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
     {
         render_scene_rgba_cpu(overlay)
+    }
+    // Default build (no Spectra path tracer linked, no legacy CPU rasterizer):
+    // THE LAW forbids a non-Spectra renderer, so there is nothing to draw with.
+    // Return a solid dark studio frame rather than pulling in the banned stack.
+    #[cfg(all(not(feature = "spectra"), not(feature = "legacy-raster")))]
+    {
+        let _ = overlay;
+        (0..VIEW_W * VIEW_H).flat_map(|_| [16u8, 18, 26, 255]).collect()
     }
 }
 
@@ -174,7 +186,7 @@ pub fn render_scene_rgba_pathtraced(overlay: &[GaussianSplat]) -> Vec<u8> {
 /// of splats (e.g. a grown FloraPrime tree the shell owns) ON TOP of the base
 /// [`build_scene`]. The base scene stays fixed; the overlay is what the shell
 /// grows/undoes.
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 pub fn render_scene_rgba_cpu(overlay: &[GaussianSplat]) -> Vec<u8> {
     let mut splats = build_scene();
     splats.extend_from_slice(overlay);
@@ -263,8 +275,11 @@ pub fn scene_texture(
 }
 
 // These tests exercise the CPU rasteriser contract (no GPU). They build only
-// without the `spectra` feature, where `render_scene_rgba_with` is the CPU path.
-#[cfg(all(test, not(feature = "spectra")))]
+// without the `spectra` feature AND with the opt-in `legacy-raster` feature,
+// where `render_scene_rgba_with` is the CPU software-rasterizer path. In a plain
+// default build that path is a flat dark frame, so the visible-pixel assertions
+// would be vacuous — hence gated with the rasterizer they exercise.
+#[cfg(all(test, not(feature = "spectra"), feature = "legacy-raster"))]
 mod tests {
     use super::*;
 

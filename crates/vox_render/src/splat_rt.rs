@@ -873,6 +873,9 @@ mod tests {
     /// the residual coming from the perspective-vs-orthographic footprint
     /// difference and 8-bit quantization. The brightest pixel lands at the same
     /// coordinate (within 2px) in both paths.
+    // Cross-checks the RT path against the banned CPU software rasterizer; gated
+    // with that stack so the product (Spectra) build compiles neither.
+    #[cfg(feature = "legacy-raster")]
     #[test]
     fn cross_check_against_rasterizer() {
         use crate::gpu::software_rasteriser::SoftwareRasteriser;

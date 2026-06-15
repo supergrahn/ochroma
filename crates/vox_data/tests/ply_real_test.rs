@@ -88,6 +88,9 @@ fn realistic_ply_has_varied_colors() {
     assert!(differs, "Realistic PLY should have varied colors");
 }
 
+// Renders through the banned CPU software rasterizer; gated with that stack so
+// the product build's `cargo test` never compiles it.
+#[cfg(feature = "legacy-raster")]
 #[test]
 fn realistic_ply_renders_visible_sphere() {
     let ply = create_realistic_ply();

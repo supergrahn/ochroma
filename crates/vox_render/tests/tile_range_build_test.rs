@@ -1,3 +1,8 @@
+#![cfg(feature = "legacy-raster")]
+// Gated behind `legacy-raster` (THE LAW: Spectra is the only product renderer).
+// This test exercises a banned rasterizer/software-rasterizer stack; it compiles
+// and runs only under `--features legacy-raster`, never in the product build.
+
 //! AAA Spec 05, Step 1 — the keystone tile-range-build pass is bit-exact against
 //! its CPU oracle on real hardware. Skips gracefully on a no-GPU / software-only
 //! lane so CI stays green.

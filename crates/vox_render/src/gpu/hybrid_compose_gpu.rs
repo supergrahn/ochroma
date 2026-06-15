@@ -41,7 +41,7 @@ use spectra_gaussian_render::renderer::{
     ALPHA_THRESHOLD, Gaussian3D, GaussianCamera, TRANSMITTANCE_THRESHOLD, project_gaussian,
 };
 
-use crate::gpu::software_rasteriser::build_gaussian_camera;
+use crate::gpu::gaussian_camera::build_gaussian_camera;
 use crate::hybrid_compose::{HybridScene, SunLight};
 use crate::spectral::RenderCamera;
 

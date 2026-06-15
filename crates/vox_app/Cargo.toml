@@ -6,6 +6,16 @@ repository.workspace = true
 
 [features]
 default = []
+# legacy-raster: OFF BY DEFAULT. Opt-in for the legacy demo bins (vox_app,
+# ochroma, demo, walking_sim, splat_view, platformer, render_showcase,
+# city_ceiling, scale_trial, net_walk) that present through the banned non-Spectra
+# stacks — the GPU/CPU splat rasterizer (vox_render `legacy-raster`), the
+# wgpu-surface egui paint path (`egui-wgpu`), and the `render_to_file` software
+# rasterizer utility. THE LAW: the product (the `spectra` editor + the game's
+# Spectra-native renderer) presents only through the Spectra path tracer, so the
+# default and `spectra` builds compile NONE of this. The legacy bins are
+# preserved (not deleted): build them with `--features legacy-raster`.
+legacy-raster = ["vox_render/legacy-raster", "dep:egui-wgpu"]
 web = ["dep:wasm-bindgen", "dep:console_error_panic_hook", "dep:web-sys"]
 spectra-native = ["vox_render/spectra-native"]
 # forge-native: glue to the native AetherSpectra Forge generators (the Rust
@@ -77,7 +87,11 @@ uuid = { workspace = true }
 puffin = { workspace = true }
 puffin_http = "0.16"
 egui = { workspace = true }
-egui-wgpu = "0.31"
+# egui-wgpu is the banned wgpu-surface egui paint path (the non-Spectra editor /
+# legacy demo present). OPTIONAL + pulled only by `legacy-raster`, so the product
+# (`spectra`) editor graph contains no egui-wgpu / wgpu-surface-present stack.
+# (egui-winit stays non-optional: the Spectra editor host uses it for input.)
+egui-wgpu = { version = "0.31", optional = true }
 egui-winit = "0.31"
 egui_dock = "0.16"  # egui-0.31-compatible (verified: egui ^0.31); dockable tab shell
 dirs-next = "2"
@@ -140,41 +154,78 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 [dev-dependencies]
 tempfile = "3"
 
+# ── PRODUCT bins (Spectra-only) ──────────────────────────────────────────────
+# These build in the default/product graph with no banned stack.
 [[bin]]
-name = "ochroma"
-path = "src/bin/engine_runner.rs"
+name = "ochroma_editor"
+path = "src/bin/ochroma_editor.rs"
 
 [[bin]]
 name = "shell_snapshot"
 path = "src/bin/shell_snapshot.rs"
 
 [[bin]]
-name = "ochroma_editor"
-path = "src/bin/ochroma_editor.rs"
+name = "hello_splat"
+path = "src/bin/hello_splat.rs"
 
-[[bin]]
-name = "demo"
-path = "src/bin/demo.rs"
-
-[[bin]]
-name = "walking_sim"
-path = "src/bin/walking_sim.rs"
-
-[[bin]]
-name = "splat_view"
-path = "src/bin/splat_view.rs"
-
-[[bin]]
-name = "platformer"
-path = "src/bin/platformer.rs"
-
+# render_showcase: CPU compute showcase with its OWN local PPM writer — uses only
+# kept vox_render modules (camera/lod/particles/postprocess), no banned stack.
 [[bin]]
 name = "render_showcase"
 path = "src/bin/render_showcase.rs"
 
+# net_walk: pure networking demo, no renderer at all.
 [[bin]]
-name = "hello_splat"
-path = "src/bin/hello_splat.rs"
+name = "net_walk"
+path = "src/bin/net_walk.rs"
+
+# ── LEGACY demo bins (require `legacy-raster`) ───────────────────────────────
+# Each presents through a banned rasterizer / wgpu-surface path. Gated behind
+# `required-features = ["legacy-raster"]` so a default/product build does NOT
+# compile them; they are preserved and build with `--features legacy-raster`.
+
+# The implicit `vox_app` bin (src/main.rs) is a legacy wgpu-surface demo
+# (WgpuBackend + egui-wgpu + software rasterizer). Declared explicitly so it can
+# carry required-features; without it cargo would auto-discover it ungated.
+[[bin]]
+name = "vox_app"
+path = "src/main.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "ochroma"
+path = "src/bin/engine_runner.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "demo"
+path = "src/bin/demo.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "walking_sim"
+path = "src/bin/walking_sim.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "splat_view"
+path = "src/bin/splat_view.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "platformer"
+path = "src/bin/platformer.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "city_ceiling"
+path = "src/bin/city_ceiling.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "scale_trial"
+path = "src/bin/scale_trial.rs"
+required-features = ["legacy-raster"]
 
 [[example]]
 name = "simple_game"

@@ -1562,7 +1562,11 @@ impl InstancedSelectGpu {
 // select → ExpandDrawsPass::encode → set_active_splat_count → render.
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+// These tests cross-check the instanced selector against the GPU splat
+// rasterizer's resident walk (`ExpandDrawsPass` + `TiledSplatRenderer`), which
+// are part of the `legacy-raster`-gated stack. Gated together so the product
+// (Spectra) build compiles neither the tests nor the banned passes they use.
+#[cfg(all(test, feature = "legacy-raster"))]
 mod tests {
     use super::*;
     use crate::atom_instances::{

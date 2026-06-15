@@ -1565,6 +1565,10 @@ mod tests {
     /// meaningful: the GI output bound directly into the raster's input buffer.
     /// The full resident `render_frame` still runs as a liveness/anti-vacuous
     /// check (it lights >200 pixels) and the residency proof (`map_async == 0`).
+    // Binds GI output into the banned GPU splat rasterizer's resident walk
+    // (`ResidentGiRaster` + `gi_combine` + `splat_buffer`); gated with that stack
+    // so the product (Spectra) build compiles neither.
+    #[cfg(feature = "legacy-raster")]
     #[test]
     fn resident_gi_seam_matches_readback_oracle() {
         use crate::gpu::gi_combine::GiCombinePass;

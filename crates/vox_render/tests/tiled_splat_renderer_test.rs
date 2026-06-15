@@ -1,3 +1,8 @@
+#![cfg(feature = "legacy-raster")]
+// Gated behind `legacy-raster` (THE LAW: Spectra is the only product renderer).
+// This test exercises a banned rasterizer/software-rasterizer stack; it compiles
+// and runs only under `--features legacy-raster`, never in the product build.
+
 //! Integration tests for [`vox_render::gpu::tiled_splat_renderer::TiledSplatRenderer`].
 //!
 //! These run the FULL on-device tiled chain (tile_assign → radix_sort →

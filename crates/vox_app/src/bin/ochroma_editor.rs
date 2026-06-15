@@ -34,30 +34,30 @@
 #[path = "../editor_spectra/host.rs"]
 mod editor_host_spectra;
 
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 use std::sync::Arc;
 
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 use winit::application::ApplicationHandler;
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 use winit::event::WindowEvent;
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 use winit::window::{Window, WindowId};
 
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 use vox_app::shell::cpu_render;
 use vox_app::shell::{EditorShell, ShellRequest};
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 use vox_render::gpu::wgpu_backend::WgpuBackend;
 use vox_ui::Tokens;
 
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 const WINDOW_WIDTH: u32 = 1600;
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 const WINDOW_HEIGHT: u32 = 900;
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 const WINDOW_TITLE: &str = "Ochroma Editor";
 
 /// Parsed command-line options. `pub` fields so the spectra host module can read
@@ -218,7 +218,7 @@ pub fn build_shell(tokens: Tokens, cli: &Cli) -> EditorShell {
     shell
 }
 
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 struct EditorHost {
     window: Option<Arc<Window>>,
     backend: Option<WgpuBackend>,
@@ -248,7 +248,7 @@ struct EditorHost {
     no_timestamp_warned: bool,
 }
 
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 impl EditorHost {
     fn new(cli: Cli) -> Self {
         let tokens = load_tokens(cli.light);
@@ -589,7 +589,7 @@ impl EditorHost {
     }
 }
 
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 impl ApplicationHandler for EditorHost {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -741,7 +741,7 @@ impl ApplicationHandler for EditorHost {
 /// would deadlock proof mode). Mailbox keeps frames making progress while still
 /// pacing to the display when the compositor cooperates. Called once after
 /// backend creation and again after every resize (which reverts to Fifo).
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 fn configure_present_mailbox(backend: &WgpuBackend) {
     // Mailbox is preferred (keeps frames progressing on Wayland/Xwayland) but is
     // NOT a wgpu-guaranteed present mode — some Windows surfaces don't expose it,
@@ -774,7 +774,7 @@ fn configure_present_mailbox(backend: &WgpuBackend) {
 /// `get_info()` reads the identity, but NO device is created here. The GI compute
 /// pass itself runs on the backend's actual present device (cloned handles), so this
 /// resolves the name the present device's adapter reports, not a different GPU.
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 fn resolve_present_adapter_info() -> wgpu::AdapterInfo {
     let attempts: &[wgpu::Backends] = &[
         wgpu::Backends::VULKAN,
@@ -824,7 +824,7 @@ fn resolve_present_adapter_info() -> wgpu::AdapterInfo {
 
 /// Convert an sRGB-encoded 8-bit channel to a linear 0..1 value for the surface
 /// clear colour (the surface format is *_Srgb, so the clear value must be linear).
-#[cfg(not(feature = "spectra"))]
+#[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
 fn srgb_to_linear(c: u8) -> f64 {
     let c = c as f64 / 255.0;
     if c <= 0.04045 {
@@ -847,11 +847,26 @@ fn main() {
         editor_host_spectra::run(cli);
     }
 
-    #[cfg(not(feature = "spectra"))]
+    #[cfg(all(not(feature = "spectra"), feature = "legacy-raster"))]
     {
         let event_loop = EventLoop::new().expect("Failed to create event loop");
         event_loop.set_control_flow(ControlFlow::Poll);
         let mut host = EditorHost::new(cli);
         event_loop.run_app(&mut host).expect("Event loop failed");
+    }
+
+    // THE LAW: the product editor presents through the Spectra path tracer. The
+    // legacy wgpu-surface editor host is the banned stack, gated behind
+    // `legacy-raster`. A build with NEITHER feature has no renderer to host, so
+    // we exit with a clear instruction rather than linking a forbidden backend.
+    #[cfg(all(not(feature = "spectra"), not(feature = "legacy-raster")))]
+    {
+        let _ = cli;
+        eprintln!(
+            "[ochroma_editor] built without a renderer. Build the product editor \
+             with `--features spectra` (Spectra path tracer), or the legacy \
+             wgpu-surface editor with `--features legacy-raster`."
+        );
+        std::process::exit(2);
     }
 }

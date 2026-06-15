@@ -1,41 +1,72 @@
+// ---------------------------------------------------------------------------
+// KEPT (ungated) GPU compute/util modules — used by the Spectra product path
+// (skinning, sdf, shadows, instancing, bloom/dof/volumetric post, the shared
+// `GpuContext`/adapter, and the pure-CPU camera bridge). These contain NO
+// rasterizer/surface-present code and stay compiled in every build.
+// ---------------------------------------------------------------------------
 pub mod adapter;
 pub mod atom_budget_gpu;
 pub mod blend_skinning_compute;
 pub mod bloom_pass;
-pub mod compute_sort;
 pub mod depth_prepass;
 pub mod distance_field_2d;
 pub mod dof_pass;
 pub mod entity_buffer;
-pub mod expand_draws;
-pub mod gi_combine;
+pub mod gaussian_camera;
 pub mod gi_probe;
-pub mod gpu_rasteriser;
 pub mod gpu_timing;
 pub mod hybrid_compose_gpu;
 pub mod instanced_select_gpu;
 pub mod instancing;
 pub mod many_light_gpu;
 pub mod morph_compute;
-pub mod oit_pass;
-pub mod radix_sort_pass;
 pub mod relight_gpu;
-pub mod resident_gi_raster;
 pub mod sdf_atlas;
 pub mod sdf_bake;
 pub mod sdf_shadow_pass;
 pub mod shadow_atlas;
 pub mod shadow_catcher;
 pub mod skinning_compute;
-pub mod software_rasteriser;
-pub mod spectral_present;
-pub mod splat_buffer;
-pub mod splat_raster;
 pub mod splat_rt_gpu;
-pub mod tile_assign;
-pub mod tile_range_build;
-pub mod tiled_splat_renderer;
 pub mod volumetric_pass;
+
+// ---------------------------------------------------------------------------
+// BANNED stacks — feature-gated OFF BY DEFAULT (`legacy-raster`). THE LAW: the
+// Spectra path tracer is the only renderer in the product, so the GPU splat
+// rasterizer, the CPU software rasterizer, and the GPU surface-present helpers
+// must NOT compile in the product (`spectra-native`) build. They are preserved
+// (not deleted) for the legacy demo bins, which opt in via `--features
+// legacy-raster`.
+// ---------------------------------------------------------------------------
+#[cfg(feature = "legacy-raster")]
+pub mod compute_sort;
+#[cfg(feature = "legacy-raster")]
+pub mod expand_draws;
+#[cfg(feature = "legacy-raster")]
+pub mod gi_combine;
+#[cfg(feature = "legacy-raster")]
+pub mod gpu_rasteriser;
+#[cfg(feature = "legacy-raster")]
+pub mod oit_pass;
+#[cfg(feature = "legacy-raster")]
+pub mod radix_sort_pass;
+#[cfg(feature = "legacy-raster")]
+pub mod resident_gi_raster;
+#[cfg(feature = "legacy-raster")]
+pub mod software_rasteriser;
+#[cfg(feature = "legacy-raster")]
+pub mod spectral_present;
+#[cfg(feature = "legacy-raster")]
+pub mod splat_buffer;
+#[cfg(feature = "legacy-raster")]
+pub mod splat_raster;
+#[cfg(feature = "legacy-raster")]
+pub mod tile_assign;
+#[cfg(feature = "legacy-raster")]
+pub mod tile_range_build;
+#[cfg(feature = "legacy-raster")]
+pub mod tiled_splat_renderer;
+#[cfg(feature = "legacy-raster")]
 pub mod wgpu_backend;
 
 use std::sync::Arc;

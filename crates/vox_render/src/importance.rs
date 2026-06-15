@@ -347,6 +347,11 @@ pub fn prune(splats: &[GaussianSplat], target: PruneTarget) -> PruneResult {
 
 /// Mean per-pixel absolute RGB difference between two equally-sized framebuffers,
 /// normalized to `[0, 1]` (averaged over all pixels and the 3 color channels).
+///
+/// Gated behind `legacy-raster`: its `Framebuffer` type IS the banned CPU
+/// software rasterizer's output, so the function lives with that stack. The
+/// product (Spectra) build never compiles it.
+#[cfg(feature = "legacy-raster")]
 pub fn mean_pixel_diff(
     a: &crate::gpu::software_rasteriser::Framebuffer,
     b: &crate::gpu::software_rasteriser::Framebuffer,
@@ -386,6 +391,11 @@ pub fn mean_pixel_diff(
 ///
 /// The returned [`PruneResult`] is the pruned set at the accepted fraction; the
 /// accepted fraction is recoverable from `kept.len()`.
+///
+/// Gated behind `legacy-raster`: the guard renders through the banned CPU
+/// software rasterizer ([`SoftwareRasteriser`]). The product (Spectra) build
+/// never compiles it; offline pruning without the guard uses [`prune`].
+#[cfg(feature = "legacy-raster")]
 pub fn prune_with_render_guard(
     splats: &[GaussianSplat],
     target_fraction: f32,
@@ -424,8 +434,14 @@ pub fn prune_with_render_guard(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // RenderCamera / Mat4 / Vec3 are only used by the `legacy-raster`-gated
+    // render-guard test (`wall_camera`); gate the imports so the product build's
+    // test compile stays warning-clean.
+    #[cfg(feature = "legacy-raster")]
     use crate::spectral::RenderCamera;
-    use glam::{Mat4, Quat, Vec3};
+    #[cfg(feature = "legacy-raster")]
+    use glam::{Mat4, Vec3};
+    use glam::Quat;
     use half::f16;
 
     fn flat_spectral(value: f32) -> [u16; 16] {
@@ -544,6 +560,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "legacy-raster")]
     fn wall_camera() -> RenderCamera {
         RenderCamera {
             view: Mat4::look_at_rh(Vec3::new(0.0, 0.0, 6.0), Vec3::ZERO, Vec3::Y),
@@ -553,6 +570,7 @@ mod tests {
 
     /// A flat "wall" of overlapping splats filling the view. Naive 0.1 pruning
     /// hollows it (mean pixel diff over bound); the guard backs off.
+    #[cfg(feature = "legacy-raster")]
     fn wall_scene() -> Vec<GaussianSplat> {
         let mut splats = Vec::new();
         // 20x20 grid of overlapping opaque white splats across the view plane.
@@ -572,6 +590,7 @@ mod tests {
         splats
     }
 
+    #[cfg(feature = "legacy-raster")]
     #[test]
     fn render_guard_backs_off_when_hollowing() {
         let splats = wall_scene();

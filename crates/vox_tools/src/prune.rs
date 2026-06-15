@@ -15,8 +15,13 @@ use std::path::Path;
 use anyhow::{anyhow, Context, Result};
 use glam::{Mat4, Vec3};
 use vox_core::types::GaussianSplat;
-use vox_render::importance::{prune, prune_with_render_guard, PruneResult, PruneTarget};
+use vox_render::importance::{prune, PruneResult, PruneTarget};
 use vox_render::spectral::RenderCamera;
+// The render guard renders through the banned CPU software rasterizer; it is
+// available only with the opt-in `legacy-raster` feature (THE LAW: Spectra is the
+// only product renderer). Without it, prune runs the pure importance pass.
+#[cfg(feature = "legacy-raster")]
+use vox_render::importance::prune_with_render_guard;
 
 /// Load splats from any supported format, dispatching on the file extension.
 fn load_any(path: &Path) -> Result<Vec<GaussianSplat>> {
@@ -107,22 +112,39 @@ pub fn run_prune(
 
     let camera = framing_camera(&splats);
 
-    // Compute the render diff for reporting either way.
-    let result = if no_guard {
-        prune(&splats, PruneTarget::KeepFraction(keep))
-    } else {
-        prune_with_render_guard(&splats, keep, &camera, max_pixel_diff)
+    // The render guard (and its before/after render-diff measurement) renders
+    // through the banned CPU software rasterizer, so it is `legacy-raster`-only.
+    // Without that feature, prune runs the pure importance pass and reports no
+    // render diff (the `no_guard` semantics are then the only available mode).
+    #[cfg(feature = "legacy-raster")]
+    let (result, render_diff): (PruneResult, f32) = {
+        let result = if no_guard {
+            prune(&splats, PruneTarget::KeepFraction(keep))
+        } else {
+            prune_with_render_guard(&splats, keep, &camera, max_pixel_diff)
+        };
+        // Measure the final render diff for the report (original vs pruned).
+        let diff = {
+            use vox_core::spectral::Illuminant;
+            use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
+            let illum = Illuminant::d65();
+            let mut ras = SoftwareRasteriser::new(96, 96);
+            let reference = ras.render_gaussian(&splats, &camera, &illum, None);
+            let pruned = ras.render_gaussian(&result.kept, &camera, &illum, None);
+            vox_render::importance::mean_pixel_diff(&reference, &pruned)
+        };
+        (result, diff)
     };
-
-    // Measure the final render diff for the report (original vs pruned).
-    let render_diff = {
-        use vox_core::spectral::Illuminant;
-        use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
-        let illum = Illuminant::d65();
-        let mut ras = SoftwareRasteriser::new(96, 96);
-        let reference = ras.render_gaussian(&splats, &camera, &illum, None);
-        let pruned = ras.render_gaussian(&result.kept, &camera, &illum, None);
-        vox_render::importance::mean_pixel_diff(&reference, &pruned)
+    #[cfg(not(feature = "legacy-raster"))]
+    let result: PruneResult = {
+        if !no_guard {
+            eprintln!(
+                "prune: render guard unavailable (built without `legacy-raster`); \
+                 running pure importance prune at keep={keep:.2}"
+            );
+        }
+        let _ = (&camera, max_pixel_diff);
+        prune(&splats, PruneTarget::KeepFraction(keep))
     };
 
     let kept_count = result.kept.len();
@@ -157,15 +179,25 @@ pub fn run_prune(
         "  energy_retained: {:.4} (kept spectral-energy / original)",
         result.energy_retained
     );
-    if no_guard {
+    #[cfg(feature = "legacy-raster")]
+    {
+        if no_guard {
+            println!(
+                "  render diff:     {:.5} mean abs pixel (guard disabled, requested keep={:.2})",
+                render_diff, keep
+            );
+        } else {
+            println!(
+                "  render diff:     {:.5} mean abs pixel (guard bound {:.5}, requested keep={:.2})",
+                render_diff, max_pixel_diff, keep
+            );
+        }
+    }
+    #[cfg(not(feature = "legacy-raster"))]
+    {
+        let _ = (no_guard, max_pixel_diff);
         println!(
-            "  render diff:     {:.5} mean abs pixel (guard disabled, requested keep={:.2})",
-            render_diff, keep
-        );
-    } else {
-        println!(
-            "  render diff:     {:.5} mean abs pixel (guard bound {:.5}, requested keep={:.2})",
-            render_diff, max_pixel_diff, keep
+            "  render diff:     n/a (built without `legacy-raster`; render guard unavailable)"
         );
     }
 
