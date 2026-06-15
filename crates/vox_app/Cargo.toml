@@ -31,6 +31,23 @@ crucible-native = ["dep:cook", "dep:crucible-core", "dep:crucible-types"]
 # `OCHROMA_ASK_LLM=1` to route Ask Ochroma at the local GPU. Same native-optional
 # shape as forge-native / crucible-native.
 local-llm = ["vox_nn/local-llm"]
+# spectra: render + present ochroma_editor ENTIRELY through the Spectra path
+# tracer + Spectra present stack. Removes the wgpu surface / egui-wgpu /
+# SoftwareRasteriser path from the editor bin. egui paints on the path tracer's
+# own ash (Vulkan) device via egui-ash-renderer, into an offscreen color image
+# that is copied to host RGBA and handed to spectra_present (windowed) or read
+# back (headless --frames/--shot). OFF BY DEFAULT and behind OPTIONAL path deps
+# (the spectra sibling), mirroring spectra-native: a missing checkout leaves
+# default/CI builds completely unaffected.
+spectra = [
+    "vox_render/spectra-native",
+    "dep:spectra-present",
+    "dep:spectra-gpu",
+    "dep:ash",
+    "dep:egui-ash-renderer",
+    "dep:raw-window-handle",
+    "dep:rfd",
+]
 
 [dependencies]
 vox_core = { path = "../vox_core" }
@@ -91,6 +108,25 @@ forge-mesh     = { path = "../../../forge/crates/mesh", optional = true }
 cook           = { path = "../../../crucible/rust/crates/cook", optional = true }
 crucible-core  = { path = "../../../crucible/rust/crates/crucible-core", optional = true }
 crucible-types = { path = "../../../crucible/rust/crates/crucible-types", optional = true }
+
+# Spectra present + GPU — OPTIONAL path deps to the spectra sibling, gated by the
+# `spectra` feature above. The editor constructs a `VulkanSlangBackend` and the
+# `spectra_present` swapchain directly, so spectra-gpu is needed here (not just
+# transitively through vox_render). default-features=false drops spectra-gpu's
+# default `cuda` feature; vulkan-backend + spectra-present give VulkanSlangBackend
+# + the KHR swapchain present. egui-ash-renderer paints egui on that ash device
+# (render-pass path — the device is VK 1.2, no dynamic-rendering — so NO
+# `dynamic-rendering` feature). Pinned `=0.8.0`: it supports egui >=0.26,<=0.31
+# (workspace is 0.31); 0.9+ pulls egui 0.32/0.33 and breaks the single-egui graph.
+spectra-present  = { path = "../../../spectra/rust/spectra-present", optional = true }
+spectra-gpu      = { path = "../../../spectra/rust/spectra-gpu", default-features = false, features = ["vulkan-backend", "spectra-present"], optional = true }
+ash              = { version = "0.38", optional = true }
+egui-ash-renderer = { version = "=0.8.0", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+# Native file picker for the windowed "Open world…" path (gated by `spectra`).
+# Off by default; the headless/proof path never touches it (it uses a default
+# path). xdg-portal backend keeps it dependency-light on Linux.
+rfd = { version = "0.15", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { version = "0.2", optional = true }

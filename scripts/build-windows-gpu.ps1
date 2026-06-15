@@ -29,7 +29,15 @@ param(
     # Optional binary target to build/run (implies the package that owns it).
     [string]$Bin,
     # After building, run the binary (requires -Bin).
-    [switch]$Run
+    [switch]$Run,
+    # Cargo features. If omitted: "spectra-native" for vox_render/vox_app, none otherwise.
+    # Pass "" explicitly to force no features (e.g. the wgpu game `play` binary).
+    [string]$Features,
+    # Pass --no-default-features.
+    [switch]$NoDefaultFeatures,
+    # Repo to build from (cd here before cargo). Default: this script's repo (ochroma).
+    # Set to the urban_horizon repo to build the game (its path-deps reach back to ochroma).
+    [string]$WorkDir
 )
 
 $ErrorActionPreference = "Stop"
@@ -96,14 +104,22 @@ $env:SPECTRA_BACKEND = "cuda"
 Write-Step "Backend:  cuda (NVIDIA)"
 
 # --- Build ----------------------------------------------------------------
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = if ($WorkDir) { $WorkDir } else { Split-Path -Parent $PSScriptRoot }
+if (-not (Test-Path (Join-Path $repoRoot "Cargo.toml"))) {
+    Die "No Cargo.toml at WorkDir '$repoRoot'."
+}
 Set-Location $repoRoot
+Write-Step "WorkDir:  $repoRoot"
 $cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
-# Building vox_app binaries (editor) needs the app's own spectra-native feature;
-# vox_render alone uses vox_render/spectra-native.
-$feature = if ($Package -eq "vox_render") { "spectra-native" } else { "spectra-native" }
-$cargoArgs = @("build", "-p", $Package, "--features", $feature)
+# Default features: the GPU renderer crates need spectra-native; everything else
+# (e.g. the wgpu game `play` binary) builds with its own defaults.
+if (-not $PSBoundParameters.ContainsKey('Features')) {
+    $Features = if ($Package -in @('vox_render', 'vox_app')) { 'spectra-native' } else { '' }
+}
+$cargoArgs = @("build", "-p", $Package)
 if ($Bin) { $cargoArgs += @("--bin", $Bin) }
+if ($Features) { $cargoArgs += @("--features", $Features) }
+if ($NoDefaultFeatures) { $cargoArgs += "--no-default-features" }
 if ($Release) { $cargoArgs += "--release" }
 
 Write-Step ("cargo " + ($cargoArgs -join " "))

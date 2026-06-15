@@ -24,38 +24,60 @@
 //!   cargo run -p vox_app --bin ochroma_editor -- --shot out.png     # capture last frame as PNG
 //!   cargo run -p vox_app --bin ochroma_editor -- --frames 120 --shot out.png  # combine
 
+// The editor has TWO render/present hosts, selected at compile time:
+//  * `--features spectra` (the LAW-compliant path): egui + present go entirely
+//    through the Spectra path tracer / Spectra present stack (see
+//    `editor_host_spectra.rs`). NO wgpu, NO egui-wgpu, NO SoftwareRasteriser.
+//  * default (no `spectra`): the legacy wgpu host below, kept so CI machines
+//    without the spectra sibling checkout still build the editor.
+#[cfg(feature = "spectra")]
+#[path = "../editor_spectra/host.rs"]
+mod editor_host_spectra;
+
+#[cfg(not(feature = "spectra"))]
 use std::sync::Arc;
 
+#[cfg(not(feature = "spectra"))]
 use winit::application::ApplicationHandler;
+#[cfg(not(feature = "spectra"))]
 use winit::event::WindowEvent;
+#[cfg(not(feature = "spectra"))]
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+#[cfg(not(feature = "spectra"))]
 use winit::window::{Window, WindowId};
 
-use vox_app::shell::{cpu_render, EditorShell, ShellRequest};
+#[cfg(not(feature = "spectra"))]
+use vox_app::shell::cpu_render;
+use vox_app::shell::{EditorShell, ShellRequest};
+#[cfg(not(feature = "spectra"))]
 use vox_render::gpu::wgpu_backend::WgpuBackend;
 use vox_ui::Tokens;
 
+#[cfg(not(feature = "spectra"))]
 const WINDOW_WIDTH: u32 = 1600;
+#[cfg(not(feature = "spectra"))]
 const WINDOW_HEIGHT: u32 = 900;
+#[cfg(not(feature = "spectra"))]
 const WINDOW_TITLE: &str = "Ochroma Editor";
 
-/// Parsed command-line options.
-struct Cli {
+/// Parsed command-line options. `pub` fields so the spectra host module can read
+/// them.
+pub struct Cli {
     /// If set, render exactly this many frames then exit 0 (proof mode).
-    frames: Option<u32>,
-    /// If set, capture the LAST rendered frame to this PNG path via wgpu readback.
-    shot: Option<String>,
+    pub frames: Option<u32>,
+    /// If set, capture the LAST rendered frame to this PNG path.
+    pub shot: Option<String>,
     /// Theme to load tokens from ("dark" default, "light" optional).
-    light: bool,
+    pub light: bool,
     /// AAA Spec 03 proof mode: `--demo forgery` plants the metameric forgery pair
     /// at startup so the first frame already shows it.
-    demo: Option<String>,
+    pub demo: Option<String>,
     /// AAA Spec 03: `--illuminant <name>` sets the inspection light (e.g.
     /// `cool_led`) so the captured shot shows the forgery split.
-    illuminant: Option<String>,
+    pub illuminant: Option<String>,
 }
 
-fn parse_cli() -> Cli {
+pub fn parse_cli() -> Cli {
     let mut cli = Cli { frames: None, shot: None, light: false, demo: None, illuminant: None };
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -149,7 +171,7 @@ fn resolve_asset_path(rel: &str) -> std::path::PathBuf {
 }
 
 /// Load the shipped UI tokens (dark by default — same theme as `shell_snapshot`).
-fn load_tokens(light: bool) -> Tokens {
+pub fn load_tokens(light: bool) -> Tokens {
     let rel = if light {
         "assets/ui/ochroma_light.theme.json"
     } else {
@@ -161,7 +183,7 @@ fn load_tokens(light: bool) -> Tokens {
 /// Build a fully-populated `EditorShell` with all three real plugins installed,
 /// focused on the live viewport tab — identical setup to `shell_snapshot` so the
 /// windowed editor shows exactly the same dock.
-fn build_shell(tokens: Tokens, cli: &Cli) -> EditorShell {
+pub fn build_shell(tokens: Tokens, cli: &Cli) -> EditorShell {
     let mut shell = EditorShell::new(tokens);
     // Install Crucible wired to the shell's scene-sink (NOT the detached
     // `::new()` sink) so pressing "Cook scene" plants real splats into the live
@@ -196,6 +218,7 @@ fn build_shell(tokens: Tokens, cli: &Cli) -> EditorShell {
     shell
 }
 
+#[cfg(not(feature = "spectra"))]
 struct EditorHost {
     window: Option<Arc<Window>>,
     backend: Option<WgpuBackend>,
@@ -225,6 +248,7 @@ struct EditorHost {
     no_timestamp_warned: bool,
 }
 
+#[cfg(not(feature = "spectra"))]
 impl EditorHost {
     fn new(cli: Cli) -> Self {
         let tokens = load_tokens(cli.light);
@@ -565,6 +589,7 @@ impl EditorHost {
     }
 }
 
+#[cfg(not(feature = "spectra"))]
 impl ApplicationHandler for EditorHost {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -716,6 +741,7 @@ impl ApplicationHandler for EditorHost {
 /// would deadlock proof mode). Mailbox keeps frames making progress while still
 /// pacing to the display when the compositor cooperates. Called once after
 /// backend creation and again after every resize (which reverts to Fifo).
+#[cfg(not(feature = "spectra"))]
 fn configure_present_mailbox(backend: &WgpuBackend) {
     // Mailbox is preferred (keeps frames progressing on Wayland/Xwayland) but is
     // NOT a wgpu-guaranteed present mode — some Windows surfaces don't expose it,
@@ -748,6 +774,7 @@ fn configure_present_mailbox(backend: &WgpuBackend) {
 /// `get_info()` reads the identity, but NO device is created here. The GI compute
 /// pass itself runs on the backend's actual present device (cloned handles), so this
 /// resolves the name the present device's adapter reports, not a different GPU.
+#[cfg(not(feature = "spectra"))]
 fn resolve_present_adapter_info() -> wgpu::AdapterInfo {
     let attempts: &[wgpu::Backends] = &[
         wgpu::Backends::VULKAN,
@@ -797,6 +824,7 @@ fn resolve_present_adapter_info() -> wgpu::AdapterInfo {
 
 /// Convert an sRGB-encoded 8-bit channel to a linear 0..1 value for the surface
 /// clear colour (the surface format is *_Srgb, so the clear value must be linear).
+#[cfg(not(feature = "spectra"))]
 fn srgb_to_linear(c: u8) -> f64 {
     let c = c as f64 / 255.0;
     if c <= 0.04045 {
@@ -809,13 +837,21 @@ fn srgb_to_linear(c: u8) -> f64 {
 fn main() {
     let cli = parse_cli();
     println!(
-        "[ochroma_editor] Ochroma Editor — windowed shell host (frames={:?}, shot={:?})",
+        "[ochroma_editor] Ochroma Editor — shell host (frames={:?}, shot={:?})",
         cli.frames, cli.shot
     );
 
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
-    event_loop.set_control_flow(ControlFlow::Poll);
+    #[cfg(feature = "spectra")]
+    {
+        // LAW: render + present entirely through the Spectra path tracer + present.
+        editor_host_spectra::run(cli);
+    }
 
-    let mut host = EditorHost::new(cli);
-    event_loop.run_app(&mut host).expect("Event loop failed");
+    #[cfg(not(feature = "spectra"))]
+    {
+        let event_loop = EventLoop::new().expect("Failed to create event loop");
+        event_loop.set_control_flow(ControlFlow::Poll);
+        let mut host = EditorHost::new(cli);
+        event_loop.run_app(&mut host).expect("Event loop failed");
+    }
 }

@@ -1,19 +1,24 @@
 //! The REAL viewport — an actual engine frame rendered into the dock tab.
 //!
-//! A small spectral-splat scene is built and rasterized on the CPU through
-//! `vox_render`'s [`SoftwareRasteriser`] (the exact path `walking_sim`'s smoke
-//! uses), producing an RGBA framebuffer. That buffer is uploaded once as an
-//! `egui::TextureHandle` (a `ColorImage`) and drawn as an `egui::Image` inside
-//! the Viewport tab, with the floating "View: Real light" pill over it.
-//!
-//! Because egui's `Image` is a normal textured mesh, the headless `cpu_render`
-//! harness rasterizes the real rendered splats straight into the snapshot — so
-//! the viewport's pixels are provable headlessly (no GPU, no readback hack).
+//! LAW: the editor's viewport is rendered by the SPECTRA PATH TRACER. Under the
+//! `spectra` feature the small spectral-splat scene is path-traced on the
+//! Spectra Vulkan device via [`vox_render::splat_backend::pathtrace_splats_to_rgba`],
+//! producing an RGBA frame that is uploaded as an `egui::TextureHandle` and drawn
+//! as an `egui::Image` inside the Viewport tab. The CPU `SoftwareRasteriser`
+//! viewport path is DELETED for the editor — it survives ONLY as a no-GPU
+//! fallback for the headless `shell_snapshot` / `scale_trial` bins that do not
+//! link the Spectra sibling (without the `spectra` feature).
 
-use glam::{Mat4, Quat, Vec3};
-use vox_core::spectral::Illuminant;
+use glam::Quat;
 use vox_core::types::GaussianSplat;
+
+#[cfg(not(feature = "spectra"))]
+use glam::{Mat4, Vec3};
+#[cfg(not(feature = "spectra"))]
+use vox_core::spectral::Illuminant;
+#[cfg(not(feature = "spectra"))]
 use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
+#[cfg(not(feature = "spectra"))]
 use vox_render::spectral::RenderCamera;
 
 /// Resolution of the off-screen splat frame uploaded to the viewport texture.
@@ -91,18 +96,86 @@ pub fn build_scene() -> Vec<GaussianSplat> {
     splats
 }
 
+/// Camera the viewport looks through: eye slightly above the origin, gazing into
+/// the scene down -Z. Used by the Spectra path tracer.
+#[cfg(feature = "spectra")]
+const VIEW_EYE: [f32; 3] = [0.0, 1.2, 6.0];
+#[cfg(feature = "spectra")]
+const VIEW_TARGET: [f32; 3] = [0.0, 0.0, -6.0];
+#[cfg(feature = "spectra")]
+const VIEW_FOV_Y: f32 = std::f32::consts::FRAC_PI_4;
+/// Direction toward the sun (matches the warm key the path tracer expects).
+#[cfg(feature = "spectra")]
+const VIEW_SUN_DIR: [f32; 3] = [0.4, 0.85, 0.35];
+/// Samples per pixel for the viewport still. Kept modest so the in-editor frame
+/// stays interactive; the headless proof renders the same path.
+#[cfg(feature = "spectra")]
+const VIEW_SPP: u32 = 24;
+
 /// Rasterize the scene to an RGBA8 buffer (row-major, 4 bytes/px) at
 /// [`VIEW_W`]x[`VIEW_H`], looking down the -Z axis at the scene.
 pub fn render_scene_rgba() -> Vec<u8> {
     render_scene_rgba_with(&[])
 }
 
-/// Like [`render_scene_rgba`] but composites an additive `overlay` of splats
-/// (e.g. a grown FloraPrime tree the shell owns) ON TOP of the base
-/// [`build_scene`]. The base scene stays fixed; the overlay is what the shell
-/// grows/undoes, so a grown tree's splats render in the SAME spectral pipeline as
-/// the rest of the viewport.
+/// Render the base scene + `overlay` to RGBA8. Under the `spectra` feature this
+/// PATH-TRACES on the Spectra Vulkan device; without it (snapshot bins) it falls
+/// back to the CPU rasteriser.
 pub fn render_scene_rgba_with(overlay: &[GaussianSplat]) -> Vec<u8> {
+    #[cfg(feature = "spectra")]
+    {
+        render_scene_rgba_pathtraced(overlay)
+    }
+    #[cfg(not(feature = "spectra"))]
+    {
+        render_scene_rgba_cpu(overlay)
+    }
+}
+
+/// Path-trace the base scene + `overlay` on the Spectra Vulkan device. This is
+/// the editor's REAL viewport. If the GPU/Spectra stack is unavailable the call
+/// errors; we surface a solid dark frame rather than panicking the UI thread.
+#[cfg(feature = "spectra")]
+pub fn render_scene_rgba_pathtraced(overlay: &[GaussianSplat]) -> Vec<u8> {
+    let mut splats = build_scene();
+    splats.extend_from_slice(overlay);
+    match vox_render::splat_backend::pathtrace_splats_to_rgba(
+        &splats,
+        VIEW_EYE,
+        VIEW_TARGET,
+        VIEW_FOV_Y,
+        VIEW_W as u32,
+        VIEW_H as u32,
+        VIEW_SPP,
+        VIEW_SUN_DIR,
+    ) {
+        Ok(rgba) if rgba.len() == VIEW_W * VIEW_H * 4 => rgba,
+        Ok(other) => {
+            eprintln!(
+                "[viewport] path-traced frame had {} bytes, expected {}",
+                other.len(),
+                VIEW_W * VIEW_H * 4
+            );
+            vec![0u8; VIEW_W * VIEW_H * 4]
+                .chunks_exact(4)
+                .flat_map(|_| [16u8, 18, 26, 255])
+                .collect()
+        }
+        Err(e) => {
+            eprintln!("[viewport] path-trace failed: {e}");
+            (0..VIEW_W * VIEW_H)
+                .flat_map(|_| [16u8, 18, 26, 255])
+                .collect()
+        }
+    }
+}
+
+/// CPU-rasteriser fallback for non-Spectra bins. Composites an additive `overlay`
+/// of splats (e.g. a grown FloraPrime tree the shell owns) ON TOP of the base
+/// [`build_scene`]. The base scene stays fixed; the overlay is what the shell
+/// grows/undoes.
+#[cfg(not(feature = "spectra"))]
+pub fn render_scene_rgba_cpu(overlay: &[GaussianSplat]) -> Vec<u8> {
     let mut splats = build_scene();
     splats.extend_from_slice(overlay);
     let eye = Vec3::new(0.0, 1.2, 6.0);
@@ -189,7 +262,9 @@ pub fn scene_texture(
     handle
 }
 
-#[cfg(test)]
+// These tests exercise the CPU rasteriser contract (no GPU). They build only
+// without the `spectra` feature, where `render_scene_rgba_with` is the CPU path.
+#[cfg(all(test, not(feature = "spectra")))]
 mod tests {
     use super::*;
 

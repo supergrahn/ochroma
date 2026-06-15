@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "spectra-native")]
 use spectra_gpu::{CudarcSlangBackend, GpuBackend, VulkanSlangBackend};
 #[cfg(feature = "spectra-native")]
-use spectra_renderer::{RenderConfig, Renderer};
+use spectra_renderer::{RenderConfig, RenderTarget, Renderer};
 #[cfg(feature = "spectra-native")]
 use spectra_scene_state::{CameraLayer, SceneState};
 
@@ -27,6 +27,9 @@ enum RtCommand {
         scene: Option<SceneState>,
         camera: CameraLayer,
     },
+    /// Point the renderer at a CUDA interop color ptr (CUDA-owned present path),
+    /// or back to host-beauty delivery. Forwarded to `Renderer::set_render_target`.
+    SetRenderTarget(spectra_renderer::RenderTarget),
     /// Terminate the render thread.
     Shutdown,
 }
@@ -42,6 +45,10 @@ pub struct SpectraRenderBackend {
     fail_count: u32,
     width: u32,
     height: u32,
+    /// Cached copy of the render target last requested via `set_interop_target`.
+    /// The authoritative value lives on the render thread's `Renderer`; this
+    /// mirror lets the (non-thread) caller read back what it asked for.
+    render_target: RenderTarget,
 }
 
 /// Locate the Spectra `.slang` kernel directory: `SPECTRA_SLANG_DIR` if set and
@@ -3014,7 +3021,40 @@ impl SpectraRenderBackend {
             fail_count: 0,
             width,
             height,
+            render_target: RenderTarget::HostBeauty,
         })
+    }
+
+    /// Point the renderer at a CUDA interop color ptr (the `CudaPresentSurface`
+    /// color image). After this, the realtime render writes PACK_RGBA straight
+    /// into that device pointer and skips the host beauty download — the
+    /// CUDA-owned present path. Forwarded to the render thread's
+    /// `Renderer::set_render_target`.
+    pub fn set_interop_target(&mut self, color_ptr: u64) {
+        let target = RenderTarget::Interop { color_ptr };
+        self.render_target = target;
+        let _ = self.tx.send(RtCommand::SetRenderTarget(target));
+    }
+
+    /// The render target last requested (mirror of the render thread's value).
+    pub fn render_target(&self) -> RenderTarget {
+        self.render_target
+    }
+
+    /// Test-only: a backend with a live command channel but NO render thread / GPU.
+    /// `set_interop_target` still updates the cached `render_target` and enqueues the
+    /// `SetRenderTarget` command (proving the plumbing) without needing a CUDA device.
+    #[cfg(test)]
+    pub fn new_for_test() -> Self {
+        let (tx, _rx) = channel::<RtCommand>();
+        Self {
+            tx,
+            last_output: Arc::new(Mutex::new(Arc::new(Vec::new()))),
+            fail_count: 0,
+            width: 1,
+            height: 1,
+            render_target: RenderTarget::HostBeauty,
+        }
     }
 
     /// Submit a frame request (non-blocking).
@@ -3091,6 +3131,9 @@ fn run_render_loop<G: GpuBackend>(
         };
         match cmd {
             RtCommand::Shutdown => break,
+            RtCommand::SetRenderTarget(target) => {
+                renderer.set_render_target(target);
+            }
             RtCommand::Render { scene, camera } => {
                 // New scene geometry: upload the tessellated splat mesh.
                 // `load_scene_state` replaces the old `load_splat_scene`.

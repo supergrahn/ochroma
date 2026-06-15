@@ -2412,3 +2412,93 @@
 
         println!("OK: tree saved and reloaded bit-identical ({grown} splats)");
     }
+
+    /// The transport (Play/Pause/Stop) drives a REAL PlayState and ticks the sim:
+    /// Play moves Editing->Playing and `tick_simulation()` advances `sim_tick`;
+    /// Pause freezes the tick (preserving it); resuming continues from there; Stop
+    /// returns to Editing AND resets the tick to 0. This asserts on the concrete
+    /// observable tick counter, not a boolean flag.
+    #[test]
+    fn play_state_transport_ticks_and_resets() {
+        let mut shell = EditorShell::default();
+
+        // Default authoring state: Editing, tick 0, and a frozen sim.
+        assert_eq!(shell.play_state, PlayState::Editing);
+        assert_eq!(shell.sim_tick, 0);
+        shell.tick_simulation();
+        assert_eq!(shell.sim_tick, 0, "Editing must NOT advance the sim");
+
+        // PLAY: Editing -> Playing, then the sim advances each tick.
+        shell.play();
+        assert_eq!(shell.play_state, PlayState::Playing);
+        shell.tick_simulation();
+        shell.tick_simulation();
+        shell.tick_simulation();
+        assert_eq!(shell.sim_tick, 3, "Playing must advance one tick per frame");
+
+        // PAUSE: freezes WITHOUT resetting — the tick is preserved.
+        shell.pause();
+        assert_eq!(shell.play_state, PlayState::Paused);
+        shell.tick_simulation();
+        assert_eq!(shell.sim_tick, 3, "Paused must freeze the tick (no reset)");
+
+        // RESUME: Play from Paused continues from the SAME tick.
+        shell.play();
+        assert_eq!(shell.play_state, PlayState::Playing);
+        shell.tick_simulation();
+        assert_eq!(shell.sim_tick, 4, "resume must continue from the paused tick");
+
+        // STOP: back to Editing AND the tick resets to 0.
+        shell.stop();
+        assert_eq!(shell.play_state, PlayState::Editing);
+        assert_eq!(shell.sim_tick, 0, "Stop must reset the tick to 0");
+        shell.tick_simulation();
+        assert_eq!(shell.sim_tick, 0, "after Stop the sim is frozen again");
+
+        println!("OK: PlayState transport ticks (Play->3, Pause holds, resume->4, Stop->0)");
+    }
+
+    /// "Open world…" routes through the registry's `file.open` command, which
+    /// queues an `OpenWorldDialog` request; the headless drain path loads the
+    /// default world into the LIVE scene. Proves the dead button is wired to a
+    /// real load that populates `entities` (not the old hardcoded no-op).
+    #[test]
+    fn play_state_open_world_command_loads_live_scene() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("project.ochroma_world");
+
+        // Author a world with a tree, save it, then load it through the SAME
+        // load_world the OpenWorldDialog drain arm calls — proving the wiring
+        // repopulates the live scene (entities + overlay).
+        let mut author = EditorShell::default();
+        author.grow_tree_headless("Silver Birch", "broadleaf", 0);
+        let grown = author.overlay.len();
+        author.save_world(&path).unwrap();
+
+        let mut shell = EditorShell::default();
+        shell.entities.clear();
+        shell.overlay.clear();
+        assert!(shell.entities.is_empty());
+
+        let (entities, splats) = shell.load_world(&path).unwrap();
+        assert!(entities >= 1, "load_world must populate at least one entity");
+        assert_eq!(splats, grown, "all saved splats must reload into the live overlay");
+        assert_eq!(shell.overlay.len(), grown, "the live viewport overlay is populated");
+        assert!(
+            shell.viewport_tex.is_none(),
+            "load must invalidate the viewport cache so the next frame re-renders"
+        );
+
+        // The registry command queues the dialog request (the wiring under test).
+        let q: Rc<RefCell<Vec<ShellRequest>>> = Rc::new(RefCell::new(Vec::new()));
+        let flag = Rc::new(RefCell::new(false));
+        let reg = build_registry(&flag, &q);
+        reg.run("file.open");
+        assert!(
+            matches!(q.borrow().as_slice(), [ShellRequest::OpenWorldDialog]),
+            "Open world… must queue an OpenWorldDialog request"
+        );
+
+        println!("OK: Open world… wired — file.open queues OpenWorldDialog, load repopulates {entities} entities / {splats} splats");
+    }
