@@ -57,6 +57,10 @@ spectra-native = [
     "dep:spectra-tonemap",
     "dep:image",
     "spectra-gpu/vulkan-backend",
+    # OptiX HW-RT traversal (RT cores). Pulls spectra-optix/rt-cores so build.rs
+    # compiles the OptiX device PTX (sets optix_ptx_compiled) and
+    # OptiXTraversal::available() can return true at runtime.
+    "spectra-renderer/optix-rt",
 ]
 crucible = ["vox_nodes/crucible"]
 # legacy-raster: OFF BY DEFAULT. Gates the banned non-Spectra rendering stacks
