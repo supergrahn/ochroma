@@ -166,6 +166,34 @@ impl ResidentCityRenderer {
         config.apply_settings(&settings);
         config.max_bounces = max_bounces;
 
+        // TDR GUARD (Windows WDDM 2s GPU watchdog): bound every path-trace
+        // dispatch so no single launch trips the watchdog and kills the first
+        // heavy city frame with DXGI_ERROR_DEVICE_HUNG (0x887A0007). The renderer
+        // bands the camera→bounce pipeline into horizontal strips of
+        // ceil(max_pixels_per_dispatch / width) rows; bands are an exact partition
+        // (deterministic, top-to-bottom), so this changes timing only, never the
+        // image. Config-first: SPECTRA_MAX_PIXELS_PER_DISPATCH overrides; default
+        // 65_536 (~256×256 worth of threads) keeps each city megakernel launch far
+        // under 2s while staying coarse enough to avoid per-band launch overhead.
+        // Set to 0 to disable banding (e.g. on non-WDDM / hardware-TDR-disabled).
+        config.max_pixels_per_dispatch = std::env::var("SPECTRA_MAX_PIXELS_PER_DISPATCH")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(65_536);
+
+        // CUDA-GRAPH ↔ D3D12-INTEROP FIX: the resident renderer feeds the DLSS
+        // present through a D3D12-shared external-memory texture (RenderTarget::
+        // Interop). CUDA-graph capture/replay of the per-sample pipeline records
+        // the interop memcpy_dtod into that SHARED resource into the graph; on
+        // replay the captured cross-context/external-memory dependency is not
+        // re-resolved against the D3D12 queue, which hangs the GPU past the 2s
+        // WDDM watchdog (DXGI_ERROR_DEVICE_HUNG, 0x887A0007) on the first city
+        // present — the exact city-only failure (the menu never runs the renderer
+        // or graphs). Disable graphs by default on the resident/interop path; the
+        // per-sample dispatch cost dwarfs the graph launch-overhead saving at
+        // these resolutions. SPECTRA_CUDA_GRAPHS=1 re-enables for benchmarking.
+        config.use_cuda_graphs = std::env::var("SPECTRA_CUDA_GRAPHS").as_deref() == Ok("1");
+
         let renderer = Renderer::new(gpu, config);
 
         let mut me = Self {
@@ -220,9 +248,18 @@ impl ResidentCityRenderer {
         };
         scene.mark_lights_changed();
 
+        // TDR DIAGNOSIS: the one-time scene/BVH/TLAS upload is a prime suspect for
+        // a single >2s GPU op. Wall-time it when SPECTRA_DISPATCH_TIMING=1.
+        let _scene_t = std::time::Instant::now();
         self.renderer
             .load_scene_state(scene)
             .map_err(|e| format!("load_scene_state: {e:?}"))?;
+        if std::env::var("SPECTRA_DISPATCH_TIMING").as_deref() == Ok("1") {
+            eprintln!(
+                "[dispatch_timing] load_scene_state (BVH/TLAS upload): {:.1} ms",
+                _scene_t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
 
         // Sky-dome + atmosphere from the rig — set after the scene so the state
         // exists. These setters are idempotent and cheap (no GPU rebuild).
