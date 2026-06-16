@@ -165,6 +165,19 @@ impl ResidentCityRenderer {
         settings.features.restir = tier_settings.features.restir.clone();
         config.apply_settings(&settings);
         config.max_bounces = max_bounces;
+        // ROOT-CAUSE FIX (black buildings on CUDA): the Hero4 spectral path routes
+        // primary-hit NEE direct lighting into the spectral shadow buffers
+        // (megakernel hwss branch) instead of g_shadow_contrib_r → apply_shadows →
+        // film. On the CUDA precompiled-PTX path that spectral contribution never
+        // lands on the final RGB film, so every lit surface (the whole merged city
+        // soup) integrates to ~0 and renders as a black silhouette under a lit sky
+        // — exactly the "only sky, no buildings" symptom. Force the scalar
+        // (SpectralMode::Single) NEE path, whose g_shadow_contrib_r → apply_shadows
+        // resolve is the proven-working lighting route, until the spectral CUDA
+        // resolve is wired. Overridable via OCHROMA_SPECTRAL=1 for the spectral work.
+        if std::env::var("OCHROMA_SPECTRAL").as_deref() != Ok("1") {
+            config.spectral_mode = spectra_renderer::SpectralMode::Single;
+        }
 
         // TDR GUARD (Windows WDDM 2s GPU watchdog): bound every path-trace
         // dispatch so no single launch trips the watchdog and kills the first
