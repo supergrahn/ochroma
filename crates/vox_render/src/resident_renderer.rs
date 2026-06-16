@@ -18,13 +18,26 @@
 
 #![cfg(feature = "spectra-native")]
 
+#[cfg(not(target_os = "windows"))]
 use spectra_gpu::VulkanSlangBackend;
+#[cfg(target_os = "windows")]
+use spectra_gpu::CudarcSlangBackend;
 use spectra_renderer::{FrameOutput, RenderConfig, RenderSettings, Renderer};
+
+/// The LIVE path-tracer compute backend. The standing rule: use CUDA on NVIDIA
+/// when available. On Windows (NVIDIA/CUDA box) this is the cudarc CUDA backend;
+/// elsewhere (e.g. the Linux/AMD dev box) it falls back to Vulkan. The window
+/// present is a separate, thin swapchain (display only), independent of this.
+#[cfg(target_os = "windows")]
+type ResidentBackend = CudarcSlangBackend;
+#[cfg(not(target_os = "windows"))]
+type ResidentBackend = VulkanSlangBackend;
 use spectra_scene_state::{LightLayer, SceneState};
 
 /// Re-export the R31 fidelity tier so the game layer can select a tier through
 /// `vox_render` without depending on `spectra-renderer` directly.
 pub use spectra_renderer::FidelityTier;
+pub use spectra_renderer::RenderTarget;
 
 use crate::splat_backend::{
     LightRig, VULKAN_LIGHT_FLOATS, pack_vulkan_directional_light, resolve_slang_kernel_dir,
@@ -58,7 +71,7 @@ pub struct ResidentCityRenderer {
     /// The renderer, constructed once: KernelSet, SceneUploader, GpuStage (BLAS
     /// cache + per-layer fingerprints), RenderState, AtmosphereManager. Reused
     /// across every frame.
-    renderer: Renderer<VulkanSlangBackend>,
+    renderer: Renderer<ResidentBackend>,
     /// Internal render resolution.
     width: u32,
     height: u32,
@@ -130,7 +143,7 @@ impl ResidentCityRenderer {
         max_bounces: u32,
         initial: SceneState,
     ) -> Result<Self, String> {
-        let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
+        let gpu = ResidentBackend::new(0).map_err(|e| format!("gpu backend init: {e:?}"))?;
         let mut config = RenderConfig::near_realtime(width, height);
         config.slang_kernel_dir = resolve_slang_kernel_dir();
         if std::env::var("OCHROMA_SHADE_LEAN").as_deref() == Ok("1") {
@@ -300,6 +313,25 @@ impl ResidentCityRenderer {
     /// Internal render resolution.
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// Route the renderer's final frame to a CUDA interop device pointer (the
+    /// zero-copy DLSS present path) or back to host beauty. When `Interop`, the
+    /// `PACK_RGBA` dispatch DtoD-copies the packed RGBA f32 straight into
+    /// `color_ptr` and NO host beauty download happens.
+    pub fn set_render_target(&mut self, target: spectra_renderer::RenderTarget) {
+        self.renderer.set_render_target(target);
+    }
+
+    /// The currently-configured render target.
+    pub fn render_target(&self) -> spectra_renderer::RenderTarget {
+        self.renderer.render_target()
+    }
+
+    /// The device pointer the last realtime frame routed its packed RGBA into
+    /// (`Some` after an `Interop` frame; `None` on the host-beauty path).
+    pub fn last_pack_output_ptr(&self) -> Option<u64> {
+        self.renderer.last_pack_output_ptr()
     }
 }
 
