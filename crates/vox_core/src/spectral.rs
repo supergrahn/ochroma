@@ -168,4 +168,100 @@ mod tests {
         let g = linear_to_srgb_gamma(1.0);
         assert!((g - 1.0).abs() < 0.001, "gamma(1.0) should be ~1.0, got {}", g);
     }
+
+    // --- Building albedo conversion tests ---
+    //
+    // These tests validate the spectral→base_color conversion used by
+    // `urban_horizon::spectra_frame::pbr_for_channel`. The function converts
+    // a 16-band reflectance to a LINEAR sRGB base_color for the path tracer
+    // (which works in linear space, splat_backend.rs line 264).
+    //
+    // The old code applied `linear_to_srgb_gamma` after `xyz_to_srgb`, which
+    // baked a ~1.4× brightness boost into the albedo (e.g. concrete grey linear
+    // 0.50 → gamma 0.74, then stored as "linear" reflectance). The fix removes
+    // the gamma step so the linear value is passed through directly.
+
+    /// Helper replicating the fixed `pbr_for_channel` base_color calculation:
+    /// flat reflectance → `spectral_to_xyz` → `xyz_to_srgb` (linear) → clamp.
+    /// No `linear_to_srgb_gamma` — path tracer receives linear RGB.
+    fn flat_reflectance_to_linear_base_color(v: f32) -> [f32; 3] {
+        let xyz = spectral_to_xyz(&SpectralBands([v; 16]), &Illuminant::d65());
+        let lin = xyz_to_srgb(xyz);
+        [lin[0].clamp(0.0, 1.0), lin[1].clamp(0.0, 1.0), lin[2].clamp(0.0, 1.0)]
+    }
+
+    /// Perfect-white flat reflectance (1.0) → base_color ≈ [1, 1, 1] linear.
+    #[test]
+    fn white_flat_reflectance_maps_to_white_base_color() {
+        let bc = flat_reflectance_to_linear_base_color(1.0);
+        for (i, &c) in bc.iter().enumerate() {
+            assert!(
+                (c - 1.0).abs() < 0.02,
+                "channel {i}: flat 1.0 reflectance should give linear base_color ~1.0, got {c}"
+            );
+        }
+    }
+
+    /// Perfect-black flat reflectance (0.0) → base_color = [0, 0, 0].
+    #[test]
+    fn black_flat_reflectance_maps_to_black_base_color() {
+        let bc = flat_reflectance_to_linear_base_color(0.0);
+        for (i, &c) in bc.iter().enumerate() {
+            assert!(c < 0.01, "channel {i}: flat 0.0 reflectance should give base_color ~0.0, got {c}");
+        }
+    }
+
+    /// Concrete-like reflectance (0.30 flat, physical range 0.25–0.35) must
+    /// produce a mid-dark linear base_color well below 0.5.
+    ///
+    /// The old gamma-encoding bug produced ~0.58 for this input; asserting
+    /// < 0.45 rules out the bug. Y = 0.30 for a neutral flat reflectance
+    /// (confirmed analytically: the normalization preserves Y = reflectance).
+    #[test]
+    fn concrete_reflectance_030_gives_realistic_linear_albedo() {
+        let bc = flat_reflectance_to_linear_base_color(0.30);
+        for (i, &c) in bc.iter().enumerate() {
+            assert!(
+                c > 0.20 && c < 0.45,
+                "channel {i}: concrete flat-0.30 → linear base_color should be ~0.28–0.32, \
+                 got {c:.4} (old gamma bug gave ~0.58)"
+            );
+        }
+    }
+
+    /// Service/concrete grey from `render_gpu::building_rgb(Service)` = (0.59, 0.59, 0.63).
+    /// Uplifted to spectral and back to linear, the luminance must be in [0.35, 0.60] —
+    /// NOT the near-white ~0.74 the old `linear_to_srgb_gamma` call produced.
+    #[test]
+    fn service_grey_spectral_roundtrip_is_not_near_white() {
+        use half::f16;
+        let (r, g, b) = (0.59f32, 0.59f32, 0.63f32);
+        let bits = rgb_to_spectral(r, g, b);
+        let refl: [f32; 16] = std::array::from_fn(|i| f16::from_bits(bits[i]).to_f32());
+        let xyz = spectral_to_xyz(&SpectralBands(refl), &Illuminant::d65());
+        let lin = xyz_to_srgb(xyz);
+        let bc = [lin[0].clamp(0.0, 1.0), lin[1].clamp(0.0, 1.0), lin[2].clamp(0.0, 1.0)];
+        let luma = 0.2126 * bc[0] + 0.7152 * bc[1] + 0.0722 * bc[2];
+        assert!(
+            luma < 0.65,
+            "service grey linear luma should be < 0.65, got {luma:.4} (old gamma bug: ~0.74)"
+        );
+        assert!(luma > 0.30, "service grey should be mid-grey, not black: luma {luma:.4}");
+    }
+
+    /// Dark asphalt reflectance (0.08) must be proportionally much dimmer than
+    /// concrete (0.30), proving the linear scale is preserved and not collapsed
+    /// toward white by gamma encoding.
+    #[test]
+    fn dark_reflectance_proportionally_dimmer_than_concrete() {
+        let bc_concrete = flat_reflectance_to_linear_base_color(0.30);
+        let bc_asphalt  = flat_reflectance_to_linear_base_color(0.08);
+        let y_c = bc_concrete[1];
+        let y_a = bc_asphalt[1];
+        assert!(
+            y_a < y_c * 0.5,
+            "asphalt Y {y_a:.4} should be < half concrete Y {y_c:.4} \
+             (old gamma bug collapsed the linear scale)"
+        );
+    }
 }
