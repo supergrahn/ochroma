@@ -29,7 +29,8 @@ use vox_core::types::GaussianSplat;
 
 #[cfg(feature = "spectra-native")]
 use crate::splat_backend::{
-    BlasDesc, InstanceRecordGpu, PbrMaterial, VULKAN_MATERIAL_FLOATS, pack_vulkan_mesh_material,
+    BlasDesc, InstanceRecordGpu, PbrMaterial, VULKAN_MATERIAL_FLOATS, pack_cuda_mesh_material,
+    pack_vulkan_mesh_material,
 };
 
 /// One quad = 4 vertices, 2 triangles (6 indices).
@@ -368,11 +369,36 @@ pub fn meshes_to_instanced_scene(
         instance_material_ids.push(inst.material_id);
     }
 
-    // --- Materials: 156-float Vulkan stride (NEVER 132-float CUDA) ---
-    let mut params: Vec<f32> = Vec::with_capacity(materials.len() * VULKAN_MATERIAL_FLOATS);
-    for m in materials {
-        params.extend_from_slice(&pack_vulkan_mesh_material(*m));
-    }
+    // --- Materials: per-backend stride ---
+    // The Slang `MaterialData` struct compiles to DIFFERENT memory layouts on the
+    // two backends: CUDA (NVRTC) packs tight (132 floats / 528 bytes); Vulkan
+    // (SPIR-V std430) pads every float3 to 16 bytes (156 floats / 624 bytes).
+    // Pack the layout that matches the backend the renderer will actually select.
+    // Selection mirrors `select_present` in splat_backend.rs: SPECTRA_BACKEND=cuda
+    // forces CUDA (the product path on NVIDIA, set by the game launcher); anything
+    // else defaults to the Vulkan-first fallback. Feeding the wrong layout put
+    // `visibility_mask`/`albedo` in padding slots and the whole city rendered
+    // black (every mesh hit culled on a garbage visibility mask).
+    let cuda_layout = matches!(
+        std::env::var("SPECTRA_BACKEND")
+            .ok()
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref(),
+        Some("cuda")
+    );
+    let mut params: Vec<f32> = if cuda_layout {
+        let mut p = Vec::with_capacity(materials.len() * 132);
+        for m in materials {
+            p.extend_from_slice(&pack_cuda_mesh_material(*m));
+        }
+        p
+    } else {
+        let mut p = Vec::with_capacity(materials.len() * VULKAN_MATERIAL_FLOATS);
+        for m in materials {
+            p.extend_from_slice(&pack_vulkan_mesh_material(*m));
+        }
+        p
+    };
 
     // --- Spectral SPD keyed by stable material_id (empty ⇒ white) ---
     let mut spd_map = std::collections::HashMap::with_capacity(spectral_spd.len());

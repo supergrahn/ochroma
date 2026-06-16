@@ -3036,6 +3036,55 @@ pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS
     a
 }
 
+/// Pack `PbrMaterial` into the CUDA `MaterialData` tight layout: 132 floats /
+/// 528 bytes, field-for-field with `slang/material_types.slang` as the
+/// NVRTC-compiled kernel sees it. This is the COUNTERPART to
+/// [`pack_vulkan_mesh_material`] (156-float SPIR-V std430 stride).
+///
+/// Why both exist: the same Slang `MaterialData` struct compiles to DIFFERENT
+/// strides on the two backends — Vulkan std430 pads every `float3` to 16 bytes
+/// (156 floats), CUDA packs tight (132 floats). Feeding the Vulkan-packed buffer
+/// to the CUDA kernel put `visibility_mask` / `albedo` / texture ids in the wrong
+/// slots, so every mesh hit read a garbage `visibility_mask`, failed the
+/// `(visibility_mask & u_ray_type) != 0` test, and was culled as invisible — the
+/// whole city rendered black. We delegate the exact 132-float layout to the
+/// canonical packer in `spectra_scene_data::MaterialData::to_f32_array()` (the
+/// single source of truth that mirrors the Slang struct), then override the
+/// material `type` slot for glass/metal (to_f32_array hardcodes MAT_LAMBERT).
+#[cfg(feature = "spectra-native")]
+pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
+    use spectra_scene_data::MaterialData;
+    let glass = m.transmission > 0.0;
+    let metal = !glass && m.metallic > 0.5;
+
+    let mut md = MaterialData::default();
+    md.base_color = [m.base_color[0], m.base_color[1], m.base_color[2], 1.0];
+    md.roughness = m.roughness;
+    md.metallic = m.metallic;
+    md.ior = m.ior;
+    // Emission colour = base colour, scaled by strength (matches the Vulkan
+    // packer's emission slots). Zero strength ⇒ no glow, so this is harmless for
+    // opaque facades and lights emissive materials (street lamps) correctly.
+    md.emission = m.base_color;
+    md.emission_strength = m.emission_strength;
+    md.transmission = m.transmission;
+    md.tex_base_color = m.albedo_tex;
+    md.tex_metallic_roughness = m.roughness_tex;
+    md.tex_normal = m.normal_tex;
+    md.is_thin = if glass && m.thin_walled { 1 } else { 0 };
+
+    let mut v = md.to_f32_array();
+    // [0] int type — to_f32_array writes MAT_LAMBERT(1); honour glass/metal.
+    v[0] = f32::from_bits(if glass {
+        3u32 // MAT_GLASS
+    } else if metal {
+        2u32 // MAT_METAL
+    } else {
+        1u32 // MAT_LAMBERT
+    });
+    v
+}
+
 #[cfg(feature = "spectra-native")]
 impl SpectraRenderBackend {
     /// Spawn render thread with near-realtime config (4 spp, DLSS, NRC, ReSTIR PT).
