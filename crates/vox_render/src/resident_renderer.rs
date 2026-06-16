@@ -333,6 +333,13 @@ impl ResidentCityRenderer {
     pub fn last_pack_output_ptr(&self) -> Option<u64> {
         self.renderer.last_pack_output_ptr()
     }
+
+    /// RR (DLSS Ray Reconstruction) guide device ptrs for the last frame, in the
+    /// order `(diffuse_albedo, specular_albedo, normals, roughness, depth,
+    /// motion)`. See `Renderer::rr_guide_ptrs`.
+    pub fn rr_guide_ptrs(&mut self) -> [u64; 6] {
+        self.renderer.rr_guide_ptrs()
+    }
 }
 
 /// Extract the camera forward axis (world -Z of the view) from a scene's
