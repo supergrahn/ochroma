@@ -6923,6 +6923,7 @@ name = "spectra-optix"
 version = "0.1.0"
 dependencies = [
  "bindgen 0.69.5",
+ "cudarc",
  "glam 0.29.3",
  "libloading 0.8.9",
  "serde",

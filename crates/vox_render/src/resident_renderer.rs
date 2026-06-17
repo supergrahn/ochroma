@@ -166,6 +166,16 @@ impl ResidentCityRenderer {
         config.apply_settings(&settings);
         config.max_bounces = max_bounces;
 
+        // NVIDIA-stack foundation: enable OptiX HW-RT for the LIVE game by default
+        // (config-first, not env-gated). ResidentCityRenderer historically never
+        // set this, so the shipped game ran the SOFTWARE BVH and the whole RT-core
+        // stack (CLAS/Mega-Geometry, HW TLAS, ReSTIR-PT quality, DLSS-RR guides)
+        // was dead code. The construct gate in spectra renderer/mod.rs
+        // (`want_optix && raw_context()!=0 && should_use_optix_rt()`) safely
+        // rejects this on AMD/Vulkan/no-CUDA → software fallback, so it's correct
+        // on the dev 780M too. SPECTRA_USE_OPTIX_RT remains an override.
+        config.use_optix_rt = true;
+
         // PHASE R0 measurement override: OCHROMA_RESTIR=on|off forces the ReSTIR
         // DI + PT path on/off at runtime WITHOUT permanently changing the tier,
         // so the `--compare-map` A/B harness can render the same scene both ways.
