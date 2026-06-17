@@ -230,6 +230,23 @@ impl ResidentCityRenderer {
         self.upload_scene(scene)
     }
 
+    /// Bind the path tracer's flat texture atlas (texture keystone). The
+    /// megakernel samples it (EWA) for any material whose `albedo_tex >= 0`.
+    /// MUST be called AFTER scene upload (`new_with_tier` / `set_scene`) because
+    /// the renderer's `set_texture_atlas` needs `state` to exist. `texture_descs`
+    /// + `texture_data` come from `splat_backend::build_texture_atlas`; an empty
+    /// atlas disables sampling (every material falls back to its flat colour).
+    pub fn set_texture_atlas(
+        &mut self,
+        texture_descs: &[u32],
+        texture_data: &[f32],
+        num_textures: u32,
+    ) -> Result<(), String> {
+        self.renderer
+            .set_texture_atlas(texture_descs, texture_data, num_textures)
+            .map_err(|e| format!("set_texture_atlas: {e:?}"))
+    }
+
     /// Shared upload body used by both `new` and `set_scene`.
     fn upload_scene(&mut self, mut scene: SceneState) -> Result<SceneDelta, String> {
         // Force the internal render resolution onto the scene's camera so the
