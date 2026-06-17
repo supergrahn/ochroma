@@ -68,11 +68,19 @@ pub struct HybridMesh {
     pub reflectance: [f32; 16],
     /// Object/entity id written to the framebuffer for these pixels.
     pub object_id: u32,
+    /// Per-vertex UVs (parallel to `positions`). Empty = untextured; the
+    /// flat `reflectance` is used as the base colour. When present (same len as
+    /// `positions`) and `albedo_tex >= 0`, the renderer samples the texture
+    /// atlas instead of the flat colour. (Texture keystone.)
+    pub uvs: Vec<[f32; 2]>,
+    /// Albedo texture atlas slot for this mesh, or -1 for none (flat colour).
+    pub albedo_tex: i32,
 }
 
 impl HybridMesh {
     /// Build a mesh whose reflectance comes from an RGB colour (uplifted to a
     /// 16-band reflectance via [`vox_core::spectral::rgb_to_spectral`]).
+    /// Untextured: `uvs` empty, `albedo_tex = -1`.
     pub fn from_rgb(
         positions: Vec<[f32; 3]>,
         indices: Vec<u32>,
@@ -86,7 +94,20 @@ impl HybridMesh {
             indices,
             reflectance,
             object_id,
+            uvs: Vec::new(),
+            albedo_tex: -1,
         }
+    }
+
+    /// Attach per-vertex UVs + an albedo texture atlas slot (builder style).
+    /// `uvs` must be parallel to `positions`; mismatched lengths are ignored
+    /// (mesh stays untextured) so a bad cook can never corrupt sampling.
+    pub fn with_texture(mut self, uvs: Vec<[f32; 2]>, albedo_tex: i32) -> Self {
+        if uvs.len() == self.positions.len() && albedo_tex >= 0 {
+            self.uvs = uvs;
+            self.albedo_tex = albedo_tex;
+        }
+        self
     }
 }
 
