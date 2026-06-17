@@ -165,6 +165,36 @@ impl ResidentCityRenderer {
         settings.features.restir = tier_settings.features.restir.clone();
         config.apply_settings(&settings);
         config.max_bounces = max_bounces;
+
+        // PHASE R0 measurement override: OCHROMA_RESTIR=on|off forces the ReSTIR
+        // DI + PT path on/off at runtime WITHOUT permanently changing the tier,
+        // so the `--compare-map` A/B harness can render the same scene both ways.
+        // `apply_settings` maps features.restir -> use_restir but leaves
+        // resample_mode untouched (a wiring gap the audit flagged); the PT path
+        // only runs when resample_mode != None, so we set BOTH here. Temporal-only
+        // is the R0 mode (spatial is the R1 follow-up). Unset => leave as resolved.
+        match std::env::var("OCHROMA_RESTIR").as_deref() {
+            Ok("on") | Ok("1") => {
+                config.use_restir = true;
+                config.resample_mode = spectra_renderer::ResampleMode::Temporal;
+                eprintln!("[restir-override] OCHROMA_RESTIR=on -> use_restir=true resample_mode=Temporal");
+            }
+            Ok("off") | Ok("0") => {
+                config.use_restir = false;
+                config.resample_mode = spectra_renderer::ResampleMode::None;
+                eprintln!("[restir-override] OCHROMA_RESTIR=off -> use_restir=false resample_mode=None");
+            }
+            _ => {}
+        }
+        // PHASE R0 measurement override: SPECTRA_SHOT_SPP forces the per-frame
+        // target spp (the `--compare-map` equal-time loop uses this to match the
+        // ON/OFF passes to equal wall-clock). Unset => the tier's spp stands.
+        if let Some(spp) = std::env::var("SPECTRA_SHOT_SPP").ok().and_then(|v| v.parse::<u32>().ok()) {
+            if spp > 0 {
+                config.target_spp = spp;
+                eprintln!("[spp-override] SPECTRA_SHOT_SPP={spp} -> target_spp={spp}");
+            }
+        }
         // ROOT-CAUSE FIX (black buildings on CUDA): the Hero4 spectral path routes
         // primary-hit NEE direct lighting into the spectral shadow buffers
         // (megakernel hwss branch) instead of g_shadow_contrib_r → apply_shadows →
