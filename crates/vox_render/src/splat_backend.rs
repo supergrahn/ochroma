@@ -369,6 +369,11 @@ pub enum LookPreset {
     Filmic,
     /// Reinhard-on-luminance, +0.5 EV — soft, hue-preserving, for review.
     SoftReview,
+    /// Reinhard-on-luminance, -2.0 EV — calibrated for the LIVE celestial sun
+    /// radiance (~28 at noon). SoftReview's +0.5 blew a mid-albedo ground out to
+    /// near-white under the live sun; this lands it at a believable daylit
+    /// mid-tone. Used by [`LightRig::realistic_daylight`].
+    DaylitCity,
     /// No tonemap (raw clamped linear) — diagnostics only.
     Flat,
 }
@@ -383,6 +388,7 @@ impl LookPreset {
             LookPreset::AcesBright => (ToneMapper::Aces, 1.0),
             LookPreset::Filmic => (ToneMapper::Filmic, 0.0),
             LookPreset::SoftReview => (ToneMapper::ReinhardLuma, 0.5),
+            LookPreset::DaylitCity => (ToneMapper::ReinhardLuma, -2.0),
             LookPreset::Flat => (ToneMapper::None, 0.0),
         }
     }
@@ -401,6 +407,7 @@ impl LookPreset {
             LookPreset::AcesBright => (Tm::Aces, 1.0),
             LookPreset::Filmic => (Tm::Filmic, 0.0),
             LookPreset::SoftReview => (Tm::ReinhardLuma, 0.5),
+            LookPreset::DaylitCity => (Tm::ReinhardLuma, -2.0),
             LookPreset::Flat => (Tm::Linear, 0.0),
         }
     }
@@ -551,7 +558,7 @@ impl LightRig {
             sky_dome_zenith: [0.42, 0.55, 0.78],
             sky_dome_horizon: [0.82, 0.85, 0.90],
             // Reinhard-on-luma, hue-preserving — keeps the brick's chroma.
-            look: LookPreset::SoftReview,
+            look: LookPreset::DaylitCity,
             ..Default::default()
         }
     }

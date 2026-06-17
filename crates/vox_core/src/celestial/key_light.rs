@@ -82,9 +82,14 @@ pub fn celestial_key_light(sun: &SunPosition, moon: &MoonPosition) -> KeyLight {
 
     // ── Sky dome ──────────────────────────────────────────────────────────────
     // Three anchor palettes: day, dusk, night.
-    const DAY_ZENITH: [f32; 3] = [0.08, 0.38, 0.92];  // clear blue sky
-    const DAY_HORIZON: [f32; 3] = [0.65, 0.82, 0.98]; // pale horizon
-    const DAY_INTENSITY: f32 = 0.90;
+    // Sky-dome AMBIENT fill (not the visible atmosphere sky). The prior values
+    // were a saturated pure-blue at 0.90 intensity, which flooded every surface
+    // with blue and filled the sun's shadows → flat, blue-cast daylight. Natural
+    // daylight wants a desaturated soft-blue fill at roughly HALF the strength so
+    // the warm directional sun dominates and shadows read with contrast.
+    const DAY_ZENITH: [f32; 3] = [0.40, 0.52, 0.72];  // soft desaturated sky-blue
+    const DAY_HORIZON: [f32; 3] = [0.80, 0.83, 0.88]; // near-neutral warm horizon
+    const DAY_INTENSITY: f32 = 0.45;
 
     const DUSK_ZENITH: [f32; 3] = [0.12, 0.16, 0.45]; // deep dusk blue
     const DUSK_HORIZON: [f32; 3] = [1.00, 0.45, 0.18]; // orange-red horizon
