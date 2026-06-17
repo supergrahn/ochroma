@@ -80,6 +80,27 @@ pub struct HybridMesh {
     /// an untextured (flat `reflectance`) surface. Scene assembly collects the
     /// unique paths into the texture atlas and rewrites `albedo_tex` to the slot.
     pub albedo_tex_path: Option<String>,
+    /// Tangent-space normal-map path (LINEAR data — never sRGB-decoded).
+    /// Resolved to an atlas slot during scene assembly, parallel to
+    /// `albedo_tex_path`; `None` = no normal map (geometric normals only).
+    pub normal_tex_path: Option<String>,
+    /// Roughness-map path (LINEAR, R channel). `None` = flat channel roughness.
+    pub roughness_tex_path: Option<String>,
+    /// Displacement/height-map path (LINEAR, single channel) driving POM relief
+    /// in the megakernel. `None` = no relief. NOTE: a single-channel map uses
+    /// plain POM; cone-step auto-select needs a 2-channel (height+cone) map.
+    pub displacement_tex_path: Option<String>,
+    /// POM relief depth in UV-height units (~0.02–0.05). Only consumed when a
+    /// displacement map is bound; mirrors `PbrMaterial::displacement_scale`.
+    pub displacement_scale: f32,
+    /// Height value treated as the flat surface plane for POM (0.5 typical).
+    pub displacement_midlevel: f32,
+    /// Optional transmission override for glass/water. `None` leaves the
+    /// channel-derived value intact (e.g. the Glass channel already sets 0.9);
+    /// `Some(t)` forces transmission to `t` (used for water surfaces).
+    pub transmission_override: Option<f32>,
+    /// IOR paired with `transmission_override` (e.g. 1.33 water, 1.5 glass).
+    pub ior_override: Option<f32>,
 }
 
 impl HybridMesh {
@@ -102,6 +123,13 @@ impl HybridMesh {
             uvs: Vec::new(),
             albedo_tex: -1,
             albedo_tex_path: None,
+            normal_tex_path: None,
+            roughness_tex_path: None,
+            displacement_tex_path: None,
+            displacement_scale: 0.0,
+            displacement_midlevel: 0.5,
+            transmission_override: None,
+            ior_override: None,
         }
     }
 
@@ -124,6 +152,40 @@ impl HybridMesh {
             self.uvs = uvs;
             self.albedo_tex_path = Some(path);
         }
+        self
+    }
+
+    /// Attach PBR relief maps (normal / roughness / displacement) by PATH,
+    /// resolved to atlas slots at scene assembly (parallel to
+    /// [`with_albedo_texture`]). These are LINEAR data maps (never sRGB).
+    /// A displacement map enables POM at a default `displacement_scale` of 0.03
+    /// (the proven brick value); set [`HybridMesh::displacement_scale`] directly
+    /// for a different relief depth. Pass `None` for any map you don't have.
+    /// Does NOT set UVs — call after [`with_albedo_texture`], which carries them.
+    pub fn with_pbr_textures(
+        mut self,
+        normal: Option<String>,
+        roughness: Option<String>,
+        displacement: Option<String>,
+    ) -> Self {
+        self.normal_tex_path = normal;
+        self.roughness_tex_path = roughness;
+        if displacement.is_some() {
+            self.displacement_tex_path = displacement;
+            if self.displacement_scale == 0.0 {
+                self.displacement_scale = 0.03;
+            }
+        }
+        self
+    }
+
+    /// Force a transmissive material (glass / water) regardless of the Forge
+    /// channel. Use for water surfaces (`with_transmission(0.6, 1.33)`); building
+    /// glass already gets transmission from its Glass channel so it needs no
+    /// override.
+    pub fn with_transmission(mut self, transmission: f32, ior: f32) -> Self {
+        self.transmission_override = Some(transmission);
+        self.ior_override = Some(ior);
         self
     }
 }
