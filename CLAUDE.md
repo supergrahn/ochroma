@@ -56,3 +56,15 @@ Key rules enforced by the templates:
 - `IMPORTANT NOTES` must contain real API signatures so agents don't invent their own
 
 Plans go in `docs/superpowers/plans/`. Design docs go in `docs/superpowers/specs/`.
+
+## Render/material capabilities (engine side) — built, most one wire from the world
+
+The Spectra path tracer + `vox_render` already implement far more than the live game shows. Full Forge geometry/material inventory: `../forge/CLAUDE.md`. Engine-side, verified 2026-06-17:
+
+- **Glass/transmission** — `PbrMaterial.transmission/ior` (`vox_render/src/splat_backend.rs:180`); the Glass material channel → `transmission 0.9, ior 1.5, roughness 0.05` (`spectra_frame.rs:267`), packed to `MAT_GLASS` → `brdf_glass.slang` (auto bounce-bump to 8). Real semi-transparent glass.
+- **Normal + roughness + POM/cone-step relief** — fully in the megakernel (`spectra/slang/megakernel.slang:2172-2295`) + packer (`splat_backend.rs:2974-2989`); proven by the still-path binary. **Structural choke point: `HybridMesh` (`vox_render/src/hybrid_compose.rs:62`) carries ONLY `albedo_tex_path`** — no normal/roughness/displacement, so 46 on-disk PolyHaven normal/rough maps are unreachable live. Fix = add 3 `Option<String>` fields + collect them.
+- **7-channel weathering** (`apply_weathering_full`, `megakernel.slang:2332`) — cooked per-vertex into `ReadyAssetMesh.weathering_masks`; **no setter on `ResidentCityRenderer`** so the live path drops them.
+- **Hero-wavelength spectral** (16-band) — plumbed but `resident_renderer.rs:208` forces `SpectralMode::Single` (dodges a black-buildings CUDA bug).
+- **Emission / lit windows** (`MAT_GLASS_LIT` id 7), advanced BSDF lobes (clearcoat/sheen/leaf-translucency, MaterialX), À-Trous denoise, Bruneton atmosphere + celestial key light, DaylitCity tonemap — all real; mostly unrequested by the game.
+
+**Rule:** a SOTA render needs ZERO new render tech — only wiring (drive Forge's directive path → real geometry+zones; widen the `HybridMesh` texture seam; route cooked `material_zones` to the renderer). Don't validate render/content on box-stub scenes — the witness is a hero-camera frame.
