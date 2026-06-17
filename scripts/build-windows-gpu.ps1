@@ -93,6 +93,30 @@ if (-not $libclangDir) {
 $env:LIBCLANG_PATH = $libclangDir
 Write-Step "libclang: $libclangDir"
 
+# --- MSVC host compiler (cl.exe) for nvcc --ptx --------------------------
+# spectra-optix/build.rs compiles the OptiX device programs with `nvcc --ptx`.
+# Even for PTX-only output, nvcc invokes the MSVC host compiler `cl.exe` for its
+# preprocessing pass — so cl.exe MUST be on PATH or nvcc fails and build.rs
+# falls back to the committed device_programs.ptx (still correct, but stale if
+# the .cu changed). Import the VS dev environment here so nvcc compiles FRESH.
+$vswhere2 = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path $vswhere2) {
+    $vsRoot2 = & $vswhere2 -latest -products * -property installationPath 2>$null
+    if ($vsRoot2) {
+        $vcvars = Join-Path $vsRoot2 "VC\Auxiliary\Build\vcvars64.bat"
+        if (Test-Path $vcvars) {
+            # Run vcvars in cmd and import the resulting env into this session so
+            # cl.exe (and the MSVC INCLUDE/LIB) are visible to cargo -> build.rs.
+            cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
+                if ($_ -match '^([^=]+)=(.*)$') {
+                    Set-Item -Path "Env:$($matches[1])" -Value $matches[2]
+                }
+            }
+            Write-Step "MSVC:     vcvars64 imported (cl.exe on PATH for nvcc --ptx)"
+        }
+    }
+}
+
 # --- Compose PATH + backend ----------------------------------------------
 # Order matters: slang\bin and CUDA\bin must precede the rest so Slang's PTX
 # pass-through finds nvcc and the slang DLLs resolve at link/runtime.
