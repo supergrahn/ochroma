@@ -266,6 +266,15 @@ impl ResidentCityRenderer {
     /// the renderer's `set_texture_atlas` needs `state` to exist. `texture_descs`
     /// + `texture_data` come from `splat_backend::build_texture_atlas`; an empty
     /// atlas disables sampling (every material falls back to its flat colour).
+    /// Bind an equirectangular HDRI environment map (linear RGB, `channels`
+    /// usually 3). Drives the megakernel's miss-ray environment lookup + HDRI
+    /// importance-sampled NEE (both already in the kernel) — replacing the
+    /// procedural gradient sky with real image-based lighting. Empty `data`
+    /// clears it (back to procedural sky). Call after the scene exists.
+    pub fn set_hdri(&mut self, data: &[f32], width: u32, height: u32, channels: u32) {
+        self.renderer.set_hdri(data, width, height, channels);
+    }
+
     pub fn set_texture_atlas(
         &mut self,
         texture_descs: &[u32],
