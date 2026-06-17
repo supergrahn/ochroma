@@ -332,7 +332,14 @@ pub fn meshes_to_instanced_scene(
     let mut tri_material_ids: Vec<u32> = Vec::with_capacity(total_tris);
 
     let mut vbase: u32 = 0;
+    let mut tbase: u32 = 0;
+    // K1: per-proto sub-ranges into the shared soup, so the uploader can build one
+    // BLAS per prototype (the multi-proto TLAS that makes 100K buildings + 1M cims
+    // representable instead of one merged soup).
+    let mut proto_ranges: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(blas.len());
     for b in blas {
+        let v_start = vbase;
+        let t_start = tbase;
         debug_assert_eq!(
             b.positions.len(),
             b.normals.len(),
@@ -358,15 +365,28 @@ pub fn meshes_to_instanced_scene(
             let mid = b.material_ids.get(ti).copied().unwrap_or(0) as u32;
             tri_material_ids.push(mid);
         }
-        vbase += b.positions.len() as u32;
+        let vcount = b.positions.len() as u32;
+        let tcount = b.indices.len() as u32;
+        proto_ranges.push((v_start, vcount, t_start, tcount));
+        vbase += vcount;
+        tbase += tcount;
     }
 
-    // --- Instances: transforms SoA + per-instance material id ---
+    // --- Per-prototype object-space AABBs (K0: real per-proto bounds) ---
+    // One (min,max) per BlasDesc, parallel to proto order, so the TLAS can give
+    // each prototype its REAL bound instead of the merged scene-wide box. This is
+    // the shared instancing-keystone foundation that terrain chunks ride on.
+    let proto_aabbs: Vec<([f32; 3], [f32; 3])> =
+        blas.iter().map(|b| (b.aabb_min, b.aabb_max)).collect();
+
+    // --- Instances: transforms SoA + per-instance material id + proto index ---
     let mut instance_transforms: Vec<f32> = Vec::with_capacity(instances.len() * 16);
     let mut instance_material_ids: Vec<u32> = Vec::with_capacity(instances.len());
+    let mut instance_proto_index: Vec<u32> = Vec::with_capacity(instances.len());
     for inst in instances {
         instance_transforms.extend_from_slice(&inst.transform);
         instance_material_ids.push(inst.material_id);
+        instance_proto_index.push(inst.proto_index);
     }
 
     // --- Materials: per-backend stride ---
@@ -417,6 +437,9 @@ pub fn meshes_to_instanced_scene(
     scene.geometry.instance_count = instances.len();
     scene.geometry.instance_transforms = instance_transforms;
     scene.geometry.instance_material_ids = instance_material_ids;
+    scene.geometry.instance_proto_index = instance_proto_index;
+    scene.geometry.proto_aabbs = proto_aabbs;
+    scene.geometry.proto_ranges = proto_ranges;
     scene.materials = MaterialLayer {
         params,
         spectral_spd: spd_map,
@@ -530,5 +553,93 @@ mod tests {
         assert_eq!(cam.fov_y_radians, 0.8);
         assert_eq!(cam.width, 320);
         assert_eq!(cam.height, 240);
+    }
+
+    /// K0 witness: `meshes_to_instanced_scene` records REAL per-proto AABBs and
+    /// per-instance proto indices while keeping the geometry soup byte-identical
+    /// (vertex/tri totals == sum of inputs ⇒ image unchanged). This is the shared
+    /// instancing-keystone foundation that terrain chunks + building archetypes
+    /// ride on (replaces the scene-wide-AABB-per-BLAS soup collapse).
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn meshes_to_instanced_scene_emits_per_proto_aabbs() {
+        // Proto 0: a single triangle, bound [0,0,0]..[1,1,0].
+        let proto_a = BlasDesc {
+            proto_id: 1,
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            uvs: vec![[0.0, 0.0]; 3],
+            indices: vec![[0, 1, 2]],
+            material_ids: vec![0],
+            aabb_min: [0.0, 0.0, 0.0],
+            aabb_max: [1.0, 1.0, 0.0],
+        };
+        // Proto 1: a quad (2 triangles), bound [10,0,0]..[12,2,0] — DISTINCT.
+        let proto_b = BlasDesc {
+            proto_id: 2,
+            positions: vec![
+                [10.0, 0.0, 0.0],
+                [12.0, 0.0, 0.0],
+                [12.0, 2.0, 0.0],
+                [10.0, 2.0, 0.0],
+            ],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            uvs: vec![[0.0, 0.0]; 4],
+            indices: vec![[0, 1, 2], [0, 2, 3]],
+            material_ids: vec![0, 0],
+            aabb_min: [10.0, 0.0, 0.0],
+            aabb_max: [12.0, 2.0, 0.0],
+        };
+        let blas = [proto_a, proto_b];
+        // 3 instances referencing protos 0, 1, 0.
+        let ident = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let instances = [
+            InstanceRecordGpu { proto_index: 0, transform: ident, material_id: 0 },
+            InstanceRecordGpu { proto_index: 1, transform: ident, material_id: 0 },
+            InstanceRecordGpu { proto_index: 0, transform: ident, material_id: 0 },
+        ];
+        let materials = [PbrMaterial::default()];
+        let scene = meshes_to_instanced_scene(&blas, &instances, &materials, &[], 64, 48);
+
+        let sum_verts: usize = blas.iter().map(|b| b.positions.len()).sum();
+        let sum_tris: usize = blas.iter().map(|b| b.indices.len()).sum();
+
+        // One REAL AABB per proto, and the two are DISTINCT (not the merged box).
+        assert_eq!(scene.geometry.proto_aabbs.len(), 2, "one AABB per proto");
+        let aabbs_distinct = scene.geometry.proto_aabbs[0] != scene.geometry.proto_aabbs[1];
+        assert!(aabbs_distinct, "protos must have distinct AABBs, not the scene-wide box");
+        assert_eq!(scene.geometry.proto_aabbs[0], ([0.0, 0.0, 0.0], [1.0, 1.0, 0.0]));
+        assert_eq!(scene.geometry.proto_aabbs[1], ([10.0, 0.0, 0.0], [12.0, 2.0, 0.0]));
+        // Per-instance proto index preserved in order.
+        assert_eq!(scene.geometry.instance_proto_index, vec![0u32, 1, 0]);
+        // K1: per-proto soup sub-ranges (vbase, vcount, tbase, tcount), contiguous
+        // + non-overlapping (proto 1 starts exactly where proto 0 ends — no soup
+        // corruption; this is what the multi-proto uploader slices BLASes from).
+        assert_eq!(scene.geometry.proto_ranges.len(), 2);
+        assert_eq!(scene.geometry.proto_ranges[0], (0, 3, 0, 1));
+        assert_eq!(scene.geometry.proto_ranges[1], (3, 4, 1, 2));
+        assert_eq!(
+            scene.geometry.proto_ranges[1].0,
+            scene.geometry.proto_ranges[0].0 + scene.geometry.proto_ranges[0].1,
+            "proto vertex ranges must be contiguous"
+        );
+        assert_eq!(
+            scene.geometry.proto_ranges[1].2,
+            scene.geometry.proto_ranges[0].2 + scene.geometry.proto_ranges[0].3,
+            "proto triangle ranges must be contiguous"
+        );
+        // Geometry soup byte-identical: totals == sum of inputs (image unchanged).
+        assert_eq!(scene.geometry.vertex_count, sum_verts);
+        assert_eq!(scene.geometry.triangle_count, sum_tris);
+
+        println!(
+            "protos={} aabbs_distinct={} soup_verts={}(==sum) soup_tris={}(==sum)",
+            scene.geometry.proto_aabbs.len(),
+            aabbs_distinct,
+            scene.geometry.vertex_count,
+            scene.geometry.triangle_count,
+        );
     }
 }
