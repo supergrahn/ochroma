@@ -74,7 +74,12 @@ pub struct HybridMesh {
     /// atlas instead of the flat colour. (Texture keystone.)
     pub uvs: Vec<[f32; 2]>,
     /// Albedo texture atlas slot for this mesh, or -1 for none (flat colour).
+    /// Resolved during scene assembly from `albedo_tex_path`.
     pub albedo_tex: i32,
+    /// Resolved absolute path of this mesh's base-colour texture, or `None` for
+    /// an untextured (flat `reflectance`) surface. Scene assembly collects the
+    /// unique paths into the texture atlas and rewrites `albedo_tex` to the slot.
+    pub albedo_tex_path: Option<String>,
 }
 
 impl HybridMesh {
@@ -96,6 +101,7 @@ impl HybridMesh {
             object_id,
             uvs: Vec::new(),
             albedo_tex: -1,
+            albedo_tex_path: None,
         }
     }
 
@@ -106,6 +112,17 @@ impl HybridMesh {
         if uvs.len() == self.positions.len() && albedo_tex >= 0 {
             self.uvs = uvs;
             self.albedo_tex = albedo_tex;
+        }
+        self
+    }
+
+    /// Attach per-vertex UVs + a base-colour texture PATH (resolved to an atlas
+    /// slot later by scene assembly). `uvs` must be parallel to `positions`;
+    /// mismatched lengths leave the mesh untextured.
+    pub fn with_albedo_texture(mut self, uvs: Vec<[f32; 2]>, path: String) -> Self {
+        if uvs.len() == self.positions.len() {
+            self.uvs = uvs;
+            self.albedo_tex_path = Some(path);
         }
         self
     }
