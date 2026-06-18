@@ -231,9 +231,11 @@ pub struct BlasDesc {
     pub uvs: Vec<[f32; 2]>,
     /// Triangle indices (`[i0, i1, i2]` per triangle, into this BLAS's verts).
     pub indices: Vec<[u32; 3]>,
-    /// Per-triangle material index (forge-channel id ordered). May be empty
-    /// (all triangles default to material 0).
-    pub material_ids: Vec<u8>,
+    /// Per-triangle material index (forge-channel id ordered), RELATIVE to the
+    /// per-instance material base (final = instance base + this). u32 so a real
+    /// city's >255 distinct (channel,texture,colour) combos are not capped/aliased.
+    /// May be empty (all triangles default to relative material 0).
+    pub material_ids: Vec<u32>,
     /// REAL per-mesh AABB: `(min, max)` object-space corners.
     pub aabb_min: [f32; 3],
     pub aabb_max: [f32; 3],
@@ -241,9 +243,10 @@ pub struct BlasDesc {
 
 /// One GPU instance record for the instanced TLAS (Render Keystone T3). Names a
 /// prototype BLAS by index and carries its own world transform + per-instance
-/// material id. The material id is the per-instance override the closest-hit
-/// resolves through the instance custom index (design §4.3) — distinct
-/// instances of the SAME BLAS can therefore shade with DIFFERENT materials.
+/// material BASE. The closest-hit ADDS this base to each triangle's relative
+/// `BlasDesc.material_id` (design §4.1): `final = base + tri.material_id`. So
+/// per-instance variation (different bases) COMPOSES with per-triangle
+/// multi-material instead of clobbering it — there is no override/sentinel.
 #[cfg(feature = "spectra-native")]
 #[derive(Debug, Clone, Copy)]
 pub struct InstanceRecordGpu {
@@ -253,9 +256,15 @@ pub struct InstanceRecordGpu {
     /// Row-major 4×4 world transform, flat 16 floats (translation in the last
     /// row, indices 12/13/14 — the `SceneState::instance_transforms` layout).
     pub transform: [f32; 16],
-    /// Per-instance material id — indexes `g_materials`. The closest-hit reads
-    /// this via the instance custom index.
-    pub material_id: u32,
+    /// Per-instance material BASE added to each triangle's relative
+    /// `material_id` in the closest-hit (`final = base + tri.material_id`).
+    /// `0` = no offset — static per-triangle surfaces (buildings / merged city /
+    /// ground) shade purely with their BLAS per-triangle materials. CIM agents
+    /// set `base = palette_base + clothing_offset` (uniform BLAS, tri id 0);
+    /// scatter sets `base = proto material slot`. Carried to the TLAS as the
+    /// instance custom index. REPLACES the old per-instance material override
+    /// (and its `u32::MAX` "no override" sentinel).
+    pub material_base: u32,
 }
 
 /// A texture image for the path tracer's flat atlas.

@@ -292,10 +292,11 @@ pub fn splats_to_lit_scene(
 ///
 /// Replaces the splat-quad/material-0 live path. Each [`BlasDesc`] is one
 /// archetype prototype; each [`InstanceRecordGpu`] names a prototype and
-/// carries its own world transform + per-instance `material_id`. The
-/// per-instance material reaches shading via the TLAS instance custom index
-/// (uploaded as `instance_material_ids`), so two instances of the SAME BLAS
-/// shade with DIFFERENT materials (design §4.3).
+/// carries its own world transform + per-instance material BASE. The base
+/// reaches shading via the TLAS instance custom index (uploaded as
+/// `instance_material_base`) where the closest-hit ADDS it to each triangle's
+/// relative material id, so two instances of the SAME BLAS shade with DIFFERENT
+/// materials WHILE per-triangle multi-material is preserved (design §4.1).
 ///
 /// Materials are packed with [`pack_vulkan_mesh_material`] — the proven
 /// **156-float Vulkan stride** (`materials.params.len() == materials.len() *
@@ -362,7 +363,8 @@ pub fn meshes_to_instanced_scene(
         for (ti, tri) in b.indices.iter().enumerate() {
             indices.extend_from_slice(&[vbase + tri[0], vbase + tri[1], vbase + tri[2]]);
             // Per-triangle material id (forge channel id ordered); default 0.
-            let mid = b.material_ids.get(ti).copied().unwrap_or(0) as u32;
+            // BlasDesc.material_ids is already u32 — no cast.
+            let mid = b.material_ids.get(ti).copied().unwrap_or(0);
             tri_material_ids.push(mid);
         }
         let vcount = b.positions.len() as u32;
@@ -379,13 +381,13 @@ pub fn meshes_to_instanced_scene(
     let proto_aabbs: Vec<([f32; 3], [f32; 3])> =
         blas.iter().map(|b| (b.aabb_min, b.aabb_max)).collect();
 
-    // --- Instances: transforms SoA + per-instance material id + proto index ---
+    // --- Instances: transforms SoA + per-instance material BASE + proto index ---
     let mut instance_transforms: Vec<f32> = Vec::with_capacity(instances.len() * 16);
-    let mut instance_material_ids: Vec<u32> = Vec::with_capacity(instances.len());
+    let mut instance_material_base: Vec<u32> = Vec::with_capacity(instances.len());
     let mut instance_proto_index: Vec<u32> = Vec::with_capacity(instances.len());
     for inst in instances {
         instance_transforms.extend_from_slice(&inst.transform);
-        instance_material_ids.push(inst.material_id);
+        instance_material_base.push(inst.material_base);
         instance_proto_index.push(inst.proto_index);
     }
 
@@ -436,7 +438,7 @@ pub fn meshes_to_instanced_scene(
     scene.geometry.material_ids = tri_material_ids;
     scene.geometry.instance_count = instances.len();
     scene.geometry.instance_transforms = instance_transforms;
-    scene.geometry.instance_material_ids = instance_material_ids;
+    scene.geometry.instance_material_base = instance_material_base;
     scene.geometry.instance_proto_index = instance_proto_index;
     scene.geometry.proto_aabbs = proto_aabbs;
     scene.geometry.proto_ranges = proto_ranges;
@@ -596,9 +598,9 @@ mod tests {
             1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
         let instances = [
-            InstanceRecordGpu { proto_index: 0, transform: ident, material_id: 0 },
-            InstanceRecordGpu { proto_index: 1, transform: ident, material_id: 0 },
-            InstanceRecordGpu { proto_index: 0, transform: ident, material_id: 0 },
+            InstanceRecordGpu { proto_index: 0, transform: ident, material_base: 0 },
+            InstanceRecordGpu { proto_index: 1, transform: ident, material_base: 0 },
+            InstanceRecordGpu { proto_index: 0, transform: ident, material_base: 0 },
         ];
         let materials = [PbrMaterial::default()];
         let scene = meshes_to_instanced_scene(&blas, &instances, &materials, &[], 64, 48);

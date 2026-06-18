@@ -26,7 +26,7 @@ fn cube_blas_desc() -> BlasDesc {
     let mut normals: Vec<[f32; 3]> = Vec::new();
     let mut uvs: Vec<[f32; 2]> = Vec::new();
     let mut indices: Vec<[u32; 3]> = Vec::new();
-    let mut material_ids: Vec<u8> = Vec::new();
+    let mut material_ids: Vec<u32> = Vec::new();
 
     let h = 0.75f32; // half-extent (1.5 cube → comfortably fills its screen region)
     let corners = [
@@ -72,7 +72,9 @@ fn cube_blas_desc() -> BlasDesc {
     }
 }
 
-/// One instance: proto 0, world position `t`, material id `mat`.
+/// One instance: proto 0, world position `t`, material BASE `mat`. The cube's
+/// per-triangle ids are all 0, so the closest-hit resolves `final = base + 0 =
+/// base` — the instance shades with material slot `mat`.
 fn inst(proto: u32, mat: u32, t: [f32; 3]) -> InstanceRecordGpu {
     // Row-major 4×4 translation (translation in the last ROW — the
     // SceneState::instance_transforms layout the uploader/T2 reads).
@@ -84,7 +86,7 @@ fn inst(proto: u32, mat: u32, t: [f32; 3]) -> InstanceRecordGpu {
             0.0, 0.0, 1.0, 0.0, //
             t[0], t[1], t[2], 1.0,
         ],
-        material_id: mat,
+        material_base: mat,
     }
 }
 
@@ -199,9 +201,9 @@ fn per_instance_material() {
     );
     assert_eq!(scene.geometry.instance_count, 2, "two instances");
     assert_eq!(
-        scene.geometry.instance_material_ids,
+        scene.geometry.instance_material_base,
         vec![0u32, 1u32],
-        "per-instance material ids carried for the TLAS custom index"
+        "per-instance material BASE carried for the TLAS custom index"
     );
 
     let blas_count = 1usize; // one prototype shared by both instances

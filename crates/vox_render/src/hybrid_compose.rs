@@ -66,8 +66,17 @@ pub struct HybridMesh {
     pub indices: Vec<u32>,
     /// 16-band spectral reflectance applied to the whole mesh.
     pub reflectance: [f32; 16],
-    /// Object/entity id written to the framebuffer for these pixels.
+    /// Object/entity id written to the framebuffer for these pixels. Now a dense,
+    /// collision-free monotonic [`ObjectId`](crate) (full 32 bits — the Forge
+    /// material channel no longer rides the top byte; see `material_channel`).
     pub object_id: u32,
+    /// Forge material-channel selector (the raw per-mesh material-id byte:
+    /// `0=Facade, 1=Roof, 2=Glass, 3..=5=Trim, 6=Door, 7+=Detail`). The game
+    /// resolves this to a `ReadyAssetMaterialChannel` and PBR surface params. It
+    /// USED to be packed into `object_id`'s top byte (`(object_id >> 24) & 0xff`);
+    /// it now lives in its own field so `object_id` is pure identity. `0` (Facade)
+    /// is the neutral default for untagged meshes.
+    pub material_channel: u8,
     /// Per-vertex UVs (parallel to `positions`). Empty = untextured; the
     /// flat `reflectance` is used as the base colour. When present (same len as
     /// `positions`) and `albedo_tex >= 0`, the renderer samples the texture
@@ -120,6 +129,7 @@ impl HybridMesh {
             indices,
             reflectance,
             object_id,
+            material_channel: 0,
             uvs: Vec::new(),
             albedo_tex: -1,
             albedo_tex_path: None,
@@ -131,6 +141,19 @@ impl HybridMesh {
             transmission_override: None,
             ior_override: None,
         }
+    }
+
+    /// Set the Forge material-channel selector (raw per-mesh material-id byte;
+    /// see [`HybridMesh::material_channel`]). Builder style. Replaces the old
+    /// trick of packing the channel into `object_id`'s top byte.
+    pub fn with_material_channel(mut self, channel: u8) -> Self {
+        self.material_channel = channel;
+        self
+    }
+
+    /// The Forge material-channel selector (raw per-mesh material-id byte).
+    pub fn material_channel(&self) -> u8 {
+        self.material_channel
     }
 
     /// Attach per-vertex UVs + an albedo texture atlas slot (builder style).
@@ -187,6 +210,22 @@ impl HybridMesh {
         self.transmission_override = Some(transmission);
         self.ior_override = Some(ior);
         self
+    }
+
+    /// Test-only: an untextured mesh with an explicit 16-band `reflectance`
+    /// (which [`from_rgb`] can't take directly) and all texture/relief/channel
+    /// fields at their neutral defaults. Keeps the raster tests terse without
+    /// hand-listing every field.
+    #[cfg(test)]
+    pub(crate) fn untextured(
+        positions: Vec<[f32; 3]>,
+        indices: Vec<u32>,
+        reflectance: [f32; 16],
+        object_id: u32,
+    ) -> Self {
+        let mut m = Self::from_rgb(positions, indices, [0.0, 0.0, 0.0], object_id);
+        m.reflectance = reflectance;
+        m
     }
 }
 
@@ -763,17 +802,17 @@ mod tests {
     /// A 1×1 quad (two triangles) in the XY plane at world z = `z`, facing the
     /// camera, spanning [-half, +half] in x and y.
     fn quad(z: f32, half: f32, refl: [f32; 16], object_id: u32) -> HybridMesh {
-        HybridMesh {
-            positions: vec![
+        HybridMesh::untextured(
+            vec![
                 [-half, -half, z],
                 [half, -half, z],
                 [half, half, z],
                 [-half, half, z],
             ],
-            indices: vec![0, 1, 2, 0, 2, 3],
-            reflectance: refl,
+            vec![0, 1, 2, 0, 2, 3],
+            refl,
             object_id,
-        }
+        )
     }
 
     /// Sum of all band energy in a screen region.
@@ -885,17 +924,17 @@ mod tests {
 
         // Wall occupies x in [-8, 0] (left half of the centred view) at z=0, tall
         // enough to cover the full vertical extent of the splat.
-        let wall = HybridMesh {
-            positions: vec![
+        let wall = HybridMesh::untextured(
+            vec![
                 [-8.0, -8.0, 0.0],
                 [0.0, -8.0, 0.0],
                 [0.0, 8.0, 0.0],
                 [-8.0, 8.0, 0.0],
             ],
-            indices: vec![0, 1, 2, 0, 2, 3],
-            reflectance: single_band_f32(11, 1.0),
-            object_id: 1,
-        };
+            vec![0, 1, 2, 0, 2, 3],
+            single_band_f32(11, 1.0),
+            1,
+        );
         // Splat behind the wall, centred, band 3, wide enough to span both halves.
         let splat = big_splat(-8.0, 3, 1.0, 255);
 
@@ -1040,13 +1079,13 @@ mod tests {
         let cam = head_on_camera();
         let il = illum();
 
-        let hostile = HybridMesh {
-            positions: vec![[0.0, 0.0, 0.0], [f32::NAN, 1.0, 0.0], [1.0, 0.0, 0.0]],
+        let hostile = HybridMesh::untextured(
+            vec![[0.0, 0.0, 0.0], [f32::NAN, 1.0, 0.0], [1.0, 0.0, 0.0]],
             // First triangle references index 99 (OOB); second has a NaN vertex.
-            indices: vec![0, 1, 99, 0, 1, 2],
-            reflectance: single_band_f32(11, 1.0),
-            object_id: 1,
-        };
+            vec![0, 1, 99, 0, 1, 2],
+            single_band_f32(11, 1.0),
+            1,
+        );
         let splat = big_splat(8.0, 3, 1.0, 255);
 
         let mut fb = SpectralFramebuffer::new(W, H);
@@ -1177,27 +1216,22 @@ mod tests {
             0, 4, 5, 0, 5, 1, // +Y face
             3, 2, 6, 3, 6, 7,
         ];
-        HybridMesh {
-            positions,
-            indices,
-            reflectance: refl,
-            object_id,
-        }
+        HybridMesh::untextured(positions, indices, refl, object_id)
     }
 
     /// A steep triangle slanting from a near apex (cam_z ~1) to a far base
     /// (cam_z ~100). Eye at z=20 looking at origin, so cam_z = 20 - world_z.
     fn steep_tri(refl: [f32; 16], object_id: u32) -> HybridMesh {
-        HybridMesh {
-            positions: vec![
+        HybridMesh::untextured(
+            vec![
                 [0.0, 0.0, 19.0],     // cam_z = 1   (near apex)
                 [-30.0, 20.0, -80.0], // cam_z = 100 (far base)
                 [30.0, 20.0, -80.0],  // cam_z = 100 (far base)
             ],
-            indices: vec![0, 1, 2],
-            reflectance: refl,
+            vec![0, 1, 2],
+            refl,
             object_id,
-        }
+        )
     }
 
     /// Regression for the perspective-correct depth fix (wave-6). On a steep
@@ -1354,17 +1388,17 @@ mod tests {
         // A big ground quad on the y=0 plane, spanning z from +20 (behind the
         // eye, which sits at z=0 looking toward -z) to -60 (far in front). Two
         // triangles; each straddles the near plane (part behind the camera).
-        let ground = HybridMesh {
-            positions: vec![
+        let ground = HybridMesh::untextured(
+            vec![
                 [-40.0, 0.0, 20.0],  // behind the eye
                 [40.0, 0.0, 20.0],   // behind the eye
                 [40.0, 0.0, -60.0],  // far in front
                 [-40.0, 0.0, -60.0], // far in front
             ],
-            indices: vec![0, 1, 2, 0, 2, 3],
-            reflectance: single_band_f32(11, 1.0),
-            object_id: 1,
-        };
+            vec![0, 1, 2, 0, 2, 3],
+            single_band_f32(11, 1.0),
+            1,
+        );
 
         // Splat behind a chunk of the ground (below the plane, far out), band 3.
         let splat = GaussianSplat::volume(

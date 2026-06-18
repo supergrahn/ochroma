@@ -861,17 +861,17 @@ mod tests {
     }
 
     fn quad(z: f32, half: f32, refl: [f32; 16], object_id: u32) -> HybridMesh {
-        HybridMesh {
-            positions: vec![
+        HybridMesh::untextured(
+            vec![
                 [-half, -half, z],
                 [half, -half, z],
                 [half, half, z],
                 [-half, half, z],
             ],
-            indices: vec![0, 1, 2, 0, 2, 3],
-            reflectance: refl,
+            vec![0, 1, 2, 0, 2, 3],
+            refl,
             object_id,
-        }
+        )
     }
 
     fn big_splat(z: f32, band: usize, value: f32, opacity: u8) -> GaussianSplat {
@@ -996,12 +996,12 @@ mod tests {
         };
 
         // Steep triangle apex cam_z~1 -> base cam_z~100 (the oracle's `steep_tri`).
-        let tri = HybridMesh {
-            positions: vec![[0.0, 0.0, 19.0], [-30.0, 20.0, -80.0], [30.0, 20.0, -80.0]],
-            indices: vec![0, 1, 2],
-            reflectance: single_band_f32(11, 1.0),
-            object_id: 1,
-        };
+        let tri = HybridMesh::untextured(
+            vec![[0.0, 0.0, 19.0], [-30.0, 20.0, -80.0], [30.0, 20.0, -80.0]],
+            vec![0, 1, 2],
+            single_band_f32(11, 1.0),
+            1,
+        );
         // Splat genuinely behind the true surface (cam_z 21.1) — must be rejected.
         let behind = GaussianSplat::volume(
             [0.0, -3.0, -1.1],
@@ -1204,16 +1204,16 @@ mod tests {
         let mut worst_off = 0.0f32;
         for step in 0..64i32 {
             let xoff = (step as f32 - 32.0) * 0.03125; // sub-pixel x sweep, ~±1 world
-            let tri = HybridMesh {
-                positions: vec![
+            let tri = HybridMesh::untextured(
+                vec![
                     [xoff - 0.3, -7.0, 0.0],
                     [xoff + 0.3, -7.0, 0.0],
                     [xoff, 7.0, 0.0],
                 ],
-                indices: vec![0, 1, 2],
-                reflectance: single_band_f32(11, 1.0),
-                object_id: 1,
-            };
+                vec![0, 1, 2],
+                single_band_f32(11, 1.0),
+                1,
+            );
             let scene = HybridScene {
                 meshes: vec![tri],
                 splats: &[],
@@ -1237,12 +1237,12 @@ mod tests {
         // Sanity: the sliver actually lit something on the CPU (otherwise the
         // sweep proves nothing). Use a centred offset that definitely covers
         // pixel columns.
-        let tri = HybridMesh {
-            positions: vec![[-0.3, -7.0, 0.0], [0.3, -7.0, 0.0], [0.0, 7.0, 0.0]],
-            indices: vec![0, 1, 2],
-            reflectance: single_band_f32(11, 1.0),
-            object_id: 1,
-        };
+        let tri = HybridMesh::untextured(
+            vec![[-0.3, -7.0, 0.0], [0.3, -7.0, 0.0], [0.0, 7.0, 0.0]],
+            vec![0, 1, 2],
+            single_band_f32(11, 1.0),
+            1,
+        );
         let scene = HybridScene {
             meshes: vec![tri],
             splats: &[],
@@ -1333,67 +1333,67 @@ mod tests {
             // base well in front — clip_triangle_near splits it into a polygon.
             (
                 "near_straddling",
-                HybridMesh {
-                    positions: vec![[0.0, 0.0, 25.0], [-6.0, -5.0, 5.0], [6.0, -5.0, 5.0]],
-                    indices: vec![0, 1, 2],
-                    reflectance: refl,
-                    object_id: 1,
-                },
+                HybridMesh::untextured(
+                    vec![[0.0, 0.0, 25.0], [-6.0, -5.0, 5.0], [6.0, -5.0, 5.0]],
+                    vec![0, 1, 2],
+                    refl,
+                    1,
+                ),
             ),
             // Far-straddling: one vertex past the far plane (cam_z>1e6 →
             // world_z < 20-1e6), the rest in range — clip_polygon_far trims it.
             (
                 "far_straddling",
-                HybridMesh {
-                    positions: vec![[-5.0, 4.0, 0.0], [5.0, 4.0, 0.0], [0.0, -4.0, -2.0e6]],
-                    indices: vec![0, 1, 2],
-                    reflectance: refl,
-                    object_id: 2,
-                },
+                HybridMesh::untextured(
+                    vec![[-5.0, 4.0, 0.0], [5.0, 4.0, 0.0], [0.0, -4.0, -2.0e6]],
+                    vec![0, 1, 2],
+                    refl,
+                    2,
+                ),
             ),
             // Both-straddling: one vertex past near, one past far, one in range —
             // exercises both Sutherland–Hodgman passes in sequence.
             (
                 "both_straddling",
-                HybridMesh {
-                    positions: vec![[0.0, 5.0, 25.0], [-6.0, -5.0, 0.0], [6.0, -5.0, -2.0e6]],
-                    indices: vec![0, 1, 2],
-                    reflectance: refl,
-                    object_id: 3,
-                },
+                HybridMesh::untextured(
+                    vec![[0.0, 5.0, 25.0], [-6.0, -5.0, 0.0], [6.0, -5.0, -2.0e6]],
+                    vec![0, 1, 2],
+                    refl,
+                    3,
+                ),
             ),
             // Grazing-parallel: a near-edge-on triangle whose screen-space area is
             // tiny — stresses the area2.abs()<1e-6 / projection precision branch.
             (
                 "grazing_parallel",
-                HybridMesh {
-                    positions: vec![[-8.0, 0.0, 0.001], [8.0, 0.0, -0.001], [-8.0, 0.0001, 0.0]],
-                    indices: vec![0, 1, 2],
-                    reflectance: refl,
-                    object_id: 4,
-                },
+                HybridMesh::untextured(
+                    vec![[-8.0, 0.0, 0.001], [8.0, 0.0, -0.001], [-8.0, 0.0001, 0.0]],
+                    vec![0, 1, 2],
+                    refl,
+                    4,
+                ),
             ),
             // Fully-clipped: entirely behind the near plane (all cam_z<0.05 →
             // all world_z>19.95) — clip_triangle_near returns <3 verts, dropped.
             (
                 "fully_clipped",
-                HybridMesh {
-                    positions: vec![[-4.0, -4.0, 30.0], [4.0, -4.0, 30.0], [0.0, 4.0, 28.0]],
-                    indices: vec![0, 1, 2],
-                    reflectance: refl,
-                    object_id: 5,
-                },
+                HybridMesh::untextured(
+                    vec![[-4.0, -4.0, 30.0], [4.0, -4.0, 30.0], [0.0, 4.0, 28.0]],
+                    vec![0, 1, 2],
+                    refl,
+                    5,
+                ),
             ),
             // Degenerate zero-area: three collinear vertices — the cross-product
             // normal length test (nlen<=1e-12) rejects it on both paths.
             (
                 "degenerate_zero_area",
-                HybridMesh {
-                    positions: vec![[-5.0, -2.0, 0.0], [0.0, 0.0, 0.0], [5.0, 2.0, 0.0]],
-                    indices: vec![0, 1, 2],
-                    reflectance: refl,
-                    object_id: 6,
-                },
+                HybridMesh::untextured(
+                    vec![[-5.0, -2.0, 0.0], [0.0, 0.0, 0.0], [5.0, 2.0, 0.0]],
+                    vec![0, 1, 2],
+                    refl,
+                    6,
+                ),
             ),
         ];
 
@@ -1458,12 +1458,12 @@ mod tests {
         // pixels through the clip pipeline (otherwise the test pins nothing).
         let drawn = {
             let scene = HybridScene {
-                meshes: vec![HybridMesh {
-                    positions: vec![[0.0, 0.0, 25.0], [-6.0, -5.0, 5.0], [6.0, -5.0, 5.0]],
-                    indices: vec![0, 1, 2],
-                    reflectance: refl,
-                    object_id: 1,
-                }],
+                meshes: vec![HybridMesh::untextured(
+                    vec![[0.0, 0.0, 25.0], [-6.0, -5.0, 5.0], [6.0, -5.0, 5.0]],
+                    vec![0, 1, 2],
+                    refl,
+                    1,
+                )],
                 splats: &[],
             };
             let mut fb = SpectralFramebuffer::new(W, H);
@@ -1495,16 +1495,16 @@ mod tests {
             ("diagonal_quad", quad(0.0, 6.0, single_band_f32(11, 1.0), 7)),
             (
                 "thin_sliver",
-                HybridMesh {
-                    positions: vec![
+                HybridMesh::untextured(
+                    vec![
                         [-0.9375 - 0.3, -7.0, 0.0],
                         [-0.9375 + 0.3, -7.0, 0.0],
                         [-0.9375, 7.0, 0.0],
                     ],
-                    indices: vec![0, 1, 2],
-                    reflectance: single_band_f32(11, 1.0),
-                    object_id: 1,
-                },
+                    vec![0, 1, 2],
+                    single_band_f32(11, 1.0),
+                    1,
+                ),
             ),
         ] {
             let tris = build_mesh_tris(&[mesh], &gcam, &SunLight::default(), W, H);
@@ -1570,11 +1570,6 @@ mod tests {
             0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 3, 7, 0, 7, 4, 1, 5, 6, 1, 6, 2, 0, 4, 5, 0, 5,
             1, 3, 2, 6, 3, 6, 7,
         ];
-        HybridMesh {
-            positions,
-            indices,
-            reflectance: refl,
-            object_id,
-        }
+        HybridMesh::untextured(positions, indices, refl, object_id)
     }
 }
