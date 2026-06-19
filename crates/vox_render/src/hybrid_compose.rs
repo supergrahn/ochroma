@@ -116,6 +116,45 @@ pub struct HybridMesh {
     /// per-cluster CLAS path, cannot recover correct within-cluster vertex UVs.
     /// Scene assembly encodes this as a negative `PbrMaterial::uv_scale` sentinel.
     pub world_planar_uv_scale: Option<f32>,
+    /// Per-TRIANGLE material id (parallel to `indices.len()/3`). Indexes into
+    /// [`submesh_materials`] when that is non-empty; otherwise it is a raw Forge
+    /// material-channel byte (the same space as [`material_channel`]). **EMPTY =
+    /// the legacy single-material behavior** — every triangle uses the mesh-wide
+    /// [`material_channel`] + single texture fields. This widens the carrier so a
+    /// vegetation/asset mesh can hold several materials (bark + leaf, etc.) in one
+    /// `HybridMesh` without splitting it. Determinism: this is plain per-tri data,
+    /// no map/RNG ordering. (Vegetation mesh-carrier seam.)
+    pub material_ids: Vec<u32>,
+    /// Per-submesh material descriptors, indexed by the values in
+    /// [`material_ids`]. **EMPTY = use the existing single-material fields**
+    /// ([`material_channel`] + [`albedo_tex_path`]/[`normal_tex_path`]/
+    /// [`roughness_tex_path`]). When non-empty, `material_ids[t]` selects the
+    /// submesh material for triangle `t` (a value out of range falls back to the
+    /// mesh-wide single material so a bad cook can never panic). This lets one
+    /// mesh carry multiple textured materials (the gating piece for multi-material
+    /// vegetation/props on the live path).
+    pub submesh_materials: Vec<HybridSubmesh>,
+}
+
+/// One material slot of a multi-material [`HybridMesh`], selected per-triangle via
+/// [`HybridMesh::material_ids`]. Mirrors the per-mesh single-material fields
+/// (`material_channel` + the three texture paths) so a multi-material mesh carries
+/// exactly the same surface information per submesh that a single-material mesh
+/// carries for the whole mesh — scene assembly resolves the paths to atlas slots
+/// the same way. Kept deliberately small + `Clone` so it is cheap to fan out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HybridSubmesh {
+    /// Forge material-channel selector for this submesh (same space as
+    /// [`HybridMesh::material_channel`]: `0=Facade, 1=Roof, 2=Glass, …`).
+    pub material_channel: u8,
+    /// Base-colour texture path for this submesh, or `None` (flat channel colour).
+    /// Resolved to an atlas slot by scene assembly, exactly like
+    /// [`HybridMesh::albedo_tex_path`].
+    pub albedo_tex_path: Option<String>,
+    /// Tangent-space normal-map path (LINEAR), or `None`.
+    pub normal_tex_path: Option<String>,
+    /// Roughness-map path (LINEAR, R channel), or `None`.
+    pub roughness_tex_path: Option<String>,
 }
 
 impl HybridMesh {
@@ -147,7 +186,28 @@ impl HybridMesh {
             transmission_override: None,
             ior_override: None,
             world_planar_uv_scale: None,
+            material_ids: Vec::new(),
+            submesh_materials: Vec::new(),
         }
+    }
+
+    /// Attach per-triangle material ids + per-submesh material descriptors
+    /// (builder style; vegetation mesh-carrier seam). `material_ids` must be
+    /// parallel to the triangle count (`indices.len() / 3`); a mismatched length
+    /// is ignored (the mesh stays single-material) so a bad cook can never
+    /// desync the per-triangle stream. Empty `submesh_materials` with non-empty
+    /// `material_ids` is allowed: the ids then read as raw Forge channel bytes.
+    pub fn with_submesh_materials(
+        mut self,
+        material_ids: Vec<u32>,
+        submesh_materials: Vec<HybridSubmesh>,
+    ) -> Self {
+        let tri_count = self.indices.len() / 3;
+        if material_ids.len() == tri_count {
+            self.material_ids = material_ids;
+            self.submesh_materials = submesh_materials;
+        }
+        self
     }
 
     /// Texture this mesh with WORLD-PLANAR UV (UV = world_xz * `scale`) instead of
@@ -1465,6 +1525,77 @@ mod tests {
             "ground must occlude the splat behind it: mesh11={} splat3={}",
             lower[11],
             lower[3]
+        );
+    }
+
+    /// Vegetation mesh-carrier seam: a 2-submesh `HybridMesh` (e.g. bark + leaf)
+    /// must round-trip its per-triangle `material_ids` and `submesh_materials`,
+    /// and the legacy single-material default must stay empty (back-compat).
+    #[test]
+    fn submesh_materials_round_trip() {
+        // Two triangles: tri 0 -> submesh 0 (bark), tri 1 -> submesh 1 (leaf).
+        let positions = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ];
+        let indices = vec![0, 1, 2, 1, 3, 2];
+        let submeshes = vec![
+            HybridSubmesh {
+                material_channel: 0,
+                albedo_tex_path: Some("/assets/bark_albedo.png".to_string()),
+                normal_tex_path: Some("/assets/bark_normal.png".to_string()),
+                roughness_tex_path: None,
+            },
+            HybridSubmesh {
+                material_channel: 7,
+                albedo_tex_path: Some("/assets/leaf_albedo.png".to_string()),
+                normal_tex_path: None,
+                roughness_tex_path: Some("/assets/leaf_rough.png".to_string()),
+            },
+        ];
+        let ids = vec![0u32, 1u32];
+
+        let mesh = HybridMesh::from_rgb(positions, indices, [0.4, 0.3, 0.2], 42)
+            .with_submesh_materials(ids.clone(), submeshes.clone());
+
+        // Per-triangle ids round-trip exactly, parallel to indices/3.
+        assert_eq!(mesh.material_ids, ids, "per-triangle material_ids must round-trip");
+        assert_eq!(mesh.material_ids.len(), mesh.indices.len() / 3);
+        // Submesh descriptors round-trip exactly (paths + channels preserved).
+        assert_eq!(mesh.submesh_materials, submeshes, "submesh_materials must round-trip");
+        assert_eq!(
+            mesh.submesh_materials[ids[0] as usize].albedo_tex_path.as_deref(),
+            Some("/assets/bark_albedo.png")
+        );
+        assert_eq!(mesh.submesh_materials[ids[1] as usize].material_channel, 7);
+
+        // Legacy default: a plain mesh carries EMPTY new fields (single-material).
+        let plain = HybridMesh::from_rgb(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![0, 1, 2],
+            [0.5, 0.5, 0.5],
+            1,
+        );
+        assert!(plain.material_ids.is_empty(), "legacy mesh must have empty material_ids");
+        assert!(
+            plain.submesh_materials.is_empty(),
+            "legacy mesh must have empty submesh_materials"
+        );
+
+        // A mismatched id stream is rejected (mesh stays single-material) so a bad
+        // cook can never desync the per-triangle stream.
+        let bad = HybridMesh::from_rgb(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![0, 1, 2], // 1 triangle
+            [0.5, 0.5, 0.5],
+            1,
+        )
+        .with_submesh_materials(vec![0u32, 1u32, 2u32], submeshes); // 3 ids != 1 tri
+        assert!(
+            bad.material_ids.is_empty(),
+            "mismatched material_ids length must be ignored (single-material)"
         );
     }
 

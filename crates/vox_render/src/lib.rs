@@ -56,6 +56,7 @@ pub mod atom_instances;
 pub mod mega_geometry;
 pub mod spectral_framebuffer;
 pub mod hybrid_compose;
+pub mod mesh_simplify;
 pub mod spectral_tonemapper;
 pub mod temporal;
 pub mod dlss;
