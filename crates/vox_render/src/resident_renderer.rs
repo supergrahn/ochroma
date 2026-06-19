@@ -146,9 +146,12 @@ impl ResidentCityRenderer {
         let gpu = ResidentBackend::new(0).map_err(|e| format!("gpu backend init: {e:?}"))?;
         let mut config = RenderConfig::near_realtime(width, height);
         config.slang_kernel_dir = resolve_slang_kernel_dir();
-        if std::env::var("OCHROMA_SHADE_LEAN").as_deref() == Ok("1") {
-            config.prefer_lean_shade = true;
-        }
+        // Lean shade kernel: byte-identical for pure triangle-mesh city scenes (the
+        // heavy SSS/volume/polarization/SDF/Gaussian paths are off on the resident
+        // config) and it skips the NRC-coupled heavy path. With NRC off on the
+        // real-time tiers, make lean unconditional for the resident render.
+        config.prefer_lean_shade = true;
+        let _ = std::env::var("OCHROMA_SHADE_LEAN"); // (legacy opt-in, now default-on)
         // Start from the rig (lighting, look, weathering toggle), seed the
         // near_realtime feature parity, THEN overlay the tier's cost knobs so
         // the tier — not the rig and not the base preset — owns spp / bounces /
