@@ -32,7 +32,7 @@ use spectra_renderer::{FrameOutput, RenderConfig, RenderSettings, Renderer};
 type ResidentBackend = CudarcSlangBackend;
 #[cfg(not(target_os = "windows"))]
 type ResidentBackend = VulkanSlangBackend;
-use spectra_scene_state::{LightLayer, SceneState};
+use spectra_scene_state::{GpuSceneCmd, LightLayer, SceneDeltaRing, SceneState};
 
 /// Re-export the R31 fidelity tier so the game layer can select a tier through
 /// `vox_render` without depending on `spectra-renderer` directly.
@@ -77,11 +77,15 @@ pub struct ResidentCityRenderer {
     height: u32,
     /// Light rig — drives the four-light scene rig + sky/atmosphere setters.
     rig: LightRig,
-    /// Pending per-instance transform refits, recorded by
-    /// [`update_instance_transform`] and applied on the next `render_camera`.
-    /// (instance_index, row-major 3×4 transform). Full GPU refit lands in T4;
-    /// here the record is held so the live seam can call the method today.
-    pending_refits: Vec<(usize, [[f32; 4]; 3])>,
+    /// Aurora Step 1: the id-sorted, coalesced (latest-wins-per-slot) command
+    /// ring for resident transform deltas. Backed by a `BTreeMap<slot, …>` so
+    /// the drained stream is ALWAYS ascending-slot with one command per slot —
+    /// never HashMap/RNG/allocator order. Flushed on `render_camera` through the
+    /// GPU `apply_scene_delta` indexed scatter (ONE buffer upload + ONE
+    /// dispatch), REPLACING the old per-frame CPU `pending_refits` Vec push+sort
+    /// +drain. The indexed scatter is order-independent, so the resident buffer
+    /// is a pure function of this id-sorted command log (the determinism moat).
+    delta_ring: SceneDeltaRing,
 }
 
 impl ResidentCityRenderer {
@@ -257,7 +261,7 @@ impl ResidentCityRenderer {
             width,
             height,
             rig,
-            pending_refits: Vec::new(),
+            delta_ring: SceneDeltaRing::new(),
         };
         // Upload the initial scene (with the rig's lights + sky/atmosphere) so the
         // first render_camera has geometry/materials/lights resident.
@@ -363,27 +367,20 @@ impl ResidentCityRenderer {
         })
     }
 
-    /// Record one instance's transform refit (movers, articulated rigid
-    /// sub-parts). Applied on the next [`render_camera`] via the GPU
-    /// `MODE_UPDATE` refit (`refit_instanced_tlas`) — BLASes untouched, no scene
-    /// rebuild. Records are coalesced (latest-wins per instance) and id-sorted
-    /// for deterministic apply order.
+    /// Record one instance's transform delta (movers, articulated rigid
+    /// sub-parts). Appended to the id-sorted, coalesced [`SceneDeltaRing`] and
+    /// applied on the next [`render_camera`] via the GPU `apply_scene_delta`
+    /// indexed scatter into the persistent resident buffer (copying current →
+    /// prev_transform before overwrite, for motion vectors / DLSS-RR).
+    ///
+    /// Determinism: the ring is a `BTreeMap<slot, …>`, so repeated writes to the
+    /// same slot coalesce latest-wins in place (no push+sort, no HashMap/RNG
+    /// order), and the drained stream is ascending-slot — the indexed scatter is
+    /// order-independent. This REPLACES the old CPU `pending_refits` Vec.
     ///
     /// `transform` is a row-major 3×4 (upper rows of a 4×4 world transform).
     pub fn update_instance_transform(&mut self, instance_index: usize, transform: [[f32; 4]; 3]) {
-        // Coalesce: keep only the latest transform per instance this frame
-        // (id-ordered, no HashMap — deterministic).
-        if let Some(slot) = self
-            .pending_refits
-            .iter_mut()
-            .find(|(i, _)| *i == instance_index)
-        {
-            slot.1 = transform;
-        } else {
-            self.pending_refits.push((instance_index, transform));
-            // Keep id-sorted for deterministic apply order (T4 wiring).
-            self.pending_refits.sort_by_key(|(i, _)| *i);
-        }
+        self.delta_ring.set_transform(instance_index as u32, transform);
     }
 
     /// Per-frame camera stream. Pure state mutation (`set_camera_view_matrix` +
@@ -396,11 +393,21 @@ impl ResidentCityRenderer {
         view: [f32; 16],
         proj: [f32; 16],
     ) -> Result<FrameOutput, String> {
-        // Flush coalesced, id-sorted mover transforms through the GPU
-        // `MODE_UPDATE` refit (BLASes untouched, no scene rebuild). Draining
-        // keeps determinism: the same sequence of frames yields the same state.
-        if !self.pending_refits.is_empty() {
-            let dirty: Vec<(usize, [[f32; 4]; 3])> = std::mem::take(&mut self.pending_refits);
+        // Aurora Step 1: the id-sorted, coalesced delta ring is the new plumbing
+        // for per-instance transforms (replacing the per-frame CPU Vec push+sort).
+        // The persistent resident `g_instances` buffer + `apply_scene_delta` indexed
+        // scatter is a PROVEN, determinism-witnessed FOUNDATION — but it is NOT yet
+        // read by the trace, so the LIVE render must still drive the *traversed*
+        // TLAS via the legacy `MODE_UPDATE` refit (otherwise movers freeze on
+        // screen). We therefore drain the ring and feed the legacy refit here; the
+        // resident buffer is exercised by the witness + wired into traversal at
+        // Steps 2/5, which then retire this legacy refit. No render regression.
+        if !self.delta_ring.is_empty() {
+            let cmds = self.delta_ring.drain_commands();
+            let dirty: Vec<(usize, [[f32; 4]; 3])> = cmds
+                .iter()
+                .map(|c| (c.slot as usize, c.transform_3x4()))
+                .collect();
             self.renderer
                 .refit_instance_transforms(&dirty)
                 .map_err(|e| format!("refit_instance_transforms: {e:?}"))?;
@@ -411,6 +418,99 @@ impl ResidentCityRenderer {
         self.renderer
             .render()
             .map_err(|e| format!("render: {e:?}"))
+    }
+
+    /// Apply a batch of per-instance transform refits IMMEDIATELY through the
+    /// GPU `MODE_UPDATE` refit (`refit_instanced_tlas` on the retained hardware
+    /// TLAS — BLASes untouched, no scene rebuild), returning whether a drift
+    /// rebuild fired. This is the same call [`render_camera`] flushes
+    /// internally; exposing it lets a caller TIME the refit phase separately
+    /// from the render phase (the perf-spike mover loop). `dirty` is
+    /// `(instance_index, row-major 3×4 transform)`, id-ordered by the caller
+    /// for determinism. Prefer [`update_instance_transform`] +
+    /// [`render_camera`] for the normal game loop.
+    pub fn refit_instances(
+        &mut self,
+        dirty: &[(usize, [[f32; 4]; 3])],
+    ) -> Result<bool, String> {
+        self.renderer
+            .refit_instance_transforms(dirty)
+            .map_err(|e| format!("refit_instance_transforms: {e:?}"))
+    }
+
+    /// Aurora Step 1 witness hook: flush the id-sorted, coalesced delta ring
+    /// through the GPU `apply_scene_delta` indexed scatter IMMEDIATELY (ONE
+    /// buffer upload + ONE dispatch), WITHOUT rendering — so a bench can TIME the
+    /// resident transform path in isolation (vs the old Vec sort+drain). Drains
+    /// the ring. No-op when the ring is empty.
+    pub fn flush_scene_delta(&mut self) -> Result<(), String> {
+        if self.delta_ring.is_empty() {
+            return Ok(());
+        }
+        let cmds = self.delta_ring.drain_commands();
+        self.renderer
+            .apply_scene_delta(&cmds)
+            .map_err(|e| format!("apply_scene_delta: {e:?}"))
+    }
+
+    /// Aurora Step 1: apply an explicit id-sorted command batch directly,
+    /// bypassing the ring (the bench builds the batch once and times the GPU
+    /// apply). The caller guarantees ascending-slot + one command per slot.
+    pub fn apply_scene_delta(&mut self, cmds: &[GpuSceneCmd]) -> Result<(), String> {
+        self.renderer
+            .apply_scene_delta(cmds)
+            .map_err(|e| format!("apply_scene_delta: {e:?}"))
+    }
+
+    /// Aurora Step 1 witness: download the persistent resident `g_instances`
+    /// buffer as raw u32 words (`count * 32`). The determinism artifact — hash
+    /// this and compare across two runs of the same delta sequence. Also lets
+    /// the witness inspect `prev_transform` (words 12..23 per instance).
+    pub fn download_resident_instances(&self) -> Result<Vec<u32>, String> {
+        self.renderer
+            .download_resident_instances()
+            .map_err(|e| format!("download_resident_instances: {e:?}"))
+    }
+
+    /// Number of resident instances the persistent buffer is sized for.
+    pub fn resident_instance_count(&self) -> usize {
+        self.renderer.resident_instance_count()
+    }
+
+    /// Number of distinct slots currently pending in the delta ring (the CPU
+    /// queue depth — the witness asserts this is O(deltas), not a growing Vec).
+    pub fn pending_delta_count(&self) -> usize {
+        self.delta_ring.len()
+    }
+
+    /// Pure camera-stream render (`set_camera_view_matrix` + `set_view_proj` +
+    /// `render()`) that does NOT flush `pending_refits` — the render phase in
+    /// isolation, for benches that drive refits via [`refit_instances`] and
+    /// want the render timing uncontaminated by refit. The normal game loop
+    /// uses [`render_camera`], which flushes pending refits first.
+    pub fn render_only(
+        &mut self,
+        view: [f32; 16],
+        proj: [f32; 16],
+    ) -> Result<FrameOutput, String> {
+        self.renderer.set_camera_view_matrix(view);
+        self.renderer.set_view_proj(proj);
+        self.renderer.render().map_err(|e| format!("render: {e:?}"))
+    }
+
+    /// `(instances, clusters)` of the active RTX-Mega-Geometry CLAS scene
+    /// (per-prototype CLAS → GAS-over-CLAS → IAS), or `None` when the CLAS path
+    /// is not active (single-GAS / software fallback / built below
+    /// `SPECTRA_CLAS_THRESHOLD` / OptiX SDK not compiled). The witness that the
+    /// Mega-Geometry path actually engaged at scale.
+    pub fn clas_stats(&self) -> Option<(usize, usize)> {
+        self.renderer.device_clas_stats()
+    }
+
+    /// Number of TLAS instances registered after the last scene upload — the
+    /// fallback instance count when [`clas_stats`] is `None`.
+    pub fn tlas_instance_count(&self) -> usize {
+        self.renderer.tlas_instance_count()
     }
 
     /// A fully-reused [`SceneDelta`] (`rebuilt == 0`, `reused == 1`): the report

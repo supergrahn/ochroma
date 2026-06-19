@@ -30,7 +30,11 @@ vox_ui    = { workspace = true }
 bevy_ecs = { workspace = true }
 bevy_app = { workspace = true }
 spectra-gaussian-render = { path = "../../../spectra/rust/spectra-gaussian-render" }
-spectra-renderer = { path = "../../../spectra/rust/spectra-renderer", optional = true }
+# default-features = false so the local Linux/AMD Vulkan path can build WITHOUT
+# the CUDA-header-gated optix-sdk/optix-rt/optix-denoiser bindgen (no CUDA on the
+# dev box). The CUDA-box `spectra-native` feature re-adds cuda/ocio/dlss/optix-rt
+# explicitly; the Vulkan-only `spectra-native-vulkan` feature adds only `ocio`.
+spectra-renderer = { path = "../../../spectra/rust/spectra-renderer", optional = true, default-features = false }
 spectra-gpu = { path = "../../../spectra/rust/spectra-gpu", optional = true }
 spectra-scene-state = { path = "../../../spectra/rust/spectra-scene-state", optional = true }
 spectra-scene-data = { path = "../../../spectra/rust/spectra-scene-data", optional = true }
@@ -50,6 +54,17 @@ default = ["crucible"]
 # runs on boxes with no NVIDIA GPU (e.g. Mesa/lavapipe CPU Vulkan) while leaving
 # the CUDA path intact where a driver is present. `spectra-renderer`'s own
 # default features keep `cuda` enabled, so the CUDA backend remains compiled in.
+# spectra-native: glue to the native spectra path-tracer. ONE source cfg
+# (`feature = "spectra-native"`) gates all the glue; CUDA/OptiX are layered on
+# TOP via `spectra-native-optix` so the SAME feature builds on BOTH the CUDA box
+# AND the CUDA-less Linux/AMD dev box (Vulkan). The runtime backend selector in
+# splat_backend.rs picks VulkanSlangBackend on AMD and CudarcSlangBackend on
+# NVIDIA — independent of the build feature set.
+#
+# Linux/AMD (RADV) Vulkan dev build:
+#   scripts/build-spectra-native.sh build -p vox_render --features spectra-native
+# CUDA box (NVIDIA, RT cores + DLSS):
+#   cargo build --features spectra-native,spectra-native-optix
 spectra-native = [
     "dep:spectra-renderer",
     "dep:spectra-gpu",
@@ -58,9 +73,17 @@ spectra-native = [
     "dep:spectra-tonemap",
     "dep:image",
     "spectra-gpu/vulkan-backend",
-    # OptiX HW-RT traversal (RT cores). Pulls spectra-optix/rt-cores so build.rs
-    # compiles the OptiX device PTX (sets optix_ptx_compiled) and
-    # OptiXTraversal::available() can return true at runtime.
+    "spectra-renderer/ocio",
+]
+# spectra-native-optix: the CUDA-box-only layer. Re-adds spectra-renderer's
+# CUDA/DLSS + OptiX HW-RT (RT cores). Pulls spectra-optix/rt-cores so build.rs
+# compiles the OptiX device PTX and OptiXTraversal::available() can return true.
+# Requires the CUDA toolkit headers — NOT buildable on the Linux dev box. Layer
+# on top of spectra-native: `--features spectra-native,spectra-native-optix`.
+spectra-native-optix = [
+    "spectra-native",
+    "spectra-renderer/cuda",
+    "spectra-renderer/dlss",
     "spectra-renderer/optix-rt",
 ]
 crucible = ["vox_nodes/crucible"]
@@ -104,3 +127,17 @@ features = ["wgsl-in", "wgsl-out"]
 [[bench]]
 name = "spectra_resident"
 harness = false
+
+# CLAS-scale perf spike (RTX Mega Geometry go/no-go at ~1M dynamic instances).
+# Requires the CUDA/OptiX stack — only builds on the NVIDIA box with
+# `--features spectra-native`. Off-box the file compiles to a no-op `main`.
+[[example]]
+name = "clas_scale_bench"
+required-features = ["spectra-native"]
+
+# Aurora Step 1 witness — persistent GPU-resident instance buffer + indexed-
+# scatter apply path (replaces the CPU pending_refits Vec). Runs on the LOCAL
+# Linux/AMD (RADV) Vulkan path — no CUDA. Off-feature it compiles to a no-op main.
+[[example]]
+name = "aurora_delta_witness"
+required-features = ["spectra-native"]
