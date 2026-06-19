@@ -2863,6 +2863,40 @@ fn build_texture_atlas(textures: &[TextureImage]) -> Result<(Vec<u32>, Vec<f32>)
         }
         descs.extend_from_slice(&[data.len() as u32, t.width, t.height, t.channels]);
         data.extend_from_slice(&t.data);
+        // Box-filtered MIP PYRAMID appended contiguously after level 0 (level 0 stays
+        // at `offset`; level k+1 = floor(dim/2) min 1). The 4-int TextureDesc is
+        // unchanged — the Slang sampler reconstructs each level's offset from this
+        // exact layout and LOD-selects from the ray footprint, so tiled ground filters
+        // smoothly (no aliasing "patches") at distance with full detail up close. Mips
+        // grow the atlas ~1.33×. (The blue-regression bug was the Slang LOD math, not
+        // this build — verified by a forced-level diagnostic; see texture_atlas.slang.)
+        let c = t.channels as usize;
+        let (mut lw, mut lh) = (t.width as usize, t.height as usize);
+        let mut src: Vec<f32> = t.data.clone();
+        while lw > 1 || lh > 1 {
+            let nw = (lw / 2).max(1);
+            let nh = (lh / 2).max(1);
+            let mut dst = vec![0.0f32; nw * nh * c];
+            for y in 0..nh {
+                for x in 0..nw {
+                    for ch in 0..c {
+                        let mut sum = 0.0f32;
+                        for dy in 0..2 {
+                            let sy = (y * 2 + dy).min(lh - 1);
+                            for dx in 0..2 {
+                                let sx = (x * 2 + dx).min(lw - 1);
+                                sum += src[(sy * lw + sx) * c + ch];
+                            }
+                        }
+                        dst[(y * nw + x) * c + ch] = sum * 0.25;
+                    }
+                }
+            }
+            data.extend_from_slice(&dst);
+            src = dst;
+            lw = nw;
+            lh = nh;
+        }
     }
     Ok((descs, data))
 }
