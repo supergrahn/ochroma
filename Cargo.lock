@@ -8381,11 +8381,19 @@ dependencies = [
  "vox_data",
  "vox_nodes",
  "vox_physics",
+ "vox_scene",
  "vox_sim",
  "vox_terrain",
  "vox_ui",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "vox_scene"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

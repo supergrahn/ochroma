@@ -5,6 +5,7 @@ members = [
     "crates/vox_data",
     "crates/vox_usd",
     "crates/vox_render",
+    "crates/vox_scene",
     "crates/vox_app",
     "crates/vox_nn",
     "crates/vox_sim",

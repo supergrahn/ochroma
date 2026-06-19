@@ -110,6 +110,12 @@ pub struct HybridMesh {
     pub transmission_override: Option<f32>,
     /// IOR paired with `transmission_override` (e.g. 1.33 water, 1.5 glass).
     pub ior_override: Option<f32>,
+    /// When `Some(scale)`, the surface is textured with WORLD-PLANAR UV (UV =
+    /// world_xz * scale) instead of interpolated vertex UVs. Used for terrain
+    /// ground, whose UV is a pure function of world position — and which, on the
+    /// per-cluster CLAS path, cannot recover correct within-cluster vertex UVs.
+    /// Scene assembly encodes this as a negative `PbrMaterial::uv_scale` sentinel.
+    pub world_planar_uv_scale: Option<f32>,
 }
 
 impl HybridMesh {
@@ -140,7 +146,15 @@ impl HybridMesh {
             displacement_midlevel: 0.5,
             transmission_override: None,
             ior_override: None,
+            world_planar_uv_scale: None,
         }
+    }
+
+    /// Texture this mesh with WORLD-PLANAR UV (UV = world_xz * `scale`) instead of
+    /// interpolated vertex UVs — for terrain ground. Builder style.
+    pub fn with_world_planar_uv(mut self, scale: f32) -> Self {
+        self.world_planar_uv_scale = Some(scale);
+        self
     }
 
     /// Set the Forge material-channel selector (raw per-mesh material-id byte;

@@ -27,6 +27,7 @@ pub mod seq_ecs;
 pub mod render_ecs;
 pub mod svt;
 pub mod spectra_bridge;
+pub mod scene_delta_adapter;
 pub mod sdf_scene;
 pub mod lighting;
 pub mod many_light;
