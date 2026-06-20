@@ -212,19 +212,25 @@ impl ResidentCityRenderer {
                 eprintln!("[spp-override] SPECTRA_SHOT_SPP={spp} -> target_spp={spp}");
             }
         }
-        // ROOT-CAUSE FIX (black buildings on CUDA): the Hero4 spectral path routes
-        // primary-hit NEE direct lighting into the spectral shadow buffers
-        // (megakernel hwss branch) instead of g_shadow_contrib_r → apply_shadows →
-        // film. On the CUDA precompiled-PTX path that spectral contribution never
-        // lands on the final RGB film, so every lit surface (the whole merged city
-        // soup) integrates to ~0 and renders as a black silhouette under a lit sky
-        // — exactly the "only sky, no buildings" symptom. Force the scalar
-        // (SpectralMode::Single) NEE path, whose g_shadow_contrib_r → apply_shadows
-        // resolve is the proven-working lighting route, until the spectral CUDA
-        // resolve is wired. Overridable via OCHROMA_SPECTRAL=1 for the spectral work.
-        if std::env::var("OCHROMA_SPECTRAL").as_deref() != Ok("1") {
-            config.spectral_mode = spectra_renderer::SpectralMode::Single;
-        }
+        // SPECTRAL MODE (16-band Hero4 by default). The old dodge here forced
+        // SpectralMode::Single to avoid "black buildings" under Hero4. That
+        // premise is now STALE: the original black-buildings cause was the
+        // CORE-SUN RGB-lighting fix (spectra feabf3a), which routes building
+        // light unconditionally into the RGB film in BOTH spectral modes. The
+        // remaining issue was that the spectral XYZ film was WRITE-ONLY on every
+        // shipping path (never resolved), so Hero4 was plumbed-but-inert. That is
+        // now fixed in spectra: the present + host-beauty resolves drive
+        // u_spectral_blend from spectral_mode and fold the spectral CHROMA over
+        // the RGB MAGNITUDE (luminance-preserving — see film.slang), so Hero4 can
+        // never collapse a lit surface to black. Default to Hero4 (richer
+        // metameric chroma); keep Single reachable for A/B via OCHROMA_SPECTRAL.
+        //   OCHROMA_SPECTRAL=single|0|off  -> scalar single-wavelength path
+        //   OCHROMA_SPECTRAL=multi|hero4|1 -> 16-band Hero4 (default)
+        config.spectral_mode = match std::env::var("OCHROMA_SPECTRAL").as_deref() {
+            Ok("single") | Ok("0") | Ok("off") => spectra_renderer::SpectralMode::Single,
+            // multi / hero4 / 1 / unset all select the spectral path
+            _ => spectra_renderer::SpectralMode::Hero4,
+        };
 
         // TDR GUARD (Windows WDDM 2s GPU watchdog): bound every path-trace
         // dispatch so no single launch trips the watchdog and kills the first
