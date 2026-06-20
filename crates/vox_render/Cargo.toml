@@ -87,16 +87,20 @@ spectra-native-optix = [
     "spectra-renderer/optix-rt",
 ]
 crucible = ["vox_nodes/crucible"]
-# legacy-raster: OFF BY DEFAULT. Gates the banned non-Spectra rendering stacks
-# behind an opt-in feature so the product (Spectra) build never compiles them:
-#   - the GPU splat RASTERIZER (gpu::tiled_splat_renderer + its tile/sort/raster
-#     passes, gpu::gpu_rasteriser, gpu::resident_gi_raster, gpu::oit_pass),
-#   - the CPU SOFTWARE RASTERIZER (gpu::software_rasteriser),
-#   - the GPU SURFACE-PRESENT helpers (gpu::wgpu_backend, gpu::spectral_present).
-# THE LAW: the Spectra path tracer is the only renderer in the product. These
-# modules are preserved (not deleted) for legacy demo bins; they compile only
-# under `--features legacy-raster`. The kept GPU compute/util path (GpuContext,
-# adapter, the skinning/sdf/shadow/instancing twins) stays ungated.
+# THE LAW (no-rasterizer, WC7): the banned non-Spectra rendering stacks were
+# EXCISED from the source tree — the GPU splat RASTERIZER (gpu::tiled_splat_
+# renderer + its tile/sort/raster passes, gpu::gpu_rasteriser, gpu::
+# resident_gi_raster, gpu::oit_pass, gpu::gi_combine), the CPU SOFTWARE
+# RASTERIZER (gpu::software-rasteriser twin), and the GPU SURFACE-PRESENT
+# helpers (gpu::wgpu_backend, gpu::spectral_present). The Spectra path tracer is
+# the only renderer in the product. The kept GPU compute/util path (GpuContext,
+# adapter, the skinning/sdf/shadow/instancing twins) is the only GPU code that
+# remains in `gpu/`.
+#
+# `legacy-raster` is retained as an INERT (empty) feature so dependent manifests
+# that still reference it (`vox_data`, `vox_app` demo bins, `vox_tools`) parse;
+# it pulls NOTHING. Any code still gated `#[cfg(feature = "legacy-raster")]`
+# references the deleted modules and can no longer be enabled to compile.
 legacy-raster = []
 # fsr: in-process FSR3 upscale stage on the renderer's OWN Vulkan device (no
 # second device, no CUDA). Pulls spectra-upscale's `fsr` feature (FFX SDK FFI).

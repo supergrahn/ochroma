@@ -6764,7 +6764,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "spectra-gpu",
- "spectra-optix",
  "spectra-types",
  "thiserror 2.0.18",
  "tracing",

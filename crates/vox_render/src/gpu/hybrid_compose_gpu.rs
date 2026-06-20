@@ -352,7 +352,8 @@ impl HybridComposeGpu {
     }
 
     /// Render `scene` into a [`HybridGpuImage`] with default sun lighting,
-    /// mirroring [`crate::hybrid_compose::render_hybrid`].
+    /// mirroring [`crate::hybrid_compose::render_hybrid_lit`] with a default
+    /// `SunLight`.
     pub fn render(
         &self,
         scene: &HybridScene,
@@ -825,7 +826,7 @@ const _: f32 = TRANSMITTANCE_THRESHOLD;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hybrid_compose::{HybridMesh, render_hybrid, render_hybrid_lit};
+    use crate::hybrid_compose::{HybridMesh, render_hybrid_lit};
     use crate::spectral_framebuffer::SpectralFramebuffer;
     use glam::{Mat4, Quat, Vec3};
 
@@ -902,7 +903,7 @@ mod tests {
     /// Render the CPU oracle into a framebuffer (the literal oracle path).
     fn cpu_render(scene: &HybridScene, cam: &RenderCamera, il: &Illuminant) -> SpectralFramebuffer {
         let mut fb = SpectralFramebuffer::new(W, H);
-        render_hybrid(scene, cam, il, &mut fb);
+        render_hybrid_lit(scene, cam, il, &SunLight::default(), &mut fb);
         fb
     }
 

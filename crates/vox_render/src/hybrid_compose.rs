@@ -1,7 +1,7 @@
 //! Hybrid mesh + Gaussian-splat compositing in a single depth-correct pass.
 //!
-//! This is a CPU reference implementation, mirroring the engine's software-first
-//! pattern (`gpu::software_rasteriser`). It renders triangle meshes and spectral
+//! This is a CPU reference implementation (the oracle the GPU compositor
+//! `gpu::hybrid_compose_gpu` is validated against). It renders triangle meshes and spectral
 //! Gaussian splats into one coherent [`SpectralFramebuffer`] with correct mutual
 //! occlusion: splats behind mesh geometry are rejected by the shared depth buffer,
 //! splats in front composite over the mesh background normally.
@@ -346,21 +346,11 @@ impl Default for SunLight {
     }
 }
 
-/// Render a hybrid scene into `fb` with default sun lighting.
+/// Render a hybrid scene with an explicit sun light.
 ///
 /// Returns hardening statistics. The framebuffer is **not** cleared first; the
 /// caller controls accumulation. To render a fresh frame, call `fb.clear()`
-/// beforehand.
-pub fn render_hybrid(
-    scene: &HybridScene,
-    camera: &RenderCamera,
-    illuminant: &Illuminant,
-    fb: &mut SpectralFramebuffer,
-) -> HybridStats {
-    render_hybrid_lit(scene, camera, illuminant, &SunLight::default(), fb)
-}
-
-/// Render a hybrid scene with an explicit sun light.
+/// beforehand. For default sun lighting pass `&SunLight::default()`.
 pub fn render_hybrid_lit(
     scene: &HybridScene,
     camera: &RenderCamera,
@@ -844,6 +834,20 @@ mod tests {
 
     const W: u32 = 64;
     const H: u32 = 64;
+
+    /// Test-only convenience: render with default sun lighting. The public API
+    /// is `render_hybrid_lit` (an explicit `SunLight`); the old default-sun
+    /// wrapper `render_hybrid` was removed as part of the no-rasterizer excision
+    /// (WC7), so the CPU-compositor validation tests delegate through this local
+    /// helper instead.
+    fn render_hybrid(
+        scene: &HybridScene,
+        camera: &RenderCamera,
+        illuminant: &Illuminant,
+        fb: &mut SpectralFramebuffer,
+    ) -> HybridStats {
+        render_hybrid_lit(scene, camera, illuminant, &SunLight::default(), fb)
+    }
 
     fn head_on_camera() -> RenderCamera {
         RenderCamera {

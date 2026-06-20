@@ -1,11 +1,11 @@
 //! Pure CPU camera-convention bridge: ochroma `RenderCamera` → spectra
 //! `GaussianCamera`.
 //!
-//! This is camera *math* only — no rasterization — so it lives in an ungated
-//! module that both the kept GPU compositor (`gpu::hybrid_compose_gpu`) and the
-//! CPU compositor (`crate::hybrid_compose`) depend on. It used to live in
-//! `gpu::software_rasteriser`; it was lifted out so the Spectra product build
-//! does not have to compile the banned software rasterizer to obtain it.
+//! This is camera *math* only — no rasterization — so it lives in a module that
+//! both the GPU compositor (`gpu::hybrid_compose_gpu`) and the CPU compositor
+//! (`crate::hybrid_compose`) depend on. It was lifted out of the (now-excised)
+//! banned rasterizer stack so the Spectra product build obtains the camera
+//! bridge without any rasterizer code.
 
 use crate::spectral::RenderCamera;
 use spectra_gaussian_render::renderer::GaussianCamera;
