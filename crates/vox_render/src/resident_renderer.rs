@@ -402,24 +402,42 @@ impl ResidentCityRenderer {
         view: [f32; 16],
         proj: [f32; 16],
     ) -> Result<FrameOutput, String> {
-        // Aurora Step 1: the id-sorted, coalesced delta ring is the new plumbing
-        // for per-instance transforms (replacing the per-frame CPU Vec push+sort).
-        // The persistent resident `g_instances` buffer + `apply_scene_delta` indexed
-        // scatter is a PROVEN, determinism-witnessed FOUNDATION — but it is NOT yet
-        // read by the trace, so the LIVE render must still drive the *traversed*
-        // TLAS via the legacy `MODE_UPDATE` refit (otherwise movers freeze on
-        // screen). We therefore drain the ring and feed the legacy refit here; the
-        // resident buffer is exercised by the witness + wired into traversal at
-        // Steps 2/5, which then retire this legacy refit. No render regression.
+        // Aurora Steps 3-5 (K4): per-instance transform deltas now flow through the
+        // resident `g_instances` buffer and into the TRAVERSED OptiX CLAS IAS via an
+        // IAS REFIT — the zero-CPU-per-frame mover path. We drain the id-sorted,
+        // coalesced ring into ONE `apply_scene_delta` indexed scatter (patching
+        // `g_instances`, the determinism artifact) and then refit the IAS over the
+        // SAME retained per-prototype GASes (NO BLAS/proto/material rebuild, NO
+        // `build_instanced_scene`). The trace reads the moved instances from
+        // `g_instances`.
+        //
+        // On a backend with no CLAS IAS (the AMD/Vulkan dev box, or OptiX not yet
+        // built) the refit reports `false` after still patching `g_instances`; we
+        // then fall back to the legacy `MODE_UPDATE` refit so movers don't freeze on
+        // that path. On the NVIDIA/CUDA ship target the CLAS IAS refit runs and the
+        // legacy refit is RETIRED (never reached).
         if !self.delta_ring.is_empty() {
             let cmds = self.delta_ring.drain_commands();
-            let dirty: Vec<(usize, [[f32; 4]; 3])> = cmds
-                .iter()
-                .map(|c| (c.slot as usize, c.transform_3x4()))
-                .collect();
-            self.renderer
-                .refit_instance_transforms(&dirty)
-                .map_err(|e| format!("refit_instance_transforms: {e:?}"))?;
+            let ias_refit = self
+                .renderer
+                .apply_scene_delta_and_refit_ias(&cmds)
+                .map_err(|e| format!("apply_scene_delta_and_refit_ias: {e:?}"))?;
+            if !ias_refit {
+                // Legacy fallback (no CLAS IAS active): drive the traversed TLAS via
+                // the per-backend MODE_UPDATE refit from the same drained commands.
+                let dirty: Vec<(usize, [[f32; 4]; 3])> = cmds
+                    .iter()
+                    .map(|c| (c.slot as usize, c.transform_3x4()))
+                    .collect();
+                self.renderer
+                    .refit_instance_transforms(&dirty)
+                    .map_err(|e| format!("refit_instance_transforms: {e:?}"))?;
+            } else if std::env::var("OCHROMA_AURORA_TRACE").as_deref() == Ok("1") {
+                eprintln!(
+                    "[aurora-k4] {} delta(s) → g_instances → OptiX IAS refit (no CPU scene rebuild)",
+                    cmds.len()
+                );
+            }
         }
 
         self.renderer.set_camera_view_matrix(view);
