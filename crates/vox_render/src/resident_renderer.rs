@@ -173,6 +173,38 @@ impl ResidentCityRenderer {
         config.apply_settings(&settings);
         config.max_bounces = max_bounces;
 
+        // GLASS BOUNCE FLOOR (SOTA glass fix). The still path (`splat_backend`
+        // `pathtrace_mesh_lit_weathered_to_rgba`, ~line 934) bumps `max_bounces`
+        // to GLASS_MIN_BOUNCES whenever the scene contains a transmissive
+        // (MAT_GLASS) material, because a glass pane needs: enter front face
+        // (refract) → exit back face (refract) → travel to a lit surface →
+        // bounce off it → back through the pane. The real-time tiers only give
+        // 2 (Performance) / 3 (Balanced) / 6 (Beauty) bounces, so transmitted
+        // rays die INSIDE the glass before reaching any light and the pane reads
+        // dark/flat-matte instead of transmissive+reflective. The RESIDENT path
+        // (the live game + the STYLE_PROBE/SHOT_HERO witness) never applied this
+        // bump, so curtain-wall glass looked opaque. Mirror the still path here:
+        // scan the INITIAL scene's material table for any MAT_GLASS material and,
+        // if present, raise the bounce floor. Determinism-safe: a pure `any()`
+        // over the flat param array (no HashMap/RNG iteration); changes only the
+        // path-length budget, never the sample order. `SPECTRA_GLASS_BOUNCES`
+        // overrides the floor (config-first); 0 disables the bump entirely.
+        if scene_has_glass(&initial) {
+            let floor = std::env::var("SPECTRA_GLASS_BOUNCES")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(GLASS_MIN_BOUNCES);
+            if floor > config.max_bounces {
+                eprintln!(
+                    "[glass-bounce-floor] scene has MAT_GLASS; max_bounces {} -> {} \
+                     (transmissive panes need enough depth to refract through both \
+                     faces and reach light)",
+                    config.max_bounces, floor
+                );
+                config.max_bounces = floor;
+            }
+        }
+
         // NVIDIA-stack foundation: enable OptiX HW-RT for the LIVE game by default
         // (config-first, not env-gated). ResidentCityRenderer historically never
         // set this, so the shipped game ran the SOFTWARE BVH and the whole RT-core
@@ -590,6 +622,43 @@ impl ResidentCityRenderer {
 
 /// Extract the camera forward axis (world -Z of the view) from a scene's
 /// column-major view matrix. Used to orient the camera-relative fill lights.
+/// The bounce-depth floor enforced when a scene contains transmissive
+/// (MAT_GLASS) materials. Matches the still path's glass bump
+/// (`splat_backend::pathtrace_mesh_lit_weathered_to_rgba`, which sets 8 when
+/// `has_glass`): a glass pane needs enough depth to refract through both faces
+/// and reach a lit surface, or it terminates dark and reads opaque/matte.
+const GLASS_MIN_BOUNCES: u32 = 8;
+
+/// The material-type tag value for transmissive glass. MUST match the
+/// `MAT_GLASS` id both material packers write into element 0 of every material
+/// (`splat_backend::pack_cuda_mesh_material` / `pack_vulkan_mesh_material`) and
+/// the megakernel's `case MAT_GLASS` dispatch.
+const MAT_GLASS_TYPE: u32 = 3;
+
+/// True when the scene's material table holds at least one MAT_GLASS material.
+///
+/// Element 0 of every packed material is the material-type tag (a `u32` stored
+/// in an `f32` via `from_bits`/`pack_u32`) in BOTH the 132-float CUDA layout and
+/// the 156-float Vulkan layout, so the per-material stride is derived from
+/// `params.len() / material_count` and element 0 of each material is decoded with
+/// `to_bits()`. Pure scan — no HashMap/RNG iteration, so it is deterministic.
+fn scene_has_glass(scene: &SceneState) -> bool {
+    let mats = &scene.materials;
+    if mats.material_count == 0 || mats.params.is_empty() {
+        return false;
+    }
+    let stride = mats.params.len() / mats.material_count;
+    if stride == 0 {
+        return false;
+    }
+    (0..mats.material_count).any(|i| {
+        mats.params
+            .get(i * stride)
+            .map(|t| t.to_bits() == MAT_GLASS_TYPE)
+            .unwrap_or(false)
+    })
+}
+
 fn scene_camera_forward(scene: &SceneState) -> glam::Vec3 {
     let m = glam::Mat4::from_cols_array(&scene.camera.view_matrix);
     // Forward in world space is the inverse-rotation of view -Z. For an
