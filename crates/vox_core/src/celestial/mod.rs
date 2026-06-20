@@ -20,4 +20,4 @@ pub use sun::{
     hour_from_tick_of_day, solar_day_from_civic_day,
 };
 pub use moon::{MoonConfig, MoonPosition, compute_moon_position};
-pub use key_light::{KeyLight, celestial_key_light};
+pub use key_light::{KeyLight, KeyLightPalette, celestial_key_light};

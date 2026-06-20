@@ -321,6 +321,17 @@ pub struct LightRig {
     pub sky_dome_zenith: [f32; 3],
     /// Sky-dome gradient color at the horizon (linear RGB).
     pub sky_dome_horizon: [f32; 3],
+    /// ANALYTIC fill-light COLORS (linear RGB) for the resident renderer's
+    /// four-light rig. These were hardcoded blue-grey triples in
+    /// `resident_renderer` (the PRIME blue-cast culprit); they now ride the rig
+    /// so the GAME can drive them from `render.ron` (`lighting_rig.analytic_fills`).
+    /// Defaults match the historical literals exactly (byte-identical fallback).
+    /// `analytic_sky_fill_color` = the straight-down sky fill;
+    /// `analytic_camera_fill_color` = the camera-direction fill;
+    /// `analytic_rim_fill_color` = the opposing rim fill.
+    pub analytic_sky_fill_color: [f32; 3],
+    pub analytic_camera_fill_color: [f32; 3],
+    pub analytic_rim_fill_color: [f32; 3],
     /// Display LOOK for this shot: the tonemap operator + exposure preset
     /// applied to the linear HDR film. Default [`LookPreset::AcesFilm`]
     /// (ACES, EV 0) — byte-identical to the legacy hardcoded behaviour.
@@ -510,6 +521,12 @@ impl Default for LightRig {
             sky_dome_intensity: 0.5,
             sky_dome_zenith: [0.15, 0.25, 0.45],
             sky_dome_horizon: [0.7, 0.6, 0.5],
+            // Analytic fill colors: defaults are the historical resident_renderer
+            // literals (byte-identical fallback). The game overrides them from
+            // render.ron `lighting_rig.analytic_fills`.
+            analytic_sky_fill_color: [0.58, 0.62, 0.72],
+            analytic_camera_fill_color: [0.72, 0.74, 0.78],
+            analytic_rim_fill_color: [0.45, 0.47, 0.52],
             look: LookPreset::AcesFilm,
             // Atmosphere OFF by default — every legacy render stays
             // byte-identical (the renderer leaves u_atmosphere_enabled = 0).
@@ -549,8 +566,20 @@ impl LightRig {
     ///     red brick under a bright sky it crushed the red to grey
     ///     (`[164,161,158]` measured). SoftReview preserves the brick's chroma.
     ///
+    /// CONFIG NOTE: these numbers are the DOCUMENTED DEFAULTS — the live game
+    /// rig is now built field-by-field from `assets/config/render.ron`
+    /// (`lighting_rig.daylight` + the celestial `KeyLightPalette` sky anchors),
+    /// NOT from this function. The sky-dome anchor is derived from
+    /// `vox_core::celestial::KeyLightPalette::default()` so the engine fallback
+    /// can never drift from the canonical day palette (it used to carry a stale
+    /// `[0.42,0.55,0.78]` copy). The directional-rig numbers below are the
+    /// fallback an engine-only caller (no render.ron) gets.
+    ///
     /// See `docs/superpowers/specs/2026-06-13-material-rendering-design.md`.
     pub fn realistic_daylight() -> Self {
+        // Sky-dome anchors come from the engine's canonical day palette (the same
+        // DATA the game's render.ron mirrors) — no second hardcoded copy.
+        let day = vox_core::celestial::KeyLightPalette::default();
         Self {
             sun_dir: [0.45, 0.55, 0.50],
             sun_color: [1.0, 0.93, 0.82], // warm afternoon sun -> warm faces
@@ -562,10 +591,11 @@ impl LightRig {
             atmosphere_enabled: true,
             atmosphere_turbidity: 2.5,
             // Desaturated + dimmed sky dome: still fills shadows, but its blue
-            // ambient no longer greys the warm sunlit brick faces.
-            sky_dome_intensity: 0.45,
-            sky_dome_zenith: [0.42, 0.55, 0.78],
-            sky_dome_horizon: [0.82, 0.85, 0.90],
+            // ambient no longer greys the warm sunlit brick faces. Derived from
+            // the canonical KeyLightPalette day anchor (single source of truth).
+            sky_dome_intensity: day.day_intensity,
+            sky_dome_zenith: day.day_zenith,
+            sky_dome_horizon: day.day_horizon,
             // Reinhard-on-luma, hue-preserving — keeps the brick's chroma.
             look: LookPreset::DaylitCity,
             ..Default::default()

@@ -326,11 +326,14 @@ impl ResidentCityRenderer {
         let camera_fill = (-cam_fwd + glam::Vec3::Y * 0.35).normalize_or_zero();
         let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
         let mut light_data: Vec<f32> = Vec::with_capacity(4 * VULKAN_LIGHT_FLOATS);
+        // Fill COLORS now ride the rig (config-driven via render.ron
+        // `lighting_rig.analytic_fills`) — the prime blue-cast culprit is one
+        // config edit, not a buried literal. Defaults equal the historical triples.
         for (dir, color, intensity) in [
             (sun.to_array(), rig.sun_color, rig.sun_intensity),
-            (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
-            (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
-            (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
+            (glam::Vec3::Y.to_array(), rig.analytic_sky_fill_color, rig.sky_intensity),
+            (camera_fill.to_array(), rig.analytic_camera_fill_color, rig.camera_fill),
+            (rim_fill.to_array(), rig.analytic_rim_fill_color, rig.rim_fill),
         ] {
             light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
         }
