@@ -395,6 +395,14 @@ pub struct LightRig {
     /// so uploading masks without setting intensity reproduces the legacy
     /// weathered render. Forced to `[0; 7]` when `weathering_enabled` is false.
     pub weathering_intensity: [f32; 7],
+    /// True when the SUN is below the horizon (night). Driven by the game's
+    /// celestial clock (`rig.sun.altitude_rad < 0`), NOT by `sun_dir` — at night
+    /// the `sun_dir`/key slot carries the MOON, which can be above the horizon, so
+    /// `sun_dir.y` is NOT a reliable night signal. The resident renderer uses this
+    /// to switch on the MegaLights night path: promote glass to lit windows +
+    /// derive emissive point lights so the city lights from within. Default
+    /// `false` (day) keeps every legacy render byte-identical.
+    pub is_night: bool,
 }
 
 /// A named display LOOK = tonemap operator + exposure (EV). The renderer owns
@@ -565,6 +573,9 @@ impl Default for LightRig {
             // toggle drives `weathering_enabled`.
             weathering_enabled: true,
             weathering_intensity: [1.0; 7],
+            // Day by default — the night MegaLights path is opt-in via the game's
+            // celestial clock, so every legacy render stays byte-identical.
+            is_night: false,
         }
     }
 }
@@ -2990,6 +3001,38 @@ pub(crate) fn pack_vulkan_directional_light(
     a[4] = direction[0];
     a[5] = direction[1];
     a[6] = direction[2];
+    a[8] = color[0];
+    a[9] = color[1];
+    a[10] = color[2];
+    a[11] = intensity;
+    a[31] = pack_u32(0xFFFF_FFFF); // group_mask
+    a[32] = pack_i32(0); // num_filters
+    a[33] = pack_i32(0); // filter_offset
+
+    a
+}
+
+/// Pack a `LightData` POINT light (LIGHT_POINT = 1) in the same SPIR-V reflection
+/// layout as [`pack_vulkan_directional_light`]. The `LightData.position` field
+/// (Vulkan slots 4-6) holds the WORLD-space emitter position; the megakernel's
+/// `sample_point_light` applies inverse-square falloff. This is the MegaLights
+/// night-light path: hundreds of lit-window / street-light emitters become NEE
+/// point lights that ReSTIR-DI resamples. `radius` (slot ~28) is the soft-shadow
+/// radius for the point source — `sample_point_light` treats it as a hard point
+/// (the megakernel only reads `radius` for tube/linear lights), so it is left
+/// unset here.
+#[cfg(feature = "spectra-native")]
+pub(crate) fn pack_vulkan_point_light(
+    position: [f32; 3],
+    color: [f32; 3],
+    intensity: f32,
+) -> [f32; VULKAN_LIGHT_FLOATS] {
+    let mut a = [0.0f32; VULKAN_LIGHT_FLOATS];
+
+    a[0] = pack_u32(1); // LIGHT_POINT
+    a[4] = position[0];
+    a[5] = position[1];
+    a[6] = position[2];
     a[8] = color[0];
     a[9] = color[1];
     a[10] = color[2];

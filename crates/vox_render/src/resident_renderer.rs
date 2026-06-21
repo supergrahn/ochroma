@@ -40,8 +40,8 @@ pub use spectra_renderer::FidelityTier;
 pub use spectra_renderer::RenderTarget;
 
 use crate::splat_backend::{
-    LightRig, VULKAN_LIGHT_FLOATS, pack_vulkan_directional_light, resolve_slang_kernel_dir,
-    rig_to_settings, seed_features_from_config,
+    LightRig, VULKAN_LIGHT_FLOATS, pack_vulkan_directional_light, pack_vulkan_point_light,
+    resolve_slang_kernel_dir, rig_to_settings, seed_features_from_config,
 };
 
 /// Result of a scene-delta upload — the reuse-vs-rebuild proof.
@@ -433,6 +433,21 @@ impl ResidentCityRenderer {
         scene.camera.width = self.width;
         scene.camera.height = self.height;
 
+        // NIGHT LIT WINDOWS: when the sun is below the horizon (night), promote
+        // glass (curtain-wall window) materials to EMISSIVE so the city lights up
+        // from within. Glass surfaces otherwise read as dark holes at night (no
+        // sun/sky to reflect or transmit). Promotion sets the material's emission
+        // slot (a[23]) + a warm interior color; `emissive_point_lights` (below)
+        // then turns each lit-window instance into an NEE point light so the glow
+        // also lights neighboring facades/streets — the MegaLights night effect.
+        // Gated on sun elevation so daytime renders are byte-identical.
+        let is_night = self.rig.is_night;
+        let lit_window_disabled =
+            matches!(std::env::var("OCHROMA_LIT_WINDOWS").as_deref(), Ok("0") | Ok("off"));
+        if is_night && !lit_window_disabled {
+            promote_glass_to_lit_windows(&mut scene);
+        }
+
         // Inject the rig's four-light directional rig (sun/sky/camera-fill/rim),
         // mirroring spectra_resident_bench's light setup so lighting is identical
         // to the proven bench path.
@@ -454,9 +469,35 @@ impl ResidentCityRenderer {
         ] {
             light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
         }
+        // MegaLights night path: append a POINT light for every emissive instance
+        // (lit windows / street lights). At night the sun is below the horizon so
+        // the 4 directional lights are ~black; these emitters carry the frame. The
+        // megakernel NEE samples them directly; ReSTIR-DI resamples them when on.
+        // GATED on night (like the glass promotion) so the DAYTIME render stays
+        // byte-identical — by day, content-authored emissive surfaces still glow on
+        // direct hits exactly as before; we do NOT add NEE lights that would change
+        // the established daylit look.
+        let (emissive_lights, emissive_count) = if is_night && !lit_window_disabled {
+            let emissive_scale = std::env::var("OCHROMA_EMISSIVE_LIGHT_SCALE")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| *v > 0.0)
+                .unwrap_or(EMISSIVE_LIGHT_SCALE_DEFAULT);
+            emissive_point_lights(&scene, emissive_scale)
+        } else {
+            (Vec::new(), 0)
+        };
+        light_data.extend_from_slice(&emissive_lights);
+        let light_count = 4 + emissive_count;
+        if emissive_count > 0 {
+            eprintln!(
+                "[night-lights] derived {emissive_count} emissive point lights \
+                 -> {light_count} total lights"
+            );
+        }
         scene.lights = LightLayer {
             light_data,
-            light_count: 4,
+            light_count,
         };
         scene.mark_lights_changed();
 
@@ -767,6 +808,222 @@ fn scene_has_glass(scene: &SceneState) -> bool {
             .map(|t| t.to_bits() == MAT_GLASS_TYPE)
             .unwrap_or(false)
     })
+}
+
+/// Slot, in the 156-float Vulkan `MaterialData` layout, holding emission strength
+/// (`pack_vulkan_mesh_material` writes `a[23] = emission_strength`). The emission
+/// COLOR is the base color at slots 20..22 (also written by the packer).
+const MAT_EMISSION_SLOT: usize = 23;
+const MAT_EMISSION_COLOR_SLOT: usize = 20;
+
+/// Upper bound on derived emissive point lights. NEE selects ONE light per pixel
+/// uniformly (megakernel) so the cost is O(1) per sample regardless of count, but
+/// the light buffer upload + ReSTIR candidate quality degrade past a few thousand
+/// uncorrelated emitters. Cap keeps the night frame bounded; sorted-by-id slice so
+/// the selection is deterministic (no HashMap/RNG order).
+const MAX_EMISSIVE_POINT_LIGHTS: usize = 4096;
+
+/// Per-emitter intensity scale applied to `emission_strength` when turning an
+/// emissive instance into an NEE point light. The megakernel applies inverse-square
+/// falloff (`sample_point_light`: `emission = color * intensity / dist^2`), so this
+/// is the RADIANT POWER at 1 m. City emitters light facades ~5-30 m away, so the
+/// power must be large to read against a daylit-calibrated exposure: at 15 m a
+/// scale of 2000 (× emission ~1.6) gives irradiance ~14, comparable to the noon
+/// sun (~28) — a believable lit-window/street-lamp pool. Config-overridable via
+/// OCHROMA_EMISSIVE_LIGHT_SCALE.
+const EMISSIVE_LIGHT_SCALE_DEFAULT: f32 = 2000.0;
+
+/// Derive NEE point lights from the scene's emissive instances.
+///
+/// MegaLights night path: any instance whose material has `emission_strength > 0`
+/// (lit windows = MAT_GLASS_LIT-equivalent, street lights, signage) becomes a
+/// world-space POINT light at the instance's world centroid. Without this, emissive
+/// SURFACES only contribute when a camera/bounce ray DIRECTLY hits them — they do
+/// not LIGHT the surrounding city. Turning them into NEE lights is what makes a
+/// night frame carry: every pixel can next-event-sample the nearby windows/lamps.
+///
+/// Deterministic: instances scanned in id (index) order, capped slice, no
+/// HashMap/RNG iteration. Returns packed Vulkan `LightData` floats appended to the
+/// directional rig.
+fn emissive_point_lights(scene: &SceneState, scale: f32) -> (Vec<f32>, usize) {
+    let geo = &scene.geometry;
+    let mats = &scene.materials;
+    let inst_count = geo.instance_count;
+    if inst_count == 0 || mats.material_count == 0 || mats.params.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let mstride = mats.params.len() / mats.material_count;
+    if mstride <= MAT_EMISSION_SLOT {
+        return (Vec::new(), 0);
+    }
+    // Need per-instance transform (16 floats, row-major) to place the light.
+    if geo.instance_transforms.len() < inst_count * 16 {
+        return (Vec::new(), 0);
+    }
+
+    // Precompute per-material emission (strength + color). An instance is a light
+    // when ANY triangle of its prototype resolves to an emissive material.
+    let mat_emission: Vec<(f32, [f32; 3])> = (0..mats.material_count)
+        .map(|mi| {
+            let b = mi * mstride;
+            let em = mats.params.get(b + MAT_EMISSION_SLOT).copied().unwrap_or(0.0);
+            let col = [
+                mats.params.get(b + MAT_EMISSION_COLOR_SLOT).copied().unwrap_or(1.0),
+                mats.params.get(b + MAT_EMISSION_COLOR_SLOT + 1).copied().unwrap_or(1.0),
+                mats.params.get(b + MAT_EMISSION_COLOR_SLOT + 2).copied().unwrap_or(1.0),
+            ];
+            (em, col)
+        })
+        .collect();
+    if !mat_emission.iter().any(|(em, _)| *em > 0.0) {
+        return (Vec::new(), 0);
+    }
+
+    // Per-instance material BASE is ADDED to each triangle's relative material id
+    // (`final = base + tri.material_id`) — it is NOT the absolute material index
+    // (the earlier bug). Empty ⇒ base 0. Proto index selects the geometry range.
+    let bases = &geo.instance_material_base;
+    let protos = &geo.instance_proto_index;
+    let tri_mat = &geo.material_ids; // per-triangle relative material id
+    let ranges = &geo.proto_ranges; // (v_off, v_cnt, t_off, t_cnt) per proto
+
+    let mut out: Vec<f32> = Vec::new();
+    let mut count = 0usize;
+    for i in 0..inst_count {
+        if count >= MAX_EMISSIVE_POINT_LIGHTS {
+            break;
+        }
+        let base = bases.get(i).copied().unwrap_or(0) as usize;
+        let proto = protos.get(i).copied().unwrap_or(i as u32) as usize;
+
+        // Resolve whether this instance's proto has any emissive triangle and
+        // capture the (strongest) emissive material's color/strength.
+        let mut best_em = 0.0f32;
+        let mut best_col = [1.0f32, 0.85, 0.6];
+        if let Some(&(_, _, t_off, t_cnt)) = ranges.get(proto) {
+            let t0 = t_off as usize;
+            let t1 = t0 + t_cnt as usize;
+            for t in t0..t1.min(tri_mat.len()) {
+                let rel = tri_mat[t] as usize;
+                let abs = base + rel;
+                if let Some(&(em, col)) = mat_emission.get(abs) {
+                    if em > best_em {
+                        best_em = em;
+                        best_col = col;
+                    }
+                }
+            }
+        } else {
+            // No proto ranges (single-soup legacy): treat base as the absolute id.
+            if let Some(&(em, col)) = mat_emission.get(base) {
+                if em > 0.0 {
+                    best_em = em;
+                    best_col = col;
+                }
+            }
+        }
+        if !(best_em > 0.0) {
+            continue;
+        }
+        // Warm interior/sodium tint fallback if the emission color is ~black.
+        let color = if best_col[0] + best_col[1] + best_col[2] <= 1e-4 {
+            [1.0, 0.85, 0.6]
+        } else {
+            best_col
+        };
+
+        // World centroid: instance transform applied to the proto's object-space
+        // AABB center when available, else the transform translation.
+        let m = &geo.instance_transforms[i * 16..i * 16 + 16];
+        let local_center = geo
+            .proto_aabbs
+            .get(proto)
+            .map(|(lo, hi)| {
+                [
+                    0.5 * (lo[0] + hi[0]),
+                    0.5 * (lo[1] + hi[1]),
+                    0.5 * (lo[2] + hi[2]),
+                ]
+            })
+            .unwrap_or([0.0, 0.0, 0.0]);
+        // Row-major 4x4: world = M * [local,1]. Row r is m[r*4..r*4+4].
+        let wx = m[0] * local_center[0] + m[1] * local_center[1] + m[2] * local_center[2] + m[3];
+        let wy = m[4] * local_center[0] + m[5] * local_center[1] + m[6] * local_center[2] + m[7];
+        let wz = m[8] * local_center[0] + m[9] * local_center[1] + m[10] * local_center[2] + m[11];
+        out.extend_from_slice(&pack_vulkan_point_light([wx, wy, wz], color, best_em * scale));
+        count += 1;
+    }
+    (out, count)
+}
+
+/// Promote a deterministic fraction of MAT_GLASS materials to emissive
+/// "lit windows" for night rendering. Mutates the packed material table in place
+/// (emission strength @ slot 23, warm emission color @ slots 20..22). Lights ~60%
+/// of glass materials (deterministic per-id hash) so the night skyline reads as a
+/// believable mix of lit and dark windows rather than a uniform glow. No-op if the
+/// material is already emissive (content authored a lit channel).
+fn promote_glass_to_lit_windows(scene: &mut SceneState) {
+    let mats = &mut scene.materials;
+    if mats.material_count == 0 || mats.params.is_empty() {
+        return;
+    }
+    let stride = mats.params.len() / mats.material_count;
+    if stride <= MAT_EMISSION_SLOT {
+        return;
+    }
+    // Authorable via env (config-first): glow strength + lit fraction.
+    let glow = std::env::var("OCHROMA_LIT_WINDOW_GLOW")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(8.0);
+    let lit_frac = std::env::var("OCHROMA_LIT_WINDOW_FRACTION")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map(|v| v.clamp(0.0, 1.0))
+        .unwrap_or(0.6);
+    let mut promoted = 0usize;
+    for i in 0..mats.material_count {
+        let base = i * stride;
+        let is_glass = mats
+            .params
+            .get(base)
+            .map(|t| t.to_bits() == MAT_GLASS_TYPE)
+            .unwrap_or(false);
+        if !is_glass {
+            continue;
+        }
+        // Already emissive (content-authored lit channel): leave as-is.
+        let cur_em = mats.params.get(base + MAT_EMISSION_SLOT).copied().unwrap_or(0.0);
+        if cur_em > 0.0 {
+            continue;
+        }
+        // Deterministic per-id selection (no RNG/HashMap order). PCG-style hash.
+        let h = {
+            let mut x = (i as u32).wrapping_mul(747796405).wrapping_add(2891336453);
+            x = ((x >> ((x >> 28).wrapping_add(4))) ^ x).wrapping_mul(277803737);
+            (x >> 22) ^ x
+        };
+        let r = (h as f32) / (u32::MAX as f32);
+        if r > lit_frac {
+            continue;
+        }
+        // Warm interior glow (slightly varied hue per id so windows aren't a flat
+        // single color). Emission color rides slots 20..22; strength slot 23.
+        let warm = 0.85 + 0.15 * ((h >> 8) & 0xFF) as f32 / 255.0;
+        mats.params[base + MAT_EMISSION_COLOR_SLOT] = 1.0;
+        mats.params[base + MAT_EMISSION_COLOR_SLOT + 1] = warm;
+        mats.params[base + MAT_EMISSION_COLOR_SLOT + 2] = 0.55 + 0.25 * warm;
+        mats.params[base + MAT_EMISSION_SLOT] = glow;
+        promoted += 1;
+    }
+    if promoted > 0 {
+        scene.mark_materials_changed();
+        eprintln!(
+            "[night-lights] promoted {promoted} glass materials to lit windows \
+             (glow {glow}, frac {lit_frac})"
+        );
+    }
 }
 
 fn scene_camera_forward(scene: &SceneState) -> glam::Vec3 {
