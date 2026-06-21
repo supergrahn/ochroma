@@ -308,6 +308,69 @@ pub fn splats_to_lit_scene(
 /// vertex/triangle soup (object-space); the per-instance world transform is
 /// applied by the TLAS at trace time. `width`/`height` set the render target;
 /// the caller fills the real camera before rendering.
+/// Synthesize the geometry-anchored weathering PATTERN for a merged scene:
+/// 7 floats per vertex `[moss, water_stain, paint_chip, rust, soot,
+/// efflorescence, edge_wear]` parallel to `positions` (flat `[x,y,z]`/vertex)
+/// and `normals` (flat `[nx,ny,nz]`/vertex).
+///
+/// Pure + deterministic (a fixed function of the id-sorted merged geometry — no
+/// HashMap/RNG iteration, no time), so it never perturbs the determinism
+/// artifact. Amplitudes are deliberately SUBTLE (≤ ~0.3 at reference intensity)
+/// so a clean city still reads clean; the sim scales them per-instance later.
+///
+/// The pattern (gravity-directional aging, per [[dynamic-weathering-directive]]):
+/// - **soot** rises from the street: strongest near y≈0, fading with height.
+/// - **efflorescence** wicks up from the very base (a tighter band than soot).
+/// - **water_stain** weeps on down-facing ledges/sills (normal.y < 0).
+/// - **edge_wear** on near-vertical wall faces (|normal.y| small) — arris/wall wear.
+/// Returns an empty vec when there is no geometry (weathering then stays off).
+#[cfg(feature = "spectra-native")]
+fn build_weathering_pattern(positions: &[f32], normals: &[f32]) -> Vec<f32> {
+    let vc = positions.len() / 3;
+    if vc == 0 {
+        return Vec::new();
+    }
+    // Street-level reference: soot/efflorescence are anchored to world y≈0 (the
+    // ground plane the city sits on). Heights are in metres.
+    const SOOT_FALLOFF_M: f32 = 14.0; // soot fades out over ~14 m of height
+    const EFFLOR_FALLOFF_M: f32 = 4.0; // efflorescence is a tight base band
+    const SOOT_MAX: f32 = 0.28;
+    const EFFLOR_MAX: f32 = 0.18;
+    const STAIN_MAX: f32 = 0.22;
+    const EDGE_MAX: f32 = 0.12;
+
+    let mut masks = vec![0.0f32; vc * 7];
+    for v in 0..vc {
+        let y = positions[v * 3 + 1];
+        let ny = normals.get(v * 3 + 1).copied().unwrap_or(0.0);
+        let base = masks.get_mut(v * 7..v * 7 + 7).unwrap();
+
+        // Near-vertical WALL factor — soot/efflorescence/edge-wear are FACADE
+        // phenomena, so gate them on verticality. This also keeps the pattern off
+        // flat up-facing terrain/roads/roofs (ny≈+1 → wall≈0), so the merged
+        // scene's ground geometry stays clean even though it shares the buffer.
+        let wall = (1.0 - ny.abs()).clamp(0.0, 1.0);
+        // Height factor, 1 at the street, decaying with height.
+        let h = y.max(0.0);
+        let soot = SOOT_MAX * (-h / SOOT_FALLOFF_M).exp() * wall;
+        let efflor = EFFLOR_MAX * (-h / EFFLOR_FALLOFF_M).exp() * wall;
+        // Down-facing surfaces (sills, ledge undersides, cornice soffits) weep.
+        let down = (-ny).max(0.0); // 1 for a fully down-facing surface
+        let stain = STAIN_MAX * down * down;
+        // Near-vertical wall faces take edge/arris wear.
+        let edge = EDGE_MAX * wall;
+
+        base[1] = stain; // water_stain
+        base[4] = soot; // soot
+        base[5] = efflor; // efflorescence
+        base[6] = edge; // edge_wear
+        // moss/paint_chip/rust left at 0 — those need material/sim context the
+        // pattern alone shouldn't assume (a brand-new steel/glass tower has no
+        // moss); the sim/cook supplies them per instance later.
+    }
+    masks
+}
+
 #[cfg(feature = "spectra-native")]
 pub fn meshes_to_instanced_scene(
     blas: &[BlasDesc],
@@ -428,9 +491,24 @@ pub fn meshes_to_instanced_scene(
         spd_map.insert(*mat_id, *spd);
     }
 
+    // --- Geometry-anchored weathering PATTERN (7 floats / scene vertex) ---
+    // The cook bakes per-vertex masks, but they are not carried through the
+    // HybridMesh→BlasDesc seam yet, so synthesize the PATTERN here from the
+    // merged vertex geometry (position + normal). This is the cook-pattern layer
+    // of [[dynamic-weathering-directive]]: WHERE aging appears (soot rising from
+    // the street, water-stain weeping below sills/ledges, edge-wear on arrises,
+    // efflorescence wicking up from the base). It is a pure, deterministic
+    // function of the id-sorted merged geometry (no HashMap/RNG iteration) so it
+    // never perturbs the determinism artifact. The sim drives per-instance
+    // INTENSITY on top via `set_weathering_intensity` (future); at reference
+    // intensity 1.0 this is a SUBTLE pattern (amplitudes ≤ ~0.3) so a clean city
+    // still reads clean. Empty when there is no geometry.
+    let weathering_masks = build_weathering_pattern(&positions, &normals);
+
     let mut scene = SceneState::new(width, height);
     scene.geometry.vertex_count = positions.len() / 3;
     scene.geometry.triangle_count = indices.len() / 3;
+    scene.geometry.weathering_masks = weathering_masks;
     scene.geometry.positions = positions;
     scene.geometry.normals = normals;
     scene.geometry.uvs = uvs;
@@ -459,6 +537,49 @@ mod tests {
 
     fn zero_spectral() -> [u16; 16] {
         [0u16; 16]
+    }
+
+    #[test]
+    fn weathering_pattern_is_gravity_directional_and_facade_only() {
+        // Three vertices: a street-level WALL face (vertical normal, y=0), the
+        // SAME wall higher up (y=40), and a flat GROUND vertex (up-facing, y=0).
+        // positions [x,y,z] / vertex; normals [nx,ny,nz] / vertex.
+        let positions = [
+            0.0, 0.0, 0.0, // wall base
+            0.0, 40.0, 0.0, // wall high
+            5.0, 0.0, 5.0, // ground
+        ];
+        let normals = [
+            1.0, 0.0, 0.0, // wall base: vertical face
+            1.0, 0.0, 0.0, // wall high: vertical face
+            0.0, 1.0, 0.0, // ground: up-facing
+        ];
+        let m = build_weathering_pattern(&positions, &normals);
+        assert_eq!(m.len(), 3 * 7, "7 floats per vertex");
+        // Channel layout: [moss, water_stain, paint_chip, rust, soot, efflor, edge].
+        let soot = |v: usize| m[v * 7 + 4];
+        let efflor = |v: usize| m[v * 7 + 5];
+        let edge = |v: usize| m[v * 7 + 6];
+
+        // Soot rises from the street: base wall soot >> high wall soot > 0.
+        assert!(soot(0) > 0.1, "street-level wall has soot, got {}", soot(0));
+        assert!(
+            soot(0) > soot(1) * 2.0,
+            "soot decays with height: base {} vs high {}",
+            soot(0),
+            soot(1)
+        );
+        // Ground (up-facing) gets ~no facade weathering — the pattern is wall-only.
+        assert!(soot(2) < 1e-4, "flat ground has no soot, got {}", soot(2));
+        assert!(efflor(2) < 1e-4, "flat ground has no efflorescence");
+        assert!(edge(2) < 1e-4, "flat ground has no edge-wear");
+        // The wall DOES get edge-wear; the ground does not.
+        assert!(edge(0) > 0.01, "vertical wall has edge-wear, got {}", edge(0));
+    }
+
+    #[test]
+    fn weathering_pattern_empty_for_no_geometry() {
+        assert!(build_weathering_pattern(&[], &[]).is_empty());
     }
 
     #[test]

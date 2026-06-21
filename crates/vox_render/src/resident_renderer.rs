@@ -341,6 +341,32 @@ impl ResidentCityRenderer {
             .map_err(|e| format!("set_texture_atlas: {e:?}"))
     }
 
+    /// Upload the per-vertex weathering PATTERN (the cook/geometry-anchored
+    /// masks: `7 * vertex_count` floats, `[moss, water_stain, paint_chip, rust,
+    /// soot, efflorescence, edge_wear]`) and enable the megakernel's dormant
+    /// 7-channel weathering engine (`apply_weathering_full`). The masks MUST be
+    /// parallel to the uploaded scene's MERGED vertex buffer
+    /// (`SceneState.geometry.positions` order). `upload_scene` calls this from
+    /// `scene.geometry.weathering_masks` automatically; expose it so a caller can
+    /// re-drive it. An empty slice disables weathering. MUST be called AFTER scene
+    /// upload (it needs the renderer `state` to exist). See
+    /// [[dynamic-weathering-directive]] — the cook bakes the PATTERN, the sim
+    /// scales the INTENSITY via [`set_weathering_intensity`].
+    pub fn set_weathering_masks(&mut self, masks: &[f32]) -> Result<(), String> {
+        self.renderer
+            .set_weathering_masks(masks)
+            .map_err(|e| format!("set_weathering_masks: {e:?}"))
+    }
+
+    /// Set the per-channel DYNAMIC weathering intensity (how worn THIS render's
+    /// geometry is — sim-driven from building age + missed maintenance). Channel
+    /// order matches the masks; values clamped to `[0,1]`. Multiplies the baked
+    /// pattern in the megakernel (`u_weathering_intensity_0..6`). Defaults to
+    /// `[1.0; 7]` (full reference pattern) until called.
+    pub fn set_weathering_intensity(&mut self, intensity: [f32; 7]) {
+        self.renderer.set_weathering_intensity(intensity);
+    }
+
     /// Shared upload body used by both `new` and `set_scene`.
     fn upload_scene(&mut self, mut scene: SceneState) -> Result<SceneDelta, String> {
         // Force the internal render resolution onto the scene's camera so the
@@ -375,12 +401,29 @@ impl ResidentCityRenderer {
         };
         scene.mark_lights_changed();
 
+        // WEATHERING: the per-vertex pattern travels on the scene
+        // (`geometry.weathering_masks`, built by `meshes_to_instanced_scene`).
+        // The megakernel binds the SEPARATE `g_weathering_masks` StructuredBuffer
+        // (set via `set_weathering_masks`), NOT the interleaved vertex buffer the
+        // uploader packs, so we MUST re-drive the setter after every scene upload
+        // or the live/resident path renders clean (the historical gap: no setter
+        // on ResidentCityRenderer). Taken out before `scene` is moved into
+        // `load_scene_state` (the megakernel weathering path reads ONLY the
+        // separate buffer, so the interleaved copy is redundant here). Empty
+        // masks → the setter disables weathering.
+        let weathering_masks = std::mem::take(&mut scene.geometry.weathering_masks);
+
         // TDR DIAGNOSIS: the one-time scene/BVH/TLAS upload is a prime suspect for
         // a single >2s GPU op. Wall-time it when SPECTRA_DISPATCH_TIMING=1.
         let _scene_t = std::time::Instant::now();
         self.renderer
             .load_scene_state(scene)
             .map_err(|e| format!("load_scene_state: {e:?}"))?;
+        // Bind the weathering pattern to the megakernel's g_weathering_masks +
+        // flip u_weathering_enabled. After load_scene_state so `state` exists.
+        self.renderer
+            .set_weathering_masks(&weathering_masks)
+            .map_err(|e| format!("set_weathering_masks: {e:?}"))?;
         if std::env::var("SPECTRA_DISPATCH_TIMING").as_deref() == Ok("1") {
             eprintln!(
                 "[dispatch_timing] load_scene_state (BVH/TLAS upload): {:.1} ms",

@@ -1177,6 +1177,8 @@ mod terrain_carve;
                 transmission: cm.transmission,
                 ior: cm.ior,
                 thin_walled: cm.thin_walled,
+                absorption_color: [0.0, 0.0, 0.0],
+                absorption_depth: 1.0,
             });
             channels.push(cm.channel.clone());
             eprintln!(

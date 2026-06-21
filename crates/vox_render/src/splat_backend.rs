@@ -183,6 +183,20 @@ pub struct PbrMaterial {
     /// Thin-pane glass vs refractive solid glass; only read when
     /// `transmission > 0.0`.
     pub thin_walled: bool,
+    /// Beer-Lambert absorption colour for transmissive glass (the tint the
+    /// pane imparts on light passing through it). `[0,0,0]` = perfectly clear
+    /// (the historical behaviour). A small cool triple (e.g. `[0.25,0.12,0.05]`)
+    /// gives the blue-green cast of architectural curtain-wall glass and — far
+    /// more importantly — darkens the transmitted ray so the pane reads as glass
+    /// instead of a black hole into an unlit interior. Only read when
+    /// `transmission > 0.0`.
+    pub absorption_color: [f32; 3],
+    /// Beer-Lambert reference depth paired with `absorption_color`. Doubles as
+    /// the effective pane travel-distance the glass dispatch passes to the BSDF
+    /// (`material_dispatch.slang` MAT_GLASS), so the exit ray is attenuated by
+    /// `exp(-absorption_color)`. Only read when `transmission > 0.0` and
+    /// `absorption_color != [0,0,0]`.
+    pub absorption_depth: f32,
 }
 
 #[cfg(feature = "spectra-native")]
@@ -203,6 +217,8 @@ impl Default for PbrMaterial {
             transmission: 0.0,
             ior: 1.5,
             thin_walled: false,
+            absorption_color: [0.0, 0.0, 0.0],
+            absorption_depth: 1.0,
         }
     }
 }
@@ -3032,16 +3048,17 @@ pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS
     a[23] = m.emission_strength;
 
     if glass {
-        // absorption_color (24-26) + absorption_depth (27): the EXACT values
-        // the working SDF glass path passes to sample_glass in
-        // megakernel.slang — `sample_glass(..., float3(0.0f), 1.0f, ...)`:
-        // clear glass, no Beer-Lambert absorption. Replicated field-for-field
-        // so the mesh MAT_GLASS route is parameter-identical to the proven
-        // SDF window route.
-        a[24] = 0.0;
-        a[25] = 0.0;
-        a[26] = 0.0;
-        a[27] = 1.0;
+        // absorption_color (24-26) + absorption_depth (27). Clear glass
+        // (absorption_color == 0) is byte-identical to the old SDF-parity
+        // behaviour. Building curtain-wall glass sets a small cool tint so the
+        // TRANSMITTED ray darkens/colours through the pane (Beer-Lambert, fired
+        // by the non-zero distance the MAT_GLASS dispatch now passes) instead of
+        // travelling clear into an unlit interior and reading as a black/matte
+        // hole. The Fresnel sky reflection rides on top → a real glass read.
+        a[24] = m.absorption_color[0];
+        a[25] = m.absorption_color[1];
+        a[26] = m.absorption_color[2];
+        a[27] = m.absorption_depth;
     }
 
     a[28] = pack_i32(m.albedo_tex);
@@ -3162,6 +3179,34 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     } else {
         1u32 // MAT_LAMBERT
     });
+    // POM / cone-step RELIEF + glass ABSORPTION + UV scale on the CUDA (box)
+    // path. `MaterialData::to_f32_array()` HARDCODES slots [19-22] (absorption),
+    // [23-28] (texture ids + displacement) and [80-81] (uv_scale) to clear/off
+    // — it has no struct fields for displacement/absorption/uv_scale — so the
+    // shipped box render never enabled POM (displacement_tex stayed -1, the
+    // megakernel POM gate `mat.displacement_tex >= 0` never fired) and glass was
+    // always perfectly clear (→ black interior). The Vulkan packer
+    // (`pack_vulkan_mesh_material` a[24-33]/a[94-95]) already routes these; mirror
+    // it field-for-field here so the box path gets relief-mapped facades + tinted
+    // reflective glass. Slot indices are the canonical f32-array layout asserted
+    // by `spectra-scene-data/src/material.rs` (the single source of truth).
+    if glass {
+        v[19] = m.absorption_color[0]; // absorption_color.r
+        v[20] = m.absorption_color[1]; // absorption_color.g
+        v[21] = m.absorption_color[2]; // absorption_color.b
+        v[22] = m.absorption_depth; // absorption_depth
+    }
+    // [23-25] albedo/roughness/normal tex ids are written by to_f32_array from
+    // the tex_* fields; displacement is not, so set it (+ scale/midlevel) here.
+    v[26] = f32::from_bits(m.displacement_tex as u32); // displacement_tex (-1 = off)
+    v[27] = if m.displacement_tex >= 0 {
+        m.displacement_scale
+    } else {
+        0.0
+    }; // displacement_scale
+    v[28] = m.displacement_midlevel; // displacement_midlevel
+    v[80] = m.uv_scale[0]; // uv_scale.x
+    v[81] = m.uv_scale[1]; // uv_scale.y
     v
 }
 
