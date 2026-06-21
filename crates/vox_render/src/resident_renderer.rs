@@ -215,6 +215,41 @@ impl ResidentCityRenderer {
         // on the dev 780M too. SPECTRA_USE_OPTIX_RT remains an override.
         config.use_optix_rt = true;
 
+        // GROUND ANTI-TILING (FIX 1) — the stochastic texture-bombing knobs the
+        // megakernel ground path reads (`u_ground_antitile_*`). The spectra
+        // RenderConfig defaults (strength 0.85, cell 18 m) ship the working look;
+        // SPECTRA_GROUND_ANTITILE_STRENGTH / _CELL_M override them on the box for a
+        // no-rebuild witness sweep (config-first; mirrors the OCHROMA_GROUND_UV /
+        // SPECTRA_GLASS_BOUNCES override pattern). The game render.ron `ground`
+        // block is the authored source-of-truth; these env vars are the sweep lever.
+        if let Some(s) = std::env::var("SPECTRA_GROUND_ANTITILE_STRENGTH")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+        {
+            config.ground_antitile_strength = s;
+        }
+        if let Some(c) = std::env::var("SPECTRA_GROUND_ANTITILE_CELL_M")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+        {
+            config.ground_antitile_cell_m = c;
+        }
+
+        // GROUND DE-FACET (FIX 1) — blend the faceted ground shading normal toward
+        // world-up (`u_ground_smooth_normal`). The spectra RenderConfig default
+        // (1.0 = smooth) ships the fix; SPECTRA_GROUND_SMOOTH_NORMAL is the runtime
+        // override the game sets from its render.ron `ground.smooth_normal` (config-
+        // first; same bridge pattern as the antitile knobs above).
+        if let Some(s) = std::env::var("SPECTRA_GROUND_SMOOTH_NORMAL")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+        {
+            config.ground_smooth_normal = s;
+        }
+
         // PHASE R0 measurement override: OCHROMA_RESTIR=on|off forces the ReSTIR
         // DI + PT path on/off at runtime WITHOUT permanently changing the tier,
         // so the `--compare-map` A/B harness can render the same scene both ways.
@@ -448,6 +483,14 @@ impl ResidentCityRenderer {
         self.renderer
             .set_weathering_masks(&weathering_masks)
             .map_err(|e| format!("set_weathering_masks: {e:?}"))?;
+        // FIX 2: drive the per-channel weathering INTENSITY from the rig (config-
+        // first, from render.ron `weathering`). Without this the megakernel's
+        // `u_weathering_intensity_*` keep their legacy default of 1.0 (FULL moss →
+        // facades lerp toward saturated green, the "buildings look green" streaks);
+        // the cooked PATTERN is then scaled to the authored, tasteful level.
+        // Copied out of `&self.rig` so it doesn't alias the `&mut self.renderer` call.
+        let weathering_intensity = self.rig.weathering_intensity;
+        self.renderer.set_weathering_intensity(weathering_intensity);
         if std::env::var("SPECTRA_DISPATCH_TIMING").as_deref() == Ok("1") {
             eprintln!(
                 "[dispatch_timing] load_scene_state (BVH/TLAS upload): {:.1} ms",
