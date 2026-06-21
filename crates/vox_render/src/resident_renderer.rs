@@ -358,6 +358,30 @@ impl ResidentCityRenderer {
             .map_err(|e| format!("set_weathering_masks: {e:?}"))
     }
 
+    /// Upload the SPRAY FIELD (world-space ground-cover weight grid) + its
+    /// ChannelTable → atlas-slot mapping. Drives the megakernel's top-2 convex
+    /// triplanar ground blend (kills biome grid seams + shows painted strokes).
+    /// MUST be called AFTER `set_texture_atlas` (the channel slots reference
+    /// resident atlas entries). An empty `packed` disables the field (the ground
+    /// falls back to its single-slot triplanar path). See
+    /// `vox_core::spray::SprayField`.
+    ///
+    /// - `packed`: 2 u32/cell (4 u8 channels/word), row-major — `pack_u32()`.
+    /// - `res`: `[res_x, res_z]`; `origin`/`cell_size`: world placement.
+    /// - `channel_slots`: 4 i32/channel `[albedo, normal, rough, disp]` (-1 = none).
+    pub fn set_spray_field(
+        &mut self,
+        packed: &[u32],
+        res: [u32; 2],
+        origin: [f32; 2],
+        cell_size: f32,
+        channel_slots: &[i32],
+    ) -> Result<(), String> {
+        self.renderer
+            .set_spray_field(packed, res, origin, cell_size, channel_slots)
+            .map_err(|e| format!("set_spray_field: {e:?}"))
+    }
+
     /// Set the per-channel DYNAMIC weathering intensity (how worn THIS render's
     /// geometry is — sim-driven from building age + missed maintenance). Channel
     /// order matches the masks; values clamped to `[0,1]`. Multiplies the baked
