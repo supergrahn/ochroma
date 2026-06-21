@@ -165,6 +165,14 @@ pub struct PbrMaterial {
     pub albedo_tex: i32,
     pub roughness_tex: i32,
     pub normal_tex: i32,
+    /// Opacity / alpha-cutout texture id (-1 = off / opaque). For foliage leaf
+    /// cards (PolyHaven glTF), the leaf alpha is carried in the BASE-COLOR
+    /// texture's alpha channel, so the scatter/vegetation packer sets this EQUAL
+    /// to `albedo_tex`: the megakernel then enables the alpha-cutout test and
+    /// reads the cutout from the base-color `.w` (megakernel.slang ~2333/2377).
+    /// A separate single-channel opacity map sets a DISTINCT slot (read `.x`).
+    /// Default -1 keeps opaque facades byte-identical (cutout never fires).
+    pub opacity_tex: i32,
     /// Single-channel height/displacement map id (-1 = off). Drives POM
     /// (parallax occlusion mapping) in the megakernel — see
     /// `pack_vulkan_mesh_material` a[31]/a[32]/a[33].
@@ -210,6 +218,7 @@ impl Default for PbrMaterial {
             albedo_tex: -1,
             roughness_tex: -1,
             normal_tex: -1,
+            opacity_tex: -1,
             displacement_tex: -1,
             displacement_scale: 0.0,
             displacement_midlevel: 0.5,
@@ -3094,7 +3103,7 @@ pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS
     a[59] = pack_u32(0xFFFF_FFFF); // light_inclusion_mask
     a[60] = pack_u32(0); // light_exclusion_mask
     a[61] = pack_u32(0xFF); // visibility_mask
-    a[72] = pack_i32(-1); // opacity_tex
+    a[72] = pack_i32(m.opacity_tex); // opacity_tex (-1 = opaque; == albedo_tex => foliage alpha-cutout on base-color .w)
     a[73] = pack_i32(if glass && m.thin_walled { 1 } else { 0 }); // thin_walled
 
     a[74] = 1.0; // diffuse_weight
@@ -3207,6 +3216,13 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     v[28] = m.displacement_midlevel; // displacement_midlevel
     v[80] = m.uv_scale[0]; // uv_scale.x
     v[81] = m.uv_scale[1]; // uv_scale.y
+    // [60] opacity_tex — to_f32_array hardcodes -1 (no struct field). Foliage
+    // leaf-card cutout: the scatter/vegetation packer sets opacity_tex ==
+    // albedo_tex so the megakernel enables the alpha-cutout test and reads the
+    // cutout from the base-color .w (megakernel.slang ~2333/2377). -1 keeps
+    // opaque facades byte-identical. Slot 60 is the canonical f32-array index
+    // asserted in spectra-scene-data/src/material.rs ("opacity_tex", 60).
+    v[60] = f32::from_bits(m.opacity_tex as u32);
     v
 }
 
