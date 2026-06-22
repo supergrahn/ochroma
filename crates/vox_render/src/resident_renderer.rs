@@ -563,6 +563,12 @@ impl ResidentCityRenderer {
             rig.sky_dome_horizon,
             rig.sky_dome_intensity,
         );
+        if std::env::var("SPECTRA_FILM_DIAG").is_ok() {
+            eprintln!(
+                "[atm_diag] resident update: rig.atmosphere_enabled={} mie={} turbidity={} sun_dir={:?} e_sun={}",
+                rig.atmosphere_enabled, rig.atmosphere_mie, rig.atmosphere_turbidity, rig.sun_dir, e_sun
+            );
+        }
         if rig.atmosphere_enabled {
             // P1 residual: `u_sun_radiance` is OVERLOADED in the megakernel — it
             // drives the visible disk display AND the aerial-perspective +
