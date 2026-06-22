@@ -41,7 +41,8 @@ pub use spectra_renderer::RenderTarget;
 
 use crate::splat_backend::{
     LightRig, VULKAN_LIGHT_FLOATS, pack_vulkan_directional_light, pack_vulkan_point_light,
-    resolve_slang_kernel_dir, rig_to_settings, seed_features_from_config,
+    pack_vulkan_sun_disk_light, resolve_slang_kernel_dir, rig_to_settings,
+    seed_features_from_config, sun_solid_angle,
 };
 
 /// Result of a scene-delta upload — the reuse-vs-rebuild proof.
@@ -458,11 +459,27 @@ impl ResidentCityRenderer {
         let camera_fill = (-cam_fwd + glam::Vec3::Y * 0.35).normalize_or_zero();
         let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
         let mut light_data: Vec<f32> = Vec::with_capacity(4 * VULKAN_LIGHT_FLOATS);
-        // Fill COLORS now ride the rig (config-driven via render.ron
-        // `lighting_rig.analytic_fills`) — the prime blue-cast culprit is one
-        // config edit, not a buried literal. Defaults equal the historical triples.
+        // P1 — ONE PHYSICAL SUN. light[0] is now a DISK light shaded through the
+        // full OpenPBR BSDF via NEE (diffuse + GGX dielectric spec + Fresnel) so
+        // glass/metal/wet pick up a real sun glint. There is ONE sun magnitude:
+        // the irradiance E_sun (= rig.sun_radiance, the same scalar the old inline
+        // Lambert sun_term used as irradiance, and the same value fed to
+        // `set_sun` for the visible disk below). The disk RADIANCE the NEE light
+        // and the atmosphere disk both emit is L_sun = E_sun / Ω. The separate
+        // `sun_intensity` (5.0) and the megakernel's SUN_DIRECT_SCALE (1/π) are
+        // GONE — disk + surface + NEE are now derived from this one E_sun and the
+        // sun_ramp color, so they are physically coupled.
+        let e_sun = rig.sun_radiance; // irradiance
+        let l_sun = e_sun / sun_solid_angle(); // disk radiance = E_sun / Ω
+        light_data.extend_from_slice(&pack_vulkan_sun_disk_light(
+            sun.to_array(),
+            rig.sun_color,
+            l_sun,
+        ));
+        // Fill COLORS / intensities ride the rig (config-driven via render.ron
+        // `lighting_rig.analytic_fills`). These stay hard-delta directional fills
+        // (angular_radius=0): cheap analytic key fill, NOT physical sun.
         for (dir, color, intensity) in [
-            (sun.to_array(), rig.sun_color, rig.sun_intensity),
             (glam::Vec3::Y.to_array(), rig.analytic_sky_fill_color, rig.sky_intensity),
             (camera_fill.to_array(), rig.analytic_camera_fill_color, rig.camera_fill),
             (rim_fill.to_array(), rig.analytic_rim_fill_color, rig.rim_fill),
@@ -547,7 +564,18 @@ impl ResidentCityRenderer {
             rig.sky_dome_intensity,
         );
         if rig.atmosphere_enabled {
-            self.renderer.set_sun(sun.to_array(), rig.sun_radiance);
+            // P1 residual: `u_sun_radiance` is OVERLOADED in the megakernel — it
+            // drives the visible disk display AND the aerial-perspective +
+            // fog in-scatter integrals (atmosphere.slang / megakernel 2310-2364),
+            // which are tuned to the ~8-30 display scale and belong to the SKY
+            // pass (P4). Feeding the raw physical L_sun (≈E_sun/Ω, ~1e5) here
+            // would blow those up. So the visible disk stays on its existing
+            // display-radiance tuning (E_sun, the disk's `*1.5` boost in
+            // atmosphere.slang reads as a bright clipping core); the SURFACE
+            // lighting is now driven physically by the NEE disk light[0] from the
+            // SAME E_sun. Truly emitting L_sun from the disk is a P4 task (split
+            // the disk-display scale out of the shared u_sun_radiance).
+            self.renderer.set_sun(sun.to_array(), e_sun);
             self.renderer
                 .set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
         }

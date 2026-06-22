@@ -3012,6 +3012,55 @@ pub(crate) fn pack_vulkan_directional_light(
     a
 }
 
+/// Sun's angular RADIUS in radians (≈ 0.265° → 4.6e-3 rad). The matching solid
+/// angle is `Ω = 2π(1 − cos α) ≈ 6.794e-5 sr`. Used to convert the single sun
+/// IRRADIANCE `E_sun` into the disk RADIANCE `L_sun = E_sun / Ω` that both the
+/// NEE disk light (`pack_vulkan_sun_disk_light`) and the visible atmosphere disk
+/// (`Renderer::set_sun`) emit — so the two are physically the SAME magnitude.
+#[cfg(feature = "spectra-native")]
+pub const SUN_ANGULAR_RADIUS_RAD: f32 = 4.6e-3;
+
+/// Solid angle subtended by the sun disk, `Ω = 2π(1 − cos α)`.
+#[cfg(feature = "spectra-native")]
+pub fn sun_solid_angle() -> f32 {
+    2.0 * std::f32::consts::PI * (1.0 - (SUN_ANGULAR_RADIUS_RAD).cos())
+}
+
+/// Pack the PHYSICAL SUN as a `LightData` DISK light (LIGHT_DIRECTIONAL=3 with a
+/// non-zero `angular_radius`). Unlike [`pack_vulkan_directional_light`] (which
+/// leaves `angular_radius=0` → a hard delta, used for the FILL lights), this
+/// writes the sun's angular radius into slot `a[30]` so the megakernel's
+/// `sample_directional_light` cone-samples the disk and returns the solid-angle
+/// pdf `1/Ω`. The NEE estimator then integrates `f · E_sun · cosθ` through the
+/// FULL OpenPBR BSDF (diffuse + GGX dielectric specular + Fresnel) — lighting
+/// glass/metal/wet with a real sun glint from ONE physically coupled magnitude.
+///
+/// `disk_radiance` is `L_sun = E_sun / Ω` — the SAME value fed to
+/// `Renderer::set_sun` for the visible disk.
+#[cfg(feature = "spectra-native")]
+pub(crate) fn pack_vulkan_sun_disk_light(
+    direction: [f32; 3],
+    color: [f32; 3],
+    disk_radiance: f32,
+) -> [f32; VULKAN_LIGHT_FLOATS] {
+    let mut a = [0.0f32; VULKAN_LIGHT_FLOATS];
+
+    a[0] = pack_u32(3); // LIGHT_DIRECTIONAL
+    a[4] = direction[0];
+    a[5] = direction[1];
+    a[6] = direction[2];
+    a[8] = color[0];
+    a[9] = color[1];
+    a[10] = color[2];
+    a[11] = disk_radiance; // intensity slot carries L_sun = E_sun / Ω
+    a[30] = SUN_ANGULAR_RADIUS_RAD; // angular_radius → cone sampling + 1/Ω pdf
+    a[31] = pack_u32(0xFFFF_FFFF); // group_mask
+    a[32] = pack_i32(0); // num_filters
+    a[33] = pack_i32(0); // filter_offset
+
+    a
+}
+
 /// Pack a `LightData` POINT light (LIGHT_POINT = 1) in the same SPIR-V reflection
 /// layout as [`pack_vulkan_directional_light`]. The `LightData.position` field
 /// (Vulkan slots 4-6) holds the WORLD-space emitter position; the megakernel's
