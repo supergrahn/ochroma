@@ -116,6 +116,18 @@ pub struct HybridMesh {
     /// per-cluster CLAS path, cannot recover correct within-cluster vertex UVs.
     /// Scene assembly encodes this as a negative `PbrMaterial::uv_scale` sentinel.
     pub world_planar_uv_scale: Option<f32>,
+    /// FACADE-SCOPED extra UV tiling multiplier (vertex-UV semantics). When
+    /// `Some([sx, sy])`, scene assembly packs it into `PbrMaterial::uv_scale` so
+    /// the megakernel multiplies the interpolated vertex UV by it (`tex_uv =
+    /// hit_uv * uv_scale`) — denser tiling of the brick/panel/window motif across
+    /// a multi-metre facet (values > 1 repeat more, the opposite of the
+    /// world-planar texels-per-metre sentinel). `None` (the default for ground,
+    /// scatter vegetation, water, glass) leaves `uv_scale` at its `(1,1)`
+    /// passthrough so those meshes stay byte-identical. Set ONLY on BUILDING
+    /// facade meshes — see [`HybridMesh::with_uv_scale`]. Mutually exclusive with
+    /// `world_planar_uv_scale`: scene assembly gives the world-planar sentinel
+    /// priority so a (hypothetical) mesh carrying both never double-encodes.
+    pub uv_scale: Option<[f32; 2]>,
     /// Per-TRIANGLE material id (parallel to `indices.len()/3`). Indexes into
     /// [`submesh_materials`] when that is non-empty; otherwise it is a raw Forge
     /// material-channel byte (the same space as [`material_channel`]). **EMPTY =
@@ -186,6 +198,7 @@ impl HybridMesh {
             transmission_override: None,
             ior_override: None,
             world_planar_uv_scale: None,
+            uv_scale: None,
             material_ids: Vec::new(),
             submesh_materials: Vec::new(),
         }
@@ -214,6 +227,18 @@ impl HybridMesh {
     /// interpolated vertex UVs — for terrain ground. Builder style.
     pub fn with_world_planar_uv(mut self, scale: f32) -> Self {
         self.world_planar_uv_scale = Some(scale);
+        self
+    }
+
+    /// Attach a FACADE-SCOPED extra UV tiling multiplier (vertex-UV semantics):
+    /// scene assembly packs it into `PbrMaterial::uv_scale` so the megakernel
+    /// repeats the texture `scale`× across the facet's interpolated vertex UV
+    /// (values > 1 = denser tiling of a brick/panel/window motif). Builder style;
+    /// set ONLY on BUILDING facade meshes — scatter/ground/water leave it `None`
+    /// (passthrough `(1,1)`) so they stay byte-identical. See
+    /// [`HybridMesh::uv_scale`].
+    pub fn with_uv_scale(mut self, scale: [f32; 2]) -> Self {
+        self.uv_scale = Some(scale);
         self
     }
 
