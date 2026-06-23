@@ -471,6 +471,24 @@ impl ResidentCityRenderer {
             .map_err(|e| format!("set_spray_field: {e:?}"))
     }
 
+    /// PER-PIXEL CURVATURE FIELD. Forward a world-space mean-curvature grid (1 f32/
+    /// cell, row-major `iz*res_x+ix`; convex ridge > 0, concave hollow < 0) baked
+    /// from the heightmap. The megakernel terrain blend samples it BILINEARLY at the
+    /// hit XZ for a SMOOTH per-pixel curvature — no per-triangle facet step, hence no
+    /// angular scree "squares" when `curvature_amp`/`cavity_amp` are on. Empty values
+    /// disable the field (kernel falls back to the legacy per-triangle κ).
+    pub fn set_curvature_field(
+        &mut self,
+        values: &[f32],
+        res: [u32; 2],
+        origin: [f32; 2],
+        cell_size: f32,
+    ) -> Result<(), String> {
+        self.renderer
+            .set_curvature_field(values, res, origin, cell_size)
+            .map_err(|e| format!("set_curvature_field: {e:?}"))
+    }
+
     /// SLOPE / HEIGHT LAYERED TERRAIN MATERIAL (#33). Bind the steep-face ROCK +
     /// transition DIRT atlas slots the megakernel ground path blends over the biome
     /// ground by surface slope (geometric up-cosine) + height. Slots reference
