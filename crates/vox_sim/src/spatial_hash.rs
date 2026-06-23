@@ -30,16 +30,26 @@ impl SpatialHash {
         self.buckets.entry(self.cell(pos)).or_default().push(idx);
     }
 
-    pub fn neighbours(&self, pos: Vec3, _radius: f32) -> Vec<usize> {
-        let (cx, cz) = self.cell(pos);
+    pub fn neighbours(&self, pos: Vec3, radius: f32) -> Vec<usize> {
         let mut result = Vec::new();
+        self.neighbours_into(pos, radius, &mut result);
+        result
+    }
+
+    /// Gather neighbour indices into a caller-supplied buffer (cleared first),
+    /// avoiding a per-call `Vec` allocation in the hot crowd loop. The scan
+    /// order — the fixed `dx,dz in -1..=1` nest, each bucket in insertion
+    /// (index-ascending) order — is byte-identical to [`SpatialHash::neighbours`],
+    /// so any downstream float reduction over the result is unchanged.
+    pub fn neighbours_into(&self, pos: Vec3, _radius: f32, out: &mut Vec<usize>) {
+        out.clear();
+        let (cx, cz) = self.cell(pos);
         for dx in -1..=1i32 {
             for dz in -1..=1i32 {
                 if let Some(bucket) = self.buckets.get(&(cx + dx, cz + dz)) {
-                    result.extend_from_slice(bucket);
+                    out.extend_from_slice(bucket);
                 }
             }
         }
-        result
     }
 }
