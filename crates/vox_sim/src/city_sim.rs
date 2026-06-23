@@ -573,6 +573,25 @@ impl CitySim {
     pub fn first_citizen_id(&self) -> Option<u32> {
         self.citizens.all().first().map(|c| c.id)
     }
+
+    /// Agent positions in a DETERMINISTIC order (citizen-id order, via the
+    /// commuter records), for replay hashing. The `AgentManager` itself stores
+    /// agents by `Uuid` (whose value is RNG-seeded and therefore not stable
+    /// across runs), so callers that need a reproducible ordering must go
+    /// through this id-ordered view rather than iterating the agent map.
+    pub fn agent_positions_id_ordered(&self) -> Vec<(u32, WorldCoord)> {
+        let mut out: Vec<(u32, WorldCoord)> = self
+            .commuters
+            .iter()
+            .filter_map(|cm| {
+                self.agents
+                    .get(cm.agent_id)
+                    .map(|a| (cm.citizen_id, a.position))
+            })
+            .collect();
+        out.sort_by_key(|(cid, _)| *cid);
+        out
+    }
 }
 
 impl Default for CitySim {

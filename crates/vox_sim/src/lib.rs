@@ -33,3 +33,4 @@ pub mod sharding;
 pub mod deterministic;
 pub mod crowd;
 pub mod spatial_hash;
+pub mod sim_hash;
