@@ -251,6 +251,59 @@ impl ResidentCityRenderer {
             config.ground_smooth_normal = s;
         }
 
+        // R1 TEMPORAL ACCUMULATION (the keystone real-time-quality fix). At 1 spp
+        // a single-frame spatial denoise is blotchy/flickery under motion; the
+        // temporal_reproject kernel reprojects the previous displayed frame's
+        // accumulated color through prev_view_proj and EMA-blends it, giving an
+        // effective ~10 spp without raising sample count. Cross-vendor (pure
+        // compute), and disocclusion-rejected so static surfaces converge while
+        // moving/newly-revealed pixels fall through to the current frame.
+        //
+        // Default ON for the live resident render (this is what makes 1 spp
+        // shippable). OCHROMA_TEMPORAL=off disables it for an A/B witness; the
+        // alpha/threshold knobs stay config-first on RenderConfig.temporal.
+        config.temporal.enabled = true;
+        match std::env::var("OCHROMA_TEMPORAL").as_deref() {
+            Ok("off") | Ok("0") => {
+                config.temporal.enabled = false;
+                eprintln!("[temporal-override] OCHROMA_TEMPORAL=off -> temporal accumulation disabled");
+            }
+            Ok("on") | Ok("1") => {
+                config.temporal.enabled = true;
+                eprintln!("[temporal-override] OCHROMA_TEMPORAL=on -> temporal accumulation enabled");
+            }
+            _ => {}
+        }
+        // Optional config-first tuning overrides (the A/B sweep levers).
+        if let Some(v) = std::env::var("OCHROMA_TEMPORAL_ALPHA_STATIC")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+        {
+            config.temporal.alpha_static = v;
+        }
+        if let Some(v) = std::env::var("OCHROMA_TEMPORAL_ALPHA_MOVING")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+        {
+            config.temporal.alpha_moving = v;
+        }
+        if let Some(v) = std::env::var("OCHROMA_TEMPORAL_DEPTH_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+        {
+            config.temporal.depth_threshold = v;
+        }
+        if let Some(v) = std::env::var("OCHROMA_TEMPORAL_NORMAL_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite() && (-1.0..=1.0).contains(v))
+        {
+            config.temporal.normal_threshold = v;
+        }
+
         // PHASE R0 measurement override: OCHROMA_RESTIR=on|off forces the ReSTIR
         // DI + PT path on/off at runtime WITHOUT permanently changing the tier,
         // so the `--compare-map` A/B harness can render the same scene both ways.
@@ -440,6 +493,28 @@ impl ResidentCityRenderer {
             dirt_normal,
             rock_disp,
             dirt_disp,
+        );
+    }
+
+    /// High-altitude SNOW cap: a top-of-stack ground layer eased in above
+    /// `height_snow` with a slope falloff (caps sit on ledges/peaks, not vertical
+    /// faces). albedo = -1 / huge height → off (byte-identical lowland ground).
+    pub fn set_slope_snow(
+        &mut self,
+        snow_albedo: i32,
+        snow_normal: i32,
+        snow_disp: i32,
+        height_snow: f32,
+        height_snow_band: f32,
+        snow_slope_cos: f32,
+    ) {
+        self.renderer.set_slope_snow(
+            snow_albedo,
+            snow_normal,
+            snow_disp,
+            height_snow,
+            height_snow_band,
+            snow_slope_cos,
         );
     }
 
@@ -682,8 +757,23 @@ impl ResidentCityRenderer {
             }
         }
 
+        // The megakernel's `u_view_proj` (and the R1 temporal-reprojection kernel)
+        // multiply a WORLD-space position by this matrix to get clip space, so it
+        // MUST be the COMBINED view-projection (proj * view), not the projection
+        // alone. `set_camera_view_matrix` sets `current_view_proj = view` and
+        // `set_view_proj` overwrites it — historically with `proj` ALONE, which
+        // made `u_view_proj` projection-only. That was dormant (its only consumer,
+        // g_velocity, feeds ReSTIR-GI which ships OFF), but R1 temporal
+        // accumulation reprojects world hit positions through it, so projection-
+        // only rejected ~100% of pixels (reprojection landed out of bounds).
+        // Combine here (glam column-major: clip = proj * view * world).
+        let view_m = glam::Mat4::from_cols_array(&view);
+        let proj_m = glam::Mat4::from_cols_array(&proj);
+        let view_proj = (proj_m * view_m).to_cols_array();
+        // Keep the camera frame (eye/forward) from the view matrix; then set the
+        // COMBINED view-projection as u_view_proj.
         self.renderer.set_camera_view_matrix(view);
-        self.renderer.set_view_proj(proj);
+        self.renderer.set_view_proj(view_proj);
         self.renderer
             .render()
             .map_err(|e| format!("render: {e:?}"))
