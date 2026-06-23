@@ -64,6 +64,15 @@ pub struct HybridMesh {
     pub positions: Vec<[f32; 3]>,
     /// Triangle-list indices into `positions` (length should be a multiple of 3).
     pub indices: Vec<u32>,
+    /// Optional per-vertex shading normals (parallel to `positions`). **EMPTY =
+    /// the legacy behaviour** — the downstream BLAS converter derives flat
+    /// per-triangle face normals (or its own ground area-weighted smoothing). When
+    /// present (same len as `positions`) the converter uses THESE normals directly,
+    /// so a producer that has a better (e.g. heightfield-gradient) smooth normal —
+    /// like the terrain ground — can hand it through instead of relying on
+    /// mesh-tessellation-derived normals that still step per quad on a decimated
+    /// grid. Deterministic plain per-vertex data (no map/RNG ordering).
+    pub normals: Vec<[f32; 3]>,
     /// 16-band spectral reflectance applied to the whole mesh.
     pub reflectance: [f32; 16],
     /// Object/entity id written to the framebuffer for these pixels. Now a dense,
@@ -184,6 +193,7 @@ impl HybridMesh {
         Self {
             positions,
             indices,
+            normals: Vec::new(),
             reflectance,
             object_id,
             material_channel: 0,
@@ -219,6 +229,19 @@ impl HybridMesh {
         if material_ids.len() == tri_count {
             self.material_ids = material_ids;
             self.submesh_materials = submesh_materials;
+        }
+        self
+    }
+
+    /// Attach explicit per-vertex shading normals (parallel to `positions`).
+    /// Builder style. A mismatched length is ignored (the converter falls back to
+    /// flat/area-weighted face normals) so a bad producer can never desync the
+    /// vertex stream. Used by the terrain ground to hand through a SMOOTH
+    /// heightfield-gradient normal (tessellation-independent) so the slope-layered
+    /// material reads a smooth slope instead of stepping per decimated quad.
+    pub fn with_normals(mut self, normals: Vec<[f32; 3]>) -> Self {
+        if normals.len() == self.positions.len() {
+            self.normals = normals;
         }
         self
     }
