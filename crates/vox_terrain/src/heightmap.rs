@@ -123,49 +123,61 @@ impl Heightmap {
         zones: &[TerrainMaterialZone],
         splats_per_cell: u32,
     ) -> Vec<GaussianSplat> {
-        let mut splats = Vec::new();
+        use rayon::prelude::*;
         let sub = splats_per_cell.max(1);
+        let per_row = self.width * (sub * sub) as usize;
 
-        for iz in 0..self.height {
-            for ix in 0..self.width {
-                let base_x = self.origin[0] + ix as f32 * self.cell_size;
-                let base_z = self.origin[1] + iz as f32 * self.cell_size;
+        // Rows are independent and each emits a fixed `per_row` block of splats
+        // in ix-major / (si,sj) order. Building rows in parallel and flattening
+        // in `iz` order reproduces the exact serial ix-major ordering, and each
+        // splat's arithmetic (sample, zone find, f16 bits) is unchanged ->
+        // byte-identical output (deterministic by construction: no shared
+        // state, fixed concat order).
+        (0..self.height)
+            .into_par_iter()
+            .flat_map_iter(|iz| {
+                let mut row = Vec::with_capacity(per_row);
+                for ix in 0..self.width {
+                    let base_x = self.origin[0] + ix as f32 * self.cell_size;
+                    let base_z = self.origin[1] + iz as f32 * self.cell_size;
 
-                for si in 0..sub {
-                    for sj in 0..sub {
-                        let frac_x = (si as f32 + 0.5) / sub as f32;
-                        let frac_z = (sj as f32 + 0.5) / sub as f32;
-                        let wx = base_x + frac_x * self.cell_size;
-                        let wz = base_z + frac_z * self.cell_size;
-                        let wy = self.sample(wx, wz);
+                    for si in 0..sub {
+                        for sj in 0..sub {
+                            let frac_x = (si as f32 + 0.5) / sub as f32;
+                            let frac_z = (sj as f32 + 0.5) / sub as f32;
+                            let wx = base_x + frac_x * self.cell_size;
+                            let wz = base_z + frac_z * self.cell_size;
+                            let wy = self.sample(wx, wz);
 
-                        // Pick material based on height
-                        let zone = zones
-                            .iter()
-                            .find(|z| wy <= z.max_height)
-                            .or_else(|| zones.last());
+                            // Pick material based on height
+                            let zone = zones
+                                .iter()
+                                .find(|z| wy <= z.max_height)
+                                .or_else(|| zones.last());
 
-                        let spectral: [u16; 16] = match zone {
-                            Some(z) => {
-                                std::array::from_fn(|i| f16::from_f32(z.spectral[i % 8]).to_bits())
-                            }
-                            None => std::array::from_fn(|_| f16::from_f32(0.3).to_bits()),
-                        };
+                            let spectral: [u16; 16] = match zone {
+                                Some(z) => std::array::from_fn(|i| {
+                                    f16::from_f32(z.spectral[i % 8]).to_bits()
+                                }),
+                                None => std::array::from_fn(|_| f16::from_f32(0.3).to_bits()),
+                            };
 
-                        let scale = self.cell_size / sub as f32 * 0.5;
-                        splats.push(GaussianSplat::surface(
-                            [wx, wy, wz],
-                            [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
-                            scale, scale,
-                            250,
-                            spectral,
-                        ));
+                            let scale = self.cell_size / sub as f32 * 0.5;
+                            row.push(GaussianSplat::surface(
+                                [wx, wy, wz],
+                                [1.0, 0.0, 0.0],
+                                [0.0, 0.0, -1.0],
+                                scale,
+                                scale,
+                                250,
+                                spectral,
+                            ));
+                        }
                     }
                 }
-            }
-        }
-
-        splats
+                row
+            })
+            .collect()
     }
 }
 
@@ -235,23 +247,34 @@ pub fn generate_test_heightmap(
 ) -> Heightmap {
     let mut data = vec![0.0f32; width * height];
 
-    for z in 0..height {
-        for x in 0..width {
-            let fx = x as f32 / width as f32;
+    // Each cell is a pure function of (x, z, seed) written to its own slot, so
+    // rows are independent: `par_chunks_mut(width)` computes the identical
+    // value in the identical slot on every thread -> the buffer is
+    // bit-for-bit identical to the serial loop (deterministic by construction;
+    // no cross-row reduction, no shared mutable state).
+    use rayon::prelude::*;
+    data.par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(z, row)| {
             let fz = z as f32 / height as f32;
-
-            // Simple multi-octave noise
-            let h1 = ((fx * 3.0 + seed as f32 * 0.1).sin() * (fz * 4.0).cos()) * 5.0;
-            let h2 = ((fx * 7.0 + 1.0).sin() * (fz * 6.0 + 2.0).cos()) * 2.0;
-            let h3 = ((fx * 13.0).sin() * (fz * 11.0).cos()) * 1.0;
-
-            // River valley through the middle
+            // River valley through the middle (per-row constant).
             let dist_to_center = ((fz - 0.5).abs() * 2.0).min(1.0);
             let valley = (1.0 - (dist_to_center * dist_to_center)) * -3.0;
+            let fz4 = (fz * 4.0).cos();
+            let fz6 = (fz * 6.0 + 2.0).cos();
+            let fz11 = (fz * 11.0).cos();
 
-            data[z * width + x] = h1 + h2 + h3 + valley;
-        }
-    }
+            for (x, cell) in row.iter_mut().enumerate() {
+                let fx = x as f32 / width as f32;
+
+                // Simple multi-octave noise — SAME ops/order as the scalar loop.
+                let h1 = ((fx * 3.0 + seed as f32 * 0.1).sin() * fz4) * 5.0;
+                let h2 = ((fx * 7.0 + 1.0).sin() * fz6) * 2.0;
+                let h3 = ((fx * 13.0).sin() * fz11) * 1.0;
+
+                *cell = h1 + h2 + h3 + valley;
+            }
+        });
 
     Heightmap::from_data(width, height, data, cell_size)
 }

@@ -8435,6 +8435,7 @@ dependencies = [
  "half",
  "navmesh",
  "rand 0.9.2",
+ "rayon",
  "serde",
  "vox_core",
 ]

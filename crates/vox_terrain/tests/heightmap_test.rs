@@ -72,3 +72,46 @@ fn generate_test_heightmap_has_variation() {
         "Generated terrain should have height variation"
     );
 }
+
+// --- determinism witnesses (the replay-hash moat) -----------------------
+// These lock the BYTE-EXACT output of the parallelized gen paths. The hashes
+// were captured from the pre-parallel serial implementation; any change that
+// alters a produced float (reduction order, FMA contraction, a different
+// arithmetic expression) changes the hash and fails here. Do NOT "rebaseline"
+// without a deliberate, documented reason.
+
+const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x100000001b3;
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h = FNV_OFFSET;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+#[test]
+fn generate_test_heightmap_is_byte_exact() {
+    let hm = generate_test_heightmap(2048, 2048, 1.0, 7);
+    assert_eq!(hm.data.len(), 2048 * 2048);
+    let hash = fnv1a(bytemuck::cast_slice(&hm.data));
+    assert_eq!(
+        hash, 0x7098e23a5f4380ef,
+        "generate_test_heightmap output changed (determinism moat); got {hash:#018x}"
+    );
+}
+
+#[test]
+fn to_splats_is_byte_exact() {
+    let hm = generate_test_heightmap(512, 512, 1.0, 7);
+    let zones = default_zones();
+    let splats = hm.to_splats(&zones, 1);
+    assert_eq!(splats.len(), 512 * 512);
+    let hash = fnv1a(bytemuck::cast_slice(&splats));
+    assert_eq!(
+        hash, 0x4f7e9e92b40f70fd,
+        "to_splats output changed (determinism moat); got {hash:#018x}"
+    );
+}
