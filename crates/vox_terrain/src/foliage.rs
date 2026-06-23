@@ -1,5 +1,6 @@
 use rand::prelude::*;
 use rand::SeedableRng;
+use std::sync::Arc;
 
 /// A foliage placement rule.
 #[derive(Debug, Clone)]
@@ -17,10 +18,16 @@ pub struct FoliageRule {
 }
 
 /// A placed foliage instance.
+///
+/// `rule_name`/`asset_path` are shared [`Arc<str>`] handles cloned from the
+/// owning [`FoliageRule`] — placing N instances of a rule is N refcount bumps,
+/// not N heap allocations + copies (was the dominant per-instance cost). The
+/// strings remain readable as `&str` via `Deref`, so existing `.as_str()` /
+/// `&inst.asset_path` uses keep working.
 #[derive(Debug, Clone)]
 pub struct FoliageInstance {
-    pub rule_name: String,
-    pub asset_path: String,
+    pub rule_name: Arc<str>,
+    pub asset_path: Arc<str>,
     pub position: [f32; 3],
     pub rotation_y: f32,
     pub scale: f32,
@@ -33,12 +40,25 @@ pub fn scatter_foliage(
     seed: u64,
 ) -> Vec<FoliageInstance> {
     let mut rng = StdRng::seed_from_u64(seed);
-    let mut instances = Vec::new();
     let (min_bound, max_bound) = heightmap.bounds();
     let area = heightmap.area();
 
+    // Upper bound on placements (every candidate survives) so the output Vec
+    // never reallocates mid-fill. Candidates are rejected by height/slope, so
+    // the real count is <= this; reserving the cap is a one-time alloc.
+    let cap: usize = rules
+        .iter()
+        .map(|r| (area / 100.0 * r.density) as usize)
+        .sum();
+    let mut instances = Vec::with_capacity(cap);
+
     for rule in rules {
         let count = (area / 100.0 * rule.density) as usize;
+
+        // Allocate the rule's name/path ONCE; each placed instance is a
+        // refcount bump rather than a fresh String heap copy.
+        let rule_name: Arc<str> = Arc::from(rule.name.as_str());
+        let asset_path: Arc<str> = Arc::from(rule.asset_path.as_str());
 
         for _ in 0..count {
             let x = rng.random_range(min_bound[0]..max_bound[0]);
@@ -74,8 +94,8 @@ pub fn scatter_foliage(
             };
 
             instances.push(FoliageInstance {
-                rule_name: rule.name.clone(),
-                asset_path: rule.asset_path.clone(),
+                rule_name: Arc::clone(&rule_name),
+                asset_path: Arc::clone(&asset_path),
                 position: [cx, final_y, cz],
                 rotation_y: rotation,
                 scale,

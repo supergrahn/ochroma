@@ -36,19 +36,23 @@ impl Heightmap {
         Self::from_data(width, height, vec![terrain_height; width * height], cell_size)
     }
 
-    /// Sample height at world position (bilinear interpolation).
-    pub fn sample(&self, world_x: f32, world_z: f32) -> f32 {
-        let local_x = (world_x - self.origin[0]) / self.cell_size;
-        let local_z = (world_z - self.origin[1]) / self.cell_size;
-
+    /// Bilinear height sample at a *local* (cell-space) coordinate. Shared core
+    /// of [`sample`](Heightmap::sample) so callers that already have the
+    /// local coordinate (the normal/slope taps) don't repeat the
+    /// `origin`/`cell_size` divide. Arithmetic is identical to the world-space
+    /// path, so results are bit-for-bit unchanged.
+    #[inline(always)]
+    fn sample_local(&self, local_x: f32, local_z: f32) -> f32 {
         let ix = local_x.floor() as i32;
         let iz = local_z.floor() as i32;
         let fx = local_x - local_x.floor();
         let fz = local_z - local_z.floor();
 
+        let w = self.width as i32;
+        let h_clamp = self.height as i32;
         let h = |x: i32, z: i32| -> f32 {
-            let x = x.clamp(0, self.width as i32 - 1) as usize;
-            let z = z.clamp(0, self.height as i32 - 1) as usize;
+            let x = x.clamp(0, w - 1) as usize;
+            let z = z.clamp(0, h_clamp - 1) as usize;
             self.data[z * self.width + x]
         };
 
@@ -62,14 +66,31 @@ impl Heightmap {
         h0 + (h1 - h0) * fz
     }
 
+    /// Sample height at world position (bilinear interpolation).
+    #[inline]
+    pub fn sample(&self, world_x: f32, world_z: f32) -> f32 {
+        let local_x = (world_x - self.origin[0]) / self.cell_size;
+        let local_z = (world_z - self.origin[1]) / self.cell_size;
+        self.sample_local(local_x, local_z)
+    }
+
     /// Compute surface normal at a point (from surrounding heights).
     pub fn normal_at(&self, world_x: f32, world_z: f32) -> [f32; 3] {
-        let dx = self.sample(world_x + self.cell_size, world_z)
-            - self.sample(world_x - self.cell_size, world_z);
-        let dz = self.sample(world_x, world_z + self.cell_size)
-            - self.sample(world_x, world_z - self.cell_size);
+        // Four taps one cell apart. Each local coordinate is computed with the
+        // SAME `(world ± cell_size - origin) / cell_size` expression the old
+        // four `self.sample(...)` calls used, so the float result is
+        // bit-identical; `sample_local` only shares the clamp/index setup.
+        let cs = self.cell_size;
+        let lxp = (world_x + cs - self.origin[0]) / cs;
+        let lxm = (world_x - cs - self.origin[0]) / cs;
+        let lz0 = (world_z - self.origin[1]) / cs;
+        let lx0 = (world_x - self.origin[0]) / cs;
+        let lzp = (world_z + cs - self.origin[1]) / cs;
+        let lzm = (world_z - cs - self.origin[1]) / cs;
+        let dx = self.sample_local(lxp, lz0) - self.sample_local(lxm, lz0);
+        let dz = self.sample_local(lx0, lzp) - self.sample_local(lx0, lzm);
         let nx = -dx;
-        let ny = 2.0 * self.cell_size;
+        let ny = 2.0 * cs;
         let nz = -dz;
         let len = (nx * nx + ny * ny + nz * nz).sqrt();
         [nx / len, ny / len, nz / len]
