@@ -418,6 +418,31 @@ impl ResidentCityRenderer {
             .map_err(|e| format!("set_spray_field: {e:?}"))
     }
 
+    /// SLOPE / HEIGHT LAYERED TERRAIN MATERIAL (#33). Bind the steep-face ROCK +
+    /// transition DIRT atlas slots the megakernel ground path blends over the biome
+    /// ground by surface slope (geometric up-cosine) + height. Slots reference
+    /// resident atlas entries — call AFTER `set_texture_atlas`. Pass `-1` for any
+    /// absent layer (its weight rolls back into the biome ground → byte-identical).
+    /// The slope/height THRESHOLDS are config-first (`RenderConfig.slope_layer`).
+    pub fn set_slope_layers(
+        &mut self,
+        rock_albedo: i32,
+        rock_normal: i32,
+        dirt_albedo: i32,
+        dirt_normal: i32,
+        rock_disp: i32,
+        dirt_disp: i32,
+    ) {
+        self.renderer.set_slope_layers(
+            rock_albedo,
+            rock_normal,
+            dirt_albedo,
+            dirt_normal,
+            rock_disp,
+            dirt_disp,
+        );
+    }
+
     /// Set the per-channel DYNAMIC weathering intensity (how worn THIS render's
     /// geometry is — sim-driven from building age + missed maintenance). Channel
     /// order matches the masks; values clamped to `[0,1]`. Multiplies the baked
