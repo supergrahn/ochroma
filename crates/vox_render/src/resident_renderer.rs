@@ -918,6 +918,14 @@ impl ResidentCityRenderer {
     pub fn rr_guide_ptrs(&mut self) -> [u64; 6] {
         self.renderer.rr_guide_ptrs()
     }
+
+    /// The sub-pixel camera jitter (PIXELS, Halton(2,3)−0.5 ∈ [-0.5, 0.5]) the
+    /// last frame applied to the primary ray when an upscaler is active. The
+    /// RR/DLSS present feeds this IDENTICAL offset to `Jitter.Offset.X/Y` to
+    /// un-jitter the temporal reprojection. See `Renderer::rr_jitter`.
+    pub fn rr_jitter(&self) -> (f32, f32) {
+        self.renderer.rr_jitter()
+    }
 }
 
 /// Extract the camera forward axis (world -Z of the view) from a scene's
