@@ -1,7 +1,7 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// A deterministic PRNG wrapper that tracks how many values have been drawn.
@@ -70,15 +70,20 @@ pub struct InputRecord {
 }
 
 /// Records and replays simulation inputs for deterministic replay.
+///
+/// `records` is a `BTreeMap` (not `HashMap`) so `save_recording` serialises ticks
+/// in ascending order — the replay file is byte-deterministic across runs/machines,
+/// which is the whole point of a shareable/diffable action-log replay. Keyed access
+/// (`replay_tick`) is unaffected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationRecorder {
-    records: HashMap<u64, InputRecord>,
+    records: BTreeMap<u64, InputRecord>,
 }
 
 impl SimulationRecorder {
     pub fn new() -> Self {
         Self {
-            records: HashMap::new(),
+            records: BTreeMap::new(),
         }
     }
 
@@ -116,7 +121,7 @@ impl SimulationRecorder {
     /// Load a recording from a file (JSON).
     pub fn load_recording(path: &Path) -> std::io::Result<Self> {
         let data = std::fs::read_to_string(path)?;
-        let records: HashMap<u64, InputRecord> = serde_json::from_str(&data)
+        let records: BTreeMap<u64, InputRecord> = serde_json::from_str(&data)
             .map_err(std::io::Error::other)?;
         Ok(Self { records })
     }

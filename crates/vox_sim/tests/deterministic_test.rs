@@ -97,3 +97,31 @@ fn draw_counter_tracks_all_methods() {
     rng.next_range(0, 100);
     assert_eq!(rng.draws(), 3);
 }
+
+#[test]
+fn recording_serializes_ticks_in_ascending_order() {
+    // Record ticks in deliberately scrambled order; the saved action-log JSON MUST
+    // list them in ascending tick order so the replay file is byte-deterministic
+    // across runs/machines (BTreeMap guarantee). A HashMap-backed `records` would
+    // serialize them in arbitrary process-stable order — different file bytes for
+    // the same recording, breaking shareable/diffable replays.
+    let path = std::env::temp_dir().join("vox_sim_recorder_order_test.json");
+    let mut recorder = SimulationRecorder::new();
+    for &t in &[5u64, 2, 8, 1] {
+        recorder.record_tick(t, vec![], t * 10);
+    }
+    recorder.save_recording(&path).expect("save should succeed");
+    let json = std::fs::read_to_string(&path).expect("read back the recording");
+    std::fs::remove_file(&path).ok();
+
+    // Tick numbers serialize as JSON object keys "1","2","5","8".
+    let p1 = json.find("\"1\":").expect("tick 1 key present");
+    let p2 = json.find("\"2\":").expect("tick 2 key present");
+    let p5 = json.find("\"5\":").expect("tick 5 key present");
+    let p8 = json.find("\"8\":").expect("tick 8 key present");
+    assert!(
+        p1 < p2 && p2 < p5 && p5 < p8,
+        "recording must serialize ticks ascending for a byte-deterministic replay \
+         file; got positions 1@{p1} 2@{p2} 5@{p5} 8@{p8} — did `records` revert to HashMap?"
+    );
+}
