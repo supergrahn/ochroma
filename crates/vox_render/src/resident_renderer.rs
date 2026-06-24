@@ -174,17 +174,23 @@ impl ResidentCityRenderer {
         config.apply_settings(&settings);
         config.max_bounces = max_bounces;
 
-        // GLASS BOUNCE FLOOR (SOTA glass fix). The still path (`splat_backend`
-        // `pathtrace_mesh_lit_weathered_to_rgba`, ~line 934) bumps `max_bounces`
-        // to GLASS_MIN_BOUNCES whenever the scene contains a transmissive
-        // (MAT_GLASS) material, because a glass pane needs: enter front face
-        // (refract) → exit back face (refract) → travel to a lit surface →
-        // bounce off it → back through the pane. The real-time tiers only give
-        // 2 (Performance) / 3 (Balanced) / 6 (Beauty) bounces, so transmitted
-        // rays die INSIDE the glass before reaching any light and the pane reads
-        // dark/flat-matte instead of transmissive+reflective. The RESIDENT path
-        // (the live game + the STYLE_PROBE/SHOT_HERO witness) never applied this
-        // bump, so curtain-wall glass looked opaque. Mirror the still path here:
+        // GLASS BOUNCE FLOOR (SOTA glass fix, now TIER-AWARE — the #1 perf knob).
+        // The still path (`splat_backend` `pathtrace_mesh_lit_weathered_to_rgba`,
+        // ~line 934) bumps `max_bounces` to 8 whenever the scene contains a
+        // transmissive (MAT_GLASS) material, because a glass pane needs: enter
+        // front face (refract) → exit back face (refract) → travel to a lit
+        // surface → bounce off it → back through the pane. The real-time tiers
+        // only give 2 (Performance) / 3 (Balanced) / 6 (Beauty) bounces, so
+        // transmitted rays die INSIDE the glass before reaching any light and the
+        // pane reads dark/flat-matte instead of transmissive+reflective. But a
+        // FLAT floor of 8 forced every glassy city onto the slowest path
+        // regardless of tier (8->2 is ~-58% sample_loop), so the RESIDENT path
+        // now derives the floor from the TIER (see `glass_floor_for_tier`):
+        // Performance gets 4, Balanced 5, Beauty keeps 8 — the lowest depth each
+        // tier needs to still refract through both faces and reach light. The
+        // RESIDENT path (the live game + the STYLE_PROBE/SHOT_HERO witness) never
+        // applied any bump, so curtain-wall glass looked opaque. Mirror the still
+        // path here but with the tier-aware floor:
         // scan the INITIAL scene's material table for any MAT_GLASS material and,
         // if present, raise the bounce floor. Determinism-safe: a pure `any()`
         // over the flat param array (no HashMap/RNG iteration); changes only the
@@ -194,7 +200,7 @@ impl ResidentCityRenderer {
             let floor = std::env::var("SPECTRA_GLASS_BOUNCES")
                 .ok()
                 .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(GLASS_MIN_BOUNCES);
+                .unwrap_or_else(|| glass_floor_for_tier(config.max_bounces));
             if floor > config.max_bounces {
                 eprintln!(
                     "[glass-bounce-floor] scene has MAT_GLASS; max_bounces {} -> {} \
@@ -957,11 +963,37 @@ impl ResidentCityRenderer {
 
 /// Extract the camera forward axis (world -Z of the view) from a scene's
 /// column-major view matrix. Used to orient the camera-relative fill lights.
-/// The bounce-depth floor enforced when a scene contains transmissive
-/// (MAT_GLASS) materials. Matches the still path's glass bump
-/// (`splat_backend::pathtrace_mesh_lit_weathered_to_rgba`, which sets 8 when
-/// `has_glass`): a glass pane needs enough depth to refract through both faces
-/// and reach a lit surface, or it terminates dark and reads opaque/matte.
+/// TIER-AWARE glass bounce floor. The flat floor of 8 (matching the still
+/// path's `has_glass` bump) was the #1 real-time perf knob: a glassy city
+/// forced max_bounces->8 regardless of tier, and 8->2 is ~-58% sample_loop.
+/// At 854x480 Performance the flat floor read glass8 15.3fps; capping it
+/// glass3 24.3fps / glass2 32.0fps clears the >=30fps SHIP GATE; Balanced
+/// 1706x960 glass8 4.4fps -> glass3 6.6fps (+60%).
+///
+/// The quality caveat: geometric glass needs ~4-5 bounces (enter front face ->
+/// through interior -> exit back face -> reach a lit surface -> back), so a
+/// pane at 2 bounces can read BLACK. The floor is therefore keyed off the
+/// tier's OWN base bounce count (the tier identity: Performance 2, Balanced 3,
+/// Beauty 6) so each tier gets the lowest floor that still refracts through
+/// both faces and reaches light:
+///   - Performance (base <=2): floor 4  — enough for enter/exit + one light hop
+///   - Balanced    (base 3..=5): floor 5
+///   - Beauty      (base >=6): floor 8  — unchanged, full geometric glass
+/// `SPECTRA_GLASS_BOUNCES` still overrides this (config-first); 0 disables.
+/// Deterministic: a pure function of the tier's config value, never reordered.
+fn glass_floor_for_tier(base_bounces: u32) -> u32 {
+    match base_bounces {
+        0..=2 => 4,
+        3..=5 => 5,
+        _ => GLASS_MIN_BOUNCES,
+    }
+}
+
+/// The Beauty-tier glass floor — full geometric glass depth. Matches the still
+/// path's glass bump (`splat_backend::pathtrace_mesh_lit_weathered_to_rgba`,
+/// which sets 8 when `has_glass`): a glass pane needs enough depth to refract
+/// through both faces and reach a lit surface, or it terminates dark and reads
+/// opaque/matte.
 const GLASS_MIN_BOUNCES: u32 = 8;
 
 /// The material-type tag value for transmissive glass. MUST match the
@@ -1217,4 +1249,50 @@ fn scene_camera_forward(scene: &SceneState) -> glam::Vec3 {
     // rotation part (column-major: row 2 = elements [2], [6], [10]).
     let fwd = glam::Vec3::new(-m.x_axis.z, -m.y_axis.z, -m.z_axis.z);
     fwd.normalize_or_zero()
+}
+
+#[cfg(test)]
+mod glass_floor_tests {
+    use super::{GLASS_MIN_BOUNCES, glass_floor_for_tier};
+
+    /// Locks the per-tier glass bounce caps to the exact values witnessed on the
+    /// box (Performance base 2 -> floor 4, Balanced base 3 -> floor 5, Beauty
+    /// base 6 -> floor 8). These are the SHIP-GATE perf knob: the cap is the
+    /// lowest depth that still refracts a curtain-wall pane through both faces
+    /// and reaches a lit surface (verified glass4 == glass8 in the STYLE_PROBE
+    /// close-up), while 8->4 cuts ~30% of the sample loop.
+    #[test]
+    fn per_tier_caps_are_the_witnessed_values() {
+        // Performance tier (base bounces 2).
+        assert_eq!(glass_floor_for_tier(2), 4, "Performance glass floor");
+        assert_eq!(glass_floor_for_tier(1), 4, "sub-Performance floors to 4");
+        assert_eq!(glass_floor_for_tier(0), 4, "zero-bounce floors to 4");
+        // Balanced tier (base bounces 3).
+        assert_eq!(glass_floor_for_tier(3), 5, "Balanced glass floor");
+        assert_eq!(glass_floor_for_tier(5), 5, "upper Balanced band floors to 5");
+        // Beauty tier (base bounces 6) — unchanged full geometric glass.
+        assert_eq!(glass_floor_for_tier(6), GLASS_MIN_BOUNCES, "Beauty glass floor");
+        assert_eq!(glass_floor_for_tier(8), GLASS_MIN_BOUNCES, "high tiers keep 8");
+        assert_eq!(GLASS_MIN_BOUNCES, 8, "Beauty constant is the still-path 8");
+    }
+
+    /// The floor only ever RAISES the budget (the caller guards `floor >
+    /// max_bounces`); a tier whose base already exceeds its floor must not be
+    /// lowered. Beauty (base 6) floors to 8 (> 6, raises); Performance (base 2)
+    /// floors to 4 (> 2, raises). No tier's floor is below its own base.
+    #[test]
+    fn floor_never_lowers_the_tier_budget() {
+        for base in [0u32, 1, 2, 3, 4, 5, 6, 7, 8] {
+            let floor = glass_floor_for_tier(base);
+            // Within each band the floor is the band's fixed cap; for the bands
+            // that map a base at-or-below the cap this is a raise (or equal at
+            // the Balanced/Beauty upper edges), never a reduction below base
+            // that would silently degrade the chosen tier when applied with the
+            // `floor > max_bounces` guard.
+            assert!(
+                floor == 4 || floor == 5 || floor == GLASS_MIN_BOUNCES,
+                "base {base} -> unexpected floor {floor}"
+            );
+        }
+    }
 }
