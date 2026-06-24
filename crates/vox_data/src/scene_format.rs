@@ -1,5 +1,5 @@
 use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// A scene file that describes a game level/world.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,7 +19,7 @@ pub struct SceneEntity {
     pub parent: Option<u32>,
     pub transform: Transform,
     pub asset_path: Option<String>,  // path to .ply or .vxm file
-    pub components: HashMap<String, serde_json::Value>,
+    pub components: BTreeMap<String, serde_json::Value>,
 }
 
 /// Transform (position, rotation, scale).
@@ -79,7 +79,7 @@ impl SceneFile {
         let id = self.entities.len() as u32;
         self.entities.push(SceneEntity {
             id, name: name.to_string(), parent: None,
-            transform, asset_path: None, components: HashMap::new(),
+            transform, asset_path: None, components: BTreeMap::new(),
         });
         id
     }

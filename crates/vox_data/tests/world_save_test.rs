@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use vox_data::prefab::{Prefab, PrefabEntity};
 use vox_data::world_save::*;
 
@@ -11,7 +11,7 @@ fn make_test_entity(name: &str) -> SavedEntity {
         asset_path: Some("assets/models/cube.vxm".to_string()),
         scripts: vec!["rotate.rhai".to_string(), "bounce.rhai".to_string()],
         tags: vec!["prop".to_string(), "interactive".to_string()],
-        custom_data: HashMap::new(),
+        custom_data: BTreeMap::new(),
         collider: None,
         audio: None,
         light: None,
@@ -81,6 +81,34 @@ fn test_custom_data_mixed_types() {
     assert_eq!(cd["inventory"], serde_json::json!(["sword", "shield"]));
 
     std::fs::remove_file(&tmp).ok();
+}
+
+#[test]
+fn save_serializes_custom_data_keys_in_ascending_order() {
+    // custom_data is a BTreeMap, so the save FILE is byte-deterministic — the same
+    // logical world always serialises identically (the replay/diff moat). Insert
+    // keys in scrambled order; the saved JSON must list them ascending. A HashMap
+    // field would emit them in arbitrary process-stable order.
+    let tmp = std::env::temp_dir().join("ochroma_det_custom_data.ochroma_save");
+    let mut save = WorldSave::new("det_scene");
+    let mut entity = make_test_entity("Det");
+    for k in ["zebra", "apple", "mango", "banana"] {
+        entity.custom_data.insert(k.to_string(), serde_json::json!(1));
+    }
+    save.add_entity(entity);
+    save.save_to_file(&tmp).unwrap();
+    let json = std::fs::read_to_string(&tmp).unwrap();
+    std::fs::remove_file(&tmp).ok();
+
+    let pa = json.find("\"apple\"").expect("apple key present");
+    let pb = json.find("\"banana\"").expect("banana key present");
+    let pm = json.find("\"mango\"").expect("mango key present");
+    let pz = json.find("\"zebra\"").expect("zebra key present");
+    assert!(
+        pa < pb && pb < pm && pm < pz,
+        "custom_data keys must serialize ascending for a byte-deterministic save \
+         file (BTreeMap); got apple@{pa} banana@{pb} mango@{pm} zebra@{pz}"
+    );
 }
 
 #[test]
@@ -222,7 +250,7 @@ fn test_full_world_round_trip_spectral_and_prefab() {
         scripts: vec![],
         tags: vec!["structure".to_string()],
         children_indices: vec![1],
-        components: HashMap::new(),
+        components: BTreeMap::new(),
     });
     prefab.add_entity(PrefabEntity {
         name: "bulb".to_string(),
@@ -233,7 +261,7 @@ fn test_full_world_round_trip_spectral_and_prefab() {
         scripts: vec!["flicker.rhai".to_string()],
         tags: vec!["light".to_string()],
         children_indices: vec![],
-        components: HashMap::new(),
+        components: BTreeMap::new(),
     });
     let prefab_world_pos = [10.0, 0.0, -5.0];
     let prefab_instances = prefab.instantiate_into_save(prefab_world_pos, 42);

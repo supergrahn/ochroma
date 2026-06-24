@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use vox_data::prefab::{Prefab, PrefabEntity};
 
 fn make_entity(name: &str, pos: [f32; 3]) -> PrefabEntity {
@@ -11,7 +11,7 @@ fn make_entity(name: &str, pos: [f32; 3]) -> PrefabEntity {
         scripts: Vec::new(),
         tags: Vec::new(),
         children_indices: Vec::new(),
-        components: HashMap::new(),
+        components: BTreeMap::new(),
     }
 }
 

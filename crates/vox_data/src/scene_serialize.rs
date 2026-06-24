@@ -1,11 +1,11 @@
 use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// A serializable snapshot of an entity's components.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntitySnapshot {
     pub id: u32,
-    pub components: HashMap<String, serde_json::Value>,
+    pub components: BTreeMap<String, serde_json::Value>,
 }
 
 /// A complete world snapshot that can be saved/loaded.
@@ -15,7 +15,7 @@ pub struct WorldSnapshot {
     pub timestamp: f64,
     pub entities: Vec<EntitySnapshot>,
     pub simulation: SimulationSnapshot,
-    pub metadata: HashMap<String, String>,
+    pub metadata: BTreeMap<String, String>,
 }
 
 /// Snapshot of all simulation state.
@@ -51,14 +51,14 @@ impl WorldSnapshot {
                 road_segment_count: 0,
                 season_day: 0,
             },
-            metadata: HashMap::new(),
+            metadata: BTreeMap::new(),
         }
     }
 
     pub fn add_entity(&mut self, id: u32) -> &mut EntitySnapshot {
         self.entities.push(EntitySnapshot {
             id,
-            components: HashMap::new(),
+            components: BTreeMap::new(),
         });
         self.entities.last_mut().unwrap()
     }

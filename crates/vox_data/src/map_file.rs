@@ -50,7 +50,7 @@ pub struct PlacedObject {
     pub rotation: [f32; 4], // quaternion xyzw
     pub scale: [f32; 3],
     pub scripts: Vec<String>,                              // attached script names
-    pub properties: std::collections::HashMap<String, String>, // custom key-value
+    pub properties: std::collections::BTreeMap<String, String>, // custom key-value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,7 +134,7 @@ impl MapFile {
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: [1.0, 1.0, 1.0],
             scripts: Vec::new(),
-            properties: std::collections::HashMap::new(),
+            properties: std::collections::BTreeMap::new(),
         });
     }
 

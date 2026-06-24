@@ -3,7 +3,7 @@
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -28,7 +28,7 @@ pub struct AssetPipelineState {
     pub prompt: String,
     pub completed: Vec<AssetStageName>,
     pub failed_at: Option<AssetStageName>,
-    pub artifacts: HashMap<String, String>,
+    pub artifacts: BTreeMap<String, String>,
 }
 
 impl AssetPipelineState {
@@ -38,7 +38,7 @@ impl AssetPipelineState {
             prompt: prompt.into(),
             completed: Vec::new(),
             failed_at: None,
-            artifacts: HashMap::new(),
+            artifacts: BTreeMap::new(),
         }
     }
 

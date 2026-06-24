@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// A prefab -- a reusable entity template with hierarchy.
@@ -19,7 +19,7 @@ pub struct PrefabEntity {
     pub scripts: Vec<String>,
     pub tags: Vec<String>,
     pub children_indices: Vec<usize>,
-    pub components: HashMap<String, serde_json::Value>,
+    pub components: BTreeMap<String, serde_json::Value>,
 }
 
 impl Prefab {

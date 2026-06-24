@@ -77,7 +77,8 @@ impl AssetLibrary {
     }
 
     pub fn save_index(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
-        let entries: Vec<AssetEntry> = self.entries.values().cloned().collect();
+        let mut entries: Vec<AssetEntry> = self.entries.values().cloned().collect();
+        entries.sort_by_key(|e| e.uuid);
         let wrapper = IndexWrapper { assets: entries };
         let toml_str = toml::to_string_pretty(&wrapper)
             .map_err(std::io::Error::other)?;

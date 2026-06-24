@@ -1,6 +1,6 @@
 use serde::{Serialize, Deserialize};
 use std::path::Path;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldSave {
@@ -21,7 +21,7 @@ pub struct SavedEntity {
     pub asset_path: Option<String>,
     pub scripts: Vec<String>,
     pub tags: Vec<String>,
-    pub custom_data: HashMap<String, serde_json::Value>,
+    pub custom_data: BTreeMap<String, serde_json::Value>,
     pub collider: Option<SavedCollider>,
     pub audio: Option<SavedAudio>,
     pub light: Option<SavedLight>,
@@ -151,7 +151,7 @@ impl SavedEntity {
             asset_path: None,
             scripts: Vec::new(),
             tags: Vec::new(),
-            custom_data: HashMap::new(),
+            custom_data: BTreeMap::new(),
             collider: None,
             audio: None,
             light: None,
@@ -263,7 +263,7 @@ fn chrono_lite_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     #[test]
     fn world_save_roundtrip() {
@@ -280,7 +280,7 @@ mod tests {
                 asset_path: Some("assets/cube.vxm".into()),
                 scripts: vec![],
                 tags: vec![],
-                custom_data: HashMap::new(),
+                custom_data: BTreeMap::new(),
                 collider: None,
                 audio: None,
                 light: None,
