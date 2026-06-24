@@ -195,3 +195,41 @@ fn social_adjacency_iteration_is_id_sorted() {
          non-sorted output means the adjacency map reverted to HashMap"
     );
 }
+
+#[test]
+fn influence_propagation_returns_id_sorted_deltas() {
+    // A happy hub (id 100) influences several unhappy neighbours whose ids are
+    // ADDED in scrambled order. The returned delta map MUST iterate id-sorted so a
+    // downstream caller that folds the deltas does so deterministically — a
+    // HashMap-backed return would iterate in arbitrary process-stable order and
+    // silently break replay once this feeds CitySim::tick.
+    let mut net = SocialNetwork::new();
+    for &t in &[50u32, 200, 30, 150] {
+        net.add_relationship(100, t, RelationshipType::Friend, 1.0);
+    }
+    let mut satisfaction = HashMap::new();
+    satisfaction.insert(100, 0.9); // happy hub
+    for &t in &[50u32, 200, 30, 150] {
+        satisfaction.insert(t, 0.2); // unhappy neighbours
+    }
+
+    let deltas = net.influence_propagation(&satisfaction);
+    let keys: Vec<u32> = deltas.keys().copied().collect();
+
+    // Exact id-sorted key order (BTreeMap guarantee). A HashMap return would
+    // almost surely scramble these four ids and fail this assertion.
+    assert_eq!(
+        keys,
+        vec![30, 50, 150, 200],
+        "influence_propagation deltas must iterate id-sorted; got {keys:?} — a \
+         HashMap return lets a downstream fold of these deltas go nondeterministic"
+    );
+    // Real computed outcome, not a stub: every neighbour got a positive influence.
+    for &t in &[30u32, 50, 150, 200] {
+        assert!(
+            deltas[&t] > 0.0,
+            "neighbour {t} should receive positive influence, got {}",
+            deltas[&t]
+        );
+    }
+}

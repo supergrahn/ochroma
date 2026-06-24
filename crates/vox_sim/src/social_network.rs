@@ -117,8 +117,13 @@ impl SocialNetwork {
 
     /// Propagate influence: happy citizens boost their connected neighbours' satisfaction.
     /// Returns a map of citizen_id -> satisfaction delta.
-    pub fn influence_propagation(&self, satisfaction: &HashMap<u32, f32>) -> HashMap<u32, f32> {
-        let mut deltas: HashMap<u32, f32> = HashMap::new();
+    pub fn influence_propagation(&self, satisfaction: &HashMap<u32, f32>) -> BTreeMap<u32, f32> {
+        // Return a BTreeMap so a downstream caller that folds these deltas iterates
+        // them in id-sorted order — a HashMap return is the next float-nondeterminism
+        // point the moment this is wired into CitySim::tick. Accumulation order is
+        // already deterministic: the outer `&self.adjacency` is a BTreeMap (id-sorted
+        // source order), so each target's sum folds its sources in a fixed order.
+        let mut deltas: BTreeMap<u32, f32> = BTreeMap::new();
 
         for (&citizen_id, edges) in &self.adjacency {
             let my_sat = satisfaction.get(&citizen_id).copied().unwrap_or(0.5);
