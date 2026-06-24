@@ -34,3 +34,8 @@ pub mod deterministic;
 pub mod crowd;
 pub mod spatial_hash;
 pub mod sim_hash;
+// The canonical shared sim vocabulary (beyond-CS2 cim-sim/economy/wellbeing
+// seam, design 2026-06-24 §5 build-order A1): DistrictId/CohortId/Money/
+// SkillTier/Relevance/EventKind/PresenceLedger/assert_population_conserved.
+// Game-agnostic engine primitives the game re-exports for its cim/ callers.
+pub mod sim_types;
