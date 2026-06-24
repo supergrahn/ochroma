@@ -683,8 +683,8 @@ impl ResidentCityRenderer {
         );
         if std::env::var("SPECTRA_FILM_DIAG").is_ok() {
             eprintln!(
-                "[atm_diag] resident update: rig.atmosphere_enabled={} mie={} turbidity={} sun_dir={:?} e_sun={}",
-                rig.atmosphere_enabled, rig.atmosphere_mie, rig.atmosphere_turbidity, rig.sun_dir, e_sun
+                "[atm_diag] resident update: rig.atmosphere_enabled={} mie={} turbidity={} sun_dir={:?} e_sun={} fog_enabled={} fog_density={} fog_aniso={}",
+                rig.atmosphere_enabled, rig.atmosphere_mie, rig.atmosphere_turbidity, rig.sun_dir, e_sun, rig.fog_enabled, rig.fog_density, rig.fog_anisotropy
             );
         }
         if rig.atmosphere_enabled {
@@ -703,6 +703,15 @@ impl ResidentCityRenderer {
             self.renderer
                 .set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
         }
+        // Height fog (aerial depth + crepuscular cue). Driven every resident
+        // update; fog_enabled=false (legacy/Default rig) → byte-identical no-fog.
+        self.renderer.set_fog(
+            rig.fog_enabled,
+            rig.fog_density,
+            rig.fog_color,
+            rig.fog_height_falloff,
+            rig.fog_anisotropy,
+        );
 
         let (rebuilt, reused) = self.renderer.last_scene_sync();
         Ok(SceneDelta {

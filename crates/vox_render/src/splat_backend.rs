@@ -377,6 +377,26 @@ pub struct LightRig {
     /// Atmosphere turbidity (1.0 = clear, 10.0 = very hazy). Only consulted
     /// when `atmosphere_enabled`.
     pub atmosphere_turbidity: f32,
+    /// Enable the height-fog inscatter pass (`Renderer::set_fog` →
+    /// `u_fog_enabled`). Default `false` keeps every legacy render
+    /// byte-identical (the megakernel skips the fog block entirely). When
+    /// `true`, a thin warm fog adds aerial-depth + a sun-forward crepuscular cue.
+    pub fog_enabled: bool,
+    /// Height-fog density (extinction scale). Keep small (≈0.004) so the fog
+    /// reads as atmospheric depth without greying the buildable core. Only
+    /// consulted when `fog_enabled`.
+    pub fog_density: f32,
+    /// Height-fog inscatter color (linear RGB) — acts as the scattering-albedo
+    /// tint. A warm triple (≈`[1.0, 0.9, 0.78]`) at golden hour. Only consulted
+    /// when `fog_enabled`.
+    pub fog_color: [f32; 3],
+    /// Height-fog vertical falloff: larger = fog hugs the ground more tightly.
+    /// Only consulted when `fog_enabled`.
+    pub fog_height_falloff: f32,
+    /// Henyey-Greenstein anisotropy `g` for the fog inscatter phase. Forward
+    /// (≈0.7) concentrates inscatter toward the sun → the god-ray / crepuscular
+    /// cue; `0.0` is isotropic. Only consulted when `fog_enabled`.
+    pub fog_anisotropy: f32,
     /// Master toggle for the DYNAMIC weathering effect — the config law's
     /// `RenderSettings.features.weathering` surfaced on the rig. When `false`,
     /// the renderer renders the CLEAN surface even when cooked weathering masks
@@ -567,6 +587,13 @@ impl Default for LightRig {
             sun_radiance: 20.0,
             atmosphere_mie: 0.76,
             atmosphere_turbidity: 2.0,
+            // Fog OFF by default → the megakernel skips the fog block and every
+            // legacy render stays byte-identical (the new fog uniforms are inert).
+            fog_enabled: false,
+            fog_density: 0.004,
+            fog_color: [1.0, 0.9, 0.78],
+            fog_height_falloff: 0.5,
+            fog_anisotropy: 0.7,
             // Weathering ON at full per-channel intensity by default → uploading
             // cooked masks reproduces the legacy weathered render byte-for-byte.
             // The sim overrides `weathering_intensity` per instance; the config
@@ -626,6 +653,14 @@ impl LightRig {
             rim_fill: 0.15,     // was default 0.45
             atmosphere_enabled: true,
             atmosphere_turbidity: 2.5,
+            // Thin WARM height fog → aerial depth across the basin + a sun-forward
+            // (g=0.7) crepuscular glow at golden hour. Density kept low so the
+            // buildable core is not greyed out.
+            fog_enabled: true,
+            fog_density: 0.004,
+            fog_color: [1.0, 0.9, 0.78],
+            fog_height_falloff: 0.5,
+            fog_anisotropy: 0.7,
             // Desaturated + dimmed sky dome: still fills shadows, but its blue
             // ambient no longer greys the warm sunlit brick faces. Derived from
             // the canonical KeyLightPalette day anchor (single source of truth).
@@ -1028,6 +1063,15 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
         renderer.set_sun(sun.to_array(), rig.sun_radiance);
         renderer.set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
     }
+    // Height fog (aerial depth + crepuscular cue). Inert unless the rig opts in;
+    // fog_enabled=false → set_fog keeps the render byte-identical to no-fog.
+    renderer.set_fog(
+        rig.fog_enabled,
+        rig.fog_density,
+        rig.fog_color,
+        rig.fog_height_falloff,
+        rig.fog_anisotropy,
+    );
     // ORDER MATTERS: set_texture_atlas silently no-ops before scene state
     // exists, so it must come after load_scene_state.
     if !textures.is_empty() {
@@ -1163,6 +1207,13 @@ pub fn spectra_resident_bench(
         renderer.set_sun(sun.to_array(), rig.sun_radiance);
         renderer.set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
     }
+    renderer.set_fog(
+        rig.fog_enabled,
+        rig.fog_density,
+        rig.fog_color,
+        rig.fog_height_falloff,
+        rig.fog_anisotropy,
+    );
     if !textures.is_empty() {
         renderer
             .set_texture_atlas(&tex_descs, &tex_data, textures.len() as u32)
@@ -3774,6 +3825,13 @@ pub fn spectra_resident_bench_fsr(
         renderer.set_sun(sun.to_array(), rig.sun_radiance);
         renderer.set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
     }
+    renderer.set_fog(
+        rig.fog_enabled,
+        rig.fog_density,
+        rig.fog_color,
+        rig.fog_height_falloff,
+        rig.fog_anisotropy,
+    );
     if !textures.is_empty() {
         renderer
             .set_texture_atlas(&tex_descs, &tex_data, textures.len() as u32)
