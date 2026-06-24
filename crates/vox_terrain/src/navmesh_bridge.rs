@@ -55,7 +55,8 @@ pub fn extract_from_volume(
         (1, -1, 0), (-1, -1, 0), (0, -1, 1), (0, -1, -1),
     ];
 
-    let node_voxels: Vec<(usize, usize, usize)> = voxel_to_idx.keys().cloned().collect();
+    let mut node_voxels: Vec<(usize, usize, usize)> = voxel_to_idx.keys().cloned().collect();
+    node_voxels.sort_unstable();
     for (x, y, z) in node_voxels {
         let id = voxel_to_idx[&(x, y, z)];
         for (dx, dy, dz) in directions {

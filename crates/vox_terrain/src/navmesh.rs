@@ -95,7 +95,9 @@ pub fn build_navmesh(vol: &TerrainVolume, config: &NavMeshConfig) -> Option<NavM
     }
 
     let mut triangles: Vec<NavTriangle> = Vec::new();
-    for (&(gx, gz), &idx) in &grid {
+    let mut cells: Vec<((i32, i32), usize)> = grid.iter().map(|(k, v)| (*k, *v)).collect();
+    cells.sort_unstable_by_key(|(k, _)| *k);
+    for ((gx, gz), idx) in cells {
         let right = grid.get(&(gx + 1, gz)).copied();
         let below = grid.get(&(gx, gz + 1)).copied();
         let diag = grid.get(&(gx + 1, gz + 1)).copied();

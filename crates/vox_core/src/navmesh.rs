@@ -187,6 +187,7 @@ impl Eq for AStarEntry {}
 impl Ord for AStarEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         other.f.partial_cmp(&self.f).unwrap_or(Ordering::Equal)
+            .then_with(|| other.node.cmp(&self.node))
     }
 }
 impl PartialOrd for AStarEntry {
