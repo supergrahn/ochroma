@@ -486,7 +486,7 @@ impl CitySim {
             .iter()
             .map(|c| (c.id, c.satisfaction))
             .collect();
-        order.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
 
         let leaving: Vec<u32> = order
             .into_iter()

@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use vox_sim::sharding::{ShardManager, TileCoord};
 
-fn tile_set(coords: &[(i32, i32)]) -> HashSet<TileCoord> {
+fn tile_set(coords: &[(i32, i32)]) -> BTreeSet<TileCoord> {
     coords.iter().map(|&(x, y)| TileCoord { x, y }).collect()
 }
 
@@ -50,7 +50,7 @@ fn migrate_nonexistent_entity_returns_none() {
 #[test]
 fn rebalance_splits_large_shard() {
     let mut mgr = ShardManager::new();
-    let tiles: HashSet<TileCoord> = (0..100).map(|x| TileCoord { x, y: 0 }).collect();
+    let tiles: BTreeSet<TileCoord> = (0..100).map(|x| TileCoord { x, y: 0 }).collect();
     let id = mgr.create_shard(tiles);
 
     for i in 0..10_500u64 {
@@ -137,4 +137,46 @@ fn tick_advances_all_shards() {
 
     assert_eq!(mgr.shard(a).unwrap().current_tick(), 2);
     assert_eq!(mgr.shard(b).unwrap().current_tick(), 2);
+}
+
+/// Verifies that rebalance() migrates a deterministic, sorted upper-half of entities
+/// when a shard exceeds the 10 000 entity threshold.
+///
+/// Entities are inserted in scrambled (reverse) order to confirm that the split
+/// is not accidentally ordered by insertion sequence.  The migrated set must equal
+/// the BTreeSet-sorted upper half — this only holds when `entities` is a BTreeSet,
+/// not a HashSet (whose iteration order is process-stable but not id-sorted).
+#[test]
+fn sharding_rebalance_migration_is_deterministic() {
+    const N: u64 = 10_500;
+
+    let mut mgr = ShardManager::new();
+    // Give the shard enough tiles so tile_half > 0 in the split.
+    let tiles: BTreeSet<TileCoord> = (0..200_i32).map(|x| TileCoord { x, y: 0 }).collect();
+    let id = mgr.create_shard(tiles);
+
+    // Insert in REVERSE order (scrambled relative to sorted id order).
+    for i in (0..N).rev() {
+        mgr.assign_entity(i, id);
+    }
+    assert_eq!(mgr.shard(id).unwrap().entity_count(), N as usize);
+
+    let records = mgr.rebalance();
+    assert!(mgr.shard_count() >= 2, "large shard must be split");
+
+    // Collect the migrated entity ids from the migration records.
+    let mut migrated: Vec<u64> = records.iter().map(|r| r.entity_id).collect();
+    migrated.sort_unstable();
+    migrated.dedup();
+
+    // Build the expected upper half: ids [half .. N) in sorted order.
+    let half = N as usize / 2;
+    let mut all_ids: Vec<u64> = (0..N).collect(); // already sorted
+    let expected: Vec<u64> = all_ids.split_off(half); // upper half
+
+    assert_eq!(
+        migrated, expected,
+        "rebalance must migrate exactly the sorted upper half of entity ids"
+    );
+    assert_eq!(mgr.total_entities(), N as usize, "no entities lost or duplicated");
 }

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Type of relationship between two citizens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -56,13 +56,13 @@ impl Relationship {
 /// Social network as an adjacency list: citizen_id -> [(target_id, Relationship)].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SocialNetwork {
-    adjacency: HashMap<u32, Vec<(u32, Relationship)>>,
+    adjacency: BTreeMap<u32, Vec<(u32, Relationship)>>,
 }
 
 impl SocialNetwork {
     pub fn new() -> Self {
         Self {
-            adjacency: HashMap::new(),
+            adjacency: BTreeMap::new(),
         }
     }
 

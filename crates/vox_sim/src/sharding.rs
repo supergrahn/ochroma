@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 /// Unique identifier for a simulation shard.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ShardId(pub u32);
 
 /// A tile coordinate in the simulation world.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TileCoord {
     pub x: i32,
     pub y: i32,
@@ -35,17 +35,17 @@ pub struct MigrationRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationShard {
     pub id: ShardId,
-    tiles: HashSet<TileCoord>,
-    entities: HashSet<u64>,
+    tiles: BTreeSet<TileCoord>,
+    entities: BTreeSet<u64>,
     tick: u64,
 }
 
 impl SimulationShard {
-    pub fn new(id: ShardId, tiles: HashSet<TileCoord>) -> Self {
+    pub fn new(id: ShardId, tiles: BTreeSet<TileCoord>) -> Self {
         Self {
             id,
             tiles,
-            entities: HashSet::new(),
+            entities: BTreeSet::new(),
             tick: 0,
         }
     }
@@ -79,7 +79,7 @@ impl SimulationShard {
         self.tiles.contains(coord)
     }
 
-    pub fn tiles(&self) -> &HashSet<TileCoord> {
+    pub fn tiles(&self) -> &BTreeSet<TileCoord> {
         &self.tiles
     }
 }
@@ -102,7 +102,7 @@ impl ShardManager {
     }
 
     /// Create a new shard owning the given tiles.
-    pub fn create_shard(&mut self, tiles: HashSet<TileCoord>) -> ShardId {
+    pub fn create_shard(&mut self, tiles: BTreeSet<TileCoord>) -> ShardId {
         let id = ShardId(self.next_shard_id);
         self.next_shard_id += 1;
         self.shards.insert(id, SimulationShard::new(id, tiles));
@@ -166,12 +166,13 @@ impl ShardManager {
         let mut records = Vec::new();
 
         // Phase 1: split large shards (>10_000 entities)
-        let large_shards: Vec<ShardId> = self
+        let mut large_shards: Vec<ShardId> = self
             .shards
             .values()
             .filter(|s| s.entity_count() > 10_000)
             .map(|s| s.id)
             .collect();
+        large_shards.sort_unstable();
 
         for shard_id in large_shards {
             let shard = self.shards.get(&shard_id).unwrap();
@@ -181,7 +182,7 @@ impl ShardManager {
             let tile_half = tiles.len() / 2;
 
             // Create new shard with half the tiles
-            let new_tiles: HashSet<TileCoord> = tiles[tile_half..].iter().copied().collect();
+            let new_tiles: BTreeSet<TileCoord> = tiles[tile_half..].iter().copied().collect();
             let new_id = self.create_shard(new_tiles);
 
             // Migrate second half of entities to the new shard
@@ -200,12 +201,13 @@ impl ShardManager {
 
         // Phase 2: merge small shards (<100 entities)
         loop {
-            let small_shards: Vec<ShardId> = self
+            let mut small_shards: Vec<ShardId> = self
                 .shards
                 .values()
                 .filter(|s| s.entity_count() < 100)
                 .map(|s| s.id)
                 .collect();
+            small_shards.sort_unstable();
 
             if small_shards.len() < 2 {
                 break;
@@ -215,7 +217,7 @@ impl ShardManager {
             let b = small_shards[1];
 
             let entities_b: Vec<u64> = self.shards[&b].entities.iter().copied().collect();
-            let tiles_b: HashSet<TileCoord> = self.shards[&b].tiles.clone();
+            let tiles_b: BTreeSet<TileCoord> = self.shards[&b].tiles.clone();
 
             // Move all entities from b to a
             for eid in &entities_b {

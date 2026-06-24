@@ -173,3 +173,25 @@ fn test_family_bonds_decay_slowly() {
         "Family bond should survive 5 years of decay"
     );
 }
+
+#[test]
+fn social_adjacency_iteration_is_id_sorted() {
+    // Insert citizen ids in deliberately scrambled (non-ascending) order so that
+    // a HashMap-backed adjacency would return them in arbitrary process-stable order
+    // and could silently pass a run-twice check.  BTreeMap MUST yield them sorted.
+    let mut net = SocialNetwork::new();
+    net.add_relationship(500, 100, RelationshipType::Friend, 0.8);
+    net.add_relationship(200, 100, RelationshipType::Coworker, 0.5);
+    net.add_relationship(300, 500, RelationshipType::Neighbour, 0.6);
+    net.add_relationship(50, 200, RelationshipType::Family, 0.9);
+
+    let citizens = net.all_citizens();
+    let mut sorted = citizens.clone();
+    sorted.sort_unstable();
+
+    assert_eq!(
+        citizens, sorted,
+        "all_citizens() must return ids in ascending order (BTreeMap guarantee); \
+         non-sorted output means the adjacency map reverted to HashMap"
+    );
+}
