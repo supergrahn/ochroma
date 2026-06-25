@@ -1,6 +1,6 @@
 //! Resident Spectra path-tracer for the live window (Render Keystone T1).
 //!
-//! [`ResidentCityRenderer`] constructs the Vulkan backend + `Renderer` +
+//! [`ResidentSceneRenderer`] constructs the Vulkan backend + `Renderer` +
 //! `KernelSet` **ONCE** (paying the device init + ~9.3s slangc compile + initial
 //! BLAS/TLAS build), then streams camera + dirty scene deltas per frame. This is
 //! the opposite of the legacy still path (`pathtrace_mesh_lit_*`), which rebuilt
@@ -9,7 +9,7 @@
 //!
 //! It generalizes [`crate::splat_backend::spectra_resident_bench`]'s construct-once
 //! setup into a reusable object: `new` does the one-time build, `set_scene` does a
-//! dirty-layer-aware upload (reporting rebuilt/reused via [`SceneDelta`]), and
+//! dirty-layer-aware upload (reporting rebuilt/reused via [`SceneSyncReport`]), and
 //! `render_camera` is a pure camera-stream frame (`set_camera_view_matrix` +
 //! `set_view_proj` + `render()` — NO backend/renderer reconstruction).
 //!
@@ -34,11 +34,14 @@ type ResidentBackend = CudarcSlangBackend;
 type ResidentBackend = VulkanSlangBackend;
 use spectra_scene_state::{GpuSceneCmd, LightLayer, SceneDeltaRing, SceneState};
 
-/// Re-export the R31 fidelity tier so the game layer can select a tier through
-/// `vox_render` without depending on `spectra-renderer` directly.
+/// Re-export the R31 fidelity tier and tier-table types so the game layer can
+/// select a tier and load `render.ron` fidelity overrides through `vox_render`
+/// without depending on `spectra-renderer` or `spectra-types` directly.
 pub use spectra_renderer::FidelityTier;
 pub use spectra_renderer::RenderTarget;
+pub use spectra_renderer::{TierEntry, TierTable};
 
+use crate::scene_delta_adapter::{RetainedDeltaError, RetainedDeltaPlan, RetainedRenderMirror};
 use crate::splat_backend::{
     LightRig, VULKAN_LIGHT_FLOATS, pack_vulkan_directional_light, pack_vulkan_point_light,
     pack_vulkan_sun_disk_light, resolve_slang_kernel_dir, rig_to_settings,
@@ -50,12 +53,12 @@ use crate::splat_backend::{
 /// `layers_rebuilt == 0 && layers_reused > 0` means the GPU scene was reused
 /// (no per-frame BLAS rebuild) — the witness that the resident path is alive.
 #[derive(Debug, Clone, Copy)]
-pub struct SceneDelta {
+pub struct SceneSyncReport {
     layers_rebuilt: u32,
     layers_reused: u32,
 }
 
-impl SceneDelta {
+impl SceneSyncReport {
     /// Number of geometry layers whose BLAS was rebuilt on this upload.
     pub fn layers_rebuilt(&self) -> u32 {
         self.layers_rebuilt
@@ -68,7 +71,7 @@ impl SceneDelta {
 
 /// Resident path-tracer for the live window. Constructed ONCE; streams camera +
 /// dirty deltas. Single-threaded with the redraw loop (owned by the game).
-pub struct ResidentCityRenderer {
+pub struct ResidentSceneRenderer {
     /// The renderer, constructed once: KernelSet, SceneUploader, GpuStage (BLAS
     /// cache + per-layer fingerprints), RenderState, AtmosphereManager. Reused
     /// across every frame.
@@ -87,9 +90,14 @@ pub struct ResidentCityRenderer {
     /// +drain. The indexed scatter is order-independent, so the resident buffer
     /// is a pure function of this id-sorted command log (the determinism moat).
     delta_ring: SceneDeltaRing,
+    /// Engine-owned mirror for the NodeId→instance_index mapping of the scene
+    /// currently uploaded. Populated by `reset_retained_mirror` after every
+    /// `set_scene`; drives `drain_scene_deltas` so the game only emits
+    /// `Vec<vox_scene::SceneDelta>`.
+    retained_mirror: RetainedRenderMirror,
 }
 
-impl ResidentCityRenderer {
+impl ResidentSceneRenderer {
     /// Construct ONCE. Pays device init + the ~9.3s `KernelSet` slangc compile +
     /// the initial BLAS/TLAS build for `initial`. Mirrors the construct-once
     /// setup of `spectra_resident_bench` (`splat_backend.rs:1007-1037`) as a
@@ -128,9 +136,13 @@ impl ResidentCityRenderer {
         height: u32,
         rig: LightRig,
         tier: FidelityTier,
+        tier_table: Option<&spectra_renderer::TierTable>,
         initial: SceneState,
     ) -> Result<Self, String> {
-        let settings = RenderSettings::for_tier(tier);
+        let settings = match tier_table {
+            Some(table) => RenderSettings::for_tier_from_ron(tier, table),
+            None        => RenderSettings::for_tier(tier),
+        };
         let max_bounces = settings.render.max_bounces;
         Self::new_from_settings(width, height, rig, settings, max_bounces, initial)
     }
@@ -213,7 +225,7 @@ impl ResidentCityRenderer {
         }
 
         // NVIDIA-stack foundation: enable OptiX HW-RT for the LIVE game by default
-        // (config-first, not env-gated). ResidentCityRenderer historically never
+        // (config-first, not env-gated). ResidentSceneRenderer historically never
         // set this, so the shipped game ran the SOFTWARE BVH and the whole RT-core
         // stack (CLAS/Mega-Geometry, HW TLAS, ReSTIR-PT quality, DLSS-RR guides)
         // was dead code. The construct gate in spectra renderer/mod.rs
@@ -374,18 +386,63 @@ impl ResidentCityRenderer {
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(65_536);
 
-        // CUDA-GRAPH ↔ D3D12-INTEROP FIX: the resident renderer feeds the DLSS
-        // present through a D3D12-shared external-memory texture (RenderTarget::
-        // Interop). CUDA-graph capture/replay of the per-sample pipeline records
-        // the interop memcpy_dtod into that SHARED resource into the graph; on
-        // replay the captured cross-context/external-memory dependency is not
-        // re-resolved against the D3D12 queue, which hangs the GPU past the 2s
-        // WDDM watchdog (DXGI_ERROR_DEVICE_HUNG, 0x887A0007) on the first city
-        // present — the exact city-only failure (the menu never runs the renderer
-        // or graphs). Disable graphs by default on the resident/interop path; the
-        // per-sample dispatch cost dwarfs the graph launch-overhead saving at
-        // these resolutions. SPECTRA_CUDA_GRAPHS=1 re-enables for benchmarking.
-        config.use_cuda_graphs = std::env::var("SPECTRA_CUDA_GRAPHS").as_deref() == Ok("1");
+        // CUDA-GRAPH RE-ENABLE (B4): default-ON, with spectra as the single gate.
+        //
+        // History: this used to be a BLANKET ochroma-side disable because a captured
+        // graph could record the D3D12-interop present `memcpy_dtod` into a SHARED
+        // external-memory resource, whose cross-context dependency wasn't re-resolved
+        // against the D3D12 queue on replay → WDDM watchdog hang
+        // (DXGI_ERROR_DEVICE_HUNG, 0x887A0007) on the first city present. Two things
+        // make the blanket disable the wrong layer now:
+        //   1. The interop PACK_RGBA + DtoD present copy runs POST sample-loop
+        //      (render.rs ~1037, eager), OUTSIDE the captured region — the graph only
+        //      records the per-sample megakernel dispatch, so the interop copy is no
+        //      longer captured.
+        //   2. spectra `render()` already FORCE-disables graphs whenever OptiX HW-RT
+        //      is active (render.rs:83 `use_cuda_graphs && !optix_active`), because
+        //      graph replay never calls `render_sample()`/`optixLaunch`. OptiX is the
+        //      locked production resident path, so graphs stay suppressed there with
+        //      ZERO ochroma action — spectra owns that gate authoritatively.
+        // Plus B4 adds a scene-change graph-invalidation guard in spectra
+        // `load_scene_state` (drop the captured graph when scene buffers are
+        // freed+reuploaded), removing the stale-device-pointer hazard a resident
+        // rebuild would otherwise leave live.
+        // So: default the capability ON; the spectra OptiX gate keeps the production
+        // path safe, and the non-OptiX fallback path gets the graph launch-overhead
+        // saving. SPECTRA_CUDA_GRAPHS=0 forces OFF (the safety/A-B baseline), =1 forces
+        // ON; default (unset) is now ON.
+        config.use_cuda_graphs = std::env::var("SPECTRA_CUDA_GRAPHS").as_deref() != Ok("0");
+        eprintln!("[cuda-graphs] use_cuda_graphs={}", config.use_cuda_graphs);
+
+        // SER (Shader Execution Reordering): the 4-pass software reorder
+        // (`ser_reorder.slang`) is wired in spectra but never fired on the live
+        // resident path because `RenderConfig::near_realtime` leaves
+        // `ser_enabled = false`. The reorder coheres divergent material/closest-
+        // hit shading work across a warp before the shade megakernel, which is a
+        // pure throughput win on the divergent city scene (many archetypes,
+        // glass/lit windows, foliage any-hit) and — being a deterministic
+        // gather/scatter on a stable sort key — leaves the IMAGE bit-identical
+        // (perturbation A/B witness). Default ON on the CUDA box (the only place
+        // the reorder kernel runs); the Vulkan/AMD dev path leaves it at the
+        // config default. `SPECTRA_SER=0` forces it OFF (the A/B baseline pass);
+        // `SPECTRA_SER=1` forces it ON. Mirrors spectra's own SPECTRA_SER
+        // override (render_config.rs:1348) so both layers agree.
+        #[cfg(target_os = "windows")]
+        {
+            config.ser_enabled = true;
+        }
+        match std::env::var("SPECTRA_SER").as_deref() {
+            Ok("1") => {
+                config.ser_enabled = true;
+                eprintln!("[ser-override] SPECTRA_SER=1 -> ser_enabled=true");
+            }
+            Ok("0") => {
+                config.ser_enabled = false;
+                eprintln!("[ser-override] SPECTRA_SER=0 -> ser_enabled=false");
+            }
+            _ => {}
+        }
+        eprintln!("[ser] ser_enabled={}", config.ser_enabled);
 
         let renderer = Renderer::new(gpu, config);
 
@@ -395,6 +452,7 @@ impl ResidentCityRenderer {
             height,
             rig,
             delta_ring: SceneDeltaRing::new(),
+            retained_mirror: RetainedRenderMirror::new(),
         };
         // Upload the initial scene (with the rig's lights + sky/atmosphere) so the
         // first render_camera has geometry/materials/lights resident.
@@ -406,7 +464,7 @@ impl ResidentCityRenderer {
     /// layers are NOT re-uploaded. Returns the rebuilt/reused counts (the reuse
     /// proof). The held rig's lights + sky/atmosphere are injected so lighting is
     /// consistent across scene edits.
-    pub fn set_scene(&mut self, scene: SceneState) -> Result<SceneDelta, String> {
+    pub fn set_scene(&mut self, scene: SceneState) -> Result<SceneSyncReport, String> {
         self.upload_scene(scene)
     }
 
@@ -552,7 +610,7 @@ impl ResidentCityRenderer {
     }
 
     /// Shared upload body used by both `new` and `set_scene`.
-    fn upload_scene(&mut self, mut scene: SceneState) -> Result<SceneDelta, String> {
+    fn upload_scene(&mut self, mut scene: SceneState) -> Result<SceneSyncReport, String> {
         // Force the internal render resolution onto the scene's camera so the
         // film matches the renderer's framebuffer.
         scene.camera.width = self.width;
@@ -648,7 +706,7 @@ impl ResidentCityRenderer {
         // (set via `set_weathering_masks`), NOT the interleaved vertex buffer the
         // uploader packs, so we MUST re-drive the setter after every scene upload
         // or the live/resident path renders clean (the historical gap: no setter
-        // on ResidentCityRenderer). Taken out before `scene` is moved into
+        // on ResidentSceneRenderer). Taken out before `scene` is moved into
         // `load_scene_state` (the megakernel weathering path reads ONLY the
         // separate buffer, so the interleaved copy is redundant here). Empty
         // masks → the setter disables weathering.
@@ -720,7 +778,7 @@ impl ResidentCityRenderer {
         );
 
         let (rebuilt, reused) = self.renderer.last_scene_sync();
-        Ok(SceneDelta {
+        Ok(SceneSyncReport {
             layers_rebuilt: rebuilt,
             layers_reused: reused,
         })
@@ -740,6 +798,55 @@ impl ResidentCityRenderer {
     /// `transform` is a row-major 3×4 (upper rows of a 4×4 world transform).
     pub fn update_instance_transform(&mut self, instance_index: usize, transform: [[f32; 4]; 3]) {
         self.delta_ring.set_transform(instance_index as u32, transform);
+    }
+
+    /// Stamp the NodeId→instance_index mapping after a full scene upload.
+    /// Call once after every `set_scene` that changes the instance order.
+    pub fn reset_retained_mirror<I>(&mut self, nodes: I) -> Result<(), RetainedDeltaError>
+    where
+        I: IntoIterator<Item = vox_scene::NodeId>,
+    {
+        self.retained_mirror.replace_instances_in_node_order(nodes)
+    }
+
+    /// Drain and apply transform-only `deltas` as TLAS refits. Returns
+    /// `Err` (without clearing `deltas`) for any structural delta — caller
+    /// must then trigger a full-scene rebuild via `set_scene`.
+    /// Clears `deltas` on success.
+    #[cfg(feature = "spectra-native")]
+    pub fn drain_scene_deltas(
+        &mut self,
+        deltas: &mut Vec<vox_scene::SceneDelta>,
+    ) -> Result<RetainedDeltaPlan, String> {
+        let plan = self
+            .retained_mirror
+            .plan_deltas(deltas.as_slice())
+            .map_err(|e| format!("retained scene delta plan: {e}"))?;
+        if plan.requires_scene_rebuild() {
+            return Err(format!(
+                "retained scene structural rebuild required \
+                 (structural_deltas={})",
+                plan.stats.structural_deltas
+            ));
+        }
+        plan.queue_resident_refits(self)
+            .map_err(|e| format!("retained scene delta apply: {e}"))?;
+        deltas.clear();
+        Ok(plan)
+    }
+
+    /// Thin forwarding accessors — let the game inspect mirror state without
+    /// holding a RetainedRenderMirror field.
+    pub fn retained_instance_index(&self, node: vox_scene::NodeId) -> Option<usize> {
+        self.retained_mirror.instance_index(node)
+    }
+
+    pub fn retained_node_for_instance(&self, instance_index: usize) -> Option<vox_scene::NodeId> {
+        self.retained_mirror.node_for_instance(instance_index)
+    }
+
+    pub fn retained_node_count(&self) -> usize {
+        self.retained_mirror.len()
     }
 
     /// Per-frame camera stream. Pure state mutation (`set_camera_view_matrix` +
@@ -905,12 +1012,12 @@ impl ResidentCityRenderer {
         self.renderer.tlas_instance_count()
     }
 
-    /// A fully-reused [`SceneDelta`] (`rebuilt == 0`, `reused == 1`): the report
+    /// A fully-reused [`SceneSyncReport`] (`rebuilt == 0`, `reused == 1`): the report
     /// for a frame where the caller determined the scene was unchanged and chose
     /// NOT to re-upload it. Lets the live seam prove camera-only moves rebuild no
     /// BLASes without forcing a redundant `set_scene`.
-    pub fn reused_delta(&self) -> SceneDelta {
-        SceneDelta {
+    pub fn reused_delta(&self) -> SceneSyncReport {
+        SceneSyncReport {
             layers_rebuilt: 0,
             layers_reused: 1,
         }

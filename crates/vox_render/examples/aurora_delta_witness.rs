@@ -151,7 +151,7 @@ fn drive(
     instances: &[vox_render::splat_backend::InstanceRecordGpu],
 ) -> Result<(u64, bool, f64, usize, usize), String> {
     use std::time::Instant;
-    use vox_render::resident_renderer::ResidentCityRenderer;
+    use vox_render::resident_renderer::ResidentSceneRenderer;
     use vox_render::splat_backend::LightRig;
     use vox_render::splat_convert::meshes_to_instanced_scene;
 
@@ -163,7 +163,7 @@ fn drive(
         width,
         height,
     );
-    let mut r = ResidentCityRenderer::new(width, height, LightRig::default(), 1, 1, scene)
+    let mut r = ResidentSceneRenderer::new(width, height, LightRig::default(), 1, 1, scene)
         .map_err(|e| format!("renderer build: {e}"))?;
 
     let resident_count = r.resident_instance_count();

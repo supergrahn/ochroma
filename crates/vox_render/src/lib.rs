@@ -111,7 +111,7 @@ pub mod splat_backend;
 #[cfg(feature = "spectra-native")]
 pub mod resident_renderer;
 #[cfg(feature = "spectra-native")]
-pub use resident_renderer::{ResidentCityRenderer, SceneDelta};
+pub use resident_renderer::{ResidentSceneRenderer, SceneSyncReport};
 // The native renderer consumes `spectra_scene_state::CameraLayer` (column-major
 // view matrix + FOV); the old `spectra_renderer::CameraParams` type was removed.
 #[cfg(feature = "spectra-native")]
@@ -122,6 +122,8 @@ pub use spectra_scene_state::CameraLayer as SpectraCameraParams;
 #[cfg(feature = "spectra-native")]
 pub use spectra_scene_state::SceneState;
 
+pub mod util;
+pub use hybrid_compose::RenderScene;
 pub use cine::{Channel, FrameRate, Interp, Key};
 pub use cine::{BokehShape, CameraSequence, CinePose, CinematicConfig, FocusMode};
 pub use cine::{eye_from_framing, CineFraming, KeyRef};

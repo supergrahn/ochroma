@@ -351,6 +351,24 @@ impl HybridMesh {
     }
 }
 
+/// Engine-level render payload: the geometry the path tracer consumes for one
+/// frame. Game-agnostic — no building types, no SDF volumes, no ECS components.
+/// The game assembles this from its own `CityRenderScene` by calling
+/// `.to_render_scene()`.
+#[derive(Debug, Clone, Default)]
+pub struct RenderScene {
+    /// Road/pad/detail Gaussian splats.
+    pub splats: Vec<vox_core::types::GaussianSplat>,
+    /// Ready-asset triangle geometry.
+    pub meshes: Vec<HybridMesh>,
+    /// Precomputed world-space AABBs for SDF volumes as (min_xyz, max_xyz).
+    /// The game computes these from `SpatialSdfInstance::world_aabb()` before
+    /// handing the scene to the renderer.
+    pub sdf_aabbs: Vec<([f32; 3], [f32; 3])>,
+    /// Atom-only fallback for paths without hybrid mesh support.
+    pub fallback_splats: Vec<vox_core::types::GaussianSplat>,
+}
+
 /// A scene of triangle meshes and Gaussian splats to be composited together.
 pub struct HybridScene<'a> {
     pub meshes: Vec<HybridMesh>,

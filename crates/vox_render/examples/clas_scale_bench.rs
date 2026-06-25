@@ -8,7 +8,7 @@
 //!
 //! It builds ONE tiny prototype (a unit cube, 12 triangles) and N instances on a
 //! deterministic grid (NO RNG, NO HashMap iteration — id-ordered), uploads it
-//! through the LIVE game drive API ([`ResidentCityRenderer`] — the wrapper the
+//! through the LIVE game drive API ([`ResidentSceneRenderer`] — the wrapper the
 //! game uses to drive the Spectra path tracer), then for each frame perturbs
 //! EVERY instance transform (the worst-case 1M-mover scenario) and times the GPU
 //! refit and the render SEPARATELY.
@@ -36,7 +36,7 @@
 //! `SPECTRA_CLAS_THRESHOLD` is also forced to `1` IN-PROCESS below (so the CLAS
 //! path engages even if the env is unset), but setting it on the command line is
 //! harmless and documents intent. `SPECTRA_USE_OPTIX_RT=1` is the reliable
-//! activation switch on the `ResidentCityRenderer` path (see
+//! activation switch on the `ResidentSceneRenderer` path (see
 //! `spectra-renderer/src/renderer/mod.rs:165`).
 //!
 //! ## Output (one line per N)
@@ -101,7 +101,7 @@ fn main() {
 #[cfg(feature = "spectra-native")]
 fn run_one(n: usize, frames: u32, width: u32, height: u32) -> Result<String, String> {
     use std::time::Instant;
-    use vox_render::resident_renderer::ResidentCityRenderer;
+    use vox_render::resident_renderer::ResidentSceneRenderer;
     use vox_render::splat_backend::{LightRig, PbrMaterial};
     use vox_render::splat_convert::meshes_to_instanced_scene;
 
@@ -131,7 +131,7 @@ fn run_one(n: usize, frames: u32, width: u32, height: u32) -> Result<String, Str
     // initial CLAS/GAS/IAS build). This is the one-time scale build we time.
     // spp=1, max_bounces=1 keep the render cheap so the loop is refit-bound. ---
     let build_t = Instant::now();
-    let mut r = ResidentCityRenderer::new(width, height, LightRig::default(), 1, 1, scene)
+    let mut r = ResidentSceneRenderer::new(width, height, LightRig::default(), 1, 1, scene)
         .map_err(|e| format!("renderer build: {e}"))?;
     let build_ms = build_t.elapsed().as_secs_f64() * 1000.0;
 

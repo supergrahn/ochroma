@@ -1,6 +1,6 @@
 //! Resident-renderer steady-state witness (Render Keystone T1).
 //!
-//! Constructs a [`ResidentCityRenderer`] ONCE over a city-representative scene
+//! Constructs a [`ResidentSceneRenderer`] ONCE over a city-representative scene
 //! (a grid of cubes with distinct PBR materials) and renders N frames reusing all
 //! GPU state, streaming only the camera. Prints `cold_ms` (frame 0: device init +
 //! slangc compile + BLAS/TLAS build) and `steady_ms` (median of frames 1..N).
@@ -20,7 +20,7 @@ fn main() {
 #[cfg(feature = "spectra-native")]
 fn main() {
     use spectra_renderer::FidelityTier;
-    use vox_render::resident_renderer::ResidentCityRenderer;
+    use vox_render::resident_renderer::ResidentSceneRenderer;
     use vox_render::splat_backend::LightRig;
 
     // ── Honest cold start: redirect the SPIR-V artifact cache to a FRESH temp
@@ -69,10 +69,10 @@ fn main() {
         );
         let rig = LightRig::default();
         let t_cold = std::time::Instant::now();
-        let mut r = match ResidentCityRenderer::new_with_tier(iw, ih, rig, tier, scene) {
+        let mut r = match ResidentSceneRenderer::new_with_tier(iw, ih, rig, tier, None, scene) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("ResidentCityRenderer::new_with_tier({}) failed: {e}", tier.label());
+                eprintln!("ResidentSceneRenderer::new_with_tier({}) failed: {e}", tier.label());
                 std::process::exit(1);
             }
         };

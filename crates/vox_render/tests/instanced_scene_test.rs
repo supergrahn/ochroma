@@ -13,7 +13,7 @@
 
 #![cfg(feature = "spectra-native")]
 
-use vox_render::resident_renderer::ResidentCityRenderer;
+use vox_render::resident_renderer::ResidentSceneRenderer;
 use vox_render::splat_backend::{BlasDesc, InstanceRecordGpu, LightRig, PbrMaterial};
 use vox_render::splat_convert::meshes_to_instanced_scene;
 
@@ -213,7 +213,7 @@ fn per_instance_material() {
     );
 
     // Render through the resident HW-RT path (the live engine path).
-    let mut r = ResidentCityRenderer::new(W, H, LightRig::default(), 8, 3, scene)
+    let mut r = ResidentSceneRenderer::new(W, H, LightRig::default(), 8, 3, scene)
         .expect("construct resident renderer");
     let frame = r.render_camera(view(), proj()).expect("render");
     let rgba = beauty_to_rgba8(&frame.beauty, frame.width, frame.height);

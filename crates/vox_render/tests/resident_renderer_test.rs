@@ -1,4 +1,4 @@
-//! Render Keystone T1: ResidentCityRenderer reuse behavior.
+//! Render Keystone T1: ResidentSceneRenderer reuse behavior.
 //!
 //! Proves the renderer is constructed ONCE and a camera-only frame (then an
 //! identical-scene re-upload) reuses the GPU scene instead of rebuilding it.
@@ -6,7 +6,7 @@
 #![cfg(feature = "spectra-native")]
 
 use spectra_scene_state::{MaterialLayer, SceneState};
-use vox_render::resident_renderer::ResidentCityRenderer;
+use vox_render::resident_renderer::ResidentSceneRenderer;
 use vox_render::splat_backend::{LightRig, PbrMaterial, pack_vulkan_mesh_material};
 
 /// Build a tiny 3-cube instanced scene with distinct transforms + materials.
@@ -89,7 +89,7 @@ fn test_instanced_scene() -> SceneState {
 fn camera_only_frame_reuses_scene() {
     let scene = test_instanced_scene();
     let mut r =
-        ResidentCityRenderer::new(640, 360, LightRig::default(), 1, 2, scene).expect("construct");
+        ResidentSceneRenderer::new(640, 360, LightRig::default(), 1, 2, scene).expect("construct");
 
     let f0 = r.render_camera(view_a(), proj()).expect("frame a");
     assert!(f0.width == 640 && f0.height == 360, "frame a dims");
@@ -109,6 +109,118 @@ fn camera_only_frame_reuses_scene() {
     assert!(
         delta.layers_reused() > 0,
         "expected reused layers, got 0"
+    );
+}
+
+/// Task 3 determinism witness: replaying the same `SceneDelta` log from scratch
+/// must produce a byte-identical `download_resident_instances` buffer.
+/// The ring flushes ONLY inside `render_camera`, so `render_camera` MUST be
+/// called BETWEEN `drain_scene_deltas` and `download_resident_instances`.
+#[cfg(feature = "spectra-native")]
+#[test]
+fn scene_delta_replay_exact() {
+    use vox_render::scene_delta_adapter::RetainedRenderMirror;
+    use vox_scene::{NodeId, SceneDelta as GraphSceneDelta, SceneTransform};
+
+    let scene = test_instanced_scene();
+    // The scene has instance_count=1. Assign one NodeId to instance 0.
+    let node_id = NodeId::from_raw(1).expect("node id 1 must be valid");
+
+    // ── renderer 1 ──
+    use vox_render::resident_renderer::FidelityTier;
+
+    let mut renderer = ResidentSceneRenderer::new_with_tier(
+        256,
+        256,
+        LightRig::default(),
+        FidelityTier::Performance,
+        None,
+        scene.clone(),
+    )
+    .expect("renderer construction must succeed");
+
+    renderer
+        .reset_retained_mirror(std::iter::once(node_id))
+        .expect("reset_retained_mirror must not fail with unique nodes");
+
+    // Capture the instance buffer BEFORE the transform delta lands (pre-flush).
+    // The ring hasn't been drained yet, so this is the upload-time snapshot.
+    let pre_buf = renderer
+        .download_resident_instances()
+        .expect("download must succeed before drain");
+
+    // Build a transform delta and drain it.
+    let delta = GraphSceneDelta::SetTransform {
+        id: node_id,
+        transform: SceneTransform::from_translation(1.0, 2.0, 3.0),
+    };
+    let mut deltas1 = vec![delta.clone()];
+    renderer
+        .drain_scene_deltas(&mut deltas1)
+        .expect("transform-only drain must succeed");
+    assert!(deltas1.is_empty(), "drain must clear the vec on success");
+
+    // CRITICAL: render_camera flushes the delta ring into the GPU buffer.
+    // Without this call the ring has NOT been applied and the download
+    // would be a stale pre-transform snapshot (false-positive determinism pass).
+    renderer
+        .render_camera(view_a(), proj())
+        .expect("render_camera must succeed after drain");
+
+    let post_buf = renderer
+        .download_resident_instances()
+        .expect("download must succeed after render_camera");
+
+    // (a) The transform delta must have changed the buffer.
+    assert_ne!(
+        pre_buf, post_buf,
+        "post-flush buffer must differ from pre-flush buffer — \
+         transform delta did not land in the GPU resident buffer"
+    );
+    assert!(
+        !post_buf.is_empty(),
+        "instance buffer must be non-empty after scene upload"
+    );
+
+    // ── renderer 2 (replay) ──
+    let mut renderer2 = ResidentSceneRenderer::new_with_tier(
+        256,
+        256,
+        LightRig::default(),
+        FidelityTier::Performance,
+        None,
+        scene.clone(),
+    )
+    .expect("second renderer construction must succeed");
+
+    renderer2
+        .reset_retained_mirror(std::iter::once(node_id))
+        .expect("reset_retained_mirror must not fail on second renderer");
+
+    let mut deltas2 = vec![delta];
+    renderer2
+        .drain_scene_deltas(&mut deltas2)
+        .expect("replay drain must succeed");
+
+    renderer2
+        .render_camera(view_a(), proj())
+        .expect("replay render_camera must succeed");
+
+    let buf2 = renderer2
+        .download_resident_instances()
+        .expect("replay download must succeed");
+
+    // (b) Replay of the same delta log must produce byte-identical output.
+    assert_eq!(buf2.len(), post_buf.len(), "instance buffer lengths must match");
+    let replay_matches = post_buf == buf2;
+    println!(
+        "instance_buf[0]={} instance_buf[1]={} replay_matches={replay_matches}",
+        post_buf[0],
+        post_buf.get(1).copied().unwrap_or(0)
+    );
+    assert!(
+        replay_matches,
+        "replay of same SceneDelta log must produce byte-identical instance buffer"
     );
 }
 

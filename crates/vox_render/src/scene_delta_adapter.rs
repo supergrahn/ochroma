@@ -38,7 +38,7 @@ impl RetainedDeltaPlan {
     #[cfg(feature = "spectra-native")]
     pub fn queue_resident_refits(
         &self,
-        renderer: &mut crate::resident_renderer::ResidentCityRenderer,
+        renderer: &mut crate::resident_renderer::ResidentSceneRenderer,
     ) -> Result<(), RetainedDeltaError> {
         if self.structural_rebuild {
             return Err(RetainedDeltaError::StructuralRebuildRequired);
