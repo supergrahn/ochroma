@@ -1,9 +1,6 @@
 pub mod canvas;
 pub mod design;
 pub mod egui_theme;
-pub mod game_hud;
-pub mod game_menu;
-pub mod game_widgets;
 pub mod layout;
 pub mod node_canvas;
 pub mod node_graph_widget;
@@ -17,9 +14,6 @@ pub mod widgets;
 
 pub use tokens::{NodeCategory, PortType, Tokens};
 
-pub use game_hud::GameHud;
-pub use game_menu::GameMenu;
-pub use game_widgets::{GameWidgets, ResourceRow, WidgetCmd};
 pub use layout::{LayoutTree, LayoutNodeId};
 pub use spectral_hud::{SpectralHUD, SpectralRadianceCache};
 // The single retained, styleable, hot-reloadable game-UI tree (the rank-#11

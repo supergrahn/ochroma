@@ -876,12 +876,14 @@ mod tests {
 pub mod native {
     use crate::splat_backend::SpectraRenderBackend;
     use crate::splat_convert::splats_to_scene;
-    use bevy_ecs::prelude::*;
     use spectra_scene_state::CameraLayer;
     use vox_core::types::GaussianSplat;
 
     /// Per-viewport Spectra backend. One instance per active Spectra viewport.
-    #[derive(Resource)]
+    ///
+    /// (Formerly a `bevy_ecs::Resource`; the renderer no longer depends on Bevy
+    /// by default, and nothing consumed this as an ECS resource. Wrap it in your
+    /// own resource type behind the `bevy` feature if you need ECS storage.)
     pub struct SpectraBackendSystem {
         backend: SpectraRenderBackend,
         scene_dirty: bool,

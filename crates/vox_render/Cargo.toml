@@ -25,10 +25,12 @@ toml = { workspace = true }
 egui = { workspace = true }
 uuid = { workspace = true }
 serde_json = "1"
-vox_nodes = { workspace = true }
-vox_ui    = { workspace = true }
-bevy_ecs = { workspace = true }
-bevy_app = { workspace = true }
+# bevy is OPTIONAL and OFF by default — the renderer crate must build without the
+# Bevy ECS/app stack. The `bevy` feature re-adds it for the optional ECS-plugin
+# integration modules (lod_ecs / seq_ecs / render_ecs / particle_ecs /
+# material_hotreload + lighting's SkyPlugin). The app/integration layer enables it.
+bevy_ecs = { workspace = true, optional = true }
+bevy_app = { workspace = true, optional = true }
 spectra-gaussian-render = { path = "../../../spectra/rust/spectra-gaussian-render" }
 # default-features = false so the local Linux/AMD Vulkan path can build WITHOUT
 # the CUDA-header-gated optix-sdk/optix-rt/optix-denoiser bindgen (no CUDA on the
@@ -45,7 +47,11 @@ spectra-upscale = { path = "../../../spectra/rust/spectra-upscale", optional = t
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
 [features]
-default = ["crucible"]
+default = []
+# bevy: the optional Bevy ECS/app integration layer. OFF by default so the
+# renderer's default dep graph carries no bevy_ecs/bevy_app. Enables the
+# *_ecs plugin modules + lighting::SkyPlugin. Wired in by the app crate.
+bevy = ["dep:bevy_ecs", "dep:bevy_app"]
 # spectra-native: glue to the native spectra path-tracer.
 #
 # `spectra-gpu/vulkan-backend` makes `VulkanSlangBackend` (Slang->SPIR-V + ash)
@@ -86,7 +92,6 @@ spectra-native-optix = [
     "spectra-renderer/dlss",
     "spectra-renderer/optix-rt",
 ]
-crucible = ["vox_nodes/crucible"]
 # THE LAW (no-rasterizer, WC7): the banned non-Spectra rendering stacks were
 # EXCISED from the source tree — the GPU splat RASTERIZER (gpu::tiled_splat_
 # renderer + its tile/sort/raster passes, gpu::gpu_rasteriser, gpu::

@@ -71,10 +71,10 @@ fn json_export() {
         },
         entities: EntityBreakdown {
             total: 1000,
-            buildings: 200,
-            citizens: 500,
-            vehicles: 100,
-            trees: 150,
+            static_meshes: 200,
+            agents: 500,
+            dynamic_meshes: 100,
+            foliage: 150,
             props: 50,
         },
     });
@@ -82,7 +82,7 @@ fn json_export() {
     let json = inspector.export_json();
     assert!(json.contains("total_ms"));
     assert!(json.contains("splats_mb"));
-    assert!(json.contains("buildings"));
+    assert!(json.contains("static_meshes"));
 
     // Valid JSON.
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

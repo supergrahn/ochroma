@@ -226,7 +226,6 @@ pub fn preetham_sky(sun_dir: Vec3) -> SkyColors {
 }
 
 // ── Sky Model (time-driven) ───────────────────────────────────────────────
-
 pub struct SkyModel {
     pub hour: f32,
     pub latitude_deg: f32,
@@ -259,50 +258,56 @@ impl SkyModel {
     }
 }
 
-// ── ECS Integration ───────────────────────────────────────────────────────
+// ── ECS Integration: only the Bevy plugin is gated; sky math above is always built.
+#[cfg(feature = "bevy")]
+mod bevy_integration {
+    use super::SkyModel;
+    use bevy_ecs::prelude::*;
 
-use bevy_ecs::prelude::*;
+    #[derive(Resource)]
+    pub struct SkyModelResource(pub SkyModel);
 
-#[derive(Resource)]
-pub struct SkyModelResource(pub SkyModel);
+    #[derive(Resource, Debug, Clone, Copy)]
+    pub struct SkyDeltaTime(pub f32);
 
-#[derive(Resource, Debug, Clone, Copy)]
-pub struct SkyDeltaTime(pub f32);
-
-impl Default for SkyDeltaTime {
-    fn default() -> Self {
-        Self(1.0 / 60.0)
+    impl Default for SkyDeltaTime {
+        fn default() -> Self {
+            Self(1.0 / 60.0)
+        }
     }
-}
 
-pub fn sky_update_system(dt: Res<SkyDeltaTime>, mut sky: ResMut<SkyModelResource>) {
-    sky.0.update(dt.0);
-}
+    pub fn sky_update_system(dt: Res<SkyDeltaTime>, mut sky: ResMut<SkyModelResource>) {
+        sky.0.update(dt.0);
+    }
 
-pub struct SkyPlugin {
-    pub initial_hour: f32,
-    pub latitude_deg: f32,
-}
+    pub struct SkyPlugin {
+        pub initial_hour: f32,
+        pub latitude_deg: f32,
+    }
 
-impl SkyPlugin {
-    pub fn new(initial_hour: f32, latitude_deg: f32) -> Self {
-        Self {
-            initial_hour,
-            latitude_deg,
+    impl SkyPlugin {
+        pub fn new(initial_hour: f32, latitude_deg: f32) -> Self {
+            Self {
+                initial_hour,
+                latitude_deg,
+            }
+        }
+    }
+
+    impl bevy_app::Plugin for SkyPlugin {
+        fn build(&self, app: &mut bevy_app::App) {
+            app.insert_resource(SkyModelResource(SkyModel::new(
+                self.initial_hour,
+                self.latitude_deg,
+            )));
+            app.insert_resource(SkyDeltaTime::default());
+            app.add_systems(bevy_app::Update, sky_update_system);
         }
     }
 }
 
-impl bevy_app::Plugin for SkyPlugin {
-    fn build(&self, app: &mut bevy_app::App) {
-        app.insert_resource(SkyModelResource(SkyModel::new(
-            self.initial_hour,
-            self.latitude_deg,
-        )));
-        app.insert_resource(SkyDeltaTime::default());
-        app.add_systems(bevy_app::Update, sky_update_system);
-    }
-}
+#[cfg(feature = "bevy")]
+pub use bevy_integration::{sky_update_system, SkyDeltaTime, SkyModelResource, SkyPlugin};
 
 #[cfg(test)]
 mod tests {
@@ -461,6 +466,7 @@ mod tests {
         assert!(colors.zenith[2] > 0.0, "noon zenith should have some blue");
     }
 
+    #[cfg(feature = "bevy")]
     #[test]
     fn sky_plugin_builds_without_panic() {
         use bevy_app::App;
@@ -468,6 +474,7 @@ mod tests {
         app.add_plugins(SkyPlugin::new(12.0, 45.0));
     }
 
+    #[cfg(feature = "bevy")]
     #[test]
     fn sky_update_system_advances_time() {
         use bevy_ecs::schedule::Schedule;

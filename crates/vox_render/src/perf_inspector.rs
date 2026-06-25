@@ -27,14 +27,24 @@ pub struct VramBreakdown {
     pub buffers_mb: f32,
 }
 
-/// Breakdown of entity counts.
+/// Breakdown of scene entity counts by generic render category.
+///
+/// Fields are game-agnostic so the renderer never names game concepts. The game
+/// layer maps its own concepts onto these buckets (e.g. buildings→static_meshes,
+/// citizens→agents, vehicles→dynamic_meshes, trees→foliage) when it feeds the
+/// inspector.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EntityBreakdown {
     pub total: u32,
-    pub buildings: u32,
-    pub citizens: u32,
-    pub vehicles: u32,
-    pub trees: u32,
+    /// Static (non-moving) mesh instances.
+    pub static_meshes: u32,
+    /// Animated agent instances (crowds / characters).
+    pub agents: u32,
+    /// Dynamic (moving) mesh instances.
+    pub dynamic_meshes: u32,
+    /// Foliage / vegetation instances.
+    pub foliage: u32,
+    /// Miscellaneous prop instances.
     pub props: u32,
 }
 
@@ -160,11 +170,11 @@ impl PerfInspector {
                     ui.separator();
                     ui.heading("Entities");
                     ui.label(format!("Total: {}", snap.entities.total));
-                    ui.label(format!("  Buildings: {}", snap.entities.buildings));
-                    ui.label(format!("  Citizens:  {}", snap.entities.citizens));
-                    ui.label(format!("  Vehicles:  {}", snap.entities.vehicles));
-                    ui.label(format!("  Trees:     {}", snap.entities.trees));
-                    ui.label(format!("  Props:     {}", snap.entities.props));
+                    ui.label(format!("  Static meshes:  {}", snap.entities.static_meshes));
+                    ui.label(format!("  Agents:         {}", snap.entities.agents));
+                    ui.label(format!("  Dynamic meshes: {}", snap.entities.dynamic_meshes));
+                    ui.label(format!("  Foliage:        {}", snap.entities.foliage));
+                    ui.label(format!("  Props:          {}", snap.entities.props));
                 }
             });
     }
