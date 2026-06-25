@@ -15,13 +15,7 @@ fn catalog_has_all_categories() {
     let catalog = default_catalog();
     assert!(catalog
         .iter()
-        .any(|e| e.category == AssetCategory::ResidentialBuilding));
-    assert!(catalog
-        .iter()
-        .any(|e| e.category == AssetCategory::CommercialBuilding));
-    assert!(catalog
-        .iter()
-        .any(|e| e.category == AssetCategory::IndustrialBuilding));
+        .any(|e| e.category == AssetCategory::Structure));
     assert!(catalog.iter().any(|e| e.category == AssetCategory::Tree));
     assert!(catalog.iter().any(|e| e.category == AssetCategory::Prop));
 }

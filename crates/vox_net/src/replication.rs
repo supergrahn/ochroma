@@ -8,11 +8,37 @@ pub struct EntityDelta {
     pub timestamp: u64,
 }
 
+/// Opaque serialized game command.  The engine does not interpret the bytes —
+/// the game layer serializes its own command type (e.g. via `serde_json` or
+/// `bincode`) and deserializes on receipt.
+///
+/// ```rust,ignore
+/// // game side (not in the engine crate):
+/// let cmd = MyGameCommand::DoSomething { value: 42 };
+/// let payload = CommandPayload::encode(&serde_json::to_vec(&cmd).unwrap());
+/// let msg = NetMessage::PlayerInput { player_id: 1, command: payload };
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CommandPayload(pub Vec<u8>);
+
+impl CommandPayload {
+    /// Wrap raw bytes produced by the game's serializer.
+    pub fn encode(bytes: &[u8]) -> Self {
+        Self(bytes.to_vec())
+    }
+
+    /// Return the raw bytes for the game's deserializer.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// A network message between client and server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetMessage {
-    /// Client → Server: player input
-    PlayerInput { player_id: u32, action: PlayerAction },
+    /// Client → Server: player input (opaque command bytes; the engine does
+    /// not interpret the payload).
+    PlayerInput { player_id: u32, command: CommandPayload },
     /// Server → Client: state delta
     StateDelta { tick: u64, deltas: Vec<EntityDelta> },
     /// Server → Client: full state snapshot
@@ -20,14 +46,6 @@ pub enum NetMessage {
     /// Ping/pong for latency measurement
     Ping { timestamp: u64 },
     Pong { timestamp: u64 },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PlayerAction {
-    PlaceRoad { start: [f32; 3], end: [f32; 3] },
-    Zone { position: [f32; 2], zone_type: String },
-    PlaceBuilding { position: [f32; 3], asset_id: String },
-    AdjustBudget { tax_type: String, rate: f32 },
 }
 
 impl NetMessage {
@@ -64,12 +82,12 @@ impl ReplicationServer {
 
     pub fn process_message(&mut self, msg: &NetMessage) -> Vec<NetMessage> {
         match msg {
-            NetMessage::PlayerInput { player_id, action } => {
+            NetMessage::PlayerInput { player_id, command } => {
                 self.tick += 1;
                 let delta = EntityDelta {
                     entity_id: *player_id,
-                    component: format!("{:?}", action),
-                    data: serde_json::to_vec(action).unwrap_or_default(),
+                    component: "command".to_string(),
+                    data: command.as_bytes().to_vec(),
                     timestamp: self.tick,
                 };
                 vec![NetMessage::StateDelta { tick: self.tick, deltas: vec![delta] }]

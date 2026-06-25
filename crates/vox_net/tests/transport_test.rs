@@ -1,20 +1,21 @@
-use vox_net::replication::{NetMessage, PlayerAction};
+use vox_net::replication::{CommandPayload, NetMessage};
 use vox_net::transport::{GameClient, GameServer};
 
 #[test]
 fn message_serialization_round_trip() {
+    let raw = b"place_road:{\"start\":[0,0,0],\"end\":[100,0,0]}";
     let msg = NetMessage::PlayerInput {
         player_id: 42,
-        action: PlayerAction::PlaceRoad {
-            start: [0.0, 0.0, 0.0],
-            end: [100.0, 0.0, 0.0],
-        },
+        command: CommandPayload::encode(raw),
     };
     let bytes = msg.serialize();
     assert!(!bytes.is_empty());
     let decoded = NetMessage::deserialize(&bytes).unwrap();
     match decoded {
-        NetMessage::PlayerInput { player_id, .. } => assert_eq!(player_id, 42),
+        NetMessage::PlayerInput { player_id, command } => {
+            assert_eq!(player_id, 42);
+            assert_eq!(command.as_bytes(), raw);
+        }
         _ => panic!("Wrong message type after deserialization"),
     }
 }

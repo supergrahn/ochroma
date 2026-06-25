@@ -12,12 +12,13 @@ pub struct CatalogEntry {
     pub splat_count_estimate: usize,
 }
 
+/// Generic asset category — game-agnostic. Games register their own meaning
+/// on top (e.g. "Structure" covers any multi-floor construct regardless of use).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetCategory {
-    ResidentialBuilding,
-    CommercialBuilding,
-    IndustrialBuilding,
-    ServiceBuilding,
+    /// A multi-storey structure of any use (replaces game-specific
+    /// Residential/Commercial/Industrial/Service variants).
+    Structure,
     Tree,
     Prop,
     Vehicle,
@@ -26,12 +27,15 @@ pub enum AssetCategory {
 
 #[derive(Debug, Clone)]
 pub enum AssetGenerator {
-    /// Building with given width, depth, floor range.
-    Building {
+    /// Generic structure with width, depth, floor range, and a style tag.
+    /// The style tag is an arbitrary string; the engine does not interpret it —
+    /// games and Forge generators are free to extend the vocabulary.
+    Structure {
         width_range: (f32, f32),
         depth: f32,
         floors_range: (u32, u32),
-        style: BuildingStyle,
+        /// Freeform style identifier, e.g. "victorian", "modern", "industrial".
+        style_tag: String,
     },
     /// Tree with height and canopy radius ranges.
     Tree {
@@ -48,30 +52,21 @@ pub enum AssetGenerator {
     Custom { description: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuildingStyle {
-    Victorian,
-    Modern,
-    Suburban,
-    Industrial,
-    Commercial,
-}
-
 impl CatalogEntry {
     /// Generate splats for this entry with a given seed.
     pub fn generate(&self, seed: u64) -> Vec<GaussianSplat> {
         match &self.generator {
-            AssetGenerator::Building {
+            AssetGenerator::Structure {
                 width_range,
                 depth,
                 floors_range,
-                style,
+                style_tag,
             } => {
                 let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(seed);
                 use rand::Rng;
                 let width = rng.random_range(width_range.0..=width_range.1);
                 let floors = rng.random_range(floors_range.0..=floors_range.1);
-                generate_building_with_style(seed, width, *depth, floors, *style)
+                generate_structure_by_style(seed, width, *depth, floors, style_tag)
             }
             AssetGenerator::Tree {
                 height_range,
@@ -98,34 +93,40 @@ impl CatalogEntry {
     }
 }
 
-/// Generate a building with style-specific SPD values.
-fn generate_building_with_style(
+/// Generate a structure with style-tag-specific SPD values.
+/// Recognises: "victorian", "modern", "suburban", "industrial", "commercial".
+/// Unknown tags fall back to the generic neutral palette.
+fn generate_structure_by_style(
     seed: u64,
     width: f32,
     depth: f32,
     floors: u32,
-    style: BuildingStyle,
+    style_tag: &str,
 ) -> Vec<GaussianSplat> {
-    let (wall_spd, roof_spd): ([f32; 8], [f32; 8]) = match style {
-        BuildingStyle::Victorian => (
+    let (wall_spd, roof_spd): ([f32; 8], [f32; 8]) = match style_tag {
+        s if s.contains("victorian") => (
             [0.08, 0.08, 0.10, 0.15, 0.25, 0.55, 0.65, 0.60],
             [0.12, 0.13, 0.15, 0.17, 0.18, 0.18, 0.17, 0.16],
         ),
-        BuildingStyle::Modern => (
+        s if s.contains("modern") => (
             [0.40, 0.45, 0.50, 0.55, 0.55, 0.55, 0.50, 0.45],
             [0.05, 0.05, 0.06, 0.06, 0.06, 0.06, 0.05, 0.05],
         ),
-        BuildingStyle::Suburban => (
+        s if s.contains("suburban") => (
             [0.15, 0.18, 0.22, 0.28, 0.32, 0.35, 0.33, 0.30],
             [0.10, 0.10, 0.12, 0.18, 0.30, 0.50, 0.55, 0.50],
         ),
-        BuildingStyle::Industrial => (
+        s if s.contains("industrial") => (
             [0.20, 0.22, 0.25, 0.28, 0.30, 0.30, 0.28, 0.25],
             [0.20, 0.22, 0.25, 0.28, 0.30, 0.30, 0.28, 0.25],
         ),
-        BuildingStyle::Commercial => (
+        s if s.contains("commercial") => (
             [0.25, 0.27, 0.30, 0.32, 0.33, 0.33, 0.31, 0.28],
             [0.10, 0.10, 0.12, 0.12, 0.12, 0.12, 0.10, 0.10],
+        ),
+        _ => (
+            [0.30, 0.32, 0.34, 0.36, 0.36, 0.36, 0.34, 0.32],
+            [0.15, 0.15, 0.16, 0.17, 0.17, 0.17, 0.16, 0.15],
         ),
     };
 
@@ -217,119 +218,120 @@ fn generate_placeholder_cube(seed: u64) -> Vec<GaussianSplat> {
 }
 
 /// Create the default asset catalog with all built-in asset types.
+///
+/// Structures are categorised generically; games layer their own use-class
+/// (residential/commercial/etc.) on top via metadata or their own registries.
 pub fn default_catalog() -> Vec<CatalogEntry> {
     vec![
-        // Residential
+        // Structures — generic multi-storey constructs.  Style tags are hints
+        // for the SPD palette; game layers interpret use-class independently.
         CatalogEntry {
             name: "Victorian Terraced House".into(),
-            category: AssetCategory::ResidentialBuilding,
-            generator: AssetGenerator::Building {
+            category: AssetCategory::Structure,
+            generator: AssetGenerator::Structure {
                 width_range: (4.5, 6.0),
                 depth: 12.0,
                 floors_range: (2, 4),
-                style: BuildingStyle::Victorian,
+                style_tag: "victorian".into(),
             },
             splat_count_estimate: 2000,
         },
         CatalogEntry {
             name: "Modern Apartment".into(),
-            category: AssetCategory::ResidentialBuilding,
-            generator: AssetGenerator::Building {
+            category: AssetCategory::Structure,
+            generator: AssetGenerator::Structure {
                 width_range: (8.0, 12.0),
                 depth: 15.0,
                 floors_range: (4, 8),
-                style: BuildingStyle::Modern,
+                style_tag: "modern".into(),
             },
             splat_count_estimate: 5000,
         },
         CatalogEntry {
             name: "Suburban House".into(),
-            category: AssetCategory::ResidentialBuilding,
-            generator: AssetGenerator::Building {
+            category: AssetCategory::Structure,
+            generator: AssetGenerator::Structure {
                 width_range: (8.0, 12.0),
                 depth: 10.0,
                 floors_range: (1, 2),
-                style: BuildingStyle::Suburban,
+                style_tag: "suburban".into(),
             },
             splat_count_estimate: 1500,
         },
-        // Commercial
         CatalogEntry {
             name: "Corner Shop".into(),
-            category: AssetCategory::CommercialBuilding,
-            generator: AssetGenerator::Building {
+            category: AssetCategory::Structure,
+            generator: AssetGenerator::Structure {
                 width_range: (6.0, 10.0),
                 depth: 8.0,
                 floors_range: (1, 2),
-                style: BuildingStyle::Commercial,
+                style_tag: "commercial".into(),
             },
             splat_count_estimate: 1200,
         },
         CatalogEntry {
             name: "Office Block".into(),
-            category: AssetCategory::CommercialBuilding,
-            generator: AssetGenerator::Building {
+            category: AssetCategory::Structure,
+            generator: AssetGenerator::Structure {
                 width_range: (15.0, 25.0),
                 depth: 20.0,
                 floors_range: (5, 12),
-                style: BuildingStyle::Modern,
+                style_tag: "modern".into(),
             },
             splat_count_estimate: 8000,
         },
-        // Industrial
         CatalogEntry {
             name: "Warehouse".into(),
-            category: AssetCategory::IndustrialBuilding,
-            generator: AssetGenerator::Building {
+            category: AssetCategory::Structure,
+            generator: AssetGenerator::Structure {
                 width_range: (20.0, 30.0),
                 depth: 25.0,
                 floors_range: (1, 2),
-                style: BuildingStyle::Industrial,
+                style_tag: "industrial".into(),
             },
             splat_count_estimate: 3000,
         },
         CatalogEntry {
             name: "Factory".into(),
-            category: AssetCategory::IndustrialBuilding,
-            generator: AssetGenerator::Building {
+            category: AssetCategory::Structure,
+            generator: AssetGenerator::Structure {
                 width_range: (25.0, 40.0),
                 depth: 30.0,
                 floors_range: (2, 3),
-                style: BuildingStyle::Industrial,
+                style_tag: "industrial".into(),
             },
             splat_count_estimate: 5000,
         },
-        // Service
         CatalogEntry {
             name: "School".into(),
-            category: AssetCategory::ServiceBuilding,
-            generator: AssetGenerator::Building {
+            category: AssetCategory::Structure,
+            generator: AssetGenerator::Structure {
                 width_range: (20.0, 25.0),
                 depth: 15.0,
                 floors_range: (2, 3),
-                style: BuildingStyle::Suburban,
+                style_tag: "suburban".into(),
             },
             splat_count_estimate: 3000,
         },
         CatalogEntry {
             name: "Hospital".into(),
-            category: AssetCategory::ServiceBuilding,
-            generator: AssetGenerator::Building {
+            category: AssetCategory::Structure,
+            generator: AssetGenerator::Structure {
                 width_range: (30.0, 40.0),
                 depth: 25.0,
                 floors_range: (3, 6),
-                style: BuildingStyle::Modern,
+                style_tag: "modern".into(),
             },
             splat_count_estimate: 6000,
         },
         CatalogEntry {
             name: "Fire Station".into(),
-            category: AssetCategory::ServiceBuilding,
-            generator: AssetGenerator::Building {
+            category: AssetCategory::Structure,
+            generator: AssetGenerator::Structure {
                 width_range: (15.0, 20.0),
                 depth: 12.0,
                 floors_range: (1, 2),
-                style: BuildingStyle::Industrial,
+                style_tag: "industrial".into(),
             },
             splat_count_estimate: 1500,
         },

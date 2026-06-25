@@ -5,13 +5,14 @@ use std::path::Path;
 const SAVE_MAGIC: &[u8; 4] = b"OCHS";
 const SAVE_VERSION: u16 = 1;
 
+/// Engine-level save header — game-agnostic metadata only.
+///
+/// Game-specific state (city name, population, funds, …) belongs in the
+/// opaque `GameState::data` payload that the game serialises itself.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SaveHeader {
     pub version: u16,
-    pub city_name: String,
     pub game_time_hours: f64,
-    pub citizen_count: u32,
-    pub funds: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

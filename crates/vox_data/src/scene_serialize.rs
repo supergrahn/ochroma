@@ -18,18 +18,14 @@ pub struct WorldSnapshot {
     pub metadata: BTreeMap<String, String>,
 }
 
-/// Snapshot of all simulation state.
+/// Engine-level snapshot of simulation time state — game-agnostic.
+///
+/// Game-specific counters (population, funds, tax rates, zone counts, …) belong
+/// in `WorldSnapshot::metadata` (keyed strings) or in the game's own serialised
+/// payload layered on top of this snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationSnapshot {
     pub game_time_hours: f64,
-    pub citizen_count: u32,
-    pub funds: f64,
-    pub tax_rate_residential: f32,
-    pub tax_rate_commercial: f32,
-    pub tax_rate_industrial: f32,
-    pub zone_count: u32,
-    pub building_count: u32,
-    pub road_segment_count: u32,
     pub season_day: u32,
 }
 
@@ -41,14 +37,6 @@ impl WorldSnapshot {
             entities: Vec::new(),
             simulation: SimulationSnapshot {
                 game_time_hours: 0.0,
-                citizen_count: 0,
-                funds: 50000.0,
-                tax_rate_residential: 0.09,
-                tax_rate_commercial: 0.10,
-                tax_rate_industrial: 0.12,
-                zone_count: 0,
-                building_count: 0,
-                road_segment_count: 0,
                 season_day: 0,
             },
             metadata: BTreeMap::new(),

@@ -9,10 +9,7 @@ fn save_and_load_round_trip() {
     let state = GameState {
         header: SaveHeader {
             version: 1,
-            city_name: "TestCity".into(),
             game_time_hours: 123.456,
-            citizen_count: 5000,
-            funds: 99999.99,
         },
         data: vec![1, 2, 3, 4, 5],
     };
@@ -22,8 +19,7 @@ fn save_and_load_round_trip() {
     assert!(path.exists());
 
     let loaded = load_game(&path).unwrap();
-    assert_eq!(loaded.header.city_name, "TestCity");
-    assert_eq!(loaded.header.citizen_count, 5000);
+    assert!((loaded.header.game_time_hours - 123.456).abs() < 1e-6);
     assert_eq!(loaded.data, vec![1, 2, 3, 4, 5]);
 
     let _ = std::fs::remove_dir_all(&dir);

@@ -1,4 +1,4 @@
-use vox_script::{GameEvent, ScriptRuntime};
+use vox_script::{ScriptEvent, ScriptRuntime};
 
 #[test]
 fn subscribe_and_dispatch() {
@@ -6,10 +6,7 @@ fn subscribe_and_dispatch() {
     rt.load_module("test_mod", &[]).unwrap();
     rt.subscribe("test_mod", "BuildingPlaced");
 
-    let handlers = rt.dispatch_event(&GameEvent::BuildingPlaced {
-        position: [0.0, 0.0, 0.0],
-        asset_id: "house".into(),
-    });
+    let handlers = rt.dispatch_event(&ScriptEvent::new("BuildingPlaced", vec![]));
     assert_eq!(handlers, vec!["test_mod"]);
 }
 
@@ -19,7 +16,7 @@ fn wildcard_subscription() {
     rt.load_module("logger", &[]).unwrap();
     rt.subscribe("logger", "*");
 
-    let handlers = rt.dispatch_event(&GameEvent::CitizenBorn { citizen_id: 1 });
+    let handlers = rt.dispatch_event(&ScriptEvent::named("CitizenBorn"));
     assert!(handlers.contains(&"logger".to_string()));
 }
 
@@ -29,6 +26,6 @@ fn unmatched_event_no_handlers() {
     rt.load_module("test_mod", &[]).unwrap();
     rt.subscribe("test_mod", "BuildingPlaced");
 
-    let handlers = rt.dispatch_event(&GameEvent::BudgetTick { funds: 1000.0 });
+    let handlers = rt.dispatch_event(&ScriptEvent::named("BudgetTick"));
     assert!(handlers.is_empty());
 }

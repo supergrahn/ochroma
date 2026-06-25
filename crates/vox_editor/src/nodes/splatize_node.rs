@@ -260,14 +260,14 @@ mod tests {
     #[test]
     fn splatize_node_in_graph_end_to_end() {
         use crate::node_graph::OchromaNodeGraph;
-        use crate::nodes::building_node::BuildingNode;
+        use crate::nodes::vegetation_node::VegetationNode;
         let mut graph = OchromaNodeGraph::new();
-        let building_id = graph.add_node("building", Box::new(BuildingNode { grid_w: 3, grid_h: 2, grid_d: 3, ..Default::default() }));
+        let veg_id = graph.add_node("veg", Box::new(VegetationNode::default()));
         let splat_id = graph.add_node("splatize", Box::new(SplatizeNode { min_splats: 10, max_splats: 500, ..Default::default() }));
-        graph.connect(building_id, "mesh", splat_id, "mesh").unwrap();
+        graph.connect(veg_id, "mesh", splat_id, "mesh").unwrap();
         graph.cook().unwrap();
         let splats = graph.get_output(splat_id, "splats").unwrap().as_splats().unwrap();
         println!("splats.len() = {}", splats.len());
-        assert!(!splats.is_empty(), "splatize should produce splats from building mesh");
+        assert!(!splats.is_empty(), "splatize should produce splats from vegetation mesh");
     }
 }

@@ -8,7 +8,8 @@ members = [
     "crates/vox_scene",
     # vox_app (the old GAME layer) is retired from the build: its city-builder
     # logic moved into urban_horizon. Directory kept on disk for later harvest.
-    "crates/vox_nn",
+    # vox_nn retired: game-specific city-gen (city_block/street_layout/text_to_city/…)
+    # moved to urban_horizon/src/citygen/ — engine must stay game-agnostic.
     "crates/vox_sim",
     "crates/vox_net",
     "crates/vox_script",

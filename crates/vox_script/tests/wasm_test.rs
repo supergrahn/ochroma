@@ -1,4 +1,4 @@
-use vox_script::{GameEvent, ScriptRuntime};
+use vox_script::{ScriptEvent, ScriptRuntime};
 
 /// Minimal valid Wasm binary (empty module).
 #[cfg(feature = "wasm-runtime")]
@@ -57,10 +57,7 @@ fn event_dispatch_works() {
     let mut rt = ScriptRuntime::new();
     rt.load_module("test", &[]).unwrap();
     rt.subscribe("test", "BuildingPlaced");
-    let handlers = rt.dispatch_event(&GameEvent::BuildingPlaced {
-        position: [0.0, 0.0, 0.0],
-        asset_id: "house".into(),
-    });
+    let handlers = rt.dispatch_event(&ScriptEvent::named("BuildingPlaced"));
     assert_eq!(handlers.len(), 1);
     assert_eq!(handlers[0], "test");
 }
@@ -70,6 +67,6 @@ fn wildcard_subscription() {
     let mut rt = ScriptRuntime::new();
     rt.load_module("logger", &[]).unwrap();
     rt.subscribe("logger", "*");
-    let handlers = rt.dispatch_event(&GameEvent::CitizenBorn { citizen_id: 1 });
+    let handlers = rt.dispatch_event(&ScriptEvent::named("CitizenBorn"));
     assert_eq!(handlers.len(), 1);
 }

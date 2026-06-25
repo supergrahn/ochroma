@@ -17,7 +17,7 @@ pub mod net_walk_demo;
 pub use quic_transport::{
     QuicClient, QuicConnection, QuicServer, QuicTransport, TransportError, TransportRole,
 };
-pub use replication::{EntityDelta, NetMessage, PlayerAction, ReplicationClient, ReplicationServer};
+pub use replication::{CommandPayload, EntityDelta, NetMessage, ReplicationClient, ReplicationServer};
 pub use replication_packet::{PlayerStatePacket, ReplicationPacket};
 pub use net_walk_demo::{
     run_loopback_walk_demo, run_rollback_quic_demo, RollbackQuicConfig, RollbackQuicReport,

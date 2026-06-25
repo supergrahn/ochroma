@@ -9,7 +9,7 @@
 //! [`OchromaNodeGraph`]: every node is constructed from the registry, every edge
 //! is type-checked by `graph.connect`, and the resulting graph evaluates to a
 //! non-empty terminal output. The library mirrors the PCG "Terrain -> Biome ->
-//! Vegetation -> Splatize" / "Building -> Plot -> Splatize" starter flows.
+//! Vegetation -> Splatize" starter flows.
 
 use crate::node_graph::{NodeId, OchromaNodeGraph};
 use crate::registry::NodeRegistry;
@@ -105,7 +105,7 @@ impl GraphTemplate {
 
 /// The shipped starter-template library. Returned in a stable order.
 ///
-/// All three terminate in a [`SplatizeNode`] producing a `Splats` output, so a
+/// All templates terminate in a [`SplatizeNode`] producing a `Splats` output, so a
 /// freshly-instantiated template cooks straight to renderable Gaussian splats.
 pub fn template_library() -> Vec<GraphTemplate> {
     vec![
@@ -155,22 +155,6 @@ pub fn template_library() -> Vec<GraphTemplate> {
             terminal: 6,
             terminal_port: "splats",
         },
-        // 3. Building -> Plot -> Splatize.
-        //    A plot's ground mesh is splatized; the building sits in the same graph.
-        GraphTemplate {
-            name: "Building → Plot → Splatize",
-            description: "Lay out a plot + building, splatize the plot ground to spectral Gaussians.",
-            nodes: vec![
-                TemplateNode { kind: "BuildingNode", label: "building" },
-                TemplateNode { kind: "PlotNode",     label: "plot" },
-                TemplateNode { kind: "SplatizeNode", label: "splatize" },
-            ],
-            edges: vec![
-                TemplateEdge { from: 1, from_port: "ground_mesh", to: 2, to_port: "mesh" },
-            ],
-            terminal: 2,
-            terminal_port: "splats",
-        },
     ]
 }
 
@@ -199,7 +183,7 @@ mod tests {
     fn every_template_instantiates_cooks_and_produces_splats() {
         let reg = NodeRegistry::new();
         let lib = template_library();
-        assert_eq!(lib.len(), 3, "three starter templates ship");
+        assert_eq!(lib.len(), 2, "two starter templates ship");
 
         for tmpl in &lib {
             let mut inst = tmpl

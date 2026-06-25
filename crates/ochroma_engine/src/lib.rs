@@ -70,11 +70,6 @@ pub mod script {
     pub use vox_script::*;
 }
 
-/// Neural/AI systems.
-pub mod nn {
-    pub use vox_nn::*;
-}
-
 /// Engine-invoked, renderer-agnostic view intent.
 pub mod game_view;
 

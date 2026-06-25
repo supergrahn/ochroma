@@ -45,16 +45,33 @@ pub struct ScriptModule {
     pub cpu_budget_ms: f32,
 }
 
-/// Events that mods can subscribe to.
+/// A generic, string-keyed event that mods can subscribe to.
+///
+/// The engine knows nothing about building/zone/citizen/city specifics — the game
+/// registers its own event names and packs any payload into `data`.
 #[derive(Debug, Clone)]
-pub enum GameEvent {
-    BuildingPlaced { position: [f32; 3], asset_id: String },
-    ZoneChanged { position: [f32; 2], zone_type: String },
-    CitizenBorn { citizen_id: u32 },
-    CitizenDied { citizen_id: u32 },
-    BudgetTick { funds: f64 },
-    Custom { name: String, data: Vec<u8> },
+pub struct ScriptEvent {
+    /// Logical event name, e.g. `"BuildingPlaced"` or `"custom:explosion"`.
+    pub name: String,
+    /// Arbitrary serialised payload (game-defined; may be empty).
+    pub data: Vec<u8>,
 }
+
+impl ScriptEvent {
+    pub fn new(name: impl Into<String>, data: Vec<u8>) -> Self {
+        Self { name: name.into(), data }
+    }
+
+    /// Convenience: create an event with no payload.
+    pub fn named(name: impl Into<String>) -> Self {
+        Self { name: name.into(), data: Vec::new() }
+    }
+}
+
+/// Back-compat alias — callers that still import `GameEvent` compile without change.
+/// Deprecated: prefer `ScriptEvent` directly.
+#[deprecated(since = "0.0.0", note = "use ScriptEvent")]
+pub type GameEvent = ScriptEvent;
 
 /// A mod's event handler registration.
 pub struct EventSubscription {
@@ -129,19 +146,10 @@ impl ScriptRuntime {
     }
 
     /// Dispatch an event and return the names of all matching module handlers.
-    pub fn dispatch_event(&self, event: &GameEvent) -> Vec<String> {
-        let event_name = match event {
-            GameEvent::BuildingPlaced { .. } => "BuildingPlaced",
-            GameEvent::ZoneChanged { .. } => "ZoneChanged",
-            GameEvent::CitizenBorn { .. } => "CitizenBorn",
-            GameEvent::CitizenDied { .. } => "CitizenDied",
-            GameEvent::BudgetTick { .. } => "BudgetTick",
-            GameEvent::Custom { name, .. } => name.as_str(),
-        };
-
+    pub fn dispatch_event(&self, event: &ScriptEvent) -> Vec<String> {
         self.subscriptions
             .iter()
-            .filter(|s| s.event_pattern == "*" || s.event_pattern == event_name)
+            .filter(|s| s.event_pattern == "*" || s.event_pattern == event.name)
             .map(|s| s.module_name.clone())
             .collect()
     }

@@ -8,3 +8,4 @@ pub mod registry;
 pub mod subgraph;
 pub mod templates;
 pub mod editor_panel;
+mod registry_tests;

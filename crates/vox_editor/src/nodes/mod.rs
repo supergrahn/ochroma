@@ -1,5 +1,4 @@
 pub mod terrain_node;
-pub mod building_node;
 pub mod vegetation_node;
 pub mod splatize_node;
 pub mod biome_node;
