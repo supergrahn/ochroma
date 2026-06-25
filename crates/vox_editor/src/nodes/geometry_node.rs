@@ -1,4 +1,4 @@
-//! CatenaryNode + PropPlacementNode.
+//! Generic geometry utility nodes: CatenaryNode + PropPlacementNode.
 
 use crate::node_graph::{
     NodeDescriptor, NodeError, NodeInputs, NodeOutputs,

@@ -1,3 +1,6 @@
+pub mod color;
+pub use color::{linear_to_srgb, srgb_to_linear};
+
 pub mod picking;
 pub use picking::{ScreenRay, SplatPickEntry};
 

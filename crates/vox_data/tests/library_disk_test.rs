@@ -14,7 +14,7 @@ fn save_and_load_index_toml() {
         name: "".to_string(),
         path: "buildings/house_01.vxm".into(),
         style: "victorian".into(),
-        asset_type: AssetType::Building,
+        asset_type: AssetType::Structure,
         description: "".to_string(),
         tags: vec!["victorian".into()],
         pipeline: AssetPipeline::ProcGS,

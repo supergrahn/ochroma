@@ -420,15 +420,10 @@ mod terrain_carve;
     }
 
 
-    /// Exact piecewise sRGB EOTF (encoded -> linear) — same as textures.rs.
+    // sRGB decode lives in vox_core::srgb_to_linear; import it so the
+    // spectra-native texture tests below can call it unqualified.
     #[cfg(feature = "spectra-native")]
-    fn srgb_to_linear(c: f32) -> f32 {
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    }
+    use vox_core::srgb_to_linear;
 
 
     /// Integer box-filter reduction to `<= max_size` per side (linear space).

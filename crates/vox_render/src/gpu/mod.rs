@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 pub mod adapter;
 pub mod atom_budget_gpu;
+pub mod eikonal;
 pub mod blend_skinning_compute;
 pub mod bloom_pass;
 pub mod depth_prepass;

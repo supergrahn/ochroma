@@ -15,7 +15,12 @@
 pub mod atmosphere;
 pub mod lighting;
 pub mod season;
+pub mod sky_model;
 pub mod weather;
+
+pub use sky_model::{
+    Light, Observer, Sky, backdrop, composite_lit, lunar_dir, solar_dir,
+};
 
 pub use atmosphere::{
     AtmosphereConfig, AtmosphereGenerator, CloudPreset, CloudType, DepthHazeSettings, FogPreset,

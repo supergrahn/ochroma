@@ -122,6 +122,10 @@ pub use spectra_scene_state::CameraLayer as SpectraCameraParams;
 #[cfg(feature = "spectra-native")]
 pub use spectra_scene_state::SceneState;
 
+#[cfg(feature = "spectra-native")]
+pub mod material_table;
+pub mod render_ids;
+
 pub mod util;
 pub use hybrid_compose::RenderScene;
 pub use cine::{Channel, FrameRate, Interp, Key};

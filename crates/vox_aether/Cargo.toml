@@ -6,4 +6,5 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+glam = { workspace = true }
 vox_core = { path = "../vox_core" }

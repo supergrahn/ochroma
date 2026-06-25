@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AssetType {
-    Building,
+    Structure,
     Prop,
     Vegetation,
     Terrain,

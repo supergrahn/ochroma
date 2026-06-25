@@ -32,7 +32,7 @@ fn search_by_name() {
     let mut cache = MarketplaceCache::new();
     cache.add_listing(make_listing(
         "Victorian House",
-        MarketplaceCategory::Building,
+        MarketplaceCategory::Structure,
         4.5,
         100,
     ));
@@ -52,7 +52,7 @@ fn filter_by_category() {
     let mut cache = MarketplaceCache::new();
     cache.add_listing(make_listing(
         "House",
-        MarketplaceCategory::Building,
+        MarketplaceCategory::Structure,
         4.0,
         100,
     ));
@@ -62,16 +62,16 @@ fn filter_by_category() {
         4.5,
         200,
     ));
-    assert_eq!(cache.by_category(MarketplaceCategory::Building).len(), 1);
+    assert_eq!(cache.by_category(MarketplaceCategory::Structure).len(), 1);
     assert_eq!(cache.by_category(MarketplaceCategory::Vegetation).len(), 1);
 }
 
 #[test]
 fn top_rated() {
     let mut cache = MarketplaceCache::new();
-    cache.add_listing(make_listing("A", MarketplaceCategory::Building, 3.0, 100));
-    cache.add_listing(make_listing("B", MarketplaceCategory::Building, 5.0, 50));
-    cache.add_listing(make_listing("C", MarketplaceCategory::Building, 4.0, 75));
+    cache.add_listing(make_listing("A", MarketplaceCategory::Structure, 3.0, 100));
+    cache.add_listing(make_listing("B", MarketplaceCategory::Structure, 5.0, 50));
+    cache.add_listing(make_listing("C", MarketplaceCategory::Structure, 4.0, 75));
     let top = cache.top_rated(2);
     assert_eq!(top[0].name, "B");
     assert_eq!(top[1].name, "C");

@@ -15,13 +15,11 @@
 use crate::node_graph::{OchromaNode, PortType};
 
 use crate::nodes::biome_node::BiomeNode;
-use crate::nodes::inhabitation_node::{CatenaryNode, PropPlacementNode};
+use crate::nodes::geometry_node::{CatenaryNode, PropPlacementNode};
 use crate::nodes::moisture_node::MoistureNode;
-use crate::nodes::plot_node::PlotNode;
 use crate::nodes::splat_weight_node::SplatWeightNode;
 use crate::nodes::splatize_node::SplatizeNode;
 use crate::nodes::terrain_node::TerrainNode;
-use crate::nodes::urban_sim_node::UrbanSimNode;
 use crate::nodes::vegetation_node::VegetationNode;
 
 /// A single typed port (name + type) on a registered node.
@@ -138,12 +136,10 @@ impl NodeRegistry {
             kind_of("Terrain", || Box::new(BiomeNode::default())),
             kind_of("Terrain", || Box::new(MoistureNode::default())),
             kind_of("Vegetation", || Box::new(VegetationNode::default())),
-            kind_of("Content", || Box::new(PlotNode::default())),
             kind_of("Splatting", || Box::new(SplatizeNode::default())),
             kind_of("Splatting", || Box::new(SplatWeightNode)),
-            kind_of("Urban", || Box::new(UrbanSimNode::default())),
-            kind_of("Urban", || Box::new(CatenaryNode::default())),
-            kind_of("Urban", || Box::new(PropPlacementNode::default())),
+            kind_of("Geometry", || Box::new(CatenaryNode::default())),
+            kind_of("Geometry", || Box::new(PropPlacementNode::default())),
         ];
         Self { kinds }
     }

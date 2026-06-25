@@ -24,7 +24,7 @@ pub struct AssetListing {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MarketplaceCategory {
-    Building,
+    Structure,
     Prop,
     Vehicle,
     Vegetation,

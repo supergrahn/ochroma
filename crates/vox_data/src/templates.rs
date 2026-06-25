@@ -14,7 +14,6 @@ pub struct ProjectTemplate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GameGenre {
-    CityBuilder,
     RPG,
     Horror,
     Exploration,
@@ -34,23 +33,6 @@ pub enum Complexity {
 /// Get all available project templates.
 pub fn available_templates() -> Vec<ProjectTemplate> {
     vec![
-        ProjectTemplate {
-            name: "City Builder".into(),
-            description: "Build and manage a thriving city. Roads, zoning, citizens, economy."
-                .into(),
-            genre: GameGenre::CityBuilder,
-            features: vec![
-                "Road drawing tools".into(),
-                "Zoning system".into(),
-                "Citizen simulation".into(),
-                "Economy and budget".into(),
-                "Service buildings".into(),
-                "Traffic simulation".into(),
-            ],
-            default_scene: "scenes/city_starter.ochroma_scene".into(),
-            recommended_quality: "High".into(),
-            estimated_complexity: Complexity::Intermediate,
-        },
         ProjectTemplate {
             name: "Exploration World".into(),
             description:
