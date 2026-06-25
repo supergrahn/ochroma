@@ -2406,6 +2406,7 @@ use super::super::*;
             metallic: 0.0,
             emission_strength: 0.0,
             albedo_tex: -1,
+            opacity_tex: -1,
             roughness_tex: -1,
             normal_tex: -1,
             displacement_tex: -1,
