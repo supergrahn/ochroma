@@ -6,7 +6,8 @@ members = [
     "crates/vox_usd",
     "crates/vox_render",
     "crates/vox_scene",
-    "crates/vox_app",
+    # vox_app (the old GAME layer) is retired from the build: its city-builder
+    # logic moved into urban_horizon. Directory kept on disk for later harvest.
     "crates/vox_nn",
     "crates/vox_sim",
     "crates/vox_net",
