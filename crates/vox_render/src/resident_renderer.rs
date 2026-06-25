@@ -849,6 +849,41 @@ impl ResidentSceneRenderer {
         self.retained_mirror.len()
     }
 
+    /// Flush the queued delta ring into the resident `g_instances` buffer
+    /// WITHOUT tracing or presenting a frame. This is the EXACT same ring-drain +
+    /// `apply_scene_delta` (g_instances patch) + IAS-refit / legacy-fallback that
+    /// [`render_camera`] runs BEFORE the megakernel — minus the trace/present.
+    ///
+    /// Use it to land queued [`update_instance_transform`] / `drain_scene_deltas`
+    /// deltas into the buffer that [`download_resident_instances`] reads, on a
+    /// minimal scene where a full `render_camera` trace would CUDA-fault. The
+    /// determinism witness (replay the same delta log twice → byte-identical
+    /// resident buffer) only needs the `g_instances` patch, which
+    /// `apply_scene_delta` performs; the IAS refit reads that patched buffer back
+    /// to rebuild the traversable and does not change `g_instances`. No-op when the
+    /// ring is empty.
+    pub fn flush_pending_deltas(&mut self) -> Result<(), String> {
+        if !self.delta_ring.is_empty() {
+            let cmds = self.delta_ring.drain_commands();
+            let ias_refit = self
+                .renderer
+                .apply_scene_delta_and_refit_ias(&cmds)
+                .map_err(|e| format!("apply_scene_delta_and_refit_ias: {e:?}"))?;
+            if !ias_refit {
+                // Legacy fallback (no CLAS IAS active): drive the traversed TLAS via
+                // the per-backend MODE_UPDATE refit from the same drained commands.
+                let dirty: Vec<(usize, [[f32; 4]; 3])> = cmds
+                    .iter()
+                    .map(|c| (c.slot as usize, c.transform_3x4()))
+                    .collect();
+                self.renderer
+                    .refit_instance_transforms(&dirty)
+                    .map_err(|e| format!("refit_instance_transforms: {e:?}"))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Per-frame camera stream. Pure state mutation (`set_camera_view_matrix` +
     /// `set_view_proj`) then `render()`. Does NOT reconstruct the backend or the
     /// renderer, and does NOT re-upload the scene.

@@ -114,17 +114,17 @@ fn camera_only_frame_reuses_scene() {
 
 /// Task 3 determinism witness: replaying the same `SceneDelta` log from scratch
 /// must produce a byte-identical `download_resident_instances` buffer.
-/// The ring flushes ONLY inside `render_camera`, so `render_camera` MUST be
-/// called BETWEEN `drain_scene_deltas` and `download_resident_instances`.
+///
+/// `drain_scene_deltas` only QUEUES the transform into the delta ring; the ring
+/// is applied to the resident `g_instances` buffer by the flush. `render_camera`
+/// performs that flush but also runs a full trace/present, which CUDA-faults on
+/// this minimal 2-node scene. `flush_pending_deltas` runs the EXACT same flush
+/// (ring drain → `apply_scene_delta` g_instances patch → IAS refit / legacy
+/// fallback) with NO trace/present, so the witness reads the same patched buffer
+/// without needing a render-complete scene.
 #[cfg(feature = "spectra-native")]
 #[test]
-#[ignore = "render_camera (the only ring-flush path) CUDA-faults on this minimal 2-node \
-            scene — it needs a render-complete scene. The full city render_camera works \
-            (35.6fps@512, box-verified). The mirror's replay-exact determinism is covered \
-            by scene_delta_adapter's transform_refits_are_latest_wins_and_instance_sorted \
-            test. Re-enable with a render-complete scene or a flush-only test path."]
 fn scene_delta_replay_exact() {
-    use vox_render::scene_delta_adapter::RetainedRenderMirror;
     use vox_scene::{NodeId, SceneDelta as GraphSceneDelta, SceneTransform};
 
     let scene = test_instanced_scene();
@@ -149,12 +149,14 @@ fn scene_delta_replay_exact() {
         .expect("reset_retained_mirror must not fail with unique nodes");
 
     // Capture the instance buffer BEFORE the transform delta lands (pre-flush).
-    // The ring hasn't been drained yet, so this is the upload-time snapshot.
+    // `drain_scene_deltas` below only QUEUES into the ring; the buffer is only
+    // mutated by `flush_pending_deltas`, so this is the upload-time snapshot.
     let pre_buf = renderer
         .download_resident_instances()
         .expect("download must succeed before drain");
 
-    // Build a transform delta and drain it.
+    // Build a transform delta and drain it (QUEUES into the ring; g_instances
+    // is NOT yet patched).
     let delta = GraphSceneDelta::SetTransform {
         id: node_id,
         transform: SceneTransform::from_translation(1.0, 2.0, 3.0),
@@ -165,16 +167,17 @@ fn scene_delta_replay_exact() {
         .expect("transform-only drain must succeed");
     assert!(deltas1.is_empty(), "drain must clear the vec on success");
 
-    // CRITICAL: render_camera flushes the delta ring into the GPU buffer.
-    // Without this call the ring has NOT been applied and the download
-    // would be a stale pre-transform snapshot (false-positive determinism pass).
+    // CRITICAL: flush_pending_deltas applies the queued ring into the GPU
+    // g_instances buffer (the same `apply_scene_delta` patch render_camera runs,
+    // minus the trace/present). Without it the ring has NOT been applied and the
+    // download would be a stale pre-transform snapshot (false-positive pass).
     renderer
-        .render_camera(view_a(), proj())
-        .expect("render_camera must succeed after drain");
+        .flush_pending_deltas()
+        .expect("flush_pending_deltas must succeed after drain");
 
     let post_buf = renderer
         .download_resident_instances()
-        .expect("download must succeed after render_camera");
+        .expect("download must succeed after flush_pending_deltas");
 
     // (a) The transform delta must have changed the buffer.
     assert_ne!(
@@ -208,8 +211,8 @@ fn scene_delta_replay_exact() {
         .expect("replay drain must succeed");
 
     renderer2
-        .render_camera(view_a(), proj())
-        .expect("replay render_camera must succeed");
+        .flush_pending_deltas()
+        .expect("replay flush_pending_deltas must succeed");
 
     let buf2 = renderer2
         .download_resident_instances()
