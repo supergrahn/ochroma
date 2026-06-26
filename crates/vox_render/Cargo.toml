@@ -44,7 +44,7 @@ spectra-tonemap = { path = "../../../spectra/rust/spectra-tonemap", optional = t
 spectra-upscale = { path = "../../../spectra/rust/spectra-upscale", optional = true }
 # PNG encode for deterministic cinematic frame export (cine::export::write_png).
 # Optional + pulled by `spectra-native` so non-spectra builds stay lean.
-image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"], optional = true }
 
 [features]
 default = []
