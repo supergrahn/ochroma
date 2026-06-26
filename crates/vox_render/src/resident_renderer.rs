@@ -22,7 +22,8 @@
 use spectra_gpu::VulkanSlangBackend;
 #[cfg(target_os = "windows")]
 use spectra_gpu::CudarcSlangBackend;
-use spectra_renderer::{FrameOutput, RenderConfig, RenderSettings, Renderer};
+pub use spectra_renderer::FrameOutput;
+use spectra_renderer::{RenderConfig, RenderSettings, Renderer};
 
 /// The LIVE path-tracer compute backend. The standing rule: use CUDA on NVIDIA
 /// when available. On Windows (NVIDIA/CUDA box) this is the cudarc CUDA backend;
