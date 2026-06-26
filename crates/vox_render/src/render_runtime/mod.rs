@@ -11,6 +11,9 @@ pub mod color;
 pub mod geometry;
 pub mod hash;
 pub mod illuminant;
+pub mod terrain;
+
+pub use terrain::TerrainUpload;
 
 #[cfg(feature = "spectra-native")]
 pub use runtime::{PresentResult, RenderRuntime};

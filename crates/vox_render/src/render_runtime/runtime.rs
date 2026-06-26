@@ -17,7 +17,13 @@ use crate::scene_delta_adapter::RetainedDeltaPlan;
 use crate::spectral::RenderCamera;
 use crate::render_runtime::env::elapsed_ms;
 use crate::render_runtime::frame::beauty_to_rgba8;
+use crate::render_runtime::terrain::TerrainUpload;
 use vox_scene::NodeId;
+
+/// Snow-cap slope cutoff (geometric up-cosine): caps sit on ledges/peaks, not on
+/// vertical faces. Ported from the game's terrain-upload path so [`RenderRuntime::set_terrain`]
+/// is self-contained.
+const SNOW_SLOPE_COS: f32 = 0.78;
 
 /// Result of a host-readback present (`render_and_present`).
 ///
@@ -134,6 +140,76 @@ impl RenderRuntime {
             render_ms,
             refit,
         })
+    }
+
+    // ---- setup methods (the clean runtime API; games never touch the inner renderer) ----
+
+    /// Upload the path tracer's flat texture atlas (descs = `[offset,w,h,channels]`
+    /// per texture; data = concatenated linear samples; `num_textures` entries).
+    /// Pass-through to the inner renderer. Call before [`Self::set_terrain`] (the
+    /// terrain slope/spray slots reference resident atlas entries).
+    pub fn set_atlas(
+        &mut self,
+        texture_descs: &[u32],
+        texture_data: &[f32],
+        num_textures: u32,
+    ) -> Result<(), String> {
+        self.renderer
+            .set_texture_atlas(texture_descs, texture_data, num_textures)
+    }
+
+    /// Bind an equirectangular HDRI for image-based sky + lighting (`channels`
+    /// usually 3). Empty `data` clears it (back to the procedural gradient sky).
+    /// Call after the scene exists. Pass-through to the inner renderer.
+    pub fn set_hdri(&mut self, data: &[f32], width: u32, height: u32, channels: u32) {
+        self.renderer.set_hdri(data, width, height, channels);
+    }
+
+    /// Upload the full terrain material payload — spray field + slope/height
+    /// layered material + per-pixel curvature — from a GPU-free [`TerrainUpload`].
+    /// MUST be called AFTER [`Self::set_atlas`] (slope/spray slots reference
+    /// resident atlas entries). This is the engine home of the game's former
+    /// `upload_spray_and_terrain` (ported verbatim, `renderer.` → `self.renderer.`,
+    /// `spray_upload.` → `upload.`).
+    pub fn set_terrain(&mut self, upload: &TerrainUpload) -> Result<(), String> {
+        if !upload.packed.is_empty() {
+            self.renderer.set_spray_field(
+                &upload.packed, upload.res,
+                upload.origin, upload.cell_size,
+                &upload.channel_slots,
+            )?;
+            eprintln!("[spray] field uploaded: {}x{} cells @ {:.2}m, {} channels",
+                upload.res[0], upload.res[1], upload.cell_size,
+                upload.channel_slots.len() / 4);
+        }
+        self.renderer.set_slope_layers(
+            upload.slope_rock_albedo, upload.slope_rock_normal,
+            upload.slope_dirt_albedo, upload.slope_dirt_normal,
+            upload.slope_rock_disp, upload.slope_dirt_disp,
+        );
+        eprintln!("[slope-layer] rock_albedo={} rock_normal={} dirt_albedo={} dirt_normal={} (>=0 = layered terrain on)",
+            upload.slope_rock_albedo, upload.slope_rock_normal,
+            upload.slope_dirt_albedo, upload.slope_dirt_normal);
+        if !upload.curvature_values.is_empty() {
+            self.renderer.set_curvature_field(
+                &upload.curvature_values,
+                upload.curvature_res,
+                upload.curvature_origin,
+                upload.curvature_cell_size,
+            )?;
+            eprintln!("[curvature] per-pixel field uploaded: {}x{} cells @ {:.2}m",
+                upload.curvature_res[0], upload.curvature_res[1],
+                upload.curvature_cell_size);
+        }
+        self.renderer.set_slope_snow(
+            upload.slope_snow_albedo, upload.slope_snow_normal,
+            upload.slope_snow_disp, upload.slope_height_snow,
+            upload.slope_height_snow_band, SNOW_SLOPE_COS,
+        );
+        eprintln!("[snow-cap] snow_albedo={} snow_line={:.0}m band={:.0}m (>=0 + finite = snow on)",
+            upload.slope_snow_albedo, upload.slope_height_snow,
+            upload.slope_height_snow_band);
+        Ok(())
     }
 
     // ---- retained mirror accessors (thin delegation to ResidentSceneRenderer) ----
