@@ -5,7 +5,12 @@ pub mod env;
 pub mod atlas;
 #[cfg(feature = "spectra-native")]
 pub mod frame;
+#[cfg(feature = "spectra-native")]
+pub mod runtime;
 pub mod color;
 pub mod geometry;
 pub mod hash;
 pub mod illuminant;
+
+#[cfg(feature = "spectra-native")]
+pub use runtime::{PresentResult, RenderRuntime};

@@ -1,0 +1,155 @@
+//! `RenderRuntime` — the construct-once, engine-side render service.
+//!
+//! FIRST SLICE: wraps a `ResidentSceneRenderer` and owns the game-agnostic
+//! *delta-only present loop* (drain queued `SceneDelta` refits → stream camera →
+//! trace → convert to RGBA8). A new game gets this present/optimization path for
+//! free instead of re-implementing it.
+//!
+//! This slice is intentionally a transition layer: the wrapper is constructed
+//! FROM an already-built `ResidentSceneRenderer` ([`RenderRuntime::new_wrapping`])
+//! and exposes a transition accessor ([`RenderRuntime::renderer_mut`]) so the
+//! game's not-yet-moved setup/scene methods keep driving the inner renderer.
+//! Decoupling full construction from `GameState` is a LATER slice.
+
+use crate::resident_renderer::{ResidentSceneRenderer, SceneSyncReport};
+use crate::resident_renderer::FidelityTier;
+use crate::scene_delta_adapter::RetainedDeltaPlan;
+use crate::spectral::RenderCamera;
+use crate::render_runtime::env::elapsed_ms;
+use crate::render_runtime::frame::beauty_to_rgba8;
+use vox_scene::NodeId;
+
+/// Result of a host-readback present (`render_and_present`).
+///
+/// Carries the converted frame plus the timing/scene proofs the caller needs to
+/// drive its own per-frame breakdown logging (which references project-specific
+/// env gates + counters that stay game-side in this slice).
+pub struct PresentResult {
+    /// RGBA8 bytes + dimensions of the presented frame.
+    pub rgba8: (Vec<u8>, u32, u32),
+    /// Scene-sync proof for this frame (refit/reuse witness).
+    pub sync: SceneSyncReport,
+    /// The drained retained-delta plan (refit vs structural-rebuild proof).
+    pub plan: RetainedDeltaPlan,
+    /// Milliseconds spent draining + applying queued deltas.
+    pub delta_apply_ms: f64,
+    /// Milliseconds spent in `render_camera`.
+    pub render_ms: f64,
+    /// True when this present applied at least one TLAS refit.
+    pub refit: bool,
+}
+
+/// Construct-once render service wrapping a resident renderer.
+pub struct RenderRuntime {
+    renderer: ResidentSceneRenderer,
+    iw: u32,
+    ih: u32,
+    tier: FidelityTier,
+}
+
+impl RenderRuntime {
+    /// Wrap an ALREADY-BUILT `ResidentSceneRenderer`.
+    ///
+    /// The game keeps performing the `GameState`-coupled construction (scene
+    /// assembly, atlas/terrain upload, retained-mirror stamp) for now; full
+    /// construction decoupling is a later slice. `iw`/`ih` are the internal
+    /// render resolution the renderer was built at; `tier` its fidelity tier.
+    pub fn new_wrapping(
+        renderer: ResidentSceneRenderer,
+        iw: u32,
+        ih: u32,
+        tier: FidelityTier,
+    ) -> Self {
+        Self { renderer, iw, ih, tier }
+    }
+
+    /// Internal render resolution this runtime produces (`(iw, ih)`).
+    pub fn internal_size(&self) -> (u32, u32) {
+        (self.iw, self.ih)
+    }
+
+    /// The fidelity tier this runtime renders at.
+    pub fn tier(&self) -> FidelityTier {
+        self.tier
+    }
+
+    /// Transition accessor — shared reference to the inner renderer so the game
+    /// can keep calling its not-yet-moved setup/scene methods.
+    ///
+    /// `pub` (not `pub(crate)`) because the game's `LiveFrameSource` lives in a
+    /// DIFFERENT crate and must reach the inner renderer during the migration.
+    /// This is a deliberate transition seam: it shrinks as setup/scene methods
+    /// migrate into `RenderRuntime` in later slices, and is removed once empty.
+    #[doc(hidden)]
+    pub fn renderer(&self) -> &ResidentSceneRenderer {
+        &self.renderer
+    }
+
+    /// Transition accessor — mutable reference to the inner renderer (see
+    /// [`Self::renderer`]).
+    #[doc(hidden)]
+    pub fn renderer_mut(&mut self) -> &mut ResidentSceneRenderer {
+        &mut self.renderer
+    }
+
+    /// Drain and apply queued retained scene deltas as TLAS refits. Returns
+    /// `Err` (without clearing `deltas`) for any structural delta — the caller
+    /// must then trigger a full-scene rebuild. Clears `deltas` on success.
+    pub fn drain_scene_deltas(
+        &mut self,
+        deltas: &mut Vec<vox_scene::SceneDelta>,
+    ) -> Result<RetainedDeltaPlan, String> {
+        self.renderer.drain_scene_deltas(deltas)
+    }
+
+    /// Retained host-readback present loop: drain scene deltas, stream the
+    /// camera, trace, and convert to RGBA8.
+    ///
+    /// This is the body of the game's `LiveFrameSource::frame_with_scene_deltas`
+    /// ported verbatim (minus the project-specific breakdown logging, which the
+    /// game wraps around this call). `deltas`: queued `vox_scene::SceneDelta`
+    /// batches since the last frame, cleared on success. `camera`: the engine
+    /// `RenderCamera` (view + proj).
+    pub fn render_and_present(
+        &mut self,
+        deltas: &mut Vec<vox_scene::SceneDelta>,
+        camera: &RenderCamera,
+    ) -> Result<PresentResult, String> {
+        let delta_t = std::time::Instant::now();
+        let plan = self.renderer.drain_scene_deltas(deltas)?;
+        let delta_apply_ms = elapsed_ms(delta_t);
+        let upload_delta = self.renderer.reused_delta();
+        let refit = plan.stats.refits > 0;
+        let render_t = std::time::Instant::now();
+        let frame = self.renderer.render_camera(
+            camera.view.to_cols_array(),
+            camera.proj.to_cols_array(),
+        )?;
+        let render_ms = elapsed_ms(render_t);
+        Ok(PresentResult {
+            rgba8: beauty_to_rgba8(&frame),
+            sync: upload_delta,
+            plan,
+            delta_apply_ms,
+            render_ms,
+            refit,
+        })
+    }
+
+    // ---- retained mirror accessors (thin delegation to ResidentSceneRenderer) ----
+
+    /// Renderer instance index currently mirrored for `node`, if present.
+    pub fn retained_instance_index(&self, node: NodeId) -> Option<usize> {
+        self.renderer.retained_instance_index(node)
+    }
+
+    /// Retained node currently mirrored at `instance_index`, if any.
+    pub fn retained_node_for_instance(&self, instance_index: usize) -> Option<NodeId> {
+        self.renderer.retained_node_for_instance(instance_index)
+    }
+
+    /// Number of retained nodes currently mapped to renderer instances.
+    pub fn retained_node_count(&self) -> usize {
+        self.renderer.retained_node_count()
+    }
+}
