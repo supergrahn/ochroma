@@ -5,5 +5,7 @@ pub mod env;
 pub mod atlas;
 #[cfg(feature = "spectra-native")]
 pub mod frame;
-pub mod preview;
-pub mod util;
+pub mod color;
+pub mod geometry;
+pub mod hash;
+pub mod illuminant;
