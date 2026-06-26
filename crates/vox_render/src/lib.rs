@@ -63,6 +63,10 @@ pub mod mesh_simplify;
 pub mod spectral_tonemapper;
 pub mod temporal;
 pub mod dlss;
+/// NVIDIA DLSS quality-mode spec, engine-side and always built (pure config). The
+/// game picks a preset via `vox_render::DlssPreset`; the scale factors and the
+/// even-dimension rule are owned here.
+pub use dlss::DlssPreset;
 pub mod shadows;
 pub mod rigid_animation;
 pub mod skinning;

@@ -1,3 +1,71 @@
+use serde::{Deserialize, Serialize};
+
+/// DLSS quality / Ray Reconstruction preset — controls the scale factor applied
+/// to the player's chosen output resolution to derive the internal render
+/// resolution. The internal res is `output × scale` (both axes, rounded even).
+///
+/// These are the standard NVIDIA DLSS quality modes:
+///   Quality     ≈ 0.67× linear  (best IQ, lowest internal perf gain)
+///   Balanced    ≈ 0.58× linear
+///   Performance ≈ 0.50× linear
+///   UltraPerf   ≈ 0.33× linear  (highest perf gain, most aggressive upscale)
+///
+/// The default is `Balanced` so new saves are safe on mid-range hardware.
+///
+/// This is the canonical NVIDIA DLSS quality-mode spec and lives engine-side
+/// (all NVIDIA render-tech domain knowledge belongs in the engine). The game
+/// only PICKS a preset; it does not own the scale factors or the even-dimension
+/// rule. It is pure config (an enum + arithmetic, no GPU calls) and so is built
+/// unconditionally — the game's default (non-CUDA) build references it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DlssPreset {
+    Quality,
+    #[default]
+    Balanced,
+    Performance,
+    UltraPerformance,
+}
+
+impl DlssPreset {
+    /// Deterministic cycle order (best IQ → most aggressive).
+    pub const ORDER: [DlssPreset; 4] = [
+        DlssPreset::Quality,
+        DlssPreset::Balanced,
+        DlssPreset::Performance,
+        DlssPreset::UltraPerformance,
+    ];
+
+    /// Linear scale factor: internal = output × scale (both axes, rounded even).
+    pub fn scale(self) -> f32 {
+        match self {
+            DlssPreset::Quality => 0.6667,
+            DlssPreset::Balanced => 0.5833,
+            DlssPreset::Performance => 0.5,
+            DlssPreset::UltraPerformance => 0.3333,
+        }
+    }
+
+    /// Derive the internal render resolution from an output (display) resolution.
+    /// Both dimensions are rounded to the nearest even number (DLSS requirement).
+    pub fn internal_res(self, (dw, dh): (u32, u32)) -> (u32, u32) {
+        let s = self.scale();
+        let iw = ((dw as f32 * s).round() as u32).max(2) & !1;
+        let ih = ((dh as f32 * s).round() as u32).max(2) & !1;
+        (iw, ih)
+    }
+
+    /// Player-facing label.
+    pub fn label(self) -> &'static str {
+        match self {
+            DlssPreset::Quality => "Quality",
+            DlssPreset::Balanced => "Balanced",
+            DlssPreset::Performance => "Performance",
+            DlssPreset::UltraPerformance => "Ultra Performance",
+        }
+    }
+}
+
 /// DLSS quality mode — determines internal render resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DlssQuality {
