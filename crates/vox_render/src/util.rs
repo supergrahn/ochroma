@@ -42,8 +42,8 @@ pub fn screen_to_ground(
 }
 
 /// Project a ground point `(x, z)` (y = 0) to screen pixel coordinates — the
-/// inverse of [`screen_to_ground`], used to draw the in-progress zoning outline
-/// over the rendered city. Returns `None` if the point is behind the camera.
+/// inverse of [`screen_to_ground`], used to draw in-progress selection/region
+/// outlines over the rendered scene. Returns `None` if the point is behind the camera.
 pub fn world_to_screen(
     view: Mat4,
     proj: Mat4,

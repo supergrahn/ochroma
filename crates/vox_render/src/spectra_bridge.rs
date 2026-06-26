@@ -32,7 +32,7 @@ pub enum BoundaryOwner {
 /// Capability or policy item that crosses the Ochroma/Spectra bridge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeItem {
-    /// Domain entities and interactions such as buildings, agents, zoning, and tools.
+    /// Domain entities and interactions such as meshes, agents, regions, and tools.
     GameSemantics,
     /// ECS, visibility policy, residency decisions, frame budget, and scheduling.
     RuntimePolicy,
