@@ -16,4 +16,4 @@ pub mod terrain;
 pub use terrain::TerrainUpload;
 
 #[cfg(feature = "spectra-native")]
-pub use runtime::{PresentResult, RenderRuntime};
+pub use runtime::{GpuPresentResult, PresentResult, RenderRuntime};

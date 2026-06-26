@@ -42,6 +42,11 @@ spectra-scene-state = { path = "../../../spectra/rust/spectra-scene-state", opti
 spectra-scene-data = { path = "../../../spectra/rust/spectra-scene-data", optional = true }
 spectra-tonemap = { path = "../../../spectra/rust/spectra-tonemap", optional = true }
 spectra-upscale = { path = "../../../spectra/rust/spectra-upscale", optional = true }
+# spectra-present: home of `RrGuides` (the DLSS Ray Reconstruction guide-dptr
+# packing struct). Default features only — the CUDA/DLSS/FSR present backends
+# stay GAME-side; the engine only needs the `RrGuides` type for the GPU present
+# path moved into `RenderRuntime::rr_guides`. Pulled by `spectra-native`.
+spectra-present = { path = "../../../spectra/rust/spectra-present", optional = true, default-features = false }
 # PNG encode for deterministic cinematic frame export (cine::export::write_png).
 # Optional + pulled by `spectra-native` so non-spectra builds stay lean.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"], optional = true }
@@ -77,6 +82,7 @@ spectra-native = [
     "dep:spectra-scene-state",
     "dep:spectra-scene-data",
     "dep:spectra-tonemap",
+    "dep:spectra-present",
     "dep:image",
     "spectra-gpu/vulkan-backend",
     "spectra-renderer/ocio",

@@ -16,7 +16,7 @@ use crate::resident_renderer::FidelityTier;
 use crate::scene_delta_adapter::RetainedDeltaPlan;
 use crate::spectral::RenderCamera;
 use crate::render_runtime::env::elapsed_ms;
-use crate::render_runtime::frame::beauty_to_rgba8;
+use crate::render_runtime::frame::{beauty_to_rgba8, interop_dims};
 use crate::render_runtime::terrain::TerrainUpload;
 use vox_scene::NodeId;
 
@@ -33,6 +33,33 @@ const SNOW_SLOPE_COS: f32 = 0.78;
 pub struct PresentResult {
     /// RGBA8 bytes + dimensions of the presented frame.
     pub rgba8: (Vec<u8>, u32, u32),
+    /// Scene-sync proof for this frame (refit/reuse witness).
+    pub sync: SceneSyncReport,
+    /// The drained retained-delta plan (refit vs structural-rebuild proof).
+    pub plan: RetainedDeltaPlan,
+    /// Milliseconds spent draining + applying queued deltas.
+    pub delta_apply_ms: f64,
+    /// Milliseconds spent in `render_camera`.
+    pub render_ms: f64,
+    /// True when this present applied at least one TLAS refit.
+    pub refit: bool,
+}
+
+/// Result of a zero-copy GPU present (`render_and_present_gpu`).
+///
+/// The GPU twin of [`PresentResult`]: the present routes the packed RGBA f32
+/// beauty into the CUDA interop `color_ptr` (no host readback), so instead of
+/// RGBA8 bytes this carries the resolved interop output pointer + dims plus the
+/// same timing/scene proofs the caller needs for its per-frame breakdown logging
+/// (which references project-specific env gates + counters that stay game-side).
+pub struct GpuPresentResult {
+    /// Device pointer the frame's packed RGBA actually landed in (the renderer's
+    /// `last_pack_output_ptr`, falling back to the requested `color_ptr`).
+    pub out_ptr: u64,
+    /// Render-resolution width of the presented interop frame.
+    pub rw: u32,
+    /// Render-resolution height of the presented interop frame.
+    pub rh: u32,
     /// Scene-sync proof for this frame (refit/reuse witness).
     pub sync: SceneSyncReport,
     /// The drained retained-delta plan (refit vs structural-rebuild proof).
@@ -140,6 +167,74 @@ impl RenderRuntime {
             render_ms,
             refit,
         })
+    }
+
+    /// ZERO-COPY GPU present path (M1 DLSS): drain scene deltas as TLAS refits,
+    /// stream the camera, trace, and route the packed RGBA f32 beauty into the
+    /// CUDA interop pointer `color_ptr` (no host readback).
+    ///
+    /// This is the drain + render core of the game's
+    /// `LiveFrameSource::frame_gpu_with_scene_deltas` ported verbatim (`self.runtime
+    /// .renderer_mut().` → `self.renderer.`), minus the project-specific breakdown
+    /// logging (`scene_assembly_count` / `print_scene_frame_breakdown`), which the
+    /// game wraps around this call using the returned [`GpuPresentResult`] proofs.
+    /// `deltas`: queued `vox_scene::SceneDelta` batches since the last frame,
+    /// cleared on success. `camera`: the engine `RenderCamera` (view + proj).
+    pub fn render_and_present_gpu(
+        &mut self,
+        deltas: &mut Vec<vox_scene::SceneDelta>,
+        camera: &RenderCamera,
+        color_ptr: u64,
+    ) -> Result<GpuPresentResult, String> {
+        use crate::resident_renderer::RenderTarget;
+        let want = RenderTarget::Interop { color_ptr };
+        if self.renderer.render_target() != want {
+            self.renderer.set_render_target(want);
+        }
+        let delta_t = std::time::Instant::now();
+        let plan = self.renderer.drain_scene_deltas(deltas)?;
+        let delta_apply_ms = elapsed_ms(delta_t);
+        let upload_delta = self.renderer.reused_delta();
+        let refit = plan.stats.refits > 0;
+        let render_t = std::time::Instant::now();
+        let frame = self.renderer.render_camera(
+            camera.view.to_cols_array(), camera.proj.to_cols_array())?;
+        let render_ms = elapsed_ms(render_t);
+        let out_ptr = self.renderer.last_pack_output_ptr().unwrap_or(color_ptr);
+        let (rw, rh) = interop_dims(&frame, self.iw, self.ih);
+        Ok(GpuPresentResult {
+            out_ptr,
+            rw,
+            rh,
+            sync: upload_delta,
+            plan,
+            delta_apply_ms,
+            render_ms,
+            refit,
+        })
+    }
+
+    /// RR (DLSS Ray Reconstruction) guide device pointers for the frame the last
+    /// GPU present produced, packed into the present's `RrGuides`.
+    ///
+    /// Body of the game's `LiveFrameSource::rr_guides` ported verbatim
+    /// (`self.runtime.renderer_mut().` → `self.renderer.`). `&mut self` because
+    /// `rr_guide_ptrs` takes `&mut self` on the inner renderer.
+    pub fn rr_guides(&mut self) -> spectra_present::RrGuides {
+        let g = self.renderer.rr_guide_ptrs();
+        let (jx, jy) = self.renderer.rr_jitter();
+        spectra_present::RrGuides {
+            diffuse_albedo: g[0],
+            specular_albedo: g[1],
+            normals: g[2],
+            roughness: g[3],
+            depth: g[4],
+            motion: g[5],
+            jitter_x: jx,
+            jitter_y: jy,
+            mv_scale_x: 1.0,
+            mv_scale_y: 1.0,
+        }
     }
 
     // ---- setup methods (the clean runtime API; games never touch the inner renderer) ----
