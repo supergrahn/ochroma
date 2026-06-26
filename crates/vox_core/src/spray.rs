@@ -37,7 +37,7 @@ pub const SPRAY_SUM: u16 = 255;
 /// All fields are plain data (no floats in the *stored* identity beyond the
 /// brush params, which are applied through a fixed deterministic kernel) so the
 /// log is byte-stable to serialize.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SprayStroke {
     /// Channel raised by this stroke (`0..SPRAY_CHANNELS`).
     pub channel: u8,
