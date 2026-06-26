@@ -130,6 +130,7 @@ pub mod material_table;
 pub mod render_ids;
 
 pub mod util;
+pub mod render_runtime;
 pub use hybrid_compose::RenderScene;
 pub use cine::{Channel, FrameRate, Interp, Key};
 pub use cine::{BokehShape, CameraSequence, CinePose, CinematicConfig, FocusMode};
