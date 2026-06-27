@@ -119,6 +119,12 @@ pub struct HybridMesh {
     pub transmission_override: Option<f32>,
     /// IOR paired with `transmission_override` (e.g. 1.33 water, 1.5 glass).
     pub ior_override: Option<f32>,
+    /// Water optics: own Beer-Lambert absorption (blue-green, NOT the warm
+    /// building-glass tint), absorption depth, and roughness — so the sea reads
+    /// as tinted water with a Fresnel sky reflection, not a clear/warm mirror.
+    pub absorption_override: Option<[f32; 3]>,
+    pub absorption_depth_override: Option<f32>,
+    pub roughness_override: Option<f32>,
     /// When `Some(scale)`, the surface is textured with WORLD-PLANAR UV (UV =
     /// world_xz * scale) instead of interpolated vertex UVs. Used for terrain
     /// ground, whose UV is a pure function of world position — and which, on the
@@ -206,6 +212,9 @@ impl HybridMesh {
             displacement_scale: 0.0,
             displacement_midlevel: 0.5,
             transmission_override: None,
+            absorption_override: None,
+            absorption_depth_override: None,
+            roughness_override: None,
             ior_override: None,
             world_planar_uv_scale: None,
             uv_scale: None,
@@ -331,6 +340,21 @@ impl HybridMesh {
     pub fn with_transmission(mut self, transmission: f32, ior: f32) -> Self {
         self.transmission_override = Some(transmission);
         self.ior_override = Some(ior);
+        self
+    }
+
+    /// Water optics: own blue-green Beer-Lambert absorption (not the warm
+    /// building-glass tint), absorption depth, and roughness — so the sea reads
+    /// as tinted water with a Fresnel sky reflection.
+    pub fn with_water_optics(
+        mut self,
+        absorption: [f32; 3],
+        absorption_depth: f32,
+        roughness: f32,
+    ) -> Self {
+        self.absorption_override = Some(absorption);
+        self.absorption_depth_override = Some(absorption_depth);
+        self.roughness_override = Some(roughness);
         self
     }
 
