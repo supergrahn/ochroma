@@ -1175,6 +1175,17 @@ impl ResidentSceneRenderer {
         self.renderer.set_present_temporal_upscale(on);
     }
 
+    /// WATER (MAT_WATER) procedural-wave + shoreline-foam controls, forwarded to
+    /// the spectra `Renderer` (`u_water_*` in the megakernel). `[amp, scale, speed,
+    /// time, foam_strength, foam_rough]`. The game advances `time` by wall-clock
+    /// every present frame so the sea ripples (it has had ZERO callers, so
+    /// `u_water_time` was pinned at 0 = frozen water). Only the MAT_WATER surface
+    /// reads these; every other material is byte-identical. A no-op when no scene
+    /// is loaded.
+    pub fn set_water_params(&mut self, params: [f32; 6]) {
+        self.renderer.set_water_params(params);
+    }
+
     /// The currently-configured render target.
     pub fn render_target(&self) -> spectra_renderer::RenderTarget {
         self.renderer.render_target()
