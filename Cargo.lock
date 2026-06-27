@@ -7617,6 +7617,7 @@ dependencies = [
  "serde",
  "vox_config",
  "vox_core",
+ "vox_sim",
 ]
 
 [[package]]

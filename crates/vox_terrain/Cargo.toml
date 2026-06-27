@@ -6,6 +6,10 @@ version.workspace = true
 [dependencies]
 vox_config = { path = "../vox_config" }
 vox_core = { path = "../vox_core" }
+# Engine determinism primitive (ReplayHasher integer ledger). vox_sim depends
+# only on vox_core, so vox_terrain -> vox_sim is acyclic. Used by `water` to
+# fold the water field into the SAME replay-hash moat the cim sim uses.
+vox_sim = { path = "../vox_sim" }
 glam = { workspace = true }
 serde = { workspace = true }
 half = { workspace = true }

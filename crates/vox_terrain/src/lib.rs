@@ -7,9 +7,11 @@ pub mod navmesh_bridge;
 pub mod scene;
 pub mod texture_paint;
 pub mod volume;
+pub mod water;
 
 pub use deform::{apply_explosion, carve_sphere, carve_tunnel, fill_sphere};
 pub use scene::TerrainScene;
+pub use water::WaterField;
 
 use serde::{Deserialize, Serialize};
 
