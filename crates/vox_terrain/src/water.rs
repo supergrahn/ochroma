@@ -148,6 +148,17 @@ impl WaterField {
         self.depth[self.idx(x, z)]
     }
 
+    /// Read access to the per-cell depth grid (row-major, `z * width + x`). The
+    /// cell index IS the id. Used by the game-side replay-hash fold + inspection
+    /// (`urban_horizon::sim::sim_hash`), which folds it len-prefixed + in strict
+    /// ascending index order — the same id-ordered contract as [`fold_into`].
+    ///
+    /// [`fold_into`]: WaterField::fold_into
+    #[inline]
+    pub fn depths(&self) -> &[f64] {
+        &self.depth
+    }
+
     /// RENDER SEAM (out of scope for the model): the world-Y of the water
     /// surface at a cell = bed elevation + water column. This is what a later
     /// phase samples to drive the water mesh height / the `d_water(p) =
