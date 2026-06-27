@@ -185,9 +185,20 @@ impl ResidentSceneRenderer {
             use spectra_renderer::spectra_config::ApplyToRenderConfig;
             let rt_mode = config.mode;
             let rt_convergence = config.convergence_threshold;
+            // PRESERVE the caller's internal render resolution. `near_realtime` set
+            // width/height from the (iw, ih) the game passed (res_in_override /
+            // render.ron resolution_in / tier cap). `apply_to` maps spectra.ron
+            // `sampling.{width,height}` (default 1920x1080 = the OFFLINE film size,
+            // NOT the live internal res) OVER them, silently forcing the live
+            // path-trace to 1080p regardless of the requested res — the ~5fps-at-4K
+            // bug. Re-assert the caller's value, like mode + convergence below.
+            let rt_width = config.width;
+            let rt_height = config.height;
             spectra_renderer::spectra_config::config().apply_to(&mut config);
             config.mode = rt_mode;
             config.convergence_threshold = rt_convergence;
+            config.width = rt_width;
+            config.height = rt_height;
         }
         config.slang_kernel_dir = resolve_slang_kernel_dir();
         // Lean shade kernel: byte-identical for pure triangle-mesh city scenes (the
