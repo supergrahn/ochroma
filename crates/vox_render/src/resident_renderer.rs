@@ -1155,6 +1155,12 @@ impl ResidentSceneRenderer {
         self.renderer.set_render_target(target);
     }
 
+    /// Enable present-side DLSS-RR temporal reconstruction (jitter + motion
+    /// vectors) on the Interop path. Set to `want_rr` each frame; default off.
+    pub fn set_present_temporal_upscale(&mut self, on: bool) {
+        self.renderer.set_present_temporal_upscale(on);
+    }
+
     /// The currently-configured render target.
     pub fn render_target(&self) -> spectra_renderer::RenderTarget {
         self.renderer.render_target()

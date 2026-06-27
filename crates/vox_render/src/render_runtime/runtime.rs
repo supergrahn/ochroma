@@ -219,6 +219,11 @@ impl RenderRuntime {
     /// Body of the game's `LiveFrameSource::rr_guides` ported verbatim
     /// (`self.runtime.renderer_mut().` → `self.renderer.`). `&mut self` because
     /// `rr_guide_ptrs` takes `&mut self` on the inner renderer.
+    /// Enable present-side DLSS-RR temporal reconstruction (jitter + MV).
+    pub fn set_present_temporal_upscale(&mut self, on: bool) {
+        self.renderer.set_present_temporal_upscale(on);
+    }
+
     pub fn rr_guides(&mut self) -> spectra_present::RrGuides {
         let g = self.renderer.rr_guide_ptrs();
         let (jx, jy) = self.renderer.rr_jitter();
