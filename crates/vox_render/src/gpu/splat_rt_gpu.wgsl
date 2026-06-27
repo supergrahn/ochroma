@@ -32,9 +32,15 @@
 // unbounded gather, EXACTLY mirroring the CPU `budget` semantics.
 
 const BANDS: u32 = 16u;
+// BUDGET (scatter.splat_rt_budget) and SIGMA_CUTOFF (materials.splat_sigma_cutoff)
+// are CONFIG-FIRST: the host (`splat_rt_gpu.rs`) specializes these two const
+// declarations from `vox_config` at pipeline build (defaults 64u / 3.0 are
+// byte-identical to the checked-in source). POWER_CUTOFF derives from
+// SIGMA_CUTOFF here so it always tracks it; BUDGET sizes the per-thread hit
+// arrays below, so it must remain a module const (not an `override`).
 const BUDGET: u32 = 64u;
 const SIGMA_CUTOFF: f32 = 3.0;
-const POWER_CUTOFF: f32 = 4.5;            // 0.5 * 3^2
+const POWER_CUTOFF: f32 = 0.5 * SIGMA_CUTOFF * SIGMA_CUTOFF;
 const TRANSMITTANCE_THRESHOLD: f32 = 0.001;
 const ALPHA_THRESHOLD: f32 = 0.003921569; // 1.0 / 255.0
 const SCALE_FLOOR: f32 = 1e-4;
@@ -204,9 +210,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Per-thread bounded hit gather, insertion-sorted by t_peak (tie-break by
     // splat index, matching the CPU's stable depth-keyed sort). We keep at most
     // BUDGET hits — the 64 nearest, which is what the CPU composites.
-    var hit_t: array<f32, 64>;
-    var hit_a: array<f32, 64>;
-    var hit_i: array<u32, 64>;
+    var hit_t: array<f32, BUDGET>;
+    var hit_a: array<f32, BUDGET>;
+    var hit_i: array<u32, BUDGET>;
     var count: u32 = 0u;
 
     let n = cam.splat_count;

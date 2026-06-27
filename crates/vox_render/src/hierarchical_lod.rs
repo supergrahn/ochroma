@@ -2,6 +2,17 @@ use glam;
 use vox_core::types::GaussianSplat;
 
 /// Number of LOD levels in a chain.
+///
+/// CONFIG-FIRST exception — this is a TRUE never-change STRUCTURAL constant, NOT
+/// a tunable: it is the compile-time SIZE of fixed-length arrays across the LOD
+/// system (`LodChain.levels: [LodLevel; LOD_LEVEL_COUNT]`, the per-cluster LOD
+/// tables in `atom_budget` / `atom_instances`, the GPU range/histogram arrays).
+/// Changing it is a code change (new full/billboard end-cap logic), not a value
+/// tweak, so per the never-change-constant rule it stays a `const`. The TUNABLES
+/// in the ladder — the per-level splat fractions and switch distances — DO live
+/// in config (`scatter.lod_fractions` / `scatter.lod_distances_m`, normalized to
+/// `vox_config::LOD_LEN`, which mirrors this value). `scatter.lod_level_count` in
+/// the .ron is an informational/validation mirror only, never read as a size.
 pub const LOD_LEVEL_COUNT: usize = 4;
 
 /// A single LOD level within a chain.

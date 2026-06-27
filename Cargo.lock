@@ -6251,6 +6251,7 @@ dependencies = [
  "ash-window",
  "raw-window-handle",
  "spectra-gpu",
+ "spectra-types",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -6393,6 +6394,7 @@ name = "spectra-types"
 version = "0.1.0"
 dependencies = [
  "glam 0.29.3",
+ "ron",
  "serde",
  "serde_json",
  "validator",

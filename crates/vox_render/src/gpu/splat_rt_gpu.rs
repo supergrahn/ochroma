@@ -222,7 +222,31 @@ impl SplatRtGpu {
             mapped_at_creation: false,
         });
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("splat_rt_gpu.wgsl"));
+        // CONFIG-FIRST: specialize the per-tile splat BUDGET
+        // (`scatter.splat_rt_budget`) and the σ-cutoff (`materials.splat_sigma_cutoff`)
+        // into the WGSL `const` declarations at pipeline build. BUDGET sizes the
+        // per-thread hit arrays so it must be a module const (not an `override`),
+        // hence source specialization. POWER_CUTOFF derives from SIGMA_CUTOFF
+        // in-shader. At the default config (64 / 3.0) the produced source is
+        // byte-identical to the checked-in shader; an anchor miss is a no-op.
+        let cfg = vox_config::config();
+        let budget = cfg.scatter.splat_rt_budget.max(1);
+        let src = include_str!("splat_rt_gpu.wgsl")
+            .replace(
+                "const BUDGET: u32 = 64u;",
+                &format!("const BUDGET: u32 = {budget}u;"),
+            )
+            .replace(
+                "const SIGMA_CUTOFF: f32 = 3.0;",
+                &format!(
+                    "const SIGMA_CUTOFF: f32 = {};",
+                    crate::gpu::wgsl_f32(cfg.materials.splat_sigma_cutoff)
+                ),
+            );
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("splat_rt_gpu.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("splat_rt_bgl"),
             entries: &[
@@ -293,8 +317,9 @@ impl SplatRtGpu {
     /// in row-major order (y from top), each `[16 bands, alpha]`.
     ///
     /// `scene.bvh` is ignored — this is the brute-force `bvh = None` oracle path.
-    /// The hard budget is fixed at 64 in-shader (the CPU's hard budget); the
-    /// `budget` argument to the CPU renderer is matched by that constant.
+    /// The hard budget is `scatter.splat_rt_budget` (CONFIG-FIRST, default 64 —
+    /// the CPU's hard budget), specialized into the shader's `BUDGET` const at
+    /// pipeline build; match the CPU renderer's `budget` argument to that value.
     pub fn render(
         &self,
         scene: &RtScene,

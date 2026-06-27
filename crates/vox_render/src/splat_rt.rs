@@ -28,11 +28,24 @@ use vox_core::types::GaussianSplat;
 
 use crate::clas::{ClusterBVHNode, SplatCluster};
 
-/// 3σ Mahalanobis cutoff: beyond this the Gaussian contributes < exp(-4.5) and
-/// is skipped. Matches the rasterizer's `radius = 3·√λ_max` footprint extent.
-const SIGMA_CUTOFF: f32 = 3.0;
-/// `0.5 * SIGMA_CUTOFF^2` — compared against the peak power directly.
-const POWER_CUTOFF: f32 = 0.5 * SIGMA_CUTOFF * SIGMA_CUTOFF;
+/// σ Mahalanobis cutoff: beyond this the Gaussian contributes < exp(-0.5σ²) and
+/// is skipped. Matches the rasterizer's `radius = σ·√λ_max` footprint extent.
+/// CONFIG-FIRST (`materials.splat_sigma_cutoff`, default 3.0): this was a `const`
+/// but is now read at the call site so the cutoff is retunable WITHOUT a rebuild.
+/// The GPU mirror (`gpu/splat_rt_gpu.wgsl`) specializes the SAME value into its
+/// `SIGMA_CUTOFF`/`POWER_CUTOFF` consts so the two paths stay bit-equivalent.
+#[inline]
+fn sigma_cutoff() -> f32 {
+    vox_config::config().materials.splat_sigma_cutoff
+}
+/// `0.5 * SIGMA_CUTOFF^2` — compared against the peak power directly. Refactored
+/// from a `const` to a runtime value derived from [`sigma_cutoff`] (so it always
+/// tracks the configured cutoff) now that the cutoff is config-driven.
+#[inline]
+fn power_cutoff() -> f32 {
+    let s = sigma_cutoff();
+    0.5 * s * s
+}
 /// Stop compositing once remaining transmittance falls below this — identical
 /// to `spectra_gaussian_render::TRANSMITTANCE_THRESHOLD` used by the rasterizer.
 const TRANSMITTANCE_THRESHOLD: f32 = 0.001;
@@ -173,8 +186,8 @@ fn ray_gaussian_hit(
 #[inline]
 fn finish_hit(d2: f32, opacity: f32, t: f32, splat_index: u32) -> Option<RayHit> {
     let power = 0.5 * d2;
-    if power > POWER_CUTOFF {
-        return None; // beyond 3σ — contributes < exp(-4.5)
+    if power > power_cutoff() {
+        return None; // beyond the σ-cutoff — contributes < exp(-0.5σ²)
     }
     let alpha = (opacity * (-power).exp()).min(0.99);
     if alpha < ALPHA_THRESHOLD {
@@ -198,7 +211,7 @@ fn splat_radius(s: &GaussianSplat) -> f32 {
             .max(s.scale_v().abs())
             .max(s.scale_w().abs())
     };
-    SIGMA_CUTOFF * r
+    sigma_cutoff() * r
 }
 
 /// Slab ray-AABB test on an AABB padded by `pad` on every side. Returns true if

@@ -86,14 +86,14 @@
     //  atom_instances / gpu — listed once at canonical source.)
     // ------------------------------------------------------------------------
     scatter: (
-        lod_level_count:   4,                          // crates/vox_render/src/hierarchical_lod.rs:5 [hardcoded] (LOD_LEVEL_COUNT)
-        lod_fractions:     [1.0, 0.4, 0.1, 0.0],       // hierarchical_lod.rs:29 [hardcoded] — splat-count fraction per level (0.0 = single billboard)
-        lod_distances_m:   [0.0, 50.0, 150.0, 400.0],  // hierarchical_lod.rs:32 [hardcoded] — eye-distance (m) transitions
-        far_instance_m:    150.0,                      // crates/vox_render/src/atom_instances.rs:36 [hardcoded] (FAR_INSTANCE_M) — imposter switch distance
-        imposter_i1_m:     400.0,                      // crates/vox_render/src/atom_instances.rs:40 [hardcoded] (IMPOSTER_I1_M) — 1-atom imposter distance
+        lod_level_count:   4,                          // hierarchical_lod.rs:5 [hardcoded] (LOD_LEVEL_COUNT) — STRUCTURAL array-size const (never-change); this is an informational/validation mirror, never read as a size
+        lod_fractions:     [1.0, 0.4, 0.1, 0.0],       // hierarchical_lod.rs:29 [hardcoded] — splat-count fraction per level (0.0 = single billboard); wired CPU (hierarchical_lod/atom_budget) + GPU (atom_budget_gpu)
+        lod_distances_m:   [0.0, 50.0, 150.0, 400.0],  // hierarchical_lod.rs:32 [hardcoded] — eye-distance (m) transitions; wired CPU + GPU mirrors (atom_budget_gpu.wgsl / instanced_select_gpu.wgsl specialized)
+        far_instance_m:    150.0,                      // crates/vox_render/src/atom_instances.rs:36 [hardcoded] (FAR_INSTANCE_M) — imposter switch distance; wired CPU + instanced_select_gpu.wgsl (specialized)
+        imposter_i1_m:     400.0,                      // crates/vox_render/src/atom_instances.rs:40 [hardcoded] (IMPOSTER_I1_M) — 1-atom imposter distance; wired CPU + instanced_select_gpu.wgsl (specialized)
         lod_threshold_m:   200.0,                      // crates/vox_render/src/lod.rs:1 [hardcoded] (LOD_THRESHOLD) — coarse Full/Reduced cutoff
         rt_tile_size:      16,                         // crates/vox_render/src/spectra_render.rs:23 [hardcoded] (TILE_SIZE)
-        splat_rt_budget:   64,                         // crates/vox_render/src/gpu/splat_rt_gpu.wgsl:35 [hardcoded] (BUDGET) — per-tile splat budget (WGSL)
+        splat_rt_budget:   64,                         // crates/vox_render/src/gpu/splat_rt_gpu.wgsl:35 [hardcoded] (BUDGET) — per-tile splat budget (WGSL); wired via source-specialization at pipeline build
     ),
 
     // ------------------------------------------------------------------------
@@ -215,7 +215,7 @@
         weather_edge_max:          0.12,  // splat_convert.rs:340 [hardcoded] (EDGE_MAX)
         importance_redundancy_weight:      0.5,   // crates/vox_render/src/importance.rs:63 [hardcoded] (REDUNDANCY_WEIGHT)
         importance_color_similarity:       0.98,  // crates/vox_render/src/importance.rs:67 [hardcoded] (COLOR_SIMILARITY_THRESHOLD)
-        splat_sigma_cutoff:        3.0,   // crates/vox_render/src/splat_rt.rs:33 [hardcoded] (SIGMA_CUTOFF) — Gaussian eval radius (σ)
+        splat_sigma_cutoff:        3.0,   // crates/vox_render/src/splat_rt.rs:33 [hardcoded] (SIGMA_CUTOFF) — Gaussian eval radius (σ); wired CPU (sigma_cutoff()/power_cutoff()) + gpu/splat_rt_gpu.wgsl (specialized)
     ),
 
     // ------------------------------------------------------------------------

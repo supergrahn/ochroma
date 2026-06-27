@@ -741,7 +741,41 @@ impl InstancedSelectGpu {
         //    A welcome consequence: `score_pairs`' layout has no `k2_args`
         //    binding, so the indirect dispatch's usage scope never sees the
         //    indirect buffer as writable storage (wgpu usage-conflict rule).──
-        let shader = device.create_shader_module(wgpu::include_wgsl!("instanced_select_gpu.wgsl"));
+        // CONFIG-FIRST: specialize the LOD ladder into the WGSL mirror so it tracks
+        // the same config the CPU oracle reads — `select_lod_level` switch distances
+        // (`scatter.lod_distances_m[1..=3]`), the far/imposter classification
+        // (`scatter.far_instance_m` / `scatter.imposter_i1_m`, matching
+        // `atom_instances`), and `crossfade_factor`'s band edges (the same ladder).
+        // Two-stage anchor->placeholder->value replace (collision-proof); the code
+        // anchors carry `if (`/`distance >`/`next_dist =` prefixes so they never hit
+        // the doc-comment copies of the same literals. Byte-identical at the default
+        // ladder [0,50,150,400] / far 150 / imposter 400; an anchor miss is a no-op.
+        let sc = &vox_config::config().scatter;
+        let lod_d = &sc.lod_distances_m;
+        let src = include_str!("instanced_select_gpu.wgsl")
+            // select_lod_level switch distances
+            .replace("distance > 400.0", "distance > __LOD_D3__")
+            .replace("distance > 150.0", "distance > __LOD_D2__")
+            .replace("distance > 50.0", "distance > __LOD_D1__")
+            // far/imposter classification (anchored on the `if (` code lines only)
+            .replace("if (inst_distance >= 150.0) {", "if (inst_distance >= __FAR_M__) {")
+            .replace("if (inst_distance >= 400.0) {", "if (inst_distance >= __IMP_M__) {")
+            // crossfade_factor band edges
+            .replace("next_dist = 50.0;", "next_dist = __LOD_D1__;")
+            .replace("current_dist = 50.0;", "current_dist = __LOD_D1__;")
+            .replace("next_dist = 150.0;", "next_dist = __LOD_D2__;")
+            .replace("current_dist = 150.0;", "current_dist = __LOD_D2__;")
+            .replace("next_dist = 400.0;", "next_dist = __LOD_D3__;")
+            // placeholders -> configured values
+            .replace("__LOD_D1__", &crate::gpu::wgsl_f32(lod_d[1]))
+            .replace("__LOD_D2__", &crate::gpu::wgsl_f32(lod_d[2]))
+            .replace("__LOD_D3__", &crate::gpu::wgsl_f32(lod_d[3]))
+            .replace("__FAR_M__", &crate::gpu::wgsl_f32(sc.far_instance_m))
+            .replace("__IMP_M__", &crate::gpu::wgsl_f32(sc.imposter_i1_m));
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("instanced_select_gpu.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
 
         // The global binding map (mirrors the WGSL @binding numbers):
         // 0=params 1=instances 2=assets 3=cluster_metas 4=planes 5=pairs

@@ -67,9 +67,11 @@ use crate::frustum::Frustum;
 use crate::hierarchical_lod::{LOD_LEVEL_COUNT, crossfade_factor};
 use crate::spectral::RenderCamera;
 
-/// Fraction of original splat count kept at each LOD level — IDENTICAL to the
-/// oracle's private `atom_budget::LOD_FRACTIONS`.
-const LOD_FRACTIONS: [f32; LOD_LEVEL_COUNT] = [1.0, 0.4, 0.1, 0.0];
+// CONFIG-FIRST: the per-LOD splat-count fractions are no longer a hardcoded const
+// here — they read from `vox_config` (`scatter.lod_fractions`) at the call site in
+// `build_cluster_lod`, IDENTICAL to the CPU oracle `atom_budget::build_cluster_lod`
+// (which also reads config), so the GPU mirror tracks the same config. Default
+// `[1.0, 0.4, 0.1, 0.0]` equals the old literal.
 
 /// GPU-side static cluster geometry. Mirrors `Cluster` in the shader (three
 /// `vec4<f32>` = 48 bytes): `aabb_min.xyz + total_opacity`, `aabb_max.xyz`,
@@ -309,7 +311,24 @@ impl AtomBudgetGpu {
             mapped_at_creation: false,
         });
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("atom_budget_gpu.wgsl"));
+        // CONFIG-FIRST: specialize `select_lod_level`'s LOD switch distances
+        // (`scatter.lod_distances_m[1..=3]`) into the WGSL so the GPU mirror tracks
+        // the same config the CPU oracle reads (`hierarchical_lod::select_lod_level`).
+        // Two-stage anchor->placeholder->value replace so a configured value that
+        // equals another default literal can't be re-substituted. Byte-identical at
+        // the default ladder [0,50,150,400]; an anchor miss is a no-op.
+        let lod_d = &vox_config::config().scatter.lod_distances_m;
+        let src = include_str!("atom_budget_gpu.wgsl")
+            .replace("distance > 400.0", "distance > __LOD_D3__")
+            .replace("distance > 150.0", "distance > __LOD_D2__")
+            .replace("distance > 50.0", "distance > __LOD_D1__")
+            .replace("__LOD_D3__", &crate::gpu::wgsl_f32(lod_d[3]))
+            .replace("__LOD_D2__", &crate::gpu::wgsl_f32(lod_d[2]))
+            .replace("__LOD_D1__", &crate::gpu::wgsl_f32(lod_d[1]));
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("atom_budget_gpu.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
 
         let storage_ro = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
@@ -736,10 +755,13 @@ fn build_cluster_lod(cluster: &SplatCluster, splats: &[GaussianSplat]) -> Cluste
 
     let n = sorted.len();
     let l0 = sorted.clone();
+    // CONFIG-FIRST: read the LOD fractions from config (normalized to LOD_LEN),
+    // matching the CPU oracle `atom_budget::build_cluster_lod`.
+    let lod_fractions = &vox_config::config().scatter.lod_fractions;
     let l1_len =
-        ((n as f32 * LOD_FRACTIONS[1]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
+        ((n as f32 * lod_fractions[1]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
     let l2_len =
-        ((n as f32 * LOD_FRACTIONS[2]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
+        ((n as f32 * lod_fractions[2]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
     let l1 = sorted[..l1_len].to_vec();
     let l2 = sorted[..l2_len].to_vec();
     let l3 = if n > 0 { vec![sorted[0]] } else { Vec::new() };

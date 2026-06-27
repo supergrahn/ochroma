@@ -39,6 +39,27 @@ pub mod volumetric_pass;
 
 use std::sync::Arc;
 
+/// CONFIG-FIRST shader specialization helper (`vox_config`).
+///
+/// Several determinism-mirror compute shaders (`splat_rt_gpu`, `atom_budget_gpu`,
+/// `instanced_select_gpu`) historically HARDCODED tunables as WGSL literals — a
+/// copy of the CPU oracle's values (the LOD ladder `scatter.lod_distances_m` /
+/// `far_instance_m` / `imposter_i1_m`, the splat `BUDGET`, the σ-cutoff). Now
+/// that the CPU oracle reads those from `config/ochroma.ron`, the GPU mirror MUST
+/// read the same values or it silently diverges from the CPU under a non-default
+/// config. The mirrors specialize their WGSL SOURCE at pipeline-build time: each
+/// literal is replaced with the configured value formatted by this helper. At the
+/// DEFAULT config the produced source is byte-identical to the checked-in shader
+/// (zero behavior change); an anchor that fails to match is a no-op (the original
+/// literal stays), so specialization can never break the shader build.
+///
+/// `format!("{x:?}")` emits the shortest decimal that round-trips to the same
+/// `f32` naga parses, and always includes a `.`/`e`, so the result is always a
+/// valid WGSL float literal AND bit-equal to the CPU oracle's `f32`.
+pub(crate) fn wgsl_f32(x: f32) -> String {
+    format!("{x:?}")
+}
+
 /// The single wgpu device + queue every render and compute module binds against.
 ///
 /// Created once at surface bring-up (editor `resumed()` / engine present init) and

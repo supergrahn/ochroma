@@ -169,6 +169,26 @@ impl ResidentSceneRenderer {
         // frame is byte-identical.
         let rcfg = &vox_config::config().resident_renderer;
         let mut config = RenderConfig::near_realtime(width, height);
+        // CONFIG-FIRST (spectra.ron): layer the engine-side single source of truth
+        // UNDER the game's authoritative render.ron + realtime preset. `apply_to`
+        // maps every spectra-owned RenderConfig field (relief/ground/terrain/
+        // denoise/feature-flags/dlss/…) from spectra.ron; the realtime budget + the
+        // authoritative LOOK are then re-asserted ON TOP — the tier via
+        // `apply_settings` (spp/bounces/tonemap/exposure/grade/denoiser), the
+        // explicit overrides below (optix/ground/temporal/restir/lean), so this
+        // NEVER clobbers them. With the shipped spectra.ron (defaults == prior
+        // literals) the mapped values EQUAL RenderConfig::default(), so the resident
+        // frame is byte-identical until spectra.ron is edited. The only fields
+        // near_realtime sets that apply_to would change AND nothing downstream
+        // re-touches are `mode` + `convergence_threshold` — preserved here.
+        {
+            use spectra_renderer::spectra_config::ApplyToRenderConfig;
+            let rt_mode = config.mode;
+            let rt_convergence = config.convergence_threshold;
+            spectra_renderer::spectra_config::config().apply_to(&mut config);
+            config.mode = rt_mode;
+            config.convergence_threshold = rt_convergence;
+        }
         config.slang_kernel_dir = resolve_slang_kernel_dir();
         // Lean shade kernel: byte-identical for pure triangle-mesh city scenes (the
         // heavy SSS/volume/polarization/SDF/Gaussian paths are off on the resident
