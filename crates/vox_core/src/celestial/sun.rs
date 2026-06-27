@@ -91,6 +91,14 @@ pub struct SunPosition {
     /// Equation of time in minutes. Nonzero because of orbital eccentricity and
     /// obliquity; ranges from about −14 min (Feb) to +16 min (early Nov).
     pub equation_of_time_minutes: f64,
+    /// APPARENT altitude in radians = geometric `altitude_rad` + atmospheric
+    /// refraction (the angular lift of the sun's image near the horizon, up to
+    /// ≈+0.48° at the geometric horizon, falling to ≈0 above ~15°). This is the
+    /// altitude an observer actually SEES the disk at; the returned `direction`
+    /// is built from it (so sunrise/sunset land slightly earlier, golden hour is
+    /// physically placed). Equals `altitude_rad` when refraction is disabled or
+    /// the sun is more than ~1° below the geometric horizon.
+    pub apparent_altitude_rad: f64,
 }
 
 impl SunConfig {
@@ -189,6 +197,56 @@ pub fn compute_sun_position(
     longitude_deg: f64,
     config: &SunConfig,
 ) -> SunPosition {
+    // Backward-compatible default path: assume the game clock is LOCAL STANDARD
+    // TIME at the longitude's standard meridian (timezone = longitude/15), so the
+    // longitude terms cancel and only the equation of time corrects local→true
+    // solar time. Atmospheric refraction is applied (it lifts the apparent disk
+    // near the horizon) — this changes only the returned `direction` (built from
+    // the apparent altitude) and the new `apparent_altitude_rad`; the geometric
+    // `altitude_rad` is unchanged, so every existing altitude-keyed call site
+    // (e.g. `is_night = altitude_rad < 0`) and test is byte-for-byte preserved.
+    compute_sun_position_tz(
+        day_of_year,
+        hour_local,
+        latitude_deg,
+        longitude_deg,
+        longitude_deg / 15.0,
+        true,
+        config,
+    )
+}
+
+/// Compute the solar position with an EXPLICIT timezone offset and optional
+/// atmospheric refraction — the ultra-realistic entry point.
+///
+/// Reference: NOAA/ESRL "Solar Position Algorithm" (Meeus, *Astronomical
+/// Algorithms* 2nd ed. ch.25 basis). <https://gml.noaa.gov/grad/solcalc/solareqns.PDF>
+///
+/// - `hour_local`: civil clock time as a decimal in the observer's timezone.
+/// - `longitude_deg`: observer longitude (°E, negative = west).
+/// - `timezone_offset_hours`: the observer's UTC offset in hours (e.g. NYC EST =
+///   −5.0, EDT = −4.0). True solar time is
+///   `tst = hour_local·60 + eqtime + 4·longitude − 60·tz`. With
+///   `tz = longitude/15` (standard-meridian convention) the longitude terms
+///   cancel and only the equation of time corrects local noon → solar noon. With
+///   a REAL fixed timezone, a city east/west of its standard meridian gets the
+///   correct intra-timezone solar-noon shift (up to ±30 min) — the realism the
+///   plumbed-but-discarded longitude was meant to provide.
+/// - `apply_refraction`: when `true`, the returned `direction` is built from the
+///   apparent (refracted) altitude and `apparent_altitude_rad` carries the lift;
+///   the geometric `altitude_rad` is always the unrefracted value.
+///
+/// All math is f64 and deterministic (no RNG, no map/hash iteration) — safe for
+/// the engine's replay-exact moat.
+pub fn compute_sun_position_tz(
+    day_of_year: u32,
+    hour_local: f64,
+    latitude_deg: f64,
+    longitude_deg: f64,
+    timezone_offset_hours: f64,
+    apply_refraction: bool,
+    config: &SunConfig,
+) -> SunPosition {
     use std::f64::consts::TAU;
 
     // ── Step 1: fractional year γ (radians) ──────────────────────────────────
@@ -234,9 +292,11 @@ pub fn compute_sun_position(
     //   4*longitude - 60*(longitude/15) = 4*longitude - 4*longitude = 0
     // So the longitude terms cancel and only the equation of time matters.
     // This is the correct model for local standard time input.
-    let tst = hour_local * 60.0 + eqtime;
-    // (No rem_euclid needed — hour_local is [0,24) so tst is in [-16, 1456)
-    //  which the hour-angle formula handles naturally.)
+    let tst = hour_local * 60.0 + eqtime + 4.0 * longitude_deg - 60.0 * timezone_offset_hours;
+    // With timezone = longitude/15 the longitude terms cancel (legacy default).
+    // With a real fixed timezone, `4·longitude − 60·tz` is the genuine
+    // intra-timezone solar-time offset. (No rem_euclid needed — the hour-angle
+    // formula below handles the full range naturally.)
 
     // ── Step 5: hour angle H (degrees → radians) ──────────────────────────────
     // Solar noon: tst = 720 min → H = 0. Morning: H < 0. Afternoon: H > 0.
@@ -254,9 +314,23 @@ pub fn compute_sun_position(
     let sin_alt = (sin_lat * sin_dec + cos_lat * cos_dec * cos_ha).clamp(-1.0, 1.0);
     let altitude = sin_alt.asin();
 
+    // ── Step 6b: atmospheric refraction → apparent altitude ──────────────────
+    // The atmosphere lifts the apparent disk near the horizon (≈+0.48° at the
+    // geometric horizon). `altitude` stays GEOMETRIC; `apparent_altitude` adds
+    // the refraction and is what an observer sees (and what the rendered sun
+    // direction should use, so sunrise/sunset + golden-hour land physically).
+    let apparent_altitude = if apply_refraction {
+        altitude + atmospheric_refraction_deg(altitude.to_degrees()).to_radians()
+    } else {
+        altitude
+    };
+    // Direction is built from the APPARENT altitude (azimuth is unaffected by
+    // refraction); when refraction is off this is identical to the geometric path.
+    let sin_alt = apparent_altitude.sin();
+    let cos_alt = apparent_altitude.cos();
+
     // ── Step 7: azimuth (0=N, 90=E, 180=S, 270=W) ───────────────────────────
     // Full-circle atan2 form, numerically stable at all latitudes including poles.
-    let cos_alt = altitude.cos();
     let azimuth = if cos_alt.abs() < 1e-10 {
         // Sun is exactly at zenith or nadir — azimuth is undefined; use 0.
         0.0_f64
@@ -313,6 +387,34 @@ pub fn compute_sun_position(
         direction: dir_norm.to_array(),
         declination_rad: decl,
         equation_of_time_minutes: eqtime,
+        apparent_altitude_rad: apparent_altitude,
+    }
+}
+
+/// Atmospheric refraction (degrees to ADD to the geometric solar elevation) from
+/// the NOAA solar-calculator model. Positive near the horizon (≈+0.48° at the
+/// geometric horizon), tapering to ~0 above ~15°, and 0 well below the horizon
+/// where no refracted image exists. `geom_alt_deg` is the GEOMETRIC elevation.
+///
+/// Reference: NOAA ESRL solar-position calculator refraction term (Sæmundsson /
+/// Bennett family of fits). Deterministic, f64.
+#[inline]
+pub fn atmospheric_refraction_deg(geom_alt_deg: f64) -> f64 {
+    if geom_alt_deg > 85.0 {
+        0.0
+    } else if geom_alt_deg > 5.0 {
+        let t = geom_alt_deg.to_radians().tan();
+        (58.1 / t - 0.07 / t.powi(3) + 0.000_086 / t.powi(5)) / 3600.0
+    } else if geom_alt_deg > -0.575 {
+        let e = geom_alt_deg;
+        (1735.0 + e * (-518.2 + e * (103.4 + e * (-12.79 + e * 0.711)))) / 3600.0
+    } else if geom_alt_deg > -1.0 {
+        // Just below the geometric horizon: the refracted image can still be
+        // visible. Below ~−1° the model is invalid and no image exists → 0.
+        let t = geom_alt_deg.to_radians().tan();
+        (-20.774 / t) / 3600.0
+    } else {
+        0.0
     }
 }
 
@@ -552,5 +654,81 @@ mod tests {
         assert!((d360 - 365.0).abs() < 1e-4, "civic 360 → solar 365; got {d360}");
         let d180 = solar_day_from_civic_day(180, 360);
         assert!((d180 - 182.5).abs() < 0.01, "civic 180 → solar 182.5; got {d180}");
+    }
+
+    // ── Refraction + timezone (ultra-realistic additions) ─────────────────────
+
+    /// Atmospheric refraction LIFTS the apparent sun near the horizon and is
+    /// negligible high in the sky.
+    #[test]
+    fn refraction_lifts_apparent_altitude_near_horizon() {
+        // Horizon (~0°): refraction should add roughly half a degree.
+        let r0 = atmospheric_refraction_deg(0.0);
+        assert!(
+            r0 > 0.4 && r0 < 0.6,
+            "horizon refraction should be ≈0.48°, got {r0:.4}°"
+        );
+        // High sun (~60°): refraction is tiny (< 0.02°).
+        let r60 = atmospheric_refraction_deg(60.0);
+        assert!(r60 >= 0.0 && r60 < 0.02, "high-sun refraction ≈0, got {r60:.4}°");
+        // Find a sample where the sun is just ABOVE the horizon (0..5°) and verify
+        // the apparent altitude is strictly lifted there. Scan the sunrise window.
+        let mut found = false;
+        for i in 0..60 {
+            let hour = 6.0 + i as f64 * 0.05; // 06:00 → 09:00
+            let pos = nyc_sun(80, hour);
+            let geom_deg = pos.altitude_rad.to_degrees();
+            if geom_deg > 0.2 && geom_deg < 5.0 {
+                assert!(
+                    pos.apparent_altitude_rad > pos.altitude_rad,
+                    "apparent ({:.5}) should exceed geometric ({:.5}) at low sun",
+                    pos.apparent_altitude_rad,
+                    pos.altitude_rad
+                );
+                // Geometric altitude_rad is NOT mutated by refraction (legacy-stable).
+                let geom =
+                    compute_sun_position_tz(80, hour, NYC_LAT, NYC_LON, NYC_LON / 15.0, false, &EARTH_CONFIG);
+                assert!(
+                    (geom.altitude_rad - pos.altitude_rad).abs() < 1e-12,
+                    "geometric altitude must be identical with/without refraction"
+                );
+                assert!(
+                    (geom.apparent_altitude_rad - geom.altitude_rad).abs() < 1e-12,
+                    "with refraction off, apparent == geometric"
+                );
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "expected a low-sun sample in the sunrise window");
+    }
+
+    /// An explicit timezone shifts solar noon for a city offset from its standard
+    /// meridian — the realism the discarded longitude was meant to provide.
+    ///
+    /// At longitude 0 with timezone 0, clock noon ≈ solar noon (hour angle ≈ 0).
+    /// Move the observer +7.5° EAST while KEEPING timezone 0: the sun crosses the
+    /// meridian 30 min EARLIER, so at clock noon the sun is already PAST south
+    /// (afternoon, azimuth > 180°). The legacy lon/15 path would cancel this.
+    #[test]
+    fn explicit_timezone_shifts_solar_noon_within_zone() {
+        let cfg = EARTH_CONFIG;
+        // Standard meridian: clock noon ≈ solar noon (offset only by equation of
+        // time), so the sun is near south.
+        let at_meridian = compute_sun_position_tz(80, 12.0, 40.0, 0.0, 0.0, false, &cfg).azimuth_rad.to_degrees();
+        // 7.5° EAST of the meridian, SAME timezone (offset 0): solar noon is
+        // ~30 min EARLIER, so at clock noon the sun has moved further past south.
+        let east = compute_sun_position_tz(80, 12.0, 40.0, 7.5, 0.0, false, &cfg).azimuth_rad.to_degrees();
+        assert!(
+            east > at_meridian + 5.0,
+            "7.5°E (same tz) should push clock-noon azimuth >5° further west: meridian={at_meridian:.2}° east={east:.2}°"
+        );
+        // The legacy default (timezone = longitude/15) CANCELS the longitude, so
+        // clock noon is unchanged by longitude — proves the cancellation is intact.
+        let legacy = compute_sun_position(80, 12.0, 40.0, 7.5, &cfg).azimuth_rad.to_degrees();
+        assert!(
+            (legacy - at_meridian).abs() < 0.5,
+            "legacy lon/15 path keeps clock-noon azimuth longitude-independent: legacy={legacy:.2}° meridian={at_meridian:.2}°"
+        );
     }
 }

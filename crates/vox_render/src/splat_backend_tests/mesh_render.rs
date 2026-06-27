@@ -2418,6 +2418,7 @@ use super::super::*;
             thin_walled: true,
             absorption_color: [0.0, 0.0, 0.0],
             absorption_depth: 1.0,
+            is_water: false,
         });
         let g0 = positions.len() as u32;
         let (gx0, gx1) = (-40.0f32, block_w + 40.0);

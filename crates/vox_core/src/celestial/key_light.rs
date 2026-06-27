@@ -260,6 +260,8 @@ mod tests {
             azimuth_rad: 3.14,
             direction: [0.0, 0.766_044_4, 0.642_787_6], // sin/cos(50°), unit length
             phase: 1.0,
+            phase_angle_rad: 0.0, // full moon → phase angle 0
+            bright_limb_angle_rad: 0.0,
             radiance: if above_horizon { MOON_CONFIG.max_radiance } else { 0.0 },
             color: MOON_CONFIG.color,
         }
@@ -271,6 +273,8 @@ mod tests {
             azimuth_rad: 1.0,
             direction: [0.5, 0.7, 0.5],
             phase: 0.0,
+            phase_angle_rad: std::f64::consts::PI, // new moon → phase angle π
+            bright_limb_angle_rad: 0.0,
             radiance: 0.0,
             color: MOON_CONFIG.color,
         }

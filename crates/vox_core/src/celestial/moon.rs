@@ -68,7 +68,17 @@ pub struct MoonPosition {
     /// World-space unit direction FROM scene TOWARD the moon (Y-up, never zero).
     pub direction: [f32; 3],
     /// Illumination fraction: 0.0 = new moon (dark), 1.0 = full moon (bright).
+    /// Computed from the TRUE sun–moon elongation (Meeus ch.48), not mean D.
     pub phase: f32,
+    /// Phase ANGLE in radians = the Sun–Moon–Earth angle (Meeus ch.48 `i`).
+    /// 0 = full (fully lit), π = new (dark). `phase = (1 + cos(phase_angle))/2`.
+    /// Disambiguates waxing/waning together with `bright_limb_angle_rad`.
+    pub phase_angle_rad: f64,
+    /// Position angle (radians) of the MIDPOINT of the moon's bright limb,
+    /// measured CCW from celestial north (Meeus ch.48, eq. 48.5). Orients the
+    /// crescent so the lit edge faces the sun; combined with the screen-space
+    /// up vector it lets a renderer rotate the terminator correctly.
+    pub bright_limb_angle_rad: f64,
     /// Key-light radiance, phase-scaled. 0 when below horizon.
     pub radiance: f32,
     /// Key-light color (from `MoonConfig`).
@@ -209,12 +219,27 @@ pub fn compute_moon_position(
         east.atan2(north).rem_euclid(TAU)
     };
 
-    // ── Step 11: phase from elongation D ─────────────────────────────────────
-    // Mean elongation D (degrees) is the moon–sun angular separation from the
-    // perspective of the Earth centre. Full moon: D ≈ 180°, new moon: D ≈ 0°.
-    // phase = (1 − cos(D)) / 2:  0.0 at D=0 (new), 1.0 at D=180° (full).
-    let elongation_rad = d * r;  // D already in [0,360) degrees → radians
-    let phase = ((1.0 - elongation_rad.cos()) / 2.0).clamp(0.0, 1.0) as f32;
+    // ── Step 11: phase from the TRUE sun–moon elongation (Meeus ch.48) ───────
+    // The mean elongation D is only an approximation and is symmetric in cos, so
+    // it cannot distinguish waxing from waning. Use the true geocentric
+    // elongation ψ between the apparent Sun and Moon, then the phase angle and
+    // illuminated fraction, plus the bright-limb position angle so a renderer can
+    // orient the crescent toward the sun.
+    let (ra_sun, dec_sun) = sun_equatorial(jd);
+    let dra = ra_sun - ra; // Sun RA − Moon RA
+    // Elongation ψ (Sun–Earth–Moon as seen geocentrically), 0..π.
+    let cos_psi = (dec_sun.sin() * dec.sin()
+        + dec_sun.cos() * dec.cos() * dra.cos())
+    .clamp(-1.0, 1.0);
+    let psi = cos_psi.acos();
+    // Phase angle i: the Sun is effectively at infinity, so i ≈ π − ψ. Illuminated
+    // fraction k = (1 + cos i)/2 = (1 − cos ψ)/2 (0 = new, 1 = full).
+    let phase_angle = PI - psi;
+    let phase = ((1.0 - cos_psi) / 2.0).clamp(0.0, 1.0) as f32;
+    // Bright-limb position angle χ (Meeus 48.5): CCW from celestial north.
+    let bright_limb_angle = (dec_sun.cos() * dra.sin())
+        .atan2(dec_sun.sin() * dec.cos() - dec_sun.cos() * dec.sin() * dra.cos())
+        .rem_euclid(TAU);
 
     // ── Step 12: key-light radiance ───────────────────────────────────────────
     // Zero when below horizon; phase-scaled otherwise.
@@ -246,10 +271,38 @@ pub fn compute_moon_position(
         azimuth_rad: azimuth,
         direction: dir_norm.to_array(),
         phase,
+        phase_angle_rad: phase_angle,
+        bright_limb_angle_rad: bright_limb_angle,
         radiance,
         color: config.color,
     }
 }
+
+/// Low-precision geocentric apparent RA/Dec of the SUN (radians) at Julian Date
+/// `jd`. Used to derive the moon's true elongation, phase, and bright-limb angle.
+///
+/// Reference: USNO / Meeus *Astronomical Algorithms* ch.25 low-precision sun
+/// (accuracy ≈0.01° in longitude — far finer than the moon's ~1° budget).
+/// Deterministic, f64.
+fn sun_equatorial(jd: f64) -> (f64, f64) {
+    use std::f64::consts::TAU;
+    let r = PI_F64 / 180.0;
+    let n = jd - 2_451_545.0; // days since J2000.0
+    // Mean longitude and mean anomaly of the Sun (degrees).
+    let l = (280.460 + 0.985_647_4 * n).rem_euclid(360.0);
+    let g = (357.528 + 0.985_600_3 * n).rem_euclid(360.0) * r;
+    // Apparent ecliptic longitude (degrees → radians).
+    let lambda = (l + 1.915 * g.sin() + 0.020 * (2.0 * g).sin()) * r;
+    // Obliquity of the ecliptic (degrees → radians).
+    let eps = (23.439 - 0.000_000_4 * n) * r;
+    let ra = (eps.cos() * lambda.sin()).atan2(lambda.cos()).rem_euclid(TAU);
+    let dec = (eps.sin() * lambda.sin()).clamp(-1.0, 1.0).asin();
+    (ra, dec)
+}
+
+/// `std::f64::consts::PI` as a module const (the function above is outside the
+/// `use` scope of `compute_moon_position`).
+const PI_F64: f64 = std::f64::consts::PI;
 
 // ── Julian Date helper ────────────────────────────────────────────────────────
 

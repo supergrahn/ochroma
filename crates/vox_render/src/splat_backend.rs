@@ -205,6 +205,13 @@ pub struct PbrMaterial {
     /// `exp(-absorption_color)`. Only read when `transmission > 0.0` and
     /// `absorption_color != [0,0,0]`.
     pub absorption_depth: f32,
+    /// Sea/water surface flag. When `true` the material packs as `MAT_WATER` (21)
+    /// instead of `MAT_GLASS` (3): the megakernel then adds procedural wave normals
+    /// + shoreline foam on top of the SAME transmissive Fresnel/Beer-Lambert glass
+    /// BSDF (so it keeps reflection/refraction + the blue-green absorption). Building
+    /// curtain-wall glass leaves this `false` and stays `MAT_GLASS` byte-identical.
+    /// Set by the converter when the mesh carries a water-optics override.
+    pub is_water: bool,
 }
 
 #[cfg(feature = "spectra-native")]
@@ -228,6 +235,7 @@ impl Default for PbrMaterial {
             thin_walled: false,
             absorption_color: [0.0, 0.0, 0.0],
             absorption_depth: 1.0,
+            is_water: false,
         }
     }
 }
@@ -423,6 +431,25 @@ pub struct LightRig {
     /// derive emissive point lights so the city lights from within. Default
     /// `false` (day) keeps every legacy render byte-identical.
     pub is_night: bool,
+    /// World-space direction TOWARD the MOON (Y-up, normalized) — the moon's OWN
+    /// Meeus ephemeris direction, SEPARATE from the `sun_dir`/key slot (which
+    /// carries the blended dominant body). Lets the renderer draw a dedicated,
+    /// phase-shaded moon disk + a distinct lunar NEE light without disturbing the
+    /// sun. Default `[0,1,0]` (zenith) — inert until a moon-disk path consumes it.
+    pub moon_dir: [f32; 3],
+    /// Lunar disk/NEE color (linear RGB) — silver-grey/cool, NOT the warm sun
+    /// tint. Default mirrors `MoonConfig::color` `[0.72, 0.82, 1.0]`.
+    pub moon_color: [f32; 3],
+    /// Lunar NEE radiance, already phase-scaled, 0 below the horizon (mirrors
+    /// `MoonPosition::radiance`). Default `0.0`.
+    pub moon_radiance: f32,
+    /// Illuminated fraction in `[0,1]` (0 = new, 1 = full) from the TRUE sun–moon
+    /// elongation. Drives the rendered terminator → crescent/gibbous/full.
+    /// Default `0.0`.
+    pub moon_phase: f32,
+    /// Position angle (radians, CCW from celestial north) of the bright-limb
+    /// midpoint — orients the crescent toward the sun. Default `0.0`.
+    pub moon_bright_limb_angle: f32,
 }
 
 /// A named display LOOK = tonemap operator + exposure (EV). The renderer owns
@@ -603,6 +630,13 @@ impl Default for LightRig {
             // Day by default — the night MegaLights path is opt-in via the game's
             // celestial clock, so every legacy render stays byte-identical.
             is_night: false,
+            // Moon slot: inert defaults (zenith dir, full-moon color, zero
+            // radiance/phase) so legacy rigs that ignore the moon are unchanged.
+            moon_dir: [0.0, 1.0, 0.0],
+            moon_color: [0.72, 0.82, 1.0],
+            moon_radiance: 0.0,
+            moon_phase: 0.0,
+            moon_bright_limb_angle: 0.0,
         }
     }
 }
@@ -3194,8 +3228,14 @@ pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS
     // thin-film) is left at 0 so OpenPBR contributes ONLY diffuse + the subtle 4%
     // dielectric Fresnel sheen — it does NOT desaturate the albedo.
     let glass = m.transmission > 0.0;
+    let water = glass && m.is_water;
     let metal = !glass && m.metallic > 0.5;
-    let mat_type = if glass {
+    // MAT_WATER (21) is a transmissive glass variant: it still satisfies `glass`
+    // (transmission > 0) so the absorption block below packs its blue-green Beer-
+    // Lambert tint exactly like glass; the kernel adds wave normals + foam on top.
+    let mat_type = if water {
+        21 // MAT_WATER
+    } else if glass {
         3 // MAT_GLASS
     } else if metal {
         2 // MAT_METAL
@@ -3320,6 +3360,7 @@ pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS
 pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     use spectra_scene_data::MaterialData;
     let glass = m.transmission > 0.0;
+    let water = glass && m.is_water;
     let metal = !glass && m.metallic > 0.5;
 
     let mut md = MaterialData::default();
@@ -3339,8 +3380,11 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     md.is_thin = if glass && m.thin_walled { 1 } else { 0 };
 
     let mut v = md.to_f32_array();
-    // [0] int type — to_f32_array writes MAT_LAMBERT(1); honour glass/metal.
-    v[0] = f32::from_bits(if glass {
+    // [0] int type — to_f32_array writes MAT_LAMBERT(1); honour water/glass/metal.
+    // MAT_WATER (21) keeps the glass absorption packing below (it is still `glass`).
+    v[0] = f32::from_bits(if water {
+        21u32 // MAT_WATER
+    } else if glass {
         3u32 // MAT_GLASS
     } else if metal {
         2u32 // MAT_METAL

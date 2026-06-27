@@ -260,9 +260,9 @@ impl ResidentSceneRenderer {
                 .unwrap_or_else(|| glass_floor_for_tier(config.max_bounces));
             if floor > config.max_bounces {
                 eprintln!(
-                    "[glass-bounce-floor] scene has MAT_GLASS; max_bounces {} -> {} \
-                     (transmissive panes need enough depth to refract through both \
-                     faces and reach light)",
+                    "[glass-bounce-floor] scene has MAT_GLASS/MAT_WATER; max_bounces {} -> {} \
+                     (transmissive panes + the sea surface need enough depth to refract \
+                     through both faces and reach light)",
                     config.max_bounces, floor
                 );
                 config.max_bounces = floor;
@@ -843,6 +843,20 @@ impl ResidentSceneRenderer {
             // SAME E_sun. Truly emitting L_sun from the disk is a P4 task (split
             // the disk-display scale out of the shared u_sun_radiance).
             self.renderer.set_sun(sun.to_array(), e_sun);
+            // MOON DISK — drive the phase-lit silver moon from the rig's Meeus
+            // ephemeris (`moon_*`, populated each frame in the game's light_rig).
+            // `moon_radiance` defaults to 0 (day / no-moon) → the GPU disk path is
+            // skipped, so this is byte-identical to the prior render until a real
+            // moon is up. The disk is SEPARATE from the sun slot: at night the sun
+            // is below the horizon (no sun disk in view) and this draws the moon at
+            // its own `moon_dir`, crescent oriented by `moon_bright_limb_angle`.
+            self.renderer.set_moon(
+                rig.moon_dir,
+                rig.moon_color,
+                rig.moon_radiance,
+                rig.moon_phase,
+                rig.moon_bright_limb_angle,
+            );
             self.renderer
                 .set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
         }
@@ -1233,7 +1247,14 @@ const GLASS_MIN_BOUNCES: u32 = 8;
 /// the megakernel's `case MAT_GLASS` dispatch.
 const MAT_GLASS_TYPE: u32 = 3;
 
-/// True when the scene's material table holds at least one MAT_GLASS material.
+/// The material-type tag for the sea/water surface (`MAT_WATER`). Water shades
+/// through the SAME transmissive Fresnel/Beer-Lambert glass BSDF (plus wave
+/// normals + foam), so it wants the same multi-bounce floor as glass — a ray must
+/// refract through the surface and reach a lit point, or the sea reads opaque/dark.
+const MAT_WATER_TYPE: u32 = 21;
+
+/// True when the scene's material table holds at least one transmissive (glass OR
+/// water) material — both need the [`GLASS_MIN_BOUNCES`] floor.
 ///
 /// Element 0 of every packed material is the material-type tag (a `u32` stored
 /// in an `f32` via `from_bits`/`pack_u32`) in BOTH the 132-float CUDA layout and
@@ -1252,7 +1273,10 @@ fn scene_has_glass(scene: &SceneState) -> bool {
     (0..mats.material_count).any(|i| {
         mats.params
             .get(i * stride)
-            .map(|t| t.to_bits() == MAT_GLASS_TYPE)
+            .map(|t| {
+                let ty = t.to_bits();
+                ty == MAT_GLASS_TYPE || ty == MAT_WATER_TYPE
+            })
             .unwrap_or(false)
     })
 }

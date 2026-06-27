@@ -1176,6 +1176,7 @@ mod terrain_carve;
                 thin_walled: cm.thin_walled,
                 absorption_color: [0.0, 0.0, 0.0],
                 absorption_depth: 1.0,
+                is_water: false,
             });
             channels.push(cm.channel.clone());
             eprintln!(
