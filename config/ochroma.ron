@@ -1,0 +1,273 @@
+// ============================================================================
+// ochroma.ron — SINGLE SOURCE OF TRUTH for every tunable engine setting.
+// ============================================================================
+//
+// CONFIG-FIRST LAW (CLAUDE.md): NOTHING may stay env-gated or hardcoded. Every
+// value below currently lives as a `std::env::var(...)` read or a hardcoded
+// `const`/literal somewhere in crates/* — this file is the runtime-loaded
+// replacement so a value can be changed WITHOUT a rebuild and WITHOUT exporting
+// an env var. Each field carries a trailing `// <file:line> [<kind>]` proof of
+// where it came from.
+//
+//   kind legend:
+//     [env]             — currently read from an environment variable
+//     [env+hardcoded]   — env-overridable, but has a hardcoded default in code
+//     [hardcoded]       — a `const`/literal in source, no env override today
+//     [existing-config] — a default carried on spectra's RenderConfig, bridged
+//                         here (the engine only overrides it via an env var)
+//     [cfg-feature]     — a compile-time `#[cfg(feature=...)]` gate; needs a
+//                         runtime/config equivalent (noted, not yet runtime)
+//
+//   COUNTS THIS FILE REPLACES (exhaustive grep of crates/, runtime code only):
+//     • 38 environment variables  (25 OCHROMA_* + 13 SPECTRA_*; full list in
+//       `_env_inventory` at the bottom). 1 more (SPECTRA_SKIP_BEAUTY) is SET by
+//       the engine, never read — also listed there.
+//     • ~33 hardcoded numeric constants / literals across vox_render,
+//       vox_terrain, ochroma_engine.
+//     • 4 compile-time render `#[cfg(feature)]` gates (spectra-native /
+//       spectra-native-optix / fsr / bevy) — noted under `build_features`.
+//
+//   4 further env vars are TEST/BENCH/INFRA ONLY (CI, HOME, XDG_CACHE_HOME,
+//   RESIDENT_KEEP_CACHE) and are NOT runtime-tunable; they are listed in
+//   `_env_inventory.test_and_infra` for completeness but are intentionally not
+//   promoted to live config fields.
+// ============================================================================
+(
+    // ------------------------------------------------------------------------
+    // terrain — heightmap geometry + the per-map snow line / curvature field.
+    // Mirrors `TerrainUpload` (crates/vox_render/src/render_runtime/terrain.rs).
+    // Atlas slots are i32 indices; -1 = "layer absent" (rolls into biome ground).
+    // ------------------------------------------------------------------------
+    terrain: (
+        heightmap_size:        4096,    // crates/vox_terrain/src/lib.rs:16 [hardcoded] — heightmap grid edge (cells)
+        heightmap_resolution:  0.25,    // crates/vox_terrain/src/lib.rs:17 [hardcoded] — metres per heightmap cell
+
+        // Snow cap (alpine set). Defaults render a snow-OFF lowland map byte-
+        // identically: -1 slot + a huge snow line so the cap never fires.
+        snow_albedo_slot:   -1,         // terrain.rs:67 [hardcoded] — atlas slot, -1 = snow off
+        snow_normal_slot:   -1,         // terrain.rs:68 [hardcoded]
+        snow_disp_slot:     -1,         // terrain.rs:69 [hardcoded]
+        snow_line_m:        1.0e9,      // terrain.rs:70 [hardcoded] — altitude (m) where snow begins; 1e9 = off
+        snow_band_m:        120.0,      // terrain.rs:71 [hardcoded] — vertical blend band (m) above the snow line
+        // Up-cosine cutoff: caps sit on ledges/peaks, not vertical faces.
+        snow_slope_cos:     0.78,       // crates/vox_render/src/render_runtime/runtime.rs:26 [hardcoded] (SNOW_SLOPE_COS)
+    ),
+
+    // ------------------------------------------------------------------------
+    // slope_layers — height/slope-aware layered ground material (rock on steep
+    // faces, dirt in transition). All atlas slots default -1 (absent) — NOT 0,
+    // which is a valid slot that would wrongly fire the rock blend. Set from the
+    // map's `TerrainSurfaceSet`. (terrain.rs:60-65, ResidentSceneRenderer::set_slope_layers)
+    // ------------------------------------------------------------------------
+    slope_layers: (
+        rock_albedo_slot:  -1,          // terrain.rs:60 [hardcoded]
+        rock_normal_slot:  -1,          // terrain.rs:61 [hardcoded]
+        dirt_albedo_slot:  -1,          // terrain.rs:62 [hardcoded]
+        dirt_normal_slot:  -1,          // terrain.rs:63 [hardcoded]
+        rock_disp_slot:    -1,          // terrain.rs:64 [hardcoded] — Tier-C height-blend displacement
+        dirt_disp_slot:    -1,          // terrain.rs:65 [hardcoded]
+    ),
+
+    // ------------------------------------------------------------------------
+    // ground — stochastic texture anti-tiling + faceted-normal de-facet. These
+    // are spectra `RenderConfig` defaults the engine bridges via SPECTRA_* env
+    // overrides (the render.ron `ground` block is the authored source today).
+    // (crates/vox_render/src/resident_renderer.rs:238-271)
+    // ------------------------------------------------------------------------
+    ground: (
+        antitile_strength: 0.85,        // resident_renderer.rs:245-251 [env+existing-config] env: SPECTRA_GROUND_ANTITILE_STRENGTH; spectra default 0.85
+        antitile_cell_m:   18.0,        // resident_renderer.rs:252-258 [env+existing-config] env: SPECTRA_GROUND_ANTITILE_CELL_M; spectra default 18 m
+        smooth_normal:     1.0,         // resident_renderer.rs:265-271 [env+existing-config] env: SPECTRA_GROUND_SMOOTH_NORMAL; 1.0 = fully smooth, range 0..=1
+    ),
+
+    // ------------------------------------------------------------------------
+    // scatter / lod — vegetation + asset instancing budgets and LOD ladder.
+    // (LOD fractions/distances duplicated across hierarchical_lod / atom_budget /
+    //  atom_instances / gpu — listed once at canonical source.)
+    // ------------------------------------------------------------------------
+    scatter: (
+        lod_level_count:   4,                          // crates/vox_render/src/hierarchical_lod.rs:5 [hardcoded] (LOD_LEVEL_COUNT)
+        lod_fractions:     [1.0, 0.4, 0.1, 0.0],       // hierarchical_lod.rs:29 [hardcoded] — splat-count fraction per level (0.0 = single billboard)
+        lod_distances_m:   [0.0, 50.0, 150.0, 400.0],  // hierarchical_lod.rs:32 [hardcoded] — eye-distance (m) transitions
+        far_instance_m:    150.0,                      // crates/vox_render/src/atom_instances.rs:36 [hardcoded] (FAR_INSTANCE_M) — imposter switch distance
+        imposter_i1_m:     400.0,                      // crates/vox_render/src/atom_instances.rs:40 [hardcoded] (IMPOSTER_I1_M) — 1-atom imposter distance
+        lod_threshold_m:   200.0,                      // crates/vox_render/src/lod.rs:1 [hardcoded] (LOD_THRESHOLD) — coarse Full/Reduced cutoff
+        rt_tile_size:      16,                         // crates/vox_render/src/spectra_render.rs:23 [hardcoded] (TILE_SIZE)
+        splat_rt_budget:   64,                         // crates/vox_render/src/gpu/splat_rt_gpu.wgsl:35 [hardcoded] (BUDGET) — per-tile splat budget (WGSL)
+    ),
+
+    // ------------------------------------------------------------------------
+    // instancing — GPU GI / emissive-light scene capacities.
+    // ------------------------------------------------------------------------
+    instancing: (
+        gpu_gi_capacity:           200000,  // crates/ochroma_engine/src/engine_loop.rs:194 [hardcoded] (GPU_GI_CAPACITY) — GPU GI probe/instance capacity
+        max_emissive_point_lights: 4096,    // crates/vox_render/src/resident_renderer.rs:1183 [hardcoded] (MAX_EMISSIVE_POINT_LIGHTS) — night NEE emitter cap (id-sorted slice)
+    ),
+
+    // ------------------------------------------------------------------------
+    // resident_renderer — the live present-path gates. These are the per-frame
+    // real-time knobs (CLAUDE.md "config-first is law"). Most have an env
+    // override today AND a hardcoded default set on spectra's RenderConfig.
+    // ------------------------------------------------------------------------
+    resident_renderer: (
+        // -- shading / spectral / bounces --
+        prefer_lean_shade:   true,       // resident_renderer.rs:171 [hardcoded] — lean shade megakernel, now default-on for resident (env OCHROMA_SHADE_LEAN is legacy no-op)
+        spectral_mode:       "hero4",    // resident_renderer.rs:369 [env+hardcoded] env: OCHROMA_SPECTRAL (single|multi|hero4); 16-band Hero4 default
+        use_optix_rt:        true,       // resident_renderer.rs:236 [hardcoded] — OptiX HW-RT on by default (spectra gate falls back to SW BVH on AMD/no-CUDA); env SPECTRA_USE_OPTIX_RT override lives in spectra
+
+        // -- glass bounce floor (the #1 perf knob; tier-derived) --
+        glass_bounces_override: -1,      // resident_renderer.rs:213 [env+hardcoded] env: SPECTRA_GLASS_BOUNCES; -1 = use tier floor, 0 = disable bump
+        glass_floor_performance: 4,      // resident_renderer.rs:1129 [hardcoded] (glass_floor_for_tier) — base bounces 0..=2
+        glass_floor_balanced:    5,      // resident_renderer.rs:1130 [hardcoded] — base bounces 3..=5
+        glass_floor_beauty:      8,      // resident_renderer.rs:1140 [hardcoded] (GLASS_MIN_BOUNCES) — base bounces >=6, full geometric glass
+
+        // -- temporal accumulation (the keystone 1-spp real-time-quality fix) --
+        temporal_enabled:          true, // resident_renderer.rs:284 [env+hardcoded] env: OCHROMA_TEMPORAL (on|off); default ON
+        temporal_alpha_static:     -1.0, // resident_renderer.rs:297 [env+existing-config] env: OCHROMA_TEMPORAL_ALPHA_STATIC; -1 = spectra RenderConfig.temporal default
+        temporal_alpha_moving:     -1.0, // resident_renderer.rs:304 [env+existing-config] env: OCHROMA_TEMPORAL_ALPHA_MOVING; -1 = spectra default
+        temporal_depth_threshold:  -1.0, // resident_renderer.rs:311 [env+existing-config] env: OCHROMA_TEMPORAL_DEPTH_THRESHOLD; -1 = spectra default
+        temporal_normal_threshold: -1.0, // resident_renderer.rs:318 [env+existing-config] env: OCHROMA_TEMPORAL_NORMAL_THRESHOLD; -1 = spectra default
+
+        // -- ReSTIR (R0 measurement: default-resolved per tier) --
+        restir_override:     "auto",     // resident_renderer.rs:333 [env] env: OCHROMA_RESTIR (on|off|auto); auto = leave tier-resolved
+        shot_spp_override:   0,          // resident_renderer.rs:349 [env] env: SPECTRA_SHOT_SPP; 0 = use tier spp (equal-time A/B lever)
+
+        // -- dispatch banding (Windows WDDM 2s TDR guard) --
+        max_pixels_per_dispatch: 65536,  // resident_renderer.rs:385 [env+hardcoded] env: SPECTRA_MAX_PIXELS_PER_DISPATCH; 0 = no banding (non-WDDM)
+
+        // -- CUDA graphs + Shader Execution Reordering (throughput, image-identical) --
+        use_cuda_graphs:     true,       // resident_renderer.rs:415 [env+hardcoded] env: SPECTRA_CUDA_GRAPHS (0|1); default ON (spectra suppresses under OptiX)
+        ser_enabled:         true,       // resident_renderer.rs:433-445 [env+hardcoded+cfg] env: SPECTRA_SER (0|1); default ON on Windows/CUDA only (#[cfg(target_os="windows")]) — see build_features note
+
+        // -- night lit windows / emissive promotion --
+        lit_windows_enabled:    true,    // resident_renderer.rs:629 [env+hardcoded] env: OCHROMA_LIT_WINDOWS (0|off disables); default ON at night
+        emissive_light_scale:   2000.0,  // resident_renderer.rs:681,1193 [env+hardcoded] env: OCHROMA_EMISSIVE_LIGHT_SCALE; EMISSIVE_LIGHT_SCALE_DEFAULT — radiant power at 1 m
+        lit_window_glow:        8.0,     // resident_renderer.rs:1334 [env+hardcoded] env: OCHROMA_LIT_WINDOW_GLOW — promoted-glass emission strength
+        lit_window_fraction:    0.6,     // resident_renderer.rs:1339 [env+hardcoded] env: OCHROMA_LIT_WINDOW_FRACTION — fraction of windows lit (0..=1)
+
+        // -- diagnostics / A-B traces (off in production) --
+        aurora_trace:        false,      // resident_renderer.rs:928 [env] env: OCHROMA_AURORA_TRACE=1 — retained delta-witness trace
+        dispatch_timing:     false,      // resident_renderer.rs:735 [env] env: SPECTRA_DISPATCH_TIMING=1 — wall-time load_scene_state
+        film_diag:           false,      // resident_renderer.rs:749 [env] env: SPECTRA_FILM_DIAG — atmosphere/fog diag eprintln
+    ),
+
+    // ------------------------------------------------------------------------
+    // denoiser — À-Trous cascade + the still/SDF render A-B knobs (splat_backend).
+    // ------------------------------------------------------------------------
+    denoiser: (
+        enabled:       true,    // crates/vox_render/src/splat_backend.rs:930,3758,4141 [env+hardcoded] env: OCHROMA_DENOISE_OFF (set => off); default ON (DenoiserMode::OptiX→À-Trous)
+        legacy_single: false,   // splat_backend.rs:3792 [env] env: OCHROMA_DENOISE_LEGACY=1 — 1-pass, no luminance edge-stop
+        iterations:    0,       // splat_backend.rs:3798 [env+existing-config] env: OCHROMA_DENOISE_ITERS; 0 = spectra cascade default (min 1)
+        sigma_lum:     -1.0,    // splat_backend.rs:3803 [env+existing-config] env: OCHROMA_DENOISE_SIGMA_LUM; -1 = spectra default (1e9 disables edge-stop)
+        relief_mode:   -1,      // splat_backend.rs:946,962 [env+hardcoded] env: OCHROMA_RELIEF_MODE (0=POM,1=cone-step); -1 = auto-select by data (cone only if all disp maps 2-channel)
+    ),
+
+    // ------------------------------------------------------------------------
+    // upscale / present-bench — FSR + the OptiX/still bench A-B escapes.
+    // (These are measurement levers; production leaves them at the defaults.)
+    // ------------------------------------------------------------------------
+    present_bench: (
+        lean_pipeline:     false, // splat_backend.rs:1017,3767 [env] env: OCHROMA_LEAN=1 — strip ReSTIR DI+GI+resample (cost A/B)
+        shade_lean:        false, // splat_backend.rs:935,3776 [env] env: OCHROMA_SHADE_LEAN=1 — lean shade megakernel on still/SDF path
+        fsr_legacy_jitter: false, // splat_backend.rs:3872 [env] env: OCHROMA_FSR_LEGACY_JITTER=1 — restore buggy divergent-Halton (A/B)
+        bench_cam_motion:  false, // splat_backend.rs:3904 [env] env: OCHROMA_BENCH_CAM_MOTION=1 — pan camera to exercise motion-vector AOV
+        pass_profile:      false, // splat_backend.rs:3924 [env] env: OCHROMA_PASS_PROFILE=1 — per-dispatch ms breakdown of last frame
+        keep_beauty:       false, // splat_backend.rs:3931 [env] env: OCHROMA_KEEP_BEAUTY=1 — keep CPU beauty resolve (also drives SPECTRA_SKIP_BEAUTY set_var)
+    ),
+
+    // ------------------------------------------------------------------------
+    // gpu / backend — device selection + kernel/binary path resolution.
+    // ------------------------------------------------------------------------
+    gpu: (
+        gi_backend:           "cpu",     // crates/ochroma_engine/src/engine_loop.rs:226 [env+hardcoded] env: OCHROMA_GI (gpu|cpu); default cpu (proven path)
+        allow_software_gpu:   false,     // crates/vox_render/src/gpu/adapter.rs:69 + crates/vox_ui/src/vello_ctx.rs:34 [env] env: OCHROMA_ALLOW_SOFTWARE_GPU (1/true/yes/on) — permit llvmpipe fallback
+        spectra_backend:      "auto",    // splat_backend.rs:3412 + crates/vox_render/src/splat_convert.rs:468 [env] env: SPECTRA_BACKEND (vulkan|vk|cuda); auto = Vulkan-first fallback (also picks the material pack layout)
+        slang_kernel_dir:     "",        // splat_backend.rs:61 [env] env: SPECTRA_SLANG_DIR; "" = derive ../../../spectra/slang beside the repo
+        spectra_path:         "",        // crates/vox_render/src/spectra_bridge.rs:198 [env] env: SPECTRA_PATH; "" = auto-detect spectra root
+    ),
+
+    // ------------------------------------------------------------------------
+    // spectral / atmosphere — Rayleigh/Mie coefficients + sky luminance scale +
+    // sun disk size. Physically grounded but tunable (these are the levers that
+    // set the sky look; megakernel reads equivalents).
+    // ------------------------------------------------------------------------
+    spectral: (
+        beta_rayleigh_ref_per_km: 0.0128,    // crates/vox_render/src/spectral_atmosphere.rs:14 [hardcoded] (BETA_R_REF_KM)
+        beta_mie_per_km:          0.005,     // spectral_atmosphere.rs:16 [hardcoded] (BETA_M_KM)
+        rayleigh_scale_height_km: 8.0,       // spectral_atmosphere.rs:18 [hardcoded] (H_R_KM)
+        mie_scale_height_km:      1.2,       // spectral_atmosphere.rs:20 [hardcoded] (H_M_KM)
+        atmosphere_thickness_km:  60.0,      // spectral_atmosphere.rs:22 [hardcoded] (ATMO_THICKNESS_KM)
+        preetham_luminance_scale: 20.0,      // crates/vox_render/src/lighting.rs:160 [hardcoded] (PREETHAM_LUMINANCE_SCALE)
+        sun_angular_radius_rad:   0.0046,    // crates/vox_render/src/splat_backend.rs:3072 [hardcoded] (SUN_ANGULAR_RADIUS_RAD) — physical sun disk
+    ),
+
+    // ------------------------------------------------------------------------
+    // materials — dynamic-weathering pattern falloffs/caps + splat importance.
+    // (splat_convert bakes the weathering PATTERN; sim drives per-instance
+    //  intensity; these are the cook-side pattern shape knobs.)
+    // ------------------------------------------------------------------------
+    materials: (
+        weather_soot_falloff_m:    14.0,  // crates/vox_render/src/splat_convert.rs:335 [hardcoded] (SOOT_FALLOFF_M) — soot fades over ~14 m of height
+        weather_efflor_falloff_m:  4.0,   // splat_convert.rs:336 [hardcoded] (EFFLOR_FALLOFF_M) — efflorescence base band
+        weather_soot_max:          0.28,  // splat_convert.rs:337 [hardcoded] (SOOT_MAX)
+        weather_efflor_max:        0.18,  // splat_convert.rs:338 [hardcoded] (EFFLOR_MAX)
+        weather_stain_max:         0.22,  // splat_convert.rs:339 [hardcoded] (STAIN_MAX)
+        weather_edge_max:          0.12,  // splat_convert.rs:340 [hardcoded] (EDGE_MAX)
+        importance_redundancy_weight:      0.5,   // crates/vox_render/src/importance.rs:63 [hardcoded] (REDUNDANCY_WEIGHT)
+        importance_color_similarity:       0.98,  // crates/vox_render/src/importance.rs:67 [hardcoded] (COLOR_SIMILARITY_THRESHOLD)
+        splat_sigma_cutoff:        3.0,   // crates/vox_render/src/splat_rt.rs:33 [hardcoded] (SIGMA_CUTOFF) — Gaussian eval radius (σ)
+    ),
+
+    // ------------------------------------------------------------------------
+    // build_features — compile-time `#[cfg(feature)]` render gates. These are
+    // NOT yet runtime-selectable; recorded so each gets a config equivalent.
+    // The runtime BACKEND selector (Vulkan vs CUDA) is already independent of
+    // these features (chosen at runtime in splat_backend.rs).
+    // ------------------------------------------------------------------------
+    build_features: (
+        spectra_native:        true,   // crates/vox_render/Cargo.toml [features] [cfg-feature] — all spectra path-tracer glue (Vulkan + CUDA)
+        spectra_native_optix:  false,  // Cargo.toml [features] [cfg-feature] — CUDA-box-only OptiX HW-RT + DLSS layer (not buildable on AMD/Linux)
+        fsr:                   false,  // Cargo.toml [features] [cfg-feature] — in-process FSR3 upscale on the renderer's Vulkan device
+        bevy:                  false,  // Cargo.toml [features] [cfg-feature] — optional Bevy ECS/app integration (off by default)
+        // NOTE: resident_renderer.ser_enabled is additionally gated by
+        // #[cfg(target_os="windows")] (resident_renderer.rs:431) — it only
+        // forces-ON on Windows/CUDA; on Linux/AMD it keeps the config default.
+    ),
+
+    // ------------------------------------------------------------------------
+    // _env_inventory — EXHAUSTIVE list of every `env::var` found in crates/ so
+    // the "every env var appears" mandate is verifiably met. Runtime vars map to
+    // the fields above; test/infra vars are listed but intentionally not config.
+    // ------------------------------------------------------------------------
+    _env_inventory: (
+        ochroma_runtime: [
+            "OCHROMA_GI", "OCHROMA_ALLOW_SOFTWARE_GPU", "OCHROMA_SHADE_LEAN",
+            "OCHROMA_TEMPORAL", "OCHROMA_TEMPORAL_ALPHA_STATIC",
+            "OCHROMA_TEMPORAL_ALPHA_MOVING", "OCHROMA_TEMPORAL_DEPTH_THRESHOLD",
+            "OCHROMA_TEMPORAL_NORMAL_THRESHOLD", "OCHROMA_RESTIR", "OCHROMA_SPECTRAL",
+            "OCHROMA_LIT_WINDOWS", "OCHROMA_EMISSIVE_LIGHT_SCALE",
+            "OCHROMA_LIT_WINDOW_GLOW", "OCHROMA_LIT_WINDOW_FRACTION",
+            "OCHROMA_AURORA_TRACE", "OCHROMA_LEAN", "OCHROMA_RELIEF_MODE",
+            "OCHROMA_DENOISE_OFF", "OCHROMA_DENOISE_LEGACY", "OCHROMA_DENOISE_ITERS",
+            "OCHROMA_DENOISE_SIGMA_LUM", "OCHROMA_FSR_LEGACY_JITTER",
+            "OCHROMA_BENCH_CAM_MOTION", "OCHROMA_PASS_PROFILE", "OCHROMA_KEEP_BEAUTY",
+        ], // 25
+        spectra_runtime: [
+            "SPECTRA_GLASS_BOUNCES", "SPECTRA_GROUND_ANTITILE_STRENGTH",
+            "SPECTRA_GROUND_ANTITILE_CELL_M", "SPECTRA_GROUND_SMOOTH_NORMAL",
+            "SPECTRA_SHOT_SPP", "SPECTRA_MAX_PIXELS_PER_DISPATCH",
+            "SPECTRA_CUDA_GRAPHS", "SPECTRA_SER", "SPECTRA_DISPATCH_TIMING",
+            "SPECTRA_FILM_DIAG", "SPECTRA_SLANG_DIR", "SPECTRA_BACKEND",
+            "SPECTRA_PATH",
+        ], // 13
+        // SET (write) by the engine, never read — derived from keep_beauty:
+        spectra_set_only: ["SPECTRA_SKIP_BEAUTY"], // splat_backend.rs:3934/3936
+        // Test/bench/infra ONLY — not runtime-tunable, intentionally not fields:
+        test_and_infra: [
+            "CI",                  // vox_audio/src/lib.rs:411 (skip audio in CI)
+            "HOME",                // splat_backend_tests/* + mod.rs:724 (asset path)
+            "XDG_CACHE_HOME",      // splat_backend_tests/mod.rs:719 (cache path)
+            "RESIDENT_KEEP_CACHE", // benches/spectra_resident.rs:32
+        ],
+    ),
+)

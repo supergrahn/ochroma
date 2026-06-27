@@ -332,12 +332,15 @@ fn build_weathering_pattern(positions: &[f32], normals: &[f32]) -> Vec<f32> {
     }
     // Street-level reference: soot/efflorescence are anchored to world y≈0 (the
     // ground plane the city sits on). Heights are in metres.
-    const SOOT_FALLOFF_M: f32 = 14.0; // soot fades out over ~14 m of height
-    const EFFLOR_FALLOFF_M: f32 = 4.0; // efflorescence is a tight base band
-    const SOOT_MAX: f32 = 0.28;
-    const EFFLOR_MAX: f32 = 0.18;
-    const STAIN_MAX: f32 = 0.22;
-    const EDGE_MAX: f32 = 0.12;
+    // CONFIG-FIRST: the weathering-pattern falloffs/caps are `config/ochroma.ron`
+    // `materials.weather_*`; defaults equal the old literals (14/4/0.28/0.18/0.22/0.12).
+    let mcfg = &vox_config::config().materials;
+    let soot_falloff_m = mcfg.weather_soot_falloff_m;
+    let efflor_falloff_m = mcfg.weather_efflor_falloff_m;
+    let soot_max = mcfg.weather_soot_max;
+    let efflor_max = mcfg.weather_efflor_max;
+    let stain_max = mcfg.weather_stain_max;
+    let edge_max = mcfg.weather_edge_max;
 
     let mut masks = vec![0.0f32; vc * 7];
     for v in 0..vc {
@@ -352,13 +355,13 @@ fn build_weathering_pattern(positions: &[f32], normals: &[f32]) -> Vec<f32> {
         let wall = (1.0 - ny.abs()).clamp(0.0, 1.0);
         // Height factor, 1 at the street, decaying with height.
         let h = y.max(0.0);
-        let soot = SOOT_MAX * (-h / SOOT_FALLOFF_M).exp() * wall;
-        let efflor = EFFLOR_MAX * (-h / EFFLOR_FALLOFF_M).exp() * wall;
+        let soot = soot_max * (-h / soot_falloff_m).exp() * wall;
+        let efflor = efflor_max * (-h / efflor_falloff_m).exp() * wall;
         // Down-facing surfaces (sills, ledge undersides, cornice soffits) weep.
         let down = (-ny).max(0.0); // 1 for a fully down-facing surface
-        let stain = STAIN_MAX * down * down;
+        let stain = stain_max * down * down;
         // Near-vertical wall faces take edge/arris wear.
-        let edge = EDGE_MAX * wall;
+        let edge = edge_max * wall;
 
         base[1] = stain; // water_stain
         base[4] = soot; // soot

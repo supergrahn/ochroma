@@ -63,8 +63,13 @@ pub fn is_software(info: &wgpu::AdapterInfo) -> bool {
         || name.contains("software")
 }
 
-/// Is the software fallback explicitly permitted via `OCHROMA_ALLOW_SOFTWARE_GPU`?
+/// Is the software (llvmpipe) fallback explicitly permitted? CONFIG-FIRST:
+/// `config/ochroma.ron` `gpu.allow_software_gpu` (default false) OR the
+/// `OCHROMA_ALLOW_SOFTWARE_GPU` env escape. Default false ⇒ env-only (unchanged).
 pub fn software_allowed() -> bool {
+    if vox_config::config().gpu.allow_software_gpu {
+        return true;
+    }
     matches!(
         std::env::var("OCHROMA_ALLOW_SOFTWARE_GPU")
             .ok()

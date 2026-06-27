@@ -256,11 +256,12 @@ pub fn importance_scores(splats: &[GaussianSplat]) -> Vec<f32> {
             if dist2 > reach * reach {
                 continue;
             }
-            if spectral_cosine(s, sj) >= COLOR_SIMILARITY_THRESHOLD {
+            if spectral_cosine(s, sj) >= vox_config::config().materials.importance_color_similarity {
                 similar += 1;
             }
         }
-        let redundancy = 1.0 / (1.0 + REDUNDANCY_WEIGHT * similar as f32);
+        let redundancy =
+            1.0 / (1.0 + vox_config::config().materials.importance_redundancy_weight * similar as f32);
 
         scores.push(opacity * size * energy * redundancy);
     }

@@ -30,10 +30,10 @@ use crate::frustum::Frustum;
 use crate::hierarchical_lod::{LOD_LEVEL_COUNT, crossfade_factor, select_lod_level};
 use crate::spectral::RenderCamera;
 
-/// Fraction of original splat count kept at each LOD level.
-/// L0 = full, L1 = 40%, L2 = 10%, L3 = single billboard (handled specially).
-/// Mirrors `hierarchical_lod::LOD_FRACTIONS` (private there).
-const LOD_FRACTIONS: [f32; LOD_LEVEL_COUNT] = [1.0, 0.4, 0.1, 0.0];
+// CONFIG-FIRST (de-duplicated): the LOD fraction ladder (`[1.0, 0.4, 0.1, 0.0]`)
+// used to be copy-pasted here from `hierarchical_lod`. It now has ONE source —
+// `vox_config` (`config/ochroma.ron` `scatter.lod_fractions`) — read at the
+// call site below.
 
 /// Per-cluster precomputed LOD index lists (built once at scene load).
 pub struct ClusterLod {
@@ -473,11 +473,12 @@ fn build_cluster_lod(cluster: &SplatCluster, splats: &[GaussianSplat]) -> Cluste
     });
 
     let n = sorted.len();
+    let lod_fractions = &vox_config::config().scatter.lod_fractions;
     let l0 = sorted.clone();
     let l1_len =
-        ((n as f32 * LOD_FRACTIONS[1]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
+        ((n as f32 * lod_fractions[1]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
     let l2_len =
-        ((n as f32 * LOD_FRACTIONS[2]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
+        ((n as f32 * lod_fractions[2]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
     let l1 = sorted[..l1_len].to_vec();
     let l2 = sorted[..l2_len].to_vec();
     let l3 = if n > 0 { vec![sorted[0]] } else { Vec::new() };

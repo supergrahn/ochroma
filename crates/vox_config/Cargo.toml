@@ -1,0 +1,12 @@
+[package]
+name = "vox_config"
+edition.workspace = true
+version.workspace = true
+description = "Runtime-loaded single-source-of-truth engine config (ochroma.ron)."
+
+# Deliberately a LEAF crate: serde + ron ONLY. Every other crate (vox_core,
+# vox_terrain, vox_render, ochroma_engine, vox_ui) can depend on it with zero
+# risk of a dependency cycle, and it compiles in well under a second.
+[dependencies]
+serde = { workspace = true }
+ron = "0.8"

@@ -27,9 +27,14 @@ fn is_software_adapter(info: &vello::wgpu::AdapterInfo) -> bool {
         || name.contains("software")
 }
 
-/// Is the software fallback explicitly permitted via `OCHROMA_ALLOW_SOFTWARE_GPU`?
+/// Is the software fallback permitted? CONFIG-FIRST: `config/ochroma.ron`
+/// `gpu.allow_software_gpu` (default false) OR the `OCHROMA_ALLOW_SOFTWARE_GPU`
+/// env escape — the SAME single source as `vox_render::gpu::adapter` (de-duped).
 #[cfg(feature = "game-ui")]
 fn software_gpu_allowed() -> bool {
+    if vox_config::config().gpu.allow_software_gpu {
+        return true;
+    }
     matches!(
         std::env::var("OCHROMA_ALLOW_SOFTWARE_GPU")
             .ok()

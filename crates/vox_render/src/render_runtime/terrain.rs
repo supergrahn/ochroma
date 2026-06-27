@@ -49,26 +49,32 @@ pub struct TerrainUpload {
 
 impl Default for TerrainUpload {
     fn default() -> Self {
+        // CONFIG-FIRST: the slope-layer + snow-cap fallback slots/heights are the
+        // runtime config blocks `slope_layers` / `terrain` (`config/ochroma.ron`).
+        // The shipped defaults equal the old literals (slope slots -1, snow slots
+        // -1, snow line 1e9, band 120) so a snow-OFF lowland map renders byte-
+        // identically. The map's `TerrainSurfaceSet` still overrides these at load.
         // Slope slots default to -1 (absent) — NOT 0, which is a valid atlas slot
         // that would wrongly fire the rock blend on a field-less ground.
+        let cfg = vox_config::config();
         Self {
             packed: Vec::new(),
             res: [0, 0],
             origin: [0.0, 0.0],
             cell_size: 0.0,
             channel_slots: Vec::new(),
-            slope_rock_albedo: -1,
-            slope_rock_normal: -1,
-            slope_dirt_albedo: -1,
-            slope_dirt_normal: -1,
-            slope_rock_disp: -1,
-            slope_dirt_disp: -1,
+            slope_rock_albedo: cfg.slope_layers.rock_albedo_slot,
+            slope_rock_normal: cfg.slope_layers.rock_normal_slot,
+            slope_dirt_albedo: cfg.slope_layers.dirt_albedo_slot,
+            slope_dirt_normal: cfg.slope_layers.dirt_normal_slot,
+            slope_rock_disp: cfg.slope_layers.rock_disp_slot,
+            slope_dirt_disp: cfg.slope_layers.dirt_disp_slot,
             // Snow OFF by default: -1 slot + a huge snow line so the cap never fires.
-            slope_snow_albedo: -1,
-            slope_snow_normal: -1,
-            slope_snow_disp: -1,
-            slope_height_snow: 1.0e9,
-            slope_height_snow_band: 120.0,
+            slope_snow_albedo: cfg.terrain.snow_albedo_slot,
+            slope_snow_normal: cfg.terrain.snow_normal_slot,
+            slope_snow_disp: cfg.terrain.snow_disp_slot,
+            slope_height_snow: cfg.terrain.snow_line_m,
+            slope_height_snow_band: cfg.terrain.snow_band_m,
             curvature_values: Vec::new(),
             curvature_res: [0, 0],
             curvature_origin: [0.0, 0.0],

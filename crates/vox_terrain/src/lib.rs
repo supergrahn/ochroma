@@ -13,6 +13,12 @@ pub use scene::TerrainScene;
 
 use serde::{Deserialize, Serialize};
 
+// CONFIG-FIRST: these `pub const`s are retained as the public-API DEFAULT
+// mirror, but the runtime source of truth is `vox_config` (`config/ochroma.ron`
+// `terrain.heightmap_size` / `terrain.heightmap_resolution`). The runtime read
+// sites below pull from config so the values are tunable without a rebuild; the
+// const values equal the config defaults, so behavior is unchanged when no
+// `ochroma.ron` is present.
 pub const HEIGHTMAP_SIZE: usize = 4096;
 pub const HEIGHTMAP_RESOLUTION: f32 = 0.25;
 
@@ -35,7 +41,7 @@ pub struct TerrainTile {
 
 impl TerrainTile {
     pub fn flat(height: f32) -> Self {
-        let size = HEIGHTMAP_SIZE;
+        let size = vox_config::config().terrain.heightmap_size as usize;
         let count = size * size;
         Self {
             heights: vec![height; count],
@@ -59,8 +65,9 @@ impl TerrainTile {
     /// Bilinear interpolation for sub-cell sampling.
     /// local_x and local_z are in world units (multiplied by HEIGHTMAP_RESOLUTION per cell).
     pub fn sample(&self, local_x: f32, local_z: f32) -> f32 {
-        let fx = (local_x / HEIGHTMAP_RESOLUTION).max(0.0);
-        let fz = (local_z / HEIGHTMAP_RESOLUTION).max(0.0);
+        let res = vox_config::config().terrain.heightmap_resolution;
+        let fx = (local_x / res).max(0.0);
+        let fz = (local_z / res).max(0.0);
         let x0 = (fx as usize).min(self.size - 1);
         let z0 = (fz as usize).min(self.size - 1);
         let x1 = (x0 + 1).min(self.size - 1);

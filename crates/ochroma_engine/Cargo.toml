@@ -21,6 +21,7 @@ vr = []
 full = ["rendering", "simulation", "audio", "networking", "scripting", "vr"]
 
 [dependencies]
+vox_config = { path = "../vox_config" }
 vox_core = { path = "../vox_core" }
 vox_data = { path = "../vox_data" }
 vox_render = { path = "../vox_render" }

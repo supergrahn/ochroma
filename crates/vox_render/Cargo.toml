@@ -4,6 +4,7 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+vox_config = { path = "../vox_config" }
 vox_core = { path = "../vox_core" }
 vox_physics = { path = "../vox_physics" }
 vox_scene = { path = "../vox_scene" }

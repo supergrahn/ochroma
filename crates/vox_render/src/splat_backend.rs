@@ -927,7 +927,9 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
     // settings.denoiser.enabled from config.denoiser_mode, so toggling the
     // settings flag alone gets clobbered). Default path keeps near_realtime's
     // DenoiserMode::OptiX → the working À-Trous fallback on this box.
-    if std::env::var("OCHROMA_DENOISE_OFF").is_ok() {
+    // Config-first denoiser default (`config/ochroma.ron` denoiser.enabled);
+    // OCHROMA_DENOISE_OFF still force-disables for an A/B render.
+    if !vox_config::config().denoiser.enabled || std::env::var("OCHROMA_DENOISE_OFF").is_ok() {
         config.denoiser_mode = spectra_renderer::DenoiserMode::None;
     }
     // WT-9 A/B escape: opt into the LEAN shade megakernel so a still parity
@@ -943,33 +945,42 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
     // that DOES supply a 2-channel height+cone map opt into cone-step. 0 = POM,
     // 1 = cone-step. Absent → near_realtime's default (now POM), byte-identical
     // for opaque/POM renders. The kernel reads u_relief_mode from this field.
-    if let Ok(v) = std::env::var("OCHROMA_RELIEF_MODE") {
-        if let Ok(m) = v.trim().parse::<i32>() {
-            config.relief_mode = m;
-        }
+    // CONFIG-FIRST relief mode. The FORCED value is env OCHROMA_RELIEF_MODE > config
+    // `denoiser.relief_mode` (when >= 0). The config default -1 means "not forced"
+    // → auto-select by data (byte-identical to the old env-absent behavior).
+    let relief_forced: Option<i32> = std::env::var("OCHROMA_RELIEF_MODE")
+        .ok()
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .or_else(|| {
+            let c = vox_config::config().denoiser.relief_mode;
+            if c >= 0 { Some(c) } else { None }
+        });
+    if let Some(m) = relief_forced {
+        config.relief_mode = m;
     }
     // AUDIT WT-6 (2026-06-13): cone-step (relief_mode==1) needs a 2-channel
     // height map (R=height, G=baked relaxed-cone ratio). On a 1-channel map the
     // cone ratio reads 0 and the march silently degrades to a fixed-step linear
     // march — WORSE than POM while still paying the tap cost. Two-part guard:
-    //  (1) caller forced a mode (OCHROMA_RELIEF_MODE set): honor it, but if they
-    //      forced cone-step on a 1-channel map, PANIC rather than degrade.
+    //  (1) caller forced a mode (env OR config relief_mode>=0): honor it, but if
+    //      they forced cone-step on a 1-channel map, PANIC rather than degrade.
     //  (2) no forced mode: AUTO-SELECT by the DATA — cone-step only when EVERY
     //      displacement map carries the cone channel (the test loaders bake it;
     //      the cooked/game path uploads 1-channel, so it correctly stays on POM
     //      until the cook bakes the cone ratio). Cone becomes opt-in-by-data:
     //      correct everywhere, never silently worse than POM.
-    if std::env::var("OCHROMA_RELIEF_MODE").is_ok() {
+    if relief_forced.is_some() {
         if config.relief_mode == 1 {
             for (mi, m) in materials.iter().enumerate() {
                 if m.displacement_tex >= 0 {
                     let ch = textures[m.displacement_tex as usize].channels;
                     assert!(
                         ch >= 2,
-                        "OCHROMA_RELIEF_MODE=1 (cone-step) but material {mi}'s \
-                         displacement texture (id {}) is {ch}-channel; cone-step needs \
-                         a 2-channel height+cone map or it degrades below POM. Bake the \
-                         cone ratio into G, or use POM (relief_mode=0). (AUDIT WT-6)",
+                        "relief_mode=1 (cone-step, forced via OCHROMA_RELIEF_MODE or \
+                         config) but material {mi}'s displacement texture (id {}) is \
+                         {ch}-channel; cone-step needs a 2-channel height+cone map or it \
+                         degrades below POM. Bake the cone ratio into G, or use POM \
+                         (relief_mode=0). (AUDIT WT-6)",
                         m.displacement_tex
                     );
                 }
@@ -3068,13 +3079,18 @@ pub(crate) fn pack_vulkan_directional_light(
 /// IRRADIANCE `E_sun` into the disk RADIANCE `L_sun = E_sun / Ω` that both the
 /// NEE disk light (`pack_vulkan_sun_disk_light`) and the visible atmosphere disk
 /// (`Renderer::set_sun`) emit — so the two are physically the SAME magnitude.
+// CONFIG-FIRST: the physical sun angular radius is `config/ochroma.ron`
+// `spectral.sun_angular_radius_rad` (default 4.6e-3 == this constant). The
+// `pub const` is retained as the public-API DEFAULT mirror; the runtime read
+// sites below pull from config so it is tunable without a rebuild.
 #[cfg(feature = "spectra-native")]
 pub const SUN_ANGULAR_RADIUS_RAD: f32 = 4.6e-3;
 
 /// Solid angle subtended by the sun disk, `Ω = 2π(1 − cos α)`.
 #[cfg(feature = "spectra-native")]
 pub fn sun_solid_angle() -> f32 {
-    2.0 * std::f32::consts::PI * (1.0 - (SUN_ANGULAR_RADIUS_RAD).cos())
+    2.0 * std::f32::consts::PI
+        * (1.0 - (vox_config::config().spectral.sun_angular_radius_rad).cos())
 }
 
 /// Pack the PHYSICAL SUN as a `LightData` DISK light (LIGHT_DIRECTIONAL=3 with a
@@ -3104,7 +3120,7 @@ pub(crate) fn pack_vulkan_sun_disk_light(
     a[9] = color[1];
     a[10] = color[2];
     a[11] = disk_radiance; // intensity slot carries L_sun = E_sun / Ω
-    a[30] = SUN_ANGULAR_RADIUS_RAD; // angular_radius → cone sampling + 1/Ω pdf
+    a[30] = vox_config::config().spectral.sun_angular_radius_rad; // angular_radius → cone sampling + 1/Ω pdf
     a[31] = pack_u32(0xFFFF_FFFF); // group_mask
     a[32] = pack_i32(0); // num_filters
     a[33] = pack_i32(0); // filter_offset
@@ -3751,11 +3767,14 @@ pub fn spectra_resident_bench_fsr(
     scene.mark_lights_changed();
 
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
+    // CONFIG-FIRST denoiser defaults (`config/ochroma.ron` `denoiser`); env still
+    // overrides (the documented A/B levers). Defaults equal the old behavior.
+    let dcfg = &vox_config::config().denoiser;
     let mut config = RenderConfig::near_realtime(render_w, render_h);
     config.slang_kernel_dir = resolve_slang_kernel_dir();
     // Honor the SAME env escapes as the still entry so A/Bs (OCHROMA_LEAN etc.)
     // apply at this FAST config too.
-    if std::env::var("OCHROMA_DENOISE_OFF").is_ok() {
+    if !dcfg.enabled || std::env::var("OCHROMA_DENOISE_OFF").is_ok() {
         config.denoiser_mode = spectra_renderer::DenoiserMode::None;
     }
     // R14: spectral ON by default on the live SDF path; OCHROMA_SPECTRAL=0 drops
@@ -3789,21 +3808,27 @@ pub fn spectra_resident_bench_fsr(
     // forces the OLD single-5×5 behavior (1 pass, no luminance edge-stop) so the
     // à-trous cascade can be measured against it. OCHROMA_DENOISE_ITERS=N
     // overrides the cascade pass count.
-    if std::env::var("OCHROMA_DENOISE_LEGACY").as_deref() == Ok("1") {
+    if dcfg.legacy_single || std::env::var("OCHROMA_DENOISE_LEGACY").as_deref() == Ok("1") {
         config.denoiser.iterations = 1;
         // Disable the DEN-03 luminance edge-stop by making its sigma huge so
         // wl≈1 for all taps — reproduces the pre-DEN-03 weight exactly.
         config.denoiser.sigma_lum = 1.0e9;
     }
-    if let Ok(it) = std::env::var("OCHROMA_DENOISE_ITERS") {
-        if let Ok(n) = it.parse::<u32>() {
-            config.denoiser.iterations = n.max(1);
-        }
+    // env OCHROMA_DENOISE_ITERS > config iterations (>0). 0 = spectra cascade default.
+    if let Some(n) = std::env::var("OCHROMA_DENOISE_ITERS")
+        .ok()
+        .and_then(|it| it.parse::<u32>().ok())
+        .or(if dcfg.iterations > 0 { Some(dcfg.iterations) } else { None })
+    {
+        config.denoiser.iterations = n.max(1);
     }
-    if let Ok(sl) = std::env::var("OCHROMA_DENOISE_SIGMA_LUM") {
-        if let Ok(v) = sl.parse::<f32>() {
-            config.denoiser.sigma_lum = v;
-        }
+    // env OCHROMA_DENOISE_SIGMA_LUM > config sigma_lum (>=0). -1 = spectra default.
+    if let Some(v) = std::env::var("OCHROMA_DENOISE_SIGMA_LUM")
+        .ok()
+        .and_then(|sl| sl.parse::<f32>().ok())
+        .or(if dcfg.sigma_lum >= 0.0 { Some(dcfg.sigma_lum) } else { None })
+    {
+        config.denoiser.sigma_lum = v;
     }
     // FSR is driven explicitly below on the renderer's device — keep the internal
     // upscaler null so render() returns native (internal-res) film.
@@ -4138,7 +4163,7 @@ pub fn spectra_resident_bench_fsr(
 /// escape). Used to gate the "denoise didn't run" assertion in the FSR bench.
 #[cfg(all(feature = "spectra-native", feature = "fsr"))]
 fn config_denoise_on() -> bool {
-    std::env::var("OCHROMA_DENOISE_OFF").is_err()
+    vox_config::config().denoiser.enabled && std::env::var("OCHROMA_DENOISE_OFF").is_err()
 }
 
 /// APPEND-ONLY (2026-06-14): WT-1 measurement — build a triangle mesh scene with

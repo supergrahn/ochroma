@@ -188,10 +188,11 @@ pub struct EngineLoop {
     gpu_gi_capacity: u32,
 }
 
-/// Sizing for the headless GPU GI device. Large enough for the smoke scenes and
-/// typical editor views; a frame beyond this runs the (unlimited) CPU path for
-/// that call rather than letting the GPU clamp diverge from the CPU mirror.
-const GPU_GI_CAPACITY: u32 = 200_000;
+// CONFIG-FIRST: the headless GPU GI device capacity is `config/ochroma.ron`
+// `instancing.gpu_gi_capacity` (default 200_000 == the old const). Large enough
+// for the smoke scenes and typical editor views; a frame beyond this runs the
+// (unlimited) CPU path for that call rather than letting the GPU clamp diverge
+// from the CPU mirror.
 
 impl EngineLoop {
     /// Build the loop. Mirrors `EngineApp::new` (engine_runner.rs:425-516):
@@ -217,16 +218,20 @@ impl EngineLoop {
         // Spatial audio manager (engine_runner:512-515).
         let spatial_audio = SpatialAudioManager::new();
 
-        // GI backend selection. Precedence (read once, at construction):
-        //   1. OCHROMA_GI=gpu  → try the GPU path; on adapter/device failure log
-        //      one eprintln and fall back to Cpu (never panics).
-        //   2. OCHROMA_GI=cpu  → force the proven CPU path.
-        //   3. unset / other   → default Cpu (the proven path).
-        // A later `use_gpu_gi()` call can still upgrade an env-default-Cpu loop.
-        let gi_env = std::env::var("OCHROMA_GI").ok();
-        let gi_backend = match gi_env.as_deref() {
+        // GI backend selection. CONFIG-FIRST precedence (read once, at construction):
+        //   1. env OCHROMA_GI, else config `gpu.gi_backend` (default "cpu").
+        //   2. "gpu" → try the GPU path; on adapter/device failure log one eprintln
+        //      and fall back to Cpu (never panics).
+        //   3. "cpu" → force the proven CPU path.
+        //   4. other → warn once + Cpu.
+        // A later `use_gpu_gi()` call can still upgrade a default-Cpu loop.
+        let gpu_gi_capacity = vox_config::config().instancing.gpu_gi_capacity;
+        let gi_sel = std::env::var("OCHROMA_GI")
+            .ok()
+            .unwrap_or_else(|| vox_config::config().gpu.gi_backend.clone());
+        let gi_backend = if gi_sel.eq_ignore_ascii_case("gpu") {
             // Case-insensitive: "gpu"/"GPU"/"Gpu" all select the GPU path.
-            Some(v) if v.eq_ignore_ascii_case("gpu") => match GpuGi::new(GPU_GI_CAPACITY) {
+            match GpuGi::new(gpu_gi_capacity) {
                 Ok(g) => GiBackend::Gpu(Box::new(g)),
                 Err(e) => {
                     eprintln!(
@@ -235,18 +240,17 @@ impl EngineLoop {
                     );
                     GiBackend::Cpu
                 }
-            },
-            Some(v) if v.eq_ignore_ascii_case("cpu") => GiBackend::Cpu,
+            }
+        } else if gi_sel.eq_ignore_ascii_case("cpu") {
+            GiBackend::Cpu
+        } else {
             // An unrecognized value silently defaulting would hide typos
             // (OCHROMA_GI=Gpu used to mean "cpu" without a word) — warn once.
-            Some(other) => {
-                eprintln!(
-                    "[ochroma_engine] unrecognized OCHROMA_GI value '{other}' \
-                     (expected gpu|cpu); using the CPU path."
-                );
-                GiBackend::Cpu
-            }
-            None => GiBackend::Cpu,
+            eprintln!(
+                "[ochroma_engine] unrecognized GI backend '{gi_sel}' \
+                 (expected gpu|cpu); using the CPU path."
+            );
+            GiBackend::Cpu
         };
 
         Self {
@@ -268,7 +272,7 @@ impl EngineLoop {
             gi_backend,
             last_gi_us: None,
             last_gi_backend_used: None,
-            gpu_gi_capacity: GPU_GI_CAPACITY,
+            gpu_gi_capacity,
         }
     }
 

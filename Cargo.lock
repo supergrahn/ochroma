@@ -4351,6 +4351,7 @@ dependencies = [
  "half",
  "uuid",
  "vox_audio",
+ "vox_config",
  "vox_core",
  "vox_data",
  "vox_net",
@@ -5461,6 +5462,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ron"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b91f7eff05f748767f183df4320a63d6936e9c6107d97c9e6bdd9784f4289c94"
+dependencies = [
+ "base64 0.21.7",
+ "bitflags 2.11.0",
+ "serde",
+ "serde_derive",
+]
+
+[[package]]
 name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6258,6 +6271,7 @@ dependencies = [
  "glam 0.29.3",
  "quick-xml 0.37.5",
  "rand 0.8.5",
+ "ron",
  "serde",
  "shader-slang",
  "spectra-aov-mgr",
@@ -7394,6 +7408,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vox_config"
+version = "0.1.0"
+dependencies = [
+ "ron",
+ "serde",
+]
+
+[[package]]
 name = "vox_core"
 version = "0.1.0"
 dependencies = [
@@ -7531,6 +7553,7 @@ dependencies = [
  "tokio",
  "toml",
  "uuid",
+ "vox_config",
  "vox_core",
  "vox_data",
  "vox_physics",
@@ -7590,6 +7613,7 @@ dependencies = [
  "rand 0.9.2",
  "rayon",
  "serde",
+ "vox_config",
  "vox_core",
 ]
 
@@ -7607,6 +7631,7 @@ dependencies = [
  "swash",
  "taffy",
  "vello",
+ "vox_config",
  "vox_core",
 ]
 

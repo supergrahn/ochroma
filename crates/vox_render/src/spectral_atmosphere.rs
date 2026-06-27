@@ -10,16 +10,9 @@ pub const BAND_WAVELENGTHS_NM: [f32; 16] = [
     705.0, 730.0, 755.0,
 ];
 
-/// Reference Rayleigh scattering cross-section at 550nm [km⁻¹]
-const BETA_R_REF_KM: f32 = 0.0128; // per km at sea level
-/// Mie scattering coefficient [km⁻¹]
-const BETA_M_KM: f32 = 0.005;
-/// Rayleigh scale height [km]
-const H_R_KM: f32 = 8.0;
-/// Mie scale height [km]
-const H_M_KM: f32 = 1.2;
-/// Atmosphere effective thickness [km]
-const ATMO_THICKNESS_KM: f32 = 60.0;
+// CONFIG-FIRST: the Rayleigh/Mie coefficients + scale/thickness heights are the
+// runtime config block `spectral` (`config/ochroma.ron`), read at the call sites
+// below. Defaults equal the old literals (0.0128 / 0.005 / 8 / 1.2 / 60).
 
 pub struct AerosolProfile {
     pub haze_factor: f32,
@@ -49,7 +42,7 @@ impl SpectralAtmosphere {
 
     /// Rayleigh scattering coefficient at sea level [km⁻¹]: scales as λ⁻⁴.
     pub fn beta_rayleigh(lambda_nm: f32) -> f32 {
-        BETA_R_REF_KM * (550.0_f32 / lambda_nm).powi(4)
+        vox_config::config().spectral.beta_rayleigh_ref_per_km * (550.0_f32 / lambda_nm).powi(4)
     }
 
     /// Optical depth along a path at `elevation_rad` (elevation above horizon).
@@ -60,11 +53,12 @@ impl SpectralAtmosphere {
         let sin_elev = elevation_rad.sin().clamp(0.017, 1.0); // 1° minimum
         let air_mass = 1.0 / sin_elev;
 
+        let cfg = vox_config::config();
         // Slant path length through atmosphere [km]
-        let path_km = ATMO_THICKNESS_KM * air_mass;
+        let path_km = cfg.spectral.atmosphere_thickness_km * air_mass;
 
         let beta_r = Self::beta_rayleigh(lambda_nm);
-        let beta_m = BETA_M_KM * haze;
+        let beta_m = cfg.spectral.beta_mie_per_km * haze;
 
         // Numerical integration over 20 layers
         let steps = 20_u32;
@@ -73,8 +67,8 @@ impl SpectralAtmosphere {
         for i in 0..steps {
             // Height increases as we travel up the slant path
             let h_km = (i as f32 + 0.5) * ds * sin_elev;
-            let density_r = (-h_km / H_R_KM).exp();
-            let density_m = (-h_km / H_M_KM).exp();
+            let density_r = (-h_km / cfg.spectral.rayleigh_scale_height_km).exp();
+            let density_m = (-h_km / cfg.spectral.mie_scale_height_km).exp();
             tau += (beta_r * density_r + beta_m * density_m) * ds;
         }
         tau
@@ -98,7 +92,7 @@ impl SpectralAtmosphere {
 
             // In-scatter: Rayleigh term dominates at short wavelengths
             let beta_r = Self::beta_rayleigh(lambda);
-            let beta_m_val = BETA_M_KM * haze;
+            let beta_m_val = vox_config::config().spectral.beta_mie_per_km * haze;
             let in_scatter = (beta_r + beta_m_val * 0.5) * transmittance;
             radiance[b] = in_scatter;
 

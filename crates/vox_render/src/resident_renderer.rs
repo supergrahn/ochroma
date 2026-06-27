@@ -162,13 +162,19 @@ impl ResidentSceneRenderer {
         initial: SceneState,
     ) -> Result<Self, String> {
         let gpu = ResidentBackend::new(0).map_err(|e| format!("gpu backend init: {e:?}"))?;
+        // CONFIG-FIRST: the live present-path gates default from `config/ochroma.ron`
+        // (`vox_config`); a still-present env var (the documented A/B "sweep lever")
+        // wins over the config value, which wins over the former hardcoded literal.
+        // Every config default equals the old literal, so with no env + no ron the
+        // frame is byte-identical.
+        let rcfg = &vox_config::config().resident_renderer;
         let mut config = RenderConfig::near_realtime(width, height);
         config.slang_kernel_dir = resolve_slang_kernel_dir();
         // Lean shade kernel: byte-identical for pure triangle-mesh city scenes (the
         // heavy SSS/volume/polarization/SDF/Gaussian paths are off on the resident
         // config) and it skips the NRC-coupled heavy path. With NRC off on the
         // real-time tiers, make lean unconditional for the resident render.
-        config.prefer_lean_shade = true;
+        config.prefer_lean_shade = rcfg.prefer_lean_shade;
         let _ = std::env::var("OCHROMA_SHADE_LEAN"); // (legacy opt-in, now default-on)
         // Start from the rig (lighting, look, weathering toggle), seed the
         // near_realtime feature parity, THEN overlay the tier's cost knobs so
@@ -210,9 +216,16 @@ impl ResidentSceneRenderer {
         // path-length budget, never the sample order. `SPECTRA_GLASS_BOUNCES`
         // overrides the floor (config-first); 0 disables the bump entirely.
         if scene_has_glass(&initial) {
+            // env SPECTRA_GLASS_BOUNCES > config glass_bounces_override (>=0) > tier
+            // floor. Config default -1 means "use the tier floor" (identical to the
+            // old behavior); 0 disables the bump.
             let floor = std::env::var("SPECTRA_GLASS_BOUNCES")
                 .ok()
                 .and_then(|v| v.parse::<u32>().ok())
+                .or_else(|| {
+                    let ov = rcfg.glass_bounces_override;
+                    if ov >= 0 { Some(ov as u32) } else { None }
+                })
                 .unwrap_or_else(|| glass_floor_for_tier(config.max_bounces));
             if floor > config.max_bounces {
                 eprintln!(
@@ -233,7 +246,7 @@ impl ResidentSceneRenderer {
         // (`want_optix && raw_context()!=0 && should_use_optix_rt()`) safely
         // rejects this on AMD/Vulkan/no-CUDA → software fallback, so it's correct
         // on the dev 780M too. SPECTRA_USE_OPTIX_RT remains an override.
-        config.use_optix_rt = true;
+        config.use_optix_rt = rcfg.use_optix_rt;
 
         // GROUND ANTI-TILING (FIX 1) — the stochastic texture-bombing knobs the
         // megakernel ground path reads (`u_ground_antitile_*`). The spectra
@@ -281,7 +294,7 @@ impl ResidentSceneRenderer {
         // Default ON for the live resident render (this is what makes 1 spp
         // shippable). OCHROMA_TEMPORAL=off disables it for an A/B witness; the
         // alpha/threshold knobs stay config-first on RenderConfig.temporal.
-        config.temporal.enabled = true;
+        config.temporal.enabled = rcfg.temporal_enabled;
         match std::env::var("OCHROMA_TEMPORAL").as_deref() {
             Ok("off") | Ok("0") => {
                 config.temporal.enabled = false;
@@ -293,10 +306,18 @@ impl ResidentSceneRenderer {
             }
             _ => {}
         }
-        // Optional config-first tuning overrides (the A/B sweep levers).
+        // Optional config-first tuning overrides. Precedence: env (the A/B sweep
+        // lever) > config value > spectra RenderConfig.temporal default. The config
+        // sentinel -1.0 means "leave the spectra default" (identical to the old
+        // behavior when the env var was unset).
+        // The config sentinel -1.0 means "no override → keep the spectra default";
+        // `(x != -1.0).then_some(x)` maps it to None (the normal-threshold valid
+        // range includes -1.0, so a plain range filter could NOT distinguish the
+        // sentinel — this guard does).
         if let Some(v) = std::env::var("OCHROMA_TEMPORAL_ALPHA_STATIC")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
+            .or((rcfg.temporal_alpha_static != -1.0).then_some(rcfg.temporal_alpha_static))
             .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
         {
             config.temporal.alpha_static = v;
@@ -304,6 +325,7 @@ impl ResidentSceneRenderer {
         if let Some(v) = std::env::var("OCHROMA_TEMPORAL_ALPHA_MOVING")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
+            .or((rcfg.temporal_alpha_moving != -1.0).then_some(rcfg.temporal_alpha_moving))
             .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
         {
             config.temporal.alpha_moving = v;
@@ -311,6 +333,7 @@ impl ResidentSceneRenderer {
         if let Some(v) = std::env::var("OCHROMA_TEMPORAL_DEPTH_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
+            .or((rcfg.temporal_depth_threshold != -1.0).then_some(rcfg.temporal_depth_threshold))
             .filter(|v| v.is_finite() && *v > 0.0)
         {
             config.temporal.depth_threshold = v;
@@ -318,6 +341,7 @@ impl ResidentSceneRenderer {
         if let Some(v) = std::env::var("OCHROMA_TEMPORAL_NORMAL_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
+            .or((rcfg.temporal_normal_threshold != -1.0).then_some(rcfg.temporal_normal_threshold))
             .filter(|v| v.is_finite() && (-1.0..=1.0).contains(v))
         {
             config.temporal.normal_threshold = v;
@@ -330,13 +354,18 @@ impl ResidentSceneRenderer {
         // resample_mode untouched (a wiring gap the audit flagged); the PT path
         // only runs when resample_mode != None, so we set BOTH here. Temporal-only
         // is the R0 mode (spatial is the R1 follow-up). Unset => leave as resolved.
-        match std::env::var("OCHROMA_RESTIR").as_deref() {
-            Ok("on") | Ok("1") => {
+        // env OCHROMA_RESTIR > config restir_override. "auto" (the default) leaves
+        // the tier-resolved value untouched (identical to the old unset behavior).
+        let restir_sel = std::env::var("OCHROMA_RESTIR")
+            .ok()
+            .unwrap_or_else(|| rcfg.restir_override.clone());
+        match restir_sel.as_str() {
+            "on" | "1" => {
                 config.use_restir = true;
                 config.resample_mode = spectra_renderer::ResampleMode::Temporal;
                 eprintln!("[restir-override] OCHROMA_RESTIR=on -> use_restir=true resample_mode=Temporal");
             }
-            Ok("off") | Ok("0") => {
+            "off" | "0" => {
                 config.use_restir = false;
                 config.resample_mode = spectra_renderer::ResampleMode::None;
                 eprintln!("[restir-override] OCHROMA_RESTIR=off -> use_restir=false resample_mode=None");
@@ -346,11 +375,14 @@ impl ResidentSceneRenderer {
         // PHASE R0 measurement override: SPECTRA_SHOT_SPP forces the per-frame
         // target spp (the `--compare-map` equal-time loop uses this to match the
         // ON/OFF passes to equal wall-clock). Unset => the tier's spp stands.
-        if let Some(spp) = std::env::var("SPECTRA_SHOT_SPP").ok().and_then(|v| v.parse::<u32>().ok()) {
-            if spp > 0 {
-                config.target_spp = spp;
-                eprintln!("[spp-override] SPECTRA_SHOT_SPP={spp} -> target_spp={spp}");
-            }
+        // env SPECTRA_SHOT_SPP > config shot_spp_override. 0 (default) = use tier spp.
+        let spp_sel = std::env::var("SPECTRA_SHOT_SPP")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(rcfg.shot_spp_override);
+        if spp_sel > 0 {
+            config.target_spp = spp_sel;
+            eprintln!("[spp-override] SPECTRA_SHOT_SPP={spp_sel} -> target_spp={spp_sel}");
         }
         // SPECTRAL MODE (16-band Hero4 by default). The old dodge here forced
         // SpectralMode::Single to avoid "black buildings" under Hero4. That
@@ -366,9 +398,14 @@ impl ResidentSceneRenderer {
         // metameric chroma); keep Single reachable for A/B via OCHROMA_SPECTRAL.
         //   OCHROMA_SPECTRAL=single|0|off  -> scalar single-wavelength path
         //   OCHROMA_SPECTRAL=multi|hero4|1 -> 16-band Hero4 (default)
-        config.spectral_mode = match std::env::var("OCHROMA_SPECTRAL").as_deref() {
-            Ok("single") | Ok("0") | Ok("off") => spectra_renderer::SpectralMode::Single,
-            // multi / hero4 / 1 / unset all select the spectral path
+        // env OCHROMA_SPECTRAL > config spectral_mode (default "hero4"). Any value
+        // other than single/0/off selects the 16-band Hero4 path.
+        let spectral_sel = std::env::var("OCHROMA_SPECTRAL")
+            .ok()
+            .unwrap_or_else(|| rcfg.spectral_mode.clone());
+        config.spectral_mode = match spectral_sel.as_str() {
+            "single" | "0" | "off" => spectra_renderer::SpectralMode::Single,
+            // multi / hero4 / 1 all select the spectral path
             _ => spectra_renderer::SpectralMode::Hero4,
         };
 
@@ -385,7 +422,7 @@ impl ResidentSceneRenderer {
         config.max_pixels_per_dispatch = std::env::var("SPECTRA_MAX_PIXELS_PER_DISPATCH")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(65_536);
+            .unwrap_or(rcfg.max_pixels_per_dispatch);
 
         // CUDA-GRAPH RE-ENABLE (B4): default-ON, with spectra as the single gate.
         //
@@ -412,7 +449,13 @@ impl ResidentSceneRenderer {
         // path safe, and the non-OptiX fallback path gets the graph launch-overhead
         // saving. SPECTRA_CUDA_GRAPHS=0 forces OFF (the safety/A-B baseline), =1 forces
         // ON; default (unset) is now ON.
-        config.use_cuda_graphs = std::env::var("SPECTRA_CUDA_GRAPHS").as_deref() != Ok("0");
+        // env SPECTRA_CUDA_GRAPHS (0|1) > config use_cuda_graphs (default ON). With
+        // the env unset the config value stands; default true == the old `!= Ok("0")`.
+        config.use_cuda_graphs = match std::env::var("SPECTRA_CUDA_GRAPHS").as_deref() {
+            Ok("0") => false,
+            Ok(_) => true,
+            Err(_) => rcfg.use_cuda_graphs,
+        };
         eprintln!("[cuda-graphs] use_cuda_graphs={}", config.use_cuda_graphs);
 
         // SER (Shader Execution Reordering): the 4-pass software reorder
@@ -428,10 +471,12 @@ impl ResidentSceneRenderer {
         // config default. `SPECTRA_SER=0` forces it OFF (the A/B baseline pass);
         // `SPECTRA_SER=1` forces it ON. Mirrors spectra's own SPECTRA_SER
         // override (render_config.rs:1348) so both layers agree.
-        #[cfg(target_os = "windows")]
-        {
-            config.ser_enabled = true;
-        }
+        // SER is now a RUNTIME config field (was `#[cfg(target_os="windows")]`-
+        // gated). Config-first: the default (true) applies on every OS; the SER
+        // reorder kernel only actually fires on the CUDA box, and being a
+        // deterministic gather/scatter it is image-identical, so this is a pure
+        // throughput knob. env SPECTRA_SER (0|1) still overrides below.
+        config.ser_enabled = rcfg.ser_enabled;
         match std::env::var("SPECTRA_SER").as_deref() {
             Ok("1") => {
                 config.ser_enabled = true;
@@ -626,8 +671,10 @@ impl ResidentSceneRenderer {
         // also lights neighboring facades/streets — the MegaLights night effect.
         // Gated on sun elevation so daytime renders are byte-identical.
         let is_night = self.rig.is_night;
-        let lit_window_disabled =
-            matches!(std::env::var("OCHROMA_LIT_WINDOWS").as_deref(), Ok("0") | Ok("off"));
+        // Config-first: night lit windows default ON (config.lit_windows_enabled);
+        // env OCHROMA_LIT_WINDOWS=0|off force-disables for an A/B witness.
+        let lit_window_disabled = !vox_config::config().resident_renderer.lit_windows_enabled
+            || matches!(std::env::var("OCHROMA_LIT_WINDOWS").as_deref(), Ok("0") | Ok("off"));
         if is_night && !lit_window_disabled {
             promote_glass_to_lit_windows(&mut scene);
         }
@@ -682,7 +729,7 @@ impl ResidentSceneRenderer {
                 .ok()
                 .and_then(|v| v.parse::<f32>().ok())
                 .filter(|v| *v > 0.0)
-                .unwrap_or(EMISSIVE_LIGHT_SCALE_DEFAULT);
+                .unwrap_or(vox_config::config().resident_renderer.emissive_light_scale);
             emissive_point_lights(&scene, emissive_scale)
         } else {
             (Vec::new(), 0)
@@ -1125,10 +1172,14 @@ impl ResidentSceneRenderer {
 /// `SPECTRA_GLASS_BOUNCES` still overrides this (config-first); 0 disables.
 /// Deterministic: a pure function of the tier's config value, never reordered.
 fn glass_floor_for_tier(base_bounces: u32) -> u32 {
+    // CONFIG-FIRST: the per-tier glass bounce floors are `config/ochroma.ron`
+    // (`resident_renderer.glass_floor_{performance,balanced,beauty}`). Defaults
+    // 4 / 5 / 8 equal the old literals.
+    let rcfg = &vox_config::config().resident_renderer;
     match base_bounces {
-        0..=2 => 4,
-        3..=5 => 5,
-        _ => GLASS_MIN_BOUNCES,
+        0..=2 => rcfg.glass_floor_performance,
+        3..=5 => rcfg.glass_floor_balanced,
+        _ => rcfg.glass_floor_beauty,
     }
 }
 
@@ -1175,22 +1226,12 @@ fn scene_has_glass(scene: &SceneState) -> bool {
 const MAT_EMISSION_SLOT: usize = 23;
 const MAT_EMISSION_COLOR_SLOT: usize = 20;
 
-/// Upper bound on derived emissive point lights. NEE selects ONE light per pixel
-/// uniformly (megakernel) so the cost is O(1) per sample regardless of count, but
-/// the light buffer upload + ReSTIR candidate quality degrade past a few thousand
-/// uncorrelated emitters. Cap keeps the night frame bounded; sorted-by-id slice so
-/// the selection is deterministic (no HashMap/RNG order).
-const MAX_EMISSIVE_POINT_LIGHTS: usize = 4096;
-
-/// Per-emitter intensity scale applied to `emission_strength` when turning an
-/// emissive instance into an NEE point light. The megakernel applies inverse-square
-/// falloff (`sample_point_light`: `emission = color * intensity / dist^2`), so this
-/// is the RADIANT POWER at 1 m. City emitters light facades ~5-30 m away, so the
-/// power must be large to read against a daylit-calibrated exposure: at 15 m a
-/// scale of 2000 (× emission ~1.6) gives irradiance ~14, comparable to the noon
-/// sun (~28) — a believable lit-window/street-lamp pool. Config-overridable via
-/// OCHROMA_EMISSIVE_LIGHT_SCALE.
-const EMISSIVE_LIGHT_SCALE_DEFAULT: f32 = 2000.0;
+// CONFIG-FIRST: the night-NEE emitter cap (`instancing.max_emissive_point_lights`,
+// default 4096) and the per-emitter radiant-power scale (`resident_renderer.
+// emissive_light_scale`, default 2000, env OCHROMA_EMISSIVE_LIGHT_SCALE) live in
+// `config/ochroma.ron` and are read at their call sites. NEE selects ONE light per
+// pixel uniformly so cost is O(1)/sample; the cap keeps the buffer upload + ReSTIR
+// candidate quality bounded, and the id-sorted slice keeps selection deterministic.
 
 /// Derive NEE point lights from the scene's emissive instances.
 ///
@@ -1246,10 +1287,12 @@ fn emissive_point_lights(scene: &SceneState, scale: f32) -> (Vec<f32>, usize) {
     let tri_mat = &geo.material_ids; // per-triangle relative material id
     let ranges = &geo.proto_ranges; // (v_off, v_cnt, t_off, t_cnt) per proto
 
+    let max_emissive_point_lights =
+        vox_config::config().instancing.max_emissive_point_lights as usize;
     let mut out: Vec<f32> = Vec::new();
     let mut count = 0usize;
     for i in 0..inst_count {
-        if count >= MAX_EMISSIVE_POINT_LIGHTS {
+        if count >= max_emissive_point_lights {
             break;
         }
         let base = bases.get(i).copied().unwrap_or(0) as usize;
@@ -1330,17 +1373,19 @@ fn promote_glass_to_lit_windows(scene: &mut SceneState) {
     if stride <= MAT_EMISSION_SLOT {
         return;
     }
-    // Authorable via env (config-first): glow strength + lit fraction.
+    // Authorable via config (`config/ochroma.ron` resident_renderer.lit_window_*);
+    // env still overrides for an A/B sweep. Defaults 8.0 / 0.6 equal the old literals.
+    let rcfg = &vox_config::config().resident_renderer;
     let glow = std::env::var("OCHROMA_LIT_WINDOW_GLOW")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
         .filter(|v| *v > 0.0)
-        .unwrap_or(8.0);
+        .unwrap_or(rcfg.lit_window_glow);
     let lit_frac = std::env::var("OCHROMA_LIT_WINDOW_FRACTION")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
         .map(|v| v.clamp(0.0, 1.0))
-        .unwrap_or(0.6);
+        .unwrap_or(rcfg.lit_window_fraction);
     let mut promoted = 0usize;
     for i in 0..mats.material_count {
         let base = i * stride;

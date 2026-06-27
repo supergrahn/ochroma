@@ -26,18 +26,11 @@ use crate::frustum::Frustum;
 use crate::hierarchical_lod::{LOD_LEVEL_COUNT, crossfade_factor, select_lod_level};
 use crate::spectral::RenderCamera;
 
-/// Fraction of original splat count kept at each LOD level. Private re-
-/// declaration of `hierarchical_lod::LOD_FRACTIONS` (house precedent —
-/// `atom_budget.rs` and `atom_budget_gpu.rs` carry the same copy).
-const LOD_FRACTIONS: [f32; LOD_LEVEL_COUNT] = [1.0, 0.4, 0.1, 0.0];
-
-/// Instances at or beyond this eye distance render as asset-level imposters
-/// (`LOD_DISTANCES[2]` — private in `hierarchical_lod`).
-const FAR_INSTANCE_M: f32 = 150.0;
-
-/// Far instances at or beyond this distance start at the 1-atom I1 imposter
-/// (`LOD_DISTANCES[3]`).
-const IMPOSTER_I1_M: f32 = 400.0;
+// CONFIG-FIRST (de-duplicated): the LOD fraction ladder + the far/imposter
+// switch distances were copy-pasted here. They now have ONE source — `vox_config`
+// (`config/ochroma.ron` `scatter.lod_fractions` / `scatter.far_instance_m` =
+// `LOD_DISTANCES[2]` / `scatter.imposter_i1_m` = `LOD_DISTANCES[3]`) — read at the
+// call sites below. Defaults equal the old literals (`[1.0,0.4,0.1,0.0]` / 150 / 400).
 
 /// I0 imposter voxel resolution per axis — 4³ = 64 atoms maximum.
 const IMPOSTER0_RES: usize = 4;
@@ -420,11 +413,12 @@ fn build_cluster_levels(
     });
 
     let n = sorted.len();
+    let lod_fractions = &vox_config::config().scatter.lod_fractions;
     let l0 = sorted.clone();
     let l1_len =
-        ((n as f32 * LOD_FRACTIONS[1]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
+        ((n as f32 * lod_fractions[1]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
     let l2_len =
-        ((n as f32 * LOD_FRACTIONS[2]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
+        ((n as f32 * lod_fractions[2]).round() as usize).clamp(if n > 0 { 1 } else { 0 }, n);
     let l1 = sorted[..l1_len].to_vec();
     let l2 = sorted[..l2_len].to_vec();
     let l3 = if n > 0 { vec![sorted[0]] } else { Vec::new() };
@@ -656,13 +650,13 @@ impl InstancedSelector {
             instances_visible += 1;
 
             let inst_distance = (world_center - eye).length();
-            if inst_distance >= FAR_INSTANCE_M {
+            if inst_distance >= vox_config::config().scatter.far_instance_m {
                 // Far: ONE work unit walking the [I0, I1] imposter chain.
                 instances_far += 1;
                 let d = inst_distance.max(1e-3);
                 let radius = entry.bounds_radius;
                 let score = entry.total_opacity * (radius * radius) / (d * d);
-                let level: u8 = if inst_distance >= IMPOSTER_I1_M { 1 } else { 0 };
+                let level: u8 = if inst_distance >= vox_config::config().scatter.imposter_i1_m { 1 } else { 0 };
                 let count = entry.imposter_ranges[level as usize].1 as usize;
                 work.push(WorkUnit {
                     instance: inst_idx as u32,

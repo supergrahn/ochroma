@@ -25,14 +25,17 @@ pub struct LodChain {
     pub levels: [LodLevel; LOD_LEVEL_COUNT],
 }
 
-/// Fractions of original splat count for each LOD level.
-const LOD_FRACTIONS: [f32; LOD_LEVEL_COUNT] = [1.0, 0.4, 0.1, 0.0]; // 0.0 means 1 billboard
-
-/// Default transition distances for each level.
-const LOD_DISTANCES: [f32; LOD_LEVEL_COUNT] = [0.0, 50.0, 150.0, 400.0];
+// CONFIG-FIRST (de-duplicated): the LOD fractions + transition distances were
+// copy-pasted into hierarchical_lod / atom_budget / atom_instances. They now
+// live in ONE place — `vox_config` (`config/ochroma.ron` `scatter.lod_fractions`
+// / `scatter.lod_distances_m`) — read at the call site below. Defaults equal the
+// old literals `[1.0, 0.4, 0.1, 0.0]` / `[0.0, 50.0, 150.0, 400.0]`.
 
 /// Generate a complete 4-level LOD chain from a set of splats by stride-sampling.
 pub fn generate_lod_chain(splats: &[GaussianSplat]) -> LodChain {
+    let cfg = vox_config::config();
+    let lod_fractions = &cfg.scatter.lod_fractions; // normalized to LOD_LEVEL_COUNT
+    let lod_distances = &cfg.scatter.lod_distances_m;
     let bounding_radius = compute_bounding_radius(splats);
 
     let mut levels: Vec<LodLevel> = Vec::with_capacity(LOD_LEVEL_COUNT);
@@ -50,14 +53,14 @@ pub fn generate_lod_chain(splats: &[GaussianSplat]) -> LodChain {
             }
         } else {
             // LOD 1-2: stride-sample.
-            stride_sample(splats, LOD_FRACTIONS[i])
+            stride_sample(splats, lod_fractions[i])
         };
 
         levels.push(LodLevel {
             level: i as u32,
             splat_count: level_splats.len(),
             bounding_sphere_radius: bounding_radius,
-            transition_distance: LOD_DISTANCES[i],
+            transition_distance: lod_distances[i],
             splats: level_splats,
         });
     }
@@ -155,11 +158,12 @@ fn compute_bounding_radius(splats: &[GaussianSplat]) -> f32 {
 pub fn select_lod_level(distance: f32, screen_size: f32) -> u32 {
     // Use a combination of distance and screen size.
     // Screen size < 10px = billboard, < 50px = LOD2, < 200px = LOD1, else LOD0.
-    if screen_size < 10.0 || distance > LOD_DISTANCES[3] {
+    let lod_distances = &vox_config::config().scatter.lod_distances_m;
+    if screen_size < 10.0 || distance > lod_distances[3] {
         3
-    } else if screen_size < 50.0 || distance > LOD_DISTANCES[2] {
+    } else if screen_size < 50.0 || distance > lod_distances[2] {
         2
-    } else if screen_size < 200.0 || distance > LOD_DISTANCES[1] {
+    } else if screen_size < 200.0 || distance > lod_distances[1] {
         1
     } else {
         0
@@ -176,8 +180,9 @@ pub fn crossfade_factor(distance: f32, level: u32) -> f32 {
         return 0.0; // No transition beyond last level.
     }
 
-    let current_dist = LOD_DISTANCES[level_idx];
-    let next_dist = LOD_DISTANCES[level_idx + 1];
+    let lod_distances = &vox_config::config().scatter.lod_distances_m;
+    let current_dist = lod_distances[level_idx];
+    let next_dist = lod_distances[level_idx + 1];
     let range = next_dist - current_dist;
 
     if range <= 0.0 {

@@ -1,4 +1,5 @@
-const LOD_THRESHOLD: f32 = 200.0;
+// CONFIG-FIRST: the coarse Full/Reduced LOD cutoff is the runtime config value
+// `scatter.lod_threshold_m` (`config/ochroma.ron`); default 200.0 m.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LodLevel {
@@ -7,7 +8,7 @@ pub enum LodLevel {
 }
 
 pub fn select_lod(distance: f32) -> LodLevel {
-    if distance <= LOD_THRESHOLD {
+    if distance <= vox_config::config().scatter.lod_threshold_m {
         LodLevel::Full
     } else {
         LodLevel::Reduced

@@ -19,8 +19,10 @@ use crate::spectral::RenderCamera;
 // Constants (matching spectra-gaussian-render/src/renderer.rs)
 // ---------------------------------------------------------------------------
 
-/// Tile size for tile-based rasterization.
-const TILE_SIZE: usize = 16;
+// CONFIG-FIRST: the tile size for tile-based rasterization is `config/ochroma.ron`
+// `scatter.rt_tile_size` (default 16 == the old const), read once at the top of
+// `render_cpu_internal`. (This is the legacy CPU splat raster, not the live path
+// tracer.)
 /// Alpha threshold for Gaussian contribution (1/255).
 const ALPHA_THRESHOLD: f32 = 1.0 / 255.0;
 /// Transmittance threshold for early termination.
@@ -416,8 +418,9 @@ fn render_cpu_internal(
 ) -> Vec<f32> {
     let w = camera.width;
     let h = camera.height;
-    let tiles_x = w.div_ceil(TILE_SIZE);
-    let tiles_y = h.div_ceil(TILE_SIZE);
+    let tile_size = vox_config::config().scatter.rt_tile_size as usize;
+    let tiles_x = w.div_ceil(tile_size);
+    let tiles_y = h.div_ceil(tile_size);
 
     // Step 1: Project all Gaussians
     let mut projected: Vec<ProjectedGaussian> = Vec::with_capacity(gaussians.len());
@@ -431,13 +434,13 @@ fn render_cpu_internal(
     // Step 2: Assign to tiles
     let mut tile_gaussians: Vec<TileGaussian> = Vec::new();
     for pg in &projected {
-        let min_tx = ((pg.screen_pos[0] - pg.radius).max(0.0) as usize / TILE_SIZE)
+        let min_tx = ((pg.screen_pos[0] - pg.radius).max(0.0) as usize / tile_size)
             .min(tiles_x.saturating_sub(1));
-        let max_tx = ((pg.screen_pos[0] + pg.radius).max(0.0) as usize / TILE_SIZE)
+        let max_tx = ((pg.screen_pos[0] + pg.radius).max(0.0) as usize / tile_size)
             .min(tiles_x.saturating_sub(1));
-        let min_ty = ((pg.screen_pos[1] - pg.radius).max(0.0) as usize / TILE_SIZE)
+        let min_ty = ((pg.screen_pos[1] - pg.radius).max(0.0) as usize / tile_size)
             .min(tiles_y.saturating_sub(1));
-        let max_ty = ((pg.screen_pos[1] + pg.radius).max(0.0) as usize / TILE_SIZE)
+        let max_ty = ((pg.screen_pos[1] + pg.radius).max(0.0) as usize / tile_size)
             .min(tiles_y.saturating_sub(1));
 
         for ty in min_ty..=max_ty {
@@ -493,10 +496,10 @@ fn render_cpu_internal(
 
             let tx = tile_id % tiles_x;
             let ty = tile_id / tiles_x;
-            let px_start_x = tx * TILE_SIZE;
-            let px_start_y = ty * TILE_SIZE;
-            let px_end_x = (px_start_x + TILE_SIZE).min(w);
-            let px_end_y = (px_start_y + TILE_SIZE).min(h);
+            let px_start_x = tx * tile_size;
+            let px_start_y = ty * tile_size;
+            let px_end_x = (px_start_x + tile_size).min(w);
+            let px_end_y = (px_start_y + tile_size).min(h);
             let tile_w = px_end_x - px_start_x;
             let tile_h = px_end_y - px_start_y;
             let mut tile_pixels = vec![0.0f32; tile_w * tile_h * 4];
@@ -554,10 +557,10 @@ fn render_cpu_internal(
     for (tile_id, tile_pixels) in tile_pixel_bufs {
         let tx = tile_id % tiles_x;
         let ty = tile_id / tiles_x;
-        let px_start_x = tx * TILE_SIZE;
-        let px_start_y = ty * TILE_SIZE;
-        let px_end_x = (px_start_x + TILE_SIZE).min(w);
-        let px_end_y = (px_start_y + TILE_SIZE).min(h);
+        let px_start_x = tx * tile_size;
+        let px_start_y = ty * tile_size;
+        let px_end_x = (px_start_x + tile_size).min(w);
+        let px_end_y = (px_start_y + tile_size).min(h);
         let tile_w = px_end_x - px_start_x;
         for (local_py, py) in (px_start_y..px_end_y).enumerate() {
             for (local_px, px) in (px_start_x..px_end_x).enumerate() {

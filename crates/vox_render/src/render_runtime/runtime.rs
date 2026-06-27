@@ -20,10 +20,9 @@ use crate::render_runtime::frame::{beauty_to_rgba8, interop_dims};
 use crate::render_runtime::terrain::TerrainUpload;
 use vox_scene::NodeId;
 
-/// Snow-cap slope cutoff (geometric up-cosine): caps sit on ledges/peaks, not on
-/// vertical faces. Ported from the game's terrain-upload path so [`RenderRuntime::set_terrain`]
-/// is self-contained.
-const SNOW_SLOPE_COS: f32 = 0.78;
+// CONFIG-FIRST: the snow-cap slope cutoff (geometric up-cosine — caps sit on
+// ledges/peaks, not vertical faces) is `config/ochroma.ron` `terrain.snow_slope_cos`
+// (default 0.78 == the old literal). Read at the `set_slope_snow` call site below.
 
 /// Result of a host-readback present (`render_and_present`).
 ///
@@ -299,7 +298,8 @@ impl RenderRuntime {
         self.renderer.set_slope_snow(
             upload.slope_snow_albedo, upload.slope_snow_normal,
             upload.slope_snow_disp, upload.slope_height_snow,
-            upload.slope_height_snow_band, SNOW_SLOPE_COS,
+            upload.slope_height_snow_band,
+            vox_config::config().terrain.snow_slope_cos,
         );
         eprintln!("[snow-cap] snow_albedo={} snow_line={:.0}m band={:.0}m (>=0 + finite = snow on)",
             upload.slope_snow_albedo, upload.slope_height_snow,

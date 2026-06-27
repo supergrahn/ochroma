@@ -156,8 +156,9 @@ pub fn sun_direction(hour: f32, latitude_deg: f32) -> Vec3 {
 
 // ── Sky Colors ────────────────────────────────────────────────────────────
 
-/// Normalisation divisor that maps Preetham Yz luminance (~0-20 kcd/m²) to [0, 1].
-const PREETHAM_LUMINANCE_SCALE: f32 = 20.0;
+// CONFIG-FIRST: the Preetham luminance normalisation divisor is the runtime
+// config value `spectral.preetham_luminance_scale` (`config/ochroma.ron`); the
+// default 20.0 equals the old literal. Read at the call site below.
 
 /// Zenith, horizon, and sun disk colors from a Preetham-inspired sky model.
 #[derive(Debug, Clone, Copy)]
@@ -199,7 +200,7 @@ pub fn preetham_sky(sun_dir: Vec3) -> SkyColors {
         (4.0 / 9.0 - turbidity / 120.0) * (std::f32::consts::PI - 2.0 * sun_alt.acos()).max(0.0);
     let zenith_y = ((4.0453 * turbidity - 4.971) * chi.tan() - 0.2155 * turbidity + 2.4192)
         .max(0.0)
-        / PREETHAM_LUMINANCE_SCALE;
+        / vox_config::config().spectral.preetham_luminance_scale;
 
     let zenith_r = (0.15 + 0.05 * (turbidity - 2.0)).clamp(0.0, 1.0) * zenith_y;
     let zenith_g = (0.2 + 0.1 * sun_alt).clamp(0.0, 1.0) * zenith_y;

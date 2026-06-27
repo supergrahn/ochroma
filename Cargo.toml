@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/vox_config",
     "crates/vox_core",
     "crates/vox_data",
     "crates/vox_usd",
