@@ -179,15 +179,17 @@ mod tests {
     #[test]
     fn test_rgb_to_spectral_red_has_high_bands_10_11() {
         let spectral = rgb_to_spectral(1.0, 0.0, 0.0);
-        // 16-band: band 10=630nm (0.9*r), band 11=655nm (1.0*r=peak red)
+        // 16-band Smits-1999 RED basis (see vox_core::spectral::SMITS_BASIS): the
+        // long-wavelength bands carry the red energy — band 10=630nm≈0.75,
+        // band 11=655nm≈0.90 (rising toward the 1.0 peak at 730–755nm).
         let band10 = f16::from_bits(spectral[10]).to_f32();
         let band11 = f16::from_bits(spectral[11]).to_f32();
-        assert!(band10 > 0.8, "red input should have high band 10 (630nm), got {}", band10);
+        assert!(band10 > 0.7, "red input should have high band 10 (630nm), got {}", band10);
         assert!(band11 > 0.9, "red input should have high band 11 (655nm), got {}", band11);
-        // Blue bands should be zero for pure red
+        // Short-wavelength (blue) bands should be near zero for pure red.
         let band0 = f16::from_bits(spectral[0]).to_f32();
         let band3 = f16::from_bits(spectral[3]).to_f32();
-        assert!(band0 < 0.01, "red input should have ~zero band 0, got {}", band0);
+        assert!(band0 < 0.06, "red input should have ~zero band 0 (380nm), got {}", band0);
         assert!(band3 < 0.01, "red input should have ~zero band 3 (455nm peak blue), got {}", band3);
     }
 
