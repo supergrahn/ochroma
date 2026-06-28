@@ -300,6 +300,30 @@ impl RenderRuntime {
                 upload.curvature_res[0], upload.curvature_res[1],
                 upload.curvature_cell_size);
         }
+        // WATER-DEPTH FIELD + UNDERWATER BED layers (P3, ROOT 4). Upload the static
+        // per-cell water column so the megakernel can blend the bed by depth (and
+        // darken/roughen the intertidal wet band) instead of painting submerged
+        // ground as flat Coastal grass/sand. Empty `depth_values` leaves both OFF
+        // (byte-identical). Order does not matter; both are static scene data.
+        self.renderer.set_underwater_layers(
+            upload.uw_wet_albedo, upload.uw_wet_normal, upload.uw_wet_rough,
+            upload.uw_mud_albedo, upload.uw_mud_normal, upload.uw_mud_rough,
+            upload.uw_silt_albedo, upload.uw_silt_normal, upload.uw_silt_rough,
+            upload.uw_bed_albedo, upload.uw_bed_normal, upload.uw_bed_rough,
+        );
+        if !upload.depth_values.is_empty() {
+            self.renderer.set_depth_field(
+                &upload.depth_values,
+                upload.depth_res,
+                upload.depth_origin,
+                upload.depth_cell_size,
+                upload.depth_sea_level,
+            )?;
+            eprintln!("[water-depth] per-cell field uploaded: {}x{} cells @ {:.2}m, sea_y={:.2} (uw_wet={} uw_mud={} uw_silt={})",
+                upload.depth_res[0], upload.depth_res[1], upload.depth_cell_size,
+                upload.depth_sea_level, upload.uw_wet_albedo, upload.uw_mud_albedo,
+                upload.uw_silt_albedo);
+        }
         self.renderer.set_slope_snow(
             upload.slope_snow_albedo, upload.slope_snow_normal,
             upload.slope_snow_disp, upload.slope_height_snow,

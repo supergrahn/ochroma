@@ -50,6 +50,38 @@ pub struct TerrainUpload {
     pub curvature_res: [u32; 2],
     pub curvature_origin: [f32; 2],
     pub curvature_cell_size: f32,
+    /// WATER-DEPTH FIELD (P3, ROOT 4): per-cell STATIC water-column depth in metres
+    /// (`max(0, sea_level - bed)`), row-major `iz*res_x+ix`. Sampled bilinearly in
+    /// the megakernel at the ground hit XZ so the bed material can be blended by
+    /// depth (wet_sand → shallow_mud → deep_silt) instead of reading flat Coastal
+    /// sand. `0` = dry. Empty = field OFF (byte-identical: no underwater override,
+    /// no wet band). origin/cell_size/res match the heightmap. v1 is the static
+    /// initial-flood plane; dynamic WaterField ponds are a follow-up refit.
+    pub depth_values: Vec<f32>,
+    pub depth_res: [u32; 2],
+    pub depth_origin: [f32; 2],
+    pub depth_cell_size: f32,
+    /// World-Y of the static sea plane (drives the intertidal WET BAND above the
+    /// waterline). Only consulted when `depth_values` is non-empty.
+    pub depth_sea_level: f32,
+    /// UNDERWATER BED atlas slots (P3): the submerged bed materials the megakernel
+    /// blends by `depth_values` — `wet_sand` (~0 m) → `shallow_mud` (~2 m) →
+    /// `deep_silt` (~8 m+), plus `riverbed` (driven by flow, follow-up). Each is an
+    /// (albedo, normal, roughness) atlas-slot triple resolved against the SAME atlas
+    /// as the meshes (`-1` = absent → that bed rolls back to the next-shallower one,
+    /// finally to the spray ground → byte-identical). Set via `set_underwater_layers`.
+    pub uw_wet_albedo: i32,
+    pub uw_wet_normal: i32,
+    pub uw_wet_rough: i32,
+    pub uw_mud_albedo: i32,
+    pub uw_mud_normal: i32,
+    pub uw_mud_rough: i32,
+    pub uw_silt_albedo: i32,
+    pub uw_silt_normal: i32,
+    pub uw_silt_rough: i32,
+    pub uw_bed_albedo: i32,
+    pub uw_bed_normal: i32,
+    pub uw_bed_rough: i32,
 }
 
 impl Default for TerrainUpload {
@@ -84,6 +116,28 @@ impl Default for TerrainUpload {
             curvature_res: [0, 0],
             curvature_origin: [0.0, 0.0],
             curvature_cell_size: 0.0,
+            // Depth field OFF by default: empty values + a sentinel sea plane, so a
+            // map that does not fill it renders byte-identically (no underwater
+            // override, no wet band).
+            depth_values: Vec::new(),
+            depth_res: [0, 0],
+            depth_origin: [0.0, 0.0],
+            depth_cell_size: 0.0,
+            depth_sea_level: 0.0,
+            // Underwater bed slots default to -1 (absent) — NOT 0, which is a valid
+            // atlas slot that would wrongly fire the bed blend on a field-less ground.
+            uw_wet_albedo: -1,
+            uw_wet_normal: -1,
+            uw_wet_rough: -1,
+            uw_mud_albedo: -1,
+            uw_mud_normal: -1,
+            uw_mud_rough: -1,
+            uw_silt_albedo: -1,
+            uw_silt_normal: -1,
+            uw_silt_rough: -1,
+            uw_bed_albedo: -1,
+            uw_bed_normal: -1,
+            uw_bed_rough: -1,
         }
     }
 }

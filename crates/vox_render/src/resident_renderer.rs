@@ -633,6 +633,48 @@ impl ResidentSceneRenderer {
             .map_err(|e| format!("set_curvature_field: {e:?}"))
     }
 
+    /// WATER-DEPTH FIELD (P3, ROOT 4). Forward a world-space per-cell water-column
+    /// depth grid (1 f32/cell, row-major `iz*res_x+ix`; `0` = dry) baked from the
+    /// heightmap + sea plane. The megakernel ground path samples it BILINEARLY at the
+    /// hit XZ so submerged ground reads as a depth-blended BED (wet sand → mud → silt)
+    /// and the intertidal band above `sea_level` darkens/roughens — fixing the
+    /// flat-Coastal-sand / grass-under-water look. `sea_level` is the world-Y of the
+    /// static sea plane (drives the wet band). Empty values disable the field.
+    pub fn set_depth_field(
+        &mut self,
+        values: &[f32],
+        res: [u32; 2],
+        origin: [f32; 2],
+        cell_size: f32,
+        sea_level: f32,
+    ) -> Result<(), String> {
+        self.renderer
+            .set_depth_field(values, res, origin, cell_size, sea_level)
+            .map_err(|e| format!("set_depth_field: {e:?}"))
+    }
+
+    /// UNDERWATER BED atlas slots (P3). Bind the submerged bed materials the
+    /// megakernel blends by water depth: `wet_*` (~0 m), `mud_*` (~2 m), `silt_*`
+    /// (~8 m+), and `bed_*` (riverbed, flow-driven follow-up). Each is an
+    /// (albedo, normal, roughness) atlas-slot triple; pass `-1` for an absent layer
+    /// (it rolls back to the next-shallower bed → byte-identical when all `-1`).
+    /// Resolve against the SAME atlas as the meshes (call AFTER `set_atlas`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_underwater_layers(
+        &mut self,
+        wet_albedo: i32, wet_normal: i32, wet_rough: i32,
+        mud_albedo: i32, mud_normal: i32, mud_rough: i32,
+        silt_albedo: i32, silt_normal: i32, silt_rough: i32,
+        bed_albedo: i32, bed_normal: i32, bed_rough: i32,
+    ) {
+        self.renderer.set_underwater_layers(
+            wet_albedo, wet_normal, wet_rough,
+            mud_albedo, mud_normal, mud_rough,
+            silt_albedo, silt_normal, silt_rough,
+            bed_albedo, bed_normal, bed_rough,
+        );
+    }
+
     /// SLOPE / HEIGHT LAYERED TERRAIN MATERIAL (#33). Bind the steep-face ROCK +
     /// transition DIRT atlas slots the megakernel ground path blends over the biome
     /// ground by surface slope (geometric up-cosine) + height. Slots reference
