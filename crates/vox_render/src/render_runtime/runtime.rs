@@ -279,7 +279,7 @@ impl RenderRuntime {
             )?;
             eprintln!("[spray] field uploaded: {}x{} cells @ {:.2}m, {} channels",
                 upload.res[0], upload.res[1], upload.cell_size,
-                upload.channel_slots.len() / 4);
+                upload.channel_slots.len() / 8);
         }
         self.renderer.set_slope_layers(
             upload.slope_rock_albedo, upload.slope_rock_normal,

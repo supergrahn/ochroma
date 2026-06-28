@@ -17,7 +17,12 @@ pub struct TerrainUpload {
     pub res: [u32; 2],
     pub origin: [f32; 2],
     pub cell_size: f32,
-    /// 4 i32 per spray channel `[albedo, normal, rough, disp]` atlas slot.
+    /// 8 i32 per spray channel — MUST match the megakernel `SPRAY_CH_STRIDE` and
+    /// its `g_spray_channels[c*8+k]` reads. Per-channel layout:
+    ///   [0] base albedo   [1] base normal   [2] base rough   [3] base disp
+    ///   [4] overlay albedo [5] overlay alpha [6] overlay normal [7] overlay disp
+    /// (-1 = none). The game fills [1..3]/[4..7] only when its ground-detail
+    /// toggles are on; otherwise they are -1 and the kernel skips that path.
     pub channel_slots: Vec<i32>,
     /// SLOPE-LAYER atlas slots (#33): steep-face ROCK + transition DIRT
     /// albedo/normal, resolved from the map's `TerrainSurfaceSet.cliff/transition`.

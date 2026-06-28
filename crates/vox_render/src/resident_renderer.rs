@@ -598,7 +598,10 @@ impl ResidentSceneRenderer {
     ///
     /// - `packed`: 2 u32/cell (4 u8 channels/word), row-major — `pack_u32()`.
     /// - `res`: `[res_x, res_z]`; `origin`/`cell_size`: world placement.
-    /// - `channel_slots`: 4 i32/channel `[albedo, normal, rough, disp]` (-1 = none).
+    /// - `channel_slots`: 8 i32/channel — MUST match the megakernel
+    ///   `SPRAY_CH_STRIDE`. Layout `[base_albedo, base_normal, base_rough,
+    ///   base_disp, overlay_albedo, overlay_alpha, overlay_normal, overlay_disp]`
+    ///   (-1 = none). Uploaded verbatim; the shader interprets the stride.
     pub fn set_spray_field(
         &mut self,
         packed: &[u32],
