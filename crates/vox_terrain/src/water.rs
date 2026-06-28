@@ -87,6 +87,12 @@ const GRAD_EPS: f64 = 1.0e-4;
 /// `water*0.9` CFL limiter), so `depth` can never go negative.
 const FLUX_FRAC: f64 = 0.9;
 
+/// Per-tick fraction of dissolved CONTAMINANT MASS that decays (self-purifies)
+/// each step. `0 <= CONTAM_DECAY < 1`. Fixed constant (config-first DEBT to
+/// migrate into `sim.ron`) so the advection is bit-stable. Small enough that a
+/// plume still travels several cells downstream before it fades.
+const CONTAM_DECAY: f64 = 0.01;
+
 /// Fixed-ε quantize → integer, for the replay-hash fold. `q(x) = round(x * 1e6)`.
 #[inline]
 fn q(x: f64) -> i64 {
@@ -114,6 +120,16 @@ pub struct WaterField {
     /// struct avoids a per-tick allocation and keeps the step order-independent
     /// (it reads only `depth`, writes only `next`).
     next: Vec<f64>,
+    /// Per-cell water-borne CONTAMINANT MASS (arbitrary units), row-major,
+    /// co-sized with `depth`. PERSISTS across ticks — it is dissolved load that
+    /// rides the water: each `step` advects it along the SAME admitted mass-flux
+    /// the depth divergence uses (so it travels DOWNSTREAM), then decays a fixed
+    /// fraction. Concentration at a cell = `contam / depth` (0 where dry). Folded
+    /// into the replay hash alongside `depth`/`vel` — it is replay truth.
+    contam: Vec<f64>,
+    /// Double-buffer scratch for the contaminant advection (read `contam`, write
+    /// `contam_next`, swap) — same order-independence discipline as `next`.
+    contam_next: Vec<f64>,
     /// Terraform dirty cells (row-major indices) the NEXT step consumes. A carve
     /// or raise pushes the edited AABB here; the step applies an instant cap at
     /// these cells (raise → drain) then clears the set.
@@ -148,6 +164,8 @@ impl WaterField {
             height,
             depth: vec![0.0; n],
             next: vec![0.0; n],
+            contam: vec![0.0; n],
+            contam_next: vec![0.0; n],
             dirty: Vec::new(),
             vel_x: vec![0.0; n],
             vel_z: vec![0.0; n],
@@ -179,6 +197,53 @@ impl WaterField {
         let i = self.idx(x, z);
         self.depth[i] = (self.depth[i] + amount).max(0.0);
         self.rev += 1;
+    }
+
+    /// SOURCE seam: inject `amount` of dissolved CONTAMINANT MASS into a cell
+    /// (untreated sewage / an industrial outfall / a spill). Clamped non-negative;
+    /// ignores out-of-range cells. The next [`step`](WaterField::step) advects it
+    /// downstream along the water's mass flux. id-addressed, deterministic.
+    pub fn add_contaminant(&mut self, x: u32, z: u32, amount: f64) {
+        if x >= self.width || z >= self.height {
+            return;
+        }
+        let i = self.idx(x, z);
+        self.contam[i] = (self.contam[i] + amount).max(0.0);
+        self.rev += 1;
+    }
+
+    /// Dissolved contaminant MASS at a cell (arbitrary units; `0.0` = clean).
+    #[inline]
+    pub fn contaminant_at(&self, x: u32, z: u32) -> f64 {
+        self.contam[self.idx(x, z)]
+    }
+
+    /// Contaminant CONCENTRATION at a cell = `contam / depth` (mass per unit
+    /// water column). `0.0` where the cell is dry (no water to be polluted). This
+    /// is the signal a building "drinking" from a cell reads: a high column of
+    /// clean water dilutes the same mass to a lower concentration.
+    #[inline]
+    pub fn concentration_at(&self, x: u32, z: u32) -> f64 {
+        let i = self.idx(x, z);
+        let d = self.depth[i];
+        if d > 0.0 { self.contam[i] / d } else { 0.0 }
+    }
+
+    /// Read access to the per-cell contaminant grid (row-major), for the
+    /// replay-hash fold + inspection. PERSISTENT dissolved-load state.
+    #[inline]
+    pub fn contaminants(&self) -> &[f64] {
+        &self.contam
+    }
+
+    /// Total dissolved contaminant mass on the grid (folded in index order). A
+    /// real computed witness for the advection test (conserved minus decay).
+    pub fn total_contaminant(&self) -> f64 {
+        let mut c = 0.0;
+        for &v in &self.contam {
+            c += v;
+        }
+        c
     }
 
     /// Read access to the per-cell velocity grids (row-major), for the
@@ -455,7 +520,71 @@ impl WaterField {
                 self.next[i] = (self.depth[i] - out + inflow).max(0.0);
             }
         }
+
+        //   (d) CONTAMINANT advection. Dissolved load rides the water: the SAME
+        //       admitted mass-flux gates that move `depth` move the contaminant,
+        //       so a plume travels DOWNSTREAM. The fraction of cell `i`'s water
+        //       that leaves carries the same fraction of its contaminant; each
+        //       admitted inflow from a neighbour `j` carries `contam[j] · (flux /
+        //       depth[j])`. Reads the FRONT `depth`/`contam` + `flux`/`surf`,
+        //       writes only `contam_next` → order-independent. A fixed
+        //       `CONTAM_DECAY` self-purification is applied last. Mass is
+        //       conserved (modulo decay + fixed-ε float order the fold quantizes).
+        for z in 0..h {
+            for x in 0..w {
+                let i = z * w + x;
+                let si = self.surf[i];
+                let d_i = self.depth[i];
+                let c_i = self.contam[i];
+                let mut out_water = 0.0;
+                let mut in_contam = 0.0;
+                if x + 1 < w {
+                    let j = i + 1;
+                    if self.flux_x[i] > 0.0 && bed[j] < si {
+                        out_water += self.flux_x[i];
+                    }
+                    if self.flux_x[j] < 0.0 && bed[i] < self.surf[j] && self.depth[j] > 0.0 {
+                        in_contam += self.contam[j] * (-self.flux_x[j] / self.depth[j]);
+                    }
+                }
+                if x > 0 {
+                    let j = i - 1;
+                    if self.flux_x[i] < 0.0 && bed[j] < si {
+                        out_water += -self.flux_x[i];
+                    }
+                    if self.flux_x[j] > 0.0 && bed[i] < self.surf[j] && self.depth[j] > 0.0 {
+                        in_contam += self.contam[j] * (self.flux_x[j] / self.depth[j]);
+                    }
+                }
+                if z + 1 < h {
+                    let j = i + w;
+                    if self.flux_z[i] > 0.0 && bed[j] < si {
+                        out_water += self.flux_z[i];
+                    }
+                    if self.flux_z[j] < 0.0 && bed[i] < self.surf[j] && self.depth[j] > 0.0 {
+                        in_contam += self.contam[j] * (-self.flux_z[j] / self.depth[j]);
+                    }
+                }
+                if z > 0 {
+                    let j = i - w;
+                    if self.flux_z[i] < 0.0 && bed[j] < si {
+                        out_water += -self.flux_z[i];
+                    }
+                    if self.flux_z[j] > 0.0 && bed[i] < self.surf[j] && self.depth[j] > 0.0 {
+                        in_contam += self.contam[j] * (self.flux_z[j] / self.depth[j]);
+                    }
+                }
+                // Fraction of i's water (and thus its dissolved load) that leaves.
+                // `out_water < depth` always (CFL FLUX_FRAC limiter), so the
+                // out fraction is in [0, 1) and contaminant can never go negative.
+                let out_contam = if d_i > 0.0 { c_i * (out_water / d_i) } else { 0.0 };
+                let moved = (c_i - out_contam + in_contam).max(0.0);
+                self.contam_next[i] = moved * (1.0 - CONTAM_DECAY);
+            }
+        }
+
         std::mem::swap(&mut self.depth, &mut self.next);
+        std::mem::swap(&mut self.contam, &mut self.contam_next);
 
         // (3) FILL pass — the connectivity-gated relaxation toward the sea plane
         //     (the SOURCE/equilibration term), now reading the post-flow depth.
@@ -532,6 +661,13 @@ impl WaterField {
             let qz = (q(vz) as u64) & 0xFF_FFFF_FFFF;
             hasher.mix(((i as u64) << 40) ^ qx);
             hasher.mix(((i as u64) << 40) ^ qz);
+        }
+        // Contaminant is PERSISTENT dissolved-load state → it is part of the
+        // replay truth and must be folded too, same id-ordered fixed-ε discipline.
+        hasher.mix(self.contam.len() as u64);
+        for (i, &c) in self.contam.iter().enumerate() {
+            let qc = (q(c) as u64) & 0xFF_FFFF_FFFF;
+            hasher.mix(((i as u64) << 40) ^ qc);
         }
     }
 
@@ -616,6 +752,11 @@ mod tests {
             let qz = (q(wa.vel_z[i]) as u64) & 0xFF_FFFF_FFFF;
             reference.mix(((i as u64) << 40) ^ qx);
             reference.mix(((i as u64) << 40) ^ qz);
+        }
+        reference.mix(wa.contam.len() as u64);
+        for i in 0..wa.contam.len() {
+            let qc = (q(wa.contam[i]) as u64) & 0xFF_FFFF_FFFF;
+            reference.mix(((i as u64) << 40) ^ qc);
         }
         assert_eq!(
             reference.finish(),
@@ -763,6 +904,79 @@ mod tests {
         };
         assert_eq!(depth_bits(&wa), depth_bits(&wb), "flow depth grid diverged (ULP)");
         assert_eq!(vel_bits(&wa), vel_bits(&wb), "flow velocity grid diverged (ULP)");
+    }
+
+    /// POLLUTION: a contaminant injected on the HIGH (release) cell of a tilted,
+    /// flowing bed is carried DOWNSTREAM by the water — the downstream cell's
+    /// concentration rises from zero while the source's falls; total mass is
+    /// conserved up to the fixed `CONTAM_DECAY` self-purification; and two runs
+    /// are bit-identical (the contaminant is part of the replay moat). Asserts
+    /// REAL computed transport, not `is_some`/`> 0` of one cell.
+    #[test]
+    fn contaminant_advects_downstream_conserved_minus_decay() {
+        let size = 8usize;
+        let slope = 0.5;
+        let mut bed = vec![0.0; size * size];
+        for z in 0..size {
+            for x in 0..size {
+                bed[z * size + x] = (size - 1 - x) as f64 * slope; // x=0 highest
+            }
+        }
+        let sea_level = -1000.0; // no sea source — flow fully governs.
+        let row = size / 2;
+
+        let run = || {
+            let mut w = WaterField::new(size as u32, size as u32);
+            // Release water AND its dissolved contaminant on the high edge.
+            w.add_water(0, row as u32, 4.0);
+            w.add_contaminant(0, row as u32, 2.0);
+            let mut hashes = Vec::new();
+            for _ in 0..400 {
+                w.step(&bed, sea_level);
+                hashes.push(w.replay_hash());
+            }
+            (w, hashes)
+        };
+
+        let (wa, ha) = run();
+        let (wb, hb) = run();
+
+        // Determinism: the contaminant rides the moat bit-for-bit.
+        assert_eq!(ha, hb, "contaminant replay-hash trajectory diverged");
+        let cbits = |w: &WaterField| -> Vec<u64> { w.contam.iter().map(|c| c.to_bits()).collect() };
+        assert_eq!(cbits(&wa), cbits(&wb), "contaminant grid diverged (ULP)");
+
+        // (a) the contaminant reached the DOWNSTREAM (low) end from zero.
+        let down_conc = wa.concentration_at((size - 1) as u32, row as u32);
+        assert!(
+            down_conc > 1.0e-4,
+            "contaminant did not advect downstream (downstream conc {down_conc})"
+        );
+        // (b) the SOURCE cell's contaminant fell (it flowed away, not stayed put).
+        let src_contam = wa.contaminant_at(0, row as u32);
+        assert!(
+            src_contam < 2.0 - 0.5,
+            "source contaminant did not flow downstream (still {src_contam})"
+        );
+        // (c) total mass conserved MINUS decay: strictly below the 2.0 released,
+        //     but not vanished — a real bounded witness (decay over 400 ticks).
+        let total = wa.total_contaminant();
+        assert!(
+            total < 2.0 && total > 0.0,
+            "total contaminant must be conserved-minus-decay in (0, 2): {total}"
+        );
+        // (d) plume centre-of-mass advanced down-slope (toward +x).
+        let com = {
+            let mut num = 0.0;
+            let mut den = 0.0;
+            for x in 0..size {
+                let c = wa.contaminant_at(x as u32, row as u32);
+                num += x as f64 * c;
+                den += c;
+            }
+            if den > 0.0 { num / den } else { 0.0 }
+        };
+        assert!(com > 1.0, "contaminant centre-of-mass did not advance down-slope ({com})");
     }
 
     /// A SEALED interior pit (walled off from the border sea, no breach to it)
