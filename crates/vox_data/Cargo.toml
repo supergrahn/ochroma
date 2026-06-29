@@ -21,6 +21,13 @@ gltf = "1"
 dirs-next = "2"
 flate2 = "1"
 
+[features]
+# legacy-raster: opt-in for the PLY-render integration tests, which render
+# loaded splats through vox_render's banned CPU software rasterizer. OFF by
+# default so `cargo test` in the product build never compiles that stack.
+# Run those tests with `cargo test -p vox_data --features legacy-raster`.
+legacy-raster = ["vox_render/legacy-raster"]
+
 [dev-dependencies]
 vox_render = { path = "../vox_render" }
 vox_core = { path = "../vox_core" }

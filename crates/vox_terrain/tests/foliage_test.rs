@@ -87,3 +87,39 @@ fn scale_varies_within_range() {
 fn default_rules_have_entries() {
     assert!(default_foliage_rules().len() >= 3);
 }
+
+// --- determinism witness (replay-hash moat) -----------------------------
+// Locks the byte-exact float placement of scatter_foliage. The Arc<str> name
+// interning + reserved Vec + fused slope taps must NOT change any produced
+// position/rotation/scale or the resolved asset path.
+
+const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x100000001b3;
+
+#[test]
+fn scatter_foliage_is_byte_exact() {
+    let hm = generate_test_heightmap(300, 300, 3.3, 11);
+    let rules = default_foliage_rules();
+    let inst = scatter_foliage(&hm, &rules, 42);
+    assert_eq!(inst.len(), 89731, "placement count changed");
+
+    let mut h = FNV_OFFSET;
+    for i in &inst {
+        for f in i.position {
+            h ^= f.to_bits() as u64;
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+        h ^= i.rotation_y.to_bits() as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+        h ^= i.scale.to_bits() as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+        for b in i.asset_path.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+    }
+    assert_eq!(
+        h, 0xfb3958023395a1af,
+        "scatter_foliage output changed (determinism moat); got {h:#018x}"
+    );
+}

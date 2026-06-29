@@ -27,6 +27,12 @@
 use spectra_scene_state::{CameraLayer, SceneState};
 use vox_core::types::GaussianSplat;
 
+#[cfg(feature = "spectra-native")]
+use crate::splat_backend::{
+    BlasDesc, InstanceRecordGpu, PbrMaterial, VULKAN_MATERIAL_FLOATS, pack_cuda_mesh_material,
+    pack_vulkan_mesh_material,
+};
+
 /// One quad = 4 vertices, 2 triangles (6 indices).
 const VERTS_PER_SPLAT: usize = 4;
 const INDICES_PER_SPLAT: usize = 6;
@@ -140,17 +146,26 @@ pub fn splats_to_scene(splats: &[GaussianSplat], width: u32, height: u32) -> Sce
 ///
 /// This is the camera type the native renderer consumes (`Renderer::set_camera_view_matrix`
 /// reads `CameraLayer::view_matrix`). Width/height set the target resolution and aspect.
+///
+/// `lens_radius` and `focus_distance` drive the path tracer's **real** depth of
+/// field (`lens_radius == 0.0` is a pinhole; pass `1.0` focus for back-compat).
+/// They are threaded here so the cinematic [`crate::cine::CinePose`] adapter and
+/// gameplay callers share one builder rather than zeroing DoF downstream.
 pub fn camera_layer(
     view_matrix: [f32; 16],
     fov_y_radians: f32,
     width: u32,
     height: u32,
+    lens_radius: f32,
+    focus_distance: f32,
 ) -> CameraLayer {
     let mut cam = CameraLayer::new_default();
     cam.view_matrix = view_matrix;
     cam.fov_y_radians = fov_y_radians;
     cam.width = width;
     cam.height = height;
+    cam.lens_radius = lens_radius;
+    cam.focus_distance = focus_distance;
     cam
 }
 
@@ -272,6 +287,249 @@ pub fn splats_to_lit_scene(
     scene
 }
 
+/// Forge meshes + per-instance transforms/materials → an instanced
+/// [`SceneState`] for the resident path tracer (Render Keystone T3).
+///
+/// Replaces the splat-quad/material-0 live path. Each [`BlasDesc`] is one
+/// archetype prototype; each [`InstanceRecordGpu`] names a prototype and
+/// carries its own world transform + per-instance material BASE. The base
+/// reaches shading via the TLAS instance custom index (uploaded as
+/// `instance_material_base`) where the closest-hit ADDS it to each triangle's
+/// relative material id, so two instances of the SAME BLAS shade with DIFFERENT
+/// materials WHILE per-triangle multi-material is preserved (design §4.1).
+///
+/// Materials are packed with [`pack_vulkan_mesh_material`] — the proven
+/// **156-float Vulkan stride** (`materials.params.len() == materials.len() *
+/// 156`), NEVER the 132-float CUDA `MaterialData` (the "black silhouettes"
+/// landmine). `spectral_spd` populates `MaterialLayer::spectral_spd[material_id]`
+/// with the real 16-band reflectance (empty ⇒ no entry ⇒ white, spectral off).
+///
+/// Geometry: prototype meshes are laid out contiguously into one SceneState
+/// vertex/triangle soup (object-space); the per-instance world transform is
+/// applied by the TLAS at trace time. `width`/`height` set the render target;
+/// the caller fills the real camera before rendering.
+/// Synthesize the geometry-anchored weathering PATTERN for a merged scene:
+/// 7 floats per vertex `[moss, water_stain, paint_chip, rust, soot,
+/// efflorescence, edge_wear]` parallel to `positions` (flat `[x,y,z]`/vertex)
+/// and `normals` (flat `[nx,ny,nz]`/vertex).
+///
+/// Pure + deterministic (a fixed function of the id-sorted merged geometry — no
+/// HashMap/RNG iteration, no time), so it never perturbs the determinism
+/// artifact. Amplitudes are deliberately SUBTLE (≤ ~0.3 at reference intensity)
+/// so a clean city still reads clean; the sim scales them per-instance later.
+///
+/// The pattern (gravity-directional aging, per [[dynamic-weathering-directive]]):
+/// - **soot** rises from the street: strongest near y≈0, fading with height.
+/// - **efflorescence** wicks up from the very base (a tighter band than soot).
+/// - **water_stain** weeps on down-facing ledges/sills (normal.y < 0).
+/// - **edge_wear** on near-vertical wall faces (|normal.y| small) — arris/wall wear.
+/// Returns an empty vec when there is no geometry (weathering then stays off).
+#[cfg(feature = "spectra-native")]
+fn build_weathering_pattern(positions: &[f32], normals: &[f32]) -> Vec<f32> {
+    let vc = positions.len() / 3;
+    if vc == 0 {
+        return Vec::new();
+    }
+    // Street-level reference: soot/efflorescence are anchored to world y≈0 (the
+    // ground plane the city sits on). Heights are in metres.
+    const SOOT_FALLOFF_M: f32 = 14.0; // soot fades out over ~14 m of height
+    const EFFLOR_FALLOFF_M: f32 = 4.0; // efflorescence is a tight base band
+    const SOOT_MAX: f32 = 0.28;
+    const EFFLOR_MAX: f32 = 0.18;
+    const STAIN_MAX: f32 = 0.22;
+    const EDGE_MAX: f32 = 0.12;
+
+    let mut masks = vec![0.0f32; vc * 7];
+    for v in 0..vc {
+        let y = positions[v * 3 + 1];
+        let ny = normals.get(v * 3 + 1).copied().unwrap_or(0.0);
+        let base = masks.get_mut(v * 7..v * 7 + 7).unwrap();
+
+        // Near-vertical WALL factor — soot/efflorescence/edge-wear are FACADE
+        // phenomena, so gate them on verticality. This also keeps the pattern off
+        // flat up-facing terrain/roads/roofs (ny≈+1 → wall≈0), so the merged
+        // scene's ground geometry stays clean even though it shares the buffer.
+        let wall = (1.0 - ny.abs()).clamp(0.0, 1.0);
+        // Height factor, 1 at the street, decaying with height.
+        let h = y.max(0.0);
+        let soot = SOOT_MAX * (-h / SOOT_FALLOFF_M).exp() * wall;
+        let efflor = EFFLOR_MAX * (-h / EFFLOR_FALLOFF_M).exp() * wall;
+        // Down-facing surfaces (sills, ledge undersides, cornice soffits) weep.
+        let down = (-ny).max(0.0); // 1 for a fully down-facing surface
+        let stain = STAIN_MAX * down * down;
+        // Near-vertical wall faces take edge/arris wear.
+        let edge = EDGE_MAX * wall;
+
+        base[1] = stain; // water_stain
+        base[4] = soot; // soot
+        base[5] = efflor; // efflorescence
+        base[6] = edge; // edge_wear
+        // moss/paint_chip/rust left at 0 — those need material/sim context the
+        // pattern alone shouldn't assume (a brand-new steel/glass tower has no
+        // moss); the sim/cook supplies them per instance later.
+    }
+    masks
+}
+
+#[cfg(feature = "spectra-native")]
+pub fn meshes_to_instanced_scene(
+    blas: &[BlasDesc],
+    instances: &[InstanceRecordGpu],
+    materials: &[PbrMaterial],
+    spectral_spd: &[(u32, [f32; 16])],
+    width: u32,
+    height: u32,
+) -> SceneState {
+    use spectra_scene_state::MaterialLayer;
+
+    // --- Geometry soup: prototypes laid out contiguously ---
+    // Track each prototype's vertex base so a future per-archetype-BLAS uploader
+    // can recover sub-ranges; today the HW soup proto shares the buffer and the
+    // instance custom index selects the material.
+    let total_verts: usize = blas.iter().map(|b| b.positions.len()).sum();
+    let total_tris: usize = blas.iter().map(|b| b.indices.len()).sum();
+
+    let mut positions: Vec<f32> = Vec::with_capacity(total_verts * 3);
+    let mut normals: Vec<f32> = Vec::with_capacity(total_verts * 3);
+    let mut uvs: Vec<f32> = Vec::with_capacity(total_verts * 2);
+    let mut indices: Vec<u32> = Vec::with_capacity(total_tris * 3);
+    let mut tri_material_ids: Vec<u32> = Vec::with_capacity(total_tris);
+
+    let mut vbase: u32 = 0;
+    let mut tbase: u32 = 0;
+    // K1: per-proto sub-ranges into the shared soup, so the uploader can build one
+    // BLAS per prototype (the multi-proto TLAS that makes 100K buildings + 1M cims
+    // representable instead of one merged soup).
+    let mut proto_ranges: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(blas.len());
+    for b in blas {
+        let v_start = vbase;
+        let t_start = tbase;
+        debug_assert_eq!(
+            b.positions.len(),
+            b.normals.len(),
+            "BlasDesc positions/normals length mismatch"
+        );
+        for p in &b.positions {
+            positions.extend_from_slice(p);
+        }
+        for n in &b.normals {
+            normals.extend_from_slice(n);
+        }
+        if b.uvs.len() == b.positions.len() {
+            for t in &b.uvs {
+                uvs.extend_from_slice(t);
+            }
+        } else {
+            // Missing UVs → unit zeros (kept length-consistent with positions).
+            uvs.extend(std::iter::repeat(0.0).take(b.positions.len() * 2));
+        }
+        for (ti, tri) in b.indices.iter().enumerate() {
+            indices.extend_from_slice(&[vbase + tri[0], vbase + tri[1], vbase + tri[2]]);
+            // Per-triangle material id (forge channel id ordered); default 0.
+            // BlasDesc.material_ids is already u32 — no cast.
+            let mid = b.material_ids.get(ti).copied().unwrap_or(0);
+            tri_material_ids.push(mid);
+        }
+        let vcount = b.positions.len() as u32;
+        let tcount = b.indices.len() as u32;
+        proto_ranges.push((v_start, vcount, t_start, tcount));
+        vbase += vcount;
+        tbase += tcount;
+    }
+
+    // --- Per-prototype object-space AABBs (K0: real per-proto bounds) ---
+    // One (min,max) per BlasDesc, parallel to proto order, so the TLAS can give
+    // each prototype its REAL bound instead of the merged scene-wide box. This is
+    // the shared instancing-keystone foundation that terrain chunks ride on.
+    let proto_aabbs: Vec<([f32; 3], [f32; 3])> =
+        blas.iter().map(|b| (b.aabb_min, b.aabb_max)).collect();
+
+    // --- Instances: transforms SoA + per-instance material BASE + proto index ---
+    let mut instance_transforms: Vec<f32> = Vec::with_capacity(instances.len() * 16);
+    let mut instance_material_base: Vec<u32> = Vec::with_capacity(instances.len());
+    let mut instance_proto_index: Vec<u32> = Vec::with_capacity(instances.len());
+    for inst in instances {
+        instance_transforms.extend_from_slice(&inst.transform);
+        instance_material_base.push(inst.material_base);
+        instance_proto_index.push(inst.proto_index);
+    }
+
+    // --- Materials: per-backend stride ---
+    // The Slang `MaterialData` struct compiles to DIFFERENT memory layouts on the
+    // two backends: CUDA (NVRTC) packs tight (132 floats / 528 bytes); Vulkan
+    // (SPIR-V std430) pads every float3 to 16 bytes (156 floats / 624 bytes).
+    // Pack the layout that matches the backend the renderer will actually select.
+    // Selection mirrors `select_present` in splat_backend.rs: SPECTRA_BACKEND=cuda
+    // forces CUDA (the product path on NVIDIA, set by the game launcher); anything
+    // else defaults to the Vulkan-first fallback. Feeding the wrong layout put
+    // `visibility_mask`/`albedo` in padding slots and the whole city rendered
+    // black (every mesh hit culled on a garbage visibility mask).
+    let cuda_layout = matches!(
+        std::env::var("SPECTRA_BACKEND")
+            .ok()
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref(),
+        Some("cuda")
+    );
+    let mut params: Vec<f32> = if cuda_layout {
+        let mut p = Vec::with_capacity(materials.len() * 132);
+        for m in materials {
+            p.extend_from_slice(&pack_cuda_mesh_material(*m));
+        }
+        p
+    } else {
+        let mut p = Vec::with_capacity(materials.len() * VULKAN_MATERIAL_FLOATS);
+        for m in materials {
+            p.extend_from_slice(&pack_vulkan_mesh_material(*m));
+        }
+        p
+    };
+
+    // --- Spectral SPD keyed by stable material_id (empty ⇒ white) ---
+    let mut spd_map = std::collections::HashMap::with_capacity(spectral_spd.len());
+    for (mat_id, spd) in spectral_spd {
+        spd_map.insert(*mat_id, *spd);
+    }
+
+    // --- Geometry-anchored weathering PATTERN (7 floats / scene vertex) ---
+    // The cook bakes per-vertex masks, but they are not carried through the
+    // HybridMesh→BlasDesc seam yet, so synthesize the PATTERN here from the
+    // merged vertex geometry (position + normal). This is the cook-pattern layer
+    // of [[dynamic-weathering-directive]]: WHERE aging appears (soot rising from
+    // the street, water-stain weeping below sills/ledges, edge-wear on arrises,
+    // efflorescence wicking up from the base). It is a pure, deterministic
+    // function of the id-sorted merged geometry (no HashMap/RNG iteration) so it
+    // never perturbs the determinism artifact. The sim drives per-instance
+    // INTENSITY on top via `set_weathering_intensity` (future); at reference
+    // intensity 1.0 this is a SUBTLE pattern (amplitudes ≤ ~0.3) so a clean city
+    // still reads clean. Empty when there is no geometry.
+    let weathering_masks = build_weathering_pattern(&positions, &normals);
+
+    let mut scene = SceneState::new(width, height);
+    scene.geometry.vertex_count = positions.len() / 3;
+    scene.geometry.triangle_count = indices.len() / 3;
+    scene.geometry.weathering_masks = weathering_masks;
+    scene.geometry.positions = positions;
+    scene.geometry.normals = normals;
+    scene.geometry.uvs = uvs;
+    scene.geometry.indices = indices;
+    scene.geometry.material_ids = tri_material_ids;
+    scene.geometry.instance_count = instances.len();
+    scene.geometry.instance_transforms = instance_transforms;
+    scene.geometry.instance_material_base = instance_material_base;
+    scene.geometry.instance_proto_index = instance_proto_index;
+    scene.geometry.proto_aabbs = proto_aabbs;
+    scene.geometry.proto_ranges = proto_ranges;
+    scene.materials = MaterialLayer {
+        params,
+        spectral_spd: spd_map,
+        material_count: materials.len(),
+    };
+    scene.mark_geometry_changed();
+    scene.mark_materials_changed();
+    scene
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +537,49 @@ mod tests {
 
     fn zero_spectral() -> [u16; 16] {
         [0u16; 16]
+    }
+
+    #[test]
+    fn weathering_pattern_is_gravity_directional_and_facade_only() {
+        // Three vertices: a street-level WALL face (vertical normal, y=0), the
+        // SAME wall higher up (y=40), and a flat GROUND vertex (up-facing, y=0).
+        // positions [x,y,z] / vertex; normals [nx,ny,nz] / vertex.
+        let positions = [
+            0.0, 0.0, 0.0, // wall base
+            0.0, 40.0, 0.0, // wall high
+            5.0, 0.0, 5.0, // ground
+        ];
+        let normals = [
+            1.0, 0.0, 0.0, // wall base: vertical face
+            1.0, 0.0, 0.0, // wall high: vertical face
+            0.0, 1.0, 0.0, // ground: up-facing
+        ];
+        let m = build_weathering_pattern(&positions, &normals);
+        assert_eq!(m.len(), 3 * 7, "7 floats per vertex");
+        // Channel layout: [moss, water_stain, paint_chip, rust, soot, efflor, edge].
+        let soot = |v: usize| m[v * 7 + 4];
+        let efflor = |v: usize| m[v * 7 + 5];
+        let edge = |v: usize| m[v * 7 + 6];
+
+        // Soot rises from the street: base wall soot >> high wall soot > 0.
+        assert!(soot(0) > 0.1, "street-level wall has soot, got {}", soot(0));
+        assert!(
+            soot(0) > soot(1) * 2.0,
+            "soot decays with height: base {} vs high {}",
+            soot(0),
+            soot(1)
+        );
+        // Ground (up-facing) gets ~no facade weathering — the pattern is wall-only.
+        assert!(soot(2) < 1e-4, "flat ground has no soot, got {}", soot(2));
+        assert!(efflor(2) < 1e-4, "flat ground has no efflorescence");
+        assert!(edge(2) < 1e-4, "flat ground has no edge-wear");
+        // The wall DOES get edge-wear; the ground does not.
+        assert!(edge(0) > 0.01, "vertical wall has edge-wear, got {}", edge(0));
+    }
+
+    #[test]
+    fn weathering_pattern_empty_for_no_geometry() {
+        assert!(build_weathering_pattern(&[], &[]).is_empty());
     }
 
     #[test]
@@ -370,10 +671,98 @@ mod tests {
         let view = [
             1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -5.0, 1.0,
         ];
-        let cam = camera_layer(view, 0.8, 320, 240);
+        let cam = camera_layer(view, 0.8, 320, 240, 0.0, 1.0);
         assert_eq!(cam.view_matrix, view);
         assert_eq!(cam.fov_y_radians, 0.8);
         assert_eq!(cam.width, 320);
         assert_eq!(cam.height, 240);
+    }
+
+    /// K0 witness: `meshes_to_instanced_scene` records REAL per-proto AABBs and
+    /// per-instance proto indices while keeping the geometry soup byte-identical
+    /// (vertex/tri totals == sum of inputs ⇒ image unchanged). This is the shared
+    /// instancing-keystone foundation that terrain chunks + building archetypes
+    /// ride on (replaces the scene-wide-AABB-per-BLAS soup collapse).
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn meshes_to_instanced_scene_emits_per_proto_aabbs() {
+        // Proto 0: a single triangle, bound [0,0,0]..[1,1,0].
+        let proto_a = BlasDesc {
+            proto_id: 1,
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            uvs: vec![[0.0, 0.0]; 3],
+            indices: vec![[0, 1, 2]],
+            material_ids: vec![0],
+            aabb_min: [0.0, 0.0, 0.0],
+            aabb_max: [1.0, 1.0, 0.0],
+        };
+        // Proto 1: a quad (2 triangles), bound [10,0,0]..[12,2,0] — DISTINCT.
+        let proto_b = BlasDesc {
+            proto_id: 2,
+            positions: vec![
+                [10.0, 0.0, 0.0],
+                [12.0, 0.0, 0.0],
+                [12.0, 2.0, 0.0],
+                [10.0, 2.0, 0.0],
+            ],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            uvs: vec![[0.0, 0.0]; 4],
+            indices: vec![[0, 1, 2], [0, 2, 3]],
+            material_ids: vec![0, 0],
+            aabb_min: [10.0, 0.0, 0.0],
+            aabb_max: [12.0, 2.0, 0.0],
+        };
+        let blas = [proto_a, proto_b];
+        // 3 instances referencing protos 0, 1, 0.
+        let ident = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let instances = [
+            InstanceRecordGpu { proto_index: 0, transform: ident, material_base: 0 },
+            InstanceRecordGpu { proto_index: 1, transform: ident, material_base: 0 },
+            InstanceRecordGpu { proto_index: 0, transform: ident, material_base: 0 },
+        ];
+        let materials = [PbrMaterial::default()];
+        let scene = meshes_to_instanced_scene(&blas, &instances, &materials, &[], 64, 48);
+
+        let sum_verts: usize = blas.iter().map(|b| b.positions.len()).sum();
+        let sum_tris: usize = blas.iter().map(|b| b.indices.len()).sum();
+
+        // One REAL AABB per proto, and the two are DISTINCT (not the merged box).
+        assert_eq!(scene.geometry.proto_aabbs.len(), 2, "one AABB per proto");
+        let aabbs_distinct = scene.geometry.proto_aabbs[0] != scene.geometry.proto_aabbs[1];
+        assert!(aabbs_distinct, "protos must have distinct AABBs, not the scene-wide box");
+        assert_eq!(scene.geometry.proto_aabbs[0], ([0.0, 0.0, 0.0], [1.0, 1.0, 0.0]));
+        assert_eq!(scene.geometry.proto_aabbs[1], ([10.0, 0.0, 0.0], [12.0, 2.0, 0.0]));
+        // Per-instance proto index preserved in order.
+        assert_eq!(scene.geometry.instance_proto_index, vec![0u32, 1, 0]);
+        // K1: per-proto soup sub-ranges (vbase, vcount, tbase, tcount), contiguous
+        // + non-overlapping (proto 1 starts exactly where proto 0 ends — no soup
+        // corruption; this is what the multi-proto uploader slices BLASes from).
+        assert_eq!(scene.geometry.proto_ranges.len(), 2);
+        assert_eq!(scene.geometry.proto_ranges[0], (0, 3, 0, 1));
+        assert_eq!(scene.geometry.proto_ranges[1], (3, 4, 1, 2));
+        assert_eq!(
+            scene.geometry.proto_ranges[1].0,
+            scene.geometry.proto_ranges[0].0 + scene.geometry.proto_ranges[0].1,
+            "proto vertex ranges must be contiguous"
+        );
+        assert_eq!(
+            scene.geometry.proto_ranges[1].2,
+            scene.geometry.proto_ranges[0].2 + scene.geometry.proto_ranges[0].3,
+            "proto triangle ranges must be contiguous"
+        );
+        // Geometry soup byte-identical: totals == sum of inputs (image unchanged).
+        assert_eq!(scene.geometry.vertex_count, sum_verts);
+        assert_eq!(scene.geometry.triangle_count, sum_tris);
+
+        println!(
+            "protos={} aabbs_distinct={} soup_verts={}(==sum) soup_tris={}(==sum)",
+            scene.geometry.proto_aabbs.len(),
+            aabbs_distinct,
+            scene.geometry.vertex_count,
+            scene.geometry.triangle_count,
+        );
     }
 }

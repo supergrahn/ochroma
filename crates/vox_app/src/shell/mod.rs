@@ -18,6 +18,7 @@ pub mod cpu_render;
 pub mod graph_bridge;
 pub mod host;
 pub mod intent;
+pub mod panels;
 pub mod plugins;
 pub mod forge_native;
 pub mod forge_process;
@@ -59,6 +60,7 @@ pub enum PanelId {
     NodeGraph,
     Content,
     Output,
+    Sequencer,
 }
 
 impl PanelId {
@@ -71,6 +73,7 @@ impl PanelId {
             PanelId::NodeGraph => "Node Graph",
             PanelId::Content => "Content",
             PanelId::Output => "Output Log",
+            PanelId::Sequencer => "Sequencer",
         }
     }
     pub fn icon(self) -> &'static str {
@@ -81,6 +84,7 @@ impl PanelId {
             PanelId::NodeGraph => icon::NODE_GRAPH,
             PanelId::Content => icon::FOLDER,
             PanelId::Output => icon::CONSOLE,
+            PanelId::Sequencer => icon::CAMERA,
         }
     }
 }
@@ -326,6 +330,48 @@ pub enum ShellRequest {
     /// REPLAYING each entity's splats through `plant_asset`. Queued by `file.open`
     /// (Ctrl+O); the drain arm calls [`EditorShell::load_world`] + a receipt.
     OpenWorld(PathBuf),
+    /// AAA Spec 06: open a world via a NATIVE FILE PICKER (the windowed path).
+    /// Queued by `file.open` (Ctrl+O / "Open world…"). The drain arm shows an
+    /// `rfd` file dialog under the `spectra` feature; if the user picks a file it
+    /// loads it, otherwise it is a no-op (cancel). For the headless/proof build
+    /// (no `spectra`, no display) this falls back to the fixed default world path
+    /// so proof mode never blocks on a dialog. The picker-vs-default split keeps a
+    /// real chooser for humans AND a deterministic path for `--frames/--shot`.
+    OpenWorldDialog,
+}
+
+/// The editor's play mode — an Unreal-style transport state for the in-editor
+/// simulation. `Editing` is the authoring state (sim frozen). `Playing` runs the
+/// shell's simulation, advancing [`EditorShell::sim_tick`] once per `ui()` frame.
+/// `Paused` freezes the sim WITHOUT resetting the tick counter (so resuming
+/// continues from where it left off); `Stop` returns to `Editing` AND resets the
+/// tick counter to 0. Drives the Play/Pause/Stop toolbar buttons, the status bar
+/// transport label, and a viewport "PLAY"/"PAUSED" badge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PlayState {
+    /// Authoring mode — the simulation is frozen and the scene is editable.
+    Editing,
+    /// The simulation is running, advancing the tick counter each frame.
+    Playing,
+    /// The simulation is frozen mid-run; the tick counter is preserved so
+    /// resuming continues from the same tick.
+    Paused,
+}
+
+impl PlayState {
+    /// The short transport word shown in the status bar / viewport badge.
+    pub fn label(self) -> &'static str {
+        match self {
+            PlayState::Editing => "Editing",
+            PlayState::Playing => "Playing",
+            PlayState::Paused => "Paused",
+        }
+    }
+
+    /// Whether the simulation should advance this frame.
+    pub fn is_running(self) -> bool {
+        matches!(self, PlayState::Playing)
+    }
 }
 
 /// The editor shell — owns the dock layout, panel state, and tokens.
@@ -346,6 +392,15 @@ pub struct EditorShell {
     /// Toolbar gizmo mode (0=move,1=rotate,2=scale).
     pub gizmo: u8,
     pub snap: bool,
+    /// The editor transport state (Editing/Playing/Paused) the Play/Pause/Stop
+    /// toolbar buttons drive. `Editing` by default; `ui()` advances `sim_tick`
+    /// while this is `Playing`. See [`PlayState`].
+    pub play_state: PlayState,
+    /// Monotonic simulation tick, advanced once per `ui()` frame WHILE
+    /// `play_state == Playing`. Frozen in `Editing`/`Paused`; reset to 0 by Stop.
+    /// This is the concrete, observable proof that the transport ticks the sim —
+    /// the play-state test asserts on it.
+    pub sim_tick: u64,
     /// The one-command-surface (menus/toolbar/palette/AI all dispatch through it).
     pub registry: CommandRegistry,
     /// The Ctrl+K command palette state.
@@ -408,6 +463,9 @@ pub struct EditorShell {
     /// Output Log lines appended at runtime (e.g. a content-browser asset load),
     /// shown beneath the static engine banner in the Output Log tab.
     pub output_log: Vec<String>,
+    /// The Sequencer tab's cinematic timeline state (authored `CameraSequence`,
+    /// playhead, transport, and a drained offline-render request).
+    pub sequencer: panels::sequencer::SequencerState,
     /// Monotonic UI frame counter, bumped once per `ui()`. Used to coalesce a
     /// continuous inspector drag (many per-frame value changes) into ONE undo
     /// entry: see [`EditorShell::record_inspector_edit`].
@@ -462,6 +520,25 @@ const HISTORY_CAP: usize = 200;
 /// top of it). Applied to BOTH the entity transform and every cloned splat.
 const DUP_OFFSET: [f32; 3] = [2.0, 0.0, 0.0];
 
+/// The fixed world path the headless/proof "Open world…" path uses when there is
+/// no display to pop a native file picker on. Matches the `file.save` default so
+/// a saved project round-trips through the proof path.
+#[cfg_attr(feature = "spectra", allow(dead_code))]
+const DEFAULT_WORLD_PATH: &str = "project.ochroma_world";
+
+/// A default cinematic for an empty Sequencer tab: a short dolly with a two-key
+/// rack focus and a hexagonal iris, so opening the panel shows a usable timeline.
+fn default_demo_sequence() -> vox_render::CameraSequence {
+    const DEMO: &str = r#"{ "fps":{"num":60,"den":1}, "duration":120,
+        "eye_keys":[[0,[0,0,0]],[30,[1,2,0]],[90,[5,2,0]],[120,[6,0,0]]],
+        "target_keys":[[0,[0,0,0]],[120,[0,0,0]]],
+        "focus_distance":[[0,30.0],[120,8.0]],
+        "aperture_fstop":[[0,2.8]], "focal_length_mm":[[0,50.0]],
+        "fov_y_deg":[[0,45.0]], "bokeh_shape":"Hexagon" }"#;
+    vox_render::CameraSequence::load_json(DEMO)
+        .expect("built-in demo cine JSON is valid")
+}
+
 impl EditorShell {
     /// Build the shell with the standard SOTA layout:
     /// left = World; center-top = Viewport, center-bottom = Node Graph;
@@ -475,9 +552,16 @@ impl EditorShell {
             surface.split_left(NodeIndex::root(), 0.18, vec![B(PanelId::Hierarchy)]);
         // Right: Properties.
         let [center, _right] = surface.split_right(center, 0.78, vec![B(PanelId::Inspector)]);
-        // Bottom: Content + Output Log as a tab group.
-        let [_center, _bottom] =
-            surface.split_below(center, 0.72, vec![B(PanelId::Content), B(PanelId::Output)]);
+        // Bottom: Content + Output Log + Sequencer as a tab group.
+        let [_center, _bottom] = surface.split_below(
+            center,
+            0.72,
+            vec![
+                B(PanelId::Content),
+                B(PanelId::Output),
+                B(PanelId::Sequencer),
+            ],
+        );
 
         let last_command_flag = Rc::new(RefCell::new(false));
         let requests: Rc<RefCell<Vec<ShellRequest>>> = Rc::new(RefCell::new(Vec::new()));
@@ -507,6 +591,7 @@ impl EditorShell {
             assistant_log: Vec::new(),
             content: ContentPanel::new(ContentPanel::default_root()),
             output_log: Vec::new(),
+            sequencer: panels::sequencer::SequencerState::new(default_demo_sequence()),
             frame: 0,
             last_inspector_edit: None,
             intent_backend: intent::IntentBackend::from_env(),
@@ -552,6 +637,8 @@ impl EditorShell {
             last_gpu_pass_ms: None,
             gizmo: 0,
             snap: true,
+            play_state: PlayState::Editing,
+            sim_tick: 0,
         }
     }
 
@@ -786,6 +873,11 @@ impl EditorShell {
         // current before the viewport texture is (re)built below.
         self.drain_requests();
 
+        // Advance the editor simulation if the transport is Playing (frozen in
+        // Editing/Paused). This is the heartbeat the Play/Pause/Stop buttons drive
+        // and the status bar / viewport badge reflect.
+        self.tick_simulation();
+
         // Ensure the viewport scene texture is uploaded (rebuilt when the planted
         // overlay changed, since planting/undo invalidate the cache).
         let viewport_tex = viewport::scene_texture(
@@ -812,6 +904,9 @@ impl EditorShell {
             content: &mut self.content,
             output_log: &self.output_log,
             content_action: &mut content_action,
+            play_state: self.play_state,
+            sim_tick: self.sim_tick,
+            sequencer: &mut self.sequencer,
         };
         let dock_style = DockStyle::from_egui(ctx.style().as_ref());
         DockArea::new(&mut self.dock)
@@ -1371,6 +1466,7 @@ impl EditorShell {
                     };
                     self.push_output_log(line);
                 }
+                ShellRequest::OpenWorldDialog => self.open_world_dialog(),
             }
         }
     }
@@ -1767,6 +1863,81 @@ impl EditorShell {
         Ok((self.entities.len(), total_splats))
     }
 
+    /// Transport: PLAY — enter the running state from Editing or Paused. From
+    /// `Editing` the simulation starts fresh; from `Paused` it RESUMES (the tick
+    /// counter is preserved). Idempotent if already `Playing`. Invalidates the
+    /// viewport cache so the next frame re-renders with the transport badge.
+    pub fn play(&mut self) {
+        if self.play_state != PlayState::Playing {
+            self.play_state = PlayState::Playing;
+            self.status = "Playing — simulation running".into();
+            self.viewport_tex = None;
+        }
+    }
+
+    /// Transport: PAUSE — freeze a running simulation WITHOUT resetting the tick
+    /// counter, so a following PLAY resumes from the same tick. A no-op unless the
+    /// shell is currently `Playing`.
+    pub fn pause(&mut self) {
+        if self.play_state == PlayState::Playing {
+            self.play_state = PlayState::Paused;
+            self.status = format!("Paused at tick {}", self.sim_tick);
+            self.viewport_tex = None;
+        }
+    }
+
+    /// Transport: STOP — return to `Editing` AND reset the tick counter to 0.
+    /// Always returns to a clean authoring state regardless of the prior state.
+    pub fn stop(&mut self) {
+        if self.play_state != PlayState::Editing || self.sim_tick != 0 {
+            self.play_state = PlayState::Editing;
+            self.sim_tick = 0;
+            self.status = "Editing".into();
+            self.viewport_tex = None;
+        }
+    }
+
+    /// Advance the shell's simulation by one tick if (and only if) the transport
+    /// is `Playing`. Called once per `ui()` frame. Today the simulation step is the
+    /// monotonic `sim_tick` advance (the observable transport heartbeat the live
+    /// viewport/status bar reflect); richer per-tick sim work hangs off this.
+    pub fn tick_simulation(&mut self) {
+        if self.play_state.is_running() {
+            self.sim_tick = self.sim_tick.wrapping_add(1);
+        }
+    }
+
+    /// Open a world via a native file picker (windowed) or the default path
+    /// (headless/proof). Under the `spectra` feature an `rfd` dialog filtered to
+    /// `*.ochroma_world` is shown; a chosen file is loaded into the LIVE viewport
+    /// scene (`load_world` repopulates `entities`/`overlay` and invalidates the
+    /// viewport cache, so the next frame path-traces the loaded scene). A cancel
+    /// is a no-op with a receipt. Without `spectra` (the snapshot/proof bins, no
+    /// display) it loads the fixed [`DEFAULT_WORLD_PATH`] so proof mode is
+    /// deterministic and never blocks on a dialog.
+    pub fn open_world_dialog(&mut self) {
+        #[cfg(feature = "spectra")]
+        let chosen: Option<PathBuf> = rfd::FileDialog::new()
+            .add_filter("Ochroma world", &["ochroma_world"])
+            .set_title("Open world")
+            .pick_file();
+        #[cfg(not(feature = "spectra"))]
+        let chosen: Option<PathBuf> = Some(PathBuf::from(DEFAULT_WORLD_PATH));
+
+        let Some(path) = chosen else {
+            self.push_output_log("[open] Open world cancelled".to_string());
+            return;
+        };
+        let line = match self.load_world(&path) {
+            Ok((entities, splats)) => format!(
+                "[open] Loaded {entities} entities and {splats} splats from {}",
+                path.display()
+            ),
+            Err(e) => format!("[open] Couldn't open {}: {e}", path.display()),
+        };
+        self.push_output_log(line);
+    }
+
     /// Append a line to the Output Log, capping it at [`HISTORY_CAP`].
     fn push_output_log(&mut self, line: String) {
         self.output_log.push(line);
@@ -1905,6 +2076,9 @@ impl EditorShell {
 
     fn toolbar(&mut self, ctx: &egui::Context) {
         let mut add_to_world = false;
+        // Transport intent captured inside the panel closure (which borrows shell
+        // fields for the button labels) and applied after it closes.
+        let mut transport: Option<PlayState> = None;
         egui::TopBottomPanel::top("shell_toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // Primary labeled action (the Canva rule) — routes through the
@@ -1939,13 +2113,44 @@ impl EditorShell {
                 let _ = widgets::icon_button(ui, icon::SHOW_FLAGS, "What's shown");
                 let _ = widgets::icon_button(ui, icon::PERF, "Speed & smoothness");
                 ui.separator();
-                let _ = widgets::icon_button(ui, icon::PLAY, "Play");
-                let _ = widgets::icon_button(ui, icon::PAUSE, "Pause");
-                let _ = widgets::icon_button(ui, icon::STOP, "Stop");
+                // Transport (Unreal-style Play/Pause/Stop). Each drives the real
+                // editor PlayState: Play runs/resumes the sim, Pause freezes it
+                // (tick preserved), Stop returns to Editing and resets the tick.
+                // Play is highlighted while running, Pause while paused, so the
+                // active transport state is visible at a glance.
+                if ui
+                    .selectable_label(
+                        self.play_state == PlayState::Playing,
+                        format!("{}  Play", icon::PLAY),
+                    )
+                    .clicked()
+                {
+                    transport = Some(PlayState::Playing);
+                }
+                if ui
+                    .selectable_label(
+                        self.play_state == PlayState::Paused,
+                        format!("{}  Pause", icon::PAUSE),
+                    )
+                    .clicked()
+                {
+                    transport = Some(PlayState::Paused);
+                }
+                if widgets::icon_button(ui, icon::STOP, "Stop").clicked() {
+                    transport = Some(PlayState::Editing);
+                }
             });
         });
         if add_to_world {
             self.registry.run("world.add");
+        }
+        // Apply the transport intent AFTER the panel closes (the closure borrows
+        // `self`'s fields immutably for the labels; the state change needs `&mut`).
+        match transport {
+            Some(PlayState::Playing) => self.play(),
+            Some(PlayState::Paused) => self.pause(),
+            Some(PlayState::Editing) => self.stop(),
+            None => {}
         }
     }
 
@@ -1962,6 +2167,27 @@ impl EditorShell {
                     ui.separator();
                     ui.label(format!("GPU: {pass} {ms:.1} ms"));
                 }
+                // Transport state + live tick — the visible reflection of
+                // PlayState in the status bar. Tick only shows while running/paused
+                // (it is meaningless in Editing, which always reads tick 0).
+                ui.separator();
+                let transport = match self.play_state {
+                    PlayState::Editing => self.play_state.label().to_string(),
+                    PlayState::Playing | PlayState::Paused => {
+                        format!("{} \u{2022} tick {}", self.play_state.label(), self.sim_tick)
+                    }
+                };
+                let tcol = match self.play_state {
+                    PlayState::Editing => self.tokens.color("text.secondary"),
+                    PlayState::Playing => self.tokens.color("status.success"),
+                    PlayState::Paused => self.tokens.color("status.warning"),
+                };
+                ui.label(
+                    egui::RichText::new(format!("\u{25B6} {transport}"))
+                        .color(egui::Color32::from_rgba_unmultiplied(
+                            tcol[0], tcol[1], tcol[2], tcol[3],
+                        )),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let n = self.entities.len();
                     let noun = if n == 1 { "thing" } else { "things" };
@@ -2015,6 +2241,15 @@ struct ShellViewer<'a> {
     /// A content-browser activation (double-click) staged this frame for the
     /// shell to drain into a `ShellRequest::LoadAsset` after the dock lays out.
     content_action: &'a mut Option<ContentAction>,
+    /// The editor transport state, so the Viewport tab can draw a PLAY/PAUSED
+    /// badge and tick readout over the path-traced frame.
+    play_state: PlayState,
+    /// The live simulation tick, shown in the viewport transport badge while
+    /// running/paused.
+    sim_tick: u64,
+    /// The Sequencer tab's cinematic timeline state (borrowed from the shell so
+    /// scrubbing/keys persist across frames).
+    sequencer: &'a mut panels::sequencer::SequencerState,
 }
 
 impl egui_dock::TabViewer for ShellViewer<'_> {
@@ -2041,6 +2276,7 @@ impl egui_dock::TabViewer for ShellViewer<'_> {
             TabKind::Builtin(PanelId::NodeGraph) => self.node_graph(ui),
             TabKind::Builtin(PanelId::Content) => self.content(ui),
             TabKind::Builtin(PanelId::Output) => self.output(ui),
+            TabKind::Builtin(PanelId::Sequencer) => self.sequencer_tab(ui),
             TabKind::Plugin(id) => self.plugin_tab_ui(ui, &id.clone()),
         }
     }
@@ -2228,6 +2464,40 @@ impl ShellViewer<'_> {
             egui::FontId::proportional(self.tokens.type_ramp.body),
             egui::Color32::from_rgb(220, 222, 230),
         );
+
+        // Transport badge (top-right): reflects the live PlayState over the
+        // path-traced frame. Hidden while Editing (the default authoring state);
+        // shown as a colored "PLAY"/"PAUSED" pill with the live tick otherwise.
+        if self.play_state != PlayState::Editing {
+            let (txt, key) = match self.play_state {
+                PlayState::Playing => (format!("\u{25B6} PLAY  tick {}", self.sim_tick), "status.success"),
+                PlayState::Paused => (format!("\u{2389} PAUSED  tick {}", self.sim_tick), "status.warning"),
+                PlayState::Editing => unreachable!(),
+            };
+            let badge = egui::Rect::from_min_size(
+                inner.right_top() + egui::vec2(-176.0, 12.0),
+                egui::vec2(164.0, 26.0),
+            );
+            let [br, bg, bb, ba] = self.tokens.color("surface.bg.2");
+            ui.painter().rect_filled(
+                badge,
+                self.tokens.radius[2],
+                egui::Color32::from_rgba_unmultiplied(br, bg, bb, ba.min(235)),
+            );
+            let [cr, cg2, cb, _] = self.tokens.color(key);
+            ui.painter().circle_filled(
+                badge.left_center() + egui::vec2(12.0, 0.0),
+                4.0,
+                egui::Color32::from_rgb(cr, cg2, cb),
+            );
+            ui.painter().text(
+                badge.left_center() + egui::vec2(22.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                txt,
+                egui::FontId::proportional(self.tokens.type_ramp.body),
+                egui::Color32::from_rgb(cr, cg2, cb),
+            );
+        }
     }
 
     fn node_graph(&mut self, ui: &mut egui::Ui) {
@@ -2275,6 +2545,15 @@ impl ShellViewer<'_> {
         for line in self.output_log {
             ui.label(egui::RichText::new(line).monospace());
         }
+    }
+
+    /// The Sequencer tab: the cinematic timeline. Scrubbing moves the playhead;
+    /// **Render Sequence** stages an offline-render request the shell drains.
+    fn sequencer_tab(&mut self, ui: &mut egui::Ui) {
+        // No live viewport orbit is threaded here yet (engine stays game-agnostic
+        // about the orbit source); pass None so the timeline/transport drive the
+        // authored sequence directly.
+        let _view = panels::sequencer::ui(ui, self.sequencer, None);
     }
 
     /// Find a plugin tab declaration by its tab id.
@@ -2416,7 +2695,9 @@ fn build_registry(
     }));
     let q = requests.clone();
     r.add(Command::new("file.open", "Open world…", "File", "Ctrl+O", move || {
-        q.borrow_mut().push(ShellRequest::OpenWorld(PathBuf::from("project.ochroma_world")))
+        // Route through OpenWorldDialog so the drain arm can pop a native file
+        // picker (windowed) or fall back to the default path (headless/proof).
+        q.borrow_mut().push(ShellRequest::OpenWorldDialog)
     }));
     // Undo routes through the registry too (same one-command-surface) — its
     // closure queues a request the shell drains, since undo needs `&mut self`.

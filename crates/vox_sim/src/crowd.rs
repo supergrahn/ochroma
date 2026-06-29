@@ -1,6 +1,9 @@
 //! Crowd simulation — many agents moving simultaneously with basic avoidance.
 
 use glam::Vec3;
+use rayon::prelude::*;
+
+use crate::spatial_hash::SpatialHash;
 
 /// A single crowd agent.
 pub struct CrowdAgent {
@@ -13,19 +16,32 @@ pub struct CrowdAgent {
     pub path_index: usize,
 }
 
+/// Minimum agent count before the per-agent avoidance pass is parallelized.
+/// Below this the rayon fork/join overhead outweighs the work; the result is
+/// identical either way (each agent writes only its own delta slot).
+const PARALLEL_THRESHOLD: usize = 2048;
+
 /// Manages a crowd of agents with simple steering and avoidance.
 pub struct CrowdSimulation {
     pub agents: Vec<CrowdAgent>,
     pub avoidance_weight: f32,
     pub separation_distance: f32,
+    /// Spatial hash reused across ticks (cleared + refilled), instead of a
+    /// fresh allocation every `tick` — removes the per-tick map/bucket churn.
+    hash: SpatialHash,
+    /// Per-agent steering output, reused across ticks to avoid reallocation.
+    deltas: Vec<Vec3>,
 }
 
 impl CrowdSimulation {
     pub fn new() -> Self {
+        let separation_distance = 1.5;
         Self {
             agents: Vec::new(),
             avoidance_weight: 2.0,
-            separation_distance: 1.5,
+            separation_distance,
+            hash: SpatialHash::new(separation_distance * 1.5),
+            deltas: Vec::new(),
         }
     }
 
@@ -48,53 +64,130 @@ impl CrowdSimulation {
         self.agents.len()
     }
 
+    /// Compute one agent's steering velocity from read-only pre-tick state.
+    ///
+    /// Pure function of `i`, the immutable `agents` slice, and the immutable
+    /// spatial `hash`. It writes nothing shared, and iterates neighbours in the
+    /// hash's fixed scan order, so calling it for each `i` serially or in
+    /// parallel (each writing its own `deltas[i]`) yields bit-identical results.
+    #[inline]
+    fn steer(
+        agents: &[CrowdAgent],
+        hash: &SpatialHash,
+        avoidance_weight: f32,
+        separation_distance: f32,
+        i: usize,
+        neighbour_scratch: &mut Vec<usize>,
+    ) -> Vec3 {
+        let agent = &agents[i];
+
+        let effective_target = if !agent.path.is_empty() && agent.path_index < agent.path.len() {
+            let wp = agent.path[agent.path_index];
+            Vec3::new(wp[0], wp[1], wp[2])
+        } else {
+            agent.target
+        };
+
+        let to_target = effective_target - agent.position;
+        let dist_to_target = to_target.length();
+        let desired = if dist_to_target > 0.01 {
+            to_target / dist_to_target * agent.speed
+        } else {
+            Vec3::ZERO
+        };
+
+        let mut avoidance = Vec3::ZERO;
+        hash.neighbours_into(agent.position, separation_distance, neighbour_scratch);
+        for &j in neighbour_scratch.iter() {
+            if j == i { continue; }
+            let other = &agents[j];
+            let diff = agent.position - other.position;
+            let dist = diff.length();
+            if dist < separation_distance && dist > 1e-4 {
+                let strength = avoidance_weight * (separation_distance - dist) / separation_distance;
+                avoidance += (diff / dist) * strength;
+            }
+        }
+
+        (desired + avoidance).clamp_length_max(agent.speed * 1.5)
+    }
+
     /// Advance the simulation by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        self.tick_impl(dt, None);
+    }
+
+    /// Advance one tick, FORCING the serial steering path regardless of the
+    /// agent count. Test-only hook used to prove the parallel path produces
+    /// byte-identical state to the serial reference on the same input.
+    #[doc(hidden)]
+    pub fn tick_force_serial(&mut self, dt: f32) {
+        self.tick_impl(dt, Some(false));
+    }
+
+    /// Advance one tick, FORCING the parallel steering path. Test-only hook.
+    #[doc(hidden)]
+    pub fn tick_force_parallel(&mut self, dt: f32) {
+        self.tick_impl(dt, Some(true));
+    }
+
+    /// One tick. `force` overrides the auto parallel/serial selection
+    /// (`Some(true)` = parallel, `Some(false)` = serial, `None` = by threshold).
+    fn tick_impl(&mut self, dt: f32, force: Option<bool>) {
         let n = self.agents.len();
         if n == 0 { return; }
 
-        let mut hash = crate::spatial_hash::SpatialHash::new(self.separation_distance * 1.5);
+        // Reuse the spatial hash across ticks: clear keeps the allocated bucket
+        // Vecs, and reinsertion is in agent-index order, so each bucket's
+        // contents are index-ascending — identical to a freshly built hash.
+        self.hash.clear();
         for (i, agent) in self.agents.iter().enumerate() {
-            hash.insert(i, agent.position);
+            self.hash.insert(i, agent.position);
         }
 
-        let mut deltas: Vec<Vec3> = Vec::with_capacity(n);
-        for i in 0..n {
-            let agent = &self.agents[i];
+        self.deltas.clear();
+        self.deltas.resize(n, Vec3::ZERO);
 
-            let effective_target = if !agent.path.is_empty() && agent.path_index < agent.path.len() {
-                let wp = agent.path[agent.path_index];
-                Vec3::new(wp[0], wp[1], wp[2])
-            } else {
-                agent.target
-            };
+        let agents = &self.agents;
+        let hash = &self.hash;
+        let avoidance_weight = self.avoidance_weight;
+        let separation_distance = self.separation_distance;
 
-            let to_target = effective_target - agent.position;
-            let dist_to_target = to_target.length();
-            let desired = if dist_to_target > 0.01 {
-                to_target / dist_to_target * agent.speed
-            } else {
-                Vec3::ZERO
-            };
-
-            let mut avoidance = Vec3::ZERO;
-            let neighbours = hash.neighbours(agent.position, self.separation_distance);
-            for &j in &neighbours {
-                if j == i { continue; }
-                let other = &self.agents[j];
-                let diff = agent.position - other.position;
-                let dist = diff.length();
-                if dist < self.separation_distance && dist > 1e-4 {
-                    let strength = self.avoidance_weight * (self.separation_distance - dist) / self.separation_distance;
-                    avoidance += (diff / dist) * strength;
-                }
+        let parallel = force.unwrap_or(n >= PARALLEL_THRESHOLD);
+        if parallel {
+            // Determinism-safe parallelism: each closure writes ONLY its own
+            // `deltas[i]` and reads only the immutable pre-tick `agents`/`hash`.
+            // The result is independent of task scheduling, so it is bit-identical
+            // to the serial path (each agent's internal avoidance sum keeps its
+            // fixed neighbour-scan order). No cross-task float reduction occurs.
+            self.deltas
+                .par_iter_mut()
+                .enumerate()
+                .for_each_init(Vec::new, |scratch, (i, out)| {
+                    *out = Self::steer(
+                        agents,
+                        hash,
+                        avoidance_weight,
+                        separation_distance,
+                        i,
+                        scratch,
+                    );
+                });
+        } else {
+            let mut scratch: Vec<usize> = Vec::new();
+            for (i, out) in self.deltas.iter_mut().enumerate() {
+                *out = Self::steer(
+                    agents,
+                    hash,
+                    avoidance_weight,
+                    separation_distance,
+                    i,
+                    &mut scratch,
+                );
             }
-
-            let velocity = (desired + avoidance).clamp_length_max(agent.speed * 1.5);
-            deltas.push(velocity);
         }
 
-        for (agent, vel) in self.agents.iter_mut().zip(deltas.iter()) {
+        for (agent, vel) in self.agents.iter_mut().zip(self.deltas.iter()) {
             agent.velocity = *vel;
             agent.position += *vel * dt;
 

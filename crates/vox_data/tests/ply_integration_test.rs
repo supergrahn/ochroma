@@ -1,3 +1,9 @@
+#![cfg(feature = "legacy-raster")]
+// Gated behind `legacy-raster` (THE LAW: Spectra is the only product renderer).
+// This whole test file renders loaded PLY splats through the banned CPU software
+// rasterizer; it compiles only under `cargo test -p vox_data --features
+// legacy-raster`, never in the product build.
+
 //! PLY Integration Test — verifies the full pipeline from PLY file generation
 //! through loading to software rasterisation, producing a visible image.
 //!

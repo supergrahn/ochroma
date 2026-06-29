@@ -5,6 +5,7 @@ members = [
     "crates/vox_data",
     "crates/vox_usd",
     "crates/vox_render",
+    "crates/vox_scene",
     "crates/vox_app",
     "crates/vox_nn",
     "crates/vox_sim",
@@ -20,6 +21,7 @@ members = [
     "crates/ochroma_engine",
     "crates/vox_web",
     "crates/vox_ai",
+    "crates/vox_aether",
 ]
 # vendor/shader-slang is a patched copy of the crates.io `shader-slang 0.1.0`
 # crate, used only as a [patch.crates-io] target for the optional

@@ -8,6 +8,10 @@ pub mod debug_console;
 pub mod content_browser;
 pub mod editor;
 pub mod shell;
+// render_to_file renders through the banned CPU software rasterizer; it is a
+// legacy offline utility (PPM/turntable). Gated OFF by default so the lib (and
+// thus the editor/game) compiles with no rasterizer in its graph.
+#[cfg(feature = "legacy-raster")]
 pub mod render_to_file;
 pub mod screenshot;
 pub mod shortcut_help;

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "spectra-native")]
 use spectra_gpu::{CudarcSlangBackend, GpuBackend, VulkanSlangBackend};
 #[cfg(feature = "spectra-native")]
-use spectra_renderer::{RenderConfig, Renderer};
+use spectra_renderer::{RenderConfig, RenderTarget, Renderer};
 #[cfg(feature = "spectra-native")]
 use spectra_scene_state::{CameraLayer, SceneState};
 
@@ -27,6 +27,9 @@ enum RtCommand {
         scene: Option<SceneState>,
         camera: CameraLayer,
     },
+    /// Point the renderer at a CUDA interop color ptr (CUDA-owned present path),
+    /// or back to host-beauty delivery. Forwarded to `Renderer::set_render_target`.
+    SetRenderTarget(spectra_renderer::RenderTarget),
     /// Terminate the render thread.
     Shutdown,
 }
@@ -42,6 +45,10 @@ pub struct SpectraRenderBackend {
     fail_count: u32,
     width: u32,
     height: u32,
+    /// Cached copy of the render target last requested via `set_interop_target`.
+    /// The authoritative value lives on the render thread's `Renderer`; this
+    /// mirror lets the (non-thread) caller read back what it asked for.
+    render_target: RenderTarget,
 }
 
 /// Locate the Spectra `.slang` kernel directory: `SPECTRA_SLANG_DIR` if set and
@@ -49,7 +56,7 @@ pub struct SpectraRenderBackend {
 /// `../../../spectra/...` path deps in Cargo.toml). Returns `None` if neither
 /// exists (the renderer then falls back to temp_dir and produces blank frames).
 #[cfg(feature = "spectra-native")]
-fn resolve_slang_kernel_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn resolve_slang_kernel_dir() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     if let Ok(d) = std::env::var("SPECTRA_SLANG_DIR") {
         let p = PathBuf::from(d);
@@ -107,7 +114,7 @@ pub fn pathtrace_splats_to_rgba(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
     renderer
         .load_scene_state(scene)
@@ -158,6 +165,14 @@ pub struct PbrMaterial {
     pub albedo_tex: i32,
     pub roughness_tex: i32,
     pub normal_tex: i32,
+    /// Opacity / alpha-cutout texture id (-1 = off / opaque). For foliage leaf
+    /// cards (PolyHaven glTF), the leaf alpha is carried in the BASE-COLOR
+    /// texture's alpha channel, so the scatter/vegetation packer sets this EQUAL
+    /// to `albedo_tex`: the megakernel then enables the alpha-cutout test and
+    /// reads the cutout from the base-color `.w` (megakernel.slang ~2333/2377).
+    /// A separate single-channel opacity map sets a DISTINCT slot (read `.x`).
+    /// Default -1 keeps opaque facades byte-identical (cutout never fires).
+    pub opacity_tex: i32,
     /// Single-channel height/displacement map id (-1 = off). Drives POM
     /// (parallax occlusion mapping) in the megakernel — see
     /// `pack_vulkan_mesh_material` a[31]/a[32]/a[33].
@@ -176,6 +191,20 @@ pub struct PbrMaterial {
     /// Thin-pane glass vs refractive solid glass; only read when
     /// `transmission > 0.0`.
     pub thin_walled: bool,
+    /// Beer-Lambert absorption colour for transmissive glass (the tint the
+    /// pane imparts on light passing through it). `[0,0,0]` = perfectly clear
+    /// (the historical behaviour). A small cool triple (e.g. `[0.25,0.12,0.05]`)
+    /// gives the blue-green cast of architectural curtain-wall glass and — far
+    /// more importantly — darkens the transmitted ray so the pane reads as glass
+    /// instead of a black hole into an unlit interior. Only read when
+    /// `transmission > 0.0`.
+    pub absorption_color: [f32; 3],
+    /// Beer-Lambert reference depth paired with `absorption_color`. Doubles as
+    /// the effective pane travel-distance the glass dispatch passes to the BSDF
+    /// (`material_dispatch.slang` MAT_GLASS), so the exit ray is attenuated by
+    /// `exp(-absorption_color)`. Only read when `transmission > 0.0` and
+    /// `absorption_color != [0,0,0]`.
+    pub absorption_depth: f32,
 }
 
 #[cfg(feature = "spectra-native")]
@@ -189,6 +218,7 @@ impl Default for PbrMaterial {
             albedo_tex: -1,
             roughness_tex: -1,
             normal_tex: -1,
+            opacity_tex: -1,
             displacement_tex: -1,
             displacement_scale: 0.0,
             displacement_midlevel: 0.5,
@@ -196,8 +226,70 @@ impl Default for PbrMaterial {
             transmission: 0.0,
             ior: 1.5,
             thin_walled: false,
+            absorption_color: [0.0, 0.0, 0.0],
+            absorption_depth: 1.0,
         }
     }
+}
+
+/// One per-archetype BLAS description handed to the instanced-scene converter
+/// (Render Keystone T3). Each archetype's Forge mesh becomes ONE BLAS that
+/// every instance naming its `proto_id` shares — the RTX-Mega-Geometry-shaped
+/// "build once, instance many" model, NOT one merged soup.
+///
+/// Geometry is object-space (the instance's world transform is applied by the
+/// TLAS). `aabb` is the REAL per-mesh bound (closes the `scene.rs:64-68`
+/// "same scene-wide AABB to every BLAS" gap). `material_ids` is per-triangle,
+/// indexed by forge channel id (NOT slot order — see the `splat_backend.rs:676`
+/// debug_assert contract).
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone)]
+pub struct BlasDesc {
+    /// Stable key for cross-frame BLAS cache reuse (rigid prototypes never
+    /// rebuilt). Ordered deterministically by the caller.
+    pub proto_id: u64,
+    /// Object-space vertex positions (`[x, y, z]` per vertex).
+    pub positions: Vec<[f32; 3]>,
+    /// Object-space vertex normals (`[nx, ny, nz]` per vertex).
+    pub normals: Vec<[f32; 3]>,
+    /// UV coordinates (`[u, v]` per vertex).
+    pub uvs: Vec<[f32; 2]>,
+    /// Triangle indices (`[i0, i1, i2]` per triangle, into this BLAS's verts).
+    pub indices: Vec<[u32; 3]>,
+    /// Per-triangle material index (forge-channel id ordered), RELATIVE to the
+    /// per-instance material base (final = instance base + this). u32 so a real
+    /// city's >255 distinct (channel,texture,colour) combos are not capped/aliased.
+    /// May be empty (all triangles default to relative material 0).
+    pub material_ids: Vec<u32>,
+    /// REAL per-mesh AABB: `(min, max)` object-space corners.
+    pub aabb_min: [f32; 3],
+    pub aabb_max: [f32; 3],
+}
+
+/// One GPU instance record for the instanced TLAS (Render Keystone T3). Names a
+/// prototype BLAS by index and carries its own world transform + per-instance
+/// material BASE. The closest-hit ADDS this base to each triangle's relative
+/// `BlasDesc.material_id` (design §4.1): `final = base + tri.material_id`. So
+/// per-instance variation (different bases) COMPOSES with per-triangle
+/// multi-material instead of clobbering it — there is no override/sentinel.
+#[cfg(feature = "spectra-native")]
+#[derive(Debug, Clone, Copy)]
+pub struct InstanceRecordGpu {
+    /// Which `BlasDesc` (by index into the converter's `blas` slice) this
+    /// instance uses.
+    pub proto_index: u32,
+    /// Row-major 4×4 world transform, flat 16 floats (translation in the last
+    /// row, indices 12/13/14 — the `SceneState::instance_transforms` layout).
+    pub transform: [f32; 16],
+    /// Per-instance material BASE added to each triangle's relative
+    /// `material_id` in the closest-hit (`final = base + tri.material_id`).
+    /// `0` = no offset — static per-triangle surfaces (buildings / merged city /
+    /// ground) shade purely with their BLAS per-triangle materials. CIM agents
+    /// set `base = palette_base + clothing_offset` (uniform BLAS, tri id 0);
+    /// scatter sets `base = proto material slot`. Carried to the TLAS as the
+    /// instance custom index. REPLACES the old per-instance material override
+    /// (and its `u32::MAX` "no override" sentinel).
+    pub material_base: u32,
 }
 
 /// A texture image for the path tracer's flat atlas.
@@ -254,6 +346,17 @@ pub struct LightRig {
     pub sky_dome_zenith: [f32; 3],
     /// Sky-dome gradient color at the horizon (linear RGB).
     pub sky_dome_horizon: [f32; 3],
+    /// ANALYTIC fill-light COLORS (linear RGB) for the resident renderer's
+    /// four-light rig. These were hardcoded blue-grey triples in
+    /// `resident_renderer` (the PRIME blue-cast culprit); they now ride the rig
+    /// so the GAME can drive them from `render.ron` (`lighting_rig.analytic_fills`).
+    /// Defaults match the historical literals exactly (byte-identical fallback).
+    /// `analytic_sky_fill_color` = the straight-down sky fill;
+    /// `analytic_camera_fill_color` = the camera-direction fill;
+    /// `analytic_rim_fill_color` = the opposing rim fill.
+    pub analytic_sky_fill_color: [f32; 3],
+    pub analytic_camera_fill_color: [f32; 3],
+    pub analytic_rim_fill_color: [f32; 3],
     /// Display LOOK for this shot: the tonemap operator + exposure preset
     /// applied to the linear HDR film. Default [`LookPreset::AcesFilm`]
     /// (ACES, EV 0) — byte-identical to the legacy hardcoded behaviour.
@@ -274,6 +377,26 @@ pub struct LightRig {
     /// Atmosphere turbidity (1.0 = clear, 10.0 = very hazy). Only consulted
     /// when `atmosphere_enabled`.
     pub atmosphere_turbidity: f32,
+    /// Enable the height-fog inscatter pass (`Renderer::set_fog` →
+    /// `u_fog_enabled`). Default `false` keeps every legacy render
+    /// byte-identical (the megakernel skips the fog block entirely). When
+    /// `true`, a thin warm fog adds aerial-depth + a sun-forward crepuscular cue.
+    pub fog_enabled: bool,
+    /// Height-fog density (extinction scale). Keep small (≈0.004) so the fog
+    /// reads as atmospheric depth without greying the buildable core. Only
+    /// consulted when `fog_enabled`.
+    pub fog_density: f32,
+    /// Height-fog inscatter color (linear RGB) — acts as the scattering-albedo
+    /// tint. A warm triple (≈`[1.0, 0.9, 0.78]`) at golden hour. Only consulted
+    /// when `fog_enabled`.
+    pub fog_color: [f32; 3],
+    /// Height-fog vertical falloff: larger = fog hugs the ground more tightly.
+    /// Only consulted when `fog_enabled`.
+    pub fog_height_falloff: f32,
+    /// Henyey-Greenstein anisotropy `g` for the fog inscatter phase. Forward
+    /// (≈0.7) concentrates inscatter toward the sun → the god-ray / crepuscular
+    /// cue; `0.0` is isotropic. Only consulted when `fog_enabled`.
+    pub fog_anisotropy: f32,
     /// Master toggle for the DYNAMIC weathering effect — the config law's
     /// `RenderSettings.features.weathering` surfaced on the rig. When `false`,
     /// the renderer renders the CLEAN surface even when cooked weathering masks
@@ -292,6 +415,14 @@ pub struct LightRig {
     /// so uploading masks without setting intensity reproduces the legacy
     /// weathered render. Forced to `[0; 7]` when `weathering_enabled` is false.
     pub weathering_intensity: [f32; 7],
+    /// True when the SUN is below the horizon (night). Driven by the game's
+    /// celestial clock (`rig.sun.altitude_rad < 0`), NOT by `sun_dir` — at night
+    /// the `sun_dir`/key slot carries the MOON, which can be above the horizon, so
+    /// `sun_dir.y` is NOT a reliable night signal. The resident renderer uses this
+    /// to switch on the MegaLights night path: promote glass to lit windows +
+    /// derive emissive point lights so the city lights from within. Default
+    /// `false` (day) keeps every legacy render byte-identical.
+    pub is_night: bool,
 }
 
 /// A named display LOOK = tonemap operator + exposure (EV). The renderer owns
@@ -311,6 +442,11 @@ pub enum LookPreset {
     Filmic,
     /// Reinhard-on-luminance, +0.5 EV — soft, hue-preserving, for review.
     SoftReview,
+    /// Reinhard-on-luminance, -2.0 EV — calibrated for the LIVE celestial sun
+    /// radiance (~28 at noon). SoftReview's +0.5 blew a mid-albedo ground out to
+    /// near-white under the live sun; this lands it at a believable daylit
+    /// mid-tone. Used by [`LightRig::realistic_daylight`].
+    DaylitCity,
     /// No tonemap (raw clamped linear) — diagnostics only.
     Flat,
 }
@@ -325,6 +461,7 @@ impl LookPreset {
             LookPreset::AcesBright => (ToneMapper::Aces, 1.0),
             LookPreset::Filmic => (ToneMapper::Filmic, 0.0),
             LookPreset::SoftReview => (ToneMapper::ReinhardLuma, 0.5),
+            LookPreset::DaylitCity => (ToneMapper::ReinhardLuma, -2.0),
             LookPreset::Flat => (ToneMapper::None, 0.0),
         }
     }
@@ -343,6 +480,7 @@ impl LookPreset {
             LookPreset::AcesBright => (Tm::Aces, 1.0),
             LookPreset::Filmic => (Tm::Filmic, 0.0),
             LookPreset::SoftReview => (Tm::ReinhardLuma, 0.5),
+            LookPreset::DaylitCity => (Tm::ReinhardLuma, -2.0),
             LookPreset::Flat => (Tm::Linear, 0.0),
         }
     }
@@ -366,7 +504,7 @@ impl LookPreset {
 /// override still flows through `apply_settings`. `max_bounces` likewise lives
 /// in `settings.render` so deeper-bounce scenes route through settings too.
 #[cfg(feature = "spectra-native")]
-fn rig_to_settings(rig: &LightRig, spp: u32, max_bounces: u32) -> spectra_renderer::RenderSettings {
+pub(crate) fn rig_to_settings(rig: &LightRig, spp: u32, max_bounces: u32) -> spectra_renderer::RenderSettings {
     let mut s = spectra_renderer::RenderSettings::default();
     s.render.spp = spp;
     s.render.max_bounces = max_bounces;
@@ -401,7 +539,7 @@ fn rig_to_settings(rig: &LightRig, spp: u32, max_bounces: u32) -> spectra_render
 /// this, `apply_settings` would clobber `near_realtime`'s `use_restir = true`
 /// with the `RenderSettings` default (`restir = off`).
 #[cfg(feature = "spectra-native")]
-fn seed_features_from_config(
+pub(crate) fn seed_features_from_config(
     s: &mut spectra_renderer::RenderSettings,
     config: &RenderConfig,
 ) {
@@ -436,6 +574,12 @@ impl Default for LightRig {
             sky_dome_intensity: 0.5,
             sky_dome_zenith: [0.15, 0.25, 0.45],
             sky_dome_horizon: [0.7, 0.6, 0.5],
+            // Analytic fill colors: defaults are the historical resident_renderer
+            // literals (byte-identical fallback). The game overrides them from
+            // render.ron `lighting_rig.analytic_fills`.
+            analytic_sky_fill_color: [0.58, 0.62, 0.72],
+            analytic_camera_fill_color: [0.72, 0.74, 0.78],
+            analytic_rim_fill_color: [0.45, 0.47, 0.52],
             look: LookPreset::AcesFilm,
             // Atmosphere OFF by default — every legacy render stays
             // byte-identical (the renderer leaves u_atmosphere_enabled = 0).
@@ -443,12 +587,22 @@ impl Default for LightRig {
             sun_radiance: 20.0,
             atmosphere_mie: 0.76,
             atmosphere_turbidity: 2.0,
+            // Fog OFF by default → the megakernel skips the fog block and every
+            // legacy render stays byte-identical (the new fog uniforms are inert).
+            fog_enabled: false,
+            fog_density: 0.004,
+            fog_color: [1.0, 0.9, 0.78],
+            fog_height_falloff: 0.5,
+            fog_anisotropy: 0.7,
             // Weathering ON at full per-channel intensity by default → uploading
             // cooked masks reproduces the legacy weathered render byte-for-byte.
             // The sim overrides `weathering_intensity` per instance; the config
             // toggle drives `weathering_enabled`.
             weathering_enabled: true,
             weathering_intensity: [1.0; 7],
+            // Day by default — the night MegaLights path is opt-in via the game's
+            // celestial clock, so every legacy render stays byte-identical.
+            is_night: false,
         }
     }
 }
@@ -475,8 +629,20 @@ impl LightRig {
     ///     red brick under a bright sky it crushed the red to grey
     ///     (`[164,161,158]` measured). SoftReview preserves the brick's chroma.
     ///
+    /// CONFIG NOTE: these numbers are the DOCUMENTED DEFAULTS — the live game
+    /// rig is now built field-by-field from `assets/config/render.ron`
+    /// (`lighting_rig.daylight` + the celestial `KeyLightPalette` sky anchors),
+    /// NOT from this function. The sky-dome anchor is derived from
+    /// `vox_core::celestial::KeyLightPalette::default()` so the engine fallback
+    /// can never drift from the canonical day palette (it used to carry a stale
+    /// `[0.42,0.55,0.78]` copy). The directional-rig numbers below are the
+    /// fallback an engine-only caller (no render.ron) gets.
+    ///
     /// See `docs/superpowers/specs/2026-06-13-material-rendering-design.md`.
     pub fn realistic_daylight() -> Self {
+        // Sky-dome anchors come from the engine's canonical day palette (the same
+        // DATA the game's render.ron mirrors) — no second hardcoded copy.
+        let day = vox_core::celestial::KeyLightPalette::default();
         Self {
             sun_dir: [0.45, 0.55, 0.50],
             sun_color: [1.0, 0.93, 0.82], // warm afternoon sun -> warm faces
@@ -487,13 +653,22 @@ impl LightRig {
             rim_fill: 0.15,     // was default 0.45
             atmosphere_enabled: true,
             atmosphere_turbidity: 2.5,
+            // Thin WARM height fog → aerial depth across the basin + a sun-forward
+            // (g=0.7) crepuscular glow at golden hour. Density kept low so the
+            // buildable core is not greyed out.
+            fog_enabled: true,
+            fog_density: 0.004,
+            fog_color: [1.0, 0.9, 0.78],
+            fog_height_falloff: 0.5,
+            fog_anisotropy: 0.7,
             // Desaturated + dimmed sky dome: still fills shadows, but its blue
-            // ambient no longer greys the warm sunlit brick faces.
-            sky_dome_intensity: 0.45,
-            sky_dome_zenith: [0.42, 0.55, 0.78],
-            sky_dome_horizon: [0.82, 0.85, 0.90],
+            // ambient no longer greys the warm sunlit brick faces. Derived from
+            // the canonical KeyLightPalette day anchor (single source of truth).
+            sky_dome_intensity: day.day_intensity,
+            sky_dome_zenith: day.day_zenith,
+            sky_dome_horizon: day.day_horizon,
             // Reinhard-on-luma, hue-preserving — keeps the brick's chroma.
-            look: LookPreset::SoftReview,
+            look: LookPreset::DaylitCity,
             ..Default::default()
         }
     }
@@ -738,7 +913,7 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
     scene.mark_geometry_changed();
     scene.mark_materials_changed();
@@ -807,16 +982,18 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
         });
         config.relief_mode = if any_disp && all_cone { 1 } else { 0 };
     }
-    // Config-first escape for SPECTRAL (Hero4 HWSS). The ONE config object owns
-    // the spectral lever (RenderConfig::spectral_mode; near_realtime defaults to
-    // SpectralMode::Single = spectral OFF). seed_features_from_config derives
-    // settings.features.spectral.enabled = matches!(spectral_mode, Hero4), so
-    // flipping this field is the ONLY way to reach the kernel's spectral path
-    // through the mesh entry. Absent → Single (byte-identical to legacy). This
-    // mirrors the OCHROMA_RELIEF_MODE / OCHROMA_DENOISE_OFF escapes above.
-    if std::env::var("OCHROMA_SPECTRAL").as_deref() == Ok("1") {
-        config.spectral_mode = spectra_renderer::SpectralMode::Hero4;
-    }
+    // R14 "realize spectral": the headline differentiator is now ON by default
+    // on this path. The ONE config object owns the lever
+    // (RenderConfig::spectral_mode); seed_features_from_config derives
+    // settings.features.spectral.enabled = matches!(spectral_mode, Hero4), which
+    // drives u_hwss_enabled into the kernel so surfaces shade per hero
+    // wavelength (R(λ)·L(λ)) instead of the legacy luminance smear. The cheap
+    // single-wavelength tier remains reachable via OCHROMA_SPECTRAL=0 (noted for
+    // the R31 fidelity-tier work).
+    config.spectral_mode = match std::env::var("OCHROMA_SPECTRAL").as_deref() {
+        Ok("0") => spectra_renderer::SpectralMode::Single,
+        _ => spectra_renderer::SpectralMode::Hero4,
+    };
     // Config-first: spp, the shot LOOK (tonemap + exposure), and the per-scene
     // bounce/NRC needs all reach the config through the ONE settings object.
     // Transmissive glass needs path DEPTH: a two-faced pane costs two bounces
@@ -886,6 +1063,15 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
         renderer.set_sun(sun.to_array(), rig.sun_radiance);
         renderer.set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
     }
+    // Height fog (aerial depth + crepuscular cue). Inert unless the rig opts in;
+    // fog_enabled=false → set_fog keeps the render byte-identical to no-fog.
+    renderer.set_fog(
+        rig.fog_enabled,
+        rig.fog_density,
+        rig.fog_color,
+        rig.fog_height_falloff,
+        rig.fog_anisotropy,
+    );
     // ORDER MATTERS: set_texture_atlas silently no-ops before scene state
     // exists, so it must come after load_scene_state.
     if !textures.is_empty() {
@@ -991,7 +1177,7 @@ pub fn spectra_resident_bench(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
     scene.mark_geometry_changed();
     scene.mark_materials_changed();
@@ -1021,6 +1207,13 @@ pub fn spectra_resident_bench(
         renderer.set_sun(sun.to_array(), rig.sun_radiance);
         renderer.set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
     }
+    renderer.set_fog(
+        rig.fog_enabled,
+        rig.fog_density,
+        rig.fog_color,
+        rig.fog_height_falloff,
+        rig.fog_anisotropy,
+    );
     if !textures.is_empty() {
         renderer
             .set_texture_atlas(&tex_descs, &tex_data, textures.len() as u32)
@@ -1229,7 +1422,7 @@ pub fn pathtrace_sdf_to_rgba(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
 
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
@@ -1281,6 +1474,48 @@ pub struct SdfSceneInstance {
     pub rotation_xyzw: [f32; 4],
     pub uniform_scale: f32,
     pub albedo: [f32; 3],
+    /// R14 "realize spectral": per-instance 8-band spectral REFLECTANCE SPD
+    /// (reflectance at 380,437,494,551,608,665,722,780 nm). This is the REAL
+    /// material response the megakernel integrates per hero wavelength
+    /// (radiance(λ) = R(λ)·L(λ)) so the surface shifts colour under different
+    /// illuminants. Build it from an authored 16-band engine SPD via
+    /// [`SdfSceneInstance::with_bands16`] (resampled 16→8, NOT RGB-upsampled),
+    /// or leave the default — the default is the Smits upsample of `albedo`,
+    /// which is still genuinely per-wavelength (a smooth reflectance), never the
+    /// flat luminance smear the legacy path used.
+    pub reflectance_spd: [f32; 8],
+}
+
+#[cfg(feature = "spectra-native")]
+impl SdfSceneInstance {
+    /// Construct from flat albedo, deriving the reflectance SPD via the Smits
+    /// (1999) RGB→reflectance upsample (real per-band reflectance, the honest
+    /// fallback when no authored SPD exists).
+    pub fn from_albedo(
+        volume_index: u32,
+        position: [f32; 3],
+        rotation_xyzw: [f32; 4],
+        uniform_scale: f32,
+        albedo: [f32; 3],
+    ) -> Self {
+        Self {
+            volume_index,
+            position,
+            rotation_xyzw,
+            uniform_scale,
+            albedo,
+            reflectance_spd: crate::spectral_response::reflectance_from_rgb(albedo),
+        }
+    }
+
+    /// Attach a REAL authored 16-band reflectance SPD (the engine's USGS grid,
+    /// `vox_core::spectral::BAND_WAVELENGTHS`), resampled 16→8 onto the GPU grid.
+    /// This is the metameric-capable path: two distinct 16-band SPDs that match
+    /// under one illuminant diverge under another.
+    pub fn with_bands16(mut self, bands16: &[f32; 16]) -> Self {
+        self.reflectance_spd = crate::spectral_response::reflectance_from_bands16(bands16);
+        self
+    }
 }
 
 /// One cooked atom's material contribution for the M2 per-surface gather. The
@@ -1571,6 +1806,8 @@ pub fn pathtrace_sdf_scene_perf(
     // megakernel's union-AABB sphere-trace covers every instance.
     let mut instance_headers: Vec<SdfInstanceHeader> = Vec::with_capacity(instances.len());
     let mut instance_albedo: Vec<f32> = Vec::with_capacity(instances.len() * 3);
+    // R14: per-instance 8-band reflectance SPD (real spectral response).
+    let mut instance_spd: Vec<f32> = Vec::with_capacity(instances.len() * 8);
     let mut scene_min = [f32::INFINITY; 3];
     let mut scene_max = [f32::NEG_INFINITY; 3];
     for (ii, inst) in instances.iter().enumerate() {
@@ -1625,14 +1862,16 @@ pub fn pathtrace_sdf_scene_perf(
             world_aabb_max: wmax,
         });
         instance_albedo.extend_from_slice(&inst.albedo);
+        instance_spd.extend_from_slice(&inst.reflectance_spd);
     }
 
-    let sdf = SdfLayer::from_parts_with_albedo(
+    let mut sdf = SdfLayer::from_parts_with_albedo(
         volume_headers,
         instance_headers,
         all_distances,
         instance_albedo,
     );
+    sdf.instance_reflectance_spd = instance_spd;
 
     let mut scene = SceneState::new(width, height);
     scene.sdf = sdf;
@@ -1700,7 +1939,7 @@ pub fn pathtrace_sdf_scene_perf(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
 
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
@@ -1891,6 +2130,7 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
     // --- Instances + per-atom WORLD-space material buffers. ------------------
     let mut instance_headers: Vec<SdfInstanceHeader> = Vec::with_capacity(instances.len());
     let mut instance_albedo: Vec<f32> = Vec::with_capacity(instances.len() * 3);
+    let mut instance_spd: Vec<f32> = Vec::with_capacity(instances.len() * 8);
     // Flat SoA atom buffers + per-instance [offset, count] ranges (M2).
     let mut atom_positions: Vec<f32> = Vec::new();
     let mut atom_colors: Vec<f32> = Vec::new();
@@ -1947,6 +2187,7 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
             world_aabb_max: wmax,
         });
         instance_albedo.extend_from_slice(&inst.albedo);
+        instance_spd.extend_from_slice(&inst.reflectance_spd);
 
         // Transform this instance's atoms to world space (rot*scale*local + pos),
         // matching the SDF grid transform, and append to the flat SoA buffers.
@@ -1963,7 +2204,7 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
         instance_atom_range.push(atom_count as f32);
     }
 
-    let sdf = SdfLayer::from_parts_with_atoms(
+    let mut sdf = SdfLayer::from_parts_with_atoms(
         volume_headers,
         instance_headers,
         all_distances,
@@ -1973,6 +2214,7 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
         atom_channels,
         instance_atom_range,
     );
+    sdf.instance_reflectance_spd = instance_spd;
 
     let mut scene = SceneState::new(width, height);
     scene.sdf = sdf;
@@ -2036,7 +2278,7 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
 
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
@@ -2456,6 +2698,7 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
     // --- Instances + CELL-SORTED world-space atom SoA + per-instance grid. ---
     let mut instance_headers: Vec<SdfInstanceHeader> = Vec::with_capacity(instances.len());
     let mut instance_albedo: Vec<f32> = Vec::with_capacity(instances.len() * 3);
+    let mut instance_spd: Vec<f32> = Vec::with_capacity(instances.len() * 8);
     let mut atom_positions: Vec<f32> = Vec::new();
     let mut atom_colors: Vec<f32> = Vec::new();
     let mut atom_channels: Vec<f32> = Vec::new();
@@ -2497,6 +2740,7 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
             world_aabb_max: wmax,
         });
         instance_albedo.extend_from_slice(&inst.albedo);
+        instance_spd.extend_from_slice(&inst.reflectance_spd);
 
         // World-space atoms (rot*scale*local + pos — the SDF grid transform).
         let world_pos: Vec<[f32; 3]> = atoms_per_instance[ii]
@@ -2541,7 +2785,7 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
     let channel_material_table = pack_sdf_channel_material_table(channel_materials);
     let volume_uv_params = pack_sdf_uv_params(uv_params);
 
-    let sdf = SdfLayer::from_parts_textured(
+    let mut sdf = SdfLayer::from_parts_textured(
         volume_headers,
         instance_headers,
         all_distances,
@@ -2555,6 +2799,7 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
         channel_material_table,
         volume_uv_params,
     );
+    sdf.instance_reflectance_spd = instance_spd;
 
     let mut scene = SceneState::new(width, height);
     scene.sdf = sdf;
@@ -2636,7 +2881,7 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
 
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;
@@ -2735,14 +2980,48 @@ fn build_texture_atlas(textures: &[TextureImage]) -> Result<(Vec<u32>, Vec<f32>)
         }
         descs.extend_from_slice(&[data.len() as u32, t.width, t.height, t.channels]);
         data.extend_from_slice(&t.data);
+        // Box-filtered MIP PYRAMID appended contiguously after level 0 (level 0 stays
+        // at `offset`; level k+1 = floor(dim/2) min 1). The 4-int TextureDesc is
+        // unchanged — the Slang sampler reconstructs each level's offset from this
+        // exact layout and LOD-selects from the ray footprint, so tiled ground filters
+        // smoothly (no aliasing "patches") at distance with full detail up close. Mips
+        // grow the atlas ~1.33×. (The blue-regression bug was the Slang LOD math, not
+        // this build — verified by a forced-level diagnostic; see texture_atlas.slang.)
+        let c = t.channels as usize;
+        let (mut lw, mut lh) = (t.width as usize, t.height as usize);
+        let mut src: Vec<f32> = t.data.clone();
+        while lw > 1 || lh > 1 {
+            let nw = (lw / 2).max(1);
+            let nh = (lh / 2).max(1);
+            let mut dst = vec![0.0f32; nw * nh * c];
+            for y in 0..nh {
+                for x in 0..nw {
+                    for ch in 0..c {
+                        let mut sum = 0.0f32;
+                        for dy in 0..2 {
+                            let sy = (y * 2 + dy).min(lh - 1);
+                            for dx in 0..2 {
+                                let sx = (x * 2 + dx).min(lw - 1);
+                                sum += src[(sy * lw + sx) * c + ch];
+                            }
+                        }
+                        dst[(y * nw + x) * c + ch] = sum * 0.25;
+                    }
+                }
+            }
+            data.extend_from_slice(&dst);
+            src = dst;
+            lw = nw;
+            lh = nh;
+        }
     }
     Ok((descs, data))
 }
 
 #[cfg(feature = "spectra-native")]
-const VULKAN_MATERIAL_FLOATS: usize = 156;
+pub(crate) const VULKAN_MATERIAL_FLOATS: usize = 156;
 #[cfg(feature = "spectra-native")]
-const VULKAN_LIGHT_FLOATS: usize = 36;
+pub(crate) const VULKAN_LIGHT_FLOATS: usize = 36;
 
 #[cfg(feature = "spectra-native")]
 fn pack_u32(x: u32) -> f32 {
@@ -2762,7 +3041,7 @@ fn pack_i32(x: i32) -> f32 {
 /// 36 floats / 144 bytes per light. The tight layout shifts direction, color,
 /// and intensity into the wrong fields.
 #[cfg(feature = "spectra-native")]
-fn pack_vulkan_directional_light(
+pub(crate) fn pack_vulkan_directional_light(
     direction: [f32; 3],
     color: [f32; 3],
     intensity: f32,
@@ -2784,6 +3063,87 @@ fn pack_vulkan_directional_light(
     a
 }
 
+/// Sun's angular RADIUS in radians (≈ 0.265° → 4.6e-3 rad). The matching solid
+/// angle is `Ω = 2π(1 − cos α) ≈ 6.794e-5 sr`. Used to convert the single sun
+/// IRRADIANCE `E_sun` into the disk RADIANCE `L_sun = E_sun / Ω` that both the
+/// NEE disk light (`pack_vulkan_sun_disk_light`) and the visible atmosphere disk
+/// (`Renderer::set_sun`) emit — so the two are physically the SAME magnitude.
+#[cfg(feature = "spectra-native")]
+pub const SUN_ANGULAR_RADIUS_RAD: f32 = 4.6e-3;
+
+/// Solid angle subtended by the sun disk, `Ω = 2π(1 − cos α)`.
+#[cfg(feature = "spectra-native")]
+pub fn sun_solid_angle() -> f32 {
+    2.0 * std::f32::consts::PI * (1.0 - (SUN_ANGULAR_RADIUS_RAD).cos())
+}
+
+/// Pack the PHYSICAL SUN as a `LightData` DISK light (LIGHT_DIRECTIONAL=3 with a
+/// non-zero `angular_radius`). Unlike [`pack_vulkan_directional_light`] (which
+/// leaves `angular_radius=0` → a hard delta, used for the FILL lights), this
+/// writes the sun's angular radius into slot `a[30]` so the megakernel's
+/// `sample_directional_light` cone-samples the disk and returns the solid-angle
+/// pdf `1/Ω`. The NEE estimator then integrates `f · E_sun · cosθ` through the
+/// FULL OpenPBR BSDF (diffuse + GGX dielectric specular + Fresnel) — lighting
+/// glass/metal/wet with a real sun glint from ONE physically coupled magnitude.
+///
+/// `disk_radiance` is `L_sun = E_sun / Ω` — the SAME value fed to
+/// `Renderer::set_sun` for the visible disk.
+#[cfg(feature = "spectra-native")]
+pub(crate) fn pack_vulkan_sun_disk_light(
+    direction: [f32; 3],
+    color: [f32; 3],
+    disk_radiance: f32,
+) -> [f32; VULKAN_LIGHT_FLOATS] {
+    let mut a = [0.0f32; VULKAN_LIGHT_FLOATS];
+
+    a[0] = pack_u32(3); // LIGHT_DIRECTIONAL
+    a[4] = direction[0];
+    a[5] = direction[1];
+    a[6] = direction[2];
+    a[8] = color[0];
+    a[9] = color[1];
+    a[10] = color[2];
+    a[11] = disk_radiance; // intensity slot carries L_sun = E_sun / Ω
+    a[30] = SUN_ANGULAR_RADIUS_RAD; // angular_radius → cone sampling + 1/Ω pdf
+    a[31] = pack_u32(0xFFFF_FFFF); // group_mask
+    a[32] = pack_i32(0); // num_filters
+    a[33] = pack_i32(0); // filter_offset
+
+    a
+}
+
+/// Pack a `LightData` POINT light (LIGHT_POINT = 1) in the same SPIR-V reflection
+/// layout as [`pack_vulkan_directional_light`]. The `LightData.position` field
+/// (Vulkan slots 4-6) holds the WORLD-space emitter position; the megakernel's
+/// `sample_point_light` applies inverse-square falloff. This is the MegaLights
+/// night-light path: hundreds of lit-window / street-light emitters become NEE
+/// point lights that ReSTIR-DI resamples. `radius` (slot ~28) is the soft-shadow
+/// radius for the point source — `sample_point_light` treats it as a hard point
+/// (the megakernel only reads `radius` for tube/linear lights), so it is left
+/// unset here.
+#[cfg(feature = "spectra-native")]
+pub(crate) fn pack_vulkan_point_light(
+    position: [f32; 3],
+    color: [f32; 3],
+    intensity: f32,
+) -> [f32; VULKAN_LIGHT_FLOATS] {
+    let mut a = [0.0f32; VULKAN_LIGHT_FLOATS];
+
+    a[0] = pack_u32(1); // LIGHT_POINT
+    a[4] = position[0];
+    a[5] = position[1];
+    a[6] = position[2];
+    a[8] = color[0];
+    a[9] = color[1];
+    a[10] = color[2];
+    a[11] = intensity;
+    a[31] = pack_u32(0xFFFF_FFFF); // group_mask
+    a[32] = pack_i32(0); // num_filters
+    a[33] = pack_i32(0); // filter_offset
+
+    a
+}
+
 /// Pack `MaterialData` using the SPIR-V reflection layout for
 /// `slang/material_types.slang`.
 ///
@@ -2793,7 +3153,7 @@ fn pack_vulkan_directional_light(
 /// Using the tight layout puts albedo/emission in padding slots and renders
 /// later material IDs as black silhouettes.
 #[cfg(feature = "spectra-native")]
-fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
+pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
     let mut a = [0.0f32; VULKAN_MATERIAL_FLOATS];
 
     // `transmission > 0` selects MAT_GLASS (3): dispatch_sample's existing
@@ -2840,16 +3200,17 @@ fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
     a[23] = m.emission_strength;
 
     if glass {
-        // absorption_color (24-26) + absorption_depth (27): the EXACT values
-        // the working SDF glass path passes to sample_glass in
-        // megakernel.slang — `sample_glass(..., float3(0.0f), 1.0f, ...)`:
-        // clear glass, no Beer-Lambert absorption. Replicated field-for-field
-        // so the mesh MAT_GLASS route is parameter-identical to the proven
-        // SDF window route.
-        a[24] = 0.0;
-        a[25] = 0.0;
-        a[26] = 0.0;
-        a[27] = 1.0;
+        // absorption_color (24-26) + absorption_depth (27). Clear glass
+        // (absorption_color == 0) is byte-identical to the old SDF-parity
+        // behaviour. Building curtain-wall glass sets a small cool tint so the
+        // TRANSMITTED ray darkens/colours through the pane (Beer-Lambert, fired
+        // by the non-zero distance the MAT_GLASS dispatch now passes) instead of
+        // travelling clear into an unlit interior and reading as a black/matte
+        // hole. The Fresnel sky reflection rides on top → a real glass read.
+        a[24] = m.absorption_color[0];
+        a[25] = m.absorption_color[1];
+        a[26] = m.absorption_color[2];
+        a[27] = m.absorption_depth;
     }
 
     a[28] = pack_i32(m.albedo_tex);
@@ -2885,7 +3246,7 @@ fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
     a[59] = pack_u32(0xFFFF_FFFF); // light_inclusion_mask
     a[60] = pack_u32(0); // light_exclusion_mask
     a[61] = pack_u32(0xFF); // visibility_mask
-    a[72] = pack_i32(-1); // opacity_tex
+    a[72] = pack_i32(m.opacity_tex); // opacity_tex (-1 = opaque; == albedo_tex => foliage alpha-cutout on base-color .w)
     a[73] = pack_i32(if glass && m.thin_walled { 1 } else { 0 }); // thin_walled
 
     a[74] = 1.0; // diffuse_weight
@@ -2922,6 +3283,90 @@ fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
     a[151] = 0.5;
 
     a
+}
+
+/// Pack `PbrMaterial` into the CUDA `MaterialData` tight layout: 132 floats /
+/// 528 bytes, field-for-field with `slang/material_types.slang` as the
+/// NVRTC-compiled kernel sees it. This is the COUNTERPART to
+/// [`pack_vulkan_mesh_material`] (156-float SPIR-V std430 stride).
+///
+/// Why both exist: the same Slang `MaterialData` struct compiles to DIFFERENT
+/// strides on the two backends — Vulkan std430 pads every `float3` to 16 bytes
+/// (156 floats), CUDA packs tight (132 floats). Feeding the Vulkan-packed buffer
+/// to the CUDA kernel put `visibility_mask` / `albedo` / texture ids in the wrong
+/// slots, so every mesh hit read a garbage `visibility_mask`, failed the
+/// `(visibility_mask & u_ray_type) != 0` test, and was culled as invisible — the
+/// whole city rendered black. We delegate the exact 132-float layout to the
+/// canonical packer in `spectra_scene_data::MaterialData::to_f32_array()` (the
+/// single source of truth that mirrors the Slang struct), then override the
+/// material `type` slot for glass/metal (to_f32_array hardcodes MAT_LAMBERT).
+#[cfg(feature = "spectra-native")]
+pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
+    use spectra_scene_data::MaterialData;
+    let glass = m.transmission > 0.0;
+    let metal = !glass && m.metallic > 0.5;
+
+    let mut md = MaterialData::default();
+    md.base_color = [m.base_color[0], m.base_color[1], m.base_color[2], 1.0];
+    md.roughness = m.roughness;
+    md.metallic = m.metallic;
+    md.ior = m.ior;
+    // Emission colour = base colour, scaled by strength (matches the Vulkan
+    // packer's emission slots). Zero strength ⇒ no glow, so this is harmless for
+    // opaque facades and lights emissive materials (street lamps) correctly.
+    md.emission = m.base_color;
+    md.emission_strength = m.emission_strength;
+    md.transmission = m.transmission;
+    md.tex_base_color = m.albedo_tex;
+    md.tex_metallic_roughness = m.roughness_tex;
+    md.tex_normal = m.normal_tex;
+    md.is_thin = if glass && m.thin_walled { 1 } else { 0 };
+
+    let mut v = md.to_f32_array();
+    // [0] int type — to_f32_array writes MAT_LAMBERT(1); honour glass/metal.
+    v[0] = f32::from_bits(if glass {
+        3u32 // MAT_GLASS
+    } else if metal {
+        2u32 // MAT_METAL
+    } else {
+        1u32 // MAT_LAMBERT
+    });
+    // POM / cone-step RELIEF + glass ABSORPTION + UV scale on the CUDA (box)
+    // path. `MaterialData::to_f32_array()` HARDCODES slots [19-22] (absorption),
+    // [23-28] (texture ids + displacement) and [80-81] (uv_scale) to clear/off
+    // — it has no struct fields for displacement/absorption/uv_scale — so the
+    // shipped box render never enabled POM (displacement_tex stayed -1, the
+    // megakernel POM gate `mat.displacement_tex >= 0` never fired) and glass was
+    // always perfectly clear (→ black interior). The Vulkan packer
+    // (`pack_vulkan_mesh_material` a[24-33]/a[94-95]) already routes these; mirror
+    // it field-for-field here so the box path gets relief-mapped facades + tinted
+    // reflective glass. Slot indices are the canonical f32-array layout asserted
+    // by `spectra-scene-data/src/material.rs` (the single source of truth).
+    if glass {
+        v[19] = m.absorption_color[0]; // absorption_color.r
+        v[20] = m.absorption_color[1]; // absorption_color.g
+        v[21] = m.absorption_color[2]; // absorption_color.b
+        v[22] = m.absorption_depth; // absorption_depth
+    }
+    // [23-25] albedo/roughness/normal tex ids are written by to_f32_array from
+    // the tex_* fields; displacement is not, so set it (+ scale/midlevel) here.
+    v[26] = f32::from_bits(m.displacement_tex as u32); // displacement_tex (-1 = off)
+    v[27] = if m.displacement_tex >= 0 {
+        m.displacement_scale
+    } else {
+        0.0
+    }; // displacement_scale
+    v[28] = m.displacement_midlevel; // displacement_midlevel
+    v[80] = m.uv_scale[0]; // uv_scale.x
+    v[81] = m.uv_scale[1]; // uv_scale.y
+    // [60] opacity_tex — to_f32_array hardcodes -1 (no struct field). Foliage
+    // leaf-card cutout: the scatter/vegetation packer sets opacity_tex ==
+    // albedo_tex so the megakernel enables the alpha-cutout test and reads the
+    // cutout from the base-color .w (megakernel.slang ~2333/2377). -1 keeps
+    // opaque facades byte-identical. Slot 60 is the canonical f32-array index
+    // asserted in spectra-scene-data/src/material.rs ("opacity_tex", 60).
+    v[60] = f32::from_bits(m.opacity_tex as u32);
+    v
 }
 
 #[cfg(feature = "spectra-native")]
@@ -3014,7 +3459,40 @@ impl SpectraRenderBackend {
             fail_count: 0,
             width,
             height,
+            render_target: RenderTarget::HostBeauty,
         })
+    }
+
+    /// Point the renderer at a CUDA interop color ptr (the `CudaPresentSurface`
+    /// color image). After this, the realtime render writes PACK_RGBA straight
+    /// into that device pointer and skips the host beauty download — the
+    /// CUDA-owned present path. Forwarded to the render thread's
+    /// `Renderer::set_render_target`.
+    pub fn set_interop_target(&mut self, color_ptr: u64) {
+        let target = RenderTarget::Interop { color_ptr };
+        self.render_target = target;
+        let _ = self.tx.send(RtCommand::SetRenderTarget(target));
+    }
+
+    /// The render target last requested (mirror of the render thread's value).
+    pub fn render_target(&self) -> RenderTarget {
+        self.render_target
+    }
+
+    /// Test-only: a backend with a live command channel but NO render thread / GPU.
+    /// `set_interop_target` still updates the cached `render_target` and enqueues the
+    /// `SetRenderTarget` command (proving the plumbing) without needing a CUDA device.
+    #[cfg(test)]
+    pub fn new_for_test() -> Self {
+        let (tx, _rx) = channel::<RtCommand>();
+        Self {
+            tx,
+            last_output: Arc::new(Mutex::new(Arc::new(Vec::new()))),
+            fail_count: 0,
+            width: 1,
+            height: 1,
+            render_target: RenderTarget::HostBeauty,
+        }
     }
 
     /// Submit a frame request (non-blocking).
@@ -3091,6 +3569,9 @@ fn run_render_loop<G: GpuBackend>(
         };
         match cmd {
             RtCommand::Shutdown => break,
+            RtCommand::SetRenderTarget(target) => {
+                renderer.set_render_target(target);
+            }
             RtCommand::Render { scene, camera } => {
                 // New scene geometry: upload the tessellated splat mesh.
                 // `load_scene_state` replaces the old `load_splat_scene`.
@@ -3263,7 +3744,7 @@ pub fn spectra_resident_bench_fsr(
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, render_w, render_h);
+    let cam = camera_layer(view, fov_y, render_w, render_h, 0.0, 1.0);
     scene.camera = cam.clone();
     scene.mark_geometry_changed();
     scene.mark_materials_changed();
@@ -3277,9 +3758,12 @@ pub fn spectra_resident_bench_fsr(
     if std::env::var("OCHROMA_DENOISE_OFF").is_ok() {
         config.denoiser_mode = spectra_renderer::DenoiserMode::None;
     }
-    if std::env::var("OCHROMA_SPECTRAL").as_deref() == Ok("1") {
-        config.spectral_mode = spectra_renderer::SpectralMode::Hero4;
-    }
+    // R14: spectral ON by default on the live SDF path; OCHROMA_SPECTRAL=0 drops
+    // to the cheap single-wavelength tier (R31 fidelity tiering).
+    config.spectral_mode = match std::env::var("OCHROMA_SPECTRAL").as_deref() {
+        Ok("0") => spectra_renderer::SpectralMode::Single,
+        _ => spectra_renderer::SpectralMode::Hero4,
+    };
     if std::env::var("OCHROMA_LEAN").as_deref() == Ok("1") {
         config.use_restir = false;
         config.use_restir_gi = false;
@@ -3341,6 +3825,13 @@ pub fn spectra_resident_bench_fsr(
         renderer.set_sun(sun.to_array(), rig.sun_radiance);
         renderer.set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
     }
+    renderer.set_fog(
+        rig.fog_enabled,
+        rig.fog_density,
+        rig.fog_color,
+        rig.fog_height_falloff,
+        rig.fog_anisotropy,
+    );
     if !textures.is_empty() {
         renderer
             .set_texture_atlas(&tex_descs, &tex_data, textures.len() as u32)

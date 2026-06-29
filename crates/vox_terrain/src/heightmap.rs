@@ -36,19 +36,23 @@ impl Heightmap {
         Self::from_data(width, height, vec![terrain_height; width * height], cell_size)
     }
 
-    /// Sample height at world position (bilinear interpolation).
-    pub fn sample(&self, world_x: f32, world_z: f32) -> f32 {
-        let local_x = (world_x - self.origin[0]) / self.cell_size;
-        let local_z = (world_z - self.origin[1]) / self.cell_size;
-
+    /// Bilinear height sample at a *local* (cell-space) coordinate. Shared core
+    /// of [`sample`](Heightmap::sample) so callers that already have the
+    /// local coordinate (the normal/slope taps) don't repeat the
+    /// `origin`/`cell_size` divide. Arithmetic is identical to the world-space
+    /// path, so results are bit-for-bit unchanged.
+    #[inline(always)]
+    fn sample_local(&self, local_x: f32, local_z: f32) -> f32 {
         let ix = local_x.floor() as i32;
         let iz = local_z.floor() as i32;
         let fx = local_x - local_x.floor();
         let fz = local_z - local_z.floor();
 
+        let w = self.width as i32;
+        let h_clamp = self.height as i32;
         let h = |x: i32, z: i32| -> f32 {
-            let x = x.clamp(0, self.width as i32 - 1) as usize;
-            let z = z.clamp(0, self.height as i32 - 1) as usize;
+            let x = x.clamp(0, w - 1) as usize;
+            let z = z.clamp(0, h_clamp - 1) as usize;
             self.data[z * self.width + x]
         };
 
@@ -62,14 +66,31 @@ impl Heightmap {
         h0 + (h1 - h0) * fz
     }
 
+    /// Sample height at world position (bilinear interpolation).
+    #[inline]
+    pub fn sample(&self, world_x: f32, world_z: f32) -> f32 {
+        let local_x = (world_x - self.origin[0]) / self.cell_size;
+        let local_z = (world_z - self.origin[1]) / self.cell_size;
+        self.sample_local(local_x, local_z)
+    }
+
     /// Compute surface normal at a point (from surrounding heights).
     pub fn normal_at(&self, world_x: f32, world_z: f32) -> [f32; 3] {
-        let dx = self.sample(world_x + self.cell_size, world_z)
-            - self.sample(world_x - self.cell_size, world_z);
-        let dz = self.sample(world_x, world_z + self.cell_size)
-            - self.sample(world_x, world_z - self.cell_size);
+        // Four taps one cell apart. Each local coordinate is computed with the
+        // SAME `(world ± cell_size - origin) / cell_size` expression the old
+        // four `self.sample(...)` calls used, so the float result is
+        // bit-identical; `sample_local` only shares the clamp/index setup.
+        let cs = self.cell_size;
+        let lxp = (world_x + cs - self.origin[0]) / cs;
+        let lxm = (world_x - cs - self.origin[0]) / cs;
+        let lz0 = (world_z - self.origin[1]) / cs;
+        let lx0 = (world_x - self.origin[0]) / cs;
+        let lzp = (world_z + cs - self.origin[1]) / cs;
+        let lzm = (world_z - cs - self.origin[1]) / cs;
+        let dx = self.sample_local(lxp, lz0) - self.sample_local(lxm, lz0);
+        let dz = self.sample_local(lx0, lzp) - self.sample_local(lx0, lzm);
         let nx = -dx;
-        let ny = 2.0 * self.cell_size;
+        let ny = 2.0 * cs;
         let nz = -dz;
         let len = (nx * nx + ny * ny + nz * nz).sqrt();
         [nx / len, ny / len, nz / len]
@@ -102,49 +123,61 @@ impl Heightmap {
         zones: &[TerrainMaterialZone],
         splats_per_cell: u32,
     ) -> Vec<GaussianSplat> {
-        let mut splats = Vec::new();
+        use rayon::prelude::*;
         let sub = splats_per_cell.max(1);
+        let per_row = self.width * (sub * sub) as usize;
 
-        for iz in 0..self.height {
-            for ix in 0..self.width {
-                let base_x = self.origin[0] + ix as f32 * self.cell_size;
-                let base_z = self.origin[1] + iz as f32 * self.cell_size;
+        // Rows are independent and each emits a fixed `per_row` block of splats
+        // in ix-major / (si,sj) order. Building rows in parallel and flattening
+        // in `iz` order reproduces the exact serial ix-major ordering, and each
+        // splat's arithmetic (sample, zone find, f16 bits) is unchanged ->
+        // byte-identical output (deterministic by construction: no shared
+        // state, fixed concat order).
+        (0..self.height)
+            .into_par_iter()
+            .flat_map_iter(|iz| {
+                let mut row = Vec::with_capacity(per_row);
+                for ix in 0..self.width {
+                    let base_x = self.origin[0] + ix as f32 * self.cell_size;
+                    let base_z = self.origin[1] + iz as f32 * self.cell_size;
 
-                for si in 0..sub {
-                    for sj in 0..sub {
-                        let frac_x = (si as f32 + 0.5) / sub as f32;
-                        let frac_z = (sj as f32 + 0.5) / sub as f32;
-                        let wx = base_x + frac_x * self.cell_size;
-                        let wz = base_z + frac_z * self.cell_size;
-                        let wy = self.sample(wx, wz);
+                    for si in 0..sub {
+                        for sj in 0..sub {
+                            let frac_x = (si as f32 + 0.5) / sub as f32;
+                            let frac_z = (sj as f32 + 0.5) / sub as f32;
+                            let wx = base_x + frac_x * self.cell_size;
+                            let wz = base_z + frac_z * self.cell_size;
+                            let wy = self.sample(wx, wz);
 
-                        // Pick material based on height
-                        let zone = zones
-                            .iter()
-                            .find(|z| wy <= z.max_height)
-                            .or_else(|| zones.last());
+                            // Pick material based on height
+                            let zone = zones
+                                .iter()
+                                .find(|z| wy <= z.max_height)
+                                .or_else(|| zones.last());
 
-                        let spectral: [u16; 16] = match zone {
-                            Some(z) => {
-                                std::array::from_fn(|i| f16::from_f32(z.spectral[i % 8]).to_bits())
-                            }
-                            None => std::array::from_fn(|_| f16::from_f32(0.3).to_bits()),
-                        };
+                            let spectral: [u16; 16] = match zone {
+                                Some(z) => std::array::from_fn(|i| {
+                                    f16::from_f32(z.spectral[i % 8]).to_bits()
+                                }),
+                                None => std::array::from_fn(|_| f16::from_f32(0.3).to_bits()),
+                            };
 
-                        let scale = self.cell_size / sub as f32 * 0.5;
-                        splats.push(GaussianSplat::surface(
-                            [wx, wy, wz],
-                            [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
-                            scale, scale,
-                            250,
-                            spectral,
-                        ));
+                            let scale = self.cell_size / sub as f32 * 0.5;
+                            row.push(GaussianSplat::surface(
+                                [wx, wy, wz],
+                                [1.0, 0.0, 0.0],
+                                [0.0, 0.0, -1.0],
+                                scale,
+                                scale,
+                                250,
+                                spectral,
+                            ));
+                        }
                     }
                 }
-            }
-        }
-
-        splats
+                row
+            })
+            .collect()
     }
 }
 
@@ -214,23 +247,34 @@ pub fn generate_test_heightmap(
 ) -> Heightmap {
     let mut data = vec![0.0f32; width * height];
 
-    for z in 0..height {
-        for x in 0..width {
-            let fx = x as f32 / width as f32;
+    // Each cell is a pure function of (x, z, seed) written to its own slot, so
+    // rows are independent: `par_chunks_mut(width)` computes the identical
+    // value in the identical slot on every thread -> the buffer is
+    // bit-for-bit identical to the serial loop (deterministic by construction;
+    // no cross-row reduction, no shared mutable state).
+    use rayon::prelude::*;
+    data.par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(z, row)| {
             let fz = z as f32 / height as f32;
-
-            // Simple multi-octave noise
-            let h1 = ((fx * 3.0 + seed as f32 * 0.1).sin() * (fz * 4.0).cos()) * 5.0;
-            let h2 = ((fx * 7.0 + 1.0).sin() * (fz * 6.0 + 2.0).cos()) * 2.0;
-            let h3 = ((fx * 13.0).sin() * (fz * 11.0).cos()) * 1.0;
-
-            // River valley through the middle
+            // River valley through the middle (per-row constant).
             let dist_to_center = ((fz - 0.5).abs() * 2.0).min(1.0);
             let valley = (1.0 - (dist_to_center * dist_to_center)) * -3.0;
+            let fz4 = (fz * 4.0).cos();
+            let fz6 = (fz * 6.0 + 2.0).cos();
+            let fz11 = (fz * 11.0).cos();
 
-            data[z * width + x] = h1 + h2 + h3 + valley;
-        }
-    }
+            for (x, cell) in row.iter_mut().enumerate() {
+                let fx = x as f32 / width as f32;
+
+                // Simple multi-octave noise — SAME ops/order as the scalar loop.
+                let h1 = ((fx * 3.0 + seed as f32 * 0.1).sin() * fz4) * 5.0;
+                let h2 = ((fx * 7.0 + 1.0).sin() * fz6) * 2.0;
+                let h3 = ((fx * 13.0).sin() * fz11) * 1.0;
+
+                *cell = h1 + h2 + h3 + valley;
+            }
+        });
 
     Heightmap::from_data(width, height, data, cell_size)
 }

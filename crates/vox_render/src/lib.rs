@@ -27,6 +27,7 @@ pub mod seq_ecs;
 pub mod render_ecs;
 pub mod svt;
 pub mod spectra_bridge;
+pub mod scene_delta_adapter;
 pub mod sdf_scene;
 pub mod lighting;
 pub mod many_light;
@@ -35,6 +36,7 @@ pub mod atmosphere;
 pub mod water;
 pub mod subsurface;
 pub mod cinematic;
+pub mod cine;
 pub mod web_renderer;
 pub mod spatial_ui;
 pub mod hand_tracking;
@@ -54,11 +56,13 @@ pub mod atom_instances;
 pub mod mega_geometry;
 pub mod spectral_framebuffer;
 pub mod hybrid_compose;
+pub mod mesh_simplify;
 pub mod spectral_tonemapper;
 pub mod temporal;
 pub mod dlss;
 pub mod shadows;
 pub mod rigid_animation;
+pub mod skinning;
 pub mod gizmos;
 pub mod visual_effects;
 pub mod ik;
@@ -95,6 +99,7 @@ pub mod morph_targets;
 pub mod hair;
 pub mod platform_profiles;
 pub mod spectral_uplift;
+pub mod spectral_response;
 pub mod spectral_atmosphere;
 pub mod spectral_gi;
 pub mod relight;
@@ -103,7 +108,24 @@ pub mod importance;
 pub mod splat_convert;
 #[cfg(feature = "spectra-native")]
 pub mod splat_backend;
+#[cfg(feature = "spectra-native")]
+pub mod resident_renderer;
+#[cfg(feature = "spectra-native")]
+pub use resident_renderer::{ResidentCityRenderer, SceneDelta};
 // The native renderer consumes `spectra_scene_state::CameraLayer` (column-major
 // view matrix + FOV); the old `spectra_renderer::CameraParams` type was removed.
 #[cfg(feature = "spectra-native")]
 pub use spectra_scene_state::CameraLayer as SpectraCameraParams;
+/// Re-export the native scene-state type so downstream crates (the game's live
+/// frame seam) can name the type returned by the instanced-scene builder without
+/// taking a direct dependency on `spectra-scene-state`.
+#[cfg(feature = "spectra-native")]
+pub use spectra_scene_state::SceneState;
+
+pub use cine::{Channel, FrameRate, Interp, Key};
+pub use cine::{BokehShape, CameraSequence, CinePose, CinematicConfig, FocusMode};
+pub use cine::{eye_from_framing, CineFraming, KeyRef};
+#[cfg(feature = "spectra-native")]
+pub use cine::{
+    beauty_to_rgba8, render_cine_frame, write_png, write_png16, CINE_BASE_SEED,
+};

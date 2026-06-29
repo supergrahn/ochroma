@@ -6,6 +6,16 @@ repository.workspace = true
 
 [features]
 default = []
+# legacy-raster: OFF BY DEFAULT. Opt-in for the legacy demo bins (vox_app,
+# ochroma, demo, walking_sim, splat_view, platformer, render_showcase,
+# city_ceiling, scale_trial, net_walk) that present through the banned non-Spectra
+# stacks — the GPU/CPU splat rasterizer (vox_render `legacy-raster`), the
+# wgpu-surface egui paint path (`egui-wgpu`), and the `render_to_file` software
+# rasterizer utility. THE LAW: the product (the `spectra` editor + the game's
+# Spectra-native renderer) presents only through the Spectra path tracer, so the
+# default and `spectra` builds compile NONE of this. The legacy bins are
+# preserved (not deleted): build them with `--features legacy-raster`.
+legacy-raster = ["vox_render/legacy-raster", "dep:egui-wgpu"]
 web = ["dep:wasm-bindgen", "dep:console_error_panic_hook", "dep:web-sys"]
 spectra-native = ["vox_render/spectra-native"]
 # forge-native: glue to the native AetherSpectra Forge generators (the Rust
@@ -31,6 +41,23 @@ crucible-native = ["dep:cook", "dep:crucible-core", "dep:crucible-types"]
 # `OCHROMA_ASK_LLM=1` to route Ask Ochroma at the local GPU. Same native-optional
 # shape as forge-native / crucible-native.
 local-llm = ["vox_nn/local-llm"]
+# spectra: render + present ochroma_editor ENTIRELY through the Spectra path
+# tracer + Spectra present stack. Removes the wgpu surface / egui-wgpu /
+# SoftwareRasteriser path from the editor bin. egui paints on the path tracer's
+# own ash (Vulkan) device via egui-ash-renderer, into an offscreen color image
+# that is copied to host RGBA and handed to spectra_present (windowed) or read
+# back (headless --frames/--shot). OFF BY DEFAULT and behind OPTIONAL path deps
+# (the spectra sibling), mirroring spectra-native: a missing checkout leaves
+# default/CI builds completely unaffected.
+spectra = [
+    "vox_render/spectra-native",
+    "dep:spectra-present",
+    "dep:spectra-gpu",
+    "dep:ash",
+    "dep:egui-ash-renderer",
+    "dep:raw-window-handle",
+    "dep:rfd",
+]
 
 [dependencies]
 vox_core = { path = "../vox_core" }
@@ -60,7 +87,11 @@ uuid = { workspace = true }
 puffin = { workspace = true }
 puffin_http = "0.16"
 egui = { workspace = true }
-egui-wgpu = "0.31"
+# egui-wgpu is the banned wgpu-surface egui paint path (the non-Spectra editor /
+# legacy demo present). OPTIONAL + pulled only by `legacy-raster`, so the product
+# (`spectra`) editor graph contains no egui-wgpu / wgpu-surface-present stack.
+# (egui-winit stays non-optional: the Spectra editor host uses it for input.)
+egui-wgpu = { version = "0.31", optional = true }
 egui-winit = "0.31"
 egui_dock = "0.16"  # egui-0.31-compatible (verified: egui ^0.31); dockable tab shell
 dirs-next = "2"
@@ -92,6 +123,25 @@ cook           = { path = "../../../crucible/rust/crates/cook", optional = true 
 crucible-core  = { path = "../../../crucible/rust/crates/crucible-core", optional = true }
 crucible-types = { path = "../../../crucible/rust/crates/crucible-types", optional = true }
 
+# Spectra present + GPU — OPTIONAL path deps to the spectra sibling, gated by the
+# `spectra` feature above. The editor constructs a `VulkanSlangBackend` and the
+# `spectra_present` swapchain directly, so spectra-gpu is needed here (not just
+# transitively through vox_render). default-features=false drops spectra-gpu's
+# default `cuda` feature; vulkan-backend + spectra-present give VulkanSlangBackend
+# + the KHR swapchain present. egui-ash-renderer paints egui on that ash device
+# (render-pass path — the device is VK 1.2, no dynamic-rendering — so NO
+# `dynamic-rendering` feature). Pinned `=0.8.0`: it supports egui >=0.26,<=0.31
+# (workspace is 0.31); 0.9+ pulls egui 0.32/0.33 and breaks the single-egui graph.
+spectra-present  = { path = "../../../spectra/rust/spectra-present", optional = true }
+spectra-gpu      = { path = "../../../spectra/rust/spectra-gpu", default-features = false, features = ["vulkan-backend", "spectra-present"], optional = true }
+ash              = { version = "0.38", optional = true }
+egui-ash-renderer = { version = "=0.8.0", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+# Native file picker for the windowed "Open world…" path (gated by `spectra`).
+# Off by default; the headless/proof path never touches it (it uses a default
+# path). xdg-portal backend keeps it dependency-light on Linux.
+rfd = { version = "0.15", optional = true }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { version = "0.2", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
@@ -104,41 +154,78 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 [dev-dependencies]
 tempfile = "3"
 
+# ── PRODUCT bins (Spectra-only) ──────────────────────────────────────────────
+# These build in the default/product graph with no banned stack.
 [[bin]]
-name = "ochroma"
-path = "src/bin/engine_runner.rs"
+name = "ochroma_editor"
+path = "src/bin/ochroma_editor.rs"
 
 [[bin]]
 name = "shell_snapshot"
 path = "src/bin/shell_snapshot.rs"
 
 [[bin]]
-name = "ochroma_editor"
-path = "src/bin/ochroma_editor.rs"
+name = "hello_splat"
+path = "src/bin/hello_splat.rs"
 
-[[bin]]
-name = "demo"
-path = "src/bin/demo.rs"
-
-[[bin]]
-name = "walking_sim"
-path = "src/bin/walking_sim.rs"
-
-[[bin]]
-name = "splat_view"
-path = "src/bin/splat_view.rs"
-
-[[bin]]
-name = "platformer"
-path = "src/bin/platformer.rs"
-
+# render_showcase: CPU compute showcase with its OWN local PPM writer — uses only
+# kept vox_render modules (camera/lod/particles/postprocess), no banned stack.
 [[bin]]
 name = "render_showcase"
 path = "src/bin/render_showcase.rs"
 
+# net_walk: pure networking demo, no renderer at all.
 [[bin]]
-name = "hello_splat"
-path = "src/bin/hello_splat.rs"
+name = "net_walk"
+path = "src/bin/net_walk.rs"
+
+# ── LEGACY demo bins (require `legacy-raster`) ───────────────────────────────
+# Each presents through a banned rasterizer / wgpu-surface path. Gated behind
+# `required-features = ["legacy-raster"]` so a default/product build does NOT
+# compile them; they are preserved and build with `--features legacy-raster`.
+
+# The implicit `vox_app` bin (src/main.rs) is a legacy wgpu-surface demo
+# (WgpuBackend + egui-wgpu + software rasterizer). Declared explicitly so it can
+# carry required-features; without it cargo would auto-discover it ungated.
+[[bin]]
+name = "vox_app"
+path = "src/main.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "ochroma"
+path = "src/bin/engine_runner.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "demo"
+path = "src/bin/demo.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "walking_sim"
+path = "src/bin/walking_sim.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "splat_view"
+path = "src/bin/splat_view.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "platformer"
+path = "src/bin/platformer.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "city_ceiling"
+path = "src/bin/city_ceiling.rs"
+required-features = ["legacy-raster"]
+
+[[bin]]
+name = "scale_trial"
+path = "src/bin/scale_trial.rs"
+required-features = ["legacy-raster"]
 
 [[example]]
 name = "simple_game"

@@ -1,7 +1,7 @@
 //! Hybrid mesh + Gaussian-splat compositing in a single depth-correct pass.
 //!
-//! This is a CPU reference implementation, mirroring the engine's software-first
-//! pattern (`gpu::software_rasteriser`). It renders triangle meshes and spectral
+//! This is a CPU reference implementation (the oracle the GPU compositor
+//! `gpu::hybrid_compose_gpu` is validated against). It renders triangle meshes and spectral
 //! Gaussian splats into one coherent [`SpectralFramebuffer`] with correct mutual
 //! occlusion: splats behind mesh geometry are rejected by the shared depth buffer,
 //! splats in front composite over the mesh background normally.
@@ -51,7 +51,7 @@ use spectra_gaussian_render::renderer::{
     ALPHA_THRESHOLD, Gaussian3D, GaussianCamera, TRANSMITTANCE_THRESHOLD, project_gaussian,
 };
 
-use crate::gpu::software_rasteriser::build_gaussian_camera;
+use crate::gpu::gaussian_camera::build_gaussian_camera;
 use crate::spectral::RenderCamera;
 use crate::spectral_framebuffer::SpectralFramebuffer;
 
@@ -64,15 +64,124 @@ pub struct HybridMesh {
     pub positions: Vec<[f32; 3]>,
     /// Triangle-list indices into `positions` (length should be a multiple of 3).
     pub indices: Vec<u32>,
+    /// Optional per-vertex shading normals (parallel to `positions`). **EMPTY =
+    /// the legacy behaviour** — the downstream BLAS converter derives flat
+    /// per-triangle face normals (or its own ground area-weighted smoothing). When
+    /// present (same len as `positions`) the converter uses THESE normals directly,
+    /// so a producer that has a better (e.g. heightfield-gradient) smooth normal —
+    /// like the terrain ground — can hand it through instead of relying on
+    /// mesh-tessellation-derived normals that still step per quad on a decimated
+    /// grid. Deterministic plain per-vertex data (no map/RNG ordering).
+    pub normals: Vec<[f32; 3]>,
     /// 16-band spectral reflectance applied to the whole mesh.
     pub reflectance: [f32; 16],
-    /// Object/entity id written to the framebuffer for these pixels.
+    /// Object/entity id written to the framebuffer for these pixels. Now a dense,
+    /// collision-free monotonic [`ObjectId`](crate) (full 32 bits — the Forge
+    /// material channel no longer rides the top byte; see `material_channel`).
     pub object_id: u32,
+    /// Forge material-channel selector (the raw per-mesh material-id byte:
+    /// `0=Facade, 1=Roof, 2=Glass, 3..=5=Trim, 6=Door, 7+=Detail`). The game
+    /// resolves this to a `ReadyAssetMaterialChannel` and PBR surface params. It
+    /// USED to be packed into `object_id`'s top byte (`(object_id >> 24) & 0xff`);
+    /// it now lives in its own field so `object_id` is pure identity. `0` (Facade)
+    /// is the neutral default for untagged meshes.
+    pub material_channel: u8,
+    /// Per-vertex UVs (parallel to `positions`). Empty = untextured; the
+    /// flat `reflectance` is used as the base colour. When present (same len as
+    /// `positions`) and `albedo_tex >= 0`, the renderer samples the texture
+    /// atlas instead of the flat colour. (Texture keystone.)
+    pub uvs: Vec<[f32; 2]>,
+    /// Albedo texture atlas slot for this mesh, or -1 for none (flat colour).
+    /// Resolved during scene assembly from `albedo_tex_path`.
+    pub albedo_tex: i32,
+    /// Resolved absolute path of this mesh's base-colour texture, or `None` for
+    /// an untextured (flat `reflectance`) surface. Scene assembly collects the
+    /// unique paths into the texture atlas and rewrites `albedo_tex` to the slot.
+    pub albedo_tex_path: Option<String>,
+    /// Tangent-space normal-map path (LINEAR data — never sRGB-decoded).
+    /// Resolved to an atlas slot during scene assembly, parallel to
+    /// `albedo_tex_path`; `None` = no normal map (geometric normals only).
+    pub normal_tex_path: Option<String>,
+    /// Roughness-map path (LINEAR, R channel). `None` = flat channel roughness.
+    pub roughness_tex_path: Option<String>,
+    /// Displacement/height-map path (LINEAR, single channel) driving POM relief
+    /// in the megakernel. `None` = no relief. NOTE: a single-channel map uses
+    /// plain POM; cone-step auto-select needs a 2-channel (height+cone) map.
+    pub displacement_tex_path: Option<String>,
+    /// POM relief depth in UV-height units (~0.02–0.05). Only consumed when a
+    /// displacement map is bound; mirrors `PbrMaterial::displacement_scale`.
+    pub displacement_scale: f32,
+    /// Height value treated as the flat surface plane for POM (0.5 typical).
+    pub displacement_midlevel: f32,
+    /// Optional transmission override for glass/water. `None` leaves the
+    /// channel-derived value intact (e.g. the Glass channel already sets 0.9);
+    /// `Some(t)` forces transmission to `t` (used for water surfaces).
+    pub transmission_override: Option<f32>,
+    /// IOR paired with `transmission_override` (e.g. 1.33 water, 1.5 glass).
+    pub ior_override: Option<f32>,
+    /// When `Some(scale)`, the surface is textured with WORLD-PLANAR UV (UV =
+    /// world_xz * scale) instead of interpolated vertex UVs. Used for terrain
+    /// ground, whose UV is a pure function of world position — and which, on the
+    /// per-cluster CLAS path, cannot recover correct within-cluster vertex UVs.
+    /// Scene assembly encodes this as a negative `PbrMaterial::uv_scale` sentinel.
+    pub world_planar_uv_scale: Option<f32>,
+    /// FACADE-SCOPED extra UV tiling multiplier (vertex-UV semantics). When
+    /// `Some([sx, sy])`, scene assembly packs it into `PbrMaterial::uv_scale` so
+    /// the megakernel multiplies the interpolated vertex UV by it (`tex_uv =
+    /// hit_uv * uv_scale`) — denser tiling of the brick/panel/window motif across
+    /// a multi-metre facet (values > 1 repeat more, the opposite of the
+    /// world-planar texels-per-metre sentinel). `None` (the default for ground,
+    /// scatter vegetation, water, glass) leaves `uv_scale` at its `(1,1)`
+    /// passthrough so those meshes stay byte-identical. Set ONLY on BUILDING
+    /// facade meshes — see [`HybridMesh::with_uv_scale`]. Mutually exclusive with
+    /// `world_planar_uv_scale`: scene assembly gives the world-planar sentinel
+    /// priority so a (hypothetical) mesh carrying both never double-encodes.
+    pub uv_scale: Option<[f32; 2]>,
+    /// Per-TRIANGLE material id (parallel to `indices.len()/3`). Indexes into
+    /// [`submesh_materials`] when that is non-empty; otherwise it is a raw Forge
+    /// material-channel byte (the same space as [`material_channel`]). **EMPTY =
+    /// the legacy single-material behavior** — every triangle uses the mesh-wide
+    /// [`material_channel`] + single texture fields. This widens the carrier so a
+    /// vegetation/asset mesh can hold several materials (bark + leaf, etc.) in one
+    /// `HybridMesh` without splitting it. Determinism: this is plain per-tri data,
+    /// no map/RNG ordering. (Vegetation mesh-carrier seam.)
+    pub material_ids: Vec<u32>,
+    /// Per-submesh material descriptors, indexed by the values in
+    /// [`material_ids`]. **EMPTY = use the existing single-material fields**
+    /// ([`material_channel`] + [`albedo_tex_path`]/[`normal_tex_path`]/
+    /// [`roughness_tex_path`]). When non-empty, `material_ids[t]` selects the
+    /// submesh material for triangle `t` (a value out of range falls back to the
+    /// mesh-wide single material so a bad cook can never panic). This lets one
+    /// mesh carry multiple textured materials (the gating piece for multi-material
+    /// vegetation/props on the live path).
+    pub submesh_materials: Vec<HybridSubmesh>,
+}
+
+/// One material slot of a multi-material [`HybridMesh`], selected per-triangle via
+/// [`HybridMesh::material_ids`]. Mirrors the per-mesh single-material fields
+/// (`material_channel` + the three texture paths) so a multi-material mesh carries
+/// exactly the same surface information per submesh that a single-material mesh
+/// carries for the whole mesh — scene assembly resolves the paths to atlas slots
+/// the same way. Kept deliberately small + `Clone` so it is cheap to fan out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HybridSubmesh {
+    /// Forge material-channel selector for this submesh (same space as
+    /// [`HybridMesh::material_channel`]: `0=Facade, 1=Roof, 2=Glass, …`).
+    pub material_channel: u8,
+    /// Base-colour texture path for this submesh, or `None` (flat channel colour).
+    /// Resolved to an atlas slot by scene assembly, exactly like
+    /// [`HybridMesh::albedo_tex_path`].
+    pub albedo_tex_path: Option<String>,
+    /// Tangent-space normal-map path (LINEAR), or `None`.
+    pub normal_tex_path: Option<String>,
+    /// Roughness-map path (LINEAR, R channel), or `None`.
+    pub roughness_tex_path: Option<String>,
 }
 
 impl HybridMesh {
     /// Build a mesh whose reflectance comes from an RGB colour (uplifted to a
     /// 16-band reflectance via [`vox_core::spectral::rgb_to_spectral`]).
+    /// Untextured: `uvs` empty, `albedo_tex = -1`.
     pub fn from_rgb(
         positions: Vec<[f32; 3]>,
         indices: Vec<u32>,
@@ -84,9 +193,161 @@ impl HybridMesh {
         Self {
             positions,
             indices,
+            normals: Vec::new(),
             reflectance,
             object_id,
+            material_channel: 0,
+            uvs: Vec::new(),
+            albedo_tex: -1,
+            albedo_tex_path: None,
+            normal_tex_path: None,
+            roughness_tex_path: None,
+            displacement_tex_path: None,
+            displacement_scale: 0.0,
+            displacement_midlevel: 0.5,
+            transmission_override: None,
+            ior_override: None,
+            world_planar_uv_scale: None,
+            uv_scale: None,
+            material_ids: Vec::new(),
+            submesh_materials: Vec::new(),
         }
+    }
+
+    /// Attach per-triangle material ids + per-submesh material descriptors
+    /// (builder style; vegetation mesh-carrier seam). `material_ids` must be
+    /// parallel to the triangle count (`indices.len() / 3`); a mismatched length
+    /// is ignored (the mesh stays single-material) so a bad cook can never
+    /// desync the per-triangle stream. Empty `submesh_materials` with non-empty
+    /// `material_ids` is allowed: the ids then read as raw Forge channel bytes.
+    pub fn with_submesh_materials(
+        mut self,
+        material_ids: Vec<u32>,
+        submesh_materials: Vec<HybridSubmesh>,
+    ) -> Self {
+        let tri_count = self.indices.len() / 3;
+        if material_ids.len() == tri_count {
+            self.material_ids = material_ids;
+            self.submesh_materials = submesh_materials;
+        }
+        self
+    }
+
+    /// Attach explicit per-vertex shading normals (parallel to `positions`).
+    /// Builder style. A mismatched length is ignored (the converter falls back to
+    /// flat/area-weighted face normals) so a bad producer can never desync the
+    /// vertex stream. Used by the terrain ground to hand through a SMOOTH
+    /// heightfield-gradient normal (tessellation-independent) so the slope-layered
+    /// material reads a smooth slope instead of stepping per decimated quad.
+    pub fn with_normals(mut self, normals: Vec<[f32; 3]>) -> Self {
+        if normals.len() == self.positions.len() {
+            self.normals = normals;
+        }
+        self
+    }
+
+    /// Texture this mesh with WORLD-PLANAR UV (UV = world_xz * `scale`) instead of
+    /// interpolated vertex UVs — for terrain ground. Builder style.
+    pub fn with_world_planar_uv(mut self, scale: f32) -> Self {
+        self.world_planar_uv_scale = Some(scale);
+        self
+    }
+
+    /// Attach a FACADE-SCOPED extra UV tiling multiplier (vertex-UV semantics):
+    /// scene assembly packs it into `PbrMaterial::uv_scale` so the megakernel
+    /// repeats the texture `scale`× across the facet's interpolated vertex UV
+    /// (values > 1 = denser tiling of a brick/panel/window motif). Builder style;
+    /// set ONLY on BUILDING facade meshes — scatter/ground/water leave it `None`
+    /// (passthrough `(1,1)`) so they stay byte-identical. See
+    /// [`HybridMesh::uv_scale`].
+    pub fn with_uv_scale(mut self, scale: [f32; 2]) -> Self {
+        self.uv_scale = Some(scale);
+        self
+    }
+
+    /// Set the Forge material-channel selector (raw per-mesh material-id byte;
+    /// see [`HybridMesh::material_channel`]). Builder style. Replaces the old
+    /// trick of packing the channel into `object_id`'s top byte.
+    pub fn with_material_channel(mut self, channel: u8) -> Self {
+        self.material_channel = channel;
+        self
+    }
+
+    /// The Forge material-channel selector (raw per-mesh material-id byte).
+    pub fn material_channel(&self) -> u8 {
+        self.material_channel
+    }
+
+    /// Attach per-vertex UVs + an albedo texture atlas slot (builder style).
+    /// `uvs` must be parallel to `positions`; mismatched lengths are ignored
+    /// (mesh stays untextured) so a bad cook can never corrupt sampling.
+    pub fn with_texture(mut self, uvs: Vec<[f32; 2]>, albedo_tex: i32) -> Self {
+        if uvs.len() == self.positions.len() && albedo_tex >= 0 {
+            self.uvs = uvs;
+            self.albedo_tex = albedo_tex;
+        }
+        self
+    }
+
+    /// Attach per-vertex UVs + a base-colour texture PATH (resolved to an atlas
+    /// slot later by scene assembly). `uvs` must be parallel to `positions`;
+    /// mismatched lengths leave the mesh untextured.
+    pub fn with_albedo_texture(mut self, uvs: Vec<[f32; 2]>, path: String) -> Self {
+        if uvs.len() == self.positions.len() {
+            self.uvs = uvs;
+            self.albedo_tex_path = Some(path);
+        }
+        self
+    }
+
+    /// Attach PBR relief maps (normal / roughness / displacement) by PATH,
+    /// resolved to atlas slots at scene assembly (parallel to
+    /// [`with_albedo_texture`]). These are LINEAR data maps (never sRGB).
+    /// A displacement map enables POM at a default `displacement_scale` of 0.03
+    /// (the proven brick value); set [`HybridMesh::displacement_scale`] directly
+    /// for a different relief depth. Pass `None` for any map you don't have.
+    /// Does NOT set UVs — call after [`with_albedo_texture`], which carries them.
+    pub fn with_pbr_textures(
+        mut self,
+        normal: Option<String>,
+        roughness: Option<String>,
+        displacement: Option<String>,
+    ) -> Self {
+        self.normal_tex_path = normal;
+        self.roughness_tex_path = roughness;
+        if displacement.is_some() {
+            self.displacement_tex_path = displacement;
+            if self.displacement_scale == 0.0 {
+                self.displacement_scale = 0.03;
+            }
+        }
+        self
+    }
+
+    /// Force a transmissive material (glass / water) regardless of the Forge
+    /// channel. Use for water surfaces (`with_transmission(0.6, 1.33)`); building
+    /// glass already gets transmission from its Glass channel so it needs no
+    /// override.
+    pub fn with_transmission(mut self, transmission: f32, ior: f32) -> Self {
+        self.transmission_override = Some(transmission);
+        self.ior_override = Some(ior);
+        self
+    }
+
+    /// Test-only: an untextured mesh with an explicit 16-band `reflectance`
+    /// (which [`from_rgb`] can't take directly) and all texture/relief/channel
+    /// fields at their neutral defaults. Keeps the raster tests terse without
+    /// hand-listing every field.
+    #[cfg(test)]
+    pub(crate) fn untextured(
+        positions: Vec<[f32; 3]>,
+        indices: Vec<u32>,
+        reflectance: [f32; 16],
+        object_id: u32,
+    ) -> Self {
+        let mut m = Self::from_rgb(positions, indices, [0.0, 0.0, 0.0], object_id);
+        m.reflectance = reflectance;
+        m
     }
 }
 
@@ -133,21 +394,11 @@ impl Default for SunLight {
     }
 }
 
-/// Render a hybrid scene into `fb` with default sun lighting.
+/// Render a hybrid scene with an explicit sun light.
 ///
 /// Returns hardening statistics. The framebuffer is **not** cleared first; the
 /// caller controls accumulation. To render a fresh frame, call `fb.clear()`
-/// beforehand.
-pub fn render_hybrid(
-    scene: &HybridScene,
-    camera: &RenderCamera,
-    illuminant: &Illuminant,
-    fb: &mut SpectralFramebuffer,
-) -> HybridStats {
-    render_hybrid_lit(scene, camera, illuminant, &SunLight::default(), fb)
-}
-
-/// Render a hybrid scene with an explicit sun light.
+/// beforehand. For default sun lighting pass `&SunLight::default()`.
 pub fn render_hybrid_lit(
     scene: &HybridScene,
     camera: &RenderCamera,
@@ -632,6 +883,20 @@ mod tests {
     const W: u32 = 64;
     const H: u32 = 64;
 
+    /// Test-only convenience: render with default sun lighting. The public API
+    /// is `render_hybrid_lit` (an explicit `SunLight`); the old default-sun
+    /// wrapper `render_hybrid` was removed as part of the no-rasterizer excision
+    /// (WC7), so the CPU-compositor validation tests delegate through this local
+    /// helper instead.
+    fn render_hybrid(
+        scene: &HybridScene,
+        camera: &RenderCamera,
+        illuminant: &Illuminant,
+        fb: &mut SpectralFramebuffer,
+    ) -> HybridStats {
+        render_hybrid_lit(scene, camera, illuminant, &SunLight::default(), fb)
+    }
+
     fn head_on_camera() -> RenderCamera {
         RenderCamera {
             view: Mat4::look_at_rh(Vec3::new(0.0, 0.0, 20.0), Vec3::ZERO, Vec3::Y),
@@ -663,17 +928,17 @@ mod tests {
     /// A 1×1 quad (two triangles) in the XY plane at world z = `z`, facing the
     /// camera, spanning [-half, +half] in x and y.
     fn quad(z: f32, half: f32, refl: [f32; 16], object_id: u32) -> HybridMesh {
-        HybridMesh {
-            positions: vec![
+        HybridMesh::untextured(
+            vec![
                 [-half, -half, z],
                 [half, -half, z],
                 [half, half, z],
                 [-half, half, z],
             ],
-            indices: vec![0, 1, 2, 0, 2, 3],
-            reflectance: refl,
+            vec![0, 1, 2, 0, 2, 3],
+            refl,
             object_id,
-        }
+        )
     }
 
     /// Sum of all band energy in a screen region.
@@ -785,17 +1050,17 @@ mod tests {
 
         // Wall occupies x in [-8, 0] (left half of the centred view) at z=0, tall
         // enough to cover the full vertical extent of the splat.
-        let wall = HybridMesh {
-            positions: vec![
+        let wall = HybridMesh::untextured(
+            vec![
                 [-8.0, -8.0, 0.0],
                 [0.0, -8.0, 0.0],
                 [0.0, 8.0, 0.0],
                 [-8.0, 8.0, 0.0],
             ],
-            indices: vec![0, 1, 2, 0, 2, 3],
-            reflectance: single_band_f32(11, 1.0),
-            object_id: 1,
-        };
+            vec![0, 1, 2, 0, 2, 3],
+            single_band_f32(11, 1.0),
+            1,
+        );
         // Splat behind the wall, centred, band 3, wide enough to span both halves.
         let splat = big_splat(-8.0, 3, 1.0, 255);
 
@@ -940,13 +1205,13 @@ mod tests {
         let cam = head_on_camera();
         let il = illum();
 
-        let hostile = HybridMesh {
-            positions: vec![[0.0, 0.0, 0.0], [f32::NAN, 1.0, 0.0], [1.0, 0.0, 0.0]],
+        let hostile = HybridMesh::untextured(
+            vec![[0.0, 0.0, 0.0], [f32::NAN, 1.0, 0.0], [1.0, 0.0, 0.0]],
             // First triangle references index 99 (OOB); second has a NaN vertex.
-            indices: vec![0, 1, 99, 0, 1, 2],
-            reflectance: single_band_f32(11, 1.0),
-            object_id: 1,
-        };
+            vec![0, 1, 99, 0, 1, 2],
+            single_band_f32(11, 1.0),
+            1,
+        );
         let splat = big_splat(8.0, 3, 1.0, 255);
 
         let mut fb = SpectralFramebuffer::new(W, H);
@@ -1077,27 +1342,22 @@ mod tests {
             0, 4, 5, 0, 5, 1, // +Y face
             3, 2, 6, 3, 6, 7,
         ];
-        HybridMesh {
-            positions,
-            indices,
-            reflectance: refl,
-            object_id,
-        }
+        HybridMesh::untextured(positions, indices, refl, object_id)
     }
 
     /// A steep triangle slanting from a near apex (cam_z ~1) to a far base
     /// (cam_z ~100). Eye at z=20 looking at origin, so cam_z = 20 - world_z.
     fn steep_tri(refl: [f32; 16], object_id: u32) -> HybridMesh {
-        HybridMesh {
-            positions: vec![
+        HybridMesh::untextured(
+            vec![
                 [0.0, 0.0, 19.0],     // cam_z = 1   (near apex)
                 [-30.0, 20.0, -80.0], // cam_z = 100 (far base)
                 [30.0, 20.0, -80.0],  // cam_z = 100 (far base)
             ],
-            indices: vec![0, 1, 2],
-            reflectance: refl,
+            vec![0, 1, 2],
+            refl,
             object_id,
-        }
+        )
     }
 
     /// Regression for the perspective-correct depth fix (wave-6). On a steep
@@ -1254,17 +1514,17 @@ mod tests {
         // A big ground quad on the y=0 plane, spanning z from +20 (behind the
         // eye, which sits at z=0 looking toward -z) to -60 (far in front). Two
         // triangles; each straddles the near plane (part behind the camera).
-        let ground = HybridMesh {
-            positions: vec![
+        let ground = HybridMesh::untextured(
+            vec![
                 [-40.0, 0.0, 20.0],  // behind the eye
                 [40.0, 0.0, 20.0],   // behind the eye
                 [40.0, 0.0, -60.0],  // far in front
                 [-40.0, 0.0, -60.0], // far in front
             ],
-            indices: vec![0, 1, 2, 0, 2, 3],
-            reflectance: single_band_f32(11, 1.0),
-            object_id: 1,
-        };
+            vec![0, 1, 2, 0, 2, 3],
+            single_band_f32(11, 1.0),
+            1,
+        );
 
         // Splat behind a chunk of the ground (below the plane, far out), band 3.
         let splat = GaussianSplat::volume(
@@ -1317,6 +1577,77 @@ mod tests {
             "ground must occlude the splat behind it: mesh11={} splat3={}",
             lower[11],
             lower[3]
+        );
+    }
+
+    /// Vegetation mesh-carrier seam: a 2-submesh `HybridMesh` (e.g. bark + leaf)
+    /// must round-trip its per-triangle `material_ids` and `submesh_materials`,
+    /// and the legacy single-material default must stay empty (back-compat).
+    #[test]
+    fn submesh_materials_round_trip() {
+        // Two triangles: tri 0 -> submesh 0 (bark), tri 1 -> submesh 1 (leaf).
+        let positions = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ];
+        let indices = vec![0, 1, 2, 1, 3, 2];
+        let submeshes = vec![
+            HybridSubmesh {
+                material_channel: 0,
+                albedo_tex_path: Some("/assets/bark_albedo.png".to_string()),
+                normal_tex_path: Some("/assets/bark_normal.png".to_string()),
+                roughness_tex_path: None,
+            },
+            HybridSubmesh {
+                material_channel: 7,
+                albedo_tex_path: Some("/assets/leaf_albedo.png".to_string()),
+                normal_tex_path: None,
+                roughness_tex_path: Some("/assets/leaf_rough.png".to_string()),
+            },
+        ];
+        let ids = vec![0u32, 1u32];
+
+        let mesh = HybridMesh::from_rgb(positions, indices, [0.4, 0.3, 0.2], 42)
+            .with_submesh_materials(ids.clone(), submeshes.clone());
+
+        // Per-triangle ids round-trip exactly, parallel to indices/3.
+        assert_eq!(mesh.material_ids, ids, "per-triangle material_ids must round-trip");
+        assert_eq!(mesh.material_ids.len(), mesh.indices.len() / 3);
+        // Submesh descriptors round-trip exactly (paths + channels preserved).
+        assert_eq!(mesh.submesh_materials, submeshes, "submesh_materials must round-trip");
+        assert_eq!(
+            mesh.submesh_materials[ids[0] as usize].albedo_tex_path.as_deref(),
+            Some("/assets/bark_albedo.png")
+        );
+        assert_eq!(mesh.submesh_materials[ids[1] as usize].material_channel, 7);
+
+        // Legacy default: a plain mesh carries EMPTY new fields (single-material).
+        let plain = HybridMesh::from_rgb(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![0, 1, 2],
+            [0.5, 0.5, 0.5],
+            1,
+        );
+        assert!(plain.material_ids.is_empty(), "legacy mesh must have empty material_ids");
+        assert!(
+            plain.submesh_materials.is_empty(),
+            "legacy mesh must have empty submesh_materials"
+        );
+
+        // A mismatched id stream is rejected (mesh stays single-material) so a bad
+        // cook can never desync the per-triangle stream.
+        let bad = HybridMesh::from_rgb(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![0, 1, 2], // 1 triangle
+            [0.5, 0.5, 0.5],
+            1,
+        )
+        .with_submesh_materials(vec![0u32, 1u32, 2u32], submeshes); // 3 ids != 1 tri
+        assert!(
+            bad.material_ids.is_empty(),
+            "mismatched material_ids length must be ignored (single-material)"
         );
     }
 

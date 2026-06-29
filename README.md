@@ -2,6 +2,11 @@
 
 **Spectral Gaussian Splatting Game Engine**
 
+> Built to ship a flagship game: **Urban Horizon**, a care-first city builder
+> (`../../Ochroma/projects/urban_horizon`). For *why people will buy it* — the
+> demand-validated value proposition this engine serves — see that project's
+> `README.md` / `CLAUDE.md`.
+
 Ochroma is a game engine built on 3D Gaussian Splatting with spectral rendering.
 Scenes are volumetric Gaussian splats whose materials carry 8-band spectral
 reflectance, so they respond physically to any illuminant — the same geometry

@@ -73,6 +73,15 @@ pub struct CitySim {
     pub budget: CityBudget,
     pub migration: MigrationSystem,
 
+    /// When `false`, the autonomous migration step (arrivals/departures off the
+    /// satisfaction + vacant-housing heuristic) is skipped, so `CitySim` no longer
+    /// drives its own population. A host application that owns the authoritative
+    /// population sim externally disables this so `CitySim` does not run a SECOND,
+    /// independently-diverging population. `true` by default so the engine's own
+    /// demo city and tests keep their self-contained behavior. Game-agnostic: this
+    /// is a plain on/off toggle, not a population source.
+    pub migration_enabled: bool,
+
     /// Building id -> world position, so we can route agents to their job.
     building_positions: Vec<(u32, WorldCoord)>,
     commuters: Vec<Commuter>,
@@ -114,6 +123,7 @@ impl CitySim {
             agents: AgentManager::new(),
             budget: CityBudget::default(),
             migration: MigrationSystem::new(),
+            migration_enabled: true,
             building_positions: Vec::new(),
             commuters: Vec::new(),
             next_residence_anchor: 0.0,
@@ -403,20 +413,25 @@ impl CitySim {
         self.budget
             .tick(population, commercial, industrial);
 
-        // 5. Migration: attract newcomers when the city beats the region and has housing.
-        let city_satisfaction = self.mean_satisfaction();
-        let available_housing = self.vacant_housing();
-        let (arrivals, departures) = self.migration.calculate_migration(
-            &self.citizens,
-            city_satisfaction,
-            available_housing,
-            dt_secs,
-        );
-        if arrivals > 0 {
-            self.spawn_arrivals(arrivals);
-        }
-        if departures > 0 {
-            self.remove_departures(departures);
+        // 5. Migration: attract newcomers when the city beats the region and has
+        //    housing. Skipped when an external host owns the authoritative
+        //    population sim (`migration_enabled == false`), so `CitySim` does not
+        //    run a SECOND population that diverges from the host's.
+        if self.migration_enabled {
+            let city_satisfaction = self.mean_satisfaction();
+            let available_housing = self.vacant_housing();
+            let (arrivals, departures) = self.migration.calculate_migration(
+                &self.citizens,
+                city_satisfaction,
+                available_housing,
+                dt_secs,
+            );
+            if arrivals > 0 {
+                self.spawn_arrivals(arrivals);
+            }
+            if departures > 0 {
+                self.remove_departures(departures);
+            }
         }
 
         // 6. Agents: point each employed citizen's agent at its workplace and step movement.
@@ -557,6 +572,25 @@ impl CitySim {
     /// First citizen id (founding population), for tests.
     pub fn first_citizen_id(&self) -> Option<u32> {
         self.citizens.all().first().map(|c| c.id)
+    }
+
+    /// Agent positions in a DETERMINISTIC order (citizen-id order, via the
+    /// commuter records), for replay hashing. The `AgentManager` itself stores
+    /// agents by `Uuid` (whose value is RNG-seeded and therefore not stable
+    /// across runs), so callers that need a reproducible ordering must go
+    /// through this id-ordered view rather than iterating the agent map.
+    pub fn agent_positions_id_ordered(&self) -> Vec<(u32, WorldCoord)> {
+        let mut out: Vec<(u32, WorldCoord)> = self
+            .commuters
+            .iter()
+            .filter_map(|cm| {
+                self.agents
+                    .get(cm.agent_id)
+                    .map(|a| (cm.citizen_id, a.position))
+            })
+            .collect();
+        out.sort_by_key(|(cid, _)| *cid);
+        out
     }
 }
 

@@ -29,7 +29,15 @@ param(
     # Optional binary target to build/run (implies the package that owns it).
     [string]$Bin,
     # After building, run the binary (requires -Bin).
-    [switch]$Run
+    [switch]$Run,
+    # Cargo features. If omitted: "spectra-native" for vox_render/vox_app, none otherwise.
+    # Pass "" explicitly to force no features (e.g. the wgpu game `play` binary).
+    [string]$Features,
+    # Pass --no-default-features.
+    [switch]$NoDefaultFeatures,
+    # Repo to build from (cd here before cargo). Default: this script's repo (ochroma).
+    # Set to the urban_horizon repo to build the game (its path-deps reach back to ochroma).
+    [string]$WorkDir
 )
 
 $ErrorActionPreference = "Stop"
@@ -85,6 +93,30 @@ if (-not $libclangDir) {
 $env:LIBCLANG_PATH = $libclangDir
 Write-Step "libclang: $libclangDir"
 
+# --- MSVC host compiler (cl.exe) for nvcc --ptx --------------------------
+# spectra-optix/build.rs compiles the OptiX device programs with `nvcc --ptx`.
+# Even for PTX-only output, nvcc invokes the MSVC host compiler `cl.exe` for its
+# preprocessing pass — so cl.exe MUST be on PATH or nvcc fails and build.rs
+# falls back to the committed device_programs.ptx (still correct, but stale if
+# the .cu changed). Import the VS dev environment here so nvcc compiles FRESH.
+$vswhere2 = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path $vswhere2) {
+    $vsRoot2 = & $vswhere2 -latest -products * -property installationPath 2>$null
+    if ($vsRoot2) {
+        $vcvars = Join-Path $vsRoot2 "VC\Auxiliary\Build\vcvars64.bat"
+        if (Test-Path $vcvars) {
+            # Run vcvars in cmd and import the resulting env into this session so
+            # cl.exe (and the MSVC INCLUDE/LIB) are visible to cargo -> build.rs.
+            cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
+                if ($_ -match '^([^=]+)=(.*)$') {
+                    Set-Item -Path "Env:$($matches[1])" -Value $matches[2]
+                }
+            }
+            Write-Step "MSVC:     vcvars64 imported (cl.exe on PATH for nvcc --ptx)"
+        }
+    }
+}
+
 # --- Compose PATH + backend ----------------------------------------------
 # Order matters: slang\bin and CUDA\bin must precede the rest so Slang's PTX
 # pass-through finds nvcc and the slang DLLs resolve at link/runtime.
@@ -95,15 +127,36 @@ $env:PATH = ($pathParts -join ";") + ";" + $env:PATH
 $env:SPECTRA_BACKEND = "cuda"
 Write-Step "Backend:  cuda (NVIDIA)"
 
+# --- AOT kernel precompilation -------------------------------------------
+# spectra-renderer's build.rs precompiles every .slang kernel to PTX at build
+# time (-> get_ptx()), so the SHIPPED game loads compiled kernels and never runs
+# nvrtc/Slang at runtime. It needs the REAL kernel dir; its default
+# (<spectra>/platform/slang) is wrong, so point it at <spectra>/slang.
+$spectraKernels = Resolve-Path (Join-Path $PSScriptRoot "..\..\spectra\slang") -ErrorAction SilentlyContinue
+if ($spectraKernels) {
+    $env:SLANG_KERNEL_DIR = $spectraKernels.Path
+    Write-Step "Kernels:  $($spectraKernels.Path)  (AOT PTX precompile)"
+} else {
+    Write-Host "[build-gpu] WARN: spectra/slang kernel dir not found; PTX precompile will be empty." -ForegroundColor Yellow
+}
+
 # --- Build ----------------------------------------------------------------
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = if ($WorkDir) { $WorkDir } else { Split-Path -Parent $PSScriptRoot }
+if (-not (Test-Path (Join-Path $repoRoot "Cargo.toml"))) {
+    Die "No Cargo.toml at WorkDir '$repoRoot'."
+}
 Set-Location $repoRoot
+Write-Step "WorkDir:  $repoRoot"
 $cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
-# Building vox_app binaries (editor) needs the app's own spectra-native feature;
-# vox_render alone uses vox_render/spectra-native.
-$feature = if ($Package -eq "vox_render") { "spectra-native" } else { "spectra-native" }
-$cargoArgs = @("build", "-p", $Package, "--features", $feature)
+# Default features: the GPU renderer crates need spectra-native; everything else
+# (e.g. the wgpu game `play` binary) builds with its own defaults.
+if (-not $PSBoundParameters.ContainsKey('Features')) {
+    $Features = if ($Package -in @('vox_render', 'vox_app')) { 'spectra-native' } else { '' }
+}
+$cargoArgs = @("build", "-p", $Package)
 if ($Bin) { $cargoArgs += @("--bin", $Bin) }
+if ($Features) { $cargoArgs += @("--features", $Features) }
+if ($NoDefaultFeatures) { $cargoArgs += "--no-default-features" }
 if ($Release) { $cargoArgs += "--release" }
 
 Write-Step ("cargo " + ($cargoArgs -join " "))

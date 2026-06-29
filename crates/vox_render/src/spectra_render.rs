@@ -971,5 +971,54 @@ pub mod native {
         pub fn dimensions(&self) -> (u32, u32) {
             (self.backend.width(), self.backend.height())
         }
+
+        /// Point the renderer at the `CudaPresentSurface` interop color ptr so the
+        /// realtime path writes PACK_RGBA straight into the CUDA-owned present
+        /// image (no host beauty download). Forwarded to the render thread's
+        /// `Renderer::set_render_target` via `SpectraRenderBackend::set_interop_target`.
+        pub fn set_interop_target(&mut self, color_ptr: u64) {
+            self.backend.set_interop_target(color_ptr);
+        }
+
+        /// The render target last requested via [`set_interop_target`].
+        pub fn render_target(&self) -> spectra_renderer::RenderTarget {
+            self.backend.render_target()
+        }
+
+        /// Test-only: a system with a backend that has no render thread / GPU,
+        /// so the interop-ptr plumbing can be asserted on the dev box (no CUDA).
+        #[cfg(test)]
+        pub fn new_for_test() -> Self {
+            Self {
+                backend: SpectraRenderBackend::new_for_test(),
+                scene_dirty: true,
+                last_splat_count: 0,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod interop_target_tests {
+        use super::*;
+        use spectra_renderer::RenderTarget;
+
+        /// The backend MUST forward the CUDA interop color ptr to the realtime
+        /// `RenderTarget` so the game can point the renderer at
+        /// `CudaPresentSurface::color_ptr()`. Asserts the exact stored ptr — no stub.
+        #[test]
+        fn backend_forwards_interop_ptr() {
+            let mut backend = SpectraBackendSystem::new_for_test();
+            assert!(
+                matches!(backend.render_target(), RenderTarget::HostBeauty),
+                "fresh backend delivers to host beauty"
+            );
+
+            backend.set_interop_target(0xBEEF_0000);
+            assert!(
+                matches!(backend.render_target(), RenderTarget::Interop { color_ptr } if color_ptr == 0xBEEF_0000),
+                "set_interop_target must store Interop {{ color_ptr }}"
+            );
+            println!("forwarded_ptr={:#x}", 0xBEEF_0000u64);
+        }
     }
 }

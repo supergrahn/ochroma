@@ -232,7 +232,7 @@ fn render_with_settings(settings: &RenderSettings) -> Result<Vec<u8>, String> {
         glam::Vec3::Y,
     )
     .to_cols_array();
-    let cam = camera_layer(view, fov_y, width, height);
+    let cam = camera_layer(view, fov_y, width, height, 0.0, 1.0);
     scene.camera = cam.clone();
 
     let gpu = VulkanSlangBackend::new(0).map_err(|e| format!("vulkan backend init: {e:?}"))?;

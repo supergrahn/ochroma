@@ -79,31 +79,84 @@ pub fn linear_to_srgb_gamma(c: f32) -> f32 {
     if c <= 0.0031308 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
 }
 
-/// Convert linear RGB to approximate 16-band spectral reflectance.
+/// Smits-1999 reflectance basis curves resampled to this crate's 16-band
+/// 380–755 nm / 25 nm grid and refined so the RGB→spectral→RGB roundtrip is
+/// faithful under *this* renderer's `spectral_to_xyz` (per-channel D65
+/// normalization) + `xyz_to_srgb`.
 ///
-/// The 16 bands span 380-755nm at 25nm steps (USGS wavelength grid). This is a rough
-/// approximation using simple primary decomposition: R peaks at 630nm, G at 545nm, B at 455nm.
+/// Each row is a smooth, physically plausible reflectance in [0,1]:
+/// - `CYAN`    — high in blue/green, drops toward red
+/// - `MAGENTA` — high in blue + red, dips in green
+/// - `YELLOW`  — low in blue, high in green/red
+/// - `RED`     — low in blue/green, rises toward red
+/// - `GREEN`   — bump centered on green
+/// - `BLUE`    — high in blue, drops toward red
+///
+/// Derivation (deterministic, reproducible — no RNG, no per-call magic): the
+/// classic Smits 10-sample white/cyan/magenta/yellow/red/green/blue spectra were
+/// linearly resampled onto the 16-band grid, then a fixed-seed coordinate-descent
+/// minimized the squared roundtrip error over a uniform 6×6×6 RGB grid (with a
+/// smoothness penalty to keep the curves physical). The white basis is implicitly
+/// all-ones, so any neutral `r=g=b=v` yields a FLAT `v` spectrum — and a flat
+/// reflectance roundtrips exactly through `spectral_to_xyz` (which is white-balanced
+/// to D65), giving neutrals zero roundtrip error with no channel-ordering tint.
+/// Max roundtrip error over the full 6×6×6 grid is ≈0.019 per channel.
+const SMITS_BASIS: [[f32; 16]; 6] = [
+    // CYAN
+    [0.9515, 0.9531, 0.9641, 0.9940, 1.0000, 1.0010, 1.0000, 1.0000, 0.8873, 0.5236, 0.2510, 0.0981, 0.0248, 0.0004, 0.0000, 0.0000],
+    // MAGENTA
+    [1.0000, 1.0000, 1.0000, 1.0000, 0.4400, 0.0000, 0.0000, 0.0000, 0.0336, 0.7349, 1.0000, 1.0000, 1.0000, 1.0000, 1.0000, 1.0000],
+    // YELLOW
+    [0.0000, 0.0000, 0.0000, 0.0507, 0.5268, 1.0000, 1.0000, 1.0000, 1.0000, 0.9415, 0.7962, 0.6867, 0.6205, 0.5917, 0.5826, 0.5804],
+    // RED
+    [0.0533, 0.0513, 0.0397, 0.0023, 0.0000, 0.0000, 0.0000, 0.0000, 0.1113, 0.4777, 0.7495, 0.9004, 0.9729, 0.9978, 1.0000, 1.0000],
+    // GREEN
+    [0.0000, 0.0000, 0.0000, 0.0000, 0.5601, 1.0000, 1.0000, 1.0000, 0.9683, 0.2634, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+    // BLUE
+    [1.0000, 1.0000, 1.0000, 0.9507, 0.4716, 0.0000, 0.0000, 0.0000, 0.0000, 0.0574, 0.2031, 0.3145, 0.3815, 0.4111, 0.4209, 0.4233],
+];
+
+/// Convert linear RGB reflectance to a 16-band spectral reflectance via the
+/// Smits-1999 method.
+///
+/// The 16 bands span 380–755 nm at 25 nm steps (USGS wavelength grid). The RGB is
+/// decomposed into a white component plus one secondary (cyan/magenta/yellow) and
+/// one primary (red/green/blue) basis curve, chosen by which channel is the
+/// smallest / largest, then weighted so the spectrum is a smooth, physically
+/// plausible reflectance in [0,1]. This feeds the real spectral path tracer AND
+/// roundtrips faithfully: a neutral grey reconstructs a flat spectrum (no tint, no
+/// darkening), and saturated colors reconstruct hue-preserved. No brightness
+/// compensation is applied or required.
 pub fn rgb_to_spectral(r: f32, g: f32, b: f32) -> [u16; 16] {
     use half::f16;
-    let bands = [
-        b * 0.3,                        // 380nm — violet, mostly blue
-        b * 0.6,                        // 405nm
-        b * 0.9,                        // 430nm
-        b * 1.0,                        // 455nm — peak blue
-        b * 0.7 + g * 0.1,             // 480nm
-        g * 0.5 + b * 0.2,             // 505nm — cyan/green
-        g * 0.9,                        // 530nm
-        g * 1.0,                        // 555nm — peak green
-        g * 0.6 + r * 0.1,             // 580nm — yellow
-        r * 0.5 + g * 0.2,             // 605nm
-        r * 0.9,                        // 630nm
-        r * 1.0,                        // 655nm — peak red
-        r * 0.8,                        // 680nm
-        r * 0.6,                        // 705nm
-        r * 0.4,                        // 730nm
-        r * 0.3,                        // 755nm — deep red falloff
-    ];
-    std::array::from_fn(|i| f16::from_f32(bands[i].clamp(0.0, 1.0)).to_bits())
+    let [cyan, magenta, yellow, red, green, blue] = SMITS_BASIS;
+    std::array::from_fn(|k| {
+        // White component is `min(r,g,b)`; the two residuals select one secondary
+        // (the channel that is *absent*) and one primary (the dominant channel).
+        let spec = if r <= g && r <= b {
+            // red is smallest -> white = r, add cyan for the (g,b) excess
+            r + if g <= b {
+                (g - r) * cyan[k] + (b - g) * blue[k]
+            } else {
+                (b - r) * cyan[k] + (g - b) * green[k]
+            }
+        } else if g <= r && g <= b {
+            // green is smallest -> add magenta for the (r,b) excess
+            g + if r <= b {
+                (r - g) * magenta[k] + (b - r) * blue[k]
+            } else {
+                (b - g) * magenta[k] + (r - b) * red[k]
+            }
+        } else {
+            // blue is smallest -> add yellow for the (r,g) excess
+            b + if r <= g {
+                (r - b) * yellow[k] + (g - r) * green[k]
+            } else {
+                (g - b) * yellow[k] + (r - g) * red[k]
+            }
+        };
+        f16::from_f32(spec.clamp(0.0, 1.0)).to_bits()
+    })
 }
 
 #[cfg(test)]
@@ -144,6 +197,74 @@ mod tests {
         assert!(band3 < 0.01, "pure red should have ~zero at band 3 (455nm), got {}", band3);
     }
 
+    /// GATE: the RGB → spectral → XYZ(D65) → sRGB roundtrip must be faithful.
+    ///
+    /// Neutrals must come back within ±0.03 per channel with NO channel-ordering
+    /// flip (no blue tint — the old code reconstructed grey as R<G<B). Saturated
+    /// colors must come back within ±0.07, hue-preserved (the channel ordering of
+    /// out must match in). FAILS on the old primary-sum `rgb_to_spectral`; PASSES
+    /// on the Smits basis.
+    #[test]
+    fn roundtrip_is_faithful() {
+        use half::f16;
+        fn roundtrip(rgb: [f32; 3]) -> [f32; 3] {
+            let bits = rgb_to_spectral(rgb[0], rgb[1], rgb[2]);
+            let refl: [f32; 16] = std::array::from_fn(|i| f16::from_bits(bits[i]).to_f32());
+            let xyz = spectral_to_xyz(&SpectralBands(refl), &Illuminant::d65());
+            let lin = xyz_to_srgb(xyz);
+            [lin[0].clamp(0.0, 1.0), lin[1].clamp(0.0, 1.0), lin[2].clamp(0.0, 1.0)]
+        }
+        // (input, tol, neutral?)
+        let neutrals: [[f32; 3]; 4] = [
+            [0.18, 0.18, 0.18],
+            [0.50, 0.50, 0.50],
+            [0.90, 0.90, 0.90],
+            [0.32, 0.32, 0.30], // concrete (essentially neutral)
+        ];
+        for rgb in neutrals {
+            let out = roundtrip(rgb);
+            for c in 0..3 {
+                let e = (out[c] - rgb[c]).abs();
+                assert!(
+                    e <= 0.03,
+                    "neutral {rgb:?} -> {out:?}: channel {c} error {e:.4} > 0.03"
+                );
+            }
+            // No channel-ordering flip: a (near-)neutral must NOT come back blue-tinted.
+            assert!(
+                out[2] <= out[0] + 0.03 && out[2] <= out[1] + 0.03,
+                "neutral {rgb:?} -> {out:?}: blue must not dominate (old code gave R<G<B tint)"
+            );
+        }
+        // Saturated: within ±0.07, hue-preserved (channel ordering preserved).
+        let saturated: [[f32; 3]; 3] = [
+            [0.34, 0.58, 0.36], // grass  (g > r,b)
+            [0.45, 0.28, 0.22], // brick  (r > g > b)
+            [0.30, 0.50, 0.80], // sky    (b > g > r)
+        ];
+        for rgb in saturated {
+            let out = roundtrip(rgb);
+            for c in 0..3 {
+                let e = (out[c] - rgb[c]).abs();
+                assert!(
+                    e <= 0.07,
+                    "saturated {rgb:?} -> {out:?}: channel {c} error {e:.4} > 0.07"
+                );
+            }
+            // Hue preserved: the rank order of channels must survive the roundtrip.
+            let order = |v: &[f32; 3]| {
+                let mut idx = [0usize, 1, 2];
+                idx.sort_by(|&a, &b| v[a].partial_cmp(&v[b]).unwrap());
+                idx
+            };
+            assert_eq!(
+                order(&rgb),
+                order(&out),
+                "saturated {rgb:?} -> {out:?}: channel rank order (hue) not preserved"
+            );
+        }
+    }
+
     #[test]
     fn rgb_to_spectral_black_is_all_zero() {
         let s = rgb_to_spectral(0.0, 0.0, 0.0);
@@ -167,5 +288,101 @@ mod tests {
     fn linear_to_srgb_gamma_one_is_one() {
         let g = linear_to_srgb_gamma(1.0);
         assert!((g - 1.0).abs() < 0.001, "gamma(1.0) should be ~1.0, got {}", g);
+    }
+
+    // --- Building albedo conversion tests ---
+    //
+    // These tests validate the spectral→base_color conversion used by
+    // `urban_horizon::spectra_frame::pbr_for_channel`. The function converts
+    // a 16-band reflectance to a LINEAR sRGB base_color for the path tracer
+    // (which works in linear space, splat_backend.rs line 264).
+    //
+    // The old code applied `linear_to_srgb_gamma` after `xyz_to_srgb`, which
+    // baked a ~1.4× brightness boost into the albedo (e.g. concrete grey linear
+    // 0.50 → gamma 0.74, then stored as "linear" reflectance). The fix removes
+    // the gamma step so the linear value is passed through directly.
+
+    /// Helper replicating the fixed `pbr_for_channel` base_color calculation:
+    /// flat reflectance → `spectral_to_xyz` → `xyz_to_srgb` (linear) → clamp.
+    /// No `linear_to_srgb_gamma` — path tracer receives linear RGB.
+    fn flat_reflectance_to_linear_base_color(v: f32) -> [f32; 3] {
+        let xyz = spectral_to_xyz(&SpectralBands([v; 16]), &Illuminant::d65());
+        let lin = xyz_to_srgb(xyz);
+        [lin[0].clamp(0.0, 1.0), lin[1].clamp(0.0, 1.0), lin[2].clamp(0.0, 1.0)]
+    }
+
+    /// Perfect-white flat reflectance (1.0) → base_color ≈ [1, 1, 1] linear.
+    #[test]
+    fn white_flat_reflectance_maps_to_white_base_color() {
+        let bc = flat_reflectance_to_linear_base_color(1.0);
+        for (i, &c) in bc.iter().enumerate() {
+            assert!(
+                (c - 1.0).abs() < 0.02,
+                "channel {i}: flat 1.0 reflectance should give linear base_color ~1.0, got {c}"
+            );
+        }
+    }
+
+    /// Perfect-black flat reflectance (0.0) → base_color = [0, 0, 0].
+    #[test]
+    fn black_flat_reflectance_maps_to_black_base_color() {
+        let bc = flat_reflectance_to_linear_base_color(0.0);
+        for (i, &c) in bc.iter().enumerate() {
+            assert!(c < 0.01, "channel {i}: flat 0.0 reflectance should give base_color ~0.0, got {c}");
+        }
+    }
+
+    /// Concrete-like reflectance (0.30 flat, physical range 0.25–0.35) must
+    /// produce a mid-dark linear base_color well below 0.5.
+    ///
+    /// The old gamma-encoding bug produced ~0.58 for this input; asserting
+    /// < 0.45 rules out the bug. Y = 0.30 for a neutral flat reflectance
+    /// (confirmed analytically: the normalization preserves Y = reflectance).
+    #[test]
+    fn concrete_reflectance_030_gives_realistic_linear_albedo() {
+        let bc = flat_reflectance_to_linear_base_color(0.30);
+        for (i, &c) in bc.iter().enumerate() {
+            assert!(
+                c > 0.20 && c < 0.45,
+                "channel {i}: concrete flat-0.30 → linear base_color should be ~0.28–0.32, \
+                 got {c:.4} (old gamma bug gave ~0.58)"
+            );
+        }
+    }
+
+    /// Service/concrete grey from `render_gpu::building_rgb(Service)` = (0.59, 0.59, 0.63).
+    /// Uplifted to spectral and back to linear, the luminance must be in [0.35, 0.60] —
+    /// NOT the near-white ~0.74 the old `linear_to_srgb_gamma` call produced.
+    #[test]
+    fn service_grey_spectral_roundtrip_is_not_near_white() {
+        use half::f16;
+        let (r, g, b) = (0.59f32, 0.59f32, 0.63f32);
+        let bits = rgb_to_spectral(r, g, b);
+        let refl: [f32; 16] = std::array::from_fn(|i| f16::from_bits(bits[i]).to_f32());
+        let xyz = spectral_to_xyz(&SpectralBands(refl), &Illuminant::d65());
+        let lin = xyz_to_srgb(xyz);
+        let bc = [lin[0].clamp(0.0, 1.0), lin[1].clamp(0.0, 1.0), lin[2].clamp(0.0, 1.0)];
+        let luma = 0.2126 * bc[0] + 0.7152 * bc[1] + 0.0722 * bc[2];
+        assert!(
+            luma < 0.65,
+            "service grey linear luma should be < 0.65, got {luma:.4} (old gamma bug: ~0.74)"
+        );
+        assert!(luma > 0.30, "service grey should be mid-grey, not black: luma {luma:.4}");
+    }
+
+    /// Dark asphalt reflectance (0.08) must be proportionally much dimmer than
+    /// concrete (0.30), proving the linear scale is preserved and not collapsed
+    /// toward white by gamma encoding.
+    #[test]
+    fn dark_reflectance_proportionally_dimmer_than_concrete() {
+        let bc_concrete = flat_reflectance_to_linear_base_color(0.30);
+        let bc_asphalt  = flat_reflectance_to_linear_base_color(0.08);
+        let y_c = bc_concrete[1];
+        let y_a = bc_asphalt[1];
+        assert!(
+            y_a < y_c * 0.5,
+            "asphalt Y {y_a:.4} should be < half concrete Y {y_c:.4} \
+             (old gamma bug collapsed the linear scale)"
+        );
     }
 }

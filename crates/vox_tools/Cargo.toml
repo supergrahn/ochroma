@@ -16,6 +16,15 @@ path = "src/main.rs"
 name = "ochroma-tools"
 path = "src/ochroma_main.rs"
 
+[features]
+default = []
+# legacy-raster: OFF BY DEFAULT. Enables the `prune` subcommand's render guard,
+# which renders candidate prunes through vox_render's banned CPU software
+# rasterizer to back off visible hollowing. THE LAW: Spectra is the only product
+# renderer, so the default build runs the pure (no-render) importance prune; the
+# guard is preserved behind `--features legacy-raster`.
+legacy-raster = ["vox_render/legacy-raster"]
+
 [dependencies]
 vox_core = { path = "../vox_core" }
 vox_data = { path = "../vox_data" }
