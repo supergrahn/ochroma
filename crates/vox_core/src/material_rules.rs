@@ -8,9 +8,16 @@
 //! to produce a CONVEX (Σ=1) per-cell material weight vector that is baked into the spray
 //! field. The renderer then only SAMPLES + blends those weights.
 //!
-//! [`standard_terrain`] reproduces the megakernel softmax (megakernel.slang:4084-4125)
-//! EXACTLY, so wiring this in preserves today's look as the default; the rules are then
-//! authorable (config / per-biome) without touching the kernel.
+//! [`standard_terrain`] is MODELLED ON the megakernel softmax (megakernel.slang:4084-4125)
+//! but is a DELIBERATE LOOK CHANGE, not a byte-for-byte reproduction. It authors from the
+//! TRUE-heightmap curvature/slope drivers, whereas the live GPU path runs with
+//! `slope_lowpass=1.0` (unbridged by the game) which ZEROES its curvature driver — so today's
+//! image has the convex/concave/cavity terms DEAD and a facet-suppressed slope. The
+//! central-difference heightmap drivers are facet-noise-immune BY CONSTRUCTION, so the GPU's
+//! lowpass + flat-guard band-aids are intentionally NOT re-imported (terrain law 7: fix the
+//! cause, don't carry the band-aid). Expect a look delta at the Step-4 witness; the rules are
+//! authorable (config / per-biome), so tune via config and witness against INTENT (green
+//! buildable core + rock borders), never against today's degraded image.
 //!
 //! Engine-generic + game-agnostic: this crate knows nothing about biomes or textures —
 //! a material is just a `u8` palette index. DETERMINISTIC: f64 math, fixed layer order,
@@ -221,7 +228,18 @@ pub struct TerrainRuleConfig {
     // dirt
     pub dirt_prior: f64,
     pub dirt_lobe_gain: f64,
+    /// The shoulder steepness band the dirt lobe opens/closes over (kernel
+    /// `u_terrain_dirt_lobe_lo/hi/close_lo/close_hi`). Config-first so the dirt band
+    /// can be retuned without editing this ruleset (and cannot drift from the kernel).
+    pub dirt_lobe_lo: f64,
+    pub dirt_lobe_hi: f64,
+    pub dirt_lobe_close_lo: f64,
+    pub dirt_lobe_close_hi: f64,
     pub dirt_cavity: f64,
+    /// SEPARATE cavity gain (kernel `u_slope_cavity_amp`) added to `dirt_cavity` for the
+    /// dirt Cavity term — kept its OWN knob so the two stay independent (the kernel computes
+    /// `(dirt_cavity + cavity_amp) * cavity`); folding them would let a cavity_amp retune drift.
+    pub dirt_cavity_amp: f64,
     pub dirt_convex_suppress: f64,
     // rock
     pub rock_prior: f64,
@@ -247,7 +265,12 @@ impl Default for TerrainRuleConfig {
             grass_dirt_cede: 0.70,
             dirt_prior: -0.55,
             dirt_lobe_gain: 1.65,
+            dirt_lobe_lo: 0.12,
+            dirt_lobe_hi: 0.40,
+            dirt_lobe_close_lo: 0.55,
+            dirt_lobe_close_hi: 0.85,
             dirt_cavity: 0.40,
+            dirt_cavity_amp: 0.12,
             dirt_convex_suppress: 0.20,
             rock_prior: -0.85,
             rock_ramp_gain: 3.10,
@@ -262,12 +285,14 @@ impl Default for TerrainRuleConfig {
     }
 }
 
-/// The default terrain ruleset — reproduces the megakernel grass/dirt/rock/snow softmax
-/// (megakernel.slang:4091-4125) over the flat palette. NOTE: the megakernel's rock CLOUD-
-/// SPREAD HALO term (`H`, a NEIGHBORHOOD diffusion that softens cliff borders) is OMITTED
-/// here — pointwise drivers cannot reproduce a neighborhood spread; the soft rock-border
-/// halo is a DEFERRED baked dilated-steep driver (a known Step-4 look risk, flagged by the
-/// design red-team).
+/// The default terrain ruleset — MODELS the megakernel grass/dirt/rock/snow softmax
+/// (megakernel.slang:4091-4125) over the flat palette, as a DELIBERATE look change authored
+/// from true-heightmap drivers (see the module doc: the live GPU curvature driver is dead under
+/// `slope_lowpass=1.0`, so this is NOT a byte-for-byte reproduction and we do NOT re-import that
+/// band-aid). NOTE: the megakernel's rock CLOUD-SPREAD HALO term (`H`, a NEIGHBORHOOD diffusion
+/// that softens cliff borders) is OMITTED here — pointwise drivers cannot reproduce a
+/// neighborhood spread; the soft rock-border halo is a DEFERRED baked dilated-steep driver (a
+/// known Step-4 look risk, flagged by the design red-team).
 pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
     use Curve::*;
     use Driver::*;
@@ -290,8 +315,18 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                 material: mat::DIRT,
                 prior: c.dirt_prior,
                 terms: vec![
-                    Term::new(Steep, Band { lo1: 0.12, hi1: 0.40, lo2: 0.55, hi2: 0.85 }, c.dirt_lobe_gain),
-                    Term::new(Cavity, Linear, c.dirt_cavity),
+                    Term::new(
+                        Steep,
+                        Band {
+                            lo1: c.dirt_lobe_lo,
+                            hi1: c.dirt_lobe_hi,
+                            lo2: c.dirt_lobe_close_lo,
+                            hi2: c.dirt_lobe_close_hi,
+                        },
+                        c.dirt_lobe_gain,
+                    ),
+                    // Cavity gain = dirt_cavity + cavity_amp (the kernel's two independent knobs).
+                    Term::new(Cavity, Linear, c.dirt_cavity + c.dirt_cavity_amp),
                     Term::new(Convex, Linear, -c.dirt_convex_suppress),
                     Term::new(DirtFlat, Linear, 1.0),
                 ],
