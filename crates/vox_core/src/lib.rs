@@ -42,4 +42,5 @@ pub mod drag_drop;
 pub mod localization;
 pub mod sdf;
 pub mod celestial;
+pub mod material_rules;
 pub mod spray;
