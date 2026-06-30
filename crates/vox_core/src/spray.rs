@@ -21,10 +21,16 @@
 //! replay-exact delta log over the procedural baseline (same model as terraform):
 //! re-running [`SprayField::apply_stroke`] in log order rebuilds the exact field.
 
-/// Number of ground-cover channels carried per cell. Matches the megakernel's
-/// `SPRAY_CHANNELS` and the game's `ChannelTable` length (the 7 biome ground
-/// textures + 1 spare).
-pub const SPRAY_CHANNELS: usize = 8;
+/// Number of MATERIAL channels carried per cell. Matches the megakernel's
+/// `SPRAY_CHANNELS` and the game's `ChannelTable` length. STEP 3: the channels are the
+/// flat GLOBAL MATERIAL palette (grass/lush/dry/forest-floor/dirt/rock/scree/sand/snow/
+/// wet-sand/mud/silt — see `material_rules::mat`), NOT biomes; biome became a map-build
+/// INPUT to the material rules. KEEP IN SYNC with megakernel.slang `SPRAY_CHANNELS`.
+pub const SPRAY_CHANNELS: usize = 12;
+
+/// u32 words per cell when the field is packed for GPU upload (4 u8 channels per word,
+/// rounded up). 12 channels → 3 words. Generalises the old hardcoded 2.
+pub const SPRAY_WORDS_PER_CELL: usize = SPRAY_CHANNELS.div_ceil(4);
 
 /// Per-cell weights sum to this (a `u8` budget). Σ≈255 (exact after renormalize,
 /// modulo the unavoidable ±`SPRAY_CHANNELS` rounding spread across channels).
@@ -37,8 +43,19 @@ pub const SPRAY_SUM: u16 = 255;
 /// All fields are plain data (no floats in the *stored* identity beyond the
 /// brush params, which are applied through a fixed deterministic kernel) so the
 /// log is byte-stable to serialize.
+/// Stroke-log schema: which index space `channel` lives in. `0` (the serde default for
+/// pre-Step-3 saved logs) = the LEGACY BIOME-indexed channel; the GAME must remap such a
+/// stroke's `channel` from biome → its material channel before replay (the spray field is
+/// now MATERIAL-indexed). New strokes carry [`STROKE_SCHEMA_MATERIAL`].
+pub const STROKE_SCHEMA_LEGACY_BIOME: u32 = 0;
+pub const STROKE_SCHEMA_MATERIAL: u32 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SprayStroke {
+    /// Index space of `channel` (see [`STROKE_SCHEMA_MATERIAL`]). `#[serde(default)]` →
+    /// old saved logs deserialize as `0` (legacy biome) so they are DETECTABLE + remappable.
+    #[serde(default)]
+    pub schema_version: u32,
     /// Channel raised by this stroke (`0..SPRAY_CHANNELS`).
     pub channel: u8,
     /// Brush centre in world XZ metres.
@@ -183,6 +200,7 @@ impl SprayField {
         density: f32,
     ) -> usize {
         let stroke = SprayStroke {
+            schema_version: STROKE_SCHEMA_MATERIAL,
             channel,
             center,
             radius,
@@ -301,28 +319,73 @@ impl SprayField {
         (best as u8, cell[best] as f32 / SPRAY_SUM as f32)
     }
 
-    /// Pack the field into u32 words for GPU upload: 2 u32 per cell (4 channels
-    /// per word, little-endian byte order channel `0..3` in word 0, `4..7` in
-    /// word 1). Row-major. Matches the megakernel's unpack.
+    /// Pack the field into u32 words for GPU upload: `SPRAY_WORDS_PER_CELL` u32 per cell
+    /// (4 channels per word, little-endian byte order — channel `4w..4w+3` in word `w`).
+    /// Row-major. Matches the megakernel's `spray_unpack_cell` loop. Channels past
+    /// `SPRAY_CHANNELS` in the final word are zero.
     pub fn pack_u32(&self) -> Vec<u32> {
-        let mut out = Vec::with_capacity(self.weights.len() * 2);
+        let mut out = Vec::with_capacity(self.weights.len() * SPRAY_WORDS_PER_CELL);
         for cell in &self.weights {
-            out.push(
-                cell[0] as u32
-                    | (cell[1] as u32) << 8
-                    | (cell[2] as u32) << 16
-                    | (cell[3] as u32) << 24,
-            );
-            out.push(
-                cell[4] as u32
-                    | (cell[5] as u32) << 8
-                    | (cell[6] as u32) << 16
-                    | (cell[7] as u32) << 24,
-            );
+            for w in 0..SPRAY_WORDS_PER_CELL {
+                let mut word = 0u32;
+                for k in 0..4 {
+                    let c = w * 4 + k;
+                    if c < SPRAY_CHANNELS {
+                        word |= (cell[c] as u32) << (8 * k);
+                    }
+                }
+                out.push(word);
+            }
         }
         out
     }
 }
+
+/// The per-channel atlas-slot table for ONE material channel: the base PBR quad
+/// (albedo/normal/rough/disp) + the detail-overlay quad (albedo/alpha/normal/disp).
+/// A TYPED `#[repr(C)]` replacement for the old stride-8 raw-`i32` comment-contract
+/// (megakernel `SPRAY_CH_STRIDE = 8`): the layout is the struct, so a miscount is a
+/// compile error, not a silent wrong-channel read. `-1` = absent slot. The host
+/// flattens a `[ChannelSlots; SPRAY_CHANNELS]` to i32 (via [`ChannelSlots::to_ints`])
+/// for upload — the channel COUNT changed (8→12), the per-channel STRIDE stays 8.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelSlots {
+    pub base_albedo: i32,
+    pub base_normal: i32,
+    pub base_rough: i32,
+    pub base_disp: i32,
+    pub ov_albedo: i32,
+    pub ov_alpha: i32,
+    pub ov_normal: i32,
+    pub ov_disp: i32,
+}
+
+/// i32 ints per channel slot (== megakernel `SPRAY_CH_STRIDE`). Changing this is a
+/// kernel-coupled break — do NOT bump it for a wider palette (that's `SPRAY_CHANNELS`).
+pub const CHANNEL_SLOT_INTS: usize = 8;
+
+impl Default for ChannelSlots {
+    fn default() -> Self {
+        // -1 everywhere (0 is a VALID atlas slot, so it can't be the "absent" sentinel).
+        Self {
+            base_albedo: -1, base_normal: -1, base_rough: -1, base_disp: -1,
+            ov_albedo: -1, ov_alpha: -1, ov_normal: -1, ov_disp: -1,
+        }
+    }
+}
+
+impl ChannelSlots {
+    /// Flatten to the raw `i32` stride the megakernel reads (`g_spray_channels[c*8 + k]`).
+    pub const fn to_ints(&self) -> [i32; CHANNEL_SLOT_INTS] {
+        [
+            self.base_albedo, self.base_normal, self.base_rough, self.base_disp,
+            self.ov_albedo, self.ov_alpha, self.ov_normal, self.ov_disp,
+        ]
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<ChannelSlots>() == CHANNEL_SLOT_INTS * 4);
 
 /// Raise `cell[ch]` by `add` (clamped into the budget) and renormalize the cell
 /// to Σ=255 by proportionally scaling the OTHER channels down. Returns true if
@@ -564,7 +627,7 @@ mod tests {
             w
         });
         let packed = f.pack_u32();
-        assert_eq!(packed.len(), 4 * 4 * 2, "2 u32 per cell");
+        assert_eq!(packed.len(), 4 * 4 * SPRAY_WORDS_PER_CELL, "SPRAY_WORDS_PER_CELL u32 per cell");
         // Unpack cell 0 and confirm it matches the stored bytes.
         let cell0 = f.weights()[0];
         let w0 = packed[0];
@@ -576,11 +639,11 @@ mod tests {
 
     #[test]
     fn quantize_sums_to_exactly_255() {
-        // A nasty ratio that doesn't divide evenly must still land on Σ=255.
-        let raw = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        // A nasty ratio that doesn't divide evenly must still land on Σ=255 (12 channels).
+        let raw = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let q = quantize_to_sum(&raw);
         assert_eq!(sum(&q), 255);
-        let raw2 = [0.1, 0.2, 0.3, 0.05, 0.15, 0.07, 0.08, 0.05];
+        let raw2 = [0.1, 0.2, 0.3, 0.05, 0.15, 0.07, 0.08, 0.05, 0.03, 0.04, 0.02, 0.01];
         assert_eq!(sum(&quantize_to_sum(&raw2)), 255);
     }
 }
