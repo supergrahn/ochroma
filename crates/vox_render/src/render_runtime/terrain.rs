@@ -24,6 +24,14 @@ pub struct TerrainUpload {
     /// (-1 = none). The game fills [1..3]/[4..7] only when its ground-detail
     /// toggles are on; otherwise they are -1 and the kernel skips that path.
     pub channel_slots: Vec<i32>,
+    /// GROUND MACRO VARIATION: atlas slot of ONE global aerial-scale albedo the
+    /// ground lerps toward with distance (keeps meso-scale patchiness resolving
+    /// at aerial range where the ~1 m detail tile mips to a flat average). `-1`
+    /// = off (byte-identical). `tile_m` = world metres per macro tile; `blend` =
+    /// max lerp weight at full distance fade [0,1].
+    pub ground_macro_slot: i32,
+    pub ground_macro_tile_m: f32,
+    pub ground_macro_blend: f32,
     /// SLOPE-LAYER atlas slots (#33): steep-face ROCK + transition DIRT
     /// albedo/normal, resolved from the map's `TerrainSurfaceSet.cliff/transition`.
     /// `-1` = absent (that layer rolls back into the biome ground in the kernel).
@@ -100,6 +108,11 @@ impl Default for TerrainUpload {
             origin: [0.0, 0.0],
             cell_size: 0.0,
             channel_slots: Vec::new(),
+            // Macro layer OFF by default (-1 slot / 0 blend) — byte-identical for
+            // any game that does not fill it.
+            ground_macro_slot: -1,
+            ground_macro_tile_m: 30.0,
+            ground_macro_blend: 0.0,
             slope_rock_albedo: cfg.slope_layers.rock_albedo_slot,
             slope_rock_normal: cfg.slope_layers.rock_normal_slot,
             slope_dirt_albedo: cfg.slope_layers.dirt_albedo_slot,

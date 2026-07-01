@@ -615,6 +615,17 @@ impl ResidentSceneRenderer {
             .map_err(|e| format!("set_spray_field: {e:?}"))
     }
 
+    /// GROUND MACRO VARIATION LAYER. Forward ONE global aerial-scale albedo (an
+    /// atlas slot) the ground albedo lerps toward with distance — keeps meso-scale
+    /// patchiness resolving at aerial range where the ~1 m detail tile mips to a
+    /// flat average ("textures are just colors"). `slot < 0` or `blend <= 0`
+    /// disables (byte-identical).
+    pub fn set_ground_macro(&mut self, slot: i32, tile_m: f32, blend: f32) -> Result<(), String> {
+        self.renderer
+            .set_ground_macro(slot, tile_m, blend)
+            .map_err(|e| format!("set_ground_macro: {e:?}"))
+    }
+
     /// PER-PIXEL CURVATURE FIELD. Forward a world-space mean-curvature grid (1 f32/
     /// cell, row-major `iz*res_x+ix`; convex ridge > 0, concave hollow < 0) baked
     /// from the heightmap. The megakernel terrain blend samples it BILINEARLY at the
