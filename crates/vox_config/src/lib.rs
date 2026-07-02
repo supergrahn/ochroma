@@ -218,6 +218,15 @@ pub struct ResidentRendererConfig {
     pub emissive_light_scale: f32,
     pub lit_window_glow: f32,
     pub lit_window_fraction: f32,
+    /// Register the DAY analytic NEE lights (sun disk + 3 directional fills)
+    /// on the live path. In the ReSTIR present path the deferred NEE sun lands
+    /// in a buffer that never reaches the film (audited 2026-07-02) — while
+    /// its mere REGISTRATION makes `u_num_lights > 0`, which blocks the
+    /// megakernel's `defer_sun` shadow path: with it on, CAST SUN SHADOWS can
+    /// never engage. `false` (default) skips the day lights → the inline sun
+    /// defers through the per-pixel shadow ray → real terrain/tree shadows.
+    /// Night emissive point lights are unaffected (registered on their own).
+    pub nee_day_lights: bool,
     pub aurora_trace: bool,
     pub dispatch_timing: bool,
     pub film_diag: bool,
@@ -247,6 +256,7 @@ impl Default for ResidentRendererConfig {
             emissive_light_scale: 2000.0,
             lit_window_glow: 8.0,
             lit_window_fraction: 0.6,
+            nee_day_lights: false,
             aurora_trace: false,
             dispatch_timing: false,
             film_diag: false,

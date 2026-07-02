@@ -805,21 +805,36 @@ impl ResidentSceneRenderer {
         // sun_ramp color, so they are physically coupled.
         let e_sun = rig.sun_radiance; // irradiance
         let l_sun = e_sun / sun_solid_angle(); // disk radiance = E_sun / Ω
-        light_data.extend_from_slice(&pack_vulkan_sun_disk_light(
-            sun.to_array(),
-            rig.sun_color,
-            l_sun,
-        ));
-        // Fill COLORS / intensities ride the rig (config-driven via render.ron
-        // `lighting_rig.analytic_fills`). These stay hard-delta directional fills
-        // (angular_radius=0): cheap analytic key fill, NOT physical sun.
-        for (dir, color, intensity) in [
-            (glam::Vec3::Y.to_array(), rig.analytic_sky_fill_color, rig.sky_intensity),
-            (camera_fill.to_array(), rig.analytic_camera_fill_color, rig.camera_fill),
-            (rim_fill.to_array(), rig.analytic_rim_fill_color, rig.rim_fill),
-        ] {
-            light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
-        }
+        // DAY NEE LIGHTS ARE OPT-IN (`resident_renderer.nee_day_lights`,
+        // default OFF): in the ReSTIR present path the deferred NEE sun lands
+        // in a buffer that never reaches the film (audited 2026-07-02 — the
+        // inline Lambert sun in the megakernel is the ONE effective sun), yet
+        // merely REGISTERING these lights makes `u_num_lights > 0`, which
+        // blocks the megakernel's `defer_sun` path — so CAST SUN SHADOWS could
+        // never engage on the live path. With the day lights skipped, the
+        // inline sun rides the per-pixel shadow ray (u_sun_shadow, host
+        // default on) → real terrain/tree cast shadows + the shadow-depth
+        // ambient couple. Night emissive point lights register regardless.
+        let day_light_count = if vox_config::config().resident_renderer.nee_day_lights {
+            light_data.extend_from_slice(&pack_vulkan_sun_disk_light(
+                sun.to_array(),
+                rig.sun_color,
+                l_sun,
+            ));
+            // Fill COLORS / intensities ride the rig (config-driven via render.ron
+            // `lighting_rig.analytic_fills`). These stay hard-delta directional fills
+            // (angular_radius=0): cheap analytic key fill, NOT physical sun.
+            for (dir, color, intensity) in [
+                (glam::Vec3::Y.to_array(), rig.analytic_sky_fill_color, rig.sky_intensity),
+                (camera_fill.to_array(), rig.analytic_camera_fill_color, rig.camera_fill),
+                (rim_fill.to_array(), rig.analytic_rim_fill_color, rig.rim_fill),
+            ] {
+                light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
+            }
+            4
+        } else {
+            0
+        };
         // MegaLights night path: append a POINT light for every emissive instance
         // (lit windows / street lights). At night the sun is below the horizon so
         // the 4 directional lights are ~black; these emitters carry the frame. The
@@ -839,7 +854,7 @@ impl ResidentSceneRenderer {
             (Vec::new(), 0)
         };
         light_data.extend_from_slice(&emissive_lights);
-        let light_count = 4 + emissive_count;
+        let light_count = day_light_count + emissive_count;
         if emissive_count > 0 {
             eprintln!(
                 "[night-lights] derived {emissive_count} emissive point lights \
