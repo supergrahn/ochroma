@@ -929,10 +929,15 @@ impl ResidentSceneRenderer {
             rig.moon_phase,
             rig.moon_bright_limb_angle,
         );
-        if rig.atmosphere_enabled {
-            self.renderer
-                .set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
-        }
+        // ALWAYS forward the flag — both ways. This used to be
+        // `if rig.atmosphere_enabled { set_atmosphere(true, ..) }` with NO else,
+        // so a game rig with atmosphere_enabled:false never reached the GPU and
+        // spectra's AtmosphereParams DEFAULT (enabled: true) stood: the kernel
+        // kept taking the atmospheric_sky dome-ambient branch while the game
+        // believed it had selected the config gradient sky (u_sky_horizon/zenith).
+        // An inverted gate = ambient light the config can't explain or tune.
+        self.renderer
+            .set_atmosphere(rig.atmosphere_enabled, rig.atmosphere_mie, rig.atmosphere_turbidity);
         // Height fog (aerial depth + crepuscular cue). Driven every resident
         // update; fog_enabled=false (legacy/Default rig) → byte-identical no-fog.
         self.renderer.set_fog(
