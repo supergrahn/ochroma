@@ -272,12 +272,12 @@ impl Default for TerrainRuleConfig {
             dirt_cavity: 0.40,
             dirt_cavity_amp: 0.12,
             dirt_convex_suppress: 0.20,
-            rock_prior: -0.85,
-            rock_ramp_gain: 3.10,
-            rock_slope_lo: 0.20,
-            rock_slope_hi: 0.70,
+            rock_prior: -0.10,   // was -0.85 (rock too rare) → rock actually wins on the massif slopes
+            rock_ramp_gain: 3.60,
+            rock_slope_lo: 0.08,  // rock starts on gentle slopes (the massif dome reads moderate) (was 0.20)
+            rock_slope_hi: 0.45,  // full rock by mid-steepness (was 0.70)
             rock_convex: 0.90,
-            rock_alt: 0.70,
+            rock_alt: 0.45,      // altitude gate lower so the mid/upper massif authors rock (was 0.70)
             snow_prior: -3.50,
             snow_alt_gain: 5.50,
             snow_hold_gain: 1.20,
