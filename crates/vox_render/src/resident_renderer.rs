@@ -224,6 +224,23 @@ impl ResidentSceneRenderer {
         config.apply_settings(&settings);
         config.max_bounces = max_bounces;
 
+        // NRC world-space radiance cache (online-trained; the inline shade hook
+        // short-circuits deep bounces once cells warm up). Env-gated A/B toggle —
+        // SPECTRA_NRC=1 forces ON (compiles the FEATURE_NRC shade variant + binds the
+        // cache/stash + dispatches nrc_harvest), =0 forces OFF (byte-identical). Default
+        // = whatever the tier/config set (currently false). SPECTRA_NRC_BOUNCE sets the
+        // query/short-circuit depth (paths shorter than this stay full unbiased PT).
+        if let Ok(v) = std::env::var("SPECTRA_NRC") {
+            let t = v.trim();
+            config.use_nrc = t == "1" || t.eq_ignore_ascii_case("true");
+        }
+        if let Some(b) = std::env::var("SPECTRA_NRC_BOUNCE")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+        {
+            config.nrc_query_bounce = b;
+        }
+
         // GLASS BOUNCE FLOOR (SOTA glass fix, now TIER-AWARE — the #1 perf knob).
         // The still path (`splat_backend` `pathtrace_mesh_lit_weathered_to_rgba`,
         // ~line 934) bumps `max_bounces` to 8 whenever the scene contains a

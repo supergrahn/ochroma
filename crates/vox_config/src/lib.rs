@@ -472,12 +472,22 @@ impl OchromaConfig {
             None => resolve_default_path(),
         };
         let Some(p) = resolved else {
+            // No file resolved ANYWHERE (no $OCHROMA_CONFIG, no config/ochroma.ron up
+            // from cwd, none beside the exe). The live game falling through to here is
+            // the silent config-first bug: ~372 engine settings stay at compiled
+            // defaults. Warn loudly so a missing-config ship/run is caught, not hidden.
+            eprintln!(
+                "[vox_config] WARNING: no ochroma.ron found ($OCHROMA_CONFIG unset, none \
+                 in config/ up from cwd, none beside the exe) — using COMPILED DEFAULTS. \
+                 Engine config (sky/lighting/glass/perf) will NOT reflect ochroma.ron."
+            );
             return OchromaConfig::default();
         };
         match std::fs::read_to_string(&p) {
             Ok(text) => match ron::from_str::<OchromaConfig>(&text) {
                 Ok(mut cfg) => {
                     cfg.normalize();
+                    eprintln!("[vox_config] loaded engine config from {}", p.display());
                     cfg
                 }
                 Err(e) => {
@@ -523,16 +533,46 @@ fn resolve_default_path() -> Option<PathBuf> {
             return Some(PathBuf::from(env_path));
         }
     }
-    let mut dir = std::env::current_dir().ok()?;
-    loop {
-        let candidate = dir.join("config").join("ochroma.ron");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        if !dir.pop() {
-            return None;
+    // 1) Walk up from the current directory (covers running from the repo root or
+    //    any crate subdir during dev/test).
+    if let Ok(start) = std::env::current_dir() {
+        let mut dir = start;
+        loop {
+            let candidate = dir.join("config").join("ochroma.ron");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            if !dir.pop() {
+                break;
+            }
         }
     }
+    // 2) SHIP path: the game runs from `urban_horizon/` (no `config/ochroma.ron` in
+    //    its tree) so the cwd walk above fails and the live game silently fell back
+    //    to the compiled defaults — i.e. NONE of ochroma.ron's ~372 settings applied
+    //    (the "config doesn't override everything" bug). Also search relative to the
+    //    EXECUTABLE: `<exe_dir>/ochroma.ron` and `<exe_dir>/config/ochroma.ron`,
+    //    walking up from the exe dir. The Windows packager copies ochroma.ron next to
+    //    play.exe so a shipped build is config-first without any env var.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(start) = exe.parent() {
+            let mut dir = start.to_path_buf();
+            loop {
+                let beside = dir.join("ochroma.ron");
+                if beside.is_file() {
+                    return Some(beside);
+                }
+                let in_cfg = dir.join("config").join("ochroma.ron");
+                if in_cfg.is_file() {
+                    return Some(in_cfg);
+                }
+                if !dir.pop() {
+                    break;
+                }
+            }
+        }
+    }
+    None
 }
 
 static GLOBAL: OnceLock<OchromaConfig> = OnceLock::new();
