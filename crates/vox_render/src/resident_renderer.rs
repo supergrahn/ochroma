@@ -903,33 +903,33 @@ impl ResidentSceneRenderer {
                 rig.atmosphere_enabled, rig.atmosphere_mie, rig.atmosphere_turbidity, rig.sun_dir, e_sun, rig.fog_enabled, rig.fog_density, rig.fog_anisotropy
             );
         }
+        // THE SUN LIGHTS SURFACES REGARDLESS OF THE ATMOSPHERE FLAG (2026-07-02).
+        // set_sun used to live INSIDE `if rig.atmosphere_enabled` — so disabling the
+        // Bruneton haze in render.ron (atmosphere_enabled: false, done to kill the
+        // aerial-perspective washout) silently left u_sun_radiance at 0 and the
+        // megakernel's inline Lambert sun term dead: EVERY opaque surface was lit
+        // by the blue sky-dome ambient only. Measured: SUN scale 5.0 vs 0.1 =
+        // bit-identical terrain pixels; a constant warm-tan albedo rendered pale
+        // sage (the "green felt" wash). u_sun_radiance drives SURFACE lighting;
+        // the atmosphere flag gates only the haze/scatter integrals below.
+        //
+        // (P1 residual note kept: u_sun_radiance is OVERLOADED — it also drives
+        // the visible disk display + aerial-perspective/fog in-scatter, tuned to
+        // the ~8-30 display scale. Splitting the disk-display scale out is a P4
+        // task; e_sun here matches what those paths were tuned against.)
+        self.renderer.set_sun(sun.to_array(), e_sun);
+        // MOON DISK — drive the phase-lit silver moon from the rig's Meeus
+        // ephemeris (`moon_*`, populated each frame in the game's light_rig).
+        // `moon_radiance` defaults to 0 (day / no-moon) → the GPU disk path is
+        // skipped. Like the sun, the moon is a LIGHT, not an atmosphere effect.
+        self.renderer.set_moon(
+            rig.moon_dir,
+            rig.moon_color,
+            rig.moon_radiance,
+            rig.moon_phase,
+            rig.moon_bright_limb_angle,
+        );
         if rig.atmosphere_enabled {
-            // P1 residual: `u_sun_radiance` is OVERLOADED in the megakernel — it
-            // drives the visible disk display AND the aerial-perspective +
-            // fog in-scatter integrals (atmosphere.slang / megakernel 2310-2364),
-            // which are tuned to the ~8-30 display scale and belong to the SKY
-            // pass (P4). Feeding the raw physical L_sun (≈E_sun/Ω, ~1e5) here
-            // would blow those up. So the visible disk stays on its existing
-            // display-radiance tuning (E_sun, the disk's `*1.5` boost in
-            // atmosphere.slang reads as a bright clipping core); the SURFACE
-            // lighting is now driven physically by the NEE disk light[0] from the
-            // SAME E_sun. Truly emitting L_sun from the disk is a P4 task (split
-            // the disk-display scale out of the shared u_sun_radiance).
-            self.renderer.set_sun(sun.to_array(), e_sun);
-            // MOON DISK — drive the phase-lit silver moon from the rig's Meeus
-            // ephemeris (`moon_*`, populated each frame in the game's light_rig).
-            // `moon_radiance` defaults to 0 (day / no-moon) → the GPU disk path is
-            // skipped, so this is byte-identical to the prior render until a real
-            // moon is up. The disk is SEPARATE from the sun slot: at night the sun
-            // is below the horizon (no sun disk in view) and this draws the moon at
-            // its own `moon_dir`, crescent oriented by `moon_bright_limb_angle`.
-            self.renderer.set_moon(
-                rig.moon_dir,
-                rig.moon_color,
-                rig.moon_radiance,
-                rig.moon_phase,
-                rig.moon_bright_limb_angle,
-            );
             self.renderer
                 .set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
         }
