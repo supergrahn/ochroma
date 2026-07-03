@@ -31,6 +31,225 @@ const TIERS: [SkillTier; 4] = [
     SkillTier::Expert,
 ];
 
+// ───────────────────────────── The two-axis matrix ─────────────────────────────
+//
+// Population state is a two-axis matrix — `cohort[district][age_band][occupation]
+// [edu_tier]` — separating BIOLOGY (age band: fertility, mortality curve, care-need
+// type, school-stage) from ALLOCATION (occupation: labor, school, care given/
+// received). Design §5.3. The band boundaries never move; policies move the
+// *occupation* eligibility windows across them.
+//
+// This slice ships the matrix SUBSTRATE (the type, the legal-pair mask, the 47-row/
+// district schema, and the conserved column accessors). The vital + occupation
+// FLOWS are Tasks 2+; until they land, the existing four-band [`CohortRow::age_band`]
+// lifecycle still drives the conserved `head_count`, and each row's matrix triple
+// (`band`, `occ`, `edu_tier`) is derived from `(is_worker, age_band, district, tier)`
+// by the pure adapter [`matrix_of`] — so the neutral-baseline replay hash (which
+// folds only `id` + `head_count`) stays bit-for-bit identical.
+
+/// Age band — BIOLOGY. Seven bands, each earning its lower boundary by a distinct
+/// mechanic (care-need type, school-stage, labor/fertility eligibility, mortality
+/// curve). Boundaries are fixed; only occupation windows move across them
+/// (design §5.3.1). Discriminants are stable (they key id-ordered folds).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum AgeBand {
+    /// 0–1 — institutional care ineligible; the parental-leave window.
+    Newborn = 0,
+    /// 1–5 — kindergarten-eligible (the scarce slot, the care gate's theater).
+    Toddler = 1,
+    /// 6–12 — elementary stage; an unseated Child still binds a Caregiver.
+    Child = 2,
+    /// 13–18 — secondary stage; NEVER binds a Caregiver (self-supervising).
+    Teenager = 3,
+    /// 19–25 — University window; peak migration propensity; fertility onset.
+    YoungAdult = 4,
+    /// 26–66 — prime labor; fertility confined to its 26–45 slice; the R window.
+    Adult = 5,
+    /// 67+ — mortality-curve step; eldercare onset; the Care Corps pool.
+    Senior = 6,
+}
+
+/// The seven age bands in canonical (ascending) order.
+pub const AGE_BANDS: [AgeBand; 7] = [
+    AgeBand::Newborn,
+    AgeBand::Toddler,
+    AgeBand::Child,
+    AgeBand::Teenager,
+    AgeBand::YoungAdult,
+    AgeBand::Adult,
+    AgeBand::Senior,
+];
+
+/// Occupation — ALLOCATION. Nine columns, each with an age-eligibility window, a
+/// capacity gate, and a ledger (design §5.3.2). Unemployment is a first-class
+/// column (a row-sum, not "workers minus jobs"); the care gate is the Caregiver
+/// column. Discriminants are stable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum Occupation {
+    /// The default row when every other gate refuses; consumes one household
+    /// Caregiver; produces the care demand every panel reads.
+    HomeCare = 0,
+    /// Toddler slot; releasing a Caregiver back to labor supply.
+    Kindergarten = 1,
+    /// Child primary stage; doubles as childcare.
+    Elementary = 2,
+    /// Teenager secondary stage; coverage EMA → Skilled at age-up.
+    Secondary = 3,
+    /// YoungAdult tertiary; Skilled at entry → Educated at graduation.
+    University = 4,
+    /// In the labor force and placed in a job.
+    Employed = 5,
+    /// In the labor force, unplaced — the buffer row; labor *supply*.
+    Unemployed = 6,
+    /// Bound by a household HomeCare dependent; withdrawn from labor supply.
+    Caregiver = 7,
+    /// Past the retirement-age policy R (default 67); the Senior age-up default.
+    Retired = 8,
+}
+
+/// The nine occupations in canonical (ascending) order.
+pub const OCCUPATIONS: [Occupation; 9] = [
+    Occupation::HomeCare,
+    Occupation::Kindergarten,
+    Occupation::Elementary,
+    Occupation::Secondary,
+    Occupation::University,
+    Occupation::Employed,
+    Occupation::Unemployed,
+    Occupation::Caregiver,
+    Occupation::Retired,
+];
+
+/// The exactly **17** legal `(AgeBand, Occupation)` pairs (design §5.3.3). Every
+/// pair NOT in this table is structurally illegal — *unallocated*, never
+/// constructed, never hashed, never able to drift (Newborn×Employed cannot be
+/// written). Listed band-ascending then occupation-ascending so any fold over the
+/// mask is deterministic. This is the whole design of the matrix: state scales with
+/// `districts × legal pairs`, never with population.
+pub const LEGAL_PAIRS: [(AgeBand, Occupation); 17] = [
+    (AgeBand::Newborn, Occupation::HomeCare),
+    (AgeBand::Toddler, Occupation::HomeCare),
+    (AgeBand::Toddler, Occupation::Kindergarten),
+    (AgeBand::Child, Occupation::HomeCare),
+    (AgeBand::Child, Occupation::Elementary),
+    (AgeBand::Teenager, Occupation::Secondary),
+    (AgeBand::YoungAdult, Occupation::University),
+    (AgeBand::YoungAdult, Occupation::Employed),
+    (AgeBand::YoungAdult, Occupation::Unemployed),
+    (AgeBand::YoungAdult, Occupation::Caregiver),
+    (AgeBand::Adult, Occupation::Employed),
+    (AgeBand::Adult, Occupation::Unemployed),
+    (AgeBand::Adult, Occupation::Caregiver),
+    (AgeBand::Adult, Occupation::Retired),
+    (AgeBand::Senior, Occupation::Retired),
+    (AgeBand::Senior, Occupation::Employed),
+    (AgeBand::Senior, Occupation::HomeCare),
+];
+
+/// Is `(band, occ)` a structurally legal pair? A membership test against
+/// [`LEGAL_PAIRS`] — the illegal-pair guard every constructor/flow honors.
+pub fn is_legal_pair(band: AgeBand, occ: Occupation) -> bool {
+    LEGAL_PAIRS.iter().any(|&(b, o)| b == band && o == occ)
+}
+
+/// Does `(band, occ)` expand across all four [`SkillTier`]s? `edu_tier` is assigned
+/// at the Teenager→YoungAdult age-up and is undefined before it; `University` pins
+/// Skilled at entry. So exactly the **10 adult-labor pairs** expand ×4 — YoungAdult
+/// {Employed, Unemployed, Caregiver}, Adult {Employed, Unemployed, Caregiver,
+/// Retired}, Senior {Retired, Employed, HomeCare} — and the other 7 legal pairs
+/// carry a single (undefined/pinned) tier: `10×4 + 7 = 47` rows per district
+/// (design §5.3.3).
+pub fn is_tier_expanded(band: AgeBand, occ: Occupation) -> bool {
+    matches!(
+        (band, occ),
+        (AgeBand::YoungAdult, Occupation::Employed)
+            | (AgeBand::YoungAdult, Occupation::Unemployed)
+            | (AgeBand::YoungAdult, Occupation::Caregiver)
+            | (AgeBand::Adult, Occupation::Employed)
+            | (AgeBand::Adult, Occupation::Unemployed)
+            | (AgeBand::Adult, Occupation::Caregiver)
+            | (AgeBand::Adult, Occupation::Retired)
+            | (AgeBand::Senior, Occupation::Retired)
+            | (AgeBand::Senior, Occupation::Employed)
+            | (AgeBand::Senior, Occupation::HomeCare)
+    )
+}
+
+/// The number of matrix rows a single district's schema carries: `10×4 + 7 = 47`.
+/// State per district is exactly this, independent of population (design §5.3.3).
+pub const ROWS_PER_DISTRICT: usize = 47;
+
+/// The canonical 47-row/district matrix schema: every legal `(band, occ, edu_tier)`
+/// triple, in a deterministic order (legal-pair order, then tier-ascending for the
+/// tier-expanded pairs; `University` pinned Skilled; the other single-tier pairs
+/// carry `Unskilled` as the "undefined" placeholder). This is the MATRIX SCHEMA the
+/// vital/occupation flows (Tasks 2+) allocate against; the seed's conserved mass is
+/// classified onto these triples by [`matrix_of`]. Pure — no state, no allocation
+/// choice — so two builds are bit-identical.
+pub fn legal_rows() -> Vec<(AgeBand, Occupation, SkillTier)> {
+    let mut out: Vec<(AgeBand, Occupation, SkillTier)> = Vec::with_capacity(ROWS_PER_DISTRICT);
+    for &(band, occ) in LEGAL_PAIRS.iter() {
+        if is_tier_expanded(band, occ) {
+            for &t in TIERS.iter() {
+                out.push((band, occ, t));
+            }
+        } else if (band, occ) == (AgeBand::YoungAdult, Occupation::University) {
+            // University pins Skilled at entry.
+            out.push((band, occ, SkillTier::Skilled));
+        } else {
+            // Pre-YoungAdult pairs: tier undefined until the age-up split — carry the
+            // Unskilled placeholder (never read as a real tier before assignment).
+            out.push((band, occ, SkillTier::Unskilled));
+        }
+    }
+    out
+}
+
+/// The pure ADAPTER classifying an existing four-band [`CohortRow`] onto its matrix
+/// triple `(band, occ, edu_tier)` from `(is_worker, age_band, district, tier)`. Used
+/// only while the four-band `age_band` lifecycle still drives the conserved
+/// `head_count` (this slice's remaining seam — the real conserved flows replace it
+/// in Tasks 2+). Every output is a LEGAL pair (asserted below). Deterministic: a
+/// pure function of the row's own fields, no state, no order.
+fn matrix_of(
+    is_worker: bool,
+    age_band: u8,
+    district: DistrictId,
+    tier: SkillTier,
+) -> (AgeBand, Occupation, SkillTier) {
+    let triple = if is_worker {
+        // Working-age labor force → prime-Adult Employed; tier is the real edu tier.
+        (AgeBand::Adult, Occupation::Employed, tier)
+    } else {
+        // Non-worker mass: the legacy seed spreads it across the three non-working
+        // bands via `age_band ∈ {0=Child<6, 1=Student<18, 3=Retired}`. Map each onto
+        // the honest matrix pairs. The "student/prime-age non-worker" bucket is split
+        // deterministically (district+tier parity) between self-supervising Teenagers
+        // (Secondary) and prime adults BOUND as Caregivers — so the care gate's
+        // Caregiver column carries real mass from year 0 (design §5.3.5).
+        match age_band {
+            0 => (AgeBand::Toddler, Occupation::HomeCare, SkillTier::Unskilled),
+            1 => {
+                if (district as u64 + tier as u64) % 2 == 1 {
+                    (AgeBand::Adult, Occupation::Caregiver, tier)
+                } else {
+                    (AgeBand::Teenager, Occupation::Secondary, SkillTier::Unskilled)
+                }
+            }
+            _ => (AgeBand::Senior, Occupation::Retired, tier),
+        }
+    };
+    debug_assert!(
+        is_legal_pair(triple.0, triple.1),
+        "matrix_of produced an ILLEGAL pair ({:?}, {:?})",
+        triple.0,
+        triple.1
+    );
+    triple
+}
+
 /// One conserved block of statistically-identical cims. `head_count` is a real
 /// number so a *fraction* of a cohort can be hydrated without losing population;
 /// the integer census carries the rounding remainder so the total stays exact.
@@ -59,6 +278,37 @@ pub struct CohortRow {
     /// band 2 (Worker) to band 3 (Retired), flipping `is_worker` off for the
     /// retired mass so it leaves `district_worker_mass`/`cohort_supply_by_tier`.
     pub age_band: u8,
+    /// Matrix axis 1 — BIOLOGY. The [`AgeBand`] this cohort's mass occupies. Derived
+    /// from `age_band` by [`matrix_of`] while the four-band lifecycle drives mass
+    /// (this slice's seam); the target storage for Tasks 2+' conserved band flows.
+    pub band: AgeBand,
+    /// Matrix axis 2 — ALLOCATION. The [`Occupation`] this cohort's mass holds. The
+    /// invariant `is_worker == (occ == Occupation::Employed)` always holds.
+    pub occ: Occupation,
+    /// Matrix axis 3 — the education tier of this cohort. Meaningful only for the 10
+    /// tier-expanded adult-labor pairs (§5.3.3); the placeholder `Unskilled` for the
+    /// pre-YoungAdult single-tier pairs (tier undefined before the age-up split).
+    /// Mirrors [`CohortRow::tier`] for labor rows so `cohort_supply_by_tier` is
+    /// unchanged.
+    pub edu_tier: SkillTier,
+}
+
+impl CohortRow {
+    /// Re-derive the matrix triple (`band`, `occ`, `edu_tier`) from this row's own
+    /// `(is_worker, age_band, district, tier)` via the pure adapter [`matrix_of`].
+    /// Call after any mutation of `age_band`/`is_worker` so the matrix overlay never
+    /// drifts from the four-band lifecycle that still drives the conserved mass.
+    fn reclassify(&mut self) {
+        let (band, occ, edu_tier) = matrix_of(self.is_worker, self.age_band, self.district, self.tier);
+        self.band = band;
+        self.occ = occ;
+        self.edu_tier = edu_tier;
+        debug_assert_eq!(
+            self.is_worker,
+            self.occ == Occupation::Employed,
+            "is_worker must equal (occ == Employed)"
+        );
+    }
 }
 
 /// Age band for retired cims (≥ retirement age 65).
@@ -222,6 +472,8 @@ impl CohortTable {
                     1 => 1,            // Student
                     _ => BAND_RETIRED, // Retired
                 };
+                // Keep the matrix overlay in sync with the just-set legacy band.
+                row.reclassify();
                 self.rows.push(row);
                 next_id += 1;
                 placed += head;
@@ -327,6 +579,8 @@ impl CohortTable {
             } else {
                 let mut row = Self::make_row(next_id, moved as f32, district, tier, false);
                 row.age_band = BAND_RETIRED;
+                // Retired mass lands on (Senior, Retired) in the matrix overlay.
+                row.reclassify();
                 next_id += 1;
                 self.rows.push(row);
             }
@@ -402,6 +656,9 @@ impl CohortTable {
         // Child/Student/Retired mix. `is_worker == (age_band == BAND_WORKER)` is the
         // invariant the lifecycle maintains.
         let age_band = if is_worker { BAND_WORKER } else { 0 };
+        // Classify onto the matrix from the row's own fields (kept in sync by
+        // `reclassify` wherever `age_band` is later overridden).
+        let (band, occ, edu_tier) = matrix_of(is_worker, age_band, district, tier);
         CohortRow {
             id,
             head_count,
@@ -412,6 +669,9 @@ impl CohortTable {
             need_var,
             archetype: tier as u8,
             age_band,
+            band,
+            occ,
+            edu_tier,
         }
     }
 
@@ -555,6 +815,76 @@ impl CohortTable {
         }
         acc.into_iter().map(|x| x.round() as u32).collect()
     }
+
+    // ───────────────────────── Matrix column accessors ─────────────────────────
+    //
+    // Every demographic question is a row-read. Each accessor folds the id-sorted
+    // `rows` in ascending-id order and returns a conservation-disciplined integer
+    // (rounded head_count), so two replays produce bit-identical aggregates.
+
+    /// Σ head_count of every cohort holding [`Occupation`] `occ` — a matrix COLUMN
+    /// read. Folds `rows` in id order; rounded integer (conservation-disciplined).
+    pub fn occupation_mass(&self, occ: Occupation) -> u64 {
+        let mut acc = 0.0f64;
+        for r in &self.rows {
+            if r.occ == occ {
+                acc += r.head_count.max(0.0) as f64;
+            }
+        }
+        acc.round() as u64
+    }
+
+    /// Σ head_count of every cohort in [`AgeBand`] `band` — a matrix ROW read.
+    /// Folds `rows` in id order; rounded integer.
+    pub fn band_mass(&self, band: AgeBand) -> u64 {
+        let mut acc = 0.0f64;
+        for r in &self.rows {
+            if r.band == band {
+                acc += r.head_count.max(0.0) as f64;
+            }
+        }
+        acc.round() as u64
+    }
+
+    /// Σ head_count bound in the Caregiver occupation — the care gate's mass, now a
+    /// readable column instead of a per-worker side effect (design §5.3.5). The
+    /// labor supply withdrawn to home care.
+    pub fn caregivers_bound(&self) -> u64 {
+        self.occupation_mass(Occupation::Caregiver)
+    }
+
+    /// Σ head_count in the Unemployed buffer column — unemployment as a first-class
+    /// row-sum, not "workers minus jobs" (design §5.6). (Populated by the labor
+    /// flows in Task 6; a real column here from day one.)
+    pub fn unemployed(&self) -> u64 {
+        self.occupation_mass(Occupation::Unemployed)
+    }
+
+    /// Σ head_count in the Retired occupation column (Adult×Retired when policy
+    /// R < 67, plus Senior×Retired). The occupation read; distinct from the
+    /// age-band [`Self::retired_count`] (which folds the legacy `age_band`).
+    pub fn retired(&self) -> u64 {
+        self.occupation_mass(Occupation::Retired)
+    }
+
+    /// Σ head_count over ALL cohorts (rounded integer) — the matrix conservation
+    /// invariant: `row_sum() == pop` at seed and after every conserved flow. Folds
+    /// `rows` in id order (independent of the `pop - hydrated` bookkeeping in
+    /// [`Self::head_count_int`], so a mismatch would surface a real drift).
+    pub fn row_sum(&self) -> u64 {
+        let mut acc = 0.0f64;
+        for r in &self.rows {
+            acc += r.head_count.max(0.0) as f64;
+        }
+        acc.round() as u64
+    }
+
+    /// The number of structurally legal `(AgeBand, Occupation)` pairs — exactly 17
+    /// ([`LEGAL_PAIRS`]). A schema fact (illegal pairs are unallocated, never
+    /// constructed), not a count of populated rows.
+    pub fn legal_pair_count(&self) -> usize {
+        LEGAL_PAIRS.len()
+    }
 }
 
 impl Default for CohortTable {
@@ -632,5 +962,148 @@ mod lifecycle_tests {
         t.seed(100_000);
         assert_eq!(t.worker_count(), workers, "reseed wiped the aged workforce");
         assert_eq!(t.retired_count(), retired, "reseed wiped the retired mass");
+    }
+}
+
+#[cfg(test)]
+mod matrix_tests {
+    //! The two-axis (age × occupation) matrix SUBSTRATE gate. Proves the schema (17
+    //! legal pairs, 47 rows/district), the conservation invariant (`row_sum == pop`),
+    //! the column/row partitions, and that the matrix overlay is derived id-ordered
+    //! and deterministically — without disturbing the four-band lifecycle that still
+    //! drives the conserved mass (this slice's seam).
+
+    use super::*;
+
+    /// KEYSTONE acceptance (plan Task 1, Step 1). A seeded city is conserved on the
+    /// matrix, carries exactly the 17 legal pairs, binds real Caregiver mass, and
+    /// still honours the historical Educated-worker economy contract (2100 @ 100k).
+    #[test]
+    fn matrix_seed_is_conserved_and_legal() {
+        let mut m = CohortTable::new();
+        m.seed(100_000);
+        let row_sum = m.row_sum();
+        let legal_pairs = m.legal_pair_count();
+        let caregivers = m.occupation_mass(Occupation::Caregiver);
+        assert_eq!(row_sum, 100_000, "matrix must conserve pop");
+        assert_eq!(legal_pairs, 17, "exactly 17 legal (band,occ) pairs");
+        assert!(caregivers > 0, "a seeded city binds some caregivers, got {caregivers}");
+        // Educated-worker economy contract preserved (the economy reads this back).
+        assert_eq!(
+            m.cohort_supply_by_tier()[SkillTier::Educated as usize].round() as u64,
+            2100
+        );
+        // The acceptance's exact human-visible line.
+        println!(
+            "pop={} row_sum={} legal_pairs={} caregivers={}",
+            m.pop(),
+            row_sum,
+            legal_pairs,
+            caregivers
+        );
+    }
+
+    /// The matrix SCHEMA arithmetic: `10×4 + 7 = 47` rows/district, spanning exactly
+    /// the 17 legal pairs, and no illegal pair is ever representable.
+    #[test]
+    fn matrix_schema_is_47_rows_and_17_pairs() {
+        let rows = legal_rows();
+        assert_eq!(rows.len(), ROWS_PER_DISTRICT, "47 rows per district");
+        assert_eq!(rows.len(), 47);
+
+        // Distinct (band, occ) pairs among the schema rows == 17.
+        let mut pairs: Vec<(AgeBand, Occupation)> = rows.iter().map(|&(b, o, _)| (b, o)).collect();
+        pairs.sort();
+        pairs.dedup();
+        assert_eq!(pairs.len(), 17, "47 rows collapse to 17 legal pairs");
+        assert_eq!(pairs.len(), LEGAL_PAIRS.len());
+
+        // Every schema row is a legal pair; the tier-expanded ones appear 4× and the
+        // 7 single-tier ones once → 10×4 + 7.
+        let expanded = LEGAL_PAIRS.iter().filter(|&&(b, o)| is_tier_expanded(b, o)).count();
+        let single = LEGAL_PAIRS.len() - expanded;
+        assert_eq!(expanded, 10, "exactly 10 tier-expanded adult-labor pairs");
+        assert_eq!(single, 7);
+        assert_eq!(expanded * 4 + single, 47);
+        for &(b, o, _) in &rows {
+            assert!(is_legal_pair(b, o), "schema row ({b:?},{o:?}) must be legal");
+        }
+
+        // A structurally illegal pair is absent from the mask (Newborn×Employed is a
+        // "compile error, not a bug report").
+        assert!(!is_legal_pair(AgeBand::Newborn, Occupation::Employed));
+        assert!(!is_legal_pair(AgeBand::Teenager, Occupation::Caregiver));
+        assert!(!is_legal_pair(AgeBand::Toddler, Occupation::Employed));
+    }
+
+    /// The matrix partitions the population two ways: Σ over occupation columns and
+    /// Σ over age-band rows both equal `pop`, and every seeded row sits on a legal
+    /// pair. Conservation holds through an `advance_year` too (the lifecycle moves
+    /// mass Employed→Retired inside the matrix without leaking).
+    #[test]
+    fn matrix_columns_and_rows_partition_pop() {
+        let mut m = CohortTable::new();
+        m.seed(100_000);
+
+        let by_occ: u64 = OCCUPATIONS.iter().map(|&o| m.occupation_mass(o)).sum();
+        let by_band: u64 = AGE_BANDS.iter().map(|&b| m.band_mass(b)).sum();
+        assert_eq!(by_occ, 100_000, "occupation columns must partition pop");
+        assert_eq!(by_band, 100_000, "age bands must partition pop");
+        assert_eq!(m.row_sum(), 100_000);
+
+        // Every seeded row is a legal pair (illegal pairs are never constructed).
+        for r in m.rows() {
+            assert!(
+                is_legal_pair(r.band, r.occ),
+                "seeded row {} on ILLEGAL pair ({:?},{:?})",
+                r.id,
+                r.band,
+                r.occ
+            );
+        }
+
+        // Invariant `is_worker == (occ == Employed)` → the labor column IS the
+        // workforce; the historical worker accessor is unchanged.
+        assert_eq!(
+            m.occupation_mass(Occupation::Employed),
+            m.worker_count(),
+            "Employed column must equal the legacy worker_count"
+        );
+
+        // Conservation survives a civic year (Employed→Retired transfer stays inside
+        // the matrix; nothing leaks).
+        m.advance_year();
+        assert_eq!(m.row_sum(), 100_000, "advance_year must conserve on the matrix");
+        let by_occ_after: u64 = OCCUPATIONS.iter().map(|&o| m.occupation_mass(o)).sum();
+        assert_eq!(by_occ_after, 100_000, "columns still partition after a year");
+    }
+
+    /// The matrix overlay is a PURE function of the seed → two independent seeds
+    /// produce bit-identical column/row masses (no HashMap/RNG/wall-clock), and a
+    /// reseed of the same `(pop, years_aged)` reproduces them exactly.
+    #[test]
+    fn matrix_overlay_is_deterministic_and_reseed_stable() {
+        let mut a = CohortTable::new();
+        let mut b = CohortTable::new();
+        a.seed(250_000);
+        b.seed(250_000);
+        for &o in OCCUPATIONS.iter() {
+            assert_eq!(a.occupation_mass(o), b.occupation_mass(o), "occ {o:?} diverged");
+        }
+        for &band in AGE_BANDS.iter() {
+            assert_eq!(a.band_mass(band), b.band_mass(band), "band {band:?} diverged");
+        }
+
+        // Age two years, then reseed the same pop: the overlay re-derives identically
+        // (the reconstruction contract — pure function of (pop, years_aged)).
+        a.advance_year();
+        a.advance_year();
+        let care = a.caregivers_bound();
+        let ret = a.retired();
+        let emp = a.occupation_mass(Occupation::Employed);
+        a.seed(250_000); // reseed replays years_aged internally
+        assert_eq!(a.caregivers_bound(), care, "reseed changed Caregiver column");
+        assert_eq!(a.retired(), ret, "reseed changed Retired column");
+        assert_eq!(a.occupation_mass(Occupation::Employed), emp, "reseed changed Employed column");
     }
 }
