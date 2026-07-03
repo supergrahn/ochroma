@@ -274,10 +274,19 @@ impl Default for TerrainRuleConfig {
             dirt_convex_suppress: 0.20,
             rock_prior: -0.10,   // was -0.85 (rock too rare) → rock actually wins on the massif slopes
             rock_ramp_gain: 3.60,
-            rock_slope_lo: 0.08,  // rock starts on gentle slopes (the massif dome reads moderate) (was 0.20)
-            rock_slope_hi: 0.45,  // full rock by mid-steepness (was 0.70)
+            // Slope window: rock ramps in past the dirt-shoulder band and is full by the
+            // massif-flank steepness (founders flanks read 0.3–0.61). Gentle buildable
+            // hills (<0.18) never rock; summits above the rock line are handled by
+            // AltRock, so the window no longer has to reach down to near-flat slopes.
+            rock_slope_lo: 0.22,
+            rock_slope_hi: 0.50,
             rock_convex: 0.90,
-            rock_alt: 0.45,      // altitude gate lower so the mid/upper massif authors rock (was 0.70)
+            // Bare-summit gain: at full AltRock (above the caller's rock altitude line)
+            // the rock logit (rock_prior + rock_alt = 2.10) must decisively beat
+            // grass_prior 1.10 so a smooth low-slope dome CAP authors rock, with the
+            // crossover blending inside the caller's altitude band. Slope-only rock
+            // leaves a green cap ringed by a rock annulus (map_spray-proven).
+            rock_alt: 2.20,
             snow_prior: -3.50,
             snow_alt_gain: 5.50,
             snow_hold_gain: 1.20,
