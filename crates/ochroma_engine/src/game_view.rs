@@ -120,10 +120,14 @@ impl OrbitView {
     pub fn camera(self) -> ViewCamera {
         let radius = self.radius.max(0.001);
         let cp = self.pitch.cos();
+        // NO SILENT CLAMPING (user law 2026-07-04): the old `.max(0.05)` floor on
+        // sin(pitch) silently re-lofted every low/upward camera pose (witnessed:
+        // a requested eye_y 430 rendered from 575.5 = center.y + r*0.05, to the
+        // decimal). A caller that asks to look up gets to look up.
         let eye = self.center
             + Vec3::new(
                 radius * cp * self.yaw.sin(),
-                radius * self.pitch.sin().max(0.05),
+                radius * self.pitch.sin(),
                 radius * cp * self.yaw.cos(),
             );
 

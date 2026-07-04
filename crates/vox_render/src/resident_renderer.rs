@@ -766,6 +766,74 @@ impl ResidentSceneRenderer {
         scene.camera.width = self.width;
         scene.camera.height = self.height;
 
+        // UPLOAD DIAG (OCHROMA_SCENE_UPLOAD_DIAG=1): the Y-extent of the geometry
+        // ACTUALLY handed to the GPU. Splits the flat-terrain search space in one
+        // run: CPU mesh has the relief (terrain-mesh-diag) — if THIS prints flat,
+        // the game's scene build dropped it; if it prints the relief, the loss is
+        // downstream in the BLAS/CLAS build.
+        if std::env::var("OCHROMA_SCENE_UPLOAD_DIAG").is_ok() {
+            let p = &scene.geometry.positions;
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for c in p.chunks_exact(3) {
+                lo = lo.min(c[1]);
+                hi = hi.max(c[1]);
+            }
+            eprintln!(
+                "[scene-upload-diag] verts={} y_range=[{lo:.1},{hi:.1}] instances={} protos={}",
+                p.len() / 3,
+                scene.geometry.instance_transforms.len() / 16,
+                scene.geometry.proto_ranges.len(),
+            );
+            // Count-vs-content: a declared count SMALLER than the arrays silently
+            // truncates the traced geometry to the first N triangles.
+            eprintln!(
+                "[scene-upload-diag] declared vertex_count={} triangle_count={} vs arrays: positions/3={} indices/3={}",
+                scene.geometry.vertex_count,
+                scene.geometry.triangle_count,
+                p.len() / 3,
+                scene.geometry.indices.len() / 3,
+            );
+            // The TERRAIN proto = the largest by vertex count. Print its range,
+            // its OWN y-extent, and the transform of its first instance (row-major
+            // 4x4; y-scale = m[5], y-translate = m[7]) — a squashed/offset terrain
+            // instance paints the real map's materials with no relief.
+            if let Some((pi, r)) = scene
+                .geometry
+                .proto_ranges
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, r)| r.1)
+            {
+                let (v0, vc, _, _) = *r;
+                let (mut plo, mut phi) = (f32::MAX, f32::MIN);
+                for i in (v0 as usize)..((v0 + vc) as usize) {
+                    let y = p[i * 3 + 1];
+                    plo = plo.min(y);
+                    phi = phi.max(y);
+                }
+                let inst = scene
+                    .geometry
+                    .instance_proto_index
+                    .iter()
+                    .position(|&x| x == pi as u32);
+                let tf: Vec<f32> = inst
+                    .map(|ii| scene.geometry.instance_transforms[ii * 16..ii * 16 + 16].to_vec())
+                    .unwrap_or_default();
+                eprintln!(
+                    "[scene-upload-diag] biggest proto #{pi}: verts={vc} y=[{plo:.1},{phi:.1}] first_inst={inst:?} tf_row_y={:?}",
+                    tf.get(4..8),
+                );
+                // The TLAS culls ray-vs-BLAS tests by the per-proto AABB: a stale
+                // FLAT aabb here makes everything above its ceiling untraceable
+                // while the low ground renders perfectly.
+                eprintln!(
+                    "[scene-upload-diag] proto_aabbs[{pi}]={:?} (of {})",
+                    scene.geometry.proto_aabbs.get(pi),
+                    scene.geometry.proto_aabbs.len(),
+                );
+            }
+        }
+
         // NIGHT LIT WINDOWS: when the sun is below the horizon (night), promote
         // glass (curtain-wall window) materials to EMISSIVE so the city lights up
         // from within. Glass surfaces otherwise read as dark holes at night (no
