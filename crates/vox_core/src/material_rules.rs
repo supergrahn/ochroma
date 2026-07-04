@@ -252,6 +252,56 @@ pub struct TerrainRuleConfig {
     pub snow_prior: f64,
     pub snow_alt_gain: f64,
     pub snow_hold_gain: f64,
+    // ─── wetness/dryness/flow/aspect layers (design §4.5, law 9) ───
+    // These read the Moisture / Flow / Aspect / Cavity / Convex drivers that the
+    // grass/dirt/rock/snow set leaves dormant. Each is an ADDED logit in the SAME
+    // softmax; priors are tuned negative so a layer only wins when its driver is
+    // genuinely present (DriverSample::default() — all zero — still yields GRASS).
+    // LUSH — wet flat/hollow ground → rich moss/lush soil.
+    pub lush_prior: f64,
+    pub lush_moisture: f64,
+    pub lush_moisture_lo: f64,
+    pub lush_moisture_hi: f64,
+    pub lush_cavity: f64,
+    pub lush_steep_suppress: f64,
+    pub lush_convex_suppress: f64,
+    /// Aspect shade gain — added as a NEGATIVE-gain Linear term so shaded (aspect<0)
+    /// ground RAISES lush and sunny (aspect>0) lowers it (moisture holds in shade).
+    pub lush_aspect_shade: f64,
+    // MUD — wet lows / streambanks: strong Flow AND Moisture, flat only.
+    pub mud_prior: f64,
+    pub mud_flow: f64,
+    pub mud_flow_lo: f64,
+    pub mud_flow_hi: f64,
+    pub mud_moisture: f64,
+    pub mud_moisture_lo: f64,
+    pub mud_moisture_hi: f64,
+    pub mud_steep_suppress: f64,
+    // SAND — dry pale ground where moisture is LOW + flat + sunny. The dry response
+    // is a Band peaking at low (non-zero) moisture so it is ZERO at moisture 0
+    // (default ground stays grass) yet opens on genuinely-dry cells.
+    pub sand_prior: f64,
+    pub sand_dry_gain: f64,
+    pub sand_dry_lo1: f64,
+    pub sand_dry_hi1: f64,
+    pub sand_dry_lo2: f64,
+    pub sand_dry_hi2: f64,
+    pub sand_moisture_suppress: f64,
+    pub sand_moisture_suppress_lo: f64,
+    pub sand_moisture_suppress_hi: f64,
+    pub sand_steep_suppress: f64,
+    pub sand_aspect_sun: f64,
+    // DRY — dry ground/dry grass; shares SAND's dry Band shape, own prior/gain/aspect.
+    pub dry_prior: f64,
+    pub dry_dry_gain: f64,
+    pub dry_steep_suppress: f64,
+    pub dry_aspect_sun: f64,
+    // Streambed SILT — gravel/silt in the drainage lines: Flow above a threshold, flat.
+    pub streambed_prior: f64,
+    pub streambed_flow_gain: f64,
+    pub streambed_flow_lo: f64,
+    pub streambed_flow_hi: f64,
+    pub streambed_steep_suppress: f64,
 }
 
 impl Default for TerrainRuleConfig {
@@ -290,6 +340,53 @@ impl Default for TerrainRuleConfig {
             snow_prior: -3.50,
             snow_alt_gain: 5.50,
             snow_hold_gain: 1.20,
+            // ─── wetness/dryness/flow/aspect layers (design §4.5, law 9) ───
+            lush_prior: -1.00,
+            lush_moisture: 3.00,
+            lush_moisture_lo: 0.35,
+            lush_moisture_hi: 0.75,
+            lush_cavity: 0.60,
+            lush_steep_suppress: 2.20,
+            lush_convex_suppress: 0.80,
+            lush_aspect_shade: 0.50,
+            // MUD is a soft-AND of flow AND moisture: neither alone clears the -2.0
+            // prior, so DRY high-flow drainage falls through to SILT (gravel) and only
+            // a WET drainage line authors mud (review major #2 — mud_flow was 4.0, which
+            // let dry flow win and made SILT unreachable).
+            mud_prior: -2.00,
+            mud_flow: 2.00,
+            mud_flow_lo: 0.30,
+            mud_flow_hi: 0.70,
+            mud_moisture: 2.50,
+            mud_moisture_lo: 0.40,
+            mud_moisture_hi: 0.80,
+            mud_steep_suppress: 3.00,
+            // SAND is ARID-ONLY: the dry Band is full only in ~[0.04,0.15] moisture and
+            // closed by 0.30, so a flat cell at typical grass moisture (~0.35) stays
+            // GRASS — SAND no longer eats the green buildable core (review major #1 —
+            // the band used to reach 0.55, tying SAND with GRASS across the core).
+            sand_prior: -1.60,
+            sand_dry_gain: 3.20,
+            sand_dry_lo1: 0.00,
+            sand_dry_hi1: 0.04,
+            sand_dry_lo2: 0.15,
+            sand_dry_hi2: 0.30,
+            sand_moisture_suppress: 2.00,
+            sand_moisture_suppress_lo: 0.50,
+            sand_moisture_suppress_hi: 0.90,
+            sand_steep_suppress: 2.50,
+            sand_aspect_sun: 0.50,
+            dry_prior: -1.80,
+            dry_dry_gain: 2.80,
+            dry_steep_suppress: 2.30,
+            dry_aspect_sun: 0.40,
+            // SILT wins a DRY high-flow drainage line over grass (prior raised from
+            // -2.2 so a gravel bed reads at flow≈0.9): -1.5 + 3.0 = 1.5 > grass 1.10.
+            streambed_prior: -1.50,
+            streambed_flow_gain: 3.00,
+            streambed_flow_lo: 0.35,
+            streambed_flow_hi: 0.70,
+            streambed_steep_suppress: 2.60,
         }
     }
 }
@@ -359,6 +456,79 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                     Term::new(SnowHoldAlt, Linear, c.snow_hold_gain),
                 ],
             },
+            // LUSH — wet flat/hollow ground: Moisture + Cavity deposition raise it;
+            // Steep + Convex + sunny Aspect suppress it (shade holds moisture).
+            MaterialLayer {
+                material: mat::LUSH,
+                prior: c.lush_prior,
+                terms: vec![
+                    Term::new(Moisture, Smoothstep { lo: c.lush_moisture_lo, hi: c.lush_moisture_hi }, c.lush_moisture),
+                    Term::new(Cavity, Linear, c.lush_cavity),
+                    Term::new(Steep, Linear, -c.lush_steep_suppress),
+                    Term::new(Convex, Linear, -c.lush_convex_suppress),
+                    // NEGATIVE gain on Aspect: shaded (aspect<0) raises, sunny (aspect>0) lowers.
+                    Term::new(Aspect, Linear, -c.lush_aspect_shade),
+                ],
+            },
+            // MUD — wet lows / streambanks: strong Flow AND Moisture, flat only.
+            MaterialLayer {
+                material: mat::MUD,
+                prior: c.mud_prior,
+                terms: vec![
+                    Term::new(Flow, Smoothstep { lo: c.mud_flow_lo, hi: c.mud_flow_hi }, c.mud_flow),
+                    Term::new(Moisture, Smoothstep { lo: c.mud_moisture_lo, hi: c.mud_moisture_hi }, c.mud_moisture),
+                    Term::new(Steep, Linear, -c.mud_steep_suppress),
+                ],
+            },
+            // SAND — dry pale ground: low-moisture Band (zero at moisture 0 → default
+            // ground stays grass) + flat + sunny Aspect; suppressed by high moisture.
+            MaterialLayer {
+                material: mat::SAND,
+                prior: c.sand_prior,
+                terms: vec![
+                    Term::new(
+                        Moisture,
+                        Band { lo1: c.sand_dry_lo1, hi1: c.sand_dry_hi1, lo2: c.sand_dry_lo2, hi2: c.sand_dry_hi2 },
+                        c.sand_dry_gain,
+                    ),
+                    Term::new(
+                        Moisture,
+                        Smoothstep { lo: c.sand_moisture_suppress_lo, hi: c.sand_moisture_suppress_hi },
+                        -c.sand_moisture_suppress,
+                    ),
+                    Term::new(Steep, Linear, -c.sand_steep_suppress),
+                    // POSITIVE gain on Aspect: sunny raises the dry pale ground.
+                    Term::new(Aspect, Linear, c.sand_aspect_sun),
+                ],
+            },
+            // DRY — dry ground / dry grass: shares SAND's dry Band + high-moisture suppress.
+            MaterialLayer {
+                material: mat::DRY,
+                prior: c.dry_prior,
+                terms: vec![
+                    Term::new(
+                        Moisture,
+                        Band { lo1: c.sand_dry_lo1, hi1: c.sand_dry_hi1, lo2: c.sand_dry_lo2, hi2: c.sand_dry_hi2 },
+                        c.dry_dry_gain,
+                    ),
+                    Term::new(
+                        Moisture,
+                        Smoothstep { lo: c.sand_moisture_suppress_lo, hi: c.sand_moisture_suppress_hi },
+                        -c.sand_moisture_suppress,
+                    ),
+                    Term::new(Steep, Linear, -c.dry_steep_suppress),
+                    Term::new(Aspect, Linear, c.dry_aspect_sun),
+                ],
+            },
+            // SILT — streambed gravel/silt in the drainage lines: Flow above a threshold, flat.
+            MaterialLayer {
+                material: mat::SILT,
+                prior: c.streambed_prior,
+                terms: vec![
+                    Term::new(Flow, Smoothstep { lo: c.streambed_flow_lo, hi: c.streambed_flow_hi }, c.streambed_flow_gain),
+                    Term::new(Steep, Linear, -c.streambed_steep_suppress),
+                ],
+            },
         ],
     }
 }
@@ -414,5 +584,54 @@ mod tests {
         let dirt = w.iter().find(|(m, _)| *m == mat::DIRT).unwrap().1;
         let rock = w.iter().find(|(m, _)| *m == mat::ROCK).unwrap().1;
         assert!(dirt > rock, "shoulder slope should favor dirt over rock: dirt={dirt} rock={rock}");
+    }
+
+    #[test]
+    fn wet_vs_dry() {
+        // Identical steep/alt; only moisture differs. Wet → LUSH/MUD; dry → SAND/DRY.
+        let wet = DriverSample { moisture: 0.9, ..Default::default() };
+        let dry = DriverSample { moisture: 0.1, ..Default::default() };
+        let wm = rules().dominant(&wet);
+        let dm = rules().dominant(&dry);
+        assert_ne!(wm, dm, "wet and dry ground must author different materials");
+        assert!(wm == mat::LUSH || wm == mat::MUD, "wet dominant should be LUSH/MUD, got {wm}");
+        assert!(dm == mat::SAND || dm == mat::DRY, "dry dominant should be SAND/DRY, got {dm}");
+    }
+
+    #[test]
+    fn flow_streambed() {
+        // DRY high-flow drainage → SILT (gravel bed); MUD requires moisture too, so it
+        // must NOT win here. WET high-flow → MUD (streambank). Asserts the SPECIFIC
+        // material each way (a permissive OR-list hid that SILT was never reachable).
+        let dry_flow = DriverSample { flow: 0.9, moisture: 0.0, ..Default::default() };
+        assert_eq!(rules().dominant(&dry_flow), mat::SILT, "dry drainage line should author SILT gravel");
+        let wet_flow = DriverSample { flow: 0.9, moisture: 0.9, ..Default::default() };
+        assert_eq!(rules().dominant(&wet_flow), mat::MUD, "wet drainage line should author MUD");
+    }
+
+    #[test]
+    fn typical_moisture_flat_is_grass() {
+        // A flat cell at TYPICAL grass moisture (0.35) must stay GRASS — SAND is
+        // arid-only and must never eat the green buildable core (review major #1).
+        let s = DriverSample { moisture: 0.35, ..Default::default() };
+        assert_eq!(rules().dominant(&s), mat::GRASS, "typical-moisture flat ground must be grass, not sand");
+    }
+
+    #[test]
+    fn aspect_shift() {
+        // Identical moderate moisture; shaded (aspect -1) holds moisture → more LUSH
+        // than the sunny (aspect +1) sample.
+        let shaded = DriverSample { moisture: 0.5, aspect: -1.0, ..Default::default() };
+        let sunny = DriverSample { moisture: 0.5, aspect: 1.0, ..Default::default() };
+        let lush = |s: &DriverSample| rules().evaluate(s).iter().find(|(m, _)| *m == mat::LUSH).unwrap().1;
+        let (ls, lu) = (lush(&shaded), lush(&sunny));
+        assert!(ls > lu, "shaded ground should hold more LUSH than sunny: shaded={ls} sunny={lu}");
+    }
+
+    #[test]
+    fn ridge_stays_bare() {
+        // A convex ridge with low moisture must NOT author LUSH (deposition needs a hollow).
+        let s = DriverSample { convex: 0.9, moisture: 0.1, ..Default::default() };
+        assert_ne!(rules().dominant(&s), mat::LUSH, "convex ridge must stay bare, not lush");
     }
 }
