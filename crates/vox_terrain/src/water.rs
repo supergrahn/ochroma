@@ -153,7 +153,28 @@ pub struct WaterField {
     /// Bumped every committed step + on structural change — a cheap "did the
     /// field move" signal for the (out-of-scope) render double-buffer.
     rev: u64,
+    /// SETTLED gate (perf): true once a committed step moved every cell by less
+    /// than `SETTLE_EPS` — the field is at hydrostatic equilibrium. While settled
+    /// AND nothing perturbs it (no terraform `dirty`, no contaminant injection, an
+    /// unchanged `sea_level`), [`step`] returns immediately instead of running the
+    /// O(width·height) flow/fill/advection passes. On a large map with a static
+    /// sea this turns a ~26 ms/tick full-grid relaxation into a no-op. Any
+    /// perturbation clears it (see `add_contaminant`, `mark_terraform`, a changed
+    /// sea_level in `step`). Waves/tide are RENDER-side (megakernel MAT_WATER),
+    /// independent of this gameplay depth field.
+    settled: bool,
+    /// The `sea_level` the last committed step relaxed toward; a change re-runs the
+    /// step even when settled (so a moving sea plane still equilibrates).
+    last_sea_level: f64,
 }
+
+/// Max per-cell change (m, and contaminant units) below which a step counts as
+/// having reached equilibrium and the field marks itself [`WaterField::settled`].
+/// Set FAR below the fill SNAP_EPS (1e-6) + the replay-fold quantization grid
+/// (1e-6) so the gate fires only at the SNAPPED, float-noise-level equilibrium — a
+/// skipped step's would-be change (~1e-12) is far below one quantization step, so
+/// the replay hash is unchanged whether the step is skipped or run.
+const SETTLE_EPS: f64 = 1e-9;
 
 impl WaterField {
     /// A dry field co-sized with the heightfield grid (`width * height` cells).
@@ -174,6 +195,8 @@ impl WaterField {
             flux_z: vec![0.0; n],
             cell_size: 1.0,
             rev: 0,
+            settled: false,
+            last_sea_level: f64::NAN, // NAN != any sea_level → the first step always runs
         }
     }
 
@@ -184,6 +207,7 @@ impl WaterField {
     pub fn set_cell_size(&mut self, cell_size: f64) {
         if cell_size > 0.0 {
             self.cell_size = cell_size;
+            self.settled = false; // re-relax under the new flow pitch
         }
     }
 
@@ -197,6 +221,9 @@ impl WaterField {
         let i = self.idx(x, z);
         self.depth[i] = (self.depth[i] + amount).max(0.0);
         self.rev += 1;
+        if amount != 0.0 {
+            self.settled = false; // new water must flow → re-run the step
+        }
     }
 
     /// SOURCE seam: inject `amount` of dissolved CONTAMINANT MASS into a cell
@@ -210,6 +237,9 @@ impl WaterField {
         let i = self.idx(x, z);
         self.contam[i] = (self.contam[i] + amount).max(0.0);
         self.rev += 1;
+        if amount != 0.0 {
+            self.settled = false; // a fresh plume must advect → re-run the step
+        }
     }
 
     /// Dissolved contaminant MASS at a cell (arbitrary units; `0.0` = clean).
@@ -368,6 +398,8 @@ impl WaterField {
             return;
         }
 
+        let had_dirty = !self.dirty.is_empty();
+
         // (1) Consume the terraform dirty set: a raise that lifted the bed above
         // the local water surface drains INSTANTLY at the edited cells (clamp to
         // the new cap) rather than waiting for the relaxation. Carve lowers the
@@ -381,6 +413,19 @@ impl WaterField {
             }
         }
         self.dirty.clear();
+
+        // SETTLED GATE (perf): if the last committed step reached equilibrium and
+        // nothing has perturbed the field (no terraform this step, no contaminant
+        // injection since, the SAME sea plane), the O(n) flow/fill/advection passes
+        // below would all be no-ops — skip them. This is what makes a large static
+        // sea cheap (a full-grid relaxation every tick was ~26 ms). Deterministic:
+        // a pure function of committed state + the settle threshold; the field is
+        // bit-identical whether or not the skip fires (the passes produce < ε change).
+        if self.settled && !had_dirty && sea_level == self.last_sea_level {
+            return;
+        }
+        self.last_sea_level = sea_level;
+        let mut max_delta = 0.0f64;
 
         let w = self.width as usize;
         let h = self.height as usize;
@@ -517,7 +562,9 @@ impl WaterField {
                         inflow += self.flux_z[j];
                     }
                 }
-                self.next[i] = (self.depth[i] - out + inflow).max(0.0);
+                let nd = (self.depth[i] - out + inflow).max(0.0);
+                max_delta = max_delta.max((nd - self.depth[i]).abs());
+                self.next[i] = nd;
             }
         }
 
@@ -579,7 +626,9 @@ impl WaterField {
                 // out fraction is in [0, 1) and contaminant can never go negative.
                 let out_contam = if d_i > 0.0 { c_i * (out_water / d_i) } else { 0.0 };
                 let moved = (c_i - out_contam + in_contam).max(0.0);
-                self.contam_next[i] = moved * (1.0 - CONTAM_DECAY);
+                let cn = moved * (1.0 - CONTAM_DECAY);
+                max_delta = max_delta.max((cn - self.contam[i]).abs());
+                self.contam_next[i] = cn;
             }
         }
 
@@ -621,6 +670,7 @@ impl WaterField {
                     if (nv - cap).abs() < SNAP_EPS {
                         nv = cap;
                     }
+                    max_delta = max_delta.max((nv - cur).abs());
                     self.next[i] = nv;
                 } else {
                     self.next[i] = cur;
@@ -630,6 +680,8 @@ impl WaterField {
 
         std::mem::swap(&mut self.depth, &mut self.next);
         self.rev += 1;
+        // Reached equilibrium this step → the next unperturbed step can skip.
+        self.settled = max_delta < SETTLE_EPS;
     }
 
     /// Fold the water field into the SAME integer-ledger replay moat the cim sim
