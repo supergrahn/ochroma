@@ -199,6 +199,15 @@ pub struct ResidentRendererConfig {
     pub glass_floor_performance: u32,
     pub glass_floor_balanced: u32,
     pub glass_floor_beauty: u32,
+    /// SPECTRA_WATER_BOUNCES; -1 = use the per-tier water floor, 0 = disable the
+    /// water bounce bump. The SEA (MAT_WATER) shades through the same transmissive
+    /// BSDF as glass but needs far less depth to read right (a surface refraction +
+    /// one lit hop), so it gets its OWN, lower floor than architectural glass —
+    /// the #1 trace-fps lever on water-heavy / near-empty maps.
+    pub water_bounces_override: i32,
+    pub water_floor_performance: u32,
+    pub water_floor_balanced: u32,
+    pub water_floor_beauty: u32,
     pub temporal_enabled: bool,
     /// -1 = spectra RenderConfig.temporal default.
     pub temporal_alpha_static: f32,
@@ -242,6 +251,10 @@ impl Default for ResidentRendererConfig {
             glass_floor_performance: 4,
             glass_floor_balanced: 5,
             glass_floor_beauty: 8,
+            water_bounces_override: -1,
+            water_floor_performance: 3,
+            water_floor_balanced: 4,
+            water_floor_beauty: 4,
             temporal_enabled: true,
             temporal_alpha_static: -1.0,
             temporal_alpha_moving: -1.0,

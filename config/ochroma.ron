@@ -121,6 +121,14 @@
         glass_floor_balanced:    4,      // resident_renderer.rs:1130 — base bounces 3..=5. MEASURED 2026-06-29: 5->4 = 49.4->42.7ms (6.7ms/14%) at 1440p; water puddles + both-face refraction intact. 4->3 saves ~4ms more but risks deep-water coves; 4 is the Balanced default.
         glass_floor_beauty:      8,      // resident_renderer.rs:1140 [hardcoded] (GLASS_MIN_BOUNCES) — base bounces >=6, full geometric glass
 
+        // -- WATER bounce floor (separate + LOWER than glass) -- the SEA (MAT_WATER)
+        // reads right with a surface refraction + one lit hop, so it no longer rides
+        // the glass floor. #1 trace-fps lever on water-heavy / near-empty maps.
+        water_bounces_override:  -1,     // env: SPECTRA_WATER_BOUNCES; -1 = use tier floor, 0 = disable the water bump
+        water_floor_performance: 3,      // base bounces 0..=2
+        water_floor_balanced:    4,      // base bounces 3..=5
+        water_floor_beauty:      4,      // base bounces >=6 (water needs no more than glass here; keep the sea cheap)
+
         // -- temporal accumulation (the keystone 1-spp real-time-quality fix) --
         temporal_enabled:          true, // resident_renderer.rs:284 [env+hardcoded] env: OCHROMA_TEMPORAL (on|off); default ON
         temporal_alpha_static:     -1.0, // resident_renderer.rs:297 [env+existing-config] env: OCHROMA_TEMPORAL_ALPHA_STATIC; -1 = spectra RenderConfig.temporal default

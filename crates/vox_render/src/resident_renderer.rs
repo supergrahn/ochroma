@@ -263,23 +263,52 @@ impl ResidentSceneRenderer {
         // over the flat param array (no HashMap/RNG iteration); changes only the
         // path-length budget, never the sample order. `SPECTRA_GLASS_BOUNCES`
         // overrides the floor (config-first); 0 disables the bump entirely.
-        if scene_has_glass(&initial) {
-            // env SPECTRA_GLASS_BOUNCES > config glass_bounces_override (>=0) > tier
-            // floor. Config default -1 means "use the tier floor" (identical to the
-            // old behavior); 0 disables the bump.
-            let floor = std::env::var("SPECTRA_GLASS_BOUNCES")
-                .ok()
-                .and_then(|v| v.parse::<u32>().ok())
-                .or_else(|| {
-                    let ov = rcfg.glass_bounces_override;
-                    if ov >= 0 { Some(ov as u32) } else { None }
-                })
-                .unwrap_or_else(|| glass_floor_for_tier(config.max_bounces));
+        // TRANSMISSIVE BOUNCE FLOORS — glass and water are now floored SEPARATELY.
+        // Architectural glass needs depth to refract through both faces and reach
+        // light (~4-8); the SEA surface needs far less (a surface refraction + one
+        // lit hop, ~3-4) yet used to be lumped with glass and forced max_bounces->8
+        // even on a near-empty map with only water — the dominant trace cost. We
+        // now raise the floor to the MAX of the applicable per-material floors, so
+        // a glassy city keeps full glass depth while a water-only map pays only the
+        // (much cheaper) water floor. Each has an env override (SPECTRA_GLASS_BOUNCES
+        // / SPECTRA_WATER_BOUNCES) > config override (>=0) > per-tier floor; a config
+        // default of -1 = use the tier floor, 0 = disable that material's bump.
+        let has_glass = scene_has_mat_type(&initial, MAT_GLASS_TYPE);
+        let has_water = scene_has_mat_type(&initial, MAT_WATER_TYPE);
+        if has_glass || has_water {
+            let mut floor = config.max_bounces;
+            if has_glass {
+                let g = std::env::var("SPECTRA_GLASS_BOUNCES")
+                    .ok()
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .or_else(|| {
+                        let ov = rcfg.glass_bounces_override;
+                        if ov >= 0 { Some(ov as u32) } else { None }
+                    })
+                    .unwrap_or_else(|| glass_floor_for_tier(config.max_bounces));
+                floor = floor.max(g);
+            }
+            if has_water {
+                let wf = std::env::var("SPECTRA_WATER_BOUNCES")
+                    .ok()
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .or_else(|| {
+                        let ov = rcfg.water_bounces_override;
+                        if ov >= 0 { Some(ov as u32) } else { None }
+                    })
+                    .unwrap_or_else(|| water_floor_for_tier(config.max_bounces));
+                floor = floor.max(wf);
+            }
             if floor > config.max_bounces {
                 eprintln!(
-                    "[glass-bounce-floor] scene has MAT_GLASS/MAT_WATER; max_bounces {} -> {} \
+                    "[glass-bounce-floor] scene has {}; max_bounces {} -> {} \
                      (transmissive panes + the sea surface need enough depth to refract \
-                     through both faces and reach light)",
+                     and reach light; glass and water floored separately)",
+                    match (has_glass, has_water) {
+                        (true, true) => "MAT_GLASS+MAT_WATER",
+                        (true, false) => "MAT_GLASS",
+                        _ => "MAT_WATER",
+                    },
                     config.max_bounces, floor
                 );
                 config.max_bounces = floor;
@@ -1406,6 +1435,21 @@ fn glass_floor_for_tier(base_bounces: u32) -> u32 {
     }
 }
 
+/// TIER-AWARE water bounce floor — the SEA (MAT_WATER) surface's own, LOWER floor.
+/// CONFIG-FIRST: `config/ochroma.ron`
+/// (`resident_renderer.water_floor_{performance,balanced,beauty}`, defaults 3/4/4).
+/// Water reads correctly with a single surface refraction + one lit hop, far less
+/// depth than architectural glass, so flooring it separately is the #1 trace-fps
+/// lever on water-heavy / near-empty maps without touching glass quality.
+fn water_floor_for_tier(base_bounces: u32) -> u32 {
+    let rcfg = &vox_config::config().resident_renderer;
+    match base_bounces {
+        0..=2 => rcfg.water_floor_performance,
+        3..=5 => rcfg.water_floor_balanced,
+        _ => rcfg.water_floor_beauty,
+    }
+}
+
 /// The Beauty-tier glass floor — full geometric glass depth. Matches the still
 /// path's glass bump (`splat_backend::pathtrace_mesh_lit_weathered_to_rgba`,
 /// which sets 8 when `has_glass`): a glass pane needs enough depth to refract
@@ -1425,15 +1469,16 @@ const MAT_GLASS_TYPE: u32 = 3;
 /// refract through the surface and reach a lit point, or the sea reads opaque/dark.
 const MAT_WATER_TYPE: u32 = 21;
 
-/// True when the scene's material table holds at least one transmissive (glass OR
-/// water) material — both need the [`GLASS_MIN_BOUNCES`] floor.
+/// True when the scene's material table holds at least one material whose type
+/// tag equals `want_ty` (e.g. [`MAT_GLASS_TYPE`] or [`MAT_WATER_TYPE`]) — used to
+/// floor the glass and water bounce budgets INDEPENDENTLY.
 ///
 /// Element 0 of every packed material is the material-type tag (a `u32` stored
 /// in an `f32` via `from_bits`/`pack_u32`) in BOTH the 132-float CUDA layout and
 /// the 156-float Vulkan layout, so the per-material stride is derived from
 /// `params.len() / material_count` and element 0 of each material is decoded with
 /// `to_bits()`. Pure scan — no HashMap/RNG iteration, so it is deterministic.
-fn scene_has_glass(scene: &SceneState) -> bool {
+fn scene_has_mat_type(scene: &SceneState, want_ty: u32) -> bool {
     let mats = &scene.materials;
     if mats.material_count == 0 || mats.params.is_empty() {
         return false;
@@ -1445,10 +1490,7 @@ fn scene_has_glass(scene: &SceneState) -> bool {
     (0..mats.material_count).any(|i| {
         mats.params
             .get(i * stride)
-            .map(|t| {
-                let ty = t.to_bits();
-                ty == MAT_GLASS_TYPE || ty == MAT_WATER_TYPE
-            })
+            .map(|t| t.to_bits() == want_ty)
             .unwrap_or(false)
     })
 }
