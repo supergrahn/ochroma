@@ -1376,6 +1376,39 @@ impl ResidentSceneRenderer {
         self.renderer.set_water_params(params);
     }
 
+    /// LIVE COLOR-GRADE — forward the game's Look-panel grade to the spectra
+    /// `Renderer`, mutating the resident `state.config` in place so the change
+    /// reaches the post-tonemap grade uniforms (`u_exposure` / `u_grade_*` /
+    /// `u_cdl_*`) next frame WITHOUT a `reconfigure` (buffer/graph rebuild) —
+    /// exactly like `set_water_params`. Scalars (not a spectra struct) so the
+    /// engine/game boundary stays decoupled from spectra's `GradeParams` type.
+    /// `temperature_k` is white-balance Kelvin; the three CDL arrays are
+    /// per-channel slope(gain)/offset(lift)/power(gamma). A no-op when no scene
+    /// is loaded.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_grade_params(
+        &mut self,
+        exposure_ev: f32,
+        temperature_k: f32,
+        tint: f32,
+        saturation: f32,
+        contrast: f32,
+        cdl_slope: [f32; 3],
+        cdl_offset: [f32; 3],
+        cdl_power: [f32; 3],
+    ) {
+        self.renderer.set_grade_params(
+            exposure_ev,
+            temperature_k,
+            tint,
+            saturation,
+            contrast,
+            cdl_slope,
+            cdl_offset,
+            cdl_power,
+        );
+    }
+
     /// The currently-configured render target.
     pub fn render_target(&self) -> spectra_renderer::RenderTarget {
         self.renderer.render_target()
