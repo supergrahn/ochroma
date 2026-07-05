@@ -125,6 +125,15 @@ pub struct HybridMesh {
     pub absorption_override: Option<[f32; 3]>,
     pub absorption_depth_override: Option<f32>,
     pub roughness_override: Option<f32>,
+    /// Per-mesh metallic override. `None` = use the material channel's default
+    /// (the historical behaviour). `Some(m)` forces `PbrMaterial::metallic` — the
+    /// hook for metallic-clearcoat car paint / chrome trim on a hard-surface
+    /// asset whose channel would otherwise be non-metallic (Facade = 0).
+    pub metallic_override: Option<f32>,
+    /// Per-mesh emission-strength override. `None` = channel default (0 except
+    /// GlassLit). `Some(e)` forces `PbrMaterial::emission_strength` — the hook for
+    /// emissive vehicle head/tail lamps without a dedicated lit channel.
+    pub emission_override: Option<f32>,
     /// When `Some(scale)`, the surface is textured with WORLD-PLANAR UV (UV =
     /// world_xz * scale) instead of interpolated vertex UVs. Used for terrain
     /// ground, whose UV is a pure function of world position — and which, on the
@@ -215,6 +224,8 @@ impl HybridMesh {
             absorption_override: None,
             absorption_depth_override: None,
             roughness_override: None,
+            metallic_override: None,
+            emission_override: None,
             ior_override: None,
             world_planar_uv_scale: None,
             uv_scale: None,
