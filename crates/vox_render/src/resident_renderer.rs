@@ -18,10 +18,10 @@
 
 #![cfg(feature = "spectra-native")]
 
-#[cfg(not(target_os = "windows"))]
-use spectra_gpu::VulkanSlangBackend;
 #[cfg(target_os = "windows")]
 use spectra_gpu::CudarcSlangBackend;
+#[cfg(not(target_os = "windows"))]
+use spectra_gpu::VulkanSlangBackend;
 pub use spectra_renderer::FrameOutput;
 use spectra_renderer::{RenderConfig, RenderSettings, Renderer};
 
@@ -44,9 +44,9 @@ pub use spectra_renderer::{TierEntry, TierTable};
 
 use crate::scene_delta_adapter::{RetainedDeltaError, RetainedDeltaPlan, RetainedRenderMirror};
 use crate::splat_backend::{
-    LightRig, VULKAN_LIGHT_FLOATS, pack_vulkan_directional_light, pack_vulkan_point_light,
-    pack_vulkan_sun_disk_light, resolve_slang_kernel_dir, rig_to_settings,
-    seed_features_from_config, sun_solid_angle,
+    pack_vulkan_directional_light, pack_vulkan_point_light, pack_vulkan_sun_disk_light,
+    resolve_slang_kernel_dir, rig_to_settings, seed_features_from_config, sun_solid_angle,
+    LightRig, VULKAN_LIGHT_FLOATS,
 };
 
 /// Result of a scene-delta upload — the reuse-vs-rebuild proof.
@@ -142,7 +142,7 @@ impl ResidentSceneRenderer {
     ) -> Result<Self, String> {
         let settings = match tier_table {
             Some(table) => RenderSettings::for_tier_from_ron(tier, table),
-            None        => RenderSettings::for_tier(tier),
+            None => RenderSettings::for_tier(tier),
         };
         let max_bounces = settings.render.max_bounces;
         Self::new_from_settings(width, height, rig, settings, max_bounces, initial)
@@ -207,6 +207,7 @@ impl ResidentSceneRenderer {
         // real-time tiers, make lean unconditional for the resident render.
         config.prefer_lean_shade = rcfg.prefer_lean_shade;
         let _ = std::env::var("OCHROMA_SHADE_LEAN"); // (legacy opt-in, now default-on)
+
         // Start from the rig (lighting, look, weathering toggle), seed the
         // near_realtime feature parity, THEN overlay the tier's cost knobs so
         // the tier — not the rig and not the base preset — owns spp / bounces /
@@ -283,7 +284,11 @@ impl ResidentSceneRenderer {
                     .and_then(|v| v.parse::<u32>().ok())
                     .or_else(|| {
                         let ov = rcfg.glass_bounces_override;
-                        if ov >= 0 { Some(ov as u32) } else { None }
+                        if ov >= 0 {
+                            Some(ov as u32)
+                        } else {
+                            None
+                        }
                     })
                     .unwrap_or_else(|| glass_floor_for_tier(config.max_bounces));
                 floor = floor.max(g);
@@ -294,7 +299,11 @@ impl ResidentSceneRenderer {
                     .and_then(|v| v.parse::<u32>().ok())
                     .or_else(|| {
                         let ov = rcfg.water_bounces_override;
-                        if ov >= 0 { Some(ov as u32) } else { None }
+                        if ov >= 0 {
+                            Some(ov as u32)
+                        } else {
+                            None
+                        }
                     })
                     .unwrap_or_else(|| water_floor_for_tier(config.max_bounces));
                 floor = floor.max(wf);
@@ -309,7 +318,8 @@ impl ResidentSceneRenderer {
                         (true, false) => "MAT_GLASS",
                         _ => "MAT_WATER",
                     },
-                    config.max_bounces, floor
+                    config.max_bounces,
+                    floor
                 );
                 config.max_bounces = floor;
             }
@@ -375,11 +385,15 @@ impl ResidentSceneRenderer {
         match std::env::var("OCHROMA_TEMPORAL").as_deref() {
             Ok("off") | Ok("0") => {
                 config.temporal.enabled = false;
-                eprintln!("[temporal-override] OCHROMA_TEMPORAL=off -> temporal accumulation disabled");
+                eprintln!(
+                    "[temporal-override] OCHROMA_TEMPORAL=off -> temporal accumulation disabled"
+                );
             }
             Ok("on") | Ok("1") => {
                 config.temporal.enabled = true;
-                eprintln!("[temporal-override] OCHROMA_TEMPORAL=on -> temporal accumulation enabled");
+                eprintln!(
+                    "[temporal-override] OCHROMA_TEMPORAL=on -> temporal accumulation enabled"
+                );
             }
             _ => {}
         }
@@ -469,15 +483,22 @@ impl ResidentSceneRenderer {
                 };
                 eprintln!(
                     "[restir-override] OCHROMA_RESTIR=on -> DI={} GI={} PT={:?} (di={} gi={} pt={} default_pt={})",
-                    config.use_restir, config.use_restir_gi, config.resample_mode,
-                    want_di, want_gi, want_pt, default_pt
+                    config.use_restir,
+                    config.use_restir_gi,
+                    config.resample_mode,
+                    want_di,
+                    want_gi,
+                    want_pt,
+                    default_pt
                 );
             }
             "off" | "0" => {
                 config.use_restir = false;
                 config.use_restir_gi = false;
                 config.resample_mode = spectra_renderer::ResampleMode::None;
-                eprintln!("[restir-override] OCHROMA_RESTIR=off -> ALL ReSTIR variants off (DI/GI/PT)");
+                eprintln!(
+                    "[restir-override] OCHROMA_RESTIR=off -> ALL ReSTIR variants off (DI/GI/PT)"
+                );
             }
             _ => {}
         }
@@ -533,33 +554,15 @@ impl ResidentSceneRenderer {
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(rcfg.max_pixels_per_dispatch);
 
-        // CUDA-GRAPH RE-ENABLE (B4): default-ON, with spectra as the single gate.
+        // CUDA GRAPH POLICY: OFF for the live resident game path.
         //
-        // History: this used to be a BLANKET ochroma-side disable because a captured
-        // graph could record the D3D12-interop present `memcpy_dtod` into a SHARED
-        // external-memory resource, whose cross-context dependency wasn't re-resolved
-        // against the D3D12 queue on replay → WDDM watchdog hang
-        // (DXGI_ERROR_DEVICE_HUNG, 0x887A0007) on the first city present. Two things
-        // make the blanket disable the wrong layer now:
-        //   1. The interop PACK_RGBA + DtoD present copy runs POST sample-loop
-        //      (render.rs ~1037, eager), OUTSIDE the captured region — the graph only
-        //      records the per-sample megakernel dispatch, so the interop copy is no
-        //      longer captured.
-        //   2. spectra `render()` already FORCE-disables graphs whenever OptiX HW-RT
-        //      is active (render.rs:83 `use_cuda_graphs && !optix_active`), because
-        //      graph replay never calls `render_sample()`/`optixLaunch`. OptiX is the
-        //      locked production resident path, so graphs stay suppressed there with
-        //      ZERO ochroma action — spectra owns that gate authoritatively.
-        // Plus B4 adds a scene-change graph-invalidation guard in spectra
-        // `load_scene_state` (drop the captured graph when scene buffers are
-        // freed+reuploaded), removing the stale-device-pointer hazard a resident
-        // rebuild would otherwise leave live.
-        // So: default the capability ON; the spectra OptiX gate keeps the production
-        // path safe, and the non-OptiX fallback path gets the graph launch-overhead
-        // saving. SPECTRA_CUDA_GRAPHS=0 forces OFF (the safety/A-B baseline), =1 forces
-        // ON; default (unset) is now ON.
-        // env SPECTRA_CUDA_GRAPHS (0|1) > config use_cuda_graphs (default ON). With
-        // the env unset the config value stands; default true == the old `!= Ok("0")`.
+        // Graph capture is a batch/multi-spp launch-amortization tool. In the live
+        // city it captures the first displayed frame's full megakernel sequence and
+        // can stall for seconds or minutes before the player sees anything. Spectra
+        // now hard-disables graph capture in `RenderMode::Interactive`; this config
+        // value stays false so the resident log and policy agree. The env override is
+        // kept only as an A/B switch for non-interactive experiments.
+        // env SPECTRA_CUDA_GRAPHS (0|1) > config use_cuda_graphs (default OFF).
         config.use_cuda_graphs = match std::env::var("SPECTRA_CUDA_GRAPHS").as_deref() {
             Ok("0") => false,
             Ok(_) => true,
@@ -751,16 +754,32 @@ impl ResidentSceneRenderer {
     #[allow(clippy::too_many_arguments)]
     pub fn set_underwater_layers(
         &mut self,
-        wet_albedo: i32, wet_normal: i32, wet_rough: i32,
-        mud_albedo: i32, mud_normal: i32, mud_rough: i32,
-        silt_albedo: i32, silt_normal: i32, silt_rough: i32,
-        bed_albedo: i32, bed_normal: i32, bed_rough: i32,
+        wet_albedo: i32,
+        wet_normal: i32,
+        wet_rough: i32,
+        mud_albedo: i32,
+        mud_normal: i32,
+        mud_rough: i32,
+        silt_albedo: i32,
+        silt_normal: i32,
+        silt_rough: i32,
+        bed_albedo: i32,
+        bed_normal: i32,
+        bed_rough: i32,
     ) {
         self.renderer.set_underwater_layers(
-            wet_albedo, wet_normal, wet_rough,
-            mud_albedo, mud_normal, mud_rough,
-            silt_albedo, silt_normal, silt_rough,
-            bed_albedo, bed_normal, bed_rough,
+            wet_albedo,
+            wet_normal,
+            wet_rough,
+            mud_albedo,
+            mud_normal,
+            mud_rough,
+            silt_albedo,
+            silt_normal,
+            silt_rough,
+            bed_albedo,
+            bed_normal,
+            bed_rough,
         );
     }
 
@@ -907,7 +926,10 @@ impl ResidentSceneRenderer {
         // Config-first: night lit windows default ON (config.lit_windows_enabled);
         // env OCHROMA_LIT_WINDOWS=0|off force-disables for an A/B witness.
         let lit_window_disabled = !vox_config::config().resident_renderer.lit_windows_enabled
-            || matches!(std::env::var("OCHROMA_LIT_WINDOWS").as_deref(), Ok("0") | Ok("off"));
+            || matches!(
+                std::env::var("OCHROMA_LIT_WINDOWS").as_deref(),
+                Ok("0") | Ok("off")
+            );
         if is_night && !lit_window_disabled {
             promote_glass_to_lit_windows(&mut scene);
         }
@@ -934,6 +956,7 @@ impl ResidentSceneRenderer {
         // sun_ramp color, so they are physically coupled.
         let e_sun = rig.sun_radiance; // irradiance
         let l_sun = e_sun / sun_solid_angle(); // disk radiance = E_sun / Ω
+
         // DAY NEE LIGHTS ARE OPT-IN (`resident_renderer.nee_day_lights`,
         // default OFF): in the ReSTIR present path the deferred NEE sun lands
         // in a buffer that never reaches the film (audited 2026-07-02 — the
@@ -954,9 +977,21 @@ impl ResidentSceneRenderer {
             // `lighting_rig.analytic_fills`). These stay hard-delta directional fills
             // (angular_radius=0): cheap analytic key fill, NOT physical sun.
             for (dir, color, intensity) in [
-                (glam::Vec3::Y.to_array(), rig.analytic_sky_fill_color, rig.sky_intensity),
-                (camera_fill.to_array(), rig.analytic_camera_fill_color, rig.camera_fill),
-                (rim_fill.to_array(), rig.analytic_rim_fill_color, rig.rim_fill),
+                (
+                    glam::Vec3::Y.to_array(),
+                    rig.analytic_sky_fill_color,
+                    rig.sky_intensity,
+                ),
+                (
+                    camera_fill.to_array(),
+                    rig.analytic_camera_fill_color,
+                    rig.camera_fill,
+                ),
+                (
+                    rim_fill.to_array(),
+                    rig.analytic_rim_fill_color,
+                    rig.rim_fill,
+                ),
             ] {
                 light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
             }
@@ -1044,7 +1079,14 @@ impl ResidentSceneRenderer {
         if std::env::var("SPECTRA_FILM_DIAG").is_ok() {
             eprintln!(
                 "[atm_diag] resident update: rig.atmosphere_enabled={} mie={} turbidity={} sun_dir={:?} e_sun={} fog_enabled={} fog_density={} fog_aniso={}",
-                rig.atmosphere_enabled, rig.atmosphere_mie, rig.atmosphere_turbidity, rig.sun_dir, e_sun, rig.fog_enabled, rig.fog_density, rig.fog_anisotropy
+                rig.atmosphere_enabled,
+                rig.atmosphere_mie,
+                rig.atmosphere_turbidity,
+                rig.sun_dir,
+                e_sun,
+                rig.fog_enabled,
+                rig.fog_density,
+                rig.fog_anisotropy
             );
         }
         // THE SUN LIGHTS SURFACES REGARDLESS OF THE ATMOSPHERE FLAG (2026-07-02).
@@ -1080,8 +1122,11 @@ impl ResidentSceneRenderer {
         // kept taking the atmospheric_sky dome-ambient branch while the game
         // believed it had selected the config gradient sky (u_sky_horizon/zenith).
         // An inverted gate = ambient light the config can't explain or tune.
-        self.renderer
-            .set_atmosphere(rig.atmosphere_enabled, rig.atmosphere_mie, rig.atmosphere_turbidity);
+        self.renderer.set_atmosphere(
+            rig.atmosphere_enabled,
+            rig.atmosphere_mie,
+            rig.atmosphere_turbidity,
+        );
         // Height fog (aerial depth + crepuscular cue). Driven every resident
         // update; fog_enabled=false (legacy/Default rig) → byte-identical no-fog.
         self.renderer.set_fog(
@@ -1112,7 +1157,8 @@ impl ResidentSceneRenderer {
     ///
     /// `transform` is a row-major 3×4 (upper rows of a 4×4 world transform).
     pub fn update_instance_transform(&mut self, instance_index: usize, transform: [[f32; 4]; 3]) {
-        self.delta_ring.set_transform(instance_index as u32, transform);
+        self.delta_ring
+            .set_transform(instance_index as u32, transform);
     }
 
     /// Stamp the NodeId→instance_index mapping after a full scene upload.
@@ -1264,9 +1310,7 @@ impl ResidentSceneRenderer {
         // COMBINED view-projection as u_view_proj.
         self.renderer.set_camera_view_matrix(view);
         self.renderer.set_view_proj(view_proj);
-        self.renderer
-            .render()
-            .map_err(|e| format!("render: {e:?}"))
+        self.renderer.render().map_err(|e| format!("render: {e:?}"))
     }
 
     /// Apply a batch of per-instance transform refits IMMEDIATELY through the
@@ -1278,10 +1322,7 @@ impl ResidentSceneRenderer {
     /// `(instance_index, row-major 3×4 transform)`, id-ordered by the caller
     /// for determinism. Prefer [`update_instance_transform`] +
     /// [`render_camera`] for the normal game loop.
-    pub fn refit_instances(
-        &mut self,
-        dirty: &[(usize, [[f32; 4]; 3])],
-    ) -> Result<bool, String> {
+    pub fn refit_instances(&mut self, dirty: &[(usize, [[f32; 4]; 3])]) -> Result<bool, String> {
         self.renderer
             .refit_instance_transforms(dirty)
             .map_err(|e| format!("refit_instance_transforms: {e:?}"))
@@ -1337,11 +1378,7 @@ impl ResidentSceneRenderer {
     /// isolation, for benches that drive refits via [`refit_instances`] and
     /// want the render timing uncontaminated by refit. The normal game loop
     /// uses [`render_camera`], which flushes pending refits first.
-    pub fn render_only(
-        &mut self,
-        view: [f32; 16],
-        proj: [f32; 16],
-    ) -> Result<FrameOutput, String> {
+    pub fn render_only(&mut self, view: [f32; 16], proj: [f32; 16]) -> Result<FrameOutput, String> {
         self.renderer.set_camera_view_matrix(view);
         self.renderer.set_view_proj(proj);
         self.renderer.render().map_err(|e| format!("render: {e:?}"))
@@ -1502,7 +1539,7 @@ fn glass_floor_for_tier(base_bounces: u32) -> u32 {
 
 /// TIER-AWARE water bounce floor — the SEA (MAT_WATER) surface's own, LOWER floor.
 /// CONFIG-FIRST: `config/ochroma.ron`
-/// (`resident_renderer.water_floor_{performance,balanced,beauty}`, defaults 3/4/4).
+/// (`resident_renderer.water_floor_{performance,balanced,beauty}`, defaults 2/4/4).
 /// Water reads correctly with a single surface refraction + one lit hop, far less
 /// depth than architectural glass, so flooring it separately is the #1 trace-fps
 /// lever on water-heavy / near-empty maps without touching glass quality.
@@ -1606,11 +1643,24 @@ fn emissive_point_lights(scene: &SceneState, scale: f32) -> (Vec<f32>, usize) {
     let mat_emission: Vec<(f32, [f32; 3])> = (0..mats.material_count)
         .map(|mi| {
             let b = mi * mstride;
-            let em = mats.params.get(b + MAT_EMISSION_SLOT).copied().unwrap_or(0.0);
+            let em = mats
+                .params
+                .get(b + MAT_EMISSION_SLOT)
+                .copied()
+                .unwrap_or(0.0);
             let col = [
-                mats.params.get(b + MAT_EMISSION_COLOR_SLOT).copied().unwrap_or(1.0),
-                mats.params.get(b + MAT_EMISSION_COLOR_SLOT + 1).copied().unwrap_or(1.0),
-                mats.params.get(b + MAT_EMISSION_COLOR_SLOT + 2).copied().unwrap_or(1.0),
+                mats.params
+                    .get(b + MAT_EMISSION_COLOR_SLOT)
+                    .copied()
+                    .unwrap_or(1.0),
+                mats.params
+                    .get(b + MAT_EMISSION_COLOR_SLOT + 1)
+                    .copied()
+                    .unwrap_or(1.0),
+                mats.params
+                    .get(b + MAT_EMISSION_COLOR_SLOT + 2)
+                    .copied()
+                    .unwrap_or(1.0),
             ];
             (em, col)
         })
@@ -1692,7 +1742,11 @@ fn emissive_point_lights(scene: &SceneState, scale: f32) -> (Vec<f32>, usize) {
         let wx = m[0] * local_center[0] + m[1] * local_center[1] + m[2] * local_center[2] + m[3];
         let wy = m[4] * local_center[0] + m[5] * local_center[1] + m[6] * local_center[2] + m[7];
         let wz = m[8] * local_center[0] + m[9] * local_center[1] + m[10] * local_center[2] + m[11];
-        out.extend_from_slice(&pack_vulkan_point_light([wx, wy, wz], color, best_em * scale));
+        out.extend_from_slice(&pack_vulkan_point_light(
+            [wx, wy, wz],
+            color,
+            best_em * scale,
+        ));
         count += 1;
     }
     (out, count)
@@ -1738,7 +1792,11 @@ fn promote_glass_to_lit_windows(scene: &mut SceneState) {
             continue;
         }
         // Already emissive (content-authored lit channel): leave as-is.
-        let cur_em = mats.params.get(base + MAT_EMISSION_SLOT).copied().unwrap_or(0.0);
+        let cur_em = mats
+            .params
+            .get(base + MAT_EMISSION_SLOT)
+            .copied()
+            .unwrap_or(0.0);
         if cur_em > 0.0 {
             continue;
         }
@@ -1781,10 +1839,10 @@ fn scene_camera_forward(scene: &SceneState) -> glam::Vec3 {
 
 #[cfg(test)]
 mod glass_floor_tests {
-    use super::{GLASS_MIN_BOUNCES, glass_floor_for_tier};
+    use super::{glass_floor_for_tier, water_floor_for_tier, GLASS_MIN_BOUNCES};
 
     /// Locks the per-tier glass bounce caps to the exact values witnessed on the
-    /// box (Performance base 2 -> floor 4, Balanced base 3 -> floor 5, Beauty
+    /// box (Performance base 2 -> floor 4, Balanced base 3 -> floor 4, Beauty
     /// base 6 -> floor 8). These are the SHIP-GATE perf knob: the cap is the
     /// lowest depth that still refracts a curtain-wall pane through both faces
     /// and reaches a lit surface (verified glass4 == glass8 in the STYLE_PROBE
@@ -1796,12 +1854,35 @@ mod glass_floor_tests {
         assert_eq!(glass_floor_for_tier(1), 4, "sub-Performance floors to 4");
         assert_eq!(glass_floor_for_tier(0), 4, "zero-bounce floors to 4");
         // Balanced tier (base bounces 3).
-        assert_eq!(glass_floor_for_tier(3), 5, "Balanced glass floor");
-        assert_eq!(glass_floor_for_tier(5), 5, "upper Balanced band floors to 5");
+        assert_eq!(glass_floor_for_tier(3), 4, "Balanced glass floor");
+        assert_eq!(
+            glass_floor_for_tier(5),
+            4,
+            "upper Balanced band floors to 4"
+        );
         // Beauty tier (base bounces 6) — unchanged full geometric glass.
-        assert_eq!(glass_floor_for_tier(6), GLASS_MIN_BOUNCES, "Beauty glass floor");
-        assert_eq!(glass_floor_for_tier(8), GLASS_MIN_BOUNCES, "high tiers keep 8");
+        assert_eq!(
+            glass_floor_for_tier(6),
+            GLASS_MIN_BOUNCES,
+            "Beauty glass floor"
+        );
+        assert_eq!(
+            glass_floor_for_tier(8),
+            GLASS_MIN_BOUNCES,
+            "high tiers keep 8"
+        );
         assert_eq!(GLASS_MIN_BOUNCES, 8, "Beauty constant is the still-path 8");
+    }
+
+    /// Locks the water-only Performance path to the witnessed 1280x720 -> 4K
+    /// DLSS-RR result: water must not raise Performance above its base depth.
+    #[test]
+    fn water_performance_floor_keeps_legal_rr_at_two_bounces() {
+        assert_eq!(water_floor_for_tier(2), 2, "Performance water floor");
+        assert_eq!(water_floor_for_tier(1), 2, "sub-Performance water floor");
+        assert_eq!(water_floor_for_tier(0), 2, "zero-bounce water floor");
+        assert_eq!(water_floor_for_tier(3), 4, "Balanced water floor");
+        assert_eq!(water_floor_for_tier(6), 4, "Beauty water floor");
     }
 
     /// The floor only ever RAISES the budget (the caller guards `floor >

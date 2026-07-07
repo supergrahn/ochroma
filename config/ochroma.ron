@@ -125,7 +125,7 @@
         // reads right with a surface refraction + one lit hop, so it no longer rides
         // the glass floor. #1 trace-fps lever on water-heavy / near-empty maps.
         water_bounces_override:  -1,     // env: SPECTRA_WATER_BOUNCES; -1 = use tier floor, 0 = disable the water bump
-        water_floor_performance: 3,      // base bounces 0..=2
+        water_floor_performance: 2,      // base bounces 0..=2; legal 1280x720->4K RR clears 25 FPS only when water does not raise Performance depth
         water_floor_balanced:    4,      // base bounces 3..=5
         water_floor_beauty:      4,      // base bounces >=6 (water needs no more than glass here; keep the sea cheap)
 
@@ -144,7 +144,7 @@
         max_pixels_per_dispatch: 1048576,  // resident_renderer.rs:385 env: SPECTRA_MAX_PIXELS_PER_DISPATCH; 0 = no banding. MEASURED 2026-06-29 (RTX 4070 Ti, 1440p): 65536 split 852x480 into 7 BANDS = 7x the CUDA dispatches/API-calls = the dominant per-frame CPU tax. 1048576 = 1 band up to 4K-internal (1280x720=921K px); a single megakernel dispatch ~20-30ms << 2s TDR. RESULT: 41.2->26.9ms (24->37fps), frame byte-clean, no rebuild. CAVEAT: the AMD 780M Performance tier is ~5-10x slower -> a 1-band dispatch may approach the WDDM 2s TDR; that tier needs a LOWER per-capability value (TODO: make this tier-aware, e.g. 262144 on the 780M).
 
         // -- CUDA graphs + Shader Execution Reordering (throughput, image-identical) --
-        use_cuda_graphs:     true,       // resident_renderer.rs:415 [env+hardcoded] env: SPECTRA_CUDA_GRAPHS (0|1); default ON (spectra suppresses under OptiX)
+        use_cuda_graphs:     false,      // resident_renderer.rs:415 [env+config] live resident gameplay must not pay first-frame graph capture; offline graph benches set this explicitly
         ser_enabled:         true,       // resident_renderer.rs:433-445 [env+hardcoded+cfg] env: SPECTRA_SER (0|1); default ON on Windows/CUDA only (#[cfg(target_os="windows")]) — see build_features note
 
         // -- night lit windows / emissive promotion --

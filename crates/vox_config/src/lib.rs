@@ -252,7 +252,7 @@ impl Default for ResidentRendererConfig {
             glass_floor_balanced: 5,
             glass_floor_beauty: 8,
             water_bounces_override: -1,
-            water_floor_performance: 3,
+            water_floor_performance: 2,
             water_floor_balanced: 4,
             water_floor_beauty: 4,
             temporal_enabled: true,
@@ -263,7 +263,7 @@ impl Default for ResidentRendererConfig {
             restir_override: "auto".to_string(),
             shot_spp_override: 0,
             max_pixels_per_dispatch: 65_536,
-            use_cuda_graphs: true,
+            use_cuda_graphs: false,
             ser_enabled: true,
             lit_windows_enabled: true,
             emissive_light_scale: 2000.0,
@@ -477,7 +477,11 @@ impl OchromaConfig {
     pub fn normalize(&mut self) {
         let def = ScatterConfig::default();
         coerce_len(&mut self.scatter.lod_fractions, &def.lod_fractions, LOD_LEN);
-        coerce_len(&mut self.scatter.lod_distances_m, &def.lod_distances_m, LOD_LEN);
+        coerce_len(
+            &mut self.scatter.lod_distances_m,
+            &def.lod_distances_m,
+            LOD_LEN,
+        );
     }
 
     /// Load the config.
@@ -620,6 +624,7 @@ mod tests {
         assert_eq!(c.scatter.far_instance_m, 150.0);
         assert_eq!(c.instancing.gpu_gi_capacity, 200_000);
         assert_eq!(c.resident_renderer.spectral_mode, "hero4");
+        assert!(!c.resident_renderer.use_cuda_graphs);
         assert!(c.resident_renderer.ser_enabled);
         assert_eq!(c.spectral.preetham_luminance_scale, 20.0);
         assert_eq!(c.materials.splat_sigma_cutoff, 3.0);
