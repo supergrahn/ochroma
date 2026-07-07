@@ -272,6 +272,14 @@ pub struct BlasDesc {
     /// REAL per-mesh AABB: `(min, max)` object-space corners.
     pub aabb_min: [f32; 3],
     pub aabb_max: [f32; 3],
+    /// COOKED per-vertex weathering masks — 7 floats per vertex, parallel to
+    /// `positions` (`len == positions.len() * 7`), megakernel channel order
+    /// `[moss, water_stain, paint_chip, rust, soot, efflorescence, edge_wear]`.
+    /// EMPTY (or mismatched — validated at merge) = scene assembly synthesizes
+    /// its geometry-anchored pattern for this proto's vertex range instead
+    /// (`build_weathering_pattern` in `splat_convert`). Carries the cook's
+    /// authored masks through the HybridMesh→BlasDesc seam.
+    pub weathering_masks: Vec<f32>,
 }
 
 /// One GPU instance record for the instanced TLAS (Render Keystone T3). Names a
@@ -3382,6 +3390,17 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     let mut v = md.to_f32_array();
     // [0] int type — to_f32_array writes MAT_LAMBERT(1); honour water/glass/metal.
     // MAT_WATER (21) keeps the glass absorption packing below (it is still `glass`).
+    // Opaque → MAT_OPENPBR (16), MIRRORING the Vulkan packer's content-based
+    // selection (`pack_vulkan_mesh_material`): MAT_LAMBERT ignored roughness +
+    // metallic entirely, so the shipped CUDA/box path flattened every opaque
+    // facade/roof/ground to a pure diffuse. OpenPBR here reads the SAME already-
+    // packed canonical slots — albedo [1-3], roughness [4], metallic [6], ior [7]
+    // (1.5 → 4% dielectric Fresnel F0) — while every extra lobe weight the
+    // canonical `to_f32_array()` emits is neutral (clearcoat/sheen/sss/thin-film
+    // 0, glass_weight [67] = transmission = 0 for opaque, diffuse_weight [62] =
+    // 1.0, specular_weight [64] = 0.3, energy_conservation [79] = 1.0) — exactly
+    // the "diffuse + subtle 4% dielectric sheen, no desaturation" contract the
+    // Vulkan packer documents. No other slot changes.
     v[0] = f32::from_bits(if water {
         21u32 // MAT_WATER
     } else if glass {
@@ -3389,7 +3408,7 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     } else if metal {
         2u32 // MAT_METAL
     } else {
-        1u32 // MAT_LAMBERT
+        16u32 // MAT_OPENPBR (was MAT_LAMBERT — dropped roughness/metallic)
     });
     // POM / cone-step RELIEF + glass ABSORPTION + UV scale on the CUDA (box)
     // path. `MaterialData::to_f32_array()` HARDCODES slots [19-22] (absorption),

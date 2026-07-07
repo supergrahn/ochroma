@@ -59,6 +59,8 @@ pub struct DriverSample {
     pub moisture: f64,      // [0,1]
     pub flow: f64,          // [0,1]
     pub aspect: f64,        // [-1,1] sun-facing
+    pub apron: f64,         // [0,1] erosion apron: dirt/scree skirt at the FOOT of relief on flat ground
+    pub patch: f64,         // [0,1] organic low-frequency overgrown-field patchiness on flat ground
 }
 
 /// Which driver a rule term reads.
@@ -75,6 +77,8 @@ pub enum Driver {
     Moisture,
     Flow,
     Aspect,
+    Apron,
+    Patch,
 }
 
 impl Driver {
@@ -92,6 +96,8 @@ impl Driver {
             Driver::Moisture => s.moisture,
             Driver::Flow => s.flow,
             Driver::Aspect => s.aspect,
+            Driver::Apron => s.apron,
+            Driver::Patch => s.patch,
         }
     }
 }
@@ -302,6 +308,37 @@ pub struct TerrainRuleConfig {
     pub streambed_flow_lo: f64,
     pub streambed_flow_hi: f64,
     pub streambed_steep_suppress: f64,
+    // ─── FLAT-GROUND HISTORY layers (2026-07-06): flat terrain carries its past —
+    // a dirt/scree apron at the foot of eroded relief (`apron` driver) and organic
+    // overgrown-field patchiness (`patch` driver). These read the Apron/Patch drivers,
+    // which are ZERO on the open buildable core (DriverSample::default() ⇒ GRASS), so a
+    // flat green core stays green; the layers only win in the apron ring / patch cores. ──
+    /// APRON → DIRT: the erosion apron raises the dirt logit (dirt skirt at the massif foot).
+    pub dirt_apron: f64,
+    /// PATCH → DIRT: high-patch cores read as bare soil (Smoothstep onset over the patch field).
+    pub dirt_patch_lo: f64,
+    pub dirt_patch_hi: f64,
+    pub dirt_patch_gain: f64,
+    /// GRASS cedes to the apron + patch history (so dirt/dry/scree can win where present).
+    pub grass_apron_cede: f64,
+    pub grass_patch_cede: f64,
+    /// SCREE — loose rock debris on the flat at the FOOT of relief: apron-driven, flat only,
+    /// a MINOR accent (lower prior than dirt so dirt dominates the apron and scree peeks through).
+    pub scree_prior: f64,
+    pub scree_apron: f64,
+    pub scree_apron_lo: f64,
+    pub scree_apron_hi: f64,
+    pub scree_steep_suppress: f64,
+    /// PATCH → DRY: the WEEDY mid-ring of an overgrown field (Band peaking at mid patch, closing
+    /// before the bare-soil core so the zones read concentric: grass → dry weeds → dirt bare).
+    pub dry_patch_gain: f64,
+    pub dry_patch_lo1: f64,
+    pub dry_patch_hi1: f64,
+    pub dry_patch_lo2: f64,
+    pub dry_patch_hi2: f64,
+    /// PATCH → SILT: the very core of a bare patch reclaims to pale silt (small accent).
+    pub silt_patch_gain: f64,
+    pub silt_patch_lo: f64,
 }
 
 impl Default for TerrainRuleConfig {
@@ -382,11 +419,37 @@ impl Default for TerrainRuleConfig {
             dry_aspect_sun: 0.40,
             // SILT wins a DRY high-flow drainage line over grass (prior raised from
             // -2.2 so a gravel bed reads at flow≈0.9): -1.5 + 3.0 = 1.5 > grass 1.10.
+            // Streambed SILT strengthened (2026-07-06) so DRY drainage lines BAND visibly
+            // across the flat core, not just hug the shoreline: gain 3.0→3.4, onset 0.35→0.28.
             streambed_prior: -1.50,
-            streambed_flow_gain: 3.00,
-            streambed_flow_lo: 0.35,
-            streambed_flow_hi: 0.70,
+            streambed_flow_gain: 3.40,
+            streambed_flow_lo: 0.28,
+            streambed_flow_hi: 0.62,
             streambed_steep_suppress: 2.60,
+            // ─── flat-ground history (apron + overgrown patch) ───
+            // Apron: at apron=1 (massif foot) dirt logit −0.55+2.10=1.55 decisively beats a
+            // ceded grass (1.10 − apron_cede 1.20 = −0.10); scree (−2.20+2.60=0.40) rides under
+            // dirt as a loose-debris accent. Patch: grass cedes Linear so mid-patch flips to DRY
+            // weeds and high-patch (Smoothstep 0.60→0.92) to bare DIRT; open core (patch≈0.5)
+            // stays GRASS (1.10 − 1.40·0.5 = 0.40 still wins) → the buildable core stays green.
+            dirt_apron: 2.10,
+            dirt_patch_lo: 0.60,
+            dirt_patch_hi: 0.92,
+            dirt_patch_gain: 1.90,
+            grass_apron_cede: 1.20,
+            grass_patch_cede: 1.40,
+            scree_prior: -2.20,
+            scree_apron: 2.60,
+            scree_apron_lo: 0.45,
+            scree_apron_hi: 0.95,
+            scree_steep_suppress: 1.20,
+            dry_patch_gain: 2.20,
+            dry_patch_lo1: 0.38,
+            dry_patch_hi1: 0.55,
+            dry_patch_lo2: 0.72,
+            dry_patch_hi2: 0.92,
+            silt_patch_gain: 1.00,
+            silt_patch_lo: 0.86,
         }
     }
 }
@@ -414,6 +477,9 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                     Term::new(Concave, Linear, c.grass_concave),
                     Term::new(Convex, Linear, -c.grass_convex),
                     Term::new(DirtFlat, Linear, -c.grass_dirt_cede),
+                    // Cede to the flat-ground history: the apron ring + patch cores go bare.
+                    Term::new(Apron, Linear, -c.grass_apron_cede),
+                    Term::new(Patch, Linear, -c.grass_patch_cede),
                 ],
             },
             // DIRT — the shoulder lobe + sheltered cavities + the low-slope patch.
@@ -435,6 +501,9 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                     Term::new(Cavity, Linear, c.dirt_cavity + c.dirt_cavity_amp),
                     Term::new(Convex, Linear, -c.dirt_convex_suppress),
                     Term::new(DirtFlat, Linear, 1.0),
+                    // Erosion apron (foot of relief) + bare-soil patch cores.
+                    Term::new(Apron, Linear, c.dirt_apron),
+                    Term::new(Patch, Smoothstep { lo: c.dirt_patch_lo, hi: c.dirt_patch_hi }, c.dirt_patch_gain),
                 ],
             },
             // ROCK — steep ramp + convex + altitude (halo omitted, see above).
@@ -445,6 +514,17 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                     Term::new(Steep, Smoothstep { lo: c.rock_slope_lo, hi: c.rock_slope_hi }, c.rock_ramp_gain),
                     Term::new(Convex, Linear, c.rock_convex),
                     Term::new(AltRock, Linear, c.rock_alt),
+                ],
+            },
+            // SCREE — loose rock debris on the FLAT at the foot of relief (erosion apron).
+            // Apron-driven + flat only; a minor accent riding under DIRT (lower prior), so the
+            // apron reads dirt-with-scree, not a rock field.
+            MaterialLayer {
+                material: mat::SCREE,
+                prior: c.scree_prior,
+                terms: vec![
+                    Term::new(Apron, Smoothstep { lo: c.scree_apron_lo, hi: c.scree_apron_hi }, c.scree_apron),
+                    Term::new(Steep, Linear, -c.scree_steep_suppress),
                 ],
             },
             // SNOW — high altitude on flatter shelves; off below the snow line.
@@ -518,6 +598,13 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                     ),
                     Term::new(Steep, Linear, -c.dry_steep_suppress),
                     Term::new(Aspect, Linear, c.dry_aspect_sun),
+                    // Overgrown-field WEEDY mid-ring: a Band peaking at mid patch, closing before
+                    // the bare-soil (DIRT) core so an old field reads grass → dry weeds → bare.
+                    Term::new(
+                        Patch,
+                        Band { lo1: c.dry_patch_lo1, hi1: c.dry_patch_hi1, lo2: c.dry_patch_lo2, hi2: c.dry_patch_hi2 },
+                        c.dry_patch_gain,
+                    ),
                 ],
             },
             // SILT — streambed gravel/silt in the drainage lines: Flow above a threshold, flat.
@@ -527,6 +614,8 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                 terms: vec![
                     Term::new(Flow, Smoothstep { lo: c.streambed_flow_lo, hi: c.streambed_flow_hi }, c.streambed_flow_gain),
                     Term::new(Steep, Linear, -c.streambed_steep_suppress),
+                    // Bare-earth patch core: the very centre of an overgrown patch reclaims to silt.
+                    Term::new(Patch, Smoothstep { lo: c.silt_patch_lo, hi: 1.0 }, c.silt_patch_gain),
                 ],
             },
         ],
@@ -626,6 +715,32 @@ mod tests {
         let lush = |s: &DriverSample| rules().evaluate(s).iter().find(|(m, _)| *m == mat::LUSH).unwrap().1;
         let (ls, lu) = (lush(&shaded), lush(&sunny));
         assert!(ls > lu, "shaded ground should hold more LUSH than sunny: shaded={ls} sunny={lu}");
+    }
+
+    #[test]
+    fn apron_authors_dirt_with_scree_accent() {
+        // Flat ground at the foot of relief (apron=1) must go bare: DIRT dominant, with a
+        // SCREE accent present — NOT grass, and NOT a rock field.
+        let s = DriverSample { apron: 1.0, ..Default::default() };
+        assert_eq!(rules().dominant(&s), mat::DIRT, "apron foot should author dirt");
+        let w = rules().evaluate(&s);
+        let scree = w.iter().find(|(m, _)| *m == mat::SCREE).unwrap().1;
+        let rock = w.iter().find(|(m, _)| *m == mat::ROCK).unwrap().1;
+        assert!(scree > 0.02, "apron should carry a scree accent, got {scree}");
+        assert!(scree < w.iter().find(|(m, _)| *m == mat::DIRT).unwrap().1, "scree must ride UNDER dirt");
+        assert!(rock < 0.05, "flat apron must not author a rock field, got {rock}");
+    }
+
+    #[test]
+    fn overgrown_patch_zones_grass_dry_dirt() {
+        // The organic patch field reads concentric: open core (patch≈0.5) stays GRASS (buildable),
+        // the mid ring (patch≈0.62) goes DRY weeds, the core (patch≈0.95) goes bare DIRT.
+        let open = DriverSample { patch: 0.50, ..Default::default() };
+        let mid = DriverSample { patch: 0.62, ..Default::default() };
+        let core = DriverSample { patch: 0.95, ..Default::default() };
+        assert_eq!(rules().dominant(&open), mat::GRASS, "open patch level must stay grass (buildable core)");
+        assert_eq!(rules().dominant(&mid), mat::DRY, "mid patch should author dry weeds");
+        assert_eq!(rules().dominant(&core), mat::DIRT, "patch core should author bare dirt");
     }
 
     #[test]

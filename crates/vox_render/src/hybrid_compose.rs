@@ -161,6 +161,13 @@ pub struct HybridMesh {
     /// `HybridMesh` without splitting it. Determinism: this is plain per-tri data,
     /// no map/RNG ordering. (Vegetation mesh-carrier seam.)
     pub material_ids: Vec<u32>,
+    /// Optional MERGE-GROUP id. `None` (default) = the mesh gets its own BLAS in
+    /// the per-mesh unmerge path. `Some(g)` = scene assembly MERGES every mesh
+    /// sharing this `g` into ONE multi-material BLAS (per-triangle material ids),
+    /// so one building's many material-split `HybridMesh`es collapse to a single
+    /// proto+instance instead of ~38. Plain id data — no map/RNG ordering, so it
+    /// stays replay-exact. Terrain/scatter/water leave this `None` (untouched).
+    pub merge_group: Option<u32>,
     /// Per-submesh material descriptors, indexed by the values in
     /// [`material_ids`]. **EMPTY = use the existing single-material fields**
     /// ([`material_channel`] + [`albedo_tex_path`]/[`normal_tex_path`]/
@@ -170,6 +177,16 @@ pub struct HybridMesh {
     /// mesh carry multiple textured materials (the gating piece for multi-material
     /// vegetation/props on the live path).
     pub submesh_materials: Vec<HybridSubmesh>,
+    /// COOKED per-vertex weathering masks — **7 floats per vertex**, parallel to
+    /// [`positions`] (`len == positions.len() * 7`), channel order `[moss,
+    /// water_stain, paint_chip, rust, soot, efflorescence, edge_wear]` (the
+    /// megakernel `apply_weathering_full` contract). **EMPTY = the legacy
+    /// behaviour**: scene assembly synthesizes its geometry-anchored pattern for
+    /// this mesh's vertices (`build_weathering_pattern`). Non-empty carries the
+    /// cook's authored masks through the HybridMesh→BlasDesc seam so they reach
+    /// `set_weathering_masks` instead of being dropped at load. Deterministic
+    /// plain per-vertex data — no map/RNG ordering.
+    pub weathering_masks: Vec<f32>,
 }
 
 /// One material slot of a multi-material [`HybridMesh`], selected per-triangle via
@@ -230,8 +247,29 @@ impl HybridMesh {
             world_planar_uv_scale: None,
             uv_scale: None,
             material_ids: Vec::new(),
+            merge_group: None,
             submesh_materials: Vec::new(),
+            weathering_masks: Vec::new(),
         }
+    }
+
+    /// Attach COOKED per-vertex weathering masks (7 floats/vertex, parallel to
+    /// `positions` — see [`HybridMesh::weathering_masks`]). Builder style. A
+    /// mismatched length is ignored (scene assembly then falls back to the
+    /// synthesized geometry-anchored pattern) so a bad cook can never desync the
+    /// per-vertex stream.
+    pub fn with_weathering_masks(mut self, masks: Vec<f32>) -> Self {
+        if masks.len() == self.positions.len() * 7 {
+            self.weathering_masks = masks;
+        }
+        self
+    }
+
+    /// Tag this mesh with a MERGE-GROUP id so scene assembly folds all meshes
+    /// sharing `group` into ONE multi-material BLAS (see [`HybridMesh::merge_group`]).
+    pub fn with_merge_group(mut self, group: u32) -> Self {
+        self.merge_group = Some(group);
+        self
     }
 
     /// Attach per-triangle material ids + per-submesh material descriptors

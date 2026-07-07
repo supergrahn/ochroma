@@ -69,6 +69,7 @@ fn cube_blas_desc() -> BlasDesc {
         material_ids,
         aabb_min: [-h, -h, -h],
         aabb_max: [h, h, h],
+        weathering_masks: Vec::new(),
     }
 }
 

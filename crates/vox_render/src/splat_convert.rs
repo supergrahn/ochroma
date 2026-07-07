@@ -506,7 +506,22 @@ pub fn meshes_to_instanced_scene(
     // INTENSITY on top via `set_weathering_intensity` (future); at reference
     // intensity 1.0 this is a SUBTLE pattern (amplitudes ≤ ~0.3) so a clean city
     // still reads clean. Empty when there is no geometry.
-    let weathering_masks = build_weathering_pattern(&positions, &normals);
+    //
+    // COOKED-MASK OVERLAY: a proto that carries its cook-baked per-vertex masks
+    // (`BlasDesc::weathering_masks`, 7 floats/vertex — the HybridMesh→BlasDesc
+    // seam is now carried) REPLACES the synthesized pattern over its own vertex
+    // range; every other proto keeps the synthesis (byte-identical to before).
+    // Iterates `blas` in the same fixed order as `proto_ranges` — deterministic.
+    let mut weathering_masks = build_weathering_pattern(&positions, &normals);
+    if !weathering_masks.is_empty() {
+        for (b, &(v_start, vcount, _, _)) in blas.iter().zip(proto_ranges.iter()) {
+            if b.weathering_masks.len() == vcount as usize * 7 {
+                let dst = v_start as usize * 7;
+                weathering_masks[dst..dst + b.weathering_masks.len()]
+                    .copy_from_slice(&b.weathering_masks);
+            }
+        }
+    }
 
     let mut scene = SceneState::new(width, height);
     scene.geometry.vertex_count = positions.len() / 3;
@@ -699,6 +714,7 @@ mod tests {
             material_ids: vec![0],
             aabb_min: [0.0, 0.0, 0.0],
             aabb_max: [1.0, 1.0, 0.0],
+            weathering_masks: Vec::new(),
         };
         // Proto 1: a quad (2 triangles), bound [10,0,0]..[12,2,0] — DISTINCT.
         let proto_b = BlasDesc {
@@ -715,6 +731,7 @@ mod tests {
             material_ids: vec![0, 0],
             aabb_min: [10.0, 0.0, 0.0],
             aabb_max: [12.0, 2.0, 0.0],
+            weathering_masks: Vec::new(),
         };
         let blas = [proto_a, proto_b];
         // 3 instances referencing protos 0, 1, 0.

@@ -347,6 +347,7 @@ fn unit_cube_blas() -> vox_render::splat_backend::BlasDesc {
         material_ids,
         aabb_min: [-h, -h, -h],
         aabb_max: [h, h, h],
+        weathering_masks: Vec::new(),
     }
 }
 

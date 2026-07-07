@@ -278,5 +278,6 @@ pub fn bake_pose_blas(
         material_ids: Vec::new(),
         aabb_min,
         aabb_max,
+        weathering_masks: Vec::new(),
     }
 }

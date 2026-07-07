@@ -549,8 +549,9 @@ use super::super::*;
         let packed_opaque = super::pack_vulkan_mesh_material(PbrMaterial::default());
         assert_eq!(
             packed_opaque[0].to_bits(),
-            1,
-            "transmission = 0 must still pack MAT_LAMBERT (1)"
+            16,
+            "transmission = 0 must pack MAT_OPENPBR (16) — the content-based \
+             opaque selection (roughness/metallic honoured; was MAT_LAMBERT)"
         );
         assert_eq!(
             packed_opaque[10], 1.5,

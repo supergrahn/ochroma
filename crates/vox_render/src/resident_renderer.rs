@@ -433,19 +433,51 @@ impl ResidentSceneRenderer {
         // is the R0 mode (spatial is the R1 follow-up). Unset => leave as resolved.
         // env OCHROMA_RESTIR > config restir_override. "auto" (the default) leaves
         // the tier-resolved value untouched (identical to the old unset behavior).
+        // Clean per-variant toggles: SPECTRA_RESTIR_{DI,GI,PT}=1 select WHICH single
+        // variant the OCHROMA_RESTIR=on A/B pass enables (so DI/GI/PT are measured in
+        // isolation, not stacked). When none is named the default variant is PT (the
+        // GRIS full-path reuse). All default OFF; the "off" branch force-clears every
+        // flag so the OFF pass is byte-identical to the pre-ReSTIR path regardless of
+        // which SPECTRA_RESTIR_* env the sweep recipe leaves set.
+        let want_di = std::env::var("SPECTRA_RESTIR_DI").as_deref() == Ok("1");
+        let want_gi = std::env::var("SPECTRA_RESTIR_GI").as_deref() == Ok("1");
+        let want_pt = std::env::var("SPECTRA_RESTIR_PT").as_deref() == Ok("1");
+        let default_pt = !want_di && !want_gi && !want_pt;
+        // PT ON-pass resample mode is config-first via SPECTRA_PT_COMPARE_MODE
+        // (temporal default | spatial => temporal+spatial).
+        let pt_mode = match std::env::var("SPECTRA_PT_COMPARE_MODE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .replace('_', "")
+            .as_str()
+        {
+            "spatial" | "temporalspatial" => spectra_renderer::ResampleMode::TemporalSpatial,
+            _ => spectra_renderer::ResampleMode::Temporal,
+        };
         let restir_sel = std::env::var("OCHROMA_RESTIR")
             .ok()
             .unwrap_or_else(|| rcfg.restir_override.clone());
         match restir_sel.as_str() {
             "on" | "1" => {
-                config.use_restir = true;
-                config.resample_mode = spectra_renderer::ResampleMode::Temporal;
-                eprintln!("[restir-override] OCHROMA_RESTIR=on -> use_restir=true resample_mode=Temporal");
+                config.use_restir = want_di;
+                config.use_restir_gi = want_gi;
+                config.resample_mode = if want_pt || default_pt {
+                    pt_mode
+                } else {
+                    spectra_renderer::ResampleMode::None
+                };
+                eprintln!(
+                    "[restir-override] OCHROMA_RESTIR=on -> DI={} GI={} PT={:?} (di={} gi={} pt={} default_pt={})",
+                    config.use_restir, config.use_restir_gi, config.resample_mode,
+                    want_di, want_gi, want_pt, default_pt
+                );
             }
             "off" | "0" => {
                 config.use_restir = false;
+                config.use_restir_gi = false;
                 config.resample_mode = spectra_renderer::ResampleMode::None;
-                eprintln!("[restir-override] OCHROMA_RESTIR=off -> use_restir=false resample_mode=None");
+                eprintln!("[restir-override] OCHROMA_RESTIR=off -> ALL ReSTIR variants off (DI/GI/PT)");
             }
             _ => {}
         }
