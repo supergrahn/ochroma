@@ -130,14 +130,31 @@ Write-Step "Backend:  cuda (NVIDIA)"
 # --- AOT kernel precompilation -------------------------------------------
 # spectra-renderer's build.rs precompiles every .slang kernel to PTX at build
 # time (-> get_ptx()), so the SHIPPED game loads compiled kernels and never runs
-# nvrtc/Slang at runtime. It needs the REAL kernel dir; its default
-# (<spectra>/platform/slang) is wrong, so point it at <spectra>/slang.
-$spectraKernels = Resolve-Path (Join-Path $PSScriptRoot "..\..\spectra\slang") -ErrorAction SilentlyContinue
+# nvrtc/Slang at runtime. Prefer explicit env from launch wrappers, then support
+# both Windows layouts used on the box:
+#   C:\Users\<you>\src\spectra\slang
+#   C:\Users\<you>\spectra\slang
+$kernelCandidates = @()
+if ($env:SLANG_KERNEL_DIR) { $kernelCandidates += $env:SLANG_KERNEL_DIR }
+if ($env:SPECTRA_SLANG_DIR) { $kernelCandidates += $env:SPECTRA_SLANG_DIR }
+$kernelCandidates += @(
+    (Join-Path $PSScriptRoot "..\..\src\spectra\slang"),
+    (Join-Path $PSScriptRoot "..\..\spectra\slang")
+)
+$spectraKernels = $null
+foreach ($candidate in $kernelCandidates) {
+    if ($candidate -and (Test-Path $candidate)) {
+        $spectraKernels = Resolve-Path $candidate -ErrorAction Stop
+        break
+    }
+}
 if ($spectraKernels) {
     $env:SLANG_KERNEL_DIR = $spectraKernels.Path
+    $env:SPECTRA_SLANG_DIR = $spectraKernels.Path
     Write-Step "Kernels:  $($spectraKernels.Path)  (AOT PTX precompile)"
 } else {
     Write-Host "[build-gpu] WARN: spectra/slang kernel dir not found; PTX precompile will be empty." -ForegroundColor Yellow
+    Write-Host "[build-gpu] Checked: $($kernelCandidates -join '; ')" -ForegroundColor Yellow
 }
 
 # --- Build ----------------------------------------------------------------
