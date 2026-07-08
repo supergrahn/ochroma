@@ -38,21 +38,35 @@ fn mouse_ray_selects_nearest_splat() {
     let ray = ScreenRay::from_screen(75.0, 50.0, 100.0, 100.0, vp_inv);
 
     let splats = vec![
-        SplatPickEntry { position: [3.0, 0.0, 5.0], radius: 0.5 },
-        SplatPickEntry { position: [7.5, 0.0, 5.0], radius: 0.5 },
+        SplatPickEntry {
+            position: [3.0, 0.0, 5.0],
+            radius: 0.5,
+        },
+        SplatPickEntry {
+            position: [7.5, 0.0, 5.0],
+            radius: 0.5,
+        },
     ];
     let result = ray.nearest_splat(&splats, 20.0);
     println!("selected splat index: {:?}", result);
-    assert_eq!(result, Some(1), "ray aimed right must select splat at index 1");
+    assert_eq!(
+        result,
+        Some(1),
+        "ray aimed right must select splat at index 1"
+    );
 }
 
 #[test]
 fn mouse_ray_returns_none_when_no_splat_in_range() {
     let vp_inv = top_down_view_proj_inv();
     let ray = ScreenRay::from_screen(50.0, 50.0, 100.0, 100.0, vp_inv);
-    let splats = vec![
-        SplatPickEntry { position: [0.0, 0.0, 0.0], radius: 0.1 },
-    ];
+    let splats = vec![SplatPickEntry {
+        position: [0.0, 0.0, 0.0],
+        radius: 0.1,
+    }];
     let result = ray.nearest_splat(&splats, 0.05);
-    assert!(result.is_none(), "no splat within max_dist must return None");
+    assert!(
+        result.is_none(),
+        "no splat within max_dist must return None"
+    );
 }

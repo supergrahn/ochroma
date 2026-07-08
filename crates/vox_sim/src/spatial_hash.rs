@@ -10,7 +10,10 @@ pub struct SpatialHash {
 
 impl SpatialHash {
     pub fn new(cell_size: f32) -> Self {
-        Self { cell_size, buckets: HashMap::new() }
+        Self {
+            cell_size,
+            buckets: HashMap::new(),
+        }
     }
 
     fn cell(&self, pos: Vec3) -> (i32, i32) {

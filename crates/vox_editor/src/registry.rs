@@ -101,14 +101,26 @@ fn kind_of(category: &'static str, constructor: fn() -> Box<dyn OchromaNode>) ->
     let inputs = desc
         .inputs
         .iter()
-        .map(|p| RegistryPort { name: p.name.to_string(), port_type: p.port_type })
+        .map(|p| RegistryPort {
+            name: p.name.to_string(),
+            port_type: p.port_type,
+        })
         .collect();
     let outputs = desc
         .outputs
         .iter()
-        .map(|p| RegistryPort { name: p.name.to_string(), port_type: p.port_type })
+        .map(|p| RegistryPort {
+            name: p.name.to_string(),
+            port_type: p.port_type,
+        })
         .collect();
-    NodeKind { name: type_name, category, inputs, outputs, constructor: Box::new(constructor) }
+    NodeKind {
+        name: type_name,
+        category,
+        inputs,
+        outputs,
+        constructor: Box::new(constructor),
+    }
 }
 
 /// Build a [`NodeKind`] from any boxed closure constructor (used for subgraphs).
@@ -118,14 +130,26 @@ fn kind_of_boxed(category: &'static str, constructor: NodeConstructor) -> NodeKi
     let inputs = desc
         .inputs
         .iter()
-        .map(|p| RegistryPort { name: p.name.to_string(), port_type: p.port_type })
+        .map(|p| RegistryPort {
+            name: p.name.to_string(),
+            port_type: p.port_type,
+        })
         .collect();
     let outputs = desc
         .outputs
         .iter()
-        .map(|p| RegistryPort { name: p.name.to_string(), port_type: p.port_type })
+        .map(|p| RegistryPort {
+            name: p.name.to_string(),
+            port_type: p.port_type,
+        })
         .collect();
-    NodeKind { name: desc.type_name, category, inputs, outputs, constructor }
+    NodeKind {
+        name: desc.type_name,
+        category,
+        inputs,
+        outputs,
+        constructor,
+    }
 }
 
 impl NodeRegistry {
@@ -164,9 +188,8 @@ impl NodeRegistry {
         let name: &'static str = Box::leak(def.name.clone().into_boxed_str());
         // The constructor owns the def and hands out deep clones, so every created
         // instance is independent and the registry copy is never mutated.
-        let ctor: NodeConstructor = Box::new(move || {
-            Box::new(crate::subgraph::SubgraphNode::new(def.deep_clone()))
-        });
+        let ctor: NodeConstructor =
+            Box::new(move || Box::new(crate::subgraph::SubgraphNode::new(def.deep_clone())));
         let mut kind = kind_of_boxed("Subgraph", ctor);
         // Keep `name` as the canonical leaked handle (kind_of_boxed copied it from the
         // descriptor's already-leaked type_name, identical content).
@@ -224,7 +247,10 @@ impl NodeRegistry {
             let mut hits: Vec<SearchHit<'_>> = self
                 .kinds
                 .iter()
-                .map(|k| SearchHit { kind: k, tier: MatchTier::Prefix })
+                .map(|k| SearchHit {
+                    kind: k,
+                    tier: MatchTier::Prefix,
+                })
                 .collect();
             hits.sort_by(|a, b| a.kind.name.cmp(b.kind.name));
             return hits;

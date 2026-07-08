@@ -248,7 +248,7 @@ impl Default for ResidentRendererConfig {
             spectral_mode: "hero4".to_string(),
             use_optix_rt: true,
             glass_bounces_override: -1,
-            glass_floor_performance: 4,
+            glass_floor_performance: 2,
             glass_floor_balanced: 5,
             glass_floor_beauty: 8,
             water_bounces_override: -1,
@@ -262,7 +262,7 @@ impl Default for ResidentRendererConfig {
             temporal_normal_threshold: -1.0,
             restir_override: "auto".to_string(),
             shot_spp_override: 0,
-            max_pixels_per_dispatch: 65_536,
+            max_pixels_per_dispatch: 2_000_000,
             use_cuda_graphs: false,
             ser_enabled: true,
             lit_windows_enabled: true,
@@ -499,14 +499,14 @@ impl OchromaConfig {
             None => resolve_default_path(),
         };
         let Some(p) = resolved else {
-            // No file resolved ANYWHERE (no $OCHROMA_CONFIG, no config/ochroma.ron up
-            // from cwd, none beside the exe). The live game falling through to here is
-            // the silent config-first bug: ~372 engine settings stay at compiled
-            // defaults. Warn loudly so a missing-config ship/run is caught, not hidden.
+            // No file resolved ANYWHERE. The live game falling through to here is
+            // the silent config-first bug: engine settings stay at compiled defaults.
+            // Warn loudly so a missing-config ship/run is caught, not hidden.
             eprintln!(
                 "[vox_config] WARNING: no ochroma.ron found ($OCHROMA_CONFIG unset, none \
-                 in config/ up from cwd, none beside the exe) — using COMPILED DEFAULTS. \
-                 Engine config (sky/lighting/glass/perf) will NOT reflect ochroma.ron."
+                 in config/ up from cwd/exe, none beside the exe, no sibling \
+                 src/ochroma/config) — using COMPILED DEFAULTS. Engine config \
+                 (sky/lighting/glass/perf) will NOT reflect ochroma.ron."
             );
             return OchromaConfig::default();
         };
@@ -552,8 +552,9 @@ fn coerce_len(v: &mut Vec<f32>, fallback: &[f32], len: usize) {
 }
 
 /// Resolve the default config path: `$OCHROMA_CONFIG`, else the nearest
-/// `config/ochroma.ron` walking up from the current directory (covers running
-/// from the repo root or any crate subdir). `None` if neither resolves.
+/// `config/ochroma.ron` walking up from the current directory / executable,
+/// else the sibling engine checkout layout used by Urban Horizon dev builds:
+/// `<user>/src/ochroma/config/ochroma.ron`.
 fn resolve_default_path() -> Option<PathBuf> {
     if let Ok(env_path) = std::env::var("OCHROMA_CONFIG") {
         if !env_path.is_empty() {
@@ -563,15 +564,8 @@ fn resolve_default_path() -> Option<PathBuf> {
     // 1) Walk up from the current directory (covers running from the repo root or
     //    any crate subdir during dev/test).
     if let Ok(start) = std::env::current_dir() {
-        let mut dir = start;
-        loop {
-            let candidate = dir.join("config").join("ochroma.ron");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            if !dir.pop() {
-                break;
-            }
+        if let Some(path) = find_config_around(&start, false, false) {
+            return Some(path);
         }
     }
     // 2) SHIP path: the game runs from `urban_horizon/` (no `config/ochroma.ron` in
@@ -583,20 +577,59 @@ fn resolve_default_path() -> Option<PathBuf> {
     //    play.exe so a shipped build is config-first without any env var.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(start) = exe.parent() {
-            let mut dir = start.to_path_buf();
-            loop {
-                let beside = dir.join("ochroma.ron");
-                if beside.is_file() {
-                    return Some(beside);
-                }
-                let in_cfg = dir.join("config").join("ochroma.ron");
-                if in_cfg.is_file() {
-                    return Some(in_cfg);
-                }
-                if !dir.pop() {
-                    break;
-                }
+            if let Some(path) = find_config_around(start, true, false) {
+                return Some(path);
             }
+        }
+    }
+    // 3) DEV GAME path: Urban Horizon is usually checked out as
+    //    `<user>/ochroma/projects/urban_horizon`, while the engine config lives in
+    //    the sibling checkout `<user>/src/ochroma/config/ochroma.ron`. Launching
+    //    `play.exe` from the game tree must still load the engine source of truth.
+    if let Ok(start) = std::env::current_dir() {
+        if let Some(path) = find_config_around(&start, false, true) {
+            return Some(path);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(start) = exe.parent() {
+            if let Some(path) = find_config_around(start, false, true) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn find_config_around(
+    start: &Path,
+    include_beside: bool,
+    include_sibling_engine_checkout: bool,
+) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        if include_beside {
+            let beside = dir.join("ochroma.ron");
+            if beside.is_file() {
+                return Some(beside);
+            }
+        }
+        let in_cfg = dir.join("config").join("ochroma.ron");
+        if in_cfg.is_file() {
+            return Some(in_cfg);
+        }
+        if include_sibling_engine_checkout {
+            let sibling = dir
+                .join("src")
+                .join("ochroma")
+                .join("config")
+                .join("ochroma.ron");
+            if sibling.is_file() {
+                return Some(sibling);
+            }
+        }
+        if !dir.pop() {
+            break;
         }
     }
     None
@@ -655,6 +688,36 @@ mod tests {
     fn missing_file_yields_defaults() {
         let c = OchromaConfig::load(Some(Path::new("/no/such/ochroma.ron")));
         assert_eq!(c.terrain.heightmap_size, 4096);
+    }
+
+    #[test]
+    fn sibling_engine_checkout_fallback_matches_game_layout() {
+        let root = std::env::temp_dir().join(format!(
+            "vox_config_layout_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let game_dir = root.join("ochroma").join("projects").join("urban_horizon");
+        let config_path = root
+            .join("src")
+            .join("ochroma")
+            .join("config")
+            .join("ochroma.ron");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            "(resident_renderer: (spectral_mode: \"hero4\"))",
+        )
+        .unwrap();
+
+        let resolved = find_config_around(&game_dir, false, true);
+        assert_eq!(resolved.as_deref(), Some(config_path.as_path()));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

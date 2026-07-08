@@ -11,13 +11,13 @@
 //! game's not-yet-moved setup/scene methods keep driving the inner renderer.
 //! Decoupling full construction from `GameState` is a LATER slice.
 
-use crate::resident_renderer::{ResidentSceneRenderer, SceneSyncReport};
-use crate::resident_renderer::FidelityTier;
-use crate::scene_delta_adapter::RetainedDeltaPlan;
-use crate::spectral::RenderCamera;
 use crate::render_runtime::env::elapsed_ms;
 use crate::render_runtime::frame::{beauty_to_rgba8, interop_dims};
 use crate::render_runtime::terrain::TerrainUpload;
+use crate::resident_renderer::FidelityTier;
+use crate::resident_renderer::{ResidentSceneRenderer, SceneSyncReport};
+use crate::scene_delta_adapter::RetainedDeltaPlan;
+use crate::spectral::RenderCamera;
 use vox_scene::NodeId;
 
 // CONFIG-FIRST: the snow-cap slope cutoff (geometric up-cosine — caps sit on
@@ -92,7 +92,12 @@ impl RenderRuntime {
         ih: u32,
         tier: FidelityTier,
     ) -> Self {
-        Self { renderer, iw, ih, tier }
+        Self {
+            renderer,
+            iw,
+            ih,
+            tier,
+        }
     }
 
     /// Internal render resolution this runtime produces (`(iw, ih)`).
@@ -153,10 +158,9 @@ impl RenderRuntime {
         let upload_delta = self.renderer.reused_delta();
         let refit = plan.stats.refits > 0;
         let render_t = std::time::Instant::now();
-        let frame = self.renderer.render_camera(
-            camera.view.to_cols_array(),
-            camera.proj.to_cols_array(),
-        )?;
+        let frame = self
+            .renderer
+            .render_camera(camera.view.to_cols_array(), camera.proj.to_cols_array())?;
         let render_ms = elapsed_ms(render_t);
         Ok(PresentResult {
             rgba8: beauty_to_rgba8(&frame),
@@ -196,8 +200,9 @@ impl RenderRuntime {
         let upload_delta = self.renderer.reused_delta();
         let refit = plan.stats.refits > 0;
         let render_t = std::time::Instant::now();
-        let frame = self.renderer.render_camera(
-            camera.view.to_cols_array(), camera.proj.to_cols_array())?;
+        let frame = self
+            .renderer
+            .render_camera(camera.view.to_cols_array(), camera.proj.to_cols_array())?;
         let render_ms = elapsed_ms(render_t);
         let out_ptr = self.renderer.last_pack_output_ptr().unwrap_or(color_ptr);
         let (rw, rh) = interop_dims(&frame, self.iw, self.ih);
@@ -227,34 +232,94 @@ impl RenderRuntime {
     pub fn rr_guides(&mut self) -> spectra_present::RrGuides {
         let g = self.renderer.rr_guide_ptrs();
         let (jx, jy) = self.renderer.rr_jitter();
-        spectra_present::RrGuides {
+        let ready_event = self.renderer.rr_payload_ready_event();
+        let guides = spectra_present::RrGuides {
             diffuse_albedo: g[0],
             specular_albedo: g[1],
             normals: g[2],
             roughness: g[3],
             depth: g[4],
             motion: g[5],
+            ready_event,
             jitter_x: jx,
             jitter_y: jy,
             mv_scale_x: 1.0,
             mv_scale_y: 1.0,
+        };
+        if std::env::var("SPECTRA_RR_GUIDE_DIAG").as_deref() == Ok("1") {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static GUIDE_DIAG_FRAME: AtomicU32 = AtomicU32::new(0);
+            let n = GUIDE_DIAG_FRAME.fetch_add(1, Ordering::Relaxed);
+            if n % 30 == 0 {
+                eprintln!(
+                    "[rr-guides] f{n} diffuse={} specular={} normals={} roughness={} depth={} motion={} \
+                     jitter=({:.3},{:.3}) mv_scale=({:.3},{:.3})",
+                    guides.diffuse_albedo != 0,
+                    guides.specular_albedo != 0,
+                    guides.normals != 0,
+                    guides.roughness != 0,
+                    guides.depth != 0,
+                    guides.motion != 0,
+                    guides.jitter_x,
+                    guides.jitter_y,
+                    guides.mv_scale_x,
+                    guides.mv_scale_y,
+                );
+            }
         }
+        guides
     }
 
     // ---- setup methods (the clean runtime API; games never touch the inner renderer) ----
 
-    /// Upload the path tracer's flat texture atlas (descs = `[offset,w,h,channels]`
-    /// per texture; data = concatenated linear samples; `num_textures` entries).
-    /// Pass-through to the inner renderer. Call before [`Self::set_terrain`] (the
-    /// terrain slope/spray slots reference resident atlas entries).
-    pub fn set_atlas(
+    /// Upload native material texture objects. Call before [`Self::set_terrain`]
+    /// because terrain slope/spray slots reference the same resident slot order.
+    pub fn set_material_textures(
         &mut self,
+        textures: &[spectra_renderer::RendererTexture2D],
+    ) -> Result<(), String> {
+        self.renderer.set_material_textures(textures)
+    }
+
+    /// Upload native material texture objects and keep the host descriptor/f32
+    /// mirror available for OMM baking/cache. The render shaders sample native
+    /// texture objects; the mirror is not a GPU texel buffer.
+    pub fn set_material_textures_with_mirror(
+        &mut self,
+        textures: &[spectra_renderer::RendererTexture2D],
         texture_descs: &[u32],
         texture_data: &[f32],
-        num_textures: u32,
     ) -> Result<(), String> {
         self.renderer
-            .set_texture_atlas(texture_descs, texture_data, num_textures)
+            .set_material_textures_with_mirror(textures, texture_descs, texture_data)
+    }
+
+    /// Bind sparse virtual texture residency for material texture slots.
+    pub fn set_svt_residency(
+        &mut self,
+        texture_descs: &[i32],
+        page_table: &[i32],
+        tile_cache_rgba: &[f32],
+        texture_count: u32,
+        tile_size: u32,
+        cache_tiles: u32,
+        max_tiles_per_axis: u32,
+        texture_size: u32,
+    ) -> Result<(), String> {
+        self.renderer.set_svt_residency(
+            texture_descs,
+            page_table,
+            tile_cache_rgba,
+            texture_count,
+            tile_size,
+            cache_tiles,
+            max_tiles_per_axis,
+            texture_size,
+        )
+    }
+
+    pub fn clear_svt_residency(&mut self) -> Result<(), String> {
+        self.renderer.clear_svt_residency()
     }
 
     /// Bind an equirectangular HDRI for image-based sky + lighting (`channels`
@@ -266,29 +331,42 @@ impl RenderRuntime {
 
     /// Upload the full terrain material payload — spray field + slope/height
     /// layered material + per-pixel curvature — from a GPU-free [`TerrainUpload`].
-    /// MUST be called AFTER [`Self::set_atlas`] (slope/spray slots reference
-    /// resident atlas entries). This is the engine home of the game's former
+    /// MUST be called AFTER [`Self::set_material_textures`] (slope/spray slots
+    /// reference resident texture entries). This is the engine home of the game's former
     /// `upload_spray_and_terrain` (ported verbatim, `renderer.` → `self.renderer.`,
     /// `spray_upload.` → `upload.`).
     pub fn set_terrain(&mut self, upload: &TerrainUpload) -> Result<(), String> {
         if !upload.packed.is_empty() {
             self.renderer.set_spray_field(
-                &upload.packed, upload.res,
-                upload.origin, upload.cell_size,
+                &upload.packed,
+                upload.res,
+                upload.origin,
+                upload.cell_size,
                 &upload.channel_slots,
             )?;
-            eprintln!("[spray] field uploaded: {}x{} cells @ {:.2}m, {} channels",
-                upload.res[0], upload.res[1], upload.cell_size,
-                upload.channel_slots.len() / 8);
+            eprintln!(
+                "[spray] field uploaded: {}x{} cells @ {:.2}m, {} channels",
+                upload.res[0],
+                upload.res[1],
+                upload.cell_size,
+                upload.channel_slots.len() / 8
+            );
         }
         self.renderer.set_slope_layers(
-            upload.slope_rock_albedo, upload.slope_rock_normal,
-            upload.slope_dirt_albedo, upload.slope_dirt_normal,
-            upload.slope_rock_disp, upload.slope_dirt_disp,
+            upload.slope_rock_albedo,
+            upload.slope_rock_normal,
+            upload.slope_dirt_albedo,
+            upload.slope_dirt_normal,
+            upload.slope_rock_disp,
+            upload.slope_dirt_disp,
         );
-        eprintln!("[slope-layer] rock_albedo={} rock_normal={} dirt_albedo={} dirt_normal={} (>=0 = layered terrain on)",
-            upload.slope_rock_albedo, upload.slope_rock_normal,
-            upload.slope_dirt_albedo, upload.slope_dirt_normal);
+        eprintln!(
+            "[slope-layer] rock_albedo={} rock_normal={} dirt_albedo={} dirt_normal={} (>=0 = layered terrain on)",
+            upload.slope_rock_albedo,
+            upload.slope_rock_normal,
+            upload.slope_dirt_albedo,
+            upload.slope_dirt_normal
+        );
         if !upload.curvature_values.is_empty() {
             self.renderer.set_curvature_field(
                 &upload.curvature_values,
@@ -296,9 +374,10 @@ impl RenderRuntime {
                 upload.curvature_origin,
                 upload.curvature_cell_size,
             )?;
-            eprintln!("[curvature] per-pixel field uploaded: {}x{} cells @ {:.2}m",
-                upload.curvature_res[0], upload.curvature_res[1],
-                upload.curvature_cell_size);
+            eprintln!(
+                "[curvature] per-pixel field uploaded: {}x{} cells @ {:.2}m",
+                upload.curvature_res[0], upload.curvature_res[1], upload.curvature_cell_size
+            );
         }
         // WATER-DEPTH FIELD + UNDERWATER BED layers (P3, ROOT 4). Upload the static
         // per-cell water column so the megakernel can blend the bed by depth (and
@@ -306,10 +385,18 @@ impl RenderRuntime {
         // ground as flat Coastal grass/sand. Empty `depth_values` leaves both OFF
         // (byte-identical). Order does not matter; both are static scene data.
         self.renderer.set_underwater_layers(
-            upload.uw_wet_albedo, upload.uw_wet_normal, upload.uw_wet_rough,
-            upload.uw_mud_albedo, upload.uw_mud_normal, upload.uw_mud_rough,
-            upload.uw_silt_albedo, upload.uw_silt_normal, upload.uw_silt_rough,
-            upload.uw_bed_albedo, upload.uw_bed_normal, upload.uw_bed_rough,
+            upload.uw_wet_albedo,
+            upload.uw_wet_normal,
+            upload.uw_wet_rough,
+            upload.uw_mud_albedo,
+            upload.uw_mud_normal,
+            upload.uw_mud_rough,
+            upload.uw_silt_albedo,
+            upload.uw_silt_normal,
+            upload.uw_silt_rough,
+            upload.uw_bed_albedo,
+            upload.uw_bed_normal,
+            upload.uw_bed_rough,
         );
         if !upload.depth_values.is_empty() {
             self.renderer.set_depth_field(
@@ -319,20 +406,29 @@ impl RenderRuntime {
                 upload.depth_cell_size,
                 upload.depth_sea_level,
             )?;
-            eprintln!("[water-depth] per-cell field uploaded: {}x{} cells @ {:.2}m, sea_y={:.2} (uw_wet={} uw_mud={} uw_silt={})",
-                upload.depth_res[0], upload.depth_res[1], upload.depth_cell_size,
-                upload.depth_sea_level, upload.uw_wet_albedo, upload.uw_mud_albedo,
-                upload.uw_silt_albedo);
+            eprintln!(
+                "[water-depth] per-cell field uploaded: {}x{} cells @ {:.2}m, sea_y={:.2} (uw_wet={} uw_mud={} uw_silt={})",
+                upload.depth_res[0],
+                upload.depth_res[1],
+                upload.depth_cell_size,
+                upload.depth_sea_level,
+                upload.uw_wet_albedo,
+                upload.uw_mud_albedo,
+                upload.uw_silt_albedo
+            );
         }
         self.renderer.set_slope_snow(
-            upload.slope_snow_albedo, upload.slope_snow_normal,
-            upload.slope_snow_disp, upload.slope_height_snow,
+            upload.slope_snow_albedo,
+            upload.slope_snow_normal,
+            upload.slope_snow_disp,
+            upload.slope_height_snow,
             upload.slope_height_snow_band,
             vox_config::config().terrain.snow_slope_cos,
         );
-        eprintln!("[snow-cap] snow_albedo={} snow_line={:.0}m band={:.0}m (>=0 + finite = snow on)",
-            upload.slope_snow_albedo, upload.slope_height_snow,
-            upload.slope_height_snow_band);
+        eprintln!(
+            "[snow-cap] snow_albedo={} snow_line={:.0}m band={:.0}m (>=0 + finite = snow on)",
+            upload.slope_snow_albedo, upload.slope_height_snow, upload.slope_height_snow_band
+        );
         Ok(())
     }
 

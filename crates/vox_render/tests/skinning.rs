@@ -3,8 +3,8 @@
 //! game-side (urban_horizon Task 3).
 
 use vox_render::skinning::{
-    joint_matrices, sample_clip, skin_mesh, AnimationClip, JointChannel, Skeleton, SkinnedMesh,
-    TransformTRS,
+    AnimationClip, JointChannel, Skeleton, SkinnedMesh, TransformTRS, joint_matrices, sample_clip,
+    skin_mesh,
 };
 
 /// A 2-joint chain: joint 0 root at origin, joint 1 child offset +1 on Y.
@@ -57,7 +57,10 @@ fn clip_sampling_changes_pose() {
     let r0 = p0[1].r;
     let rmid = pmid[1].r;
     let dq: f32 = (0..4).map(|i| (r0[i] - rmid[i]).abs()).sum();
-    println!("joint 1 rot @t0: {:?}  @t0.5: {:?}  L1 delta: {dq}", r0, rmid);
+    println!(
+        "joint 1 rot @t0: {:?}  @t0.5: {:?}  L1 delta: {dq}",
+        r0, rmid
+    );
     assert!(
         dq > 1e-3,
         "expected joint 1 rotation to change between t=0 and t=0.5, delta {dq}"

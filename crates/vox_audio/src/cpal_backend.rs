@@ -16,7 +16,9 @@ pub struct CpalBackendBuilder {
 
 impl CpalBackendBuilder {
     pub fn new() -> Self {
-        Self { preferred_sample_rate: None }
+        Self {
+            preferred_sample_rate: None,
+        }
     }
 
     pub fn sample_rate(mut self, hz: u32) -> Self {
@@ -33,13 +35,12 @@ impl CpalBackendBuilder {
     ) -> Option<CpalHandle> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-        let host   = cpal::default_host();
+        let host = cpal::default_host();
         let device = host.default_output_device()?;
         let config = device.default_output_config().ok()?;
-        let sr     = self.preferred_sample_rate.unwrap_or(config.sample_rate().0);
+        let sr = self.preferred_sample_rate.unwrap_or(config.sample_rate().0);
 
-        let queue: VoiceQueue =
-            Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        let queue: VoiceQueue = Arc::new(Mutex::new(std::collections::VecDeque::new()));
         let queue_write = Arc::clone(&queue);
 
         let channels = config.channels() as usize;
@@ -52,23 +53,31 @@ impl CpalBackendBuilder {
         let err_fn = |e| eprintln!("[ochroma-audio/cpal] stream error: {e}");
 
         let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => device.build_output_stream(
-                &stream_config,
-                move |data: &mut [f32], _| {
-                    let mut q = queue.lock().unwrap();
-                    for frame in data.chunks_mut(channels) {
-                        let sample = if let Some((buf, vol, pos)) = q.front_mut() {
-                            let s = buf.get(*pos).copied().unwrap_or(0.0) * *vol;
-                            *pos += 1;
-                            if *pos >= buf.len() { q.pop_front(); }
-                            s
-                        } else { 0.0 };
-                        for ch in frame.iter_mut() { *ch = sample; }
-                    }
-                },
-                err_fn,
-                None,
-            ).ok()?,
+            cpal::SampleFormat::F32 => device
+                .build_output_stream(
+                    &stream_config,
+                    move |data: &mut [f32], _| {
+                        let mut q = queue.lock().unwrap();
+                        for frame in data.chunks_mut(channels) {
+                            let sample = if let Some((buf, vol, pos)) = q.front_mut() {
+                                let s = buf.get(*pos).copied().unwrap_or(0.0) * *vol;
+                                *pos += 1;
+                                if *pos >= buf.len() {
+                                    q.pop_front();
+                                }
+                                s
+                            } else {
+                                0.0
+                            };
+                            for ch in frame.iter_mut() {
+                                *ch = sample;
+                            }
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .ok()?,
             _ => return None,
         };
 
@@ -87,7 +96,9 @@ impl CpalBackendBuilder {
                             }
                         }
                         crate::AudioCommand::StopAll => {
-                            if let Ok(mut q) = queue_write.lock() { q.clear(); }
+                            if let Ok(mut q) = queue_write.lock() {
+                                q.clear();
+                            }
                         }
                         _ => {}
                     }
@@ -95,7 +106,9 @@ impl CpalBackendBuilder {
             })
             .ok()?;
 
-        Some(CpalHandle { _stream: SendStream(stream) })
+        Some(CpalHandle {
+            _stream: SendStream(stream),
+        })
     }
 
     #[cfg(not(feature = "audio-backend"))]
@@ -108,7 +121,9 @@ impl CpalBackendBuilder {
 }
 
 impl Default for CpalBackendBuilder {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +268,10 @@ mod tests {
             backend.device_count(),
             backend.sample_rate()
         );
-        assert!(backend.device_count() >= 1, "open backend must see >=1 device");
+        assert!(
+            backend.device_count() >= 1,
+            "open backend must see >=1 device"
+        );
         assert!(
             (8_000..=192_000).contains(&backend.sample_rate()),
             "implausible sample rate {}",
@@ -268,9 +286,15 @@ mod tests {
     #[test]
     fn audio_command_play_synth_roundtrip() {
         let samples = vec![0.0f32; 512];
-        let cmd = crate::AudioCommand::PlaySynth { samples: samples.clone(), volume: 1.0 };
+        let cmd = crate::AudioCommand::PlaySynth {
+            samples: samples.clone(),
+            volume: 1.0,
+        };
         match cmd {
-            crate::AudioCommand::PlaySynth { samples: s, volume: v } => {
+            crate::AudioCommand::PlaySynth {
+                samples: s,
+                volume: v,
+            } => {
                 println!("samples.len={} volume={v}", s.len());
                 assert_eq!(s.len(), 512);
                 assert!((v - 1.0).abs() < 1e-6);

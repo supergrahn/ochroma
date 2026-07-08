@@ -133,7 +133,11 @@ impl NodeThumbnail {
     /// Build a thumbnail from a pixel buffer. Panics in debug if the buffer length
     /// does not match `w*h` so a malformed thumbnail is caught at the source.
     pub fn new(pixels: Vec<[u8; 4]>, w: u16, h: u16) -> Self {
-        debug_assert_eq!(pixels.len(), w as usize * h as usize, "thumbnail pixel count mismatch");
+        debug_assert_eq!(
+            pixels.len(),
+            w as usize * h as usize,
+            "thumbnail pixel count mismatch"
+        );
         Self { pixels, w, h }
     }
 }
@@ -149,13 +153,32 @@ pub struct DragConnection {
 /// Actions the widget produces for the host system to process.
 #[derive(Debug, Clone)]
 pub enum NodeGraphAction {
-    NodeMoved { id: u32, new_pos: [f32; 2] },
-    NodeSelected { id: u32 },
-    NodeDeleted { id: u32 },
-    ConnectionCreated { from_node: u32, from_pin: String, to_node: u32, to_pin: String },
-    ConnectionDeleted { from_node: u32, from_pin: String },
-    PanChanged { offset: [f32; 2] },
-    ZoomChanged { zoom: f32 },
+    NodeMoved {
+        id: u32,
+        new_pos: [f32; 2],
+    },
+    NodeSelected {
+        id: u32,
+    },
+    NodeDeleted {
+        id: u32,
+    },
+    ConnectionCreated {
+        from_node: u32,
+        from_pin: String,
+        to_node: u32,
+        to_pin: String,
+    },
+    ConnectionDeleted {
+        from_node: u32,
+        from_pin: String,
+    },
+    PanChanged {
+        offset: [f32; 2],
+    },
+    ZoomChanged {
+        zoom: f32,
+    },
 }
 
 impl NodeGraphWidget {
@@ -220,7 +243,8 @@ impl NodeGraphWidget {
 
     pub fn remove_node(&mut self, id: u32) {
         self.nodes.retain(|n| n.id != id);
-        self.connections.retain(|c| c.from_node != id && c.to_node != id);
+        self.connections
+            .retain(|c| c.from_node != id && c.to_node != id);
         // Prune the side-band wire-value chips for every wire that just went
         // away — orphaned entries would re-attach if a node id is reused.
         self.wire_values
@@ -238,7 +262,11 @@ impl NodeGraphWidget {
     /// Calculate the screen position of a pin for connection drawing.
     pub fn pin_position(&self, node_id: u32, pin_name: &str, is_output: bool) -> Option<[f32; 2]> {
         let node = self.nodes.iter().find(|n| n.id == node_id)?;
-        let pins = if is_output { &node.outputs } else { &node.inputs };
+        let pins = if is_output {
+            &node.outputs
+        } else {
+            &node.inputs
+        };
         let _pin_idx = pins.iter().position(|p| p.name == pin_name)?;
 
         let x = if is_output {
@@ -253,12 +281,7 @@ impl NodeGraphWidget {
 
     /// Render the node graph to a pixel buffer (software renderer path).
     /// Draws: background grid, connections as lines, nodes as rectangles with pins.
-    pub fn render_to_pixels(
-        &self,
-        pixels: &mut [[u8; 4]],
-        width: u32,
-        height: u32,
-    ) {
+    pub fn render_to_pixels(&self, pixels: &mut [[u8; 4]], width: u32, height: u32) {
         // Background grid
         for y in 0..height {
             for x in 0..width {
@@ -267,7 +290,11 @@ impl NodeGraphWidget {
                 let is_grid = gx < 1.0 || gy < 1.0;
                 let idx = (y * width + x) as usize;
                 if idx < pixels.len() {
-                    pixels[idx] = if is_grid { [40, 40, 45, 255] } else { [30, 30, 35, 255] };
+                    pixels[idx] = if is_grid {
+                        [40, 40, 45, 255]
+                    } else {
+                        [30, 30, 35, 255]
+                    };
                 }
             }
         }
@@ -290,14 +317,31 @@ impl NodeGraphWidget {
             ];
             fill_rect(pixels, width, height, cx, cy, cw, 16, strip);
             // Title text inside the strip.
-            draw_text(pixels, width, height, cx + 3, cy + 5, &comment.title, [240, 240, 245, 255]);
+            draw_text(
+                pixels,
+                width,
+                height,
+                cx + 3,
+                cy + 5,
+                &comment.title,
+                [240, 240, 245, 255],
+            );
             // Border so the group is visually bounded.
-            draw_rect_outline(pixels, width, height, cx, cy, cw, ch, [
-                comment.tint[0].saturating_add(90),
-                comment.tint[1].saturating_add(90),
-                comment.tint[2].saturating_add(90),
-                255,
-            ]);
+            draw_rect_outline(
+                pixels,
+                width,
+                height,
+                cx,
+                cy,
+                cw,
+                ch,
+                [
+                    comment.tint[0].saturating_add(90),
+                    comment.tint[1].saturating_add(90),
+                    comment.tint[2].saturating_add(90),
+                    255,
+                ],
+            );
         }
 
         // Draw connections as straight lines (Bezier curves in future)
@@ -307,9 +351,13 @@ impl NodeGraphWidget {
                 self.pin_position(conn.to_node, &conn.to_pin, false),
             ) {
                 draw_line(
-                    pixels, width, height,
-                    from_pos[0] as i32, from_pos[1] as i32,
-                    to_pos[0] as i32, to_pos[1] as i32,
+                    pixels,
+                    width,
+                    height,
+                    from_pos[0] as i32,
+                    from_pos[1] as i32,
+                    to_pos[0] as i32,
+                    to_pos[1] as i32,
                     [conn.color[0], conn.color[1], conn.color[2], 255],
                 );
             }
@@ -332,7 +380,11 @@ impl NodeGraphWidget {
             };
 
             // Node background
-            let bg = if node.selected { [60, 60, 70, 240] } else { [45, 45, 55, 230] };
+            let bg = if node.selected {
+                [60, 60, 70, 240]
+            } else {
+                [45, 45, 55, 230]
+            };
             fill_rect(pixels, width, height, x, y, w, h, bg);
 
             // Live preview thumbnail (rank #10): blit the cached miniature below
@@ -353,7 +405,16 @@ impl NodeGraphWidget {
                     }
                 }
                 // 1px frame around the thumbnail so it reads as a preview cell.
-                draw_rect_outline(pixels, width, height, tx - 1, ty - 1, dw + 2, dh + 2, [90, 95, 110, 255]);
+                draw_rect_outline(
+                    pixels,
+                    width,
+                    height,
+                    tx - 1,
+                    ty - 1,
+                    dw + 2,
+                    dh + 2,
+                    [90, 95, 110, 255],
+                );
             }
 
             // Title bar
@@ -364,24 +425,51 @@ impl NodeGraphWidget {
             for (i, pin) in node.inputs.iter().enumerate() {
                 let py = y + 30 + i as i32 * 24;
                 let color = pin.pin_type.color();
-                fill_circle(pixels, width, height, x, py + 4, 5, [color[0], color[1], color[2], 255]);
+                fill_circle(
+                    pixels,
+                    width,
+                    height,
+                    x,
+                    py + 4,
+                    5,
+                    [color[0], color[1], color[2], 255],
+                );
             }
             for (i, pin) in node.outputs.iter().enumerate() {
                 let py = y + 30 + i as i32 * 24;
                 let color = pin.pin_type.color();
-                fill_circle(pixels, width, height, x + w, py + 4, 5, [color[0], color[1], color[2], 255]);
+                fill_circle(
+                    pixels,
+                    width,
+                    height,
+                    x + w,
+                    py + 4,
+                    5,
+                    [color[0], color[1], color[2], 255],
+                );
             }
 
             // Selection border
             if node.selected {
-                draw_rect_outline(pixels, width, height, x - 1, y - 1, w + 2, h + 2, [255, 180, 50, 255]);
+                draw_rect_outline(
+                    pixels,
+                    width,
+                    height,
+                    x - 1,
+                    y - 1,
+                    w + 2,
+                    h + 2,
+                    [255, 180, 50, 255],
+                );
             }
         }
 
         // Wire value chips (#9b) — drawn on top, near each wire's midpoint, only for
         // wires that carried a value during the last evaluate().
         for conn in &self.connections {
-            let Some(value) = self.wire_value(conn) else { continue };
+            let Some(value) = self.wire_value(conn) else {
+                continue;
+            };
             if let (Some(from_pos), Some(to_pos)) = (
                 self.pin_position(conn.from_node, &conn.from_pin, true),
                 self.pin_position(conn.to_node, &conn.to_pin, false),
@@ -394,11 +482,35 @@ impl NodeGraphWidget {
                 let cx = mid_x - chip_w / 2;
                 let cy = mid_y - chip_h / 2;
                 // Chip background (opaque dark) + accent border in the wire's color.
-                fill_rect(pixels, width, height, cx, cy, chip_w, chip_h, [20, 22, 30, 255]);
-                draw_rect_outline(pixels, width, height, cx, cy, chip_w, chip_h, [
-                    conn.color[0], conn.color[1], conn.color[2], 255,
-                ]);
-                draw_text(pixels, width, height, cx + 3, cy + 3, value, [225, 230, 240, 255]);
+                fill_rect(
+                    pixels,
+                    width,
+                    height,
+                    cx,
+                    cy,
+                    chip_w,
+                    chip_h,
+                    [20, 22, 30, 255],
+                );
+                draw_rect_outline(
+                    pixels,
+                    width,
+                    height,
+                    cx,
+                    cy,
+                    chip_w,
+                    chip_h,
+                    [conn.color[0], conn.color[1], conn.color[2], 255],
+                );
+                draw_text(
+                    pixels,
+                    width,
+                    height,
+                    cx + 3,
+                    cy + 3,
+                    value,
+                    [225, 230, 240, 255],
+                );
             }
         }
     }
@@ -482,12 +594,18 @@ impl NodeGraphWidget {
         let grid_stroke = egui::Stroke::new(0.5, egui::Color32::from_rgb(40, 42, 52));
         let mut gx = avail.min.x + ox;
         while gx < avail.max.x {
-            painter.line_segment([egui::pos2(gx, avail.min.y), egui::pos2(gx, avail.max.y)], grid_stroke);
+            painter.line_segment(
+                [egui::pos2(gx, avail.min.y), egui::pos2(gx, avail.max.y)],
+                grid_stroke,
+            );
             gx += grid_px;
         }
         let mut gy = avail.min.y + oy;
         while gy < avail.max.y {
-            painter.line_segment([egui::pos2(avail.min.x, gy), egui::pos2(avail.max.x, gy)], grid_stroke);
+            painter.line_segment(
+                [egui::pos2(avail.min.x, gy), egui::pos2(avail.max.x, gy)],
+                grid_stroke,
+            );
             gy += grid_px;
         }
 
@@ -496,7 +614,9 @@ impl NodeGraphWidget {
             let delta = response.drag_delta();
             self.scroll_offset[0] += delta.x;
             self.scroll_offset[1] += delta.y;
-            actions.push(NodeGraphAction::PanChanged { offset: self.scroll_offset });
+            actions.push(NodeGraphAction::PanChanged {
+                offset: self.scroll_offset,
+            });
         }
 
         // Zoom (scroll wheel)
@@ -512,7 +632,7 @@ impl NodeGraphWidget {
         // Draw connections as cubic bezier curves
         for conn in &self.connections {
             let from_pos = self.pin_screen_pos(conn.from_node, &conn.from_pin, true, avail.min);
-            let to_pos   = self.pin_screen_pos(conn.to_node,   &conn.to_pin,   false, avail.min);
+            let to_pos = self.pin_screen_pos(conn.to_node, &conn.to_pin, false, avail.min);
             if let (Some(fp), Some(tp)) = (from_pos, to_pos) {
                 let ctrl_dx = ((tp.x - fp.x).abs() * 0.5).max(50.0);
                 painter.add(egui::Shape::CubicBezier(egui::epaint::CubicBezierShape {
@@ -524,16 +644,18 @@ impl NodeGraphWidget {
                     ],
                     closed: false,
                     fill: egui::Color32::TRANSPARENT,
-                    stroke: egui::Stroke::new(2.0, egui::Color32::from_rgb(
-                        conn.color[0], conn.color[1], conn.color[2],
-                    )).into(),
+                    stroke: egui::Stroke::new(
+                        2.0,
+                        egui::Color32::from_rgb(conn.color[0], conn.color[1], conn.color[2]),
+                    )
+                    .into(),
                 }));
             }
         }
 
         // Draw nodes — collect move/select actions separately to avoid borrow conflict
-        let mut move_actions:   Vec<(u32, [f32; 2])> = Vec::new();
-        let mut select_actions: Vec<u32>              = Vec::new();
+        let mut move_actions: Vec<(u32, [f32; 2])> = Vec::new();
+        let mut select_actions: Vec<u32> = Vec::new();
 
         for node in &mut self.nodes {
             let sx = avail.min.x + node.position[0] * self.zoom + self.scroll_offset[0];
@@ -556,7 +678,11 @@ impl NodeGraphWidget {
             // Title bar
             let title_h = 24.0 * self.zoom;
             let title_rect = egui::Rect::from_min_size(node_rect.min, egui::vec2(sw, title_h));
-            painter.rect_filled(title_rect, 4.0 * self.zoom, egui::Color32::from_rgb(node.color[0], node.color[1], node.color[2]));
+            painter.rect_filled(
+                title_rect,
+                4.0 * self.zoom,
+                egui::Color32::from_rgb(node.color[0], node.color[1], node.color[2]),
+            );
             painter.text(
                 title_rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -571,7 +697,12 @@ impl NodeGraphWidget {
             } else {
                 egui::Color32::from_rgb(58, 68, 100)
             };
-            painter.rect_stroke(node_rect, 4.0 * self.zoom, egui::Stroke::new(1.5, border), egui::StrokeKind::Outside);
+            painter.rect_stroke(
+                node_rect,
+                4.0 * self.zoom,
+                egui::Stroke::new(1.5, border),
+                egui::StrokeKind::Outside,
+            );
 
             // Input pins (left side)
             for (i, pin) in node.inputs.iter().enumerate() {
@@ -641,19 +772,23 @@ impl NodeGraphWidget {
     /// Screen-space position of a pin for connection curve drawing.
     fn pin_screen_pos(
         &self,
-        node_id:   u32,
-        pin_name:  &str,
+        node_id: u32,
+        pin_name: &str,
         is_output: bool,
-        origin:    egui::Pos2,
+        origin: egui::Pos2,
     ) -> Option<egui::Pos2> {
         let node = self.nodes.iter().find(|n| n.id == node_id)?;
-        let pins = if is_output { &node.outputs } else { &node.inputs };
+        let pins = if is_output {
+            &node.outputs
+        } else {
+            &node.inputs
+        };
         let idx = pins.iter().position(|p| p.name == pin_name)?;
         let sx = origin.x + node.position[0] * self.zoom + self.scroll_offset[0];
         let sy = origin.y + node.position[1] * self.zoom + self.scroll_offset[1];
         let sw = node.size[0] * self.zoom;
-        let x  = if is_output { sx + sw } else { sx };
-        let y  = sy + (30.0 + idx as f32 * 24.0 + 8.0) * self.zoom;
+        let x = if is_output { sx + sw } else { sx };
+        let y = sy + (30.0 + idx as f32 * 24.0 + 8.0) * self.zoom;
         Some(egui::pos2(x, y))
     }
 }
@@ -667,7 +802,16 @@ impl Default for NodeGraphWidget {
 // --- Helper drawing functions ---
 
 #[allow(clippy::too_many_arguments)]
-fn fill_rect(pixels: &mut [[u8; 4]], w: u32, h: u32, x: i32, y: i32, rw: i32, rh: i32, color: [u8; 4]) {
+fn fill_rect(
+    pixels: &mut [[u8; 4]],
+    w: u32,
+    h: u32,
+    x: i32,
+    y: i32,
+    rw: i32,
+    rh: i32,
+    color: [u8; 4],
+) {
     for dy in 0..rh {
         for dx in 0..rw {
             let px = x + dx;
@@ -704,7 +848,16 @@ fn fill_circle(pixels: &mut [[u8; 4]], w: u32, h: u32, cx: i32, cy: i32, r: i32,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_rect_outline(pixels: &mut [[u8; 4]], w: u32, h: u32, x: i32, y: i32, rw: i32, rh: i32, color: [u8; 4]) {
+fn draw_rect_outline(
+    pixels: &mut [[u8; 4]],
+    w: u32,
+    h: u32,
+    x: i32,
+    y: i32,
+    rw: i32,
+    rh: i32,
+    color: [u8; 4],
+) {
     for dx in 0..rw {
         set_pixel(pixels, w, h, x + dx, y, color);
         set_pixel(pixels, w, h, x + dx, y + rh - 1, color);
@@ -769,7 +922,7 @@ fn glyph(c: char) -> [u8; 5] {
         ']' => [0b110, 0b010, 0b010, 0b010, 0b110],
         '=' => [0b000, 0b111, 0b000, 0b111, 0b000],
         ' ' => [0b000, 0b000, 0b000, 0b000, 0b000],
-        _   => [0b000, 0b000, 0b010, 0b000, 0b000],
+        _ => [0b000, 0b000, 0b010, 0b000, 0b000],
     }
 }
 
@@ -797,7 +950,16 @@ fn set_pixel(pixels: &mut [[u8; 4]], w: u32, h: u32, x: i32, y: i32, color: [u8;
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_line(pixels: &mut [[u8; 4]], w: u32, h: u32, x0: i32, y0: i32, x1: i32, y1: i32, color: [u8; 4]) {
+fn draw_line(
+    pixels: &mut [[u8; 4]],
+    w: u32,
+    h: u32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: [u8; 4],
+) {
     let dx = (x1 - x0).abs();
     let dy = -(y1 - y0).abs();
     let sx = if x0 < x1 { 1 } else { -1 };
@@ -833,12 +995,16 @@ mod tests {
             position: [x, y],
             size: [160.0, 100.0],
             color: [80, 120, 200],
-            inputs: vec![
-                VisualPin { name: "In".into(), pin_type: VisualPinType::Float, connected: false },
-            ],
-            outputs: vec![
-                VisualPin { name: "Out".into(), pin_type: VisualPinType::Float, connected: false },
-            ],
+            inputs: vec![VisualPin {
+                name: "In".into(),
+                pin_type: VisualPinType::Float,
+                connected: false,
+            }],
+            outputs: vec![VisualPin {
+                name: "Out".into(),
+                pin_type: VisualPinType::Float,
+                connected: false,
+            }],
             selected: false,
             collapsed: false,
         }
@@ -900,10 +1066,18 @@ mod tests {
         widget.add_node(make_test_node(2, 200.0, 0.0));
         widget.add_node(make_test_node(3, 400.0, 0.0));
         widget.add_connection(VisualConnection {
-            from_node: 1, from_pin: "Out".into(), to_node: 2, to_pin: "In".into(), color: [100, 200, 100],
+            from_node: 1,
+            from_pin: "Out".into(),
+            to_node: 2,
+            to_pin: "In".into(),
+            color: [100, 200, 100],
         });
         widget.add_connection(VisualConnection {
-            from_node: 2, from_pin: "Out".into(), to_node: 3, to_pin: "In".into(), color: [100, 200, 100],
+            from_node: 2,
+            from_pin: "Out".into(),
+            to_node: 3,
+            to_pin: "In".into(),
+            color: [100, 200, 100],
         });
         assert_eq!(widget.connection_count(), 2);
         widget.remove_node(2);
@@ -944,7 +1118,10 @@ mod tests {
         });
 
         let moved = w.move_comment(10, [40.0, -25.0]);
-        assert!(moved, "move_comment should report success for an existing comment");
+        assert!(
+            moved,
+            "move_comment should report success for an existing comment"
+        );
 
         // Member nodes shifted by exactly the delta.
         let n1 = w.nodes.iter().find(|n| n.id == 1).unwrap();
@@ -987,7 +1164,10 @@ mod tests {
         // The title strip is brighter than the body fill (it's strip = tint + 60).
         let body_lum = body[0] as u32 + body[1] as u32 + body[2] as u32;
         let strip_lum = strip[0] as u32 + strip[1] as u32 + strip[2] as u32;
-        assert!(strip_lum > body_lum, "title strip ({strip_lum}) should be brighter than body ({body_lum})");
+        assert!(
+            strip_lum > body_lum,
+            "title strip ({strip_lum}) should be brighter than body ({body_lum})"
+        );
     }
 
     // --- Wire value chip tests (#9b) ---
@@ -1032,8 +1212,14 @@ mod tests {
         // Node positions include the default scroll offset of [0,0].
         let n1 = count_in(20, 20, 160, 120);
         let n2 = count_in(260, 20, 160, 120);
-        assert!(n1 > 1000, "node 1 should blit a big thumbnail, got {n1} magenta px");
-        assert_eq!(n2, 0, "node 2 (no thumbnail) must have 0 thumbnail px, got {n2}");
+        assert!(
+            n1 > 1000,
+            "node 1 should blit a big thumbnail, got {n1} magenta px"
+        );
+        assert_eq!(
+            n2, 0,
+            "node 2 (no thumbnail) must have 0 thumbnail px, got {n2}"
+        );
     }
 
     #[test]
@@ -1045,7 +1231,10 @@ mod tests {
         w.add_node(node);
         let tw = 64u16;
         let th = 40u16;
-        w.set_thumbnail(1, NodeThumbnail::new(vec![[200, 50, 50, 255]; tw as usize * th as usize], tw, th));
+        w.set_thumbnail(
+            1,
+            NodeThumbnail::new(vec![[200, 50, 50, 255]; tw as usize * th as usize], tw, th),
+        );
 
         let (width, height) = (256u32, 200u32);
         let mut px = vec![[30u8, 30, 35, 255]; (width * height) as usize];
@@ -1062,14 +1251,21 @@ mod tests {
                 break;
             }
         }
-        assert!(found, "node body must grow to render the full thumbnail below its title");
+        assert!(
+            found,
+            "node body must grow to render the full thumbnail below its title"
+        );
     }
 
     #[test]
     fn set_and_get_wire_value_round_trips() {
         let mut w = NodeGraphWidget::new();
         let conn = VisualConnection {
-            from_node: 1, from_pin: "Out".into(), to_node: 2, to_pin: "In".into(), color: [200, 200, 80],
+            from_node: 1,
+            from_pin: "Out".into(),
+            to_node: 2,
+            to_pin: "In".into(),
+            color: [200, 200, 80],
         };
         assert_eq!(w.wire_value(&conn), None);
         w.set_wire_value(&conn, "Terrain 1024 cells");
@@ -1084,7 +1280,11 @@ mod tests {
         w.add_node(make_test_node(1, 10.0, 20.0));
         w.add_node(make_test_node(2, 230.0, 20.0));
         let conn = VisualConnection {
-            from_node: 1, from_pin: "Out".into(), to_node: 2, to_pin: "In".into(), color: [200, 80, 80],
+            from_node: 1,
+            from_pin: "Out".into(),
+            to_node: 2,
+            to_pin: "In".into(),
+            color: [200, 80, 80],
         };
         w.add_connection(conn.clone());
 
@@ -1100,12 +1300,24 @@ mod tests {
         let with_chip = render(&w);
 
         // The chip introduces new pixels not present without a value.
-        let diff = without_chip.iter().zip(with_chip.iter()).filter(|(a, b)| a != b).count();
-        assert!(diff > 10, "wire value chip should change a region of pixels, diff={diff}");
+        let diff = without_chip
+            .iter()
+            .zip(with_chip.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            diff > 10,
+            "wire value chip should change a region of pixels, diff={diff}"
+        );
 
         // The chip background color [20,22,30] must appear somewhere (it is not a
         // color the grid/wire/background uses).
-        let has_chip_bg = with_chip.iter().any(|p| p[0] == 20 && p[1] == 22 && p[2] == 30);
-        assert!(has_chip_bg, "chip background fill should be present in the rendered buffer");
+        let has_chip_bg = with_chip
+            .iter()
+            .any(|p| p[0] == 20 && p[1] == 22 && p[2] == 30);
+        assert!(
+            has_chip_bg,
+            "chip background fill should be present in the rendered buffer"
+        );
     }
 }

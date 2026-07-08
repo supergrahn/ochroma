@@ -18,23 +18,58 @@ pub struct AudioGraphNode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AudioNodeType {
     // Sources
-    WavPlayer { path: String, looping: bool },
-    Oscillator { waveform: Waveform, frequency: f32 },
-    Noise { noise_type: NoiseType },
+    WavPlayer {
+        path: String,
+        looping: bool,
+    },
+    Oscillator {
+        waveform: Waveform,
+        frequency: f32,
+    },
+    Noise {
+        noise_type: NoiseType,
+    },
     // Effects
-    Gain { volume: f32 },
-    Pan { pan: f32 },
-    LowPass { cutoff: f32 },
-    HighPass { cutoff: f32 },
-    Delay { time: f32, feedback: f32 },
-    Reverb { room_size: f32, damping: f32 },
+    Gain {
+        volume: f32,
+    },
+    Pan {
+        pan: f32,
+    },
+    LowPass {
+        cutoff: f32,
+    },
+    HighPass {
+        cutoff: f32,
+    },
+    Delay {
+        time: f32,
+        feedback: f32,
+    },
+    Reverb {
+        room_size: f32,
+        damping: f32,
+    },
     // Mixing
-    Mixer { channel_count: u32 },
+    Mixer {
+        channel_count: u32,
+    },
     // Modulation
-    LFO { frequency: f32, amplitude: f32, waveform: Waveform },
-    Envelope { attack: f32, decay: f32, sustain: f32, release: f32 },
+    LFO {
+        frequency: f32,
+        amplitude: f32,
+        waveform: Waveform,
+    },
+    Envelope {
+        attack: f32,
+        decay: f32,
+        sustain: f32,
+        release: f32,
+    },
     // Parameters
-    GameParameter { name: String },
+    GameParameter {
+        name: String,
+    },
     // Output
     Output,
 }
@@ -138,10 +173,7 @@ impl AudioGraph {
             },
             [0.0, 100.0],
         );
-        let mixer = graph.add_node(
-            AudioNodeType::Mixer { channel_count: 2 },
-            [200.0, 50.0],
-        );
+        let mixer = graph.add_node(AudioNodeType::Mixer { channel_count: 2 }, [200.0, 50.0]);
         let gain = graph.add_node(AudioNodeType::Gain { volume: 1.0 }, [400.0, 50.0]);
         let out = graph.add_node(AudioNodeType::Output, [600.0, 50.0]);
         graph.output_node_id = out;

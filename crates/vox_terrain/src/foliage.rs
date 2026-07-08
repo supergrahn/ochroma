@@ -1,16 +1,16 @@
-use rand::prelude::*;
 use rand::SeedableRng;
+use rand::prelude::*;
 use std::sync::Arc;
 
 /// A foliage placement rule.
 #[derive(Debug, Clone)]
 pub struct FoliageRule {
     pub name: String,
-    pub asset_path: String,   // .ply or .vxm file to instance
-    pub density: f32,          // instances per 100 square metres
-    pub min_height: f32,       // only place above this height
+    pub asset_path: String, // .ply or .vxm file to instance
+    pub density: f32,       // instances per 100 square metres
+    pub min_height: f32,    // only place above this height
     pub max_height: f32,
-    pub max_slope: f32,        // degrees — don't place on steep slopes
+    pub max_slope: f32, // degrees — don't place on steep slopes
     pub min_scale: f32,
     pub max_scale: f32,
     pub random_rotation: bool, // randomise Y rotation

@@ -73,26 +73,43 @@ impl GraphTemplate {
     /// pulling every node from `registry`. Each edge is type-checked by
     /// `graph.connect`; a type-mismatched or out-of-range edge is a hard error so
     /// a template can never produce an un-cookable graph.
-    pub fn instantiate(&self, registry: &NodeRegistry) -> Result<InstantiatedTemplate, TemplateError> {
+    pub fn instantiate(
+        &self,
+        registry: &NodeRegistry,
+    ) -> Result<InstantiatedTemplate, TemplateError> {
         let mut graph = OchromaNodeGraph::new();
         let mut node_ids = Vec::with_capacity(self.nodes.len());
 
         for tn in &self.nodes {
-            let node = registry.create(tn.kind).ok_or(TemplateError::UnknownKind(tn.kind))?;
+            let node = registry
+                .create(tn.kind)
+                .ok_or(TemplateError::UnknownKind(tn.kind))?;
             node_ids.push(graph.add_node(tn.label, node));
         }
 
         for (ei, edge) in self.edges.iter().enumerate() {
-            let from = *node_ids.get(edge.from).ok_or(TemplateError::BadEdgeIndex { edge: ei, index: edge.from })?;
-            let to = *node_ids.get(edge.to).ok_or(TemplateError::BadEdgeIndex { edge: ei, index: edge.to })?;
+            let from = *node_ids.get(edge.from).ok_or(TemplateError::BadEdgeIndex {
+                edge: ei,
+                index: edge.from,
+            })?;
+            let to = *node_ids.get(edge.to).ok_or(TemplateError::BadEdgeIndex {
+                edge: ei,
+                index: edge.to,
+            })?;
             graph
                 .connect(from, edge.from_port, to, edge.to_port)
-                .map_err(|e| TemplateError::ConnectFailed { edge: ei, reason: e.to_string() })?;
+                .map_err(|e| TemplateError::ConnectFailed {
+                    edge: ei,
+                    reason: e.to_string(),
+                })?;
         }
 
         let terminal_id = *node_ids
             .get(self.terminal)
-            .ok_or(TemplateError::BadEdgeIndex { edge: usize::MAX, index: self.terminal })?;
+            .ok_or(TemplateError::BadEdgeIndex {
+                edge: usize::MAX,
+                index: self.terminal,
+            })?;
 
         Ok(InstantiatedTemplate {
             graph,
@@ -116,16 +133,39 @@ pub fn template_library() -> Vec<GraphTemplate> {
         //    same shape PCG uses where a biome map gates a downstream scatter.)
         GraphTemplate {
             name: "Terrain → Biome → Vegetation → Splatize",
-            description: "Classify terrain into biomes, grow vegetation, splatize to spectral Gaussians.",
+            description:
+                "Classify terrain into biomes, grow vegetation, splatize to spectral Gaussians.",
             nodes: vec![
-                TemplateNode { kind: "TerrainNode",    label: "terrain" },
-                TemplateNode { kind: "BiomeNode",      label: "biome" },
-                TemplateNode { kind: "VegetationNode", label: "vegetation" },
-                TemplateNode { kind: "SplatizeNode",   label: "splatize" },
+                TemplateNode {
+                    kind: "TerrainNode",
+                    label: "terrain",
+                },
+                TemplateNode {
+                    kind: "BiomeNode",
+                    label: "biome",
+                },
+                TemplateNode {
+                    kind: "VegetationNode",
+                    label: "vegetation",
+                },
+                TemplateNode {
+                    kind: "SplatizeNode",
+                    label: "splatize",
+                },
             ],
             edges: vec![
-                TemplateEdge { from: 0, from_port: "terrain", to: 1, to_port: "terrain" },
-                TemplateEdge { from: 2, from_port: "mesh",    to: 3, to_port: "mesh" },
+                TemplateEdge {
+                    from: 0,
+                    from_port: "terrain",
+                    to: 1,
+                    to_port: "terrain",
+                },
+                TemplateEdge {
+                    from: 2,
+                    from_port: "mesh",
+                    to: 3,
+                    to_port: "mesh",
+                },
             ],
             terminal: 3,
             terminal_port: "splats",
@@ -137,20 +177,66 @@ pub fn template_library() -> Vec<GraphTemplate> {
             name: "Terrain → Moisture → Vegetation",
             description: "Combine drip moisture, classify biomes, weight + splatize vegetation.",
             nodes: vec![
-                TemplateNode { kind: "TerrainNode",      label: "terrain" },
-                TemplateNode { kind: "BiomeNode",        label: "biome" },
-                TemplateNode { kind: "CatenaryNode",     label: "drip" },
-                TemplateNode { kind: "MoistureNode",     label: "moisture" },
-                TemplateNode { kind: "SplatWeightNode",  label: "splat_weight" },
-                TemplateNode { kind: "VegetationNode",   label: "vegetation" },
-                TemplateNode { kind: "SplatizeNode",     label: "splatize" },
+                TemplateNode {
+                    kind: "TerrainNode",
+                    label: "terrain",
+                },
+                TemplateNode {
+                    kind: "BiomeNode",
+                    label: "biome",
+                },
+                TemplateNode {
+                    kind: "CatenaryNode",
+                    label: "drip",
+                },
+                TemplateNode {
+                    kind: "MoistureNode",
+                    label: "moisture",
+                },
+                TemplateNode {
+                    kind: "SplatWeightNode",
+                    label: "splat_weight",
+                },
+                TemplateNode {
+                    kind: "VegetationNode",
+                    label: "vegetation",
+                },
+                TemplateNode {
+                    kind: "SplatizeNode",
+                    label: "splatize",
+                },
             ],
             edges: vec![
-                TemplateEdge { from: 0, from_port: "terrain",   to: 1, to_port: "terrain" },
-                TemplateEdge { from: 2, from_port: "points",    to: 3, to_port: "drip" },
-                TemplateEdge { from: 1, from_port: "biome_map", to: 4, to_port: "biome_map" },
-                TemplateEdge { from: 3, from_port: "moisture",  to: 4, to_port: "moisture" },
-                TemplateEdge { from: 5, from_port: "mesh",      to: 6, to_port: "mesh" },
+                TemplateEdge {
+                    from: 0,
+                    from_port: "terrain",
+                    to: 1,
+                    to_port: "terrain",
+                },
+                TemplateEdge {
+                    from: 2,
+                    from_port: "points",
+                    to: 3,
+                    to_port: "drip",
+                },
+                TemplateEdge {
+                    from: 1,
+                    from_port: "biome_map",
+                    to: 4,
+                    to_port: "biome_map",
+                },
+                TemplateEdge {
+                    from: 3,
+                    from_port: "moisture",
+                    to: 4,
+                    to_port: "moisture",
+                },
+                TemplateEdge {
+                    from: 5,
+                    from_port: "mesh",
+                    to: 6,
+                    to_port: "mesh",
+                },
             ],
             terminal: 6,
             terminal_port: "splats",
@@ -191,9 +277,19 @@ mod tests {
                 .unwrap_or_else(|e| panic!("template '{}' failed to instantiate: {e}", tmpl.name));
 
             // Every template node was actually created.
-            assert_eq!(inst.node_ids.len(), tmpl.nodes.len(), "template '{}' node count", tmpl.name);
+            assert_eq!(
+                inst.node_ids.len(),
+                tmpl.nodes.len(),
+                "template '{}' node count",
+                tmpl.name
+            );
             // Every template edge is present in the built graph (type-checked on connect).
-            assert_eq!(inst.graph.edge_count(), tmpl.edges.len(), "template '{}' edge count", tmpl.name);
+            assert_eq!(
+                inst.graph.edge_count(),
+                tmpl.edges.len(),
+                "template '{}' edge count",
+                tmpl.name
+            );
 
             // Cook the whole DAG and pull the terminal Splats output.
             let result = inst
@@ -202,22 +298,45 @@ mod tests {
                 .unwrap_or_else(|e| panic!("template '{}' failed to evaluate: {e}", tmpl.name));
             let splats: &Vec<GaussianSplat> = result
                 .get(inst.terminal_id, inst.terminal_port)
-                .unwrap_or_else(|| panic!("template '{}' terminal has no '{}' output", tmpl.name, inst.terminal_port))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "template '{}' terminal has no '{}' output",
+                        tmpl.name, inst.terminal_port
+                    )
+                })
                 .as_splats()
-                .unwrap_or_else(|| panic!("template '{}' terminal output is not Splats", tmpl.name));
+                .unwrap_or_else(|| {
+                    panic!("template '{}' terminal output is not Splats", tmpl.name)
+                });
 
-            assert!(!splats.is_empty(), "template '{}' produced zero splats", tmpl.name);
+            assert!(
+                !splats.is_empty(),
+                "template '{}' produced zero splats",
+                tmpl.name
+            );
 
             // Real, finite positions within a generous world bound (meshes are tens
             // of units; the terrain world_size default is 1000).
             for s in splats {
                 let p = s.position();
                 for (axis, &c) in p.iter().enumerate() {
-                    assert!(c.is_finite(), "template '{}' splat coord {axis} is non-finite: {c}", tmpl.name);
-                    assert!(c.abs() <= 2000.0, "template '{}' splat coord {axis} out of world bound: {c}", tmpl.name);
+                    assert!(
+                        c.is_finite(),
+                        "template '{}' splat coord {axis} is non-finite: {c}",
+                        tmpl.name
+                    );
+                    assert!(
+                        c.abs() <= 2000.0,
+                        "template '{}' splat coord {axis} out of world bound: {c}",
+                        tmpl.name
+                    );
                 }
                 // Spectral payload is non-zero (material was assigned).
-                assert!(s.spectral().iter().any(|&v| v != 0), "template '{}' splat has empty spectral", tmpl.name);
+                assert!(
+                    s.spectral().iter().any(|&v| v != 0),
+                    "template '{}' splat has empty spectral",
+                    tmpl.name
+                );
             }
             println!("template '{}': {} splats", tmpl.name, splats.len());
         }
@@ -246,10 +365,21 @@ mod tests {
             name: "bad",
             description: "intentionally type-invalid",
             nodes: vec![
-                TemplateNode { kind: "TerrainNode",  label: "terrain" },
-                TemplateNode { kind: "SplatizeNode", label: "splatize" },
+                TemplateNode {
+                    kind: "TerrainNode",
+                    label: "terrain",
+                },
+                TemplateNode {
+                    kind: "SplatizeNode",
+                    label: "splatize",
+                },
             ],
-            edges: vec![TemplateEdge { from: 0, from_port: "terrain", to: 1, to_port: "mesh" }],
+            edges: vec![TemplateEdge {
+                from: 0,
+                from_port: "terrain",
+                to: 1,
+                to_port: "mesh",
+            }],
             terminal: 1,
             terminal_port: "splats",
         };
@@ -267,7 +397,10 @@ mod tests {
         let bad = GraphTemplate {
             name: "bad-kind",
             description: "references a node that does not exist",
-            nodes: vec![TemplateNode { kind: "NoSuchNode", label: "x" }],
+            nodes: vec![TemplateNode {
+                kind: "NoSuchNode",
+                label: "x",
+            }],
             edges: vec![],
             terminal: 0,
             terminal_port: "out",

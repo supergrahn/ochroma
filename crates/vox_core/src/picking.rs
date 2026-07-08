@@ -25,16 +25,19 @@ impl ScreenRay {
         // matching the wgpu / Vulkan / Metal depth range used by glam's
         // orthographic_rh and perspective_rh projection matrices.
         let near_ndc = Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-        let far_ndc  = Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let far_ndc = Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
 
         let near_world = view_proj_inv * near_ndc;
-        let far_world  = view_proj_inv * far_ndc;
+        let far_world = view_proj_inv * far_ndc;
 
         let near_w = Vec3::new(near_world.x, near_world.y, near_world.z) / near_world.w;
-        let far_w  = Vec3::new(far_world.x,  far_world.y,  far_world.z)  / far_world.w;
+        let far_w = Vec3::new(far_world.x, far_world.y, far_world.z) / far_world.w;
 
         let direction = (far_w - near_w).normalize();
-        Self { origin: near_w, direction }
+        Self {
+            origin: near_w,
+            direction,
+        }
     }
 
     pub fn terrain_hit(&self, height_fn: &dyn Fn(f32, f32) -> f32, max_dist: f32) -> Option<Vec3> {

@@ -38,14 +38,27 @@ impl CommandPayload {
 pub enum NetMessage {
     /// Client → Server: player input (opaque command bytes; the engine does
     /// not interpret the payload).
-    PlayerInput { player_id: u32, command: CommandPayload },
+    PlayerInput {
+        player_id: u32,
+        command: CommandPayload,
+    },
     /// Server → Client: state delta
-    StateDelta { tick: u64, deltas: Vec<EntityDelta> },
+    StateDelta {
+        tick: u64,
+        deltas: Vec<EntityDelta>,
+    },
     /// Server → Client: full state snapshot
-    FullSnapshot { tick: u64, data: Vec<u8> },
+    FullSnapshot {
+        tick: u64,
+        data: Vec<u8>,
+    },
     /// Ping/pong for latency measurement
-    Ping { timestamp: u64 },
-    Pong { timestamp: u64 },
+    Ping {
+        timestamp: u64,
+    },
+    Pong {
+        timestamp: u64,
+    },
 }
 
 impl NetMessage {
@@ -90,9 +103,14 @@ impl ReplicationServer {
                     data: command.as_bytes().to_vec(),
                     timestamp: self.tick,
                 };
-                vec![NetMessage::StateDelta { tick: self.tick, deltas: vec![delta] }]
+                vec![NetMessage::StateDelta {
+                    tick: self.tick,
+                    deltas: vec![delta],
+                }]
             }
-            NetMessage::Ping { timestamp } => vec![NetMessage::Pong { timestamp: *timestamp }],
+            NetMessage::Ping { timestamp } => vec![NetMessage::Pong {
+                timestamp: *timestamp,
+            }],
             _ => vec![],
         }
     }

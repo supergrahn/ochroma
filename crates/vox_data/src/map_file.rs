@@ -49,7 +49,7 @@ pub struct PlacedObject {
     pub position: [f32; 3],
     pub rotation: [f32; 4], // quaternion xyzw
     pub scale: [f32; 3],
-    pub scripts: Vec<String>,                              // attached script names
+    pub scripts: Vec<String>, // attached script names
     pub properties: std::collections::BTreeMap<String, String>, // custom key-value
 }
 
@@ -70,8 +70,8 @@ pub struct MapSettings {
     pub fog_density: f32,
     pub fog_color: [f32; 3],
     pub gravity: f32,
-    pub time_of_day: f32,   // starting hour
-    pub weather: String,     // starting weather
+    pub time_of_day: f32, // starting hour
+    pub weather: String,  // starting weather
     pub skybox: Option<String>,
 }
 

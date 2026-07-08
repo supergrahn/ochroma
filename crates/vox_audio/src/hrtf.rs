@@ -17,7 +17,9 @@ pub struct HrtfParams {
 
 impl Default for HrtfParams {
     fn default() -> Self {
-        Self { head_radius_m: 0.0875 }
+        Self {
+            head_radius_m: 0.0875,
+        }
     }
 }
 
@@ -36,8 +38,7 @@ pub struct BinauralSample {
 pub fn compute_hrtf(azimuth_rad: f32, elevation_rad: f32, params: &HrtfParams) -> BinauralSample {
     // --- ITD via Woodworth formula ---
     // itd_seconds = (r / c) * (sin(θ) + θ)  where θ = azimuth
-    let itd_seconds = (params.head_radius_m / SPEED_OF_SOUND)
-        * (azimuth_rad.sin() + azimuth_rad);
+    let itd_seconds = (params.head_radius_m / SPEED_OF_SOUND) * (azimuth_rad.sin() + azimuth_rad);
     let itd_samples = (itd_seconds * SAMPLE_RATE).round() as i32;
 
     // --- ILD ---
@@ -54,7 +55,11 @@ pub fn compute_hrtf(azimuth_rad: f32, elevation_rad: f32, params: &HrtfParams) -
     let left_gain = left_gain.clamp(0.1, 1.0);
     let right_gain = right_gain.clamp(0.1, 1.0);
 
-    BinauralSample { left_gain, right_gain, itd_samples }
+    BinauralSample {
+        left_gain,
+        right_gain,
+        itd_samples,
+    }
 }
 
 /// Convert a world-space source position to HRTF azimuth and elevation
@@ -135,7 +140,12 @@ mod tests {
         let params = HrtfParams::default();
         let s = compute_hrtf(0.0, 0.0, &params);
         let diff = (s.left_gain - s.right_gain).abs();
-        assert!(diff < 1e-4, "gains should be equal ahead: L={} R={}", s.left_gain, s.right_gain);
+        assert!(
+            diff < 1e-4,
+            "gains should be equal ahead: L={} R={}",
+            s.left_gain,
+            s.right_gain
+        );
     }
 
     #[test]
@@ -161,7 +171,11 @@ mod tests {
     fn hrtf_itd_positive_for_right_source() {
         let params = HrtfParams::default();
         let s = compute_hrtf(PI / 4.0, 0.0, &params);
-        assert!(s.itd_samples > 0, "ITD should be positive for source at PI/4, got {}", s.itd_samples);
+        assert!(
+            s.itd_samples > 0,
+            "ITD should be positive for source at PI/4, got {}",
+            s.itd_samples
+        );
     }
 
     #[test]
@@ -172,6 +186,10 @@ mod tests {
         let forward = glam::Vec3::new(0.0, 0.0, -1.0);
         let up = glam::Vec3::new(0.0, 1.0, 0.0);
         let (az, _el) = world_to_hrtf(source, listener, forward, up);
-        assert!(az.abs() < 1e-4, "azimuth should be ~0 for source ahead, got {}", az);
+        assert!(
+            az.abs() < 1e-4,
+            "azimuth should be ~0 for source ahead, got {}",
+            az
+        );
     }
 }

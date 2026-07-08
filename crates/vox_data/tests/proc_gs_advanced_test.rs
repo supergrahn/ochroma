@@ -38,10 +38,7 @@ fn different_seeds_different_trees() {
 #[test]
 fn bench_has_seat_and_back() {
     let splats = generate_bench(42);
-    assert!(
-        splats.len() > 50,
-        "Bench needs splats for frame + slats"
-    );
+    assert!(splats.len() > 50, "Bench needs splats for frame + slats");
     let max_y = splats
         .iter()
         .map(|s| s.position()[1])

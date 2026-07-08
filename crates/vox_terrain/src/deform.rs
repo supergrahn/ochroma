@@ -6,7 +6,7 @@
 //! After any deformation call, regenerate terrain splats by calling
 //! `vox_terrain::volume_to_splats(&volume, &materials, seed)`.
 
-use crate::volume::{sculpt, TerrainVolume};
+use crate::volume::{TerrainVolume, sculpt};
 
 /// Carve a sphere-shaped hole into the SDF terrain.
 pub fn carve_sphere(volume: &mut TerrainVolume, center: [f32; 3], radius: f32) {
@@ -51,7 +51,11 @@ mod tests {
         carve_sphere(&mut vol, [0.0, 0.0, 0.0], 2.0);
         let (cx, cy, cz) = vol.world_to_voxel(0.0, 0.0, 0.0);
         let val = vol.get(cx, cy, cz);
-        assert!(val > -1.0, "SDF at sphere center should increase after carving, got {}", val);
+        assert!(
+            val > -1.0,
+            "SDF at sphere center should increase after carving, got {}",
+            val
+        );
     }
 
     #[test]
@@ -60,7 +64,11 @@ mod tests {
         carve_sphere(&mut vol, [0.0, 0.0, 0.0], 1.0);
         let (fx, fy, fz) = vol.world_to_voxel(6.0, 0.0, 0.0);
         let val = vol.get(fx, fy, fz);
-        assert!(val < 0.0, "Far voxels should remain solid after a small carve, got {}", val);
+        assert!(
+            val < 0.0,
+            "Far voxels should remain solid after a small carve, got {}",
+            val
+        );
     }
 
     #[test]
@@ -69,7 +77,11 @@ mod tests {
         fill_sphere(&mut vol, [0.0, 0.0, 0.0], 2.0, 1);
         let (cx, cy, cz) = vol.world_to_voxel(0.0, 0.0, 0.0);
         let val = vol.get(cx, cy, cz);
-        assert!(val < 0.0, "SDF at sphere center should be solid (< 0) after fill, got {}", val);
+        assert!(
+            val < 0.0,
+            "SDF at sphere center should be solid (< 0) after fill, got {}",
+            val
+        );
     }
 
     #[test]
@@ -82,7 +94,11 @@ mod tests {
         assert!(after_carve > -1.0, "carve should make center less solid");
         fill_sphere(&mut vol, center, 2.0, 0);
         let after_fill = vol.get(cx, cy, cz);
-        assert!(after_fill < 0.0, "fill after carve should restore solid (< 0), got {}", after_fill);
+        assert!(
+            after_fill < 0.0,
+            "fill after carve should restore solid (< 0), got {}",
+            after_fill
+        );
     }
 
     #[test]
@@ -91,7 +107,10 @@ mod tests {
         let mut vol_b = make_solid_volume();
         carve_sphere(&mut vol_a, [0.0, 0.0, 0.0], 3.0);
         apply_explosion(&mut vol_b, [0.0, 0.0, 0.0], 3.0);
-        assert_eq!(vol_a.data, vol_b.data, "apply_explosion should produce identical result to carve_sphere");
+        assert_eq!(
+            vol_a.data, vol_b.data,
+            "apply_explosion should produce identical result to carve_sphere"
+        );
     }
 
     #[test]
@@ -100,6 +119,10 @@ mod tests {
         carve_tunnel(&mut vol, [-3.0, 0.0, 0.0], [3.0, 0.0, 0.0], 1.0);
         let (cx, cy, cz) = vol.world_to_voxel(0.0, 0.0, 0.0);
         let val = vol.get(cx, cy, cz);
-        assert!(val > -1.0, "tunnel center should be air after carve_tunnel, got {}", val);
+        assert!(
+            val > -1.0,
+            "tunnel center should be air after carve_tunnel, got {}",
+            val
+        );
     }
 }

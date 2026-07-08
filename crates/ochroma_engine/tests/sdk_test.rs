@@ -1,5 +1,5 @@
-use ochroma_engine::prelude::*;
 use glam::Quat;
+use ochroma_engine::prelude::*;
 
 #[test]
 fn engine_prelude_imports_core_types() {

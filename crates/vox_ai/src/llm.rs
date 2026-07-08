@@ -7,7 +7,7 @@
 //! llama.cpp bindings, etc.) behind an optional feature. `LlmBackend::Stub`
 //! and `LlmBackend::Remote` exist for callers to select once that lands.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 #[derive(Debug, Clone)]
 pub enum LlmBackend {
@@ -25,7 +25,11 @@ pub struct SamplingConfig {
 
 impl Default for SamplingConfig {
     fn default() -> Self {
-        Self { temperature: 0.7, top_p: 0.9, max_tokens: 256 }
+        Self {
+            temperature: 0.7,
+            top_p: 0.9,
+            max_tokens: 256,
+        }
     }
 }
 
@@ -45,11 +49,19 @@ struct LoadedModel {
 
 impl LlmInference {
     pub fn stub() -> Self {
-        Self { backend: LlmBackend::Stub, inner: None }
+        Self {
+            backend: LlmBackend::Stub,
+            inner: None,
+        }
     }
 
     pub fn remote(endpoint: impl Into<String>) -> Self {
-        Self { backend: LlmBackend::Remote { endpoint: endpoint.into() }, inner: None }
+        Self {
+            backend: LlmBackend::Remote {
+                endpoint: endpoint.into(),
+            },
+            inner: None,
+        }
     }
 
     pub fn load_gguf(model_path: impl Into<std::path::PathBuf>) -> Result<Self> {
@@ -81,11 +93,16 @@ impl LlmInference {
             }
             LlmBackend::Local { model_path } => {
                 let _ = (model_path, config.max_tokens);
-                Ok(format!("[local GGUF: {} tokens from {}]", config.max_tokens, model_path.display()))
+                Ok(format!(
+                    "[local GGUF: {} tokens from {}]",
+                    config.max_tokens,
+                    model_path.display()
+                ))
             }
-            LlmBackend::Remote { endpoint } => {
-                Ok(format!("[remote {}: not implemented in this plan]", endpoint))
-            }
+            LlmBackend::Remote { endpoint } => Ok(format!(
+                "[remote {}: not implemented in this plan]",
+                endpoint
+            )),
         }
     }
 
@@ -101,15 +118,22 @@ mod tests {
     #[test]
     fn stub_returns_non_empty_string() {
         let llm = LlmInference::stub();
-        let result = llm.generate("Hello world", &SamplingConfig::default()).unwrap();
+        let result = llm
+            .generate("Hello world", &SamplingConfig::default())
+            .unwrap();
         assert!(!result.is_empty(), "stub must return non-empty string");
     }
 
     #[test]
     fn stub_incorporates_prompt() {
         let llm = LlmInference::stub();
-        let result = llm.generate("What is the forge temperature?", &SamplingConfig::default()).unwrap();
-        assert!(result.contains("What is the forge"), "stub must echo prompt prefix");
+        let result = llm
+            .generate("What is the forge temperature?", &SamplingConfig::default())
+            .unwrap();
+        assert!(
+            result.contains("What is the forge"),
+            "stub must echo prompt prefix"
+        );
     }
 
     #[test]
@@ -128,7 +152,11 @@ mod tests {
         std::fs::remove_file(path).ok();
         assert!(result.is_err(), "load_gguf must error on invalid magic");
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("bad magic") || msg.contains("GGUF"), "error must mention GGUF: {}", msg);
+        assert!(
+            msg.contains("bad magic") || msg.contains("GGUF"),
+            "error must mention GGUF: {}",
+            msg
+        );
     }
 
     #[test]

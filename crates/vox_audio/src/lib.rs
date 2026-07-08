@@ -1,31 +1,35 @@
 pub mod biome_soundscape;
-pub use biome_soundscape::{BiomeKind, BiomeAmbientMix};
+pub use biome_soundscape::{BiomeAmbientMix, BiomeKind};
 pub mod acoustic_raytracer;
-pub mod av_sync;
-pub mod audio_graph;
 pub mod adaptive_music;
-pub mod hrtf;
-pub mod spatial;
-pub mod synth;
-pub mod ecs;
-pub mod spectral_synth;
-pub mod spectral_synth2;
-pub mod sdf_reverb;
+pub mod audio_graph;
+pub mod av_sync;
 pub mod cpal_backend;
+pub mod ecs;
+pub mod fundsp_graph;
+pub mod hrtf;
+pub mod sdf_reverb;
+pub mod spatial;
 pub mod spectral_acoustic;
 pub mod spectral_reverb;
-pub mod fundsp_graph;
-pub use spectral_synth::{synthesize_impact, create_impact_wav, synthesize_impact_from_splat_spectral};
-pub use spectral_synth2::SpectralSynth;
+pub mod spectral_synth;
+pub mod spectral_synth2;
+pub mod synth;
+pub use cpal_backend::{CpalBackend, CpalBackendBuilder, CpalHandle};
 pub use spectral_acoustic::SpectralAcousticProfile;
 pub use spectral_reverb::{
-    SpectralReverb, ReverbParams, reverb_for_room, reverb_for_room_from_gi, room_impulse,
+    ReverbParams, SpectralReverb, reverb_for_room, reverb_for_room_from_gi, room_impulse,
 };
-pub use cpal_backend::{CpalBackend, CpalBackendBuilder, CpalHandle};
+pub use spectral_synth::{
+    create_impact_wav, synthesize_impact, synthesize_impact_from_splat_spectral,
+};
+pub use spectral_synth2::SpectralSynth;
 
-pub use spatial::{compute_spatial, Listener, SpatialAudioManager};
-pub use synth::{generate_click, generate_collect_sound, generate_place_sound, generate_tone, save_wav};
 pub use fundsp_graph::{apply_gain, apply_reverb_send};
+pub use spatial::{Listener, SpatialAudioManager, compute_spatial};
+pub use synth::{
+    generate_click, generate_collect_sound, generate_place_sound, generate_tone, save_wav,
+};
 
 use glam::Vec3;
 
@@ -35,10 +39,20 @@ use glam::Vec3;
 
 #[derive(Debug)]
 pub enum AudioCommand {
-    Play { id: u32, path: String, volume: f32, looping: bool },
-    Stop { id: u32 },
+    Play {
+        id: u32,
+        path: String,
+        volume: f32,
+        looping: bool,
+    },
+    Stop {
+        id: u32,
+    },
     StopAll,
-    PlaySynth { samples: Vec<f32>, volume: f32 },
+    PlaySynth {
+        samples: Vec<f32>,
+        volume: f32,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -57,30 +71,29 @@ impl AudioThread {
         use rodio::Source as _;
         while let Ok(cmd) = self.receiver.recv() {
             match cmd {
-                AudioCommand::Play { id, path, volume, looping } => {
-                    match std::fs::File::open(&path) {
-                        Ok(file) => {
-                            match rodio::Decoder::new(std::io::BufReader::new(file)) {
-                                Ok(source) => {
-                                    match rodio::Sink::try_new(&stream_handle) {
-                                        Ok(sink) => {
-                                            sink.set_volume(volume);
-                                            if looping {
-                                                sink.append(source.repeat_infinite());
-                                            } else {
-                                                sink.append(source);
-                                            }
-                                            self.sinks.insert(id, sink);
-                                        }
-                                        Err(e) => eprintln!("[ochroma-audio] Sink error for {}: {}", path, e),
-                                    }
+                AudioCommand::Play {
+                    id,
+                    path,
+                    volume,
+                    looping,
+                } => match std::fs::File::open(&path) {
+                    Ok(file) => match rodio::Decoder::new(std::io::BufReader::new(file)) {
+                        Ok(source) => match rodio::Sink::try_new(&stream_handle) {
+                            Ok(sink) => {
+                                sink.set_volume(volume);
+                                if looping {
+                                    sink.append(source.repeat_infinite());
+                                } else {
+                                    sink.append(source);
                                 }
-                                Err(e) => eprintln!("[ochroma-audio] Decode error for {}: {}", path, e),
+                                self.sinks.insert(id, sink);
                             }
-                        }
-                        Err(e) => eprintln!("[ochroma-audio] File open error for {}: {}", path, e),
-                    }
-                }
+                            Err(e) => eprintln!("[ochroma-audio] Sink error for {}: {}", path, e),
+                        },
+                        Err(e) => eprintln!("[ochroma-audio] Decode error for {}: {}", path, e),
+                    },
+                    Err(e) => eprintln!("[ochroma-audio] File open error for {}: {}", path, e),
+                },
                 AudioCommand::Stop { id } => {
                     if let Some(sink) = self.sinks.remove(&id) {
                         sink.stop();
@@ -157,9 +170,14 @@ impl AudioHandle {
     }
 
     pub fn play(&self, path: &str, volume: f32, looping: bool) -> u32 {
-        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _ = self.sender.send(AudioCommand::Play {
-            id, path: path.to_string(), volume, looping,
+            id,
+            path: path.to_string(),
+            volume,
+            looping,
         });
         id
     }
@@ -267,7 +285,13 @@ impl AudioEngine {
     }
 
     /// Play a sine tone through the backend (no-op stub — backend is now on AudioHandle thread).
-    pub fn play_sine_backend(&mut self, _id: u32, _frequency: f32, _duration_secs: f32, _volume: f32) {
+    pub fn play_sine_backend(
+        &mut self,
+        _id: u32,
+        _frequency: f32,
+        _duration_secs: f32,
+        _volume: f32,
+    ) {
         // Backend is now owned by AudioHandle on a separate thread.
         // Use AudioHandle::play() for audio playback.
     }
@@ -276,7 +300,8 @@ impl AudioEngine {
     pub fn tick(&mut self, _dt: f32) {
         let listener = self.listener_position;
         while self.sources.len() > self.max_sources {
-            if let Some(idx) = self.sources
+            if let Some(idx) = self
+                .sources
                 .iter()
                 .enumerate()
                 .min_by(|(_, a), (_, b)| {
@@ -408,10 +433,14 @@ mod tests {
     #[cfg(feature = "audio-backend")]
     #[test]
     fn audio_handle_spawn_returns_some_with_feature() {
-        if std::env::var("CI").is_ok() { return; }
+        if std::env::var("CI").is_ok() {
+            return;
+        }
         let handle = AudioHandle::spawn();
         // Skip assertion when no audio device is available (e.g. headless WSL).
-        if handle.is_none() { return; }
+        if handle.is_none() {
+            return;
+        }
         assert!(handle.is_some());
     }
 
@@ -446,7 +475,12 @@ mod tests {
         let peak = wet.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         println!("dry.len={} wet.len={} peak={peak:.4}", dry.len(), wet.len());
         // Reverb send appends a tail, so the wet buffer must be at least as long.
-        assert!(wet.len() >= dry.len(), "wet {} < dry {}", wet.len(), dry.len());
+        assert!(
+            wet.len() >= dry.len(),
+            "wet {} < dry {}",
+            wet.len(),
+            dry.len()
+        );
         // And it must carry an audible signal.
         assert!(peak > 0.01, "wet impact should be audible, peak={peak}");
     }
@@ -469,23 +503,38 @@ mod tests {
             // With a device, the full 0.5 s strike (plus dead-room tail) must
             // be dispatched: at least SAMPLE_RATE/2 samples.
             let min = (crate::spectral_synth2::SAMPLE_RATE / 2) as usize;
-            assert!(dispatched >= min,
-                "expected >= {min} samples dispatched, got {dispatched}");
+            assert!(
+                dispatched >= min,
+                "expected >= {min} samples dispatched, got {dispatched}"
+            );
         }
     }
 
     #[test]
     fn audio_engine_tick_culls_over_budget() {
         let mut engine = AudioEngine::new(1);
-        engine.play(AudioSource { id: 0, position: Vec3::ZERO, volume: 1.0, looping: false, clip: "a.wav".into() });
-        engine.play(AudioSource { id: 0, position: Vec3::ZERO, volume: 0.5, looping: false, clip: "b.wav".into() });
+        engine.play(AudioSource {
+            id: 0,
+            position: Vec3::ZERO,
+            volume: 1.0,
+            looping: false,
+            clip: "a.wav".into(),
+        });
+        engine.play(AudioSource {
+            id: 0,
+            position: Vec3::ZERO,
+            volume: 0.5,
+            looping: false,
+            clip: "b.wav".into(),
+        });
         engine.tick(0.016);
         assert_eq!(engine.active_count(), 1);
     }
 
     #[test]
     fn play_biome_soundscape_queues_synth_command() {
-        let mix = biome_soundscape::BiomeAmbientMix::for_biome(biome_soundscape::BiomeKind::Wetland);
+        let mix =
+            biome_soundscape::BiomeAmbientMix::for_biome(biome_soundscape::BiomeKind::Wetland);
         let (tx, rx) = std::sync::mpsc::channel::<AudioCommand>();
 
         let queued = play_biome_soundscape(&mix, 0.1, 0.8, &[], &tx);
@@ -495,7 +544,10 @@ mod tests {
         match rx.try_recv().expect("expected PlaySynth") {
             AudioCommand::PlaySynth { samples, volume } => {
                 let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-                println!("soundscape: len={} peak={peak:.4} volume={volume}", samples.len());
+                println!(
+                    "soundscape: len={} peak={peak:.4} volume={volume}",
+                    samples.len()
+                );
                 assert_eq!(samples.len(), expected);
                 assert!(peak > 0.1, "ambient bed should be audible, peak={peak}");
                 assert!((volume - 0.8).abs() < 1e-6, "volume={volume}");
@@ -520,7 +572,9 @@ mod tests {
         let wet_len = play_biome_soundscape(&mix, 0.05, 0.5, &stone_room, &tx1);
 
         println!("dry_len={dry_len} wet_len={wet_len}");
-        assert!(wet_len > dry_len,
-            "stone-room reverb must extend the bed: dry={dry_len} wet={wet_len}");
+        assert!(
+            wet_len > dry_len,
+            "stone-room reverb must extend the bed: dry={dry_len} wet={wet_len}"
+        );
     }
 }

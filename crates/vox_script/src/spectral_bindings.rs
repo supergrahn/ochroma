@@ -18,7 +18,10 @@ pub struct ThresholdEntry {
 
 impl SpectralState {
     pub fn new() -> Self {
-        Self { band_energy: [0.0f32; 16], thresholds: Vec::new() }
+        Self {
+            band_energy: [0.0f32; 16],
+            thresholds: Vec::new(),
+        }
     }
 
     /// Write a single band's energy in linear f32. This is the clean host-side
@@ -51,12 +54,18 @@ impl SpectralState {
 
     /// Read a single band's energy in linear f32. Returns 0.0 for out-of-range.
     pub fn band_energy(&self, band: usize) -> f32 {
-        if band < 16 { self.band_energy[band] } else { 0.0 }
+        if band < 16 {
+            self.band_energy[band]
+        } else {
+            0.0
+        }
     }
 }
 
 impl Default for SpectralState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub fn register_spectral_bindings(
@@ -67,44 +76,72 @@ pub fn register_spectral_bindings(
 
     {
         let s = state.clone();
-        spectral.set("get_band", lua.create_function(move |_, (x, y, z, band): (f32, f32, f32, usize)| {
-            let _ = (x, y, z);
-            let guard = s.lock().unwrap();
-            if band < 16 {
-                Ok(guard.band_energy[band])
-            } else {
-                Err(mlua::Error::RuntimeError(format!("band {} out of range [0,15]", band)))
-            }
-        })?)?;
+        spectral.set(
+            "get_band",
+            lua.create_function(move |_, (x, y, z, band): (f32, f32, f32, usize)| {
+                let _ = (x, y, z);
+                let guard = s.lock().unwrap();
+                if band < 16 {
+                    Ok(guard.band_energy[band])
+                } else {
+                    Err(mlua::Error::RuntimeError(format!(
+                        "band {} out of range [0,15]",
+                        band
+                    )))
+                }
+            })?,
+        )?;
     }
 
     {
         let s = state.clone();
-        spectral.set("field_energy", lua.create_function(move |_, (x, y, z, _radius, band): (f32, f32, f32, f32, usize)| {
-            let _ = (x, y, z);
-            let guard = s.lock().unwrap();
-            if band < 16 {
-                Ok(guard.band_energy[band])
-            } else {
-                Err(mlua::Error::RuntimeError(format!("band {} out of range [0,15]", band)))
-            }
-        })?)?;
+        spectral.set(
+            "field_energy",
+            lua.create_function(
+                move |_, (x, y, z, _radius, band): (f32, f32, f32, f32, usize)| {
+                    let _ = (x, y, z);
+                    let guard = s.lock().unwrap();
+                    if band < 16 {
+                        Ok(guard.band_energy[band])
+                    } else {
+                        Err(mlua::Error::RuntimeError(format!(
+                            "band {} out of range [0,15]",
+                            band
+                        )))
+                    }
+                },
+            )?,
+        )?;
     }
 
     {
         let s = state.clone();
-        spectral.set("on_threshold", lua.create_function(move |lua_ctx, (x, y, z, radius, band, threshold, cb): (f32, f32, f32, f32, usize, f32, LuaFunction)| {
-            let key = lua_ctx.create_registry_value(cb)?;
-            let mut guard = s.lock().unwrap();
-            guard.thresholds.push(ThresholdEntry {
-                pos: [x, y, z],
-                radius,
-                band,
-                threshold,
-                registry_key: key,
-            });
-            Ok(())
-        })?)?;
+        spectral.set(
+            "on_threshold",
+            lua.create_function(
+                move |lua_ctx,
+                      (x, y, z, radius, band, threshold, cb): (
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    usize,
+                    f32,
+                    LuaFunction,
+                )| {
+                    let key = lua_ctx.create_registry_value(cb)?;
+                    let mut guard = s.lock().unwrap();
+                    guard.thresholds.push(ThresholdEntry {
+                        pos: [x, y, z],
+                        radius,
+                        band,
+                        threshold,
+                        registry_key: key,
+                    });
+                    Ok(())
+                },
+            )?,
+        )?;
     }
 
     lua.globals().set("spectral", spectral)?;
@@ -116,7 +153,10 @@ pub fn tick_thresholds(lua: &Lua, state: &Mutex<SpectralState>) -> Result<(), ml
     let (energies, fired_indices) = {
         let guard = state.lock().unwrap();
         let energies = guard.band_energy;
-        let fired: Vec<usize> = guard.thresholds.iter().enumerate()
+        let fired: Vec<usize> = guard
+            .thresholds
+            .iter()
+            .enumerate()
             .filter(|(_, e)| e.band < 16 && energies[e.band] >= e.threshold)
             .map(|(i, _)| i)
             .collect();
@@ -152,9 +192,14 @@ mod tests {
     #[test]
     fn get_band_returns_value() {
         let lua = Lua::new();
-        let state = make_state([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]);
+        let state = make_state([
+            0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8,
+        ]);
         register_spectral_bindings(&lua, state).unwrap();
-        let v: f32 = lua.load("return spectral.get_band(0,0,0,2)").eval().unwrap();
+        let v: f32 = lua
+            .load("return spectral.get_band(0,0,0,2)")
+            .eval()
+            .unwrap();
         println!("band 2 = {}", v);
         assert!((v - 0.3).abs() < 1e-5, "band 2 should be 0.3, got {}", v);
     }
@@ -173,7 +218,9 @@ mod tests {
         let lua = Lua::new();
         let state = make_state([0.0; 16]);
         register_spectral_bindings(&lua, state.clone()).unwrap();
-        lua.load("spectral.on_threshold(0,0,0,1.0, 3, 0.5, function(band, val) end)").exec().unwrap();
+        lua.load("spectral.on_threshold(0,0,0,1.0, 3, 0.5, function(band, val) end)")
+            .exec()
+            .unwrap();
         assert_eq!(state.lock().unwrap().thresholds.len(), 1);
     }
 
@@ -187,7 +234,10 @@ mod tests {
         lua.load("fired = false; spectral.on_threshold(0,0,0,1.0, 5, 0.8, function(band, val) fired = true; print('fired = true band=' .. band .. ' energy=' .. val) end)").exec().unwrap();
         tick_thresholds(&lua, &state).unwrap();
         let fired: bool = lua.globals().get("fired").unwrap();
-        assert!(fired, "callback should have fired when band 5 energy (0.9) exceeded threshold (0.8)");
+        assert!(
+            fired,
+            "callback should have fired when band 5 energy (0.9) exceeded threshold (0.8)"
+        );
     }
 
     #[test]
@@ -206,10 +256,19 @@ mod tests {
     #[test]
     fn field_energy_returns_band_value() {
         let lua = Lua::new();
-        let state = make_state([0.0, 0.0, 0.0, 0.0, 0.77, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let state = make_state([
+            0.0, 0.0, 0.0, 0.0, 0.77, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ]);
         register_spectral_bindings(&lua, state).unwrap();
-        let v: f32 = lua.load("return spectral.field_energy(1,2,3, 5.0, 4)").eval().unwrap();
+        let v: f32 = lua
+            .load("return spectral.field_energy(1,2,3, 5.0, 4)")
+            .eval()
+            .unwrap();
         println!("field_energy band 4 = {}", v);
-        assert!((v - 0.77).abs() < 1e-5, "field_energy band 4 should be 0.77, got {}", v);
+        assert!(
+            (v - 0.77).abs() < 1e-5,
+            "field_energy band 4 should be 0.77, got {}",
+            v
+        );
     }
 }

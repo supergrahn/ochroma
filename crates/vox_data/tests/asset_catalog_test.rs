@@ -13,9 +13,11 @@ fn default_catalog_has_entries() {
 #[test]
 fn catalog_has_all_categories() {
     let catalog = default_catalog();
-    assert!(catalog
-        .iter()
-        .any(|e| e.category == AssetCategory::Structure));
+    assert!(
+        catalog
+            .iter()
+            .any(|e| e.category == AssetCategory::Structure)
+    );
     assert!(catalog.iter().any(|e| e.category == AssetCategory::Tree));
     assert!(catalog.iter().any(|e| e.category == AssetCategory::Prop));
 }

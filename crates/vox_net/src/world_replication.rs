@@ -69,7 +69,9 @@ impl WorldChunk {
     }
 
     pub fn decode(data: &[u8]) -> Option<Self> {
-        if data.len() < 4 + CELLS_PER_CHUNK * 5 { return None; }
+        if data.len() < 4 + CELLS_PER_CHUNK * 5 {
+            return None;
+        }
         let chunk_x = u16::from_le_bytes([data[0], data[1]]);
         let chunk_z = u16::from_le_bytes([data[2], data[3]]);
         let mut cells = [WorldCellPacked::default(); CELLS_PER_CHUNK];
@@ -81,7 +83,11 @@ impl WorldChunk {
             cell.channel_d = data[base + 3];
             cell.channel_e = data[base + 4];
         }
-        Some(WorldChunk { chunk_x, chunk_z, cells })
+        Some(WorldChunk {
+            chunk_x,
+            chunk_z,
+            cells,
+        })
     }
 }
 
@@ -116,7 +122,11 @@ impl WorldChunkGridNet {
                         }
                     }
                 }
-                chunks.push(WorldChunk { chunk_x: cx as u16, chunk_z: cz as u16, cells: packed_cells });
+                chunks.push(WorldChunk {
+                    chunk_x: cx as u16,
+                    chunk_z: cz as u16,
+                    cells: packed_cells,
+                });
             }
         }
         chunks
@@ -130,8 +140,15 @@ mod tests {
     #[test]
     fn test_world_chunk_encode_decode_roundtrip() {
         let chunk = WorldChunk {
-            chunk_x: 2, chunk_z: 3,
-            cells: [WorldCellPacked { channel_a: 128, channel_b: 50, channel_c: 200, channel_d: 30, channel_e: 180 }; 256],
+            chunk_x: 2,
+            chunk_z: 3,
+            cells: [WorldCellPacked {
+                channel_a: 128,
+                channel_b: 50,
+                channel_c: 200,
+                channel_d: 30,
+                channel_e: 180,
+            }; 256],
         };
         let encoded = chunk.encode();
         let decoded = WorldChunk::decode(&encoded).expect("decode should succeed");
@@ -151,8 +168,21 @@ mod tests {
 
     #[test]
     fn test_world_grid_to_chunks() {
-        let cells = vec![WorldCellF32 { channel_a: 0.5, channel_b: 0.1, channel_c: 0.8, channel_d: 0.3, channel_e: 0.4 }; 32 * 32];
-        let grid = WorldChunkGridNet { cells, width: 32, height: 32 };
+        let cells = vec![
+            WorldCellF32 {
+                channel_a: 0.5,
+                channel_b: 0.1,
+                channel_c: 0.8,
+                channel_d: 0.3,
+                channel_e: 0.4
+            };
+            32 * 32
+        ];
+        let grid = WorldChunkGridNet {
+            cells,
+            width: 32,
+            height: 32,
+        };
         let chunks = grid.to_chunks(16);
         assert_eq!(chunks.len(), 4, "32×32 / 16×16 = 4 chunks");
         assert_eq!(chunks[0].cells.len(), 256);

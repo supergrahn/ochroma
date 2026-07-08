@@ -49,13 +49,17 @@ fn software_gpu_allowed() -> bool {
 /// Headless VelloCtx for unit tests — accumulates DrawCmd without a GPU.
 pub struct VelloCtxCpu {
     commands: Vec<DrawCmd>,
-    width:    u32,
-    height:   u32,
+    width: u32,
+    height: u32,
 }
 
 impl VelloCtxCpu {
     pub fn new(width: u32, height: u32) -> Self {
-        Self { commands: Vec::new(), width, height }
+        Self {
+            commands: Vec::new(),
+            width,
+            height,
+        }
     }
 
     pub fn begin_frame(&mut self) {
@@ -71,12 +75,16 @@ impl VelloCtxCpu {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.width  = width;
+        self.width = width;
         self.height = height;
     }
 
-    pub fn width(&self)  -> u32 { self.width  }
-    pub fn height(&self) -> u32 { self.height }
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
 
     /// Rasterize all recorded draw commands, in order, into an RGBA8 pixel
     /// buffer (`pixels.len()` must be at least `width * height`, row-major).
@@ -182,9 +190,9 @@ impl VelloCtxCpu {
 #[cfg(feature = "game-ui")]
 pub struct VelloCtx {
     renderer: vello::Renderer,
-    scene:    vello::Scene,
-    width:    u32,
-    height:   u32,
+    scene: vello::Scene,
+    width: u32,
+    height: u32,
     /// Device/queue owned only by the headless constructor. When the caller
     /// supplies their own device/queue (windowed path via [`new`](Self::new)),
     /// this is `None` and the caller passes device/queue to `end_frame`.
@@ -196,7 +204,7 @@ impl VelloCtx {
     pub fn new(
         device: &vello::wgpu::Device,
         _queue: &vello::wgpu::Queue,
-        width:  u32,
+        width: u32,
         height: u32,
         // vello 0.5 dropped `RendererOptions::surface_format`; the renderer is no
         // longer told the surface format up front. The param is retained so the
@@ -206,13 +214,19 @@ impl VelloCtx {
         let renderer = vello::Renderer::new(
             device,
             vello::RendererOptions {
-                use_cpu:        false,
+                use_cpu: false,
                 antialiasing_support: vello::AaSupport::area_only(),
                 num_init_threads: std::num::NonZeroUsize::new(1),
                 pipeline_cache: None,
             },
         )?;
-        Ok(Self { renderer, scene: vello::Scene::new(), width, height, owned: None })
+        Ok(Self {
+            renderer,
+            scene: vello::Scene::new(),
+            width,
+            height,
+            owned: None,
+        })
     }
 
     /// Build a fully self-contained headless `VelloCtx`: it requests its own
@@ -227,13 +241,11 @@ impl VelloCtx {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        let adapter = pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface: None,
-            },
-        ))?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+        }))?;
         // Use local GPU: refuse the llvmpipe CPU software rasteriser for the UI
         // canvas (override: OCHROMA_ALLOW_SOFTWARE_GPU=1). vox_ui does not depend
         // on vox_render, so the policy is inlined here against vello's wgpu.
@@ -260,7 +272,7 @@ impl VelloCtx {
             vello::RendererOptions {
                 // No surface — we only ever render_to_texture offscreen.
                 // (vello 0.5 removed the `surface_format` option entirely.)
-                use_cpu:        false,
+                use_cpu: false,
                 antialiasing_support: vello::AaSupport::area_only(),
                 num_init_threads: std::num::NonZeroUsize::new(1),
                 pipeline_cache: None,
@@ -287,8 +299,10 @@ impl VelloCtx {
         // peniko::Color is AlphaColor<Srgb>; construct via AlphaColor::new([r, g, b, a])
         let vello_color = Color::new([color[0], color[1], color[2], color[3]]);
         let vello_rect = Rect::new(
-            rect[0] as f64, rect[1] as f64,
-            (rect[0] + rect[2]) as f64, (rect[1] + rect[3]) as f64,
+            rect[0] as f64,
+            rect[1] as f64,
+            (rect[0] + rect[2]) as f64,
+            (rect[1] + rect[3]) as f64,
         );
         self.scene.fill(
             Fill::NonZero,
@@ -302,7 +316,7 @@ impl VelloCtx {
     pub fn end_frame(
         &mut self,
         device: &vello::wgpu::Device,
-        queue:  &vello::wgpu::Queue,
+        queue: &vello::wgpu::Queue,
         surface_view: &vello::wgpu::TextureView,
     ) -> Result<(), vello::Error> {
         self.renderer.render_to_texture(
@@ -311,9 +325,9 @@ impl VelloCtx {
             &self.scene,
             surface_view,
             &vello::RenderParams {
-                base_color:          vello::peniko::color::palette::css::BLACK,
-                width:               self.width,
-                height:              self.height,
+                base_color: vello::peniko::color::palette::css::BLACK,
+                width: self.width,
+                height: self.height,
                 antialiasing_method: vello::AaConfig::Area,
             },
         )
@@ -329,10 +343,9 @@ impl VelloCtx {
     pub fn render_to_rgba(&mut self) -> Result<Vec<[u8; 4]>, String> {
         use vello::wgpu;
 
-        let (device, queue) = self
-            .owned
-            .as_ref()
-            .ok_or_else(|| "render_to_rgba requires a headless VelloCtx (use new_headless)".to_string())?;
+        let (device, queue) = self.owned.as_ref().ok_or_else(|| {
+            "render_to_rgba requires a headless VelloCtx (use new_headless)".to_string()
+        })?;
 
         let w = self.width;
         let h = self.height;
@@ -340,7 +353,11 @@ impl VelloCtx {
         // Vello's render_to_texture requires an Rgba8Unorm STORAGE_BINDING target.
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("vello-headless-target"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -361,9 +378,9 @@ impl VelloCtx {
                     // alpha 0, so compositors key on the real alpha channel
                     // instead of heuristically color-keying near-black (which
                     // dropped AA edge coverage and dark content).
-                    base_color:          vello::peniko::color::palette::css::TRANSPARENT,
-                    width:               w,
-                    height:              h,
+                    base_color: vello::peniko::color::palette::css::TRANSPARENT,
+                    width: w,
+                    height: h,
                     antialiasing_method: vello::AaConfig::Area,
                 },
             )
@@ -382,8 +399,9 @@ impl VelloCtx {
             mapped_at_creation: false,
         });
 
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("vello-readback") });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("vello-readback"),
+        });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &target,
@@ -399,7 +417,11 @@ impl VelloCtx {
                     rows_per_image: Some(h),
                 },
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         queue.submit(std::iter::once(encoder.finish()));
 
@@ -429,11 +451,15 @@ impl VelloCtx {
         Ok(pixels)
     }
 
-    pub fn width(&self)  -> u32 { self.width }
-    pub fn height(&self) -> u32 { self.height }
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.width  = width;
+        self.width = width;
         self.height = height;
     }
 }
@@ -465,7 +491,9 @@ mod tests {
     #[test]
     fn fill_rect_multiple_commands() {
         let mut ctx = VelloCtxCpu::new(800, 600);
-        for _ in 0..16 { ctx.fill_rect([0.0; 4], [0.0; 4]); }
+        for _ in 0..16 {
+            ctx.fill_rect([0.0; 4], [0.0; 4]);
+        }
         assert_eq!(ctx.commands().len(), 16);
     }
 
@@ -491,7 +519,11 @@ mod tests {
         // Interior sample point (6, 6).
         let inside = pixels[(6 * w + 6) as usize];
         println!("inside={:?}", inside);
-        assert_eq!(inside, [255, 0, 0, 255], "interior pixel should be opaque red");
+        assert_eq!(
+            inside,
+            [255, 0, 0, 255],
+            "interior pixel should be opaque red"
+        );
 
         // Outside sample point (0, 0) must be untouched black.
         let outside = pixels[0];
@@ -499,7 +531,11 @@ mod tests {
 
         // Just outside the right edge (x=12, y=6) is exclusive -> untouched.
         let edge = pixels[(6 * w + 12) as usize];
-        assert_eq!(edge, [0, 0, 0, 255], "pixel at exclusive right edge untouched");
+        assert_eq!(
+            edge,
+            [0, 0, 0, 255],
+            "pixel at exclusive right edge untouched"
+        );
     }
 
     #[test]
@@ -514,9 +550,21 @@ mod tests {
         let p = pixels[(3 * w + 3) as usize];
         println!("blended={:?}", p);
         // out = 1.0*0.5 + 0.0*0.5 = 0.5 -> 128 (with +0.5 rounding).
-        assert!((p[0] as i32 - 127).abs() <= 1, "R should be ~127, got {}", p[0]);
-        assert!((p[1] as i32 - 127).abs() <= 1, "G should be ~127, got {}", p[1]);
-        assert!((p[2] as i32 - 127).abs() <= 1, "B should be ~127, got {}", p[2]);
+        assert!(
+            (p[0] as i32 - 127).abs() <= 1,
+            "R should be ~127, got {}",
+            p[0]
+        );
+        assert!(
+            (p[1] as i32 - 127).abs() <= 1,
+            "G should be ~127, got {}",
+            p[1]
+        );
+        assert!(
+            (p[2] as i32 - 127).abs() <= 1,
+            "B should be ~127, got {}",
+            p[2]
+        );
     }
 
     #[test]
@@ -531,7 +579,10 @@ mod tests {
         let original = vec![[3u8, 7, 11, 255]; (w * h) as usize];
         let mut pixels = original.clone();
         ctx.rasterize_into(&mut pixels, w, h);
-        assert_eq!(pixels, original, "off-screen rects must not modify any pixel");
+        assert_eq!(
+            pixels, original,
+            "off-screen rects must not modify any pixel"
+        );
     }
 
     #[test]
@@ -596,18 +647,26 @@ mod tests {
         // Centre pixel must be (near) opaque red — the GPU rasterised it.
         let centre = pixels[(32 * 64 + 32) as usize];
         println!("[vello] gpu centre pixel = {:?}", centre);
-        assert!(centre[0] > 200, "centre R should be high (red), got {}", centre[0]);
+        assert!(
+            centre[0] > 200,
+            "centre R should be high (red), got {}",
+            centre[0]
+        );
         assert!(centre[1] < 64, "centre G should be low, got {}", centre[1]);
         assert!(centre[2] < 64, "centre B should be low, got {}", centre[2]);
 
         // A corner outside the rect must be black background.
         let corner = pixels[0];
         println!("[vello] gpu corner pixel = {:?}", corner);
-        assert!(corner[0] < 32 && corner[1] < 32 && corner[2] < 32,
-            "corner should be black background, got {:?}", corner);
+        assert!(
+            corner[0] < 32 && corner[1] < 32 && corner[2] < 32,
+            "corner should be black background, got {:?}",
+            corner
+        );
 
         // The red region must actually cover a meaningful number of pixels.
-        let red_px = pixels.iter()
+        let red_px = pixels
+            .iter()
             .filter(|p| p[0] > 200 && p[1] < 64 && p[2] < 64)
             .count();
         println!("[vello] gpu red_px = {}", red_px);
@@ -658,13 +717,13 @@ mod tests {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        let Some(adapter) = pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: None,
-            },
-        )) else {
+            }))
+        else {
             eprintln!("[vello] no GPU adapter — skipping shared-device unification proof");
             return;
         };
@@ -707,14 +766,8 @@ mod tests {
 
         // (a) Drive VELLO on the shared device via the caller-supplied-device
         // constructor (the windowed path). vello 0.5 / wgpu 24 must accept it.
-        let mut ctx = VelloCtx::new(
-            &device,
-            &queue,
-            w,
-            h,
-            wgpu::TextureFormat::Rgba8Unorm,
-        )
-        .expect("vello 0.5 Renderer must construct on a device built to vox_render's spec");
+        let mut ctx = VelloCtx::new(&device, &queue, w, h, wgpu::TextureFormat::Rgba8Unorm)
+            .expect("vello 0.5 Renderer must construct on a device built to vox_render's spec");
 
         ctx.begin_frame();
         // Opaque red rect over the centre.
@@ -724,7 +777,11 @@ mod tests {
         // read it back. (We own the target here; end_frame takes the same device.)
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shared-device-vello-target"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -764,13 +821,19 @@ mod tests {
                     rows_per_image: Some(h),
                 },
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         queue.submit(std::iter::once(enc.finish()));
 
         let slice = readback.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         device.poll(wgpu::Maintain::Wait);
         rx.recv().expect("map sender").expect("buffer map");
         let data = slice.get_mapped_range();
@@ -789,11 +852,16 @@ mod tests {
         // vox_render's spec. Centre pixel is opaque red; the rect is solidly red.
         let centre = pixels[(32 * 64 + 32) as usize];
         println!("[vello] shared-device centre pixel = {:?}", centre);
-        assert!(centre[0] > 200, "centre R should be high (red), got {}", centre[0]);
+        assert!(
+            centre[0] > 200,
+            "centre R should be high (red), got {}",
+            centre[0]
+        );
         assert!(centre[1] < 64, "centre G should be low, got {}", centre[1]);
         assert!(centre[2] < 64, "centre B should be low, got {}", centre[2]);
 
-        let red_px = pixels.iter()
+        let red_px = pixels
+            .iter()
             .filter(|p| p[0] > 200 && p[1] < 64 && p[2] < 64)
             .count();
         println!("[vello] shared-device red_px = {}", red_px);

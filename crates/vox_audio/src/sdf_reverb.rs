@@ -49,25 +49,28 @@ fn sabine_rt60(volume_m3: f32, avg_absorption: f32, surface_area_m2: f32) -> f32
 ///   Bands 3-5 → mid freq   → avg_absorption[1]
 ///   Bands 6-7 → low freq   → avg_absorption[2]
 pub fn estimate_reverb(room: &RoomEstimate) -> ReverbProfile {
-    let pre_delay_ms =
-        1000.0 * room.volume_m3.powf(1.0 / 3.0) / (2.0 * 343.0);
+    let pre_delay_ms = 1000.0 * room.volume_m3.powf(1.0 / 3.0) / (2.0 * 343.0);
 
     // One ReverbBand per absorption group.
     let make_band = |abs: f32| -> ReverbBand {
         let rt60 = sabine_rt60(room.volume_m3, abs, room.surface_area_m2);
         let room_gain = (1.0 - abs).clamp(0.0, 0.99);
-        ReverbBand { rt60, pre_delay_ms, room_gain }
+        ReverbBand {
+            rt60,
+            pre_delay_ms,
+            room_gain,
+        }
     };
 
     let high = make_band(room.avg_absorption[0]);
-    let mid  = make_band(room.avg_absorption[1]);
-    let low  = make_band(room.avg_absorption[2]);
+    let mid = make_band(room.avg_absorption[1]);
+    let low = make_band(room.avg_absorption[2]);
 
     ReverbProfile {
         bands: [
             high, high, high, // bands 0-2 → high freq
-            mid,  mid,  mid,  // bands 3-5 → mid freq
-            low,  low,        // bands 6-7 → low freq
+            mid, mid, mid, // bands 3-5 → mid freq
+            low, low, // bands 6-7 → low freq
         ],
     }
 }
@@ -84,7 +87,11 @@ pub fn room_from_aabb(half_extents: glam::Vec3, avg_absorption: [f32; 3]) -> Roo
     let h = 2.0 * hz;
     let volume_m3 = l * w * h;
     let surface_area_m2 = 2.0 * (l * w + w * h + h * l);
-    RoomEstimate { volume_m3, surface_area_m2, avg_absorption }
+    RoomEstimate {
+        volume_m3,
+        surface_area_m2,
+        avg_absorption,
+    }
 }
 
 /// Open-space reverb preset — very short RT60, minimal pre-delay.
@@ -94,19 +101,13 @@ pub fn room_from_aabb(half_extents: glam::Vec3, avg_absorption: [f32; 3]) -> Roo
 pub fn outdoor_reverb() -> ReverbProfile {
     // Use a small representative volume with near-maximum absorption so that
     // Sabine's formula yields RT60 well below 0.3 s for all bands.
-    let room = room_from_aabb(
-        glam::Vec3::new(5.0, 2.5, 5.0),
-        [0.97, 0.95, 0.90],
-    );
+    let room = room_from_aabb(glam::Vec3::new(5.0, 2.5, 5.0), [0.97, 0.95, 0.90]);
     estimate_reverb(&room)
 }
 
 /// Cave reverb preset — long RT60 due to highly reflective stone surfaces.
 pub fn cave_reverb() -> ReverbProfile {
-    let room = room_from_aabb(
-        glam::Vec3::new(5.0, 2.5, 4.0),
-        [0.02, 0.03, 0.01],
-    );
+    let room = room_from_aabb(glam::Vec3::new(5.0, 2.5, 4.0), [0.02, 0.03, 0.01]);
     estimate_reverb(&room)
 }
 

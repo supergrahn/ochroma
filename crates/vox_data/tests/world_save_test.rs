@@ -65,10 +65,19 @@ fn test_custom_data_mixed_types() {
     let mut save = WorldSave::new("custom_scene");
 
     let mut entity = make_test_entity("CustomEntity");
-    entity.custom_data.insert("health".to_string(), serde_json::json!(100));
-    entity.custom_data.insert("name".to_string(), serde_json::json!("hero"));
-    entity.custom_data.insert("active".to_string(), serde_json::json!(true));
-    entity.custom_data.insert("inventory".to_string(), serde_json::json!(["sword", "shield"]));
+    entity
+        .custom_data
+        .insert("health".to_string(), serde_json::json!(100));
+    entity
+        .custom_data
+        .insert("name".to_string(), serde_json::json!("hero"));
+    entity
+        .custom_data
+        .insert("active".to_string(), serde_json::json!(true));
+    entity.custom_data.insert(
+        "inventory".to_string(),
+        serde_json::json!(["sword", "shield"]),
+    );
     save.add_entity(entity);
 
     save.save_to_file(&tmp).unwrap();
@@ -93,7 +102,9 @@ fn save_serializes_custom_data_keys_in_ascending_order() {
     let mut save = WorldSave::new("det_scene");
     let mut entity = make_test_entity("Det");
     for k in ["zebra", "apple", "mango", "banana"] {
-        entity.custom_data.insert(k.to_string(), serde_json::json!(1));
+        entity
+            .custom_data
+            .insert(k.to_string(), serde_json::json!(1));
     }
     save.add_entity(entity);
     save.save_to_file(&tmp).unwrap();
@@ -265,7 +276,11 @@ fn test_full_world_round_trip_spectral_and_prefab() {
     });
     let prefab_world_pos = [10.0, 0.0, -5.0];
     let prefab_instances = prefab.instantiate_into_save(prefab_world_pos, 42);
-    assert_eq!(prefab_instances.len(), 2, "prefab should produce 2 entities");
+    assert_eq!(
+        prefab_instances.len(),
+        2,
+        "prefab should produce 2 entities"
+    );
 
     // --- Build the world ---
     let mut save = WorldSave::new("full_world");

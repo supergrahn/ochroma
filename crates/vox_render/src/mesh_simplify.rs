@@ -102,19 +102,17 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
     let have_uvs = !input.uvs.is_empty() && input.uvs.len() == n_verts;
     // material_ids only honored when parallel to indices; else all-zero.
     let have_mats = !input.material_ids.is_empty() && input.material_ids.len() == n_tris;
-    let mat_of = |t: usize| -> u32 {
-        if have_mats {
-            input.material_ids[t]
-        } else {
-            0
-        }
-    };
+    let mat_of = |t: usize| -> u32 { if have_mats { input.material_ids[t] } else { 0 } };
 
     // Passthrough: nothing to gain (or too small to cluster safely).
     if target_ratio >= 1.0 || n_tris <= 1 || n_verts < 4 {
         return MeshOutput {
             positions: input.positions.to_vec(),
-            uvs: if have_uvs { input.uvs.to_vec() } else { Vec::new() },
+            uvs: if have_uvs {
+                input.uvs.to_vec()
+            } else {
+                Vec::new()
+            },
             indices: input.indices.to_vec(),
             material_ids: (0..n_tris).map(mat_of).collect(),
         };
@@ -148,9 +146,21 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
     let target_cells = ((n_verts as f64 * ratio as f64).round() as usize).max(1);
     let res = grid_resolution(target_cells, extent);
     let inv_cell = [
-        if extent[0] > 0.0 { res[0] as f32 / extent[0] } else { 0.0 },
-        if extent[1] > 0.0 { res[1] as f32 / extent[1] } else { 0.0 },
-        if extent[2] > 0.0 { res[2] as f32 / extent[2] } else { 0.0 },
+        if extent[0] > 0.0 {
+            res[0] as f32 / extent[0]
+        } else {
+            0.0
+        },
+        if extent[1] > 0.0 {
+            res[1] as f32 / extent[1]
+        } else {
+            0.0
+        },
+        if extent[2] > 0.0 {
+            res[2] as f32 / extent[2]
+        } else {
+            0.0
+        },
     ];
     let cell_of = |p: [f32; 3]| -> [i32; 3] {
         let mut c = [0i32; 3];
@@ -344,7 +354,11 @@ mod tests {
         );
         assert!(!out.indices.is_empty(), "must keep some triangles");
         // UVs preserved (non-empty, parallel to positions, in the [0,1] range).
-        assert_eq!(out.uvs.len(), out.positions.len(), "UVs parallel to positions");
+        assert_eq!(
+            out.uvs.len(),
+            out.positions.len(),
+            "UVs parallel to positions"
+        );
         for uv in &out.uvs {
             assert!(
                 (0.0..=1.0).contains(&uv[0]) && (0.0..=1.0).contains(&uv[1]),
@@ -359,7 +373,10 @@ mod tests {
             for &i in t {
                 assert!((i as usize) < out.positions.len(), "index out of range");
             }
-            assert!(t[0] != t[1] && t[1] != t[2] && t[0] != t[2], "no degenerate survives");
+            assert!(
+                t[0] != t[1] && t[1] != t[2] && t[0] != t[2],
+                "no degenerate survives"
+            );
         }
     }
 
@@ -439,7 +456,10 @@ mod tests {
         };
         let a = simplify_mesh(&input, 0.15);
         let b = simplify_mesh(&input, 0.15);
-        assert_eq!(a, b, "two runs on identical input must be byte-identical (replay-safe)");
+        assert_eq!(
+            a, b,
+            "two runs on identical input must be byte-identical (replay-safe)"
+        );
     }
 
     #[test]
@@ -459,7 +479,12 @@ mod tests {
         assert_eq!(out.material_ids, mats);
 
         // Tiny mesh (1 triangle) also passes through.
-        let tpos = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]];
+        let tpos = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ];
         let tidx = vec![[0u32, 1, 2]];
         let tmats = vec![9u32];
         let tin = MeshInput {
@@ -485,6 +510,9 @@ mod tests {
         };
         let out = simplify_mesh(&input, 0.2);
         assert_eq!(out.material_ids.len(), out.indices.len());
-        assert!(out.material_ids.iter().all(|&m| m == 0), "empty ids -> all-zero");
+        assert!(
+            out.material_ids.iter().all(|&m| m == 0),
+            "empty ids -> all-zero"
+        );
     }
 }

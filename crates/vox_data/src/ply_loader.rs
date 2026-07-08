@@ -14,7 +14,9 @@ pub enum PlyError {
 }
 
 impl From<std::io::Error> for PlyError {
-    fn from(e: std::io::Error) -> Self { Self::IoError(e) }
+    fn from(e: std::io::Error) -> Self {
+        Self::IoError(e)
+    }
 }
 
 impl std::fmt::Display for PlyError {
@@ -52,7 +54,13 @@ enum PlyDataType {
 
 impl PlyDataType {
     fn byte_size(&self) -> usize {
-        match self { Self::Float => 4, Self::Double => 8, Self::UChar => 1, Self::Short => 2, Self::Int => 4 }
+        match self {
+            Self::Float => 4,
+            Self::Double => 8,
+            Self::UChar => 1,
+            Self::Short => 2,
+            Self::Int => 4,
+        }
     }
 }
 
@@ -63,7 +71,10 @@ fn parse_data_type(s: &str) -> Result<PlyDataType, PlyError> {
         "uchar" | "uint8" => Ok(PlyDataType::UChar),
         "short" | "int16" => Ok(PlyDataType::Short),
         "int" | "int32" => Ok(PlyDataType::Int),
-        _ => Err(PlyError::UnsupportedFormat(format!("Unknown data type: {}", s))),
+        _ => Err(PlyError::UnsupportedFormat(format!(
+            "Unknown data type: {}",
+            s
+        ))),
     }
 }
 
@@ -90,29 +101,41 @@ fn parse_header(reader: &mut impl Read) -> Result<(PlyHeader, Vec<u8>), PlyError
 
     for line in header_text.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.is_empty() { continue; }
+        if parts.is_empty() {
+            continue;
+        }
 
         match parts[0] {
-            "format"
-                if parts.len() >= 2 => {
-                    header.is_binary_le = parts[1] == "binary_little_endian";
-                    if parts[1] == "ascii" {
-                        return Err(PlyError::UnsupportedFormat("ASCII PLY not supported, use binary_little_endian".into()));
-                    }
+            "format" if parts.len() >= 2 => {
+                header.is_binary_le = parts[1] == "binary_little_endian";
+                if parts[1] == "ascii" {
+                    return Err(PlyError::UnsupportedFormat(
+                        "ASCII PLY not supported, use binary_little_endian".into(),
+                    ));
                 }
+            }
             "element" if parts.len() >= 3 && parts[1] == "vertex" => {
-                header.vertex_count = parts[2].parse().map_err(|_| PlyError::ParseError("Invalid vertex count".into()))?;
+                header.vertex_count = parts[2]
+                    .parse()
+                    .map_err(|_| PlyError::ParseError("Invalid vertex count".into()))?;
             }
             "property" if parts.len() >= 3 => {
                 let dt = parse_data_type(parts[1])?;
-                header.properties.push(PlyProperty { name: parts[2].to_string(), data_type: dt });
+                header.properties.push(PlyProperty {
+                    name: parts[2].to_string(),
+                    data_type: dt,
+                });
             }
             _ => {}
         }
     }
 
     // Read all vertex data
-    let vertex_size: usize = header.properties.iter().map(|p| p.data_type.byte_size()).sum();
+    let vertex_size: usize = header
+        .properties
+        .iter()
+        .map(|p| p.data_type.byte_size())
+        .sum();
     let total_bytes = vertex_size * header.vertex_count;
     let mut data = vec![0u8; total_bytes];
     reader.read_exact(&mut data)?;
@@ -127,16 +150,30 @@ fn find_prop(header: &PlyHeader, name: &str) -> Option<usize> {
 
 /// Read a float property from vertex data.
 fn read_float(data: &[u8], header: &PlyHeader, vertex: usize, prop_idx: usize) -> f32 {
-    let vertex_size: usize = header.properties.iter().map(|p| p.data_type.byte_size()).sum();
-    let prop_offset: usize = header.properties[..prop_idx].iter().map(|p| p.data_type.byte_size()).sum();
+    let vertex_size: usize = header
+        .properties
+        .iter()
+        .map(|p| p.data_type.byte_size())
+        .sum();
+    let prop_offset: usize = header.properties[..prop_idx]
+        .iter()
+        .map(|p| p.data_type.byte_size())
+        .sum();
     let offset = vertex * vertex_size + prop_offset;
 
     match header.properties[prop_idx].data_type {
-        PlyDataType::Float => f32::from_le_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]),
-        PlyDataType::Double => f64::from_le_bytes(data[offset..offset+8].try_into().unwrap()) as f32,
+        PlyDataType::Float => f32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]),
+        PlyDataType::Double => {
+            f64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as f32
+        }
         PlyDataType::UChar => data[offset] as f32 / 255.0,
-        PlyDataType::Short => i16::from_le_bytes([data[offset], data[offset+1]]) as f32 / 32767.0,
-        PlyDataType::Int => i32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as f32,
+        PlyDataType::Short => i16::from_le_bytes([data[offset], data[offset + 1]]) as f32 / 32767.0,
+        PlyDataType::Int => i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as f32,
     }
 }
 
@@ -188,18 +225,32 @@ pub fn load_ply_from_reader(reader: &mut impl Read) -> Result<Vec<GaussianSplat>
         let z = read_float(&data, &header, v, iz);
 
         // Scales (log-space in PLY)
-        let sx = i_scale0.map(|i| read_float(&data, &header, v, i).exp()).unwrap_or(0.01);
-        let sy = i_scale1.map(|i| read_float(&data, &header, v, i).exp()).unwrap_or(0.01);
-        let sz = i_scale2.map(|i| read_float(&data, &header, v, i).exp()).unwrap_or(0.01);
+        let sx = i_scale0
+            .map(|i| read_float(&data, &header, v, i).exp())
+            .unwrap_or(0.01);
+        let sy = i_scale1
+            .map(|i| read_float(&data, &header, v, i).exp())
+            .unwrap_or(0.01);
+        let sz = i_scale2
+            .map(|i| read_float(&data, &header, v, i).exp())
+            .unwrap_or(0.01);
 
         // Rotation (quaternion w,x,y,z in PLY -> x,y,z,w as i16 in Ochroma)
-        let rw = i_rot0.map(|i| read_float(&data, &header, v, i)).unwrap_or(1.0);
-        let rx = i_rot1.map(|i| read_float(&data, &header, v, i)).unwrap_or(0.0);
-        let ry = i_rot2.map(|i| read_float(&data, &header, v, i)).unwrap_or(0.0);
-        let rz = i_rot3.map(|i| read_float(&data, &header, v, i)).unwrap_or(0.0);
+        let rw = i_rot0
+            .map(|i| read_float(&data, &header, v, i))
+            .unwrap_or(1.0);
+        let rx = i_rot1
+            .map(|i| read_float(&data, &header, v, i))
+            .unwrap_or(0.0);
+        let ry = i_rot2
+            .map(|i| read_float(&data, &header, v, i))
+            .unwrap_or(0.0);
+        let rz = i_rot3
+            .map(|i| read_float(&data, &header, v, i))
+            .unwrap_or(0.0);
 
         // Normalize quaternion
-        let len = (rw*rw + rx*rx + ry*ry + rz*rz).sqrt().max(1e-8);
+        let len = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt().max(1e-8);
         let rotation = [
             (rx / len * 32767.0) as i16,
             (ry / len * 32767.0) as i16,
@@ -208,7 +259,9 @@ pub fn load_ply_from_reader(reader: &mut impl Read) -> Result<Vec<GaussianSplat>
         ];
 
         // Opacity (logit-space in PLY)
-        let opacity_raw = i_opacity.map(|i| read_float(&data, &header, v, i)).unwrap_or(0.0);
+        let opacity_raw = i_opacity
+            .map(|i| read_float(&data, &header, v, i))
+            .unwrap_or(0.0);
         let opacity = (sigmoid(opacity_raw) * 255.0) as u8;
 
         // Colour: prefer direct vertex colours (red/green/blue), fall back to SH DC coefficients
@@ -220,9 +273,15 @@ pub fn load_ply_from_reader(reader: &mut impl Read) -> Result<Vec<GaussianSplat>
             )
         } else {
             (
-                i_fdc0.map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0)).unwrap_or(0.5),
-                i_fdc1.map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0)).unwrap_or(0.5),
-                i_fdc2.map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0)).unwrap_or(0.5),
+                i_fdc0
+                    .map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0))
+                    .unwrap_or(0.5),
+                i_fdc1
+                    .map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0))
+                    .unwrap_or(0.5),
+                i_fdc2
+                    .map(|i| (0.5 + sh_c0 * read_float(&data, &header, v, i)).clamp(0.0, 1.0))
+                    .unwrap_or(0.5),
             )
         };
 
@@ -374,8 +433,7 @@ mod tests {
     /// Build a splat from an RGB colour (so the test controls the spectrum).
     fn splat_rgb(pos: [f32; 3], scale: [f32; 3], r: f32, g: f32, b: f32) -> GaussianSplat {
         let spectral_f32 = SpectralUpsampler::from_rgb(r, g, b);
-        let spectral: [u16; 16] =
-            std::array::from_fn(|i| f16::from_f32(spectral_f32[i]).to_bits());
+        let spectral: [u16; 16] = std::array::from_fn(|i| f16::from_f32(spectral_f32[i]).to_bits());
         GaussianSplat::volume(pos, scale, glam::Quat::IDENTITY, 200, spectral)
     }
 

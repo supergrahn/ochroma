@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use half::f16;
 use mlua::prelude::*;
-use vox_script::entity_bindings::{register_entity_bindings, EntityStore};
+use vox_script::entity_bindings::{EntityStore, register_entity_bindings};
 use vox_script::rhai_runtime::RhaiRuntime;
-use vox_script::spectral_bindings::{register_spectral_bindings, SpectralState};
+use vox_script::spectral_bindings::{SpectralState, register_spectral_bindings};
 
 /// Lua script reads band 7 of the populated field, scales it, and a threshold
 /// callback flips a flag because the real energy exceeds the threshold.
@@ -40,7 +40,10 @@ fn lua_script_reads_real_nonzero_band_and_reacts() {
     let reacted: f32 = lua.globals().get("reacted").unwrap();
 
     // The bug being fixed: this used to be 0.0 because the store was inert.
-    assert!(observed > 0.0, "Lua must observe a NON-ZERO band, got {observed}");
+    assert!(
+        observed > 0.0,
+        "Lua must observe a NON-ZERO band, got {observed}"
+    );
     assert!(
         (observed - 0.875).abs() < 1e-4,
         "Lua must observe the REAL written value 0.875, got {observed}"
@@ -73,10 +76,19 @@ fn lua_entity_spectral_reads_real_decoded_u16() {
     let lua = Lua::new();
     register_entity_bindings(&lua, store).unwrap();
 
-    let band4: f32 = lua.load("return entity.get_spectral(42, 4)").eval().unwrap();
-    let band9: f32 = lua.load("return entity.get_spectral(42, 9)").eval().unwrap();
+    let band4: f32 = lua
+        .load("return entity.get_spectral(42, 4)")
+        .eval()
+        .unwrap();
+    let band9: f32 = lua
+        .load("return entity.get_spectral(42, 9)")
+        .eval()
+        .unwrap();
 
-    assert!(band4 > 0.0, "Lua entity band 4 must be NON-ZERO, got {band4}");
+    assert!(
+        band4 > 0.0,
+        "Lua entity band 4 must be NON-ZERO, got {band4}"
+    );
     assert!(
         (band4 - 0.25).abs() < 1e-4,
         "Lua entity band 4 must read REAL 0.25, got {band4}"
@@ -112,9 +124,7 @@ fn rhai_script_reads_real_nonzero_band_and_reacts() {
         )
         .unwrap();
 
-    let out = rt
-        .call_fn(idx, "react", &[])
-        .expect("react() must run");
+    let out = rt.call_fn(idx, "react", &[]).expect("react() must run");
     let reacted: f64 = out.cast();
 
     // The bug being fixed: a dead store returns 0.0, so react() returns -1.0.

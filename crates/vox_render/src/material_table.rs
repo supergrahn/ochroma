@@ -24,8 +24,9 @@ use crate::splat_backend::PbrMaterial;
 /// Dedup key for a shared material slot.
 ///
 /// Mirrors the historical inline tuple `(channel, albedo_tex, normal_tex,
-/// roughness_tex, displacement_tex, color_bucket)` exactly so interning the same
-/// inputs yields the same slots as before (behaviour-preserving). Textured
+/// roughness_tex, displacement_tex, color_bucket)` for opaque materials, with
+/// opacity/vegetation added for cutout cards so masked foliage never aliases an
+/// opaque material. Textured
 /// materials share regardless of base colour (the texture IS the colour, so
 /// `color` is the zero bucket); untextured materials carry a coarse 2-level /
 /// channel colour bucket so flat buildings still read varied without exploding
@@ -37,6 +38,8 @@ pub struct MaterialKey {
     pub normal_tex: i32,
     pub roughness_tex: i32,
     pub displacement_tex: i32,
+    pub opacity_tex: i32,
+    pub vegetation_bsdf: bool,
     pub color_bucket: u32,
 }
 
@@ -64,6 +67,8 @@ impl MaterialKey {
             normal_tex,
             roughness_tex,
             displacement_tex,
+            opacity_tex: mat.opacity_tex,
+            vegetation_bsdf: mat.vegetation_bsdf,
             color_bucket,
         }
     }

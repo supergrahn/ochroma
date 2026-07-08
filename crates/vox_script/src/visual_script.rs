@@ -149,12 +149,7 @@ pub fn execute_script(
 
 const MAX_DEPTH: u32 = 1000;
 
-fn walk_node(
-    script: &VisualScript,
-    node_idx: usize,
-    result: &mut ExecutionResult,
-    depth: u32,
-) {
+fn walk_node(script: &VisualScript, node_idx: usize, result: &mut ExecutionResult, depth: u32) {
     if depth > MAX_DEPTH || node_idx >= script.nodes.len() {
         return;
     }
@@ -167,9 +162,7 @@ fn walk_node(
             }
         }
         ScriptNode::Action(name, param) => {
-            result
-                .triggered_actions
-                .push((name.clone(), param.clone()));
+            result.triggered_actions.push((name.clone(), param.clone()));
             for next in script.outgoing(node_idx) {
                 walk_node(script, next, result, depth + 1);
             }

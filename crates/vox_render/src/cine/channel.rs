@@ -161,11 +161,7 @@ impl Channel<f32> {
         // tangent so the curve does not overshoot past the value.
         let d_prev = cur.value - prv.value;
         let d_next = nxt.value - cur.value;
-        if d_prev * d_next <= 0.0 {
-            0.0
-        } else {
-            m
-        }
+        if d_prev * d_next <= 0.0 { 0.0 } else { m }
     }
 
     /// Sample the channel at a (possibly fractional) frame. Clamps to the first

@@ -126,7 +126,10 @@ impl TransportTuning {
     /// in well under a minute; the 5s keep-alive keeps an active-but-quiet
     /// connection alive with ample margin (6 keep-alives per idle window).
     pub const fn game() -> Self {
-        Self { idle_timeout_ms: 30_000, keep_alive_ms: 5_000 }
+        Self {
+            idle_timeout_ms: 30_000,
+            keep_alive_ms: 5_000,
+        }
     }
 
     /// Short idle (5s + 1s keep-alive) for the net_session selftest harness only.
@@ -135,7 +138,10 @@ impl TransportTuning {
     /// value exists solely to keep that probe fast and must never be installed on a
     /// real game transport.
     pub const fn test_harness() -> Self {
-        Self { idle_timeout_ms: 5_000, keep_alive_ms: 1_000 }
+        Self {
+            idle_timeout_ms: 5_000,
+            keep_alive_ms: 1_000,
+        }
     }
 }
 
@@ -148,9 +154,10 @@ impl Default for TransportTuning {
 /// Build a `TransportConfig` from explicit [`TransportTuning`].
 fn tuned_transport_config(tuning: TransportTuning) -> Arc<quinn::TransportConfig> {
     let mut tc = quinn::TransportConfig::default();
-    let idle =
-        quinn::IdleTimeout::try_from(std::time::Duration::from_millis(tuning.idle_timeout_ms as u64))
-            .expect("idle timeout within QUIC varint range");
+    let idle = quinn::IdleTimeout::try_from(std::time::Duration::from_millis(
+        tuning.idle_timeout_ms as u64,
+    ))
+    .expect("idle timeout within QUIC varint range");
     tc.max_idle_timeout(Some(idle));
     tc.keep_alive_interval(Some(std::time::Duration::from_millis(tuning.keep_alive_ms)));
     Arc::new(tc)
@@ -230,7 +237,10 @@ impl QuicTransport {
             .map_err(|e: std::net::AddrParseError| TransportError::Endpoint(e.to_string()))?;
         let endpoint = quinn::Endpoint::server(server_config()?, addr)
             .map_err(|e| TransportError::Endpoint(e.to_string()))?;
-        Ok(Self { endpoint, role: TransportRole::Server })
+        Ok(Self {
+            endpoint,
+            role: TransportRole::Server,
+        })
     }
 
     /// Create a client endpoint configured to reach `addr`. The returned `Connecting`
@@ -247,7 +257,10 @@ impl QuicTransport {
         let _connecting = endpoint
             .connect(addr, server_name)
             .map_err(|e| TransportError::Connection(e.to_string()))?;
-        Ok(Self { endpoint, role: TransportRole::Client })
+        Ok(Self {
+            endpoint,
+            role: TransportRole::Client,
+        })
     }
 
     /// Local address the endpoint is bound to.
@@ -309,7 +322,10 @@ impl QuicConnection {
     /// Send one [`PlayerStatePacket`] (position + full spectral signature) over a
     /// fresh bidirectional stream. Mirrors [`send_packet`](Self::send_packet) but for
     /// the fixed-size player-state wire format.
-    pub async fn send_player_state(&self, packet: &PlayerStatePacket) -> Result<(), TransportError> {
+    pub async fn send_player_state(
+        &self,
+        packet: &PlayerStatePacket,
+    ) -> Result<(), TransportError> {
         let (mut send, _recv) = self
             .inner
             .open_bi()
@@ -602,7 +618,11 @@ mod tests {
         after[2] = 2000;
         after[5] = 3000;
         let sent = ReplicationPacket::from_delta(42, &before, &after, 0);
-        assert_eq!(sent.values, vec![2000, 3000], "sanity: delta captured both bands");
+        assert_eq!(
+            sent.values,
+            vec![2000, 3000],
+            "sanity: delta captured both bands"
+        );
 
         client
             .connection()
@@ -613,19 +633,29 @@ mod tests {
         let received = accept_task.await.expect("accept task panicked");
 
         // Real field equality across the whole packet (not is_ok()).
-        assert_eq!(received.entity_id, 42, "entity_id must survive the round trip");
+        assert_eq!(
+            received.entity_id, 42,
+            "entity_id must survive the round trip"
+        );
         assert_eq!(
             received.changed_bands,
             (1 << 2) | (1 << 5),
             "changed_bands bitmask must match exactly"
         );
-        assert_eq!(received.values, vec![2000, 3000], "band values must match exactly");
+        assert_eq!(
+            received.values,
+            vec![2000, 3000],
+            "band values must match exactly"
+        );
         assert_eq!(received, sent, "decoded packet must equal the sent packet");
 
         // And the delta truly reconstructs the post-state when applied.
         let mut reconstructed = before;
         received.apply_to(&mut reconstructed).unwrap();
-        assert_eq!(reconstructed, after, "applying the received delta must yield the sender's after-state");
+        assert_eq!(
+            reconstructed, after,
+            "applying the received delta must yield the sender's after-state"
+        );
     }
 
     /// Two distinct packets sent back-to-back arrive in order, each on its own stream.

@@ -88,5 +88,6 @@ fn net_session_selftest_two_processes_over_real_quic() {
 
 /// Extract the `checksum=0x...` token from a FINAL line.
 fn checksum_token(line: &str) -> Option<&str> {
-    line.split_whitespace().find(|t| t.starts_with("checksum=0x"))
+    line.split_whitespace()
+        .find(|t| t.starts_with("checksum=0x"))
 }

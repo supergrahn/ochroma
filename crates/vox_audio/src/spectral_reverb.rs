@@ -46,19 +46,28 @@ impl SpectralReverb {
                 mean[band] += half::f16::from_bits(s[band]).to_f32().max(0.0);
             }
         }
-        for m in &mut mean { *m /= splats.len() as f32; }
+        for m in &mut mean {
+            *m /= splats.len() as f32;
+        }
 
         let overall_mean: f32 = mean.iter().sum::<f32>() / 16.0;
         let tail_length_secs = 0.05 + overall_mean.powi(2) * 7.95;
 
-        let hf_penalty = [0.70f32, 0.72, 0.75, 0.78, 0.82, 0.86, 0.90, 0.93, 0.95, 0.97, 0.98, 0.99, 1.00, 1.00, 1.00, 1.00];
+        let hf_penalty = [
+            0.70f32, 0.72, 0.75, 0.78, 0.82, 0.86, 0.90, 0.93, 0.95, 0.97, 0.98, 0.99, 1.00, 1.00,
+            1.00, 1.00,
+        ];
         let band_rt60 = std::array::from_fn(|b| {
-            let r   = mean[b].clamp(0.0, 1.0);
-            let rt  = 0.05 + r.powi(2) * 7.95;
+            let r = mean[b].clamp(0.0, 1.0);
+            let rt = 0.05 + r.powi(2) * 7.95;
             rt * hf_penalty[b]
         });
 
-        Self { tail_length_secs, band_rt60, mean_reflectance: mean }
+        Self {
+            tail_length_secs,
+            band_rt60,
+            mean_reflectance: mean,
+        }
     }
 
     /// Build a reverb from a global-illumination band vector (already linear `f32`
@@ -72,14 +81,21 @@ impl SpectralReverb {
         let overall_mean: f32 = mean.iter().sum::<f32>() / 16.0;
         let tail_length_secs = 0.05 + overall_mean.powi(2) * 7.95;
 
-        let hf_penalty = [0.70f32, 0.72, 0.75, 0.78, 0.82, 0.86, 0.90, 0.93, 0.95, 0.97, 0.98, 0.99, 1.00, 1.00, 1.00, 1.00];
+        let hf_penalty = [
+            0.70f32, 0.72, 0.75, 0.78, 0.82, 0.86, 0.90, 0.93, 0.95, 0.97, 0.98, 0.99, 1.00, 1.00,
+            1.00, 1.00,
+        ];
         let band_rt60 = std::array::from_fn(|b| {
-            let r  = mean[b].clamp(0.0, 1.0);
+            let r = mean[b].clamp(0.0, 1.0);
             let rt = 0.05 + r.powi(2) * 7.95;
             rt * hf_penalty[b]
         });
 
-        Self { tail_length_secs, band_rt60, mean_reflectance: mean }
+        Self {
+            tail_length_secs,
+            band_rt60,
+            mean_reflectance: mean,
+        }
     }
 
     /// Collapse this reverb into compact value-typed [`ReverbParams`].
@@ -104,17 +120,19 @@ impl SpectralReverb {
             (*s as i32 as f32) / i32::MAX as f32
         };
 
-        (0..n).map(|i| {
-            let t        = i as f32 / sample_rate as f32;
-            let envelope = (decay_rate * t).exp();
-            envelope * lcg_next(&mut state)
-        }).collect()
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / sample_rate as f32;
+                let envelope = (decay_rate * t).exp();
+                envelope * lcg_next(&mut state)
+            })
+            .collect()
     }
 
     fn default_dead_room() -> Self {
         Self {
             tail_length_secs: 0.05,
-            band_rt60:        [0.05; 16],
+            band_rt60: [0.05; 16],
             mean_reflectance: [0.0; 16],
         }
     }
@@ -164,10 +182,17 @@ mod tests {
     #[test]
     fn high_reflectance_gives_longer_tail_than_low() {
         let high = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
-        let low  = SpectralReverb::from_splat_reflectance(&make_low_reflectance());
-        println!("high={} low={}", high.tail_length_secs, low.tail_length_secs);
-        assert!(high.tail_length_secs > low.tail_length_secs,
-            "high={} low={}", high.tail_length_secs, low.tail_length_secs);
+        let low = SpectralReverb::from_splat_reflectance(&make_low_reflectance());
+        println!(
+            "high={} low={}",
+            high.tail_length_secs, low.tail_length_secs
+        );
+        assert!(
+            high.tail_length_secs > low.tail_length_secs,
+            "high={} low={}",
+            high.tail_length_secs,
+            low.tail_length_secs
+        );
     }
 
     #[test]
@@ -186,7 +211,7 @@ mod tests {
     #[test]
     fn tail_samples_length_matches_tail_length() {
         let reverb = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
-        let ir     = reverb.tail_samples(44_100);
+        let ir = reverb.tail_samples(44_100);
         let expected = (reverb.tail_length_secs * 44_100.0) as usize;
         assert!((ir.len() as isize - expected as isize).abs() <= 1);
     }
@@ -194,18 +219,22 @@ mod tests {
     #[test]
     fn tail_samples_decays_to_near_zero() {
         let reverb = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
-        let ir     = reverb.tail_samples(44_100);
-        let last   = ir.last().copied().unwrap_or(0.0).abs();
+        let ir = reverb.tail_samples(44_100);
+        let last = ir.last().copied().unwrap_or(0.0).abs();
         assert!(last < 0.01, "IR should decay to near-zero, last={last}");
     }
 
     #[test]
     fn per_band_rt60_high_reflectance_vs_low() {
         let high = SpectralReverb::from_splat_reflectance(&make_high_reflectance());
-        let low  = SpectralReverb::from_splat_reflectance(&make_low_reflectance());
+        let low = SpectralReverb::from_splat_reflectance(&make_low_reflectance());
         for band in 0..16usize {
-            assert!(high.band_rt60[band] > low.band_rt60[band],
-                "band {band}: high_rt60={} low_rt60={}", high.band_rt60[band], low.band_rt60[band]);
+            assert!(
+                high.band_rt60[band] > low.band_rt60[band],
+                "band {band}: high_rt60={} low_rt60={}",
+                high.band_rt60[band],
+                low.band_rt60[band]
+            );
         }
     }
 
@@ -215,51 +244,81 @@ mod tests {
     #[test]
     fn reverb_for_room_stone_longer_tail_than_fabric() {
         // Stone: high, uniform reflectance across all 16 bands.
-        let stone_v  = half::f16::from_f32(0.90).to_bits();
+        let stone_v = half::f16::from_f32(0.90).to_bits();
         // Fabric: mid-absorption (low reflectance) across all bands.
         let fabric_v = half::f16::from_f32(0.30).to_bits();
 
-        let stone_room:  Vec<[u16; 16]> = vec![[stone_v;  16]; 16];
+        let stone_room: Vec<[u16; 16]> = vec![[stone_v; 16]; 16];
         let fabric_room: Vec<[u16; 16]> = vec![[fabric_v; 16]; 16];
 
-        let stone  = reverb_for_room(&stone_room);
+        let stone = reverb_for_room(&stone_room);
         let fabric = reverb_for_room(&fabric_room);
 
         let sr = 44_100u32;
-        let stone_n  = stone.tail_samples_len(sr);
+        let stone_n = stone.tail_samples_len(sr);
         let fabric_n = fabric.tail_samples_len(sr);
 
         // Cross-check rendered IR length matches the reported param length.
-        let stone_ir  = room_impulse(&stone_room,  sr);
+        let stone_ir = room_impulse(&stone_room, sr);
         let fabric_ir = room_impulse(&fabric_room, sr);
 
         println!(
             "stone rt60={:.3}s ({stone_n} samples, ir.len={}) | fabric rt60={:.3}s ({fabric_n} samples, ir.len={})",
-            stone.rt60_secs, stone_ir.len(), fabric.rt60_secs, fabric_ir.len()
+            stone.rt60_secs,
+            stone_ir.len(),
+            fabric.rt60_secs,
+            fabric_ir.len()
         );
 
         // Ordered numeric assertions on real computed values.
-        assert!(stone.rt60_secs > fabric.rt60_secs,
-            "stone rt60={:.3}s must exceed fabric rt60={:.3}s", stone.rt60_secs, fabric.rt60_secs);
-        assert!(stone_n > fabric_n,
-            "stone tail samples {stone_n} must exceed fabric tail samples {fabric_n}");
-        assert!(stone_ir.len() > fabric_ir.len(),
-            "stone IR {} must be longer than fabric IR {}", stone_ir.len(), fabric_ir.len());
+        assert!(
+            stone.rt60_secs > fabric.rt60_secs,
+            "stone rt60={:.3}s must exceed fabric rt60={:.3}s",
+            stone.rt60_secs,
+            fabric.rt60_secs
+        );
+        assert!(
+            stone_n > fabric_n,
+            "stone tail samples {stone_n} must exceed fabric tail samples {fabric_n}"
+        );
+        assert!(
+            stone_ir.len() > fabric_ir.len(),
+            "stone IR {} must be longer than fabric IR {}",
+            stone_ir.len(),
+            fabric_ir.len()
+        );
         // Concrete magnitude sanity: a 0.9-reflectance stone room has a multi-second tail.
-        assert!(stone.rt60_secs > 1.0,
-            "stone room should ring for >1s, got {:.3}s", stone.rt60_secs);
-        assert!(fabric.rt60_secs < 1.0,
-            "fabric room should be relatively dead (<1s), got {:.3}s", fabric.rt60_secs);
+        assert!(
+            stone.rt60_secs > 1.0,
+            "stone room should ring for >1s, got {:.3}s",
+            stone.rt60_secs
+        );
+        assert!(
+            fabric.rt60_secs < 1.0,
+            "fabric room should be relatively dead (<1s), got {:.3}s",
+            fabric.rt60_secs
+        );
     }
 
     #[test]
     fn to_params_wet_mix_higher_for_reflective_room() {
-        let stone  = reverb_for_room(&make_high_reflectance());
+        let stone = reverb_for_room(&make_high_reflectance());
         let fabric = reverb_for_room(&make_low_reflectance());
-        println!("stone wet={:.3} fabric wet={:.3}", stone.wet_mix, fabric.wet_mix);
-        assert!(stone.wet_mix > fabric.wet_mix,
-            "reflective room should be wetter: stone={:.3} fabric={:.3}", stone.wet_mix, fabric.wet_mix);
-        assert!(stone.wet_mix > 0.0 && stone.wet_mix <= 0.6, "wet_mix out of range: {}", stone.wet_mix);
+        println!(
+            "stone wet={:.3} fabric wet={:.3}",
+            stone.wet_mix, fabric.wet_mix
+        );
+        assert!(
+            stone.wet_mix > fabric.wet_mix,
+            "reflective room should be wetter: stone={:.3} fabric={:.3}",
+            stone.wet_mix,
+            fabric.wet_mix
+        );
+        assert!(
+            stone.wet_mix > 0.0 && stone.wet_mix <= 0.6,
+            "wet_mix out of range: {}",
+            stone.wet_mix
+        );
     }
 
     #[test]
@@ -269,12 +328,19 @@ mod tests {
         let splat_v = half::f16::from_f32(0.5).to_bits();
         let splats: Vec<[u16; 16]> = vec![[splat_v; 16]; 4];
 
-        let from_gi    = reverb_for_room_from_gi(&gi);
+        let from_gi = reverb_for_room_from_gi(&gi);
         let from_splat = reverb_for_room(&splats);
 
-        println!("gi rt60={:.4} splat rt60={:.4}", from_gi.rt60_secs, from_splat.rt60_secs);
+        println!(
+            "gi rt60={:.4} splat rt60={:.4}",
+            from_gi.rt60_secs, from_splat.rt60_secs
+        );
         // f16(0.5) is exactly representable, so these must match closely.
-        assert!((from_gi.rt60_secs - from_splat.rt60_secs).abs() < 1e-3,
-            "gi={:.4} splat={:.4}", from_gi.rt60_secs, from_splat.rt60_secs);
+        assert!(
+            (from_gi.rt60_secs - from_splat.rt60_secs).abs() < 1e-3,
+            "gi={:.4} splat={:.4}",
+            from_gi.rt60_secs,
+            from_splat.rt60_secs
+        );
     }
 }

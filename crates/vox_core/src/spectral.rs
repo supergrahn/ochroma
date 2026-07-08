@@ -1,9 +1,9 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// 380–755 nm at 25 nm steps (USGS wavelength grid, 16 bands).
 pub const BAND_WAVELENGTHS: [f32; 16] = [
-    380.0, 405.0, 430.0, 455.0, 480.0, 505.0, 530.0, 555.0,
-    580.0, 605.0, 630.0, 655.0, 680.0, 705.0, 730.0, 755.0,
+    380.0, 405.0, 430.0, 455.0, 480.0, 505.0, 530.0, 555.0, 580.0, 605.0, 630.0, 655.0, 680.0,
+    705.0, 730.0, 755.0,
 ];
 pub const BAND_SPACING: f32 = 25.0;
 
@@ -16,22 +16,51 @@ pub struct Illuminant {
 }
 
 /// CIE 1931 2° observer, 380–755 nm at 25 nm steps.
-const CIE_X: [f32; 16] = [0.01741, 0.08028, 0.26000, 0.21000, 0.00949, 0.00000, 0.11201, 0.38000, 0.74300, 1.02200, 0.71600, 0.38100, 0.19700, 0.09020, 0.03400, 0.01180];
-const CIE_Y: [f32; 16] = [0.00039, 0.00232, 0.01998, 0.09520, 0.17399, 0.46600, 0.69500, 0.94500, 0.86800, 0.65100, 0.38100, 0.18000, 0.08000, 0.03300, 0.01200, 0.00400];
-const CIE_Z: [f32; 16] = [0.08290, 0.38637, 1.29900, 1.24500, 0.45640, 0.05250, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000];
+const CIE_X: [f32; 16] = [
+    0.01741, 0.08028, 0.26000, 0.21000, 0.00949, 0.00000, 0.11201, 0.38000, 0.74300, 1.02200,
+    0.71600, 0.38100, 0.19700, 0.09020, 0.03400, 0.01180,
+];
+const CIE_Y: [f32; 16] = [
+    0.00039, 0.00232, 0.01998, 0.09520, 0.17399, 0.46600, 0.69500, 0.94500, 0.86800, 0.65100,
+    0.38100, 0.18000, 0.08000, 0.03300, 0.01200, 0.00400,
+];
+const CIE_Z: [f32; 16] = [
+    0.08290, 0.38637, 1.29900, 1.24500, 0.45640, 0.05250, 0.00000, 0.00000, 0.00000, 0.00000,
+    0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000,
+];
 
 impl Illuminant {
     pub fn d65() -> Self {
-        Self { bands: [49.98, 52.31, 56.45, 68.70, 82.75, 91.49, 95.00, 100.00, 102.10, 100.75, 99.20, 98.00, 93.50, 88.69, 83.29, 78.28] }
+        Self {
+            bands: [
+                49.98, 52.31, 56.45, 68.70, 82.75, 91.49, 95.00, 100.00, 102.10, 100.75, 99.20,
+                98.00, 93.50, 88.69, 83.29, 78.28,
+            ],
+        }
     }
     pub fn d50() -> Self {
-        Self { bands: [25.83, 31.22, 36.93, 52.93, 67.23, 79.00, 86.68, 93.00, 97.74, 100.00, 100.76, 99.82, 97.74, 94.34, 88.49, 83.56] }
+        Self {
+            bands: [
+                25.83, 31.22, 36.93, 52.93, 67.23, 79.00, 86.68, 93.00, 97.74, 100.00, 100.76,
+                99.82, 97.74, 94.34, 88.49, 83.56,
+            ],
+        }
     }
     pub fn a() -> Self {
-        Self { bands: [9.80, 12.09, 14.71, 17.68, 21.00, 24.67, 28.70, 33.09, 37.82, 42.87, 48.24, 53.91, 59.86, 66.06, 72.50, 79.13] }
+        Self {
+            bands: [
+                9.80, 12.09, 14.71, 17.68, 21.00, 24.67, 28.70, 33.09, 37.82, 42.87, 48.24, 53.91,
+                59.86, 66.06, 72.50, 79.13,
+            ],
+        }
     }
     pub fn f11() -> Self {
-        Self { bands: [3.00, 4.00, 8.00, 15.00, 30.00, 45.00, 60.00, 70.00, 80.00, 100.00, 120.00, 90.00, 55.00, 30.00, 20.00, 15.00] }
+        Self {
+            bands: [
+                3.00, 4.00, 8.00, 15.00, 30.00, 45.00, 60.00, 70.00, 80.00, 100.00, 120.00, 90.00,
+                55.00, 30.00, 20.00, 15.00,
+            ],
+        }
     }
 }
 
@@ -76,7 +105,11 @@ pub fn xyz_to_srgb(xyz: [f32; 3]) -> [f32; 3] {
 }
 
 pub fn linear_to_srgb_gamma(c: f32) -> f32 {
-    if c <= 0.0031308 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    if c <= 0.0031308 {
+        12.92 * c
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// Smits-1999 reflectance basis curves resampled to this crate's 16-band
@@ -103,17 +136,35 @@ pub fn linear_to_srgb_gamma(c: f32) -> f32 {
 /// Max roundtrip error over the full 6×6×6 grid is ≈0.019 per channel.
 const SMITS_BASIS: [[f32; 16]; 6] = [
     // CYAN
-    [0.9515, 0.9531, 0.9641, 0.9940, 1.0000, 1.0010, 1.0000, 1.0000, 0.8873, 0.5236, 0.2510, 0.0981, 0.0248, 0.0004, 0.0000, 0.0000],
+    [
+        0.9515, 0.9531, 0.9641, 0.9940, 1.0000, 1.0010, 1.0000, 1.0000, 0.8873, 0.5236, 0.2510,
+        0.0981, 0.0248, 0.0004, 0.0000, 0.0000,
+    ],
     // MAGENTA
-    [1.0000, 1.0000, 1.0000, 1.0000, 0.4400, 0.0000, 0.0000, 0.0000, 0.0336, 0.7349, 1.0000, 1.0000, 1.0000, 1.0000, 1.0000, 1.0000],
+    [
+        1.0000, 1.0000, 1.0000, 1.0000, 0.4400, 0.0000, 0.0000, 0.0000, 0.0336, 0.7349, 1.0000,
+        1.0000, 1.0000, 1.0000, 1.0000, 1.0000,
+    ],
     // YELLOW
-    [0.0000, 0.0000, 0.0000, 0.0507, 0.5268, 1.0000, 1.0000, 1.0000, 1.0000, 0.9415, 0.7962, 0.6867, 0.6205, 0.5917, 0.5826, 0.5804],
+    [
+        0.0000, 0.0000, 0.0000, 0.0507, 0.5268, 1.0000, 1.0000, 1.0000, 1.0000, 0.9415, 0.7962,
+        0.6867, 0.6205, 0.5917, 0.5826, 0.5804,
+    ],
     // RED
-    [0.0533, 0.0513, 0.0397, 0.0023, 0.0000, 0.0000, 0.0000, 0.0000, 0.1113, 0.4777, 0.7495, 0.9004, 0.9729, 0.9978, 1.0000, 1.0000],
+    [
+        0.0533, 0.0513, 0.0397, 0.0023, 0.0000, 0.0000, 0.0000, 0.0000, 0.1113, 0.4777, 0.7495,
+        0.9004, 0.9729, 0.9978, 1.0000, 1.0000,
+    ],
     // GREEN
-    [0.0000, 0.0000, 0.0000, 0.0000, 0.5601, 1.0000, 1.0000, 1.0000, 0.9683, 0.2634, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+    [
+        0.0000, 0.0000, 0.0000, 0.0000, 0.5601, 1.0000, 1.0000, 1.0000, 0.9683, 0.2634, 0.0000,
+        0.0000, 0.0000, 0.0000, 0.0000, 0.0000,
+    ],
     // BLUE
-    [1.0000, 1.0000, 1.0000, 0.9507, 0.4716, 0.0000, 0.0000, 0.0000, 0.0000, 0.0574, 0.2031, 0.3145, 0.3815, 0.4111, 0.4209, 0.4233],
+    [
+        1.0000, 1.0000, 1.0000, 0.9507, 0.4716, 0.0000, 0.0000, 0.0000, 0.0000, 0.0574, 0.2031,
+        0.3145, 0.3815, 0.4111, 0.4209, 0.4233,
+    ],
 ];
 
 /// Convert linear RGB reflectance to a 16-band spectral reflectance via the
@@ -192,9 +243,17 @@ mod tests {
         use half::f16;
         let s = rgb_to_spectral(1.0, 0.0, 0.0);
         let band11 = f16::from_bits(s[11]).to_f32();
-        assert!(band11 > 0.9, "pure red should peak at band 11 (655nm), got {}", band11);
+        assert!(
+            band11 > 0.9,
+            "pure red should peak at band 11 (655nm), got {}",
+            band11
+        );
         let band3 = f16::from_bits(s[3]).to_f32();
-        assert!(band3 < 0.01, "pure red should have ~zero at band 3 (455nm), got {}", band3);
+        assert!(
+            band3 < 0.01,
+            "pure red should have ~zero at band 3 (455nm), got {}",
+            band3
+        );
     }
 
     /// GATE: the RGB → spectral → XYZ(D65) → sRGB roundtrip must be faithful.
@@ -212,7 +271,11 @@ mod tests {
             let refl: [f32; 16] = std::array::from_fn(|i| f16::from_bits(bits[i]).to_f32());
             let xyz = spectral_to_xyz(&SpectralBands(refl), &Illuminant::d65());
             let lin = xyz_to_srgb(xyz);
-            [lin[0].clamp(0.0, 1.0), lin[1].clamp(0.0, 1.0), lin[2].clamp(0.0, 1.0)]
+            [
+                lin[0].clamp(0.0, 1.0),
+                lin[1].clamp(0.0, 1.0),
+                lin[2].clamp(0.0, 1.0),
+            ]
         }
         // (input, tol, neutral?)
         let neutrals: [[f32; 3]; 4] = [
@@ -287,7 +350,11 @@ mod tests {
     #[test]
     fn linear_to_srgb_gamma_one_is_one() {
         let g = linear_to_srgb_gamma(1.0);
-        assert!((g - 1.0).abs() < 0.001, "gamma(1.0) should be ~1.0, got {}", g);
+        assert!(
+            (g - 1.0).abs() < 0.001,
+            "gamma(1.0) should be ~1.0, got {}",
+            g
+        );
     }
 
     // --- Building albedo conversion tests ---
@@ -308,7 +375,11 @@ mod tests {
     fn flat_reflectance_to_linear_base_color(v: f32) -> [f32; 3] {
         let xyz = spectral_to_xyz(&SpectralBands([v; 16]), &Illuminant::d65());
         let lin = xyz_to_srgb(xyz);
-        [lin[0].clamp(0.0, 1.0), lin[1].clamp(0.0, 1.0), lin[2].clamp(0.0, 1.0)]
+        [
+            lin[0].clamp(0.0, 1.0),
+            lin[1].clamp(0.0, 1.0),
+            lin[2].clamp(0.0, 1.0),
+        ]
     }
 
     /// Perfect-white flat reflectance (1.0) → base_color ≈ [1, 1, 1] linear.
@@ -328,7 +399,10 @@ mod tests {
     fn black_flat_reflectance_maps_to_black_base_color() {
         let bc = flat_reflectance_to_linear_base_color(0.0);
         for (i, &c) in bc.iter().enumerate() {
-            assert!(c < 0.01, "channel {i}: flat 0.0 reflectance should give base_color ~0.0, got {c}");
+            assert!(
+                c < 0.01,
+                "channel {i}: flat 0.0 reflectance should give base_color ~0.0, got {c}"
+            );
         }
     }
 
@@ -361,13 +435,20 @@ mod tests {
         let refl: [f32; 16] = std::array::from_fn(|i| f16::from_bits(bits[i]).to_f32());
         let xyz = spectral_to_xyz(&SpectralBands(refl), &Illuminant::d65());
         let lin = xyz_to_srgb(xyz);
-        let bc = [lin[0].clamp(0.0, 1.0), lin[1].clamp(0.0, 1.0), lin[2].clamp(0.0, 1.0)];
+        let bc = [
+            lin[0].clamp(0.0, 1.0),
+            lin[1].clamp(0.0, 1.0),
+            lin[2].clamp(0.0, 1.0),
+        ];
         let luma = 0.2126 * bc[0] + 0.7152 * bc[1] + 0.0722 * bc[2];
         assert!(
             luma < 0.65,
             "service grey linear luma should be < 0.65, got {luma:.4} (old gamma bug: ~0.74)"
         );
-        assert!(luma > 0.30, "service grey should be mid-grey, not black: luma {luma:.4}");
+        assert!(
+            luma > 0.30,
+            "service grey should be mid-grey, not black: luma {luma:.4}"
+        );
     }
 
     /// Dark asphalt reflectance (0.08) must be proportionally much dimmer than
@@ -376,7 +457,7 @@ mod tests {
     #[test]
     fn dark_reflectance_proportionally_dimmer_than_concrete() {
         let bc_concrete = flat_reflectance_to_linear_base_color(0.30);
-        let bc_asphalt  = flat_reflectance_to_linear_base_color(0.08);
+        let bc_asphalt = flat_reflectance_to_linear_base_color(0.08);
         let y_c = bc_concrete[1];
         let y_a = bc_asphalt[1];
         assert!(

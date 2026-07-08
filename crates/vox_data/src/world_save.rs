@@ -1,6 +1,6 @@
-use serde::{Serialize, Deserialize};
-use std::path::Path;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldSave {
@@ -16,7 +16,7 @@ pub struct WorldSave {
 pub struct SavedEntity {
     pub name: String,
     pub position: [f32; 3],
-    pub rotation: [f32; 4],     // quaternion xyzw
+    pub rotation: [f32; 4], // quaternion xyzw
     pub scale: [f32; 3],
     pub asset_path: Option<String>,
     pub scripts: Vec<String>,
@@ -111,7 +111,7 @@ pub struct SavedPrefabRef {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedCollider {
-    pub shape_type: String,  // "box", "sphere", "capsule"
+    pub shape_type: String,   // "box", "sphere", "capsule"
     pub dimensions: Vec<f32>, // half_extents for box, [radius] for sphere, [radius, height] for capsule
 }
 
@@ -125,7 +125,7 @@ pub struct SavedAudio {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedLight {
-    pub light_type: String,  // "point", "directional"
+    pub light_type: String, // "point", "directional"
     pub color: [f32; 3],
     pub intensity: f32,
     pub radius: f32,
@@ -186,18 +186,28 @@ impl WorldSave {
     pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         std::fs::write(path, &json).map_err(|e| e.to_string())?;
-        println!("[save] Saved {} entities to {}", self.entities.len(), path.display());
+        println!(
+            "[save] Saved {} entities to {}",
+            self.entities.len(),
+            path.display()
+        );
         Ok(())
     }
 
     pub fn load_from_file(path: &Path) -> Result<Self, String> {
         let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let save: Self = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        println!("[save] Loaded {} entities from {}", save.entities.len(), path.display());
+        println!(
+            "[save] Loaded {} entities from {}",
+            save.entities.len(),
+            path.display()
+        );
         Ok(save)
     }
 
-    pub fn entity_count(&self) -> usize { self.entities.len() }
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
+    }
 
     /// Quick save to default location.
     ///
@@ -242,7 +252,9 @@ impl WorldSave {
 
     /// Auto save path with timestamp
     pub fn auto_save_path() -> std::path::PathBuf {
-        let dir = dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("ochroma/saves");
+        let dir = dirs_next::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("ochroma/saves");
         std::fs::create_dir_all(&dir).ok();
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

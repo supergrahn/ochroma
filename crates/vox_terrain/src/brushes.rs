@@ -176,7 +176,12 @@ mod tests {
 
         let after = vol.get(cx, cy, cz);
         // Raise decreases SDF (more solid)
-        assert!(after < before, "Raise should decrease SDF: before={}, after={}", before, after);
+        assert!(
+            after < before,
+            "Raise should decrease SDF: before={}, after={}",
+            before,
+            after
+        );
     }
 
     #[test]
@@ -191,7 +196,12 @@ mod tests {
 
         let after = vol.get(cx, cy, cz);
         // Lower increases SDF (more air)
-        assert!(after > before, "Lower should increase SDF: before={}, after={}", before, after);
+        assert!(
+            after > before,
+            "Lower should increase SDF: before={}, after={}",
+            before,
+            after
+        );
     }
 
     #[test]
@@ -225,7 +235,13 @@ mod tests {
         let wp = vol.voxel_to_world(cx, cy, cz);
         let target_sdf = wp[1] - target;
 
-        let brush = TerrainBrush::new(BrushType::Flatten { target_height: target }, 3.0, 1.0);
+        let brush = TerrainBrush::new(
+            BrushType::Flatten {
+                target_height: target,
+            },
+            3.0,
+            1.0,
+        );
         brush.apply(&mut vol, center, 1.0);
 
         let after = vol.get(cx, cy, cz);

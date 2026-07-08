@@ -16,8 +16,7 @@ pub struct LoadedModule {
 impl WasmEngine {
     /// Create a new Wasm engine with default configuration.
     pub fn new() -> Result<Self, ScriptError> {
-        let engine =
-            Engine::default();
+        let engine = Engine::default();
         Ok(Self { engine })
     }
 
@@ -32,10 +31,7 @@ impl WasmEngine {
     }
 
     /// Instantiate a compiled module in a fresh store, returning the store and instance.
-    pub fn instantiate(
-        &self,
-        loaded: &LoadedModule,
-    ) -> Result<(Store<()>, Instance), ScriptError> {
+    pub fn instantiate(&self, loaded: &LoadedModule) -> Result<(Store<()>, Instance), ScriptError> {
         let mut store = Store::new(&self.engine, ());
         let linker = Linker::new(&self.engine);
         let instance = linker

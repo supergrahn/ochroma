@@ -25,7 +25,10 @@ impl GameServer {
         let listener = TcpListener::bind(format!("0.0.0.0:{}", self.port)).await?;
         let local_addr = listener.local_addr()?;
         self.bound_port = Some(local_addr.port());
-        println!("[ochroma-net] Server listening on port {}", local_addr.port());
+        println!(
+            "[ochroma-net] Server listening on port {}",
+            local_addr.port()
+        );
         self.listener = Some(listener);
         Ok(())
     }
@@ -75,7 +78,10 @@ impl GameServer {
         stream.read_exact(&mut data).await?;
 
         NetMessage::deserialize(&data).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to deserialize message")
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Failed to deserialize message",
+            )
         })
     }
 }

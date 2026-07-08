@@ -17,11 +17,16 @@ async fn two_client_replication_packet_crosses_real_socket() {
     // 2. Server accepts the established connection and reads one packet (on a task,
     //    so the client connect and server accept handshakes run concurrently).
     let server_task = tokio::spawn(async move {
-        let conn = server.accept().await.expect("server failed to accept connection");
+        let conn = server
+            .accept()
+            .await
+            .expect("server failed to accept connection");
         // remote_address proves a real peer socket is attached, not a stub.
         let peer = conn.remote_address();
         assert_eq!(peer.ip().to_string(), "127.0.0.1", "peer must be loopback");
-        conn.recv_packet().await.expect("server failed to receive packet")
+        conn.recv_packet()
+            .await
+            .expect("server failed to receive packet")
     });
 
     // 3. Client performs the real handshake (NOT a discarded future).
@@ -50,19 +55,34 @@ async fn two_client_replication_packet_crosses_real_socket() {
     // 6. The other side decodes a byte-identical packet.
     let received = server_task.await.expect("server task panicked");
 
-    assert_eq!(received.entity_id, 0xCAFE, "entity_id must round-trip exactly");
+    assert_eq!(
+        received.entity_id, 0xCAFE,
+        "entity_id must round-trip exactly"
+    );
     assert_eq!(
         received.changed_bands,
         (1 << 1) | (1 << 4) | (1 << 11),
         "changed_bands bitmask must round-trip exactly"
     );
-    assert_eq!(received.values, vec![1500, 600, 9999], "band values must round-trip exactly");
-    assert_eq!(received, sent, "received packet must equal the sent packet field-for-field");
+    assert_eq!(
+        received.values,
+        vec![1500, 600, 9999],
+        "band values must round-trip exactly"
+    );
+    assert_eq!(
+        received, sent,
+        "received packet must equal the sent packet field-for-field"
+    );
 
     // 7. The delta, applied to the original state, must reproduce the sender's after-state.
     let mut applied = before;
-    received.apply_to(&mut applied).expect("apply_to must succeed");
-    assert_eq!(applied, after, "applying the delta must reconstruct the sender's post-state");
+    received
+        .apply_to(&mut applied)
+        .expect("apply_to must succeed");
+    assert_eq!(
+        applied, after,
+        "applying the delta must reconstruct the sender's post-state"
+    );
 }
 
 #[tokio::test]
@@ -102,8 +122,14 @@ async fn server_to_client_direction_also_works() {
     let sent = expected;
 
     assert_eq!(received.entity_id, 77);
-    assert_eq!(received.changed_bands, 0xFFFF, "full packet marks all 16 bands");
+    assert_eq!(
+        received.changed_bands, 0xFFFF,
+        "full packet marks all 16 bands"
+    );
     assert_eq!(received.values.len(), 16);
     assert_eq!(received.values, vec![4321u16; 16]);
-    assert_eq!(received, sent, "client must decode the exact packet the server sent");
+    assert_eq!(
+        received, sent,
+        "client must decode the exact packet the server sent"
+    );
 }

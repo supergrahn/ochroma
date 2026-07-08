@@ -5,17 +5,17 @@ use vox_core::types::GaussianSplat;
 pub struct Heightmap {
     pub width: usize,
     pub height: usize,
-    pub data: Vec<f32>,    // height values, row-major
-    pub cell_size: f32,    // metres per cell
-    pub origin: [f32; 2],  // world-space origin [x, z]
+    pub data: Vec<f32>,   // height values, row-major
+    pub cell_size: f32,   // metres per cell
+    pub origin: [f32; 2], // world-space origin [x, z]
 }
 
 /// Material zones by height.
 #[derive(Debug, Clone)]
 pub struct TerrainMaterialZone {
-    pub max_height: f32,       // up to this height, use this material
-    pub surface_type: String,  // material name
-    pub spectral: [f32; 8],    // SPD values
+    pub max_height: f32,      // up to this height, use this material
+    pub surface_type: String, // material name
+    pub spectral: [f32; 8],   // SPD values
 }
 
 impl Heightmap {
@@ -33,7 +33,12 @@ impl Heightmap {
 
     /// Create a flat terrain at a given height.
     pub fn flat(width: usize, height: usize, cell_size: f32, terrain_height: f32) -> Self {
-        Self::from_data(width, height, vec![terrain_height; width * height], cell_size)
+        Self::from_data(
+            width,
+            height,
+            vec![terrain_height; width * height],
+            cell_size,
+        )
     }
 
     /// Bilinear height sample at a *local* (cell-space) coordinate. Shared core
@@ -253,28 +258,26 @@ pub fn generate_test_heightmap(
     // bit-for-bit identical to the serial loop (deterministic by construction;
     // no cross-row reduction, no shared mutable state).
     use rayon::prelude::*;
-    data.par_chunks_mut(width)
-        .enumerate()
-        .for_each(|(z, row)| {
-            let fz = z as f32 / height as f32;
-            // River valley through the middle (per-row constant).
-            let dist_to_center = ((fz - 0.5).abs() * 2.0).min(1.0);
-            let valley = (1.0 - (dist_to_center * dist_to_center)) * -3.0;
-            let fz4 = (fz * 4.0).cos();
-            let fz6 = (fz * 6.0 + 2.0).cos();
-            let fz11 = (fz * 11.0).cos();
+    data.par_chunks_mut(width).enumerate().for_each(|(z, row)| {
+        let fz = z as f32 / height as f32;
+        // River valley through the middle (per-row constant).
+        let dist_to_center = ((fz - 0.5).abs() * 2.0).min(1.0);
+        let valley = (1.0 - (dist_to_center * dist_to_center)) * -3.0;
+        let fz4 = (fz * 4.0).cos();
+        let fz6 = (fz * 6.0 + 2.0).cos();
+        let fz11 = (fz * 11.0).cos();
 
-            for (x, cell) in row.iter_mut().enumerate() {
-                let fx = x as f32 / width as f32;
+        for (x, cell) in row.iter_mut().enumerate() {
+            let fx = x as f32 / width as f32;
 
-                // Simple multi-octave noise — SAME ops/order as the scalar loop.
-                let h1 = ((fx * 3.0 + seed as f32 * 0.1).sin() * fz4) * 5.0;
-                let h2 = ((fx * 7.0 + 1.0).sin() * fz6) * 2.0;
-                let h3 = ((fx * 13.0).sin() * fz11) * 1.0;
+            // Simple multi-octave noise — SAME ops/order as the scalar loop.
+            let h1 = ((fx * 3.0 + seed as f32 * 0.1).sin() * fz4) * 5.0;
+            let h2 = ((fx * 7.0 + 1.0).sin() * fz6) * 2.0;
+            let h3 = ((fx * 13.0).sin() * fz11) * 1.0;
 
-                *cell = h1 + h2 + h3 + valley;
-            }
-        });
+            *cell = h1 + h2 + h3 + valley;
+        }
+    });
 
     Heightmap::from_data(width, height, data, cell_size)
 }

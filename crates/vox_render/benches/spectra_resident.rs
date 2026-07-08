@@ -38,7 +38,10 @@ fn main() {
         std::fs::create_dir_all(&dir).expect("create temp spirv cache dir");
         // SAFETY: single-threaded bench setup, before any renderer construction.
         unsafe { std::env::set_var("SPECTRA_SPIRV_CACHE_DIR", &dir) };
-        eprintln!("spectra_resident: isolated SPIR-V cache at {}", dir.display());
+        eprintln!(
+            "spectra_resident: isolated SPIR-V cache at {}",
+            dir.display()
+        );
         tmp_cache_dir = Some(dir);
     }
 
@@ -72,7 +75,10 @@ fn main() {
         let mut r = match ResidentSceneRenderer::new_with_tier(iw, ih, rig, tier, None, scene) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("ResidentSceneRenderer::new_with_tier({}) failed: {e}", tier.label());
+                eprintln!(
+                    "ResidentSceneRenderer::new_with_tier({}) failed: {e}",
+                    tier.label()
+                );
                 std::process::exit(1);
             }
         };
@@ -161,7 +167,9 @@ fn main() {
         std::process::exit(2);
     }
     if !realtime_ok {
-        eprintln!("FAIL: Performance steady_ms ({perf_steady:.2}) > 33.0 — misses the 780M real-time SHIP GATE");
+        eprintln!(
+            "FAIL: Performance steady_ms ({perf_steady:.2}) > 33.0 — misses the 780M real-time SHIP GATE"
+        );
         std::process::exit(3);
     }
     if !scales_ok {
@@ -410,10 +418,22 @@ fn look_at_rh(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [f32; 16] {
     let u = cross(s, f);
     // Column-major (matches glam Mat4::to_cols_array).
     [
-        s[0], u[0], -f[0], 0.0, //
-        s[1], u[1], -f[1], 0.0, //
-        s[2], u[2], -f[2], 0.0, //
-        -dot(s, eye), -dot(u, eye), dot(f, eye), 1.0, //
+        s[0],
+        u[0],
+        -f[0],
+        0.0, //
+        s[1],
+        u[1],
+        -f[1],
+        0.0, //
+        s[2],
+        u[2],
+        -f[2],
+        0.0, //
+        -dot(s, eye),
+        -dot(u, eye),
+        dot(f, eye),
+        1.0, //
     ]
 }
 
@@ -423,10 +443,22 @@ fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
     let k = far / (near - far);
     // Column-major, RH, depth 0..1 (matches glam perspective_rh).
     [
-        g / aspect, 0.0, 0.0, 0.0, //
-        0.0, g, 0.0, 0.0, //
-        0.0, 0.0, k, -1.0, //
-        0.0, 0.0, near * k, 0.0, //
+        g / aspect,
+        0.0,
+        0.0,
+        0.0, //
+        0.0,
+        g,
+        0.0,
+        0.0, //
+        0.0,
+        0.0,
+        k,
+        -1.0, //
+        0.0,
+        0.0,
+        near * k,
+        0.0, //
     ]
 }
 

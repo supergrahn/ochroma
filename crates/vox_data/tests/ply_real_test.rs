@@ -1,5 +1,5 @@
-use vox_data::ply_loader::*;
 use std::io::Cursor;
+use vox_data::ply_loader::*;
 
 /// Create a realistic PLY file mimicking actual 3DGS training output.
 /// Includes proper SH DC coefficients (not just zeros) and realistic scales/opacities.
@@ -37,11 +37,26 @@ fn create_realistic_ply() -> Vec<u8> {
         let logit_opacity = 2.0 + (i as f32 * 0.01).sin() * 2.0;
 
         // SH DC coefficients (typical: -1 to 1, maps to color via 0.5 + SH_C0 * val)
-        let r_dc = (i as f32 * 0.02).sin();       // varying red
+        let r_dc = (i as f32 * 0.02).sin(); // varying red
         let g_dc = (i as f32 * 0.03 + 1.0).sin(); // varying green
         let b_dc = (i as f32 * 0.01 + 2.0).cos(); // varying blue
 
-        for val in &[x, y, z, log_scale, log_scale, log_scale, qw, qx, qy, qz, logit_opacity, r_dc, g_dc, b_dc] {
+        for val in &[
+            x,
+            y,
+            z,
+            log_scale,
+            log_scale,
+            log_scale,
+            qw,
+            qx,
+            qy,
+            qz,
+            logit_opacity,
+            r_dc,
+            g_dc,
+            b_dc,
+        ] {
             data.extend_from_slice(&val.to_le_bytes());
         }
     }
@@ -64,7 +79,11 @@ fn realistic_ply_has_valid_positions() {
         // All positions should be on a sphere of radius ~3
         let pos = s.position();
         let dist = (pos[0].powi(2) + pos[1].powi(2) + pos[2].powi(2)).sqrt();
-        assert!(dist > 1.0 && dist < 5.0, "Position should be on sphere: dist={}", dist);
+        assert!(
+            dist > 1.0 && dist < 5.0,
+            "Position should be on sphere: dist={}",
+            dist
+        );
     }
 }
 
@@ -74,7 +93,11 @@ fn realistic_ply_has_valid_scales() {
     let splats = load_ply_from_reader(&mut Cursor::new(&ply)).unwrap();
     for s in &splats {
         // Scales should be small (exp(-5) ~ 0.007)
-        assert!(s.scale_u() > 0.001 && s.scale_u() < 0.1, "Scale should be small: {}", s.scale_u());
+        assert!(
+            s.scale_u() > 0.001 && s.scale_u() < 0.1,
+            "Scale should be small: {}",
+            s.scale_u()
+        );
     }
 }
 
@@ -96,10 +119,10 @@ fn realistic_ply_renders_visible_sphere() {
     let ply = create_realistic_ply();
     let splats = load_ply_from_reader(&mut Cursor::new(&ply)).unwrap();
 
+    use glam::{Mat4, Vec3};
+    use vox_core::spectral::Illuminant;
     use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
     use vox_render::spectral::RenderCamera;
-    use vox_core::spectral::Illuminant;
-    use glam::{Mat4, Vec3};
 
     let mut rast = SoftwareRasteriser::new(128, 128);
     let cam = RenderCamera {
@@ -108,9 +131,17 @@ fn realistic_ply_renders_visible_sphere() {
     };
 
     let fb = rast.render(&splats, &cam, &Illuminant::d65(), None);
-    let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();
+    let non_black = fb
+        .pixels
+        .iter()
+        .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+        .count();
     let coverage = non_black as f32 / fb.pixels.len() as f32 * 100.0;
 
-    println!("Realistic PLY sphere: {} splats, {:.1}% coverage", splats.len(), coverage);
+    println!(
+        "Realistic PLY sphere: {} splats, {:.1}% coverage",
+        splats.len(),
+        coverage
+    );
     assert!(coverage > 5.0, "Sphere should be visible: {:.1}%", coverage);
 }

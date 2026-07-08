@@ -91,12 +91,21 @@ impl GpuSdfFieldHeader {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SdfAtlasError {
     /// The quota is too small to host even one minimal box.
-    QuotaTooSmall { quota_bytes: u64, min_bytes: u64 },
+    QuotaTooSmall {
+        quota_bytes: u64,
+        min_bytes: u64,
+    },
     /// A single field's payload exceeds the whole quota — no eviction
     /// sequence can ever make it resident.
-    QuotaExceeded { needed_bytes: u64, quota_bytes: u64 },
+    QuotaExceeded {
+        needed_bytes: u64,
+        quota_bytes: u64,
+    },
     /// The field's bordered box does not fit the atlas extents at this quota.
-    FieldTooLarge { resolution: [u32; 3], atlas: [u32; 3] },
+    FieldTooLarge {
+        resolution: [u32; 3],
+        atlas: [u32; 3],
+    },
     DeviceLimits(String),
 }
 
@@ -870,9 +879,19 @@ mod tests {
         // Mixed resolutions ≤ 64³, both payload quantizations accepted.
         let fields = [
             analytic_field(Shape::Sphere(1.0), [64, 64, 64], 0.05, Quant::Snorm8),
-            analytic_field(Shape::Box(Vec3::new(0.6, 0.4, 0.3)), [48, 40, 56], 0.04, Quant::Snorm8),
+            analytic_field(
+                Shape::Box(Vec3::new(0.6, 0.4, 0.3)),
+                [48, 40, 56],
+                0.04,
+                Quant::Snorm8,
+            ),
             analytic_field(Shape::Sphere(0.5), [33, 57, 41], 0.035, Quant::Snorm16),
-            analytic_field(Shape::Box(Vec3::splat(0.45)), [24, 24, 24], 0.06, Quant::Snorm16),
+            analytic_field(
+                Shape::Box(Vec3::splat(0.45)),
+                [24, 24, 24],
+                0.06,
+                Quant::Snorm16,
+            ),
             analytic_field(Shape::Sphere(0.8), [64, 32, 48], 0.045, Quant::Snorm8),
         ];
 
@@ -888,7 +907,11 @@ mod tests {
         let mut unique = slots.clone();
         unique.sort_unstable();
         unique.dedup();
-        assert_eq!(unique.len(), fields.len(), "each asset gets its own header slot");
+        assert_eq!(
+            unique.len(),
+            fields.len(),
+            "each asset gets its own header slot"
+        );
 
         // 100k deterministic hash-jittered points, 20k per field, inside the
         // sampleable local bounds so the CPU oracle always answers.
@@ -970,7 +993,10 @@ mod tests {
         // Re-insert of a resident asset returns its slot without growing.
         let bytes_before = atlas.resident_bytes();
         let again = atlas.insert(SdfAssetId(7), &field).expect("re-insert");
-        assert!(slots.contains(&again), "re-insert returns the resident slot");
+        assert!(
+            slots.contains(&again),
+            "re-insert returns the resident slot"
+        );
         assert_eq!(atlas.resident_bytes(), bytes_before, "re-insert is a no-op");
 
         let resident = atlas.resident_bytes();

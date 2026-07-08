@@ -239,8 +239,16 @@ mod tests {
             applied.x
         );
         // X gizmo must not touch Y or Z.
-        assert!(t.translation.y.abs() < 1e-6, "y changed: {}", t.translation.y);
-        assert!(t.translation.z.abs() < 1e-6, "z changed: {}", t.translation.z);
+        assert!(
+            t.translation.y.abs() < 1e-6,
+            "y changed: {}",
+            t.translation.y
+        );
+        assert!(
+            t.translation.z.abs() < 1e-6,
+            "z changed: {}",
+            t.translation.z
+        );
         // Rotation / scale untouched by a translate drag.
         assert_eq!(t.rotation, Quat::IDENTITY);
         assert_eq!(t.scale, Vec3::ONE);
@@ -251,12 +259,7 @@ mod tests {
         // With snap=0.5, a raw translation of 0.7 units must land on 0.5.
         let mut t = Transform::from_translation(Vec3::ZERO);
         let raw = GizmoDelta::Translate(Vec3::new(0.7, 0.0, 0.0));
-        let applied = apply_delta(
-            &mut t,
-            raw,
-            Some(Axis::X),
-            SnapSettings::grid(0.5),
-        );
+        let applied = apply_delta(&mut t, raw, Some(Axis::X), SnapSettings::grid(0.5));
         assert_eq!(applied, Vec3::new(0.5, 0.0, 0.0), "0.7 should snap to 0.5");
         assert_eq!(t.translation, Vec3::new(0.5, 0.0, 0.0));
 
@@ -333,17 +336,19 @@ mod tests {
     fn rotate_delta_composes_onto_existing_rotation() {
         // Two successive 90° Y rotations compose to 180° about Y.
         let mut t = Transform::default();
-        let ninety = GizmoDelta::Rotate(Quat::from_axis_angle(
-            Vec3::Y,
-            std::f32::consts::FRAC_PI_2,
-        ));
+        let ninety =
+            GizmoDelta::Rotate(Quat::from_axis_angle(Vec3::Y, std::f32::consts::FRAC_PI_2));
         apply_delta(&mut t, ninety, Some(Axis::Y), SnapSettings::OFF);
         apply_delta(&mut t, ninety, Some(Axis::Y), SnapSettings::OFF);
 
         let expected = Quat::from_axis_angle(Vec3::Y, std::f32::consts::PI);
         // Quaternion equality up to sign.
         let dot = t.rotation.dot(expected).abs();
-        assert!(dot > 0.9999, "composed rotation {:?} != 180° about Y", t.rotation);
+        assert!(
+            dot > 0.9999,
+            "composed rotation {:?} != 180° about Y",
+            t.rotation
+        );
         assert_eq!(t.translation, Vec3::ZERO);
     }
 

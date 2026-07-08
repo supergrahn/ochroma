@@ -75,14 +75,21 @@ impl SceneQualityReport {
             let coverage =
                 energies.iter().filter(|&&e| e > 0.1).count() as f32 / splat_count as f32;
             total_energy_sum += mean;
-            band_coverage.push(BandCoverage { band, mean_energy: mean, coverage_fraction: coverage });
+            band_coverage.push(BandCoverage {
+                band,
+                mean_energy: mean,
+                coverage_fraction: coverage,
+            });
         }
 
         let mean_total_energy = total_energy_sum / 16.0;
 
         // Build feedback
         let mut feedback = Vec::new();
-        let visible_bands = band_coverage.iter().filter(|b| b.coverage_fraction > 0.05).count();
+        let visible_bands = band_coverage
+            .iter()
+            .filter(|b| b.coverage_fraction > 0.05)
+            .count();
 
         if visible_bands < 3 {
             feedback.push(format!(
@@ -91,7 +98,8 @@ impl SceneQualityReport {
             ));
         }
         if mean_total_energy < 0.01 {
-            feedback.push("Very low overall energy — scene may be too dark or splats unlit.".into());
+            feedback
+                .push("Very low overall energy — scene may be too dark or splats unlit.".into());
         }
         if splat_count < 10 {
             feedback.push(format!(
@@ -111,7 +119,13 @@ impl SceneQualityReport {
             QualityGrade::Failed
         };
 
-        Self { splat_count, mean_total_energy, band_coverage, grade, feedback }
+        Self {
+            splat_count,
+            mean_total_energy,
+            band_coverage,
+            grade,
+            feedback,
+        }
     }
 
     /// Returns the index of the most energetic spectral band.
@@ -140,7 +154,10 @@ mod tests {
     fn empty_scene_is_failed() {
         let report = SceneQualityReport::evaluate(&[]);
         assert_eq!(report.grade, QualityGrade::Failed);
-        assert!(!report.feedback.is_empty(), "failed report must explain why");
+        assert!(
+            !report.feedback.is_empty(),
+            "failed report must explain why"
+        );
     }
 
     #[test]

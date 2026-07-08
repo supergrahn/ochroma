@@ -28,7 +28,9 @@ impl ValidationBudget {
 
     /// Cap the import at `max_splats`.
     pub fn with_max(max_splats: usize) -> Self {
-        ValidationBudget { max_splats: Some(max_splats) }
+        ValidationBudget {
+            max_splats: Some(max_splats),
+        }
     }
 }
 
@@ -42,7 +44,11 @@ pub enum ValidationIssue {
     /// disks legitimately set `scale_w == 0`, which is NOT flagged).
     NonPositiveScale { index: usize, scales: [f32; 3] },
     /// A spectral band decoded to a non-finite value (f16 Inf/NaN bit pattern).
-    NonFiniteSpectral { index: usize, band: usize, value: f32 },
+    NonFiniteSpectral {
+        index: usize,
+        band: usize,
+        value: f32,
+    },
     /// Every spectral band is exactly 0 — the splat has no radiance under any
     /// illuminant (a warning: legal but almost always a mistake).
     ZeroSpectral { index: usize },
@@ -138,7 +144,10 @@ pub fn validate_splats(splats: &[GaussianSplat], budget: ValidationBudget) -> Va
         // Integrity: position must be finite.
         let position = s.position();
         if position.iter().any(|c| !c.is_finite()) {
-            issues.push((Severity::Error, ValidationIssue::NonFinitePosition { index, position }));
+            issues.push((
+                Severity::Error,
+                ValidationIssue::NonFinitePosition { index, position },
+            ));
         }
 
         // Integrity: scales must be positive. scale_w (the 3rd axis) is only a
@@ -147,7 +156,10 @@ pub fn validate_splats(splats: &[GaussianSplat], budget: ValidationBudget) -> Va
         let bad_uv = scales[0] <= 0.0 || scales[1] <= 0.0;
         let bad_w = s.is_volume() && scales[2] <= 0.0;
         if bad_uv || bad_w {
-            issues.push((Severity::Error, ValidationIssue::NonPositiveScale { index, scales }));
+            issues.push((
+                Severity::Error,
+                ValidationIssue::NonPositiveScale { index, scales },
+            ));
         }
 
         // Spectral validity: non-finite is an error; all-zero is a warning.
@@ -157,7 +169,11 @@ pub fn validate_splats(splats: &[GaussianSplat], budget: ValidationBudget) -> Va
             if !v.is_finite() {
                 issues.push((
                     Severity::Error,
-                    ValidationIssue::NonFiniteSpectral { index, band, value: v },
+                    ValidationIssue::NonFiniteSpectral {
+                        index,
+                        band,
+                        value: v,
+                    },
                 ));
                 all_zero = false;
                 break; // one spectral error per splat is enough signal
@@ -176,7 +192,10 @@ pub fn validate_splats(splats: &[GaussianSplat], budget: ValidationBudget) -> Va
         if splats.len() > m {
             issues.push((
                 Severity::Error,
-                ValidationIssue::OverBudget { count: splats.len(), budget: m },
+                ValidationIssue::OverBudget {
+                    count: splats.len(),
+                    budget: m,
+                },
             ));
         }
     }
@@ -213,7 +232,10 @@ mod tests {
         match e {
             ValidationIssue::NonFinitePosition { index, position } => {
                 assert_eq!(*index, 0);
-                assert!(position[0].is_nan(), "the NaN component survives into the report");
+                assert!(
+                    position[0].is_nan(),
+                    "the NaN component survives into the report"
+                );
             }
             other => panic!("expected NonFinitePosition, got {other:?}"),
         }
@@ -221,13 +243,18 @@ mod tests {
 
     #[test]
     fn negative_scale_flags_index() {
-        let mut v: Vec<GaussianSplat> = (0..3).map(|_| vol([0.0; 3], [1.0; 3], valid_spectral())).collect();
+        let mut v: Vec<GaussianSplat> = (0..3)
+            .map(|_| vol([0.0; 3], [1.0; 3], valid_spectral()))
+            .collect();
         v[2] = vol([0.0; 3], [1.0, -0.5, 1.0], valid_spectral());
         let r = validate_splats(&v, ValidationBudget::UNLIMITED);
         assert_eq!(r.error_count(), 1);
         assert_eq!(
             r.errors().next().unwrap(),
-            &ValidationIssue::NonPositiveScale { index: 2, scales: [1.0, -0.5, 1.0] }
+            &ValidationIssue::NonPositiveScale {
+                index: 2,
+                scales: [1.0, -0.5, 1.0]
+            }
         );
     }
 
@@ -249,12 +276,17 @@ mod tests {
 
     #[test]
     fn over_budget_exact_count() {
-        let v: Vec<GaussianSplat> = (0..5).map(|_| vol([0.0; 3], [1.0; 3], valid_spectral())).collect();
+        let v: Vec<GaussianSplat> = (0..5)
+            .map(|_| vol([0.0; 3], [1.0; 3], valid_spectral()))
+            .collect();
         let r = validate_splats(&v, ValidationBudget::with_max(3));
         assert_eq!(r.error_count(), 1);
         assert_eq!(
             r.errors().next().unwrap(),
-            &ValidationIssue::OverBudget { count: 5, budget: 3 }
+            &ValidationIssue::OverBudget {
+                count: 5,
+                budget: 3
+            }
         );
     }
 
@@ -264,13 +296,18 @@ mod tests {
         let r = validate_splats(&v, ValidationBudget::UNLIMITED);
         assert_eq!(r.error_count(), 0);
         assert_eq!(r.warning_count(), 1);
-        assert_eq!(r.warnings().next().unwrap(), &ValidationIssue::ZeroSpectral { index: 0 });
+        assert_eq!(
+            r.warnings().next().unwrap(),
+            &ValidationIssue::ZeroSpectral { index: 0 }
+        );
         assert!(r.is_ok(), "a warning passes the gate");
     }
 
     #[test]
     fn clean_buffer_ok() {
-        let v: Vec<GaussianSplat> = (0..100).map(|i| vol([i as f32, 0.0, 0.0], [1.0; 3], valid_spectral())).collect();
+        let v: Vec<GaussianSplat> = (0..100)
+            .map(|i| vol([i as f32, 0.0, 0.0], [1.0; 3], valid_spectral()))
+            .collect();
         let r = validate_splats(&v, ValidationBudget::UNLIMITED);
         assert!(r.is_ok());
         assert_eq!(r.receipts().len(), 0, "a clean buffer produces no receipts");

@@ -16,7 +16,9 @@ use vox_terrain::scene::TerrainScene;
 /// flanks, so a slope constraint actually excludes placements rather than being
 /// a no-op.
 fn hilly_scene() -> TerrainScene {
-    let mut scene = TerrainScene::with_ground(48, 32, 48, 1.0, /*ground*/ -8.0, /*grass*/ 1, /*seed*/ 7);
+    let mut scene = TerrainScene::with_ground(
+        48, 32, 48, 1.0, /*ground*/ -8.0, /*grass*/ 1, /*seed*/ 7,
+    );
     // Hill centred at the world origin; its top rises above the ground plane.
     scene.sculpt_fill_sphere([0.0, -2.0, 0.0], 10.0, /*dirt*/ 2);
     scene
@@ -114,13 +116,22 @@ fn scatter_foliage_respects_density_and_slope() {
 #[test]
 fn texture_paint_writes_expected_texel_weights() {
     // A flat scene is fine here — texture paint is independent of terrain shape.
-    let mut scene = TerrainScene::with_ground(16, 16, 16, 1.0, 0.0, /*grass*/ 1, /*seed*/ 3);
+    let mut scene =
+        TerrainScene::with_ground(16, 16, 16, 1.0, 0.0, /*grass*/ 1, /*seed*/ 3);
 
     // 32x32 splat map with two material layers. Layer 0 (grass) becomes the
     // fully-weighted base everywhere; layer 1 (dirt) starts at weight 0.
     scene.init_splat_map(32, 32);
-    let grass = scene.add_material_layer("grass", "mat_grass", [0.05, 0.05, 0.08, 0.12, 0.40, 0.25, 0.08, 0.05]);
-    let dirt = scene.add_material_layer("dirt", "mat_dirt", [0.10, 0.12, 0.15, 0.20, 0.22, 0.20, 0.18, 0.15]);
+    let grass = scene.add_material_layer(
+        "grass",
+        "mat_grass",
+        [0.05, 0.05, 0.08, 0.12, 0.40, 0.25, 0.08, 0.05],
+    );
+    let dirt = scene.add_material_layer(
+        "dirt",
+        "mat_dirt",
+        [0.10, 0.12, 0.15, 0.20, 0.22, 0.20, 0.18, 0.15],
+    );
     assert_eq!(grass, 0);
     assert_eq!(dirt, 1);
 

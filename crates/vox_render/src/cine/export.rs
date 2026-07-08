@@ -109,11 +109,7 @@ pub fn write_png(beauty: &[f32], width: u32, height: u32, path: &Path) -> Result
 pub fn write_png16(beauty: &[f32], width: u32, height: u32, path: &Path) -> Result<(), String> {
     let n = (width as usize) * (height as usize) * 4;
     if beauty.len() < n {
-        return Err(format!(
-            "beauty buffer too small: {} < {}",
-            beauty.len(),
-            n
-        ));
+        return Err(format!("beauty buffer too small: {} < {}", beauty.len(), n));
     }
     let mut rgba: Vec<u16> = Vec::with_capacity(n);
     for &v in &beauty[..n] {

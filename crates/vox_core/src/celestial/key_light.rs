@@ -93,7 +93,7 @@ impl Default for KeyLightPalette {
             day_zenith: [0.40, 0.52, 0.72], // soft desaturated sky-blue
             day_horizon: [0.80, 0.83, 0.88], // near-neutral warm horizon
             day_intensity: 0.45,
-            dusk_zenith: [0.12, 0.16, 0.45], // deep dusk blue
+            dusk_zenith: [0.12, 0.16, 0.45],  // deep dusk blue
             dusk_horizon: [1.00, 0.45, 0.18], // orange-red horizon
             dusk_intensity: 0.35,
             night_zenith: [0.008, 0.015, 0.060], // dark deep blue
@@ -159,8 +159,8 @@ pub fn celestial_key_light(
         palette.sun_color_b_base + palette.sun_color_b_slope * sin_alt,
     ];
     // Radiance: dim at horizon, bright at noon (ramp from palette).
-    let day_radiance =
-        palette.sun_radiance_base + palette.sun_radiance_scale * sin_alt.powf(palette.sun_radiance_exp);
+    let day_radiance = palette.sun_radiance_base
+        + palette.sun_radiance_scale * sin_alt.powf(palette.sun_radiance_exp);
 
     // ── Night key-light (moon) ───────────────────────────────────────────────
     let night_color = moon.color;
@@ -227,7 +227,11 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 #[inline]
 fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]
+    [
+        lerp(a[0], b[0], t),
+        lerp(a[1], b[1], t),
+        lerp(a[2], b[2], t),
+    ]
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -262,7 +266,11 @@ mod tests {
             phase: 1.0,
             phase_angle_rad: 0.0, // full moon → phase angle 0
             bright_limb_angle_rad: 0.0,
-            radiance: if above_horizon { MOON_CONFIG.max_radiance } else { 0.0 },
+            radiance: if above_horizon {
+                MOON_CONFIG.max_radiance
+            } else {
+                0.0
+            },
             color: MOON_CONFIG.color,
         }
     }
@@ -365,7 +373,13 @@ mod tests {
     /// Direction is always unit-length (never zero or NaN).
     #[test]
     fn direction_always_unit() {
-        for (day, hour) in [(1u32, 0.0_f64), (80, 6.0), (80, 12.0), (172, 0.0), (355, 18.0)] {
+        for (day, hour) in [
+            (1u32, 0.0_f64),
+            (80, 6.0),
+            (80, 12.0),
+            (172, 0.0),
+            (355, 18.0),
+        ] {
             let sun = nyc_sun(day, hour);
             let moon = full_moon_position(true);
             let key = celestial_key_light(&sun, &moon, &KeyLightPalette::default());
@@ -405,7 +419,8 @@ mod tests {
         // NYC equinox: sunrise ≈ 06:00 local; civil twilight starts before 06:00.
         // At 06:10 the sun is around −2°…+2° (in the twilight blend zone).
         let midnight = celestial_key_light(&nyc_sun(80, 0.0), &moon, &KeyLightPalette::default());
-        let civil_twilight = celestial_key_light(&nyc_sun(80, 6.1), &moon, &KeyLightPalette::default());
+        let civil_twilight =
+            celestial_key_light(&nyc_sun(80, 6.1), &moon, &KeyLightPalette::default());
         let noon = celestial_key_light(&nyc_sun(80, 12.0), &moon, &KeyLightPalette::default());
 
         assert!(

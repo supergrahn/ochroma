@@ -1,5 +1,5 @@
-use std::time::Instant;
 use glam::Vec3;
+use std::time::Instant;
 use vox_sim::crowd::CrowdSimulation;
 
 #[test]
@@ -38,7 +38,16 @@ fn spatial_hash_neighbours_correct() {
     let mut neighbours = hash.neighbours(Vec3::new(0.0, 0.0, 0.0), 2.5);
     neighbours.sort();
     println!("neighbours: {:?}", neighbours);
-    assert!(neighbours.contains(&1), "agent 1 at 1.5m must be in neighbours");
-    assert!(neighbours.contains(&2), "agent 2 at 3.5m must be in neighbours (adjacent cell)");
-    assert!(!neighbours.contains(&3), "agent 3 at 10m must NOT be in neighbours");
+    assert!(
+        neighbours.contains(&1),
+        "agent 1 at 1.5m must be in neighbours"
+    );
+    assert!(
+        neighbours.contains(&2),
+        "agent 2 at 3.5m must be in neighbours (adjacent cell)"
+    );
+    assert!(
+        !neighbours.contains(&3),
+        "agent 3 at 10m must NOT be in neighbours"
+    );
 }

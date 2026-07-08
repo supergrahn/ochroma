@@ -83,9 +83,15 @@ fn turnaround_nonexistent_views_returns_error() {
     let views = Path::new("/tmp/ochroma_test_nonexistent_views_dir_zzz");
     let output = Path::new("/tmp/ochroma_test_output.vxm");
     let result = run_turnaround(views, output, None);
-    assert!(result.is_err(), "Should fail when views directory does not exist");
+    assert!(
+        result.is_err(),
+        "Should fail when views directory does not exist"
+    );
     let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("does not exist"), "Error should mention missing views path");
+    assert!(
+        err_msg.contains("does not exist"),
+        "Error should mention missing views path"
+    );
 }
 
 // --- BuildConfig equality ---

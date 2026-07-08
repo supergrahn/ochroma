@@ -20,7 +20,9 @@ impl GameScript for TestScript {
         ctx.log("TestScript destroyed");
     }
 
-    fn name(&self) -> &str { "TestScript" }
+    fn name(&self) -> &str {
+        "TestScript"
+    }
 }
 
 #[test]
@@ -31,7 +33,10 @@ fn script_lifecycle() {
     script.on_start(&mut ctx);
     let cmds = ctx.take_commands();
     assert_eq!(cmds.len(), 1);
-    match &cmds[0] { ScriptCommand::Log { message } => assert!(message.contains("started")), _ => panic!() }
+    match &cmds[0] {
+        ScriptCommand::Log { message } => assert!(message.contains("started")),
+        _ => panic!(),
+    }
 
     // Run 10 updates
     for _ in 0..10 {
@@ -39,7 +44,10 @@ fn script_lifecycle() {
     }
     let cmds = ctx.take_commands();
     // Should have a Spawn command from update 10
-    assert!(cmds.iter().any(|c| matches!(c, ScriptCommand::Spawn { .. })));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, ScriptCommand::Spawn { .. }))
+    );
 }
 
 #[test]

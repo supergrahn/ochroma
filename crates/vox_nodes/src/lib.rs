@@ -2,17 +2,17 @@
 pub mod mat_nodes;
 
 #[cfg(feature = "crucible")]
-use std::collections::HashMap;
+pub use crucible_core::error::CookError;
 #[cfg(feature = "crucible")]
 pub use crucible_core::graph::{CrucibleGraph, NodeId};
 #[cfg(feature = "crucible")]
-pub use crucible_core::port::{PortData, PortMap, ParamValue, PortDataType};
-#[cfg(feature = "crucible")]
 pub use crucible_core::node::{CrucibleNode, NodeDescriptor, PortSpec};
 #[cfg(feature = "crucible")]
-pub use crucible_core::error::CookError;
+pub use crucible_core::port::{ParamValue, PortData, PortDataType, PortMap};
 #[cfg(feature = "crucible")]
-use vox_ui::node_graph_widget::{VisualNode, VisualConnection};
+use std::collections::HashMap;
+#[cfg(feature = "crucible")]
+use vox_ui::node_graph_widget::{VisualConnection, VisualNode};
 
 #[cfg(feature = "crucible")]
 pub struct OchrGraph {
@@ -23,7 +23,10 @@ pub struct OchrGraph {
 #[cfg(feature = "crucible")]
 impl OchrGraph {
     pub fn new() -> Self {
-        Self { graph: CrucibleGraph::new(), positions: HashMap::new() }
+        Self {
+            graph: CrucibleGraph::new(),
+            positions: HashMap::new(),
+        }
     }
 
     pub fn add_node(&mut self, name: &str, node: Box<dyn CrucibleNode>, pos: [f32; 2]) -> NodeId {
@@ -34,8 +37,10 @@ impl OchrGraph {
 
     pub fn connect(
         &mut self,
-        from: NodeId, from_port: &str,
-        to: NodeId,   to_port:   &str,
+        from: NodeId,
+        from_port: &str,
+        to: NodeId,
+        to_port: &str,
     ) -> Result<(), CookError> {
         self.graph.connect(from, from_port, to, to_port)
     }
@@ -54,38 +59,46 @@ impl OchrGraph {
     /// Callers add domain-specific pin info after receiving this list.
     pub fn to_visual_nodes(&self) -> Vec<VisualNode> {
         let snap = self.graph.snapshot();
-        snap.nodes.iter().map(|ns| {
-            let pos = self.positions.get(&ns.id).copied().unwrap_or([0.0, 0.0]);
-            VisualNode {
-                id: ns.id,
-                title: ns.name.clone(),
-                position: pos,
-                size: [140.0, 60.0],
-                color: [55, 65, 95],
-                inputs: vec![],
-                outputs: vec![],
-                selected: false,
-                collapsed: false,
-            }
-        }).collect()
+        snap.nodes
+            .iter()
+            .map(|ns| {
+                let pos = self.positions.get(&ns.id).copied().unwrap_or([0.0, 0.0]);
+                VisualNode {
+                    id: ns.id,
+                    title: ns.name.clone(),
+                    position: pos,
+                    size: [140.0, 60.0],
+                    color: [55, 65, 95],
+                    inputs: vec![],
+                    outputs: vec![],
+                    selected: false,
+                    collapsed: false,
+                }
+            })
+            .collect()
     }
 
     /// Build VisualConnection list for NodeGraphWidget.
     pub fn to_visual_connections(&self) -> Vec<VisualConnection> {
         let snap = self.graph.snapshot();
-        snap.edges.iter().map(|es| VisualConnection {
-            from_node: es.from,
-            from_pin:  es.from_port.clone(),
-            to_node:   es.to,
-            to_pin:    es.to_port.clone(),
-            color: [80, 140, 200],
-        }).collect()
+        snap.edges
+            .iter()
+            .map(|es| VisualConnection {
+                from_node: es.from,
+                from_pin: es.from_port.clone(),
+                to_node: es.to,
+                to_pin: es.to_port.clone(),
+                color: [80, 140, 200],
+            })
+            .collect()
     }
 }
 
 #[cfg(feature = "crucible")]
 impl Default for OchrGraph {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(all(test, feature = "crucible"))]

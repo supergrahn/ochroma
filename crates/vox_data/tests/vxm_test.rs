@@ -1,5 +1,5 @@
-use uuid::Uuid;
 use glam::Quat;
+use uuid::Uuid;
 use vox_core::types::GaussianSplat;
 use vox_data::vxm::{MaterialType, VxmFile, VxmHeader};
 
@@ -40,13 +40,15 @@ fn round_trip_write_read() {
 fn round_trip_many_splats() {
     let uuid = Uuid::new_v4();
     let splats: Vec<GaussianSplat> = (0..1000)
-        .map(|i| GaussianSplat::volume(
-            [i as f32, 0.0, 0.0],
-            [0.05, 0.05, 0.05],
-            Quat::IDENTITY,
-            200,
-            [15360; 16],
-        ))
+        .map(|i| {
+            GaussianSplat::volume(
+                [i as f32, 0.0, 0.0],
+                [0.05, 0.05, 0.05],
+                Quat::IDENTITY,
+                200,
+                [15360; 16],
+            )
+        })
         .collect();
 
     let file = VxmFile {
@@ -72,7 +74,8 @@ fn round_trip_byte_identical() {
                 -200.0 / 32767.0,
                 300.0 / 32767.0,
                 32000.0 / 32767.0,
-            ).normalize();
+            )
+            .normalize();
             GaussianSplat::volume(
                 [i as f32 * 0.3, (i as f32).sin(), (i as f32).cos()],
                 [0.05 + i as f32 * 0.001, 0.04, 0.06],
@@ -87,7 +90,14 @@ fn round_trip_byte_identical() {
                     half::f16::from_f32(0.6).to_bits(),
                     half::f16::from_f32(0.7).to_bits(),
                     half::f16::from_f32(0.8).to_bits(),
-                    0, 0, 0, 0, 0, 0, 0, 0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
                 ],
             )
         })

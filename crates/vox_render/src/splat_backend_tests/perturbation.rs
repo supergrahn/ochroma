@@ -35,8 +35,8 @@
 // Real internals reached through the crate (this is a child module of the
 // crate, so `super::super` is `crate::splat_backend`).
 use super::super::{
-    pack_vulkan_directional_light, resolve_slang_kernel_dir, RenderConfig, Renderer,
-    VulkanSlangBackend, VULKAN_MATERIAL_FLOATS,
+    RenderConfig, Renderer, VULKAN_MATERIAL_FLOATS, VulkanSlangBackend,
+    pack_vulkan_directional_light, resolve_slang_kernel_dir,
 };
 use crate::splat_convert::camera_layer;
 use spectra_renderer::RenderSettings;
@@ -171,9 +171,15 @@ fn render_with_settings(settings: &RenderSettings) -> Result<Vec<u8>, String> {
         scene.geometry.vertex_count = 3;
         scene.geometry.triangle_count = 1;
         scene.geometry.positions = vec![
-            far[0], far[1], far[2],
-            far[0] + 0.001, far[1], far[2],
-            far[0], far[1], far[2] + 0.001,
+            far[0],
+            far[1],
+            far[2],
+            far[0] + 0.001,
+            far[1],
+            far[2],
+            far[0],
+            far[1],
+            far[2] + 0.001,
         ];
         scene.geometry.normals = vec![0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0];
         scene.geometry.uvs = vec![0.0; 6];
@@ -201,7 +207,11 @@ fn render_with_settings(settings: &RenderSettings) -> Result<Vec<u8>, String> {
     let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
     let mut light_data: Vec<f32> = Vec::new();
     for (dir, color, intensity) in [
-        (sun.to_array(), settings.lighting.sun.color, settings.lighting.sun.intensity),
+        (
+            sun.to_array(),
+            settings.lighting.sun.color,
+            settings.lighting.sun.intensity,
+        ),
         (
             glam::Vec3::Y.to_array(),
             [0.58, 0.62, 0.72],
@@ -360,7 +370,10 @@ fn wired_leaves() -> Vec<Wired> {
 /// goal is to shrink this list as each capability gets a real fixture.
 const KNOWN_UNWIRED: &[(&str, &str)] = &[
     // version is schema metadata, not a render input.
-    ("version", "schema metadata — never affects pixels by design"),
+    (
+        "version",
+        "schema metadata — never affects pixels by design",
+    ),
     // backend.mode selects Vulkan vs CUDA; on this AMD box only Vulkan exists,
     // and the selector still hard-prefers Vulkan (Phase 2 integrator note).
     (
@@ -422,9 +435,18 @@ const KNOWN_UNWIRED: &[(&str, &str)] = &[
         "look.color.enabled",
         "ASC-CDL color grade unwired in native path (design §67 — Cdl exists but dead)",
     ),
-    ("look.color.value.slope", "CDL slope — dead until color grade is wired"),
-    ("look.color.value.offset", "CDL offset — dead until color grade is wired"),
-    ("look.color.value.power", "CDL power — dead until color grade is wired"),
+    (
+        "look.color.value.slope",
+        "CDL slope — dead until color grade is wired",
+    ),
+    (
+        "look.color.value.offset",
+        "CDL offset — dead until color grade is wired",
+    ),
+    (
+        "look.color.value.power",
+        "CDL power — dead until color grade is wired",
+    ),
     (
         "look.color.value.saturation",
         "CDL saturation — dead until color grade is wired",
@@ -445,9 +467,18 @@ const KNOWN_UNWIRED: &[(&str, &str)] = &[
         "look.levels.enabled",
         "Lift/Gamma/Gain unwired in native path (design §67 — LiftGammaGain dead)",
     ),
-    ("look.levels.value.lift", "LGG lift — dead until levels is wired"),
-    ("look.levels.value.gamma", "LGG gamma — dead until levels is wired"),
-    ("look.levels.value.gain", "LGG gain — dead until levels is wired"),
+    (
+        "look.levels.value.lift",
+        "LGG lift — dead until levels is wired",
+    ),
+    (
+        "look.levels.value.gamma",
+        "LGG gamma — dead until levels is wired",
+    ),
+    (
+        "look.levels.value.gain",
+        "LGG gain — dead until levels is wired",
+    ),
     // lighting.sun.radiance only matters when atmosphere is enabled.
     (
         "lighting.sun.radiance",
@@ -478,17 +509,50 @@ const KNOWN_UNWIRED: &[(&str, &str)] = &[
     // spectral in a way that deterministically moves 8-bit pixels. They are
     // unit-proven to reach the config in spectra-renderer settings_tests; a
     // visible-delta proof needs a caustics/GI fixture.
-    ("features.restir.enabled", "reaches config (settings_tests); no visible delta on a flat sphere"),
-    ("features.nrc.enabled", "reaches config; converged radiance cache invisible on a flat sphere"),
-    ("features.niv.enabled", "reaches config; needs a volumetric/irradiance fixture"),
-    ("features.path_guide.enabled", "reaches config; guiding only changes variance, not the mean"),
-    ("features.mnee.enabled", "reaches config; needs a caustics fixture"),
-    ("features.lpe.enabled", "reaches config; LPE writes AOVs, not the beauty buffer"),
-    ("features.photon_map.enabled", "reaches config; needs a caustics fixture"),
-    ("features.ser.enabled", "reaches config; SER is a scheduling optimization — identical pixels by design"),
-    ("features.mega_geometry.enabled", "reaches config; CLAS path needs a mega-geometry fixture"),
-    ("features.spectral.enabled", "reaches config (SpectralMode::Hero4); needs a dispersive fixture"),
-    ("features.weathering.enabled", "weathering masks are a mesh-path input; not used by the SDF fixture"),
+    (
+        "features.restir.enabled",
+        "reaches config (settings_tests); no visible delta on a flat sphere",
+    ),
+    (
+        "features.nrc.enabled",
+        "reaches config; converged radiance cache invisible on a flat sphere",
+    ),
+    (
+        "features.niv.enabled",
+        "reaches config; needs a volumetric/irradiance fixture",
+    ),
+    (
+        "features.path_guide.enabled",
+        "reaches config; guiding only changes variance, not the mean",
+    ),
+    (
+        "features.mnee.enabled",
+        "reaches config; needs a caustics fixture",
+    ),
+    (
+        "features.lpe.enabled",
+        "reaches config; LPE writes AOVs, not the beauty buffer",
+    ),
+    (
+        "features.photon_map.enabled",
+        "reaches config; needs a caustics fixture",
+    ),
+    (
+        "features.ser.enabled",
+        "reaches config; SER is a scheduling optimization — identical pixels by design",
+    ),
+    (
+        "features.mega_geometry.enabled",
+        "reaches config; CLAS path needs a mega-geometry fixture",
+    ),
+    (
+        "features.spectral.enabled",
+        "reaches config (SpectralMode::Hero4); needs a dispersive fixture",
+    ),
+    (
+        "features.weathering.enabled",
+        "weathering masks are a mesh-path input; not used by the SDF fixture",
+    ),
     // material.default_uv_scale only affects textured surfaces; the SDF sphere
     // is untextured flat albedo.
     (
@@ -580,8 +644,10 @@ fn all_leaf_paths() -> Vec<String> {
 #[test]
 fn perturbation_coverage_classifies_every_leaf() {
     let all: std::collections::BTreeSet<String> = all_leaf_paths().into_iter().collect();
-    let wired: std::collections::BTreeSet<String> =
-        wired_leaves().into_iter().map(|w| w.path.to_string()).collect();
+    let wired: std::collections::BTreeSet<String> = wired_leaves()
+        .into_iter()
+        .map(|w| w.path.to_string())
+        .collect();
     let unwired: std::collections::BTreeSet<String> =
         KNOWN_UNWIRED.iter().map(|(p, _)| p.to_string()).collect();
 
@@ -592,8 +658,7 @@ fn perturbation_coverage_classifies_every_leaf() {
         "leaves classified as BOTH wired and unwired: {overlap:?}"
     );
 
-    let classified: std::collections::BTreeSet<String> =
-        wired.union(&unwired).cloned().collect();
+    let classified: std::collections::BTreeSet<String> = wired.union(&unwired).cloned().collect();
 
     // Every classification path must be a real leaf (catches typos / renames).
     let phantom: Vec<&String> = classified.difference(&all).collect();
@@ -666,7 +731,11 @@ fn perturbation_coverage() {
             w.path,
             h,
             l,
-            if changed { "CHANGED" } else { "DEAD (identical to baseline!)" }
+            if changed {
+                "CHANGED"
+            } else {
+                "DEAD (identical to baseline!)"
+            }
         );
         if !changed {
             dead.push(w.path.to_string());

@@ -27,11 +27,17 @@ pub enum DragSource {
 #[derive(Debug, Clone)]
 pub enum DropAction {
     /// Drop asset into viewport -- spawn entity at world position.
-    SpawnAssetAtPosition { asset_path: String, world_position: [f32; 3] },
+    SpawnAssetAtPosition {
+        asset_path: String,
+        world_position: [f32; 3],
+    },
     /// Drop entity onto another -- reparent.
     ReparentEntity { entity_id: u32, new_parent: u32 },
     /// Drop prefab -- instantiate.
-    InstantiatePrefab { prefab_path: String, world_position: [f32; 3] },
+    InstantiatePrefab {
+        prefab_path: String,
+        world_position: [f32; 3],
+    },
     /// Cancelled.
     Cancelled,
 }
@@ -59,12 +65,14 @@ impl DragDropState {
     pub fn end_drop(&mut self, world_position: [f32; 3]) -> DropAction {
         self.active = false;
         let action = match self.payload.take() {
-            Some(DragPayload::Asset { path, .. }) => {
-                DropAction::SpawnAssetAtPosition { asset_path: path, world_position }
-            }
-            Some(DragPayload::Prefab { path, .. }) => {
-                DropAction::InstantiatePrefab { prefab_path: path, world_position }
-            }
+            Some(DragPayload::Asset { path, .. }) => DropAction::SpawnAssetAtPosition {
+                asset_path: path,
+                world_position,
+            },
+            Some(DragPayload::Prefab { path, .. }) => DropAction::InstantiatePrefab {
+                prefab_path: path,
+                world_position,
+            },
             Some(DragPayload::Entity { .. }) => DropAction::Cancelled,
             None => DropAction::Cancelled,
         };
@@ -98,7 +106,10 @@ mod tests {
         let mut state = DragDropState::new();
         assert!(!state.is_dragging());
         state.begin(
-            DragPayload::Asset { path: "mesh.vxm".into(), asset_type: "mesh".into() },
+            DragPayload::Asset {
+                path: "mesh.vxm".into(),
+                asset_type: "mesh".into(),
+            },
             DragSource::ContentBrowser,
         );
         assert!(state.is_dragging());
@@ -106,7 +117,10 @@ mod tests {
         let action = state.end_drop([1.0, 2.0, 3.0]);
         assert!(!state.is_dragging());
         match action {
-            DropAction::SpawnAssetAtPosition { asset_path, world_position } => {
+            DropAction::SpawnAssetAtPosition {
+                asset_path,
+                world_position,
+            } => {
                 assert_eq!(asset_path, "mesh.vxm");
                 assert_eq!(world_position, [1.0, 2.0, 3.0]);
             }
@@ -118,7 +132,10 @@ mod tests {
     fn test_asset_drop_spawns() {
         let mut state = DragDropState::new();
         state.begin(
-            DragPayload::Asset { path: "textures/brick.png".into(), asset_type: "texture".into() },
+            DragPayload::Asset {
+                path: "textures/brick.png".into(),
+                asset_type: "texture".into(),
+            },
             DragSource::ContentBrowser,
         );
         let action = state.end_drop([10.0, 0.0, -5.0]);
@@ -133,10 +150,7 @@ mod tests {
     #[test]
     fn test_cancel_clears() {
         let mut state = DragDropState::new();
-        state.begin(
-            DragPayload::Entity { id: 42 },
-            DragSource::Outliner,
-        );
+        state.begin(DragPayload::Entity { id: 42 }, DragSource::Outliner);
         assert!(state.is_dragging());
         state.cancel();
         assert!(!state.is_dragging());
@@ -148,7 +162,10 @@ mod tests {
     fn test_mouse_position_tracked() {
         let mut state = DragDropState::new();
         state.begin(
-            DragPayload::Asset { path: "test.vxm".into(), asset_type: "mesh".into() },
+            DragPayload::Asset {
+                path: "test.vxm".into(),
+                asset_type: "mesh".into(),
+            },
             DragSource::ContentBrowser,
         );
         state.update_mouse(100.0, 200.0);

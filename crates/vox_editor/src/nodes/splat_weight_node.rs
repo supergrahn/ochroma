@@ -1,8 +1,8 @@
 //! SplatWeightNode — BiomeMap → per-cell splat blend weights.
 
 use crate::node_graph::{
-    NodeDescriptor, NodeError, NodeInputs, NodeOutputs,
-    OchromaNode, ParamValue, PortData, PortSpec, PortType,
+    NodeDescriptor, NodeError, NodeInputs, NodeOutputs, OchromaNode, ParamValue, PortData,
+    PortSpec, PortType,
 };
 use crate::nodes::biome_node::{biome_to_splat_weights, BiomeKind};
 
@@ -10,7 +10,9 @@ use crate::nodes::biome_node::{biome_to_splat_weights, BiomeKind};
 pub struct SplatWeightNode;
 
 impl Default for SplatWeightNode {
-    fn default() -> Self { Self }
+    fn default() -> Self {
+        Self
+    }
 }
 
 impl OchromaNode for SplatWeightNode {
@@ -18,12 +20,22 @@ impl OchromaNode for SplatWeightNode {
         NodeDescriptor {
             type_name: "SplatWeightNode",
             inputs: vec![
-                PortSpec { name: "biome_map", port_type: PortType::BiomeMap,   optional: false },
-                PortSpec { name: "moisture",  port_type: PortType::ScalarVec,  optional: true  },
+                PortSpec {
+                    name: "biome_map",
+                    port_type: PortType::BiomeMap,
+                    optional: false,
+                },
+                PortSpec {
+                    name: "moisture",
+                    port_type: PortType::ScalarVec,
+                    optional: true,
+                },
             ],
-            outputs: vec![
-                PortSpec { name: "splat_weights", port_type: PortType::SplatWeights, optional: false },
-            ],
+            outputs: vec![PortSpec {
+                name: "splat_weights",
+                port_type: PortType::SplatWeights,
+                optional: false,
+            }],
         }
     }
 
@@ -31,37 +43,48 @@ impl OchromaNode for SplatWeightNode {
         Err(NodeError::UnknownParam(key.into()))
     }
 
-    fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(self.clone()) }
+    fn clone_box(&self) -> Box<dyn OchromaNode> {
+        Box::new(self.clone())
+    }
 
     fn cook(&self, inputs: NodeInputs) -> Result<NodeOutputs, NodeError> {
-        let biome_map = inputs.get("biome_map")
+        let biome_map = inputs
+            .get("biome_map")
             .ok_or_else(|| NodeError::MissingInput("biome_map".into()))?
             .as_biome_map()
             .ok_or_else(|| NodeError::TypeMismatch("biome_map".into()))?;
 
         let moisture = inputs.get("moisture").and_then(|d| d.as_scalar_vec());
 
-        let weights: Vec<[f32; 4]> = biome_map.iter().enumerate().map(|(i, &b)| {
-            let kind = BiomeKind::from_u8(b);
-            let m = moisture.map(|mv| mv.get(i).cloned().unwrap_or(0.5)).unwrap_or(0.5);
-            let mut w = biome_to_splat_weights(kind, 0.0, m);
-            // If moisture data provided, blend some weight toward water slot
-            if moisture.is_some() && m > 0.5 {
-                let blend = (m - 0.5) * 0.4;
-                let drain = blend.min(w[1] + w[2] + w[3]);
-                let ratio_1 = w[1] / (w[1] + w[2] + w[3] + 1e-8);
-                let ratio_2 = w[2] / (w[1] + w[2] + w[3] + 1e-8);
-                let ratio_3 = w[3] / (w[1] + w[2] + w[3] + 1e-8);
-                w[0] += drain;
-                w[1] -= drain * ratio_1;
-                w[2] -= drain * ratio_2;
-                w[3] -= drain * ratio_3;
-            }
-            // Normalize
-            let sum: f32 = w.iter().sum();
-            if sum > 1e-8 { w.iter_mut().for_each(|v| *v /= sum); }
-            w
-        }).collect();
+        let weights: Vec<[f32; 4]> = biome_map
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| {
+                let kind = BiomeKind::from_u8(b);
+                let m = moisture
+                    .map(|mv| mv.get(i).cloned().unwrap_or(0.5))
+                    .unwrap_or(0.5);
+                let mut w = biome_to_splat_weights(kind, 0.0, m);
+                // If moisture data provided, blend some weight toward water slot
+                if moisture.is_some() && m > 0.5 {
+                    let blend = (m - 0.5) * 0.4;
+                    let drain = blend.min(w[1] + w[2] + w[3]);
+                    let ratio_1 = w[1] / (w[1] + w[2] + w[3] + 1e-8);
+                    let ratio_2 = w[2] / (w[1] + w[2] + w[3] + 1e-8);
+                    let ratio_3 = w[3] / (w[1] + w[2] + w[3] + 1e-8);
+                    w[0] += drain;
+                    w[1] -= drain * ratio_1;
+                    w[2] -= drain * ratio_2;
+                    w[3] -= drain * ratio_3;
+                }
+                // Normalize
+                let sum: f32 = w.iter().sum();
+                if sum > 1e-8 {
+                    w.iter_mut().for_each(|v| *v /= sum);
+                }
+                w
+            })
+            .collect();
 
         let mut out = NodeOutputs::new();
         out.insert("splat_weights".into(), PortData::SplatWeights(weights));

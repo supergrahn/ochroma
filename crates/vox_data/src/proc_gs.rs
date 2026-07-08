@@ -1,7 +1,7 @@
 use glam::{self, Vec3};
 use half::f16;
-use rand::SeedableRng;
 use rand::Rng;
+use rand::SeedableRng;
 use rand::rngs::StdRng;
 use serde::Deserialize;
 use vox_core::types::GaussianSplat;
@@ -92,8 +92,10 @@ pub fn emit_splats_simple(seed: u64, width: f32, depth: f32) -> Vec<GaussianSpla
     let total_height = floors as f32 * floor_height;
 
     let brick_spd: [u16; 16] = {
-        let v = [0.08f32, 0.08, 0.10, 0.15, 0.25, 0.55, 0.65, 0.60,
-                 0.08, 0.08, 0.10, 0.15, 0.25, 0.55, 0.65, 0.60];
+        let v = [
+            0.08f32, 0.08, 0.10, 0.15, 0.25, 0.55, 0.65, 0.60, 0.08, 0.08, 0.10, 0.15, 0.25, 0.55,
+            0.65, 0.60,
+        ];
         std::array::from_fn(|i| f16::from_f32(v[i]).to_bits())
     };
     let roof_spd: [u16; 16] = std::array::from_fn(|_| f16::from_f32(0.15).to_bits());
@@ -105,9 +107,9 @@ pub fn emit_splats_simple(seed: u64, width: f32, depth: f32) -> Vec<GaussianSpla
     for wall in 0..4 {
         let (_wall_w, _wall_d, wx, wz, flip) = match wall {
             0 => (width, 0.0, 0.0, 0.0, false),    // front
-            1 => (width, 0.0, 0.0, -depth, false),  // back
-            2 => (0.0, depth, 0.0, 0.0, true),      // left
-            _ => (0.0, depth, width, 0.0, true),     // right
+            1 => (width, 0.0, 0.0, -depth, false), // back
+            2 => (0.0, depth, 0.0, 0.0, true),     // left
+            _ => (0.0, depth, width, 0.0, true),   // right
         };
 
         let area = if flip {
@@ -126,8 +128,10 @@ pub fn emit_splats_simple(seed: u64, width: f32, depth: f32) -> Vec<GaussianSpla
             let s = 0.04 + rng.random::<f32>() * 0.04;
             splats.push(GaussianSplat::surface(
                 [x, y, z],
-                [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
-                s, s * 0.3,
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                s,
+                s * 0.3,
                 240,
                 brick_spd,
             ));
@@ -143,8 +147,10 @@ pub fn emit_splats_simple(seed: u64, width: f32, depth: f32) -> Vec<GaussianSpla
                 total_height,
                 -rng.random::<f32>() * depth,
             ],
-            [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
-            0.06, 0.06,
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            0.06,
+            0.06,
             245,
             roof_spd,
         ));
@@ -157,7 +163,8 @@ pub fn emit_splats(rule: &SplatRule, seed: u64) -> Vec<GaussianSplat> {
     let mut rng = StdRng::seed_from_u64(seed);
     let lib = MaterialLibrary::default();
 
-    let floor_count = rng.random_range(rule.geometry.floor_count_min..=rule.geometry.floor_count_max);
+    let floor_count =
+        rng.random_range(rule.geometry.floor_count_min..=rule.geometry.floor_count_max);
     let height = rng.random_range(rule.geometry.height_min..=rule.geometry.height_max);
     let width = rng.random_range(rule.geometry.width_min..=rule.geometry.width_max);
     let depth = rng.random_range(rule.geometry.depth_min..=rule.geometry.depth_max);
@@ -183,9 +190,17 @@ pub fn emit_splats(rule: &SplatRule, seed: u64) -> Vec<GaussianSplat> {
                     let x = rng.random_range(-width / 2.0..width / 2.0);
                     let z = rng.random_range(-depth / 2.0..depth / 2.0);
                     let y = height;
-                    let scale = rng.random_range(rule.variation.scale_min..rule.variation.scale_max);
-                    let opacity = rng.random_range(rule.variation.opacity_min..rule.variation.opacity_max);
-                    splats.push(make_splat(&mut rng, Vec3::new(x, y, z), scale, opacity, &spd));
+                    let scale =
+                        rng.random_range(rule.variation.scale_min..rule.variation.scale_max);
+                    let opacity =
+                        rng.random_range(rule.variation.opacity_min..rule.variation.opacity_max);
+                    splats.push(make_splat(
+                        &mut rng,
+                        Vec3::new(x, y, z),
+                        scale,
+                        opacity,
+                        &spd,
+                    ));
                 }
             }
             _ => {
@@ -195,17 +210,33 @@ pub fn emit_splats(rule: &SplatRule, seed: u64) -> Vec<GaussianSplat> {
                     // 4 faces: front, back, left, right
                     let faces: [(Vec3, Vec3, f32, f32); 4] = [
                         // front (+z)
-                        (Vec3::new(0.0, base_y + floor_height / 2.0, depth / 2.0),
-                         Vec3::new(1.0, 0.0, 0.0), width, floor_height),
+                        (
+                            Vec3::new(0.0, base_y + floor_height / 2.0, depth / 2.0),
+                            Vec3::new(1.0, 0.0, 0.0),
+                            width,
+                            floor_height,
+                        ),
                         // back (-z)
-                        (Vec3::new(0.0, base_y + floor_height / 2.0, -depth / 2.0),
-                         Vec3::new(1.0, 0.0, 0.0), width, floor_height),
+                        (
+                            Vec3::new(0.0, base_y + floor_height / 2.0, -depth / 2.0),
+                            Vec3::new(1.0, 0.0, 0.0),
+                            width,
+                            floor_height,
+                        ),
                         // left (-x)
-                        (Vec3::new(-width / 2.0, base_y + floor_height / 2.0, 0.0),
-                         Vec3::new(0.0, 0.0, 1.0), depth, floor_height),
+                        (
+                            Vec3::new(-width / 2.0, base_y + floor_height / 2.0, 0.0),
+                            Vec3::new(0.0, 0.0, 1.0),
+                            depth,
+                            floor_height,
+                        ),
                         // right (+x)
-                        (Vec3::new(width / 2.0, base_y + floor_height / 2.0, 0.0),
-                         Vec3::new(0.0, 0.0, 1.0), depth, floor_height),
+                        (
+                            Vec3::new(width / 2.0, base_y + floor_height / 2.0, 0.0),
+                            Vec3::new(0.0, 0.0, 1.0),
+                            depth,
+                            floor_height,
+                        ),
                     ];
 
                     for (center, tangent, face_w, face_h) in &faces {
@@ -215,8 +246,11 @@ pub fn emit_splats(rule: &SplatRule, seed: u64) -> Vec<GaussianSplat> {
                             let u = rng.random_range(-face_w / 2.0..face_w / 2.0);
                             let v = rng.random_range(-face_h / 2.0..face_h / 2.0);
                             let pos = *center + *tangent * u + Vec3::Y * v;
-                            let scale = rng.random_range(rule.variation.scale_min..rule.variation.scale_max);
-                            let opacity = rng.random_range(rule.variation.opacity_min..rule.variation.opacity_max);
+                            let scale = rng
+                                .random_range(rule.variation.scale_min..rule.variation.scale_max);
+                            let opacity = rng.random_range(
+                                rule.variation.opacity_min..rule.variation.opacity_max,
+                            );
                             splats.push(make_splat(&mut rng, pos, scale, opacity, &spd));
                         }
                     }

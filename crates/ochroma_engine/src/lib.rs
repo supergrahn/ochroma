@@ -90,15 +90,15 @@ pub mod prelude {
 
     // Game view
     pub use crate::game_view::{
-        screen_to_ground, screen_to_ground_from_camera, world_to_screen,
-        world_to_screen_from_camera, GameViewSource, OrbitView, ViewCamera, ViewContext,
-        ViewIntent, ViewPurpose, ViewQuality, ViewportSize,
+        GameViewSource, OrbitView, ViewCamera, ViewContext, ViewIntent, ViewPurpose, ViewQuality,
+        ViewportSize, screen_to_ground, screen_to_ground_from_camera, world_to_screen,
+        world_to_screen_from_camera,
     };
 
     // Render
     pub use vox_render::camera::CameraController;
     pub use vox_render::frustum::Frustum;
-    pub use vox_render::lod::{select_lod, LodLevel as RenderLodLevel};
+    pub use vox_render::lod::{LodLevel as RenderLodLevel, select_lod};
     pub use vox_render::particles::ParticleSystem;
     pub use vox_render::spectra_bridge::{QualityPreset, RenderConfig};
     pub use vox_render::spectral::RenderCamera;

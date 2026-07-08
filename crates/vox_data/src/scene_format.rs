@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// A scene file that describes a game level/world.
@@ -18,7 +18,7 @@ pub struct SceneEntity {
     pub name: String,
     pub parent: Option<u32>,
     pub transform: Transform,
-    pub asset_path: Option<String>,  // path to .ply or .vxm file
+    pub asset_path: Option<String>, // path to .ply or .vxm file
     pub components: BTreeMap<String, serde_json::Value>,
 }
 
@@ -78,8 +78,12 @@ impl SceneFile {
     pub fn add_entity(&mut self, name: &str, transform: Transform) -> u32 {
         let id = self.entities.len() as u32;
         self.entities.push(SceneEntity {
-            id, name: name.to_string(), parent: None,
-            transform, asset_path: None, components: BTreeMap::new(),
+            id,
+            name: name.to_string(),
+            parent: None,
+            transform,
+            asset_path: None,
+            components: BTreeMap::new(),
         });
         id
     }
@@ -96,5 +100,7 @@ impl SceneFile {
         serde_json::from_str(&json).map_err(|e| e.to_string())
     }
 
-    pub fn entity_count(&self) -> usize { self.entities.len() }
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
+    }
 }

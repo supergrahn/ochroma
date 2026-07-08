@@ -84,9 +84,9 @@ pub enum EventKind {
 /// commutative, so the ledger is order-independent and therefore replay-exact —
 /// business productivity reads `present_fraction`, not a per-cim sweep.
 pub struct PresenceLedger {
-    present_count: Vec<u32>,   // building-indexed; integer ±1 from Individual-tier cims
+    present_count: Vec<u32>, // building-indexed; integer ±1 from Individual-tier cims
     cohort_fraction: Vec<f64>, // building-indexed; fractional cohort attendance
-    staff_target: Vec<u32>,    // building-indexed
+    staff_target: Vec<u32>,  // building-indexed
 }
 
 impl PresenceLedger {

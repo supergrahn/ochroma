@@ -31,7 +31,8 @@ impl LuaRuntime {
             globals.set("dofile", mlua::Value::Nil)?;
             globals.set("loadfile", mlua::Value::Nil)?;
         }
-        lua.load(r#"
+        lua.load(
+            r#"
             function wait_frames(n)
                 for _ = 1, n do coroutine.yield() end
             end
@@ -42,8 +43,13 @@ impl LuaRuntime {
                     coroutine.yield()
                 end
             end
-        "#).exec()?;
-        Ok(Self { lua, pending_reload: Vec::new() })
+        "#,
+        )
+        .exec()?;
+        Ok(Self {
+            lua,
+            pending_reload: Vec::new(),
+        })
     }
 
     pub fn exec_file(&mut self, path: &Path) -> Result<(), LuaError> {
@@ -51,7 +57,10 @@ impl LuaRuntime {
             return Err(LuaError::NotFound(path.display().to_string()));
         }
         let src = std::fs::read_to_string(path)?;
-        self.lua.load(&src).set_name(path.to_string_lossy().as_ref()).exec()?;
+        self.lua
+            .load(&src)
+            .set_name(path.to_string_lossy().as_ref())
+            .exec()?;
         Ok(())
     }
 
@@ -59,7 +68,10 @@ impl LuaRuntime {
         let pending = std::mem::take(&mut self.pending_reload);
         for path in pending {
             let src = std::fs::read_to_string(&path)?;
-            self.lua.load(&src).set_name(path.to_string_lossy().as_ref()).exec()?;
+            self.lua
+                .load(&src)
+                .set_name(path.to_string_lossy().as_ref())
+                .exec()?;
         }
         self.lua.globals().set("frame_dt", dt)?;
         let globals = self.lua.globals();
@@ -108,11 +120,18 @@ mod tests {
     #[test]
     fn call_update_calls_lua_function() {
         let mut rt = LuaRuntime::new().unwrap();
-        rt.lua().load("last_dt = 0.0; function update(dt) last_dt = dt end").exec().unwrap();
+        rt.lua()
+            .load("last_dt = 0.0; function update(dt) last_dt = dt end")
+            .exec()
+            .unwrap();
         rt.call_update(0.016).unwrap();
         let last_dt: f32 = rt.lua().globals().get("last_dt").unwrap();
         println!("last_dt = {}", last_dt);
-        assert!((last_dt - 0.016).abs() < 1e-5, "update(dt) should have been called with 0.016, got {}", last_dt);
+        assert!(
+            (last_dt - 0.016).abs() < 1e-5,
+            "update(dt) should have been called with 0.016, got {}",
+            last_dt
+        );
     }
 
     #[test]
@@ -169,23 +188,33 @@ mod tests {
         rt.call_update(0.033).unwrap();
         let dt: f32 = rt.lua().globals().get("frame_dt").unwrap();
         println!("frame_dt = {}", dt);
-        assert!((dt - 0.033).abs() < 1e-5, "frame_dt should be 0.033, got {}", dt);
+        assert!(
+            (dt - 0.033).abs() < 1e-5,
+            "frame_dt should be 0.033, got {}",
+            dt
+        );
     }
 
     #[test]
     fn game_lua_parses_cleanly() {
         let mut rt = LuaRuntime::new().unwrap();
         // Register spectral stub so game.lua can call spectral.on_threshold/get_band
-        rt.lua().load(r#"
+        rt.lua()
+            .load(
+                r#"
             spectral = {
                 on_threshold = function(...) end,
                 get_band = function(...) return 0.0 end,
             }
-        "#).exec().unwrap();
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/scripts/game.lua");
+        "#,
+            )
+            .exec()
+            .unwrap();
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scripts/game.lua");
         if path.exists() {
-            rt.exec_file(&path).expect("game.lua should parse without error");
+            rt.exec_file(&path)
+                .expect("game.lua should parse without error");
             println!("game.lua parsed successfully from {:?}", path);
         } else {
             println!("game.lua not found at {:?} — skipping", path);

@@ -40,7 +40,11 @@ impl AdaptiveMusicPlayer {
         Self {
             state: MusicState::Exploration,
             layers: Vec::new(),
-            intensity: MusicIntensity { combat: 0.0, tension: 0.0, exploration: 0.0 },
+            intensity: MusicIntensity {
+                combat: 0.0,
+                tension: 0.0,
+                exploration: 0.0,
+            },
             transition_blend: 1.0,
             target_state: MusicState::Exploration,
         }
@@ -108,7 +112,11 @@ pub fn spectral_to_intensity(spectral: &[f32; 8]) -> MusicIntensity {
     let combat = (spectral[5] + spectral[6] + spectral[7]) / 3.0;
     let tension = spectral[0];
     let exploration = (spectral[2] + spectral[3] + spectral[4]) / 3.0;
-    MusicIntensity { combat, tension, exploration }
+    MusicIntensity {
+        combat,
+        tension,
+        exploration,
+    }
 }
 
 #[cfg(test)]

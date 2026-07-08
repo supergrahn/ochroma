@@ -1,9 +1,9 @@
-use std::path::PathBuf;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+use vox_tools::build::{BuildConfig, BuildManifest, BuildTarget};
+use vox_tools::gltf2splat::{Gltf2SplatConfig, gltf2splat};
+use vox_tools::splats2gltf::{gltf2splats_import, splats2gltf};
 use vox_tools::turnaround::run_turnaround;
-use vox_tools::build::{BuildTarget, BuildConfig, BuildManifest};
-use vox_tools::gltf2splat::{gltf2splat, Gltf2SplatConfig};
-use vox_tools::splats2gltf::{splats2gltf, gltf2splats_import};
 
 #[derive(Parser)]
 #[command(name = "vox_tools", about = "Ochroma engine asset pipeline tools")]
@@ -148,17 +148,23 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Turnaround { views, output, material_map } => {
-            match run_turnaround(&views, &output, material_map.as_deref()) {
-                Ok(count) => {
-                    println!("Turnaround complete: {} splats written to {}", count, output.display());
-                }
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    std::process::exit(1);
-                }
+        Commands::Turnaround {
+            views,
+            output,
+            material_map,
+        } => match run_turnaround(&views, &output, material_map.as_deref()) {
+            Ok(count) => {
+                println!(
+                    "Turnaround complete: {} splats written to {}",
+                    count,
+                    output.display()
+                );
             }
-        }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        },
         Commands::Import { input, output } => {
             use std::path::Path;
             match vox_data::gltf_import::import_gltf(Path::new(&input)) {
@@ -170,7 +176,9 @@ fn main() {
                         result.triangle_count,
                         result.vertex_count,
                     );
-                    println!("NOTE: This is REFERENCE QUALITY. For production, train proper 3DGS from multi-view captures.");
+                    println!(
+                        "NOTE: This is REFERENCE QUALITY. For production, train proper 3DGS from multi-view captures."
+                    );
                     let file = vox_data::vxm::VxmFile {
                         header: vox_data::vxm::VxmHeader::new(
                             uuid::Uuid::new_v4(),
@@ -179,7 +187,8 @@ fn main() {
                         ),
                         splats: result.splats,
                     };
-                    let mut out = std::fs::File::create(&output).expect("failed to create output file");
+                    let mut out =
+                        std::fs::File::create(&output).expect("failed to create output file");
                     file.write(&mut out).expect("failed to write VXM file");
                     println!("Saved to: {}", output);
                 }
@@ -189,15 +198,18 @@ fn main() {
                 }
             }
         }
-        Commands::Gltf2splat { input, output, density } => {
-            let config = Gltf2SplatConfig { density, ..Gltf2SplatConfig::default() };
+        Commands::Gltf2splat {
+            input,
+            output,
+            density,
+        } => {
+            let config = Gltf2SplatConfig {
+                density,
+                ..Gltf2SplatConfig::default()
+            };
             match gltf2splat(&input, &output, config) {
                 Ok(count) => {
-                    println!(
-                        "gltf2splat: wrote {} splats to {}",
-                        count,
-                        output.display()
-                    );
+                    println!("gltf2splat: wrote {} splats to {}", count, output.display());
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -205,43 +217,36 @@ fn main() {
                 }
             }
         }
-        Commands::Splats2gltf { input, output } => {
-            match splats2gltf(&input, &output) {
-                Ok(count) => {
-                    println!(
-                        "splats2gltf: wrote {} splats (KHR_gaussian_splatting) to {}",
-                        count,
-                        output.display()
-                    );
-                }
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    std::process::exit(1);
-                }
+        Commands::Splats2gltf { input, output } => match splats2gltf(&input, &output) {
+            Ok(count) => {
+                println!(
+                    "splats2gltf: wrote {} splats (KHR_gaussian_splatting) to {}",
+                    count,
+                    output.display()
+                );
             }
-        }
-        Commands::Gltf2splats { input, output } => {
-            match gltf2splats_import(&input, &output) {
-                Ok(count) => {
-                    println!(
-                        "gltf2splats: imported {} splats (KHR_gaussian_splatting) to {}",
-                        count,
-                        output.display()
-                    );
-                }
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    std::process::exit(1);
-                }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
             }
-        }
+        },
+        Commands::Gltf2splats { input, output } => match gltf2splats_import(&input, &output) {
+            Ok(count) => {
+                println!(
+                    "gltf2splats: imported {} splats (KHR_gaussian_splatting) to {}",
+                    count,
+                    output.display()
+                );
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        },
         Commands::UsdImport { file } => {
             match vox_usd::import_usd(&file) {
                 Ok(imp) => {
-                    let fname = file
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("?");
+                    let fname = file.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                     // metersPerUnit printed without trailing zeros when integral.
                     let mpu = imp.meters_per_unit;
                     let mpu_str = if (mpu.fract()).abs() < 1e-9 {
@@ -298,16 +303,27 @@ fn main() {
                 }
             }
         }
-        Commands::Prune { input, output, keep, max_pixel_diff, no_guard } => {
-            match vox_tools::prune::run_prune(&input, &output, keep, max_pixel_diff, no_guard) {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("Error: {e:#}");
-                    std::process::exit(1);
-                }
+        Commands::Prune {
+            input,
+            output,
+            keep,
+            max_pixel_diff,
+            no_guard,
+        } => match vox_tools::prune::run_prune(&input, &output, keep, max_pixel_diff, no_guard) {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error: {e:#}");
+                std::process::exit(1);
             }
-        }
-        Commands::Relight { input, output, from, to, no_shadows, no_sky } => {
+        },
+        Commands::Relight {
+            input,
+            output,
+            from,
+            to,
+            no_shadows,
+            no_sky,
+        } => {
             match vox_tools::relight::run_relight(&input, &output, &from, &to, no_shadows, no_sky) {
                 Ok(_) => {}
                 Err(e) => {
@@ -316,7 +332,11 @@ fn main() {
                 }
             }
         }
-        Commands::Build { target, config, name } => {
+        Commands::Build {
+            target,
+            config,
+            name,
+        } => {
             let target = match target.as_str() {
                 "windows" => BuildTarget::Windows,
                 "macos" => BuildTarget::MacOS,

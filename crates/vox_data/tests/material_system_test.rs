@@ -71,7 +71,11 @@ fn material_system_effective_bands_half_is_midpoint() {
     let worn = mat.worn.as_ref().unwrap().bands;
     for i in 0..8 {
         let expected = (fresh[i] + worn[i]) / 2.0;
-        assert!((effective[i] - expected).abs() < 1e-6, "band {} mismatch", i);
+        assert!(
+            (effective[i] - expected).abs() < 1e-6,
+            "band {} mismatch",
+            i
+        );
     }
 }
 

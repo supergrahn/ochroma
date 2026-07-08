@@ -66,8 +66,10 @@ pub fn import_asset(path: &Path, settings: &ImportSettings) -> Result<ImportResu
         _ => Err(format!("Unsupported format: .{}", ext)),
     }?;
 
-    let report =
-        crate::asset_validate::validate_splats(&result.splats, crate::asset_validate::ValidationBudget::UNLIMITED);
+    let report = crate::asset_validate::validate_splats(
+        &result.splats,
+        crate::asset_validate::ValidationBudget::UNLIMITED,
+    );
     if !report.is_ok() {
         return Err(format!(
             "asset failed validation ({} error(s)): {}",
@@ -95,7 +97,10 @@ fn import_ply(path: &Path, settings: &ImportSettings) -> Result<ImportResult, St
         Ok(s) => s,
         Err(e) => {
             // Binary PLY parse failed — this is a real error, not a fallback.
-            return Err(format!("PLY load error: {:?}. Only binary PLY is supported.", e));
+            return Err(format!(
+                "PLY load error: {:?}. Only binary PLY is supported.",
+                e
+            ));
         }
     };
 
@@ -124,8 +129,12 @@ fn import_ply(path: &Path, settings: &ImportSettings) -> Result<ImportResult, St
         for s in &splats {
             let p = s.position();
             for i in 0..3 {
-                if p[i] < mn[i] { mn[i] = p[i]; }
-                if p[i] > mx[i] { mx[i] = p[i]; }
+                if p[i] < mn[i] {
+                    mn[i] = p[i];
+                }
+                if p[i] > mx[i] {
+                    mx[i] = p[i];
+                }
             }
         }
         Some((mn, mx))
@@ -147,8 +156,7 @@ fn import_gltf_full(path: &Path, settings: &ImportSettings) -> Result<ImportResu
     use crate::gltf_import;
 
     // Use gltf_import for real triangle-sampled splats
-    let gr = gltf_import::import_gltf(path)
-        .map_err(|e| format!("GLTF import error: {}", e))?;
+    let gr = gltf_import::import_gltf(path).map_err(|e| format!("GLTF import error: {}", e))?;
 
     let mut splats = gr.splats;
 
@@ -165,27 +173,33 @@ fn import_gltf_full(path: &Path, settings: &ImportSettings) -> Result<ImportResu
     let mut warnings = Vec::new();
 
     // Extract metadata (separate open — degrade gracefully on failure)
-    let (material_names, skeleton_joint_count, animation_count) =
-        match gltf::Gltf::open(path) {
-            Ok(gltf_doc) => {
-                let materials = if settings.extract_materials {
-                    gltf_doc.materials()
-                        .map(|m| m.name().unwrap_or("unnamed_material").to_string())
-                        .collect()
-                } else { vec![] };
-                let joints = if settings.extract_skeleton {
-                    gltf_doc.skins().map(|s| s.joints().count()).sum()
-                } else { 0 };
-                let anims = if settings.extract_animations {
-                    gltf_doc.animations().count()
-                } else { 0 };
-                (materials, joints, anims)
-            }
-            Err(_) => {
-                warnings.push("Could not re-open GLTF for metadata extraction.".to_string());
-                (vec![], 0, 0)
-            }
-        };
+    let (material_names, skeleton_joint_count, animation_count) = match gltf::Gltf::open(path) {
+        Ok(gltf_doc) => {
+            let materials = if settings.extract_materials {
+                gltf_doc
+                    .materials()
+                    .map(|m| m.name().unwrap_or("unnamed_material").to_string())
+                    .collect()
+            } else {
+                vec![]
+            };
+            let joints = if settings.extract_skeleton {
+                gltf_doc.skins().map(|s| s.joints().count()).sum()
+            } else {
+                0
+            };
+            let anims = if settings.extract_animations {
+                gltf_doc.animations().count()
+            } else {
+                0
+            };
+            (materials, joints, anims)
+        }
+        Err(_) => {
+            warnings.push("Could not re-open GLTF for metadata extraction.".to_string());
+            (vec![], 0, 0)
+        }
+    };
     if material_names.is_empty() {
         warnings.push("No materials found in GLTF file".to_string());
     }
@@ -202,8 +216,12 @@ fn import_gltf_full(path: &Path, settings: &ImportSettings) -> Result<ImportResu
         for s in &splats {
             let p = s.position();
             for i in 0..3 {
-                if p[i] < mn[i] { mn[i] = p[i]; }
-                if p[i] > mx[i] { mx[i] = p[i]; }
+                if p[i] < mn[i] {
+                    mn[i] = p[i];
+                }
+                if p[i] > mx[i] {
+                    mx[i] = p[i];
+                }
             }
         }
         Some((mn, mx))
@@ -249,8 +267,12 @@ fn import_vxm(path: &Path, settings: &ImportSettings) -> Result<ImportResult, St
         for s in &splats {
             let p = s.position();
             for i in 0..3 {
-                if p[i] < mn[i] { mn[i] = p[i]; }
-                if p[i] > mx[i] { mx[i] = p[i]; }
+                if p[i] < mn[i] {
+                    mn[i] = p[i];
+                }
+                if p[i] > mx[i] {
+                    mx[i] = p[i];
+                }
             }
         }
         Some((mn, mx))
@@ -281,23 +303,41 @@ mod tests {
         let ply_path = dir.join("test.ply");
         {
             let mut f = BufWriter::new(std::fs::File::create(&ply_path).unwrap());
-            write!(f, "ply\nformat binary_little_endian 1.0\nelement vertex 100\n").unwrap();
+            write!(
+                f,
+                "ply\nformat binary_little_endian 1.0\nelement vertex 100\n"
+            )
+            .unwrap();
             write!(f, "property float x\nproperty float y\nproperty float z\n").unwrap();
-            write!(f, "property float scale_0\nproperty float scale_1\nproperty float scale_2\n").unwrap();
+            write!(
+                f,
+                "property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+            )
+            .unwrap();
             write!(f, "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n").unwrap();
             write!(f, "property float opacity\n").unwrap();
-            write!(f, "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n").unwrap();
+            write!(
+                f,
+                "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n"
+            )
+            .unwrap();
             write!(f, "end_header\n").unwrap();
             for i in 0..100u32 {
                 let x = i as f32 * 0.1;
-                f.write_all(&x.to_le_bytes()).unwrap();         // x
-                f.write_all(&0.0f32.to_le_bytes()).unwrap();    // y
-                f.write_all(&0.0f32.to_le_bytes()).unwrap();    // z
-                for _ in 0..3 { f.write_all(&(-2.3f32).to_le_bytes()).unwrap(); } // scale
-                f.write_all(&1.0f32.to_le_bytes()).unwrap();    // rot_0 (w)
-                for _ in 0..3 { f.write_all(&0.0f32.to_le_bytes()).unwrap(); }   // rot x,y,z
-                f.write_all(&0.0f32.to_le_bytes()).unwrap();    // opacity
-                for _ in 0..3 { f.write_all(&0.5f32.to_le_bytes()).unwrap(); }   // f_dc
+                f.write_all(&x.to_le_bytes()).unwrap(); // x
+                f.write_all(&0.0f32.to_le_bytes()).unwrap(); // y
+                f.write_all(&0.0f32.to_le_bytes()).unwrap(); // z
+                for _ in 0..3 {
+                    f.write_all(&(-2.3f32).to_le_bytes()).unwrap();
+                } // scale
+                f.write_all(&1.0f32.to_le_bytes()).unwrap(); // rot_0 (w)
+                for _ in 0..3 {
+                    f.write_all(&0.0f32.to_le_bytes()).unwrap();
+                } // rot x,y,z
+                f.write_all(&0.0f32.to_le_bytes()).unwrap(); // opacity
+                for _ in 0..3 {
+                    f.write_all(&0.5f32.to_le_bytes()).unwrap();
+                } // f_dc
             }
         }
 
@@ -318,35 +358,67 @@ mod tests {
         {
             use std::io::{BufWriter, Write};
             let mut f = BufWriter::new(std::fs::File::create(&ply_path).unwrap());
-            write!(f, "ply\nformat binary_little_endian 1.0\nelement vertex 1\n").unwrap();
+            write!(
+                f,
+                "ply\nformat binary_little_endian 1.0\nelement vertex 1\n"
+            )
+            .unwrap();
             write!(f, "property float x\nproperty float y\nproperty float z\n").unwrap();
-            write!(f, "property float scale_0\nproperty float scale_1\nproperty float scale_2\n").unwrap();
+            write!(
+                f,
+                "property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+            )
+            .unwrap();
             write!(f, "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n").unwrap();
             write!(f, "property float opacity\n").unwrap();
-            write!(f, "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n").unwrap();
+            write!(
+                f,
+                "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n"
+            )
+            .unwrap();
             write!(f, "end_header\n").unwrap();
             // splat at x=1.0, y=0, z=0; scale=exp(-2.3)
             f.write_all(&1.0f32.to_le_bytes()).unwrap(); // x
-            for _ in 0..2 { f.write_all(&0.0f32.to_le_bytes()).unwrap(); } // y, z
-            for _ in 0..3 { f.write_all(&(-2.3f32).to_le_bytes()).unwrap(); } // scale
+            for _ in 0..2 {
+                f.write_all(&0.0f32.to_le_bytes()).unwrap();
+            } // y, z
+            for _ in 0..3 {
+                f.write_all(&(-2.3f32).to_le_bytes()).unwrap();
+            } // scale
             f.write_all(&1.0f32.to_le_bytes()).unwrap(); // rot_0 (w)
-            for _ in 0..3 { f.write_all(&0.0f32.to_le_bytes()).unwrap(); } // rot x,y,z
+            for _ in 0..3 {
+                f.write_all(&0.0f32.to_le_bytes()).unwrap();
+            } // rot x,y,z
             f.write_all(&0.0f32.to_le_bytes()).unwrap(); // opacity (logit)
-            for _ in 0..3 { f.write_all(&0.5f32.to_le_bytes()).unwrap(); } // f_dc
+            for _ in 0..3 {
+                f.write_all(&0.5f32.to_le_bytes()).unwrap();
+            } // f_dc
         }
 
-        let settings_2x = ImportSettings { scale_factor: 2.0, ..Default::default() };
-        let settings_1x = ImportSettings { scale_factor: 1.0, ..Default::default() };
+        let settings_2x = ImportSettings {
+            scale_factor: 2.0,
+            ..Default::default()
+        };
+        let settings_1x = ImportSettings {
+            scale_factor: 1.0,
+            ..Default::default()
+        };
 
         let result_2x = import_asset(&ply_path, &settings_2x).unwrap();
         let result_1x = import_asset(&ply_path, &settings_1x).unwrap();
 
         assert_eq!(result_1x.splats.len(), 1);
         assert_eq!(result_2x.splats.len(), 1);
-        assert!((result_1x.splats[0].position()[0] - 1.0).abs() < 0.01,
-            "1x: expected x≈1.0, got {}", result_1x.splats[0].position()[0]);
-        assert!((result_2x.splats[0].position()[0] - 2.0).abs() < 0.01,
-            "2x: expected x≈2.0, got {}", result_2x.splats[0].position()[0]);
+        assert!(
+            (result_1x.splats[0].position()[0] - 1.0).abs() < 0.01,
+            "1x: expected x≈1.0, got {}",
+            result_1x.splats[0].position()[0]
+        );
+        assert!(
+            (result_2x.splats[0].position()[0] - 2.0).abs() < 0.01,
+            "2x: expected x≈2.0, got {}",
+            result_2x.splats[0].position()[0]
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -359,23 +431,41 @@ mod tests {
         let ply_path = dir.join("test.ply");
         {
             let mut f = BufWriter::new(std::fs::File::create(&ply_path).unwrap());
-            write!(f, "ply\nformat binary_little_endian 1.0\nelement vertex 10\n").unwrap();
+            write!(
+                f,
+                "ply\nformat binary_little_endian 1.0\nelement vertex 10\n"
+            )
+            .unwrap();
             write!(f, "property float x\nproperty float y\nproperty float z\n").unwrap();
-            write!(f, "property float scale_0\nproperty float scale_1\nproperty float scale_2\n").unwrap();
+            write!(
+                f,
+                "property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+            )
+            .unwrap();
             write!(f, "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n").unwrap();
             write!(f, "property float opacity\n").unwrap();
-            write!(f, "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n").unwrap();
+            write!(
+                f,
+                "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n"
+            )
+            .unwrap();
             write!(f, "end_header\n").unwrap();
             for i in 0..10u32 {
                 let x = i as f32;
-                f.write_all(&x.to_le_bytes()).unwrap();         // x
-                f.write_all(&0.0f32.to_le_bytes()).unwrap();    // y
-                f.write_all(&0.0f32.to_le_bytes()).unwrap();    // z
-                for _ in 0..3 { f.write_all(&(-2.3f32).to_le_bytes()).unwrap(); } // scale
-                f.write_all(&1.0f32.to_le_bytes()).unwrap();    // rot_0 (w)
-                for _ in 0..3 { f.write_all(&0.0f32.to_le_bytes()).unwrap(); }   // rot x,y,z
-                f.write_all(&0.0f32.to_le_bytes()).unwrap();    // opacity
-                for _ in 0..3 { f.write_all(&0.5f32.to_le_bytes()).unwrap(); }   // f_dc
+                f.write_all(&x.to_le_bytes()).unwrap(); // x
+                f.write_all(&0.0f32.to_le_bytes()).unwrap(); // y
+                f.write_all(&0.0f32.to_le_bytes()).unwrap(); // z
+                for _ in 0..3 {
+                    f.write_all(&(-2.3f32).to_le_bytes()).unwrap();
+                } // scale
+                f.write_all(&1.0f32.to_le_bytes()).unwrap(); // rot_0 (w)
+                for _ in 0..3 {
+                    f.write_all(&0.0f32.to_le_bytes()).unwrap();
+                } // rot x,y,z
+                f.write_all(&0.0f32.to_le_bytes()).unwrap(); // opacity
+                for _ in 0..3 {
+                    f.write_all(&0.5f32.to_le_bytes()).unwrap();
+                } // f_dc
             }
         }
 
@@ -416,15 +506,31 @@ mod tests {
         let header = b"ply\nformat binary_little_endian 1.0\nelement vertex 2\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n";
         let mut data = header.to_vec();
         // Red vertex: x=0, y=0, z=0
-        for v in &0.0f32.to_le_bytes() { data.push(*v); }
-        for v in &0.0f32.to_le_bytes() { data.push(*v); }
-        for v in &0.0f32.to_le_bytes() { data.push(*v); }
-        data.push(255u8); data.push(0u8); data.push(0u8);
+        for v in &0.0f32.to_le_bytes() {
+            data.push(*v);
+        }
+        for v in &0.0f32.to_le_bytes() {
+            data.push(*v);
+        }
+        for v in &0.0f32.to_le_bytes() {
+            data.push(*v);
+        }
+        data.push(255u8);
+        data.push(0u8);
+        data.push(0u8);
         // Green vertex: x=1, y=0, z=0
-        for v in &1.0f32.to_le_bytes() { data.push(*v); }
-        for v in &0.0f32.to_le_bytes() { data.push(*v); }
-        for v in &0.0f32.to_le_bytes() { data.push(*v); }
-        data.push(0u8); data.push(255u8); data.push(0u8);
+        for v in &1.0f32.to_le_bytes() {
+            data.push(*v);
+        }
+        for v in &0.0f32.to_le_bytes() {
+            data.push(*v);
+        }
+        for v in &0.0f32.to_le_bytes() {
+            data.push(*v);
+        }
+        data.push(0u8);
+        data.push(255u8);
+        data.push(0u8);
 
         std::fs::write(&path, &data).unwrap();
         let result = import_asset(&path, &ImportSettings::default()).unwrap();
@@ -437,7 +543,10 @@ mod tests {
         let red_splat = &result.splats[0];
         let low: f32 = (0..4).map(|b| red_splat.spectral_f32(b)).sum::<f32>() / 4.0;
         let high: f32 = (8..16).map(|b| red_splat.spectral_f32(b)).sum::<f32>() / 8.0;
-        println!("red vertex should have higher spectral energy in bands 8-15: high {:.3} vs low {:.3}", high, low);
+        println!(
+            "red vertex should have higher spectral energy in bands 8-15: high {:.3} vs low {:.3}",
+            high, low
+        );
         assert!(high > low, "red vertex: high {:.3} vs low {:.3}", high, low);
 
         std::fs::remove_file(&path).ok();

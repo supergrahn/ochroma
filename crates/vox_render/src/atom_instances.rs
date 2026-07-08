@@ -279,8 +279,7 @@ impl AssetAtomLibrary {
                 let (i0, i1) = build_imposters(atoms, mn, mx);
                 imposter0_count = i0.len() as u32;
                 imposter_ranges[0] = (index_list.len() as u32, imposter0_count);
-                index_list
-                    .extend((0..imposter0_count).map(|k| full_atom_count + k));
+                index_list.extend((0..imposter0_count).map(|k| full_atom_count + k));
                 imposter_ranges[1] = (index_list.len() as u32, 1);
                 index_list.push(full_atom_count + imposter0_count);
                 packed_atoms.extend(i0.iter().map(pack_atom));
@@ -656,7 +655,11 @@ impl InstancedSelector {
                 let d = inst_distance.max(1e-3);
                 let radius = entry.bounds_radius;
                 let score = entry.total_opacity * (radius * radius) / (d * d);
-                let level: u8 = if inst_distance >= vox_config::config().scatter.imposter_i1_m { 1 } else { 0 };
+                let level: u8 = if inst_distance >= vox_config::config().scatter.imposter_i1_m {
+                    1
+                } else {
+                    0
+                };
                 let count = entry.imposter_ranges[level as usize].1 as usize;
                 work.push(WorkUnit {
                     instance: inst_idx as u32,
@@ -750,7 +753,11 @@ pub(crate) fn budget_walk_and_emit(
     };
     // Coarsest chain level: I1 for imposters, L3 for clusters.
     let max_level = |w: &WorkUnit| -> u8 {
-        if w.is_imposter { 1 } else { (LOD_LEVEL_COUNT - 1) as u8 }
+        if w.is_imposter {
+            1
+        } else {
+            (LOD_LEVEL_COUNT - 1) as u8
+        }
     };
 
     // --- 2. Drive the summed atom count toward the budget (the oracle's
@@ -1096,7 +1103,11 @@ mod tests {
         assert_eq!(lib.asset_count(), 5);
 
         // 10k instances would share these atoms — the dedup is the point.
-        assert_eq!(std::mem::size_of::<AtomInstance>(), 48, "AtomInstance must stay 48 B");
+        assert_eq!(
+            std::mem::size_of::<AtomInstance>(),
+            48,
+            "AtomInstance must stay 48 B"
+        );
 
         let total = lib.total_atoms();
         assert!(
@@ -1111,7 +1122,10 @@ mod tests {
             .map(|a| lib.assets[a].imposter0_count as usize)
             .collect();
         for (a, &c) in i0.iter().enumerate() {
-            assert!((1..=64).contains(&c), "asset {a} imposter0 count {c} outside 1..=64");
+            assert!(
+                (1..=64).contains(&c),
+                "asset {a} imposter0 count {c} outside 1..=64"
+            );
             let (_, len) = lib.unit_range(a as u32, DrawUnit::Imposter { level: 1 });
             assert_eq!(len, 1, "asset {a} must have exactly one I1 atom");
         }
@@ -1254,7 +1268,10 @@ mod tests {
                 flat_scale.extend(std::iter::repeat_n(d.opacity_scale, idx.len()));
             }
 
-            assert!(!flat_idx.is_empty(), "budget {budget}: selection must be non-trivial");
+            assert!(
+                !flat_idx.is_empty(),
+                "budget {budget}: selection must be non-trivial"
+            );
             assert_eq!(
                 flat_idx,
                 o.indices(),
@@ -1339,7 +1356,10 @@ mod tests {
 
         let mut out = InstancedSelection::new();
         let stats = sel.select(&cam, usize::MAX, &mut out);
-        assert_eq!(stats.instances_far, 1, "the 600 m instance must classify far");
+        assert_eq!(
+            stats.instances_far, 1,
+            "the 600 m instance must classify far"
+        );
 
         let mut near = 0usize;
         let mut far = 0usize;

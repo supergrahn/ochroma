@@ -17,7 +17,7 @@
 //! `spectral_response.rs` module docs), so this is a faithful proxy.
 
 use vox_render::spectral_response::{
-    reflectance_to_rgb, reflectance_to_xyz, IlluminantSpd, SPD_BANDS,
+    IlluminantSpd, SPD_BANDS, reflectance_to_rgb, reflectance_to_xyz,
 };
 
 /// CIE76-ish perceptual-ish delta: Euclidean distance in linear sRGB. Crude but
@@ -30,8 +30,7 @@ fn color_delta(a: [f32; 3], b: [f32; 3]) -> f32 {
 fn spectral_material_responds_to_illuminant() {
     // A reddish surface: high reflectance in the long-wavelength bands, low in
     // the short. Authored as a real per-band reflectance, NOT an RGB triple.
-    let red_reflectance: [f32; SPD_BANDS] =
-        [0.04, 0.05, 0.06, 0.10, 0.45, 0.85, 0.92, 0.90];
+    let red_reflectance: [f32; SPD_BANDS] = [0.04, 0.05, 0.06, 0.10, 0.45, 0.85, 0.92, 0.90];
 
     let warm = IlluminantSpd::warm_incandescent(); // 2700 K
     let cool = IlluminantSpd::cool_daylight(); // 6500 K
@@ -106,8 +105,7 @@ fn metameric_partner(base: &[f32; SPD_BANDS], illum_a: &IlluminantSpd) -> [f32; 
 
     // An arbitrary spectral wiggle with structure (alternating sign) so it has
     // components both inside and outside the visible subspace.
-    let mut wiggle: [f32; SPD_BANDS] =
-        std::array::from_fn(|i| if i % 2 == 0 { 1.0 } else { -1.0 });
+    let mut wiggle: [f32; SPD_BANDS] = std::array::from_fn(|i| if i % 2 == 0 { 1.0 } else { -1.0 });
     // Remove the visible component => remainder is invisible under A.
     project_out(&mut wiggle, &o1);
     project_out(&mut wiggle, &o2);

@@ -1,7 +1,7 @@
 //! Tests for the spatial audio manager — pure math, no speakers needed.
 
 use glam::Vec3;
-use vox_audio::spatial::{compute_spatial, Listener, SpatialAudioManager};
+use vox_audio::spatial::{Listener, SpatialAudioManager, compute_spatial};
 
 // ── Distance attenuation ──────────────────────────────────────────────────
 
@@ -28,7 +28,10 @@ fn closer_source_has_higher_volume() {
 fn source_at_listener_has_full_volume() {
     let listener = Listener::default();
     let (vol, pan) = compute_spatial(listener.position, &listener, 1.0, 0.1);
-    assert!((vol - 1.0).abs() < 1e-5, "volume at listener should be ~1.0, got {vol}");
+    assert!(
+        (vol - 1.0).abs() < 1e-5,
+        "volume at listener should be ~1.0, got {vol}"
+    );
     assert!(pan.abs() < 1e-5, "pan at listener should be ~0, got {pan}");
 }
 
@@ -60,7 +63,10 @@ fn source_to_right_has_positive_pan() {
     // = (0, 0, -1) x (0, 1, 0) = (0*0 - (-1)*1, (-1)*0 - 0*0, 0*1 - 0*0) = (1, 0, 0)
     // So right = +X. Source at +X should give positive pan.
     let (_, pan) = compute_spatial(Vec3::new(10.0, 0.0, 0.0), &listener, 1.0, 0.1);
-    assert!(pan > 0.0, "source to the right should have positive pan, got {pan}");
+    assert!(
+        pan > 0.0,
+        "source to the right should have positive pan, got {pan}"
+    );
 }
 
 #[test]
@@ -71,7 +77,10 @@ fn source_to_left_has_negative_pan() {
         up: Vec3::Y,
     };
     let (_, pan) = compute_spatial(Vec3::new(-10.0, 0.0, 0.0), &listener, 1.0, 0.1);
-    assert!(pan < 0.0, "source to the left should have negative pan, got {pan}");
+    assert!(
+        pan < 0.0,
+        "source to the left should have negative pan, got {pan}"
+    );
 }
 
 #[test]
@@ -228,5 +237,8 @@ fn listener_right_vector_is_correct() {
     };
     let right = listener.right();
     // forward(-Z) x up(Y) = +X
-    assert!((right - Vec3::X).length() < 1e-5, "right should be +X, got {right}");
+    assert!(
+        (right - Vec3::X).length() < 1e-5,
+        "right should be +X, got {right}"
+    );
 }

@@ -95,11 +95,15 @@ pub fn classify_spectral(spectral: &[u16; 16], ambient: &[f32; 16]) -> ThreatAss
 
     let total_energy: f32 = bands.iter().sum();
 
-    let (dominant_band, peak) = bands
-        .iter()
-        .copied()
-        .enumerate()
-        .fold((0usize, 0.0f32), |(bi, bv), (i, v)| if v > bv { (i, v) } else { (bi, bv) });
+    let (dominant_band, peak) =
+        bands
+            .iter()
+            .copied()
+            .enumerate()
+            .fold(
+                (0usize, 0.0f32),
+                |(bi, bv), (i, v)| if v > bv { (i, v) } else { (bi, bv) },
+            );
 
     let fire_energy: f32 = bands[FIRE_BANDS].iter().sum::<f32>() / FIRE_BANDS.len() as f32;
 
@@ -127,8 +131,8 @@ pub fn classify_spectral(spectral: &[u16; 16], ambient: &[f32; 16]) -> ThreatAss
     // Continuous threat score blends the physical-danger signals. Fire is the
     // dominant term (it can kill the NPC), a directed laser spike is secondary,
     // novelty contributes only mild unease.
-    let threat = (fire_energy * 0.9 + spike_ratio * peak.min(1.0) * 0.2 + novelty * 0.05)
-        .clamp(0.0, 1.0);
+    let threat =
+        (fire_energy * 0.9 + spike_ratio * peak.min(1.0) * 0.2 + novelty * 0.05).clamp(0.0, 1.0);
 
     let behavior = if fire_energy >= 0.45 {
         BehaviorState::Flee
@@ -310,7 +314,11 @@ impl SpectralPerceptionAgent {
 
     pub fn sense(&mut self, gi: &dyn SpectralRadianceSource) -> SpectralPercept {
         let radiance = gi.sample_at(self.position, self.sight_range);
-        let percept = SpectralPercept { position: self.position, radiance, distance: 0.0 };
+        let percept = SpectralPercept {
+            position: self.position,
+            radiance,
+            distance: 0.0,
+        };
         self.spectral_memory.push((self.position, radiance));
         if self.spectral_memory.len() > self.memory_capacity {
             self.spectral_memory.remove(0);
@@ -348,7 +356,10 @@ impl SpectralPerceptionAgent {
         if self.spectral_memory.is_empty() {
             return 0.0;
         }
-        self.spectral_memory.iter().map(|(_, s)| s[band.min(15)]).sum::<f32>()
+        self.spectral_memory
+            .iter()
+            .map(|(_, s)| s[band.min(15)])
+            .sum::<f32>()
             / self.spectral_memory.len() as f32
     }
 }
@@ -393,7 +404,11 @@ mod tests {
         for _ in 0..10 {
             agent.sense(&gi);
         }
-        assert_eq!(agent.spectral_memory.len(), 5, "memory must not exceed capacity");
+        assert_eq!(
+            agent.spectral_memory.len(),
+            5,
+            "memory must not exceed capacity"
+        );
     }
 
     #[test]
@@ -418,7 +433,11 @@ mod tests {
         red[11] = 1.0;
         red[12] = 0.8;
         let state = EmotionalState::from_ambient(&red);
-        assert_eq!(state, EmotionalState::Anxious, "dominant red bands must produce Anxious state");
+        assert_eq!(
+            state,
+            EmotionalState::Anxious,
+            "dominant red bands must produce Anxious state"
+        );
     }
 
     #[test]
@@ -428,7 +447,11 @@ mod tests {
         green[6] = 0.8;
         green[7] = 0.7;
         let state = EmotionalState::from_ambient(&green);
-        assert_eq!(state, EmotionalState::Calm, "dominant green bands must produce Calm state");
+        assert_eq!(
+            state,
+            EmotionalState::Calm,
+            "dominant green bands must produce Calm state"
+        );
     }
 
     #[test]
@@ -450,7 +473,10 @@ mod tests {
         target_spectral[5] = 0.7;
         target_spectral[6] = 0.8;
         let can = agent.can_detect(Vec3::new(1.0, 0.0, 0.0), &target_spectral, &gi);
-        assert!(can, "distinct target against dark background must be detected");
+        assert!(
+            can,
+            "distinct target against dark background must be detected"
+        );
     }
 
     #[test]
@@ -494,13 +520,21 @@ mod tests {
     #[test]
     fn fire_field_yields_flee() {
         let a = classify_spectral(&fire(), &[0.0; 16]);
-        assert_eq!(a.behavior, BehaviorState::Flee, "intense fire field must trigger Flee");
+        assert_eq!(
+            a.behavior,
+            BehaviorState::Flee,
+            "intense fire field must trigger Flee"
+        );
         assert!(
             a.fire_energy > 0.45,
             "fire_energy should reflect the heat-band field, got {}",
             a.fire_energy
         );
-        assert!(a.threat > 0.5, "fire should produce a high threat score, got {}", a.threat);
+        assert!(
+            a.threat > 0.5,
+            "fire should produce a high threat score, got {}",
+            a.threat
+        );
     }
 
     #[test]
@@ -512,7 +546,11 @@ mod tests {
             "a sharp single-band spike must trigger Alert, got {:?}",
             a
         );
-        assert_eq!(a.dominant_band, 11, "laser dominant band must be 11, got {}", a.dominant_band);
+        assert_eq!(
+            a.dominant_band, 11,
+            "laser dominant band must be 11, got {}",
+            a.dominant_band
+        );
         assert!(
             a.spike_ratio >= 0.85,
             "laser must register a high spike ratio, got {}",
@@ -523,8 +561,16 @@ mod tests {
     #[test]
     fn dark_field_yields_idle() {
         let a = classify_spectral(&dark(), &[0.0; 16]);
-        assert_eq!(a.behavior, BehaviorState::Idle, "a featureless dark field must stay Idle");
-        assert_eq!(a.total_energy, 0.0, "dark field must carry zero energy, got {}", a.total_energy);
+        assert_eq!(
+            a.behavior,
+            BehaviorState::Idle,
+            "a featureless dark field must stay Idle"
+        );
+        assert_eq!(
+            a.total_energy, 0.0,
+            "dark field must carry zero energy, got {}",
+            a.total_energy
+        );
     }
 
     #[test]
@@ -578,7 +624,11 @@ mod tests {
         let mut sorted: Vec<BehaviorState> = decisions.to_vec();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), 4, "distinct spectral inputs must yield distinct decisions");
+        assert_eq!(
+            sorted.len(),
+            4,
+            "distinct spectral inputs must yield distinct decisions"
+        );
     }
 
     #[test]
@@ -588,22 +638,37 @@ mod tests {
         let first = classify_spectral(&input, &baseline);
         for _ in 0..16 {
             let again = classify_spectral(&input, &baseline);
-            assert_eq!(again, first, "same input must always yield the same assessment");
+            assert_eq!(
+                again, first,
+                "same input must always yield the same assessment"
+            );
         }
     }
 
     #[test]
     fn agent_stores_and_retrieves_decision() {
         let mut agent = SpectralPerceptionAgent::new(Vec3::ZERO, 10.0);
-        assert!(agent.last_assessment().is_none(), "fresh agent has no decision yet");
+        assert!(
+            agent.last_assessment().is_none(),
+            "fresh agent has no decision yet"
+        );
         assert_eq!(agent.current_behavior(), BehaviorState::Idle);
 
         let returned = agent.assess_threat(&fire());
-        assert_eq!(returned.behavior, BehaviorState::Flee, "fire must make the agent flee");
+        assert_eq!(
+            returned.behavior,
+            BehaviorState::Flee,
+            "fire must make the agent flee"
+        );
 
         // The decision is retrievable later, not discarded.
-        let stored = agent.last_assessment().expect("decision must be stored after assess_threat");
-        assert_eq!(stored, returned, "stored decision must equal the one returned");
+        let stored = agent
+            .last_assessment()
+            .expect("decision must be stored after assess_threat");
+        assert_eq!(
+            stored, returned,
+            "stored decision must equal the one returned"
+        );
         assert_eq!(agent.current_behavior(), BehaviorState::Flee);
     }
 
@@ -630,8 +695,16 @@ mod tests {
         let mut fresh = SpectralPerceptionAgent::new(Vec3::ZERO, 10.0);
         let fresh_decision = fresh.assess_threat(&g).behavior;
 
-        assert_eq!(seasoned_decision, BehaviorState::Patrol, "familiar ambient => Patrol");
-        assert_eq!(fresh_decision, BehaviorState::Investigate, "unfamiliar ambient => Investigate");
+        assert_eq!(
+            seasoned_decision,
+            BehaviorState::Patrol,
+            "familiar ambient => Patrol"
+        );
+        assert_eq!(
+            fresh_decision,
+            BehaviorState::Investigate,
+            "unfamiliar ambient => Investigate"
+        );
         assert_ne!(
             seasoned_decision, fresh_decision,
             "learned memory must change the agent's decision on identical input"

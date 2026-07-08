@@ -22,7 +22,9 @@ pub struct AudioEngineResource {
 
 impl Default for AudioEngineResource {
     fn default() -> Self {
-        Self { engine: AudioEngine::new(64) }
+        Self {
+            engine: AudioEngine::new(64),
+        }
     }
 }
 
@@ -33,7 +35,9 @@ pub struct AudioListenerSettings {
 
 impl Default for AudioListenerSettings {
     fn default() -> Self {
-        Self { position: Vec3::ZERO }
+        Self {
+            position: Vec3::ZERO,
+        }
     }
 }
 
@@ -41,7 +45,9 @@ impl Default for AudioListenerSettings {
 pub struct AudioTimeStep(pub f32);
 
 impl Default for AudioTimeStep {
-    fn default() -> Self { Self(1.0 / 60.0) }
+    fn default() -> Self {
+        Self(1.0 / 60.0)
+    }
 }
 
 // ── Components ─────────────────────────────────────────────────────────────
@@ -59,18 +65,25 @@ pub fn audio_emitter_system(
     handle: Res<AudioHandleResource>,
     start_query: Query<
         (Entity, &vox_core::ecs::AudioEmitterComponent),
-        (Without<AudioPlaybackComponent>, Changed<vox_core::ecs::AudioEmitterComponent>),
+        (
+            Without<AudioPlaybackComponent>,
+            Changed<vox_core::ecs::AudioEmitterComponent>,
+        ),
     >,
-    stop_query: Query<
-        (Entity, &AudioPlaybackComponent, &vox_core::ecs::AudioEmitterComponent),
-    >,
+    stop_query: Query<(
+        Entity,
+        &AudioPlaybackComponent,
+        &vox_core::ecs::AudioEmitterComponent,
+    )>,
 ) {
     let Some(ref audio) = handle.0 else { return };
 
     for (entity, emitter) in start_query.iter() {
         if emitter.playing {
             let id = audio.play(&emitter.clip_path, emitter.volume, emitter.looping);
-            commands.entity(entity).insert(AudioPlaybackComponent { source_id: id });
+            commands
+                .entity(entity)
+                .insert(AudioPlaybackComponent { source_id: id });
         }
     }
 
@@ -145,13 +158,15 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(AudioHandleResource(None));
 
-        let entity = world.spawn(vox_core::ecs::AudioEmitterComponent {
-            clip_path: "x.ogg".into(),
-            volume: 1.0,
-            looping: false,
-            playing: true,
-            spatial: false,
-        }).id();
+        let entity = world
+            .spawn(vox_core::ecs::AudioEmitterComponent {
+                clip_path: "x.ogg".into(),
+                volume: 1.0,
+                looping: false,
+                playing: true,
+                spatial: false,
+            })
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(audio_emitter_system);
@@ -159,7 +174,10 @@ mod tests {
         world.flush();
 
         assert!(
-            world.entity(entity).get::<AudioPlaybackComponent>().is_none(),
+            world
+                .entity(entity)
+                .get::<AudioPlaybackComponent>()
+                .is_none(),
         );
     }
 
@@ -168,20 +186,27 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(AudioHandleResource(None));
 
-        let entity = world.spawn(vox_core::ecs::AudioEmitterComponent {
-            clip_path: "x.ogg".into(),
-            volume: 1.0,
-            looping: false,
-            playing: false,
-            spatial: false,
-        }).id();
+        let entity = world
+            .spawn(vox_core::ecs::AudioEmitterComponent {
+                clip_path: "x.ogg".into(),
+                volume: 1.0,
+                looping: false,
+                playing: false,
+                spatial: false,
+            })
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(audio_emitter_system);
         schedule.run(&mut world);
         world.flush();
 
-        assert!(world.entity(entity).get::<AudioPlaybackComponent>().is_none());
+        assert!(
+            world
+                .entity(entity)
+                .get::<AudioPlaybackComponent>()
+                .is_none()
+        );
     }
 
     #[test]
@@ -195,20 +220,27 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(AudioHandleResource(Some(handle)));
 
-        let entity = world.spawn(vox_core::ecs::AudioEmitterComponent {
-            clip_path: "boom.wav".into(),
-            volume: 0.8,
-            looping: false,
-            playing: true,
-            spatial: false,
-        }).id();
+        let entity = world
+            .spawn(vox_core::ecs::AudioEmitterComponent {
+                clip_path: "boom.wav".into(),
+                volume: 0.8,
+                looping: false,
+                playing: true,
+                spatial: false,
+            })
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(audio_emitter_system);
         schedule.run(&mut world);
         world.flush();
 
-        assert!(world.entity(entity).get::<AudioPlaybackComponent>().is_some());
+        assert!(
+            world
+                .entity(entity)
+                .get::<AudioPlaybackComponent>()
+                .is_some()
+        );
     }
 
     #[test]
@@ -222,31 +254,52 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(AudioHandleResource(Some(handle)));
 
-        let entity = world.spawn((
-            vox_core::ecs::AudioEmitterComponent {
-                clip_path: "boom.wav".into(),
-                volume: 0.8,
-                looping: false,
-                playing: false,
-                spatial: false,
-            },
-            AudioPlaybackComponent { source_id: 42 },
-        )).id();
+        let entity = world
+            .spawn((
+                vox_core::ecs::AudioEmitterComponent {
+                    clip_path: "boom.wav".into(),
+                    volume: 0.8,
+                    looping: false,
+                    playing: false,
+                    spatial: false,
+                },
+                AudioPlaybackComponent { source_id: 42 },
+            ))
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(audio_emitter_system);
         schedule.run(&mut world);
         world.flush();
 
-        assert!(world.entity(entity).get::<AudioPlaybackComponent>().is_none());
+        assert!(
+            world
+                .entity(entity)
+                .get::<AudioPlaybackComponent>()
+                .is_none()
+        );
     }
 
     #[test]
     fn tick_culls_over_budget_sources() {
         let mut world = World::new();
-        let mut res = AudioEngineResource { engine: crate::AudioEngine::new(1) };
-        res.engine.play(crate::AudioSource { id: 0, position: Vec3::ZERO, volume: 1.0, looping: false, clip: "a.wav".into() });
-        res.engine.play(crate::AudioSource { id: 0, position: Vec3::ZERO, volume: 0.5, looping: false, clip: "b.wav".into() });
+        let mut res = AudioEngineResource {
+            engine: crate::AudioEngine::new(1),
+        };
+        res.engine.play(crate::AudioSource {
+            id: 0,
+            position: Vec3::ZERO,
+            volume: 1.0,
+            looping: false,
+            clip: "a.wav".into(),
+        });
+        res.engine.play(crate::AudioSource {
+            id: 0,
+            position: Vec3::ZERO,
+            volume: 0.5,
+            looping: false,
+            clip: "b.wav".into(),
+        });
         world.insert_resource(res);
         world.insert_resource(AudioListenerSettings::default());
         world.insert_resource(AudioTimeStep(0.016));

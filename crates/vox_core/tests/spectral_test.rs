@@ -1,4 +1,4 @@
-use vox_core::spectral::{SpectralBands, Illuminant, spectral_to_xyz, xyz_to_srgb};
+use vox_core::spectral::{Illuminant, SpectralBands, spectral_to_xyz, xyz_to_srgb};
 
 #[test]
 fn d65_illuminant_has_16_bands() {

@@ -31,7 +31,9 @@ fn migrate_between_shards() {
     let b = mgr.create_shard(tile_set(&[(1, 0)]));
     mgr.assign_entity(42, a);
 
-    let record = mgr.migrate_entity(42, a, b).expect("migration should succeed");
+    let record = mgr
+        .migrate_entity(42, a, b)
+        .expect("migration should succeed");
     assert_eq!(record.entity_id, 42);
     assert_eq!(record.from_shard, a);
     assert_eq!(record.to_shard, b);
@@ -96,7 +98,10 @@ fn migration_preserves_entity() {
     mgr.migrate_entity(7, a, b);
     let after = mgr.total_entities();
 
-    assert_eq!(before, after, "migration must not lose or duplicate entities");
+    assert_eq!(
+        before, after,
+        "migration must not lose or duplicate entities"
+    );
     assert_eq!(after, 1);
 }
 
@@ -178,5 +183,9 @@ fn sharding_rebalance_migration_is_deterministic() {
         migrated, expected,
         "rebalance must migrate exactly the sorted upper half of entity ids"
     );
-    assert_eq!(mgr.total_entities(), N as usize, "no entities lost or duplicated");
+    assert_eq!(
+        mgr.total_entities(),
+        N as usize,
+        "no entities lost or duplicated"
+    );
 }

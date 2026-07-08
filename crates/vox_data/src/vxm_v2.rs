@@ -72,8 +72,8 @@ impl VxmFileV2 {
         writer.write_all(bytes_of(&self.header))?;
 
         let splat_bytes: &[u8] = cast_slice(&self.splats);
-        let compressed = zstd::encode_all(splat_bytes, 0)
-            .map_err(|e| VxmError::Compress(e.to_string()))?;
+        let compressed =
+            zstd::encode_all(splat_bytes, 0).map_err(|e| VxmError::Compress(e.to_string()))?;
 
         let compressed_size = compressed.len() as u64;
         writer.write_all(&compressed_size.to_le_bytes())?;
@@ -101,13 +101,12 @@ impl VxmFileV2 {
         let mut compressed = vec![0u8; compressed_size];
         reader.read_exact(&mut compressed)?;
 
-        let decompressed = zstd::decode_all(&compressed[..])
-            .map_err(|e| VxmError::Decompress(e.to_string()))?;
+        let decompressed =
+            zstd::decode_all(&compressed[..]).map_err(|e| VxmError::Decompress(e.to_string()))?;
 
-        let splats: Vec<GaussianSplatV2> =
-            try_cast_slice::<u8, GaussianSplatV2>(&decompressed)
-                .map_err(|_| VxmError::InvalidAlignment)?
-                .to_vec();
+        let splats: Vec<GaussianSplatV2> = try_cast_slice::<u8, GaussianSplatV2>(&decompressed)
+            .map_err(|_| VxmError::InvalidAlignment)?
+            .to_vec();
 
         Ok(VxmFileV2 { header, splats })
     }

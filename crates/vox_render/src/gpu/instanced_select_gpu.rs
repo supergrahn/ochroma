@@ -447,7 +447,12 @@ impl InstancedSelectGpu {
                         cm.frustum_center.z,
                         cm.radius,
                     ],
-                    centroid_opacity: [cm.centroid.x, cm.centroid.y, cm.centroid.z, cm.total_opacity],
+                    centroid_opacity: [
+                        cm.centroid.x,
+                        cm.centroid.y,
+                        cm.centroid.z,
+                        cm.total_opacity,
+                    ],
                 });
             }
             let (centre, radius) = library.asset_bounds(a);
@@ -758,8 +763,14 @@ impl InstancedSelectGpu {
             .replace("distance > 150.0", "distance > __LOD_D2__")
             .replace("distance > 50.0", "distance > __LOD_D1__")
             // far/imposter classification (anchored on the `if (` code lines only)
-            .replace("if (inst_distance >= 150.0) {", "if (inst_distance >= __FAR_M__) {")
-            .replace("if (inst_distance >= 400.0) {", "if (inst_distance >= __IMP_M__) {")
+            .replace(
+                "if (inst_distance >= 150.0) {",
+                "if (inst_distance >= __FAR_M__) {",
+            )
+            .replace(
+                "if (inst_distance >= 400.0) {",
+                "if (inst_distance >= __IMP_M__) {",
+            )
             // crossfade_factor band edges
             .replace("next_dist = 50.0;", "next_dist = __LOD_D1__;")
             .replace("current_dist = 50.0;", "current_dist = __LOD_D1__;")
@@ -867,11 +878,8 @@ impl InstancedSelectGpu {
         );
         let (pipeline_emit, bg_emit) =
             make_kernel("emit_pairs", "instanced_select_emit", &[0, 1, 2, 5, 8, 9]);
-        let (pipeline_pairs, bg_pairs) = make_kernel(
-            "score_pairs",
-            "instanced_select_k2",
-            &[0, 1, 3, 4, 5, 7, 9],
-        );
+        let (pipeline_pairs, bg_pairs) =
+            make_kernel("score_pairs", "instanced_select_k2", &[0, 1, 3, 4, 5, 7, 9]);
         // The M3.2 resident-walk kernels. No layout binds an indirect buffer
         // its own dispatch consumes (walk_args only in scan, k2_args only in
         // scan — the house usage rule).
@@ -1201,8 +1209,9 @@ impl InstancedSelectGpu {
             // construction — the 9-combo equality suite is the proof.
             let t_assemble = std::time::Instant::now();
             let mut inst_scores = vec![GpuInstScore::zeroed(); n];
-            bytemuck::cast_slice_mut::<GpuInstScore, u8>(&mut inst_scores)
-                .copy_from_slice(&data[PAIR_META_BYTES as usize..(PAIR_META_BYTES + inst_copy) as usize]);
+            bytemuck::cast_slice_mut::<GpuInstScore, u8>(&mut inst_scores).copy_from_slice(
+                &data[PAIR_META_BYTES as usize..(PAIR_META_BYTES + inst_copy) as usize],
+            );
             let mut pair_scores = vec![GpuPairScore::zeroed(); pair_count];
             let pair_off = (PAIR_META_BYTES + inst_copy) as usize;
             bytemuck::cast_slice_mut::<GpuPairScore, u8>(&mut pair_scores)
@@ -1325,7 +1334,11 @@ impl InstancedSelectGpu {
             // No GPU work — but zero the resident outputs so a following
             // `encode_indirect` honestly expands nothing (no stale frame).
             queue.write_buffer(&self.expand_params_buf, 0, &[0u8; 16]);
-            queue.write_buffer(&self.expand_args_buf, 0, bytemuck::cast_slice(&[0u32, 1, 1]));
+            queue.write_buffer(
+                &self.expand_args_buf,
+                0,
+                bytemuck::cast_slice(&[0u32, 1, 1]),
+            );
             self.last_breakdown = bd;
             return Ok((
                 InstancedStats {

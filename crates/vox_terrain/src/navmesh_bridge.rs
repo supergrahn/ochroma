@@ -27,32 +27,53 @@ pub fn extract_from_volume(
             for x in 0..sx {
                 let sdf = vol.get(x, y, z);
                 // Must be near surface
-                if sdf.abs() > surface_threshold { continue; }
+                if sdf.abs() > surface_threshold {
+                    continue;
+                }
                 // Must be solid (on or below surface)
-                if sdf > 0.0 { continue; }
+                if sdf > 0.0 {
+                    continue;
+                }
 
                 // Check headroom: all voxels above must be air (positive SDF)
                 let has_headroom = (1..=agent_height_voxels).all(|dy| {
                     let above_y = y + dy;
                     above_y < sy && vol.get(x, above_y, z) > 0.0
                 });
-                if !has_headroom { continue; }
+                if !has_headroom {
+                    continue;
+                }
 
                 let id = nodes.len() as u32;
                 let world_pos = vol.voxel_to_world(x, y, z);
                 voxel_to_idx.insert((x, y, z), id);
-                nodes.push(NavNode { id, world_pos, neighbours: Vec::new() });
+                nodes.push(NavNode {
+                    id,
+                    world_pos,
+                    neighbours: Vec::new(),
+                });
             }
         }
     }
 
     // Build adjacency: 16-connectivity (xz plane + 1-step height change)
     let directions: &[(i32, i32, i32)] = &[
-        (1, 0, 0), (-1, 0, 0),
-        (0, 0, 1), (0, 0, -1),
-        (1, 0, 1), (-1, 0, 1), (1, 0, -1), (-1, 0, -1),
-        (1, 1, 0), (-1, 1, 0), (0, 1, 1), (0, 1, -1),
-        (1, -1, 0), (-1, -1, 0), (0, -1, 1), (0, -1, -1),
+        (1, 0, 0),
+        (-1, 0, 0),
+        (0, 0, 1),
+        (0, 0, -1),
+        (1, 0, 1),
+        (-1, 0, 1),
+        (1, 0, -1),
+        (-1, 0, -1),
+        (1, 1, 0),
+        (-1, 1, 0),
+        (0, 1, 1),
+        (0, 1, -1),
+        (1, -1, 0),
+        (-1, -1, 0),
+        (0, -1, 1),
+        (0, -1, -1),
     ];
 
     let mut node_voxels: Vec<(usize, usize, usize)> = voxel_to_idx.keys().cloned().collect();
@@ -63,7 +84,9 @@ pub fn extract_from_volume(
             let nx = x as i32 + dx;
             let ny = y as i32 + dy;
             let nz = z as i32 + dz;
-            if nx < 0 || ny < 0 || nz < 0 { continue; }
+            if nx < 0 || ny < 0 || nz < 0 {
+                continue;
+            }
             let key = (nx as usize, ny as usize, nz as usize);
             if let Some(&neighbour_id) = voxel_to_idx.get(&key) {
                 nodes[id as usize].neighbours.push(neighbour_id);
@@ -86,12 +109,13 @@ pub fn extract_region(
 ) -> Vec<NavNode> {
     let full = extract_from_volume(vol, surface_threshold, agent_height_voxels);
     let r2 = radius * radius;
-    full.nodes.into_iter()
+    full.nodes
+        .into_iter()
         .filter(|n| {
             let dx = n.world_pos[0] - center[0];
             let dy = n.world_pos[1] - center[1];
             let dz = n.world_pos[2] - center[2];
-            dx*dx + dy*dy + dz*dz <= r2
+            dx * dx + dy * dy + dz * dz <= r2
         })
         .collect()
 }
@@ -118,22 +142,34 @@ mod tests {
     fn extract_produces_nodes_on_flat_ground() {
         let vol = flat_ground_volume();
         let mesh = extract_from_volume(&vol, 1.5, 2);
-        assert!(mesh.node_count() > 0, "should find walkable nodes on flat ground");
+        assert!(
+            mesh.node_count() > 0,
+            "should find walkable nodes on flat ground"
+        );
     }
 
     #[test]
     fn extracted_nodes_have_neighbours() {
         let vol = flat_ground_volume();
         let mesh = extract_from_volume(&vol, 1.5, 2);
-        let nodes_with_neighbours = mesh.nodes.iter().filter(|n| !n.neighbours.is_empty()).count();
-        assert!(nodes_with_neighbours > 0, "inner nodes should have neighbours");
+        let nodes_with_neighbours = mesh
+            .nodes
+            .iter()
+            .filter(|n| !n.neighbours.is_empty())
+            .count();
+        assert!(
+            nodes_with_neighbours > 0,
+            "inner nodes should have neighbours"
+        );
     }
 
     #[test]
     fn path_exists_across_flat_ground() {
         let vol = flat_ground_volume();
         let mesh = extract_from_volume(&vol, 1.5, 2);
-        if mesh.node_count() < 2 { return; }
+        if mesh.node_count() < 2 {
+            return;
+        }
         let start = mesh.nearest_node([1.0, 4.0, 1.0]).unwrap();
         let goal = mesh.nearest_node([12.0, 4.0, 12.0]).unwrap();
         let path = mesh.find_path(start, goal);

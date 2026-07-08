@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -11,9 +11,9 @@ pub enum BuildTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildConfig {
-    Debug,      // full debug info, assertions
-    Release,    // optimised, no debug info
-    Shipping,   // fully optimised, stripped, with Steam integration
+    Debug,    // full debug info, assertions
+    Release,  // optimised, no debug info
+    Shipping, // fully optimised, stripped, with Steam integration
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

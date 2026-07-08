@@ -1,15 +1,32 @@
 use std::io::Write;
-use vox_data::import_pipeline::{import_asset, ImportSettings};
+use vox_data::import_pipeline::{ImportSettings, import_asset};
 
 fn write_binary_ply(path: &std::path::Path, count: usize) {
     use std::io::BufWriter;
     let mut f = BufWriter::new(std::fs::File::create(path).unwrap());
-    write!(f, "ply\nformat binary_little_endian 1.0\nelement vertex {}\n", count).unwrap();
+    write!(
+        f,
+        "ply\nformat binary_little_endian 1.0\nelement vertex {}\n",
+        count
+    )
+    .unwrap();
     write!(f, "property float x\nproperty float y\nproperty float z\n").unwrap();
-    write!(f, "property float scale_0\nproperty float scale_1\nproperty float scale_2\n").unwrap();
-    write!(f, "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n").unwrap();
+    write!(
+        f,
+        "property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+    )
+    .unwrap();
+    write!(
+        f,
+        "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+    )
+    .unwrap();
     write!(f, "property float opacity\n").unwrap();
-    write!(f, "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n").unwrap();
+    write!(
+        f,
+        "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n"
+    )
+    .unwrap();
     write!(f, "end_header\n").unwrap();
     for i in 0..count {
         let x = (i as f32 * 0.1f32).to_le_bytes();
@@ -19,12 +36,20 @@ fn write_binary_ply(path: &std::path::Path, count: usize) {
         let opacity = 0.0f32.to_le_bytes();
         let color = 0.5f32.to_le_bytes();
         f.write_all(&x).unwrap();
-        for _ in 0..2 { f.write_all(&0.0f32.to_le_bytes()).unwrap(); }
-        for _ in 0..3 { f.write_all(&scale).unwrap(); }
+        for _ in 0..2 {
+            f.write_all(&0.0f32.to_le_bytes()).unwrap();
+        }
+        for _ in 0..3 {
+            f.write_all(&scale).unwrap();
+        }
         f.write_all(&rot_w).unwrap();
-        for _ in 0..3 { f.write_all(&rot_zero).unwrap(); }
+        for _ in 0..3 {
+            f.write_all(&rot_zero).unwrap();
+        }
         f.write_all(&opacity).unwrap();
-        for _ in 0..3 { f.write_all(&color).unwrap(); }
+        for _ in 0..3 {
+            f.write_all(&color).unwrap();
+        }
     }
 }
 
@@ -37,11 +62,21 @@ fn import_ply_produces_real_splats() {
 
     let settings = ImportSettings::default();
     let result = import_asset(&path, &settings).unwrap();
-    assert_eq!(result.splats.len(), 10, "PLY import should produce one splat per vertex");
-    assert!((result.splats[0].position()[0]).abs() < 0.01, "first splat near x=0");
+    assert_eq!(
+        result.splats.len(),
+        10,
+        "PLY import should produce one splat per vertex"
+    );
+    assert!(
+        (result.splats[0].position()[0]).abs() < 0.01,
+        "first splat near x=0"
+    );
     let scale = result.splats[0].scale_u();
-    assert!(scale > 0.05 && scale < 0.2,
-        "scale should be ~exp(-2.3)≈0.1, not dummy 0.01, got {}", scale);
+    assert!(
+        scale > 0.05 && scale < 0.2,
+        "scale should be ~exp(-2.3)≈0.1, not dummy 0.01, got {}",
+        scale
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -59,7 +94,9 @@ fn write_minimal_glb(path: &std::path::Path) {
     // v2: (0,1,0)
     bin[28..32].copy_from_slice(&1.0f32.to_le_bytes());
     // indices: 0,1,2
-    bin[36] = 0; bin[38] = 1; bin[40] = 2;
+    bin[36] = 0;
+    bin[38] = 1;
+    bin[40] = 2;
     let padded_bin = ((bin.len() + 3) / 4) * 4;
     let total = 12 + 8 + padded_json + 8 + padded_bin;
     let mut out = Vec::with_capacity(total);
@@ -86,20 +123,29 @@ fn import_gltf_produces_real_splats() {
 
     let settings = ImportSettings::default();
     let result = import_asset(&path, &settings).unwrap();
-    assert!(!result.splats.is_empty(), "GLTF import should produce splats");
+    assert!(
+        !result.splats.is_empty(),
+        "GLTF import should produce splats"
+    );
     // Splats should be within the triangle's bounds [0,1] on x and y
     for s in &result.splats {
-        assert!(s.position()[0] >= -0.01 && s.position()[0] <= 1.01,
-            "splat x={} out of triangle range", s.position()[0]);
-        assert!(s.position()[1] >= -0.01 && s.position()[1] <= 1.01,
-            "splat y={} out of triangle range", s.position()[1]);
+        assert!(
+            s.position()[0] >= -0.01 && s.position()[0] <= 1.01,
+            "splat x={} out of triangle range",
+            s.position()[0]
+        );
+        assert!(
+            s.position()[1] >= -0.01 && s.position()[1] <= 1.01,
+            "splat y={} out of triangle range",
+            s.position()[1]
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }
 
-use vox_data::vxm::{VxmFile, VxmHeader, MaterialType};
-use vox_core::types::GaussianSplat;
 use uuid::Uuid;
+use vox_core::types::GaussianSplat;
+use vox_data::vxm::{MaterialType, VxmFile, VxmHeader};
 
 #[test]
 fn import_vxm_produces_exact_splats() {
@@ -110,13 +156,19 @@ fn import_vxm_produces_exact_splats() {
     // Write a real VXM with 5 known splats
     let file = VxmFile {
         header: VxmHeader::new(Uuid::new_v4(), 5, MaterialType::Generic),
-        splats: (0..5).map(|i| GaussianSplat::volume(
-            [i as f32, 0.0, 0.0],
-            [0.1, 0.1, 0.1],
-            glam::Quat::IDENTITY,
-            200,
-            [100, 200, 150, 100, 80, 60, 40, 20, 100, 200, 150, 100, 80, 60, 40, 20],
-        )).collect(),
+        splats: (0..5)
+            .map(|i| {
+                GaussianSplat::volume(
+                    [i as f32, 0.0, 0.0],
+                    [0.1, 0.1, 0.1],
+                    glam::Quat::IDENTITY,
+                    200,
+                    [
+                        100, 200, 150, 100, 80, 60, 40, 20, 100, 200, 150, 100, 80, 60, 40, 20,
+                    ],
+                )
+            })
+            .collect(),
     };
     let mut buf = Vec::new();
     file.write(&mut buf).unwrap();
@@ -124,9 +176,19 @@ fn import_vxm_produces_exact_splats() {
 
     let settings = ImportSettings::default();
     let result = import_asset(&path, &settings).unwrap();
-    assert_eq!(result.splats.len(), 5, "VXM import should produce exactly 5 splats");
-    assert!((result.splats[0].position()[0]).abs() < 0.01, "first splat at x=0");
-    assert!((result.splats[4].position()[0] - 4.0).abs() < 0.01, "fifth splat at x=4");
+    assert_eq!(
+        result.splats.len(),
+        5,
+        "VXM import should produce exactly 5 splats"
+    );
+    assert!(
+        (result.splats[0].position()[0]).abs() < 0.01,
+        "first splat at x=0"
+    );
+    assert!(
+        (result.splats[4].position()[0] - 4.0).abs() < 0.01,
+        "fifth splat at x=4"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

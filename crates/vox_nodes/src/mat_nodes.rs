@@ -1,9 +1,9 @@
 #[cfg(feature = "crucible")]
+use crucible_core::error::CookError;
+#[cfg(feature = "crucible")]
 use crucible_core::node::{CrucibleNode, NodeDescriptor, PortSpec};
 #[cfg(feature = "crucible")]
-use crucible_core::port::{PortData, PortDataType, PortMap, ParamValue};
-#[cfg(feature = "crucible")]
-use crucible_core::error::CookError;
+use crucible_core::port::{ParamValue, PortData, PortDataType, PortMap};
 
 // ---------------------------------------------------------------------------
 // FloatConstNode
@@ -16,7 +16,9 @@ pub struct FloatConstNode {
 
 #[cfg(feature = "crucible")]
 impl FloatConstNode {
-    pub fn new(value: f64) -> Self { Self { value } }
+    pub fn new(value: f64) -> Self {
+        Self { value }
+    }
 }
 
 #[cfg(feature = "crucible")]
@@ -25,19 +27,28 @@ impl CrucibleNode for FloatConstNode {
         NodeDescriptor {
             type_name: "FloatConst",
             inputs: vec![],
-            outputs: vec![PortSpec { name: "out", data_type: PortDataType::Scalar, optional: false }],
+            outputs: vec![PortSpec {
+                name: "out",
+                data_type: PortDataType::Scalar,
+                optional: false,
+            }],
         }
     }
     fn set_param(&mut self, key: &str, value: ParamValue) -> Result<(), CookError> {
         match key {
             "value" => {
-                self.value = value.as_float_coerce().ok_or_else(|| CookError::InvalidParam {
-                    key: key.into(),
-                    reason: format!("'value' must be a number, got {:?}", value),
-                })?;
+                self.value = value
+                    .as_float_coerce()
+                    .ok_or_else(|| CookError::InvalidParam {
+                        key: key.into(),
+                        reason: format!("'value' must be a number, got {:?}", value),
+                    })?;
                 Ok(())
             }
-            _ => Err(CookError::UnknownParam { key: key.into(), node: "FloatConst".into() }),
+            _ => Err(CookError::UnknownParam {
+                key: key.into(),
+                node: "FloatConst".into(),
+            }),
         }
     }
     fn cook(&self, _inputs: PortMap) -> Result<PortMap, CookError> {
@@ -60,19 +71,38 @@ impl CrucibleNode for MultiplyNode {
         NodeDescriptor {
             type_name: "Multiply",
             inputs: vec![
-                PortSpec { name: "a", data_type: PortDataType::Scalar, optional: false },
-                PortSpec { name: "b", data_type: PortDataType::Scalar, optional: false },
+                PortSpec {
+                    name: "a",
+                    data_type: PortDataType::Scalar,
+                    optional: false,
+                },
+                PortSpec {
+                    name: "b",
+                    data_type: PortDataType::Scalar,
+                    optional: false,
+                },
             ],
-            outputs: vec![PortSpec { name: "out", data_type: PortDataType::Scalar, optional: false }],
+            outputs: vec![PortSpec {
+                name: "out",
+                data_type: PortDataType::Scalar,
+                optional: false,
+            }],
         }
     }
     fn set_param(&mut self, key: &str, _: ParamValue) -> Result<(), CookError> {
-        Err(CookError::UnknownParam { key: key.into(), node: "Multiply".into() })
+        Err(CookError::UnknownParam {
+            key: key.into(),
+            node: "Multiply".into(),
+        })
     }
     fn cook(&self, inputs: PortMap) -> Result<PortMap, CookError> {
-        let a = inputs.get("a").and_then(|p| p.as_scalar())
+        let a = inputs
+            .get("a")
+            .and_then(|p| p.as_scalar())
             .ok_or_else(|| CookError::MissingInput("a".into()))?;
-        let b = inputs.get("b").and_then(|p| p.as_scalar())
+        let b = inputs
+            .get("b")
+            .and_then(|p| p.as_scalar())
             .ok_or_else(|| CookError::MissingInput("b".into()))?;
         let mut out = PortMap::default();
         out.insert("out".into(), PortData::Scalar(a * b));
@@ -93,19 +123,38 @@ impl CrucibleNode for AddNode {
         NodeDescriptor {
             type_name: "Add",
             inputs: vec![
-                PortSpec { name: "a", data_type: PortDataType::Scalar, optional: false },
-                PortSpec { name: "b", data_type: PortDataType::Scalar, optional: false },
+                PortSpec {
+                    name: "a",
+                    data_type: PortDataType::Scalar,
+                    optional: false,
+                },
+                PortSpec {
+                    name: "b",
+                    data_type: PortDataType::Scalar,
+                    optional: false,
+                },
             ],
-            outputs: vec![PortSpec { name: "out", data_type: PortDataType::Scalar, optional: false }],
+            outputs: vec![PortSpec {
+                name: "out",
+                data_type: PortDataType::Scalar,
+                optional: false,
+            }],
         }
     }
     fn set_param(&mut self, key: &str, _: ParamValue) -> Result<(), CookError> {
-        Err(CookError::UnknownParam { key: key.into(), node: "Add".into() })
+        Err(CookError::UnknownParam {
+            key: key.into(),
+            node: "Add".into(),
+        })
     }
     fn cook(&self, inputs: PortMap) -> Result<PortMap, CookError> {
-        let a = inputs.get("a").and_then(|p| p.as_scalar())
+        let a = inputs
+            .get("a")
+            .and_then(|p| p.as_scalar())
             .ok_or_else(|| CookError::MissingInput("a".into()))?;
-        let b = inputs.get("b").and_then(|p| p.as_scalar())
+        let b = inputs
+            .get("b")
+            .and_then(|p| p.as_scalar())
             .ok_or_else(|| CookError::MissingInput("b".into()))?;
         let mut out = PortMap::default();
         out.insert("out".into(), PortData::Scalar(a + b));
@@ -126,22 +175,47 @@ impl CrucibleNode for LerpNode {
         NodeDescriptor {
             type_name: "Lerp",
             inputs: vec![
-                PortSpec { name: "a", data_type: PortDataType::Scalar, optional: false },
-                PortSpec { name: "b", data_type: PortDataType::Scalar, optional: false },
-                PortSpec { name: "t", data_type: PortDataType::Scalar, optional: false },
+                PortSpec {
+                    name: "a",
+                    data_type: PortDataType::Scalar,
+                    optional: false,
+                },
+                PortSpec {
+                    name: "b",
+                    data_type: PortDataType::Scalar,
+                    optional: false,
+                },
+                PortSpec {
+                    name: "t",
+                    data_type: PortDataType::Scalar,
+                    optional: false,
+                },
             ],
-            outputs: vec![PortSpec { name: "out", data_type: PortDataType::Scalar, optional: false }],
+            outputs: vec![PortSpec {
+                name: "out",
+                data_type: PortDataType::Scalar,
+                optional: false,
+            }],
         }
     }
     fn set_param(&mut self, key: &str, _: ParamValue) -> Result<(), CookError> {
-        Err(CookError::UnknownParam { key: key.into(), node: "Lerp".into() })
+        Err(CookError::UnknownParam {
+            key: key.into(),
+            node: "Lerp".into(),
+        })
     }
     fn cook(&self, inputs: PortMap) -> Result<PortMap, CookError> {
-        let a = inputs.get("a").and_then(|p| p.as_scalar())
+        let a = inputs
+            .get("a")
+            .and_then(|p| p.as_scalar())
             .ok_or_else(|| CookError::MissingInput("a".into()))?;
-        let b = inputs.get("b").and_then(|p| p.as_scalar())
+        let b = inputs
+            .get("b")
+            .and_then(|p| p.as_scalar())
             .ok_or_else(|| CookError::MissingInput("b".into()))?;
-        let t = inputs.get("t").and_then(|p| p.as_scalar())
+        let t = inputs
+            .get("t")
+            .and_then(|p| p.as_scalar())
             .ok_or_else(|| CookError::MissingInput("t".into()))?;
         let mut out = PortMap::default();
         out.insert("out".into(), PortData::Scalar(a + (b - a) * t));
@@ -161,15 +235,28 @@ impl CrucibleNode for OneMinusNode {
     fn descriptor(&self) -> NodeDescriptor {
         NodeDescriptor {
             type_name: "OneMinus",
-            inputs: vec![PortSpec { name: "input", data_type: PortDataType::Scalar, optional: false }],
-            outputs: vec![PortSpec { name: "out", data_type: PortDataType::Scalar, optional: false }],
+            inputs: vec![PortSpec {
+                name: "input",
+                data_type: PortDataType::Scalar,
+                optional: false,
+            }],
+            outputs: vec![PortSpec {
+                name: "out",
+                data_type: PortDataType::Scalar,
+                optional: false,
+            }],
         }
     }
     fn set_param(&mut self, key: &str, _: ParamValue) -> Result<(), CookError> {
-        Err(CookError::UnknownParam { key: key.into(), node: "OneMinus".into() })
+        Err(CookError::UnknownParam {
+            key: key.into(),
+            node: "OneMinus".into(),
+        })
     }
     fn cook(&self, inputs: PortMap) -> Result<PortMap, CookError> {
-        let v = inputs.get("input").and_then(|p| p.as_scalar())
+        let v = inputs
+            .get("input")
+            .and_then(|p| p.as_scalar())
             .ok_or_else(|| CookError::MissingInput("input".into()))?;
         let mut out = PortMap::default();
         out.insert("out".into(), PortData::Scalar(1.0 - v));
@@ -190,18 +277,49 @@ impl CrucibleNode for MaterialOutputNode {
         NodeDescriptor {
             type_name: "MaterialOutput",
             inputs: vec![
-                PortSpec { name: "base_r",    data_type: PortDataType::Scalar, optional: true },
-                PortSpec { name: "base_g",    data_type: PortDataType::Scalar, optional: true },
-                PortSpec { name: "base_b",    data_type: PortDataType::Scalar, optional: true },
-                PortSpec { name: "roughness", data_type: PortDataType::Scalar, optional: true },
-                PortSpec { name: "metallic",  data_type: PortDataType::Scalar, optional: true },
-                PortSpec { name: "emission",  data_type: PortDataType::Scalar, optional: true },
+                PortSpec {
+                    name: "base_r",
+                    data_type: PortDataType::Scalar,
+                    optional: true,
+                },
+                PortSpec {
+                    name: "base_g",
+                    data_type: PortDataType::Scalar,
+                    optional: true,
+                },
+                PortSpec {
+                    name: "base_b",
+                    data_type: PortDataType::Scalar,
+                    optional: true,
+                },
+                PortSpec {
+                    name: "roughness",
+                    data_type: PortDataType::Scalar,
+                    optional: true,
+                },
+                PortSpec {
+                    name: "metallic",
+                    data_type: PortDataType::Scalar,
+                    optional: true,
+                },
+                PortSpec {
+                    name: "emission",
+                    data_type: PortDataType::Scalar,
+                    optional: true,
+                },
             ],
-            outputs: vec![PortSpec { name: "material", data_type: PortDataType::Null, optional: false }],
+            outputs: vec![PortSpec {
+                name: "material",
+                data_type: PortDataType::Null,
+                optional: false,
+            }],
         }
     }
     fn set_param(&mut self, key: &str, _: ParamValue) -> Result<(), CookError> {
-        Err(CookError::UnknownParam { key: key.into(), node: "MaterialOutput".into() })
+        Err(CookError::UnknownParam {
+            key: key.into(),
+            node: "MaterialOutput".into(),
+        })
     }
     fn cook(&self, _inputs: PortMap) -> Result<PortMap, CookError> {
         let mut out = PortMap::default();

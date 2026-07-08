@@ -1,7 +1,7 @@
 //! NavMesh generation from TerrainVolume SDF.
 
 use glam::Vec3;
-use navmesh::{NavMesh, NavQuery, NavPathMode, NavTriangle, NavVec3};
+use navmesh::{NavMesh, NavPathMode, NavQuery, NavTriangle, NavVec3};
 
 use crate::volume::TerrainVolume;
 
@@ -75,13 +75,19 @@ pub struct NavMeshConfig {
 
 impl Default for NavMeshConfig {
     fn default() -> Self {
-        Self { sample_step: 2.0, agent_radius: 0.5, max_slope_angle: 45.0 }
+        Self {
+            sample_step: 2.0,
+            agent_radius: 0.5,
+            max_slope_angle: 45.0,
+        }
     }
 }
 
 pub fn build_navmesh(vol: &TerrainVolume, config: &NavMeshConfig) -> Option<NavMesh> {
     let points = sample_walkable_surface(vol, config.sample_step, config.max_slope_angle);
-    if points.len() < 3 { return None; }
+    if points.len() < 3 {
+        return None;
+    }
 
     let step = config.sample_step;
     let mut grid: std::collections::HashMap<(i32, i32), usize> = std::collections::HashMap::new();
@@ -119,7 +125,9 @@ pub fn build_navmesh(vol: &TerrainVolume, config: &NavMeshConfig) -> Option<NavM
         }
     }
 
-    if triangles.is_empty() { return None; }
+    if triangles.is_empty() {
+        return None;
+    }
 
     let nav_vertices: Vec<NavVec3> = vertices
         .iter()
@@ -141,7 +149,11 @@ pub fn find_path(mesh: &NavMesh, start: Vec3, end: Vec3) -> Option<NavPath> {
     match mesh.find_path(from, to, NavQuery::Accuracy, NavPathMode::MidPoints) {
         Some(path) => {
             let waypoints: Vec<Vec3> = path.iter().map(|p| Vec3::new(p.x, p.y, p.z)).collect();
-            if waypoints.is_empty() { None } else { Some(NavPath { waypoints }) }
+            if waypoints.is_empty() {
+                None
+            } else {
+                Some(NavPath { waypoints })
+            }
         }
         None => None,
     }
@@ -156,7 +168,10 @@ mod tests {
     fn sample_walkable_surface_empty_volume_returns_empty() {
         let vol = TerrainVolume::new(8, 8, 8, 1.0); // all air
         let points = sample_walkable_surface(&vol, 1.0, 45.0);
-        assert!(points.is_empty(), "All-air volume should have no walkable surface");
+        assert!(
+            points.is_empty(),
+            "All-air volume should have no walkable surface"
+        );
     }
 
     #[test]

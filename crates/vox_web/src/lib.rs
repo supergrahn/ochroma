@@ -21,8 +21,7 @@ pub const CANVAS_ID: &str = "ochroma-canvas";
 /// Honest note about what the next milestone is, surfaced in the browser console
 /// so anyone poking at the build knows a clear-color frame is the deliverable and
 /// real splat rendering is still to come.
-pub const NEXT_STEP: &str =
-    "vox_web clears the canvas via WebGPU. Next: port vox_render's spectral splat \
+pub const NEXT_STEP: &str = "vox_web clears the canvas via WebGPU. Next: port vox_render's spectral splat \
      pipeline (shaders + buffers) to wasm32 — a separate multi-day effort.";
 
 /// The render-loop frame description — pure data, no GPU types, so it can be
@@ -94,11 +93,11 @@ pub mod frame {
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use crate::{frame, CANVAS_ID, NEXT_STEP};
+    use crate::{CANVAS_ID, NEXT_STEP, frame};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use wasm_bindgen::prelude::*;
     use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::*;
 
     impl From<frame::ClearColor> for wgpu::Color {
         fn from(c: frame::ClearColor) -> Self {
@@ -138,11 +137,11 @@ mod web {
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
 
-            let mut encoder =
-                self.device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("ochroma-clear-encoder"),
-                    });
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("ochroma-clear-encoder"),
+                });
 
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -356,7 +355,7 @@ pub fn wasm_main() {
 
 #[cfg(test)]
 mod tests {
-    use super::frame::{clear_color_for_frame, ClearColor, SPECTRAL_TEAL};
+    use super::frame::{ClearColor, SPECTRAL_TEAL, clear_color_for_frame};
 
     #[test]
     fn brand_teal_is_recognizable_non_black() {

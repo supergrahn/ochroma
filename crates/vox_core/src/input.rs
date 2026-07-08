@@ -1,17 +1,34 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
 /// A game action (what the player wants to do).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GameAction {
-    CameraOrbit, CameraPan, CameraZoomIn, CameraZoomOut,
-    Place, Select, Cancel, Delete,
-    RotateCW, RotateCCW,
-    Undo, Redo,
-    Save, Load,
-    Pause, SpeedNormal, SpeedFast, SpeedVeryFast,
-    ToggleOverlay, CycleOverlay,
-    ZoneMode, RoadMode, ServiceMode, PlaceMode, SelectMode,
+    CameraOrbit,
+    CameraPan,
+    CameraZoomIn,
+    CameraZoomOut,
+    Place,
+    Select,
+    Cancel,
+    Delete,
+    RotateCW,
+    RotateCCW,
+    Undo,
+    Redo,
+    Save,
+    Load,
+    Pause,
+    SpeedNormal,
+    SpeedFast,
+    SpeedVeryFast,
+    ToggleOverlay,
+    CycleOverlay,
+    ZoneMode,
+    RoadMode,
+    ServiceMode,
+    PlaceMode,
+    SelectMode,
 }
 
 /// Physical input sources.
@@ -196,7 +213,8 @@ mod keybinding_persist_tests {
         save_bindings(&bindings, &path).expect("save should succeed");
 
         let loaded = load_bindings(&path);
-        let sources = loaded.bindings
+        let sources = loaded
+            .bindings
             .get(&GameAction::CameraZoomIn)
             .expect("CameraZoomIn should be present");
         assert_eq!(sources[0], InputSource::Key(200));

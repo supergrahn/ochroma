@@ -36,10 +36,9 @@ pub enum SaveError {
 }
 
 pub fn save_game(state: &GameState, path: &Path) -> Result<(), SaveError> {
-    let json =
-        serde_json::to_vec(state).map_err(|e| SaveError::Serialize(e.to_string()))?;
-    let compressed = zstd::bulk::compress(&json, 3)
-        .map_err(|e| SaveError::Serialize(e.to_string()))?;
+    let json = serde_json::to_vec(state).map_err(|e| SaveError::Serialize(e.to_string()))?;
+    let compressed =
+        zstd::bulk::compress(&json, 3).map_err(|e| SaveError::Serialize(e.to_string()))?;
 
     let mut file = std::fs::File::create(path)?;
     file.write_all(SAVE_MAGIC)?;

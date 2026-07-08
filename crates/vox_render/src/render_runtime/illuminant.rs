@@ -68,6 +68,10 @@ impl PreviewIlluminant {
             this[2] / ref_d65[2].max(1e-4),
         ];
         let g = ratio[1].max(1e-4);
-        [(ratio[0] / g).clamp(0.2, 2.0), 1.0, (ratio[2] / g).clamp(0.2, 2.0)]
+        [
+            (ratio[0] / g).clamp(0.2, 2.0),
+            1.0,
+            (ratio[2] / g).clamp(0.2, 2.0),
+        ]
     }
 }

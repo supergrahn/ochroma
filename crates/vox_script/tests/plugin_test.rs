@@ -7,8 +7,12 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn create_test_plugin_dir_named(label: &str) -> (PathBuf, PathBuf) {
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let base = std::env::temp_dir().join(format!("ochroma_plugin_{}_{}_{}",
-        label, std::process::id(), id));
+    let base = std::env::temp_dir().join(format!(
+        "ochroma_plugin_{}_{}_{}",
+        label,
+        std::process::id(),
+        id
+    ));
     let plugin_dir = base.join("my_plugin");
     fs::create_dir_all(&plugin_dir).unwrap();
 
@@ -78,8 +82,11 @@ fn compatibility_check() {
 #[test]
 fn error_on_missing_entry_point() {
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let base = std::env::temp_dir().join(format!("ochroma_plugin_noentry_{}_{}",
-        std::process::id(), id));
+    let base = std::env::temp_dir().join(format!(
+        "ochroma_plugin_noentry_{}_{}",
+        std::process::id(),
+        id
+    ));
     let plugin_dir = base.join("broken_plugin");
     fs::create_dir_all(&plugin_dir).unwrap();
 

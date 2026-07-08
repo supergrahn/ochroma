@@ -90,7 +90,15 @@ impl AssetKind {
 
     /// All asset kinds, in stable display order (used to build filter chips).
     pub fn all() -> [AssetKind; 7] {
-        [Self::Vxm, Self::Spz, Self::Ply, Self::Gltf, Self::Usd, Self::Rhai, Self::Wgsl]
+        [
+            Self::Vxm,
+            Self::Spz,
+            Self::Ply,
+            Self::Gltf,
+            Self::Usd,
+            Self::Rhai,
+            Self::Wgsl,
+        ]
     }
 }
 
@@ -281,7 +289,11 @@ fn ply_meta(path: &Path) -> AssetMeta {
             format = Some(format!("{} {}", parts[1], parts[2]));
         }
     }
-    AssetMeta { splat_count: vertex_count, version: None, detail: format }
+    AssetMeta {
+        splat_count: vertex_count,
+        version: None,
+        detail: format,
+    }
 }
 
 /// Extract the glTF `asset.version` string. Handles both raw `.gltf` JSON and
@@ -308,8 +320,7 @@ fn gltf_meta(path: &Path) -> AssetMeta {
         if n < 20 {
             return AssetMeta::default();
         }
-        let chunk_len =
-            u64::from(u32::from_le_bytes([head[12], head[13], head[14], head[15]]));
+        let chunk_len = u64::from(u32::from_le_bytes([head[12], head[13], head[14], head[15]]));
         json_bytes = Vec::new();
         if file
             .take(chunk_len.min(MAX_JSON_PEEK))
@@ -372,7 +383,11 @@ fn usd_meta(path: &Path) -> AssetMeta {
         // Text .usda (or anything else): geometry arrays are unreadable.
         Some("USD text".to_string())
     };
-    AssetMeta { splat_count: None, version: None, detail }
+    AssetMeta {
+        splat_count: None,
+        version: None,
+        detail,
+    }
 }
 
 /// Dispatch metadata extraction by asset kind. Scripts/shaders have no header
@@ -494,8 +509,8 @@ impl ContentBrowser {
         self.fingerprint = fingerprint;
 
         // Re-resolve the selection against the new listing.
-        self.selected = prev_selected_path
-            .and_then(|p| self.entries.iter().position(|e| e.path == p));
+        self.selected =
+            prev_selected_path.and_then(|p| self.entries.iter().position(|e| e.path == p));
     }
 
     /// Cheap mtime-based dirty check: re-walks the tree computing only the
@@ -656,7 +671,9 @@ fn scan_dir(dir: &Path, out: &mut Vec<AssetEntry>, fingerprint: &mut u64) {
             scan_dir(&path, out, fingerprint);
             continue;
         }
-        let Some(kind) = AssetKind::from_path(&path) else { continue };
+        let Some(kind) = AssetKind::from_path(&path) else {
+            continue;
+        };
         let metadata = entry.metadata().ok();
         let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
         let modified = metadata.as_ref().and_then(|m| m.modified().ok());
@@ -666,7 +683,14 @@ fn scan_dir(dir: &Path, out: &mut Vec<AssetEntry>, fingerprint: &mut u64) {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let meta = extract_meta(kind, &path);
-        out.push(AssetEntry { path, name, kind, size_bytes, modified, meta });
+        out.push(AssetEntry {
+            path,
+            name,
+            kind,
+            size_bytes,
+            modified,
+            meta,
+        });
     }
 }
 
@@ -802,10 +826,16 @@ impl ContentBrowserPanel {
                 self.browser.set_search(q);
             }
             ui.separator();
-            if ui.selectable_label(self.view == ViewMode::List, "List").clicked() {
+            if ui
+                .selectable_label(self.view == ViewMode::List, "List")
+                .clicked()
+            {
                 self.view = ViewMode::List;
             }
-            if ui.selectable_label(self.view == ViewMode::Grid, "Grid").clicked() {
+            if ui
+                .selectable_label(self.view == ViewMode::Grid, "Grid")
+                .clicked()
+            {
                 self.view = ViewMode::Grid;
             }
             if ui.button("Refresh").clicked() {
@@ -889,7 +919,11 @@ mod tests {
         for i in 1..n {
             splats.push(splat_at([i as f32, i as f32 * 2.0, i as f32 * 3.0]));
         }
-        let file = VxmFileV3 { splats, material_ids: Vec::new(), spectral_level: 1 };
+        let file = VxmFileV3 {
+            splats,
+            material_ids: Vec::new(),
+            spectral_level: 1,
+        };
         let mut buf = Vec::new();
         file.write(&mut buf).expect("vxm write");
         fs::write(path, buf).expect("vxm to disk");
@@ -923,13 +957,27 @@ mod tests {
             "the .txt junk file must not be in the listing"
         );
 
-        let vxm = entries.iter().find(|e| e.name == "cube.vxm").expect("vxm entry");
+        let vxm = entries
+            .iter()
+            .find(|e| e.name == "cube.vxm")
+            .expect("vxm entry");
         assert_eq!(vxm.kind, AssetKind::Vxm);
-        assert_eq!(vxm.splat_count(), Some(7), "vxm header must report 7 splats");
+        assert_eq!(
+            vxm.splat_count(),
+            Some(7),
+            "vxm header must report 7 splats"
+        );
 
-        let spz = entries.iter().find(|e| e.name == "cloud.spz").expect("spz entry");
+        let spz = entries
+            .iter()
+            .find(|e| e.name == "cloud.spz")
+            .expect("spz entry");
         assert_eq!(spz.kind, AssetKind::Spz);
-        assert_eq!(spz.splat_count(), Some(4), "spz header must report 4 splats");
+        assert_eq!(
+            spz.splat_count(),
+            Some(4),
+            "spz header must report 4 splats"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -947,7 +995,11 @@ mod tests {
         browser.set_search("cub");
         let names: Vec<&str> = browser.visible().iter().map(|e| e.name.as_str()).collect();
 
-        assert_eq!(names.len(), 3, "all three names match 'cub' (cube/cubemap prefix, scuba subseq)");
+        assert_eq!(
+            names.len(),
+            3,
+            "all three names match 'cub' (cube/cubemap prefix, scuba subseq)"
+        );
         assert_eq!(names[0], "cube.vxm", "shortest prefix match ranks first");
         assert_eq!(names[1], "cubemap.spz", "longer prefix match ranks second");
         assert_eq!(names[2], "scuba.ply", "subsequence match ranks last");
@@ -962,11 +1014,18 @@ mod tests {
         write_vxm(&dir.join("cube.vxm"), 7, first);
 
         let mut browser = ContentBrowser::new(&dir);
-        assert!(browser.select_path(&dir.join("cube.vxm")), "selecting the vxm");
+        assert!(
+            browser.select_path(&dir.join("cube.vxm")),
+            "selecting the vxm"
+        );
 
         match browser.load_selected().expect("load should succeed") {
             LoadedAsset::Splats(splats) => {
-                assert_eq!(splats.len(), 7, "loaded splat count must equal written count");
+                assert_eq!(
+                    splats.len(),
+                    7,
+                    "loaded splat count must equal written count"
+                );
                 let p = splats[0].position();
                 // Native vxm splats round-trip position exactly (no quantization).
                 assert_eq!(p, first, "first splat position must round-trip exactly");
@@ -1003,7 +1062,11 @@ mod tests {
         write_vxm(&sub.join("deep.vxm"), 9, [4.0, 5.0, 6.0]);
 
         let browser = ContentBrowser::new(&dir);
-        assert_eq!(browser.entries().len(), 2, "scan must recurse into subfolders");
+        assert_eq!(
+            browser.entries().len(),
+            2,
+            "scan must recurse into subfolders"
+        );
         let deep = browser
             .entries()
             .iter()
@@ -1022,7 +1085,10 @@ mod tests {
         assert!(!browser.is_dirty(), "fresh scan is not dirty");
 
         write_vxm(&dir.join("b.vxm"), 2, [0.0, 0.0, 0.0]);
-        assert!(browser.is_dirty(), "adding a file must make the browser dirty");
+        assert!(
+            browser.is_dirty(),
+            "adding a file must make the browser dirty"
+        );
 
         browser.refresh();
         assert!(!browser.is_dirty(), "refresh re-syncs the fingerprint");
@@ -1038,9 +1104,17 @@ mod tests {
         fs::write(dir.join("scene.gltf"), json).unwrap();
 
         let browser = ContentBrowser::new(&dir);
-        let e = browser.entries().iter().find(|e| e.name == "scene.gltf").expect("gltf entry");
+        let e = browser
+            .entries()
+            .iter()
+            .find(|e| e.name == "scene.gltf")
+            .expect("gltf entry");
         assert_eq!(e.kind, AssetKind::Gltf);
-        assert_eq!(e.meta.version.as_deref(), Some("2.0"), "glTF asset version must be parsed");
+        assert_eq!(
+            e.meta.version.as_deref(),
+            Some("2.0"),
+            "glTF asset version must be parsed"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -1054,8 +1128,16 @@ mod tests {
         fs::write(dir.join("win.ply"), header.as_bytes()).unwrap();
 
         let browser = ContentBrowser::new(&dir);
-        let e = browser.entries().iter().find(|e| e.name == "win.ply").expect("ply entry");
-        assert_eq!(e.meta.splat_count, Some(42), "CRLF header must still parse the count");
+        let e = browser
+            .entries()
+            .iter()
+            .find(|e| e.name == "win.ply")
+            .expect("ply entry");
+        assert_eq!(
+            e.meta.splat_count,
+            Some(42),
+            "CRLF header must still parse the count"
+        );
         assert_eq!(
             e.meta.detail.as_deref(),
             Some("binary_little_endian 1.0"),
@@ -1077,7 +1159,11 @@ mod tests {
         fs::write(dir.join("big.gltf"), json.as_bytes()).unwrap();
 
         let browser = ContentBrowser::new(&dir);
-        let e = browser.entries().iter().find(|e| e.name == "big.gltf").expect("entry");
+        let e = browser
+            .entries()
+            .iter()
+            .find(|e| e.name == "big.gltf")
+            .expect("entry");
         assert_eq!(e.meta.version.as_deref(), Some("2.0"));
         fs::remove_dir_all(&dir).ok();
     }
@@ -1112,9 +1198,12 @@ mod tests {
     /// `vox_usd::import_usd` does — the editor arm is real wiring, not a stub.
     #[test]
     fn load_asset_usd_matches_direct_import() {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../vox_usd/tests/data/cube_lit.usdc");
-        assert!(fixture.exists(), "committed usdc fixture must exist: {fixture:?}");
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../vox_usd/tests/data/cube_lit.usdc");
+        assert!(
+            fixture.exists(),
+            "committed usdc fixture must exist: {fixture:?}"
+        );
 
         let direct = vox_usd::import_usd(&fixture).expect("direct import");
 
@@ -1125,7 +1214,11 @@ mod tests {
                     direct.splats.len(),
                     "browser splat count must equal direct import splat count",
                 );
-                assert_eq!(splats.len(), 600, "fixture sampler yields exactly 600 splats");
+                assert_eq!(
+                    splats.len(),
+                    600,
+                    "fixture sampler yields exactly 600 splats"
+                );
             }
             other => panic!("expected Splats, got {other:?}"),
         }

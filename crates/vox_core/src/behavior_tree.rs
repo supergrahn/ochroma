@@ -146,8 +146,7 @@ mod tests {
             action("attack"),
         ]));
         let mut ctx = BTContext::new();
-        ctx.action_results
-            .insert("walk".into(), BTStatus::Success);
+        ctx.action_results.insert("walk".into(), BTStatus::Success);
         ctx.action_results
             .insert("fail_action".into(), BTStatus::Failure);
         ctx.action_results
@@ -221,8 +220,7 @@ mod tests {
     fn action_reads_from_context() {
         let tree = BehaviorTree::new(action("shoot"));
         let mut ctx = BTContext::new();
-        ctx.action_results
-            .insert("shoot".into(), BTStatus::Running);
+        ctx.action_results.insert("shoot".into(), BTStatus::Running);
         assert_eq!(tree.tick(&ctx), BTStatus::Running);
     }
 
@@ -237,8 +235,7 @@ mod tests {
         // Case 1: has ammo => shoot succeeds
         let mut ctx = BTContext::new();
         ctx.condition_results.insert("has_ammo".into(), true);
-        ctx.action_results
-            .insert("shoot".into(), BTStatus::Success);
+        ctx.action_results.insert("shoot".into(), BTStatus::Success);
         ctx.action_results
             .insert("reload".into(), BTStatus::Success);
         assert_eq!(tree.tick(&ctx), BTStatus::Success);

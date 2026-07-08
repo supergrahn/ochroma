@@ -30,8 +30,8 @@ use std::cell::Cell;
 use hashbrown::{HashMap, HashSet};
 
 use crate::node_graph::{
-    NodeDescriptor, NodeError, NodeId, NodeInputs, NodeOutputs, OchromaNode,
-    OchromaNodeGraph, ParamValue, PortData, PortSpec, PortType,
+    NodeDescriptor, NodeError, NodeId, NodeInputs, NodeOutputs, OchromaNode, OchromaNodeGraph,
+    ParamValue, PortData, PortSpec, PortType,
 };
 
 /// Maximum subgraph nesting depth before [`SubgraphNode::cook`] errors with a typed
@@ -165,9 +165,19 @@ impl SubgraphNode {
     pub fn new(def: SubgraphDef) -> Self {
         let type_name = def.static_type_name();
         let input_names = def.inputs.iter().map(|e| leak_str(&e.outer_name)).collect();
-        let output_names = def.outputs.iter().map(|e| leak_str(&e.outer_name)).collect();
+        let output_names = def
+            .outputs
+            .iter()
+            .map(|e| leak_str(&e.outer_name))
+            .collect();
         let inner_port_names = def.inputs.iter().map(|e| leak_str(&e.inner_port)).collect();
-        SubgraphNode { def, type_name, input_names, output_names, inner_port_names }
+        SubgraphNode {
+            def,
+            type_name,
+            input_names,
+            output_names,
+            inner_port_names,
+        }
     }
 
     /// The inner def (read-only). Used by [`expand_subgraph`] to re-inline.
@@ -265,10 +275,11 @@ impl OchromaNode for SubgraphNode {
         // supplied PortData on the inner port the input is bound to, then wire it
         // onto that inner port. This feeds outer inputs into the inner DAG without
         // mutating the bound node's logic.
-        for (exposed, &inner_port_name) in self.def.inputs.iter().zip(self.inner_port_names.iter()) {
-            let data = inputs.get(&exposed.outer_name).ok_or_else(|| {
-                NodeError::MissingInput(exposed.outer_name.clone())
-            })?;
+        for (exposed, &inner_port_name) in self.def.inputs.iter().zip(self.inner_port_names.iter())
+        {
+            let data = inputs
+                .get(&exposed.outer_name)
+                .ok_or_else(|| NodeError::MissingInput(exposed.outer_name.clone()))?;
             if data.port_type() != exposed.port_type {
                 return Err(NodeError::TypeMismatch(exposed.outer_name.clone()));
             }
@@ -278,7 +289,12 @@ impl OchromaNode for SubgraphNode {
                 Box::new(ConstSource::new(inner_port_name, data.clone())),
             );
             inner
-                .connect(src, &exposed.inner_port, exposed.inner_node, &exposed.inner_port)
+                .connect(
+                    src,
+                    &exposed.inner_port,
+                    exposed.inner_node,
+                    &exposed.inner_port,
+                )
                 .map_err(|e| NodeError::CookFailed(e.to_string()))?;
         }
 
@@ -477,11 +493,8 @@ pub fn collapse_to_subgraph(
     // reachable forward from every outgoing target, and check whether it contains
     // any incoming source. (Internal nodes collapse into X, so paths through them
     // are exactly the X self-loop we are testing for.)
-    let external_reachable = external_forward_closure(
-        graph,
-        &sel,
-        outgoing.iter().map(|(_, _, to, _)| *to),
-    );
+    let external_reachable =
+        external_forward_closure(graph, &sel, outgoing.iter().map(|(_, _, to, _)| *to));
     for (src, _, _, _) in &incoming {
         if external_reachable.contains(src) {
             return Err(SubgraphError::WouldCycle { external: *src });
@@ -630,10 +643,7 @@ pub fn expand_subgraph(
     inner_ids.sort_unstable();
     for inner_id in &inner_ids {
         let label = def.inner.node_name(*inner_id).unwrap_or("node").to_string();
-        let node = def
-            .inner
-            .clone_node(*inner_id)
-            .expect("inner node exists");
+        let node = def.inner.clone_node(*inner_id).expect("inner node exists");
         let new_id = graph.add_node(&label, node);
         inner_to_outer.insert(*inner_id, new_id);
         new_ids.push(new_id);
@@ -746,7 +756,13 @@ mod tests {
                 ..Default::default()
             }),
         );
-        let biome = g.add_node("biome", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        let biome = g.add_node(
+            "biome",
+            Box::new(BiomeNode {
+                world_height: 400.0,
+                moisture: 0.5,
+            }),
+        );
         let weight = g.add_node("weight", Box::new(SplatWeightNode));
         g.connect(terrain, "terrain", biome, "terrain").unwrap();
         g.connect(biome, "biome_map", weight, "biome_map").unwrap();
@@ -770,7 +786,11 @@ mod tests {
 
         let before = sink_weights(&mut g, weight);
         // 32*32 = 1024 cells, each a [f32;4] weight tuple.
-        assert_eq!(before.len(), 1024, "sink carries one weight per terrain cell");
+        assert_eq!(
+            before.len(),
+            1024,
+            "sink carries one weight per terrain cell"
+        );
 
         // Collapse just the middle Biome node into a subgraph.
         let collapsed = collapse_to_subgraph(&mut g, &[biome], "BiomeFn").unwrap();
@@ -784,7 +804,11 @@ mod tests {
         assert_eq!(def.outputs[0].port_type, PortType::BiomeMap);
 
         let after_collapse = sink_weights(&mut g, weight);
-        assert_eq!(after_collapse.len(), before.len(), "same length after collapse");
+        assert_eq!(
+            after_collapse.len(),
+            before.len(),
+            "same length after collapse"
+        );
         assert_eq!(
             bytes_of(&after_collapse),
             bytes_of(&before),
@@ -813,15 +837,27 @@ mod tests {
         // Terrain has no inputs; Biome's only input came from Terrain (internal) ->
         // zero exposed inputs. One exposed output: Biome's biome_map.
         let def = g.subgraph_def(collapsed.node_id).expect("is a subgraph");
-        assert_eq!(def.inputs.len(), 0, "no boundary inputs (terrain is a source)");
+        assert_eq!(
+            def.inputs.len(),
+            0,
+            "no boundary inputs (terrain is a source)"
+        );
         assert_eq!(def.outputs.len(), 1, "one boundary output: biome_map");
         assert_eq!(def.inner.node_count(), 2, "two inner nodes captured");
-        assert_eq!(def.inner.edge_count(), 1, "internal terrain->biome edge captured");
+        assert_eq!(
+            def.inner.edge_count(),
+            1,
+            "internal terrain->biome edge captured"
+        );
 
         // weight + the subgraph node = 2 nodes.
         assert_eq!(g.node_count(), 2);
         let after = sink_weights(&mut g, weight);
-        assert_eq!(bytes_of(&after), bytes_of(&before), "multi-node collapse preserves sink");
+        assert_eq!(
+            bytes_of(&after),
+            bytes_of(&before),
+            "multi-node collapse preserves sink"
+        );
     }
 
     /// Re-entrant selection rejected: A->B->C with A,C selected but B outside must
@@ -838,14 +874,29 @@ mod tests {
         // Select terrain (A) and weight (C), leaving biome (B) outside. A -> B -> C,
         // so collapsing {A,C} into X would form X -> B -> X: a cycle.
         let err = collapse_to_subgraph(&mut g, &[terrain, weight], "Bad").unwrap_err();
-        assert!(matches!(err, SubgraphError::WouldCycle { .. }), "got {err:?}");
+        assert!(
+            matches!(err, SubgraphError::WouldCycle { .. }),
+            "got {err:?}"
+        );
 
         // Graph fully unchanged: same node/edge counts and same sink output.
-        assert_eq!(g.node_count(), nodes_before, "node count unchanged after rejection");
-        assert_eq!(g.edge_count(), edges_before, "edge count unchanged after rejection");
+        assert_eq!(
+            g.node_count(),
+            nodes_before,
+            "node count unchanged after rejection"
+        );
+        assert_eq!(
+            g.edge_count(),
+            edges_before,
+            "edge count unchanged after rejection"
+        );
         let _ = biome; // (kept outside; nothing collapsed)
         let sink_after = sink_weights(&mut g, weight);
-        assert_eq!(bytes_of(&sink_after), bytes_of(&sink_before), "sink unchanged after rejection");
+        assert_eq!(
+            bytes_of(&sink_after),
+            bytes_of(&sink_before),
+            "sink unchanged after rejection"
+        );
     }
 
     /// Nested: a subgraph whose inner graph contains another SubgraphNode cooks and
@@ -866,10 +917,17 @@ mod tests {
             .inner
             .node_ids()
             .any(|id| outer_def.inner.subgraph_def(id).is_some());
-        assert!(inner_has_subgraph, "outer subgraph must nest an inner SubgraphNode");
+        assert!(
+            inner_has_subgraph,
+            "outer subgraph must nest an inner SubgraphNode"
+        );
 
         let nested = sink_weights(&mut g, weight);
-        assert_eq!(bytes_of(&nested), bytes_of(&inline), "nested subgraph cooks identically");
+        assert_eq!(
+            bytes_of(&nested),
+            bytes_of(&inline),
+            "nested subgraph cooks identically"
+        );
     }
 
     /// Depth-33 nesting errors with a typed CookFailed instead of overflowing.
@@ -921,8 +979,10 @@ mod tests {
         let err = node.cook(NodeInputs::new()).unwrap_err();
         match err {
             NodeError::CookFailed(msg) => {
-                assert!(msg.contains("MAX_SUBGRAPH_DEPTH") || msg.contains("nesting"),
-                    "depth overflow should be a typed cook error, got: {msg}");
+                assert!(
+                    msg.contains("MAX_SUBGRAPH_DEPTH") || msg.contains("nesting"),
+                    "depth overflow should be a typed cook error, got: {msg}"
+                );
             }
             other => panic!("expected typed CookFailed, got {other:?}"),
         }
@@ -949,7 +1009,13 @@ mod tests {
             let mut terrain_g = OchromaNodeGraph::new();
             let t = terrain_g.add_node(
                 "t",
-                Box::new(TerrainNode { resolution: 16, amplitude: 250.0, droplet_count: 0, seed: 3, ..Default::default() }),
+                Box::new(TerrainNode {
+                    resolution: 16,
+                    amplitude: 250.0,
+                    droplet_count: 0,
+                    seed: 3,
+                    ..Default::default()
+                }),
             );
             let tr = terrain_g.evaluate().unwrap();
             let terrain_data = tr.get(t, "terrain").unwrap().clone();
@@ -966,7 +1032,10 @@ mod tests {
         // Searchable like a built-in.
         let search_hits = reg.search("Biome");
         let hits: Vec<&str> = search_hits.iter().map(|h| h.name()).collect();
-        assert!(hits.contains(&"BiomeFn"), "registered subgraph must be searchable, got {hits:?}");
+        assert!(
+            hits.contains(&"BiomeFn"),
+            "registered subgraph must be searchable, got {hits:?}"
+        );
 
         let instance = reg.create("BiomeFn").expect("creatable by name");
 
@@ -975,7 +1044,13 @@ mod tests {
             let mut terrain_g = OchromaNodeGraph::new();
             let t = terrain_g.add_node(
                 "t",
-                Box::new(TerrainNode { resolution: 16, amplitude: 250.0, droplet_count: 0, seed: 3, ..Default::default() }),
+                Box::new(TerrainNode {
+                    resolution: 16,
+                    amplitude: 250.0,
+                    droplet_count: 0,
+                    seed: 3,
+                    ..Default::default()
+                }),
             );
             let tr = terrain_g.evaluate().unwrap();
             let terrain_data = tr.get(t, "terrain").unwrap().clone();
@@ -987,7 +1062,10 @@ mod tests {
         let out_port = &def.outputs[0].outer_name;
         let r = reference[out_port].as_biome_map().unwrap();
         let p = produced[out_port].as_biome_map().unwrap();
-        assert_eq!(p, r, "registry-created subgraph instance cooks identically to the def");
+        assert_eq!(
+            p, r,
+            "registry-created subgraph instance cooks identically to the def"
+        );
         assert_eq!(p.len(), 16 * 16, "biome map sized by the fed terrain");
     }
 
@@ -1005,7 +1083,12 @@ mod tests {
 
         // Establish baselines via a full cook.
         g.cook().unwrap();
-        let sink_before = g.get_output(weight, "splat_weights").unwrap().as_splat_weights().unwrap().clone();
+        let sink_before = g
+            .get_output(weight, "splat_weights")
+            .unwrap()
+            .as_splat_weights()
+            .unwrap()
+            .clone();
         let cc_weight_before = g.cook_count(weight).unwrap();
         let cc_sub_before = g.cook_count(sub_id).unwrap();
 
@@ -1013,7 +1096,8 @@ mod tests {
         // the live throttled path. "terrain" is the inner node's label.
         let t0 = std::time::Instant::now();
         g.set_recook_budget(std::time::Duration::from_millis(100));
-        g.request_recook(sub_id, "terrain.amplitude", ParamValue::Float(1200.0)).unwrap();
+        g.request_recook(sub_id, "terrain.amplitude", ParamValue::Float(1200.0))
+            .unwrap();
 
         let report = g
             .live_cook(t0 + std::time::Duration::from_millis(200))
@@ -1022,12 +1106,24 @@ mod tests {
         assert_eq!(report.root, sub_id);
 
         // Subgraph + downstream weight recooked exactly once each.
-        assert_eq!(g.cook_count(sub_id).unwrap(), cc_sub_before + 1, "subgraph recooked");
-        assert_eq!(g.cook_count(weight).unwrap(), cc_weight_before + 1, "downstream sink recooked");
+        assert_eq!(
+            g.cook_count(sub_id).unwrap(),
+            cc_sub_before + 1,
+            "subgraph recooked"
+        );
+        assert_eq!(
+            g.cook_count(weight).unwrap(),
+            cc_weight_before + 1,
+            "downstream sink recooked"
+        );
 
         // The sink output genuinely changed (raising amplitude reclassifies biomes,
         // changing splat weights).
-        let sink_after = g.get_output(weight, "splat_weights").unwrap().as_splat_weights().unwrap();
+        let sink_after = g
+            .get_output(weight, "splat_weights")
+            .unwrap()
+            .as_splat_weights()
+            .unwrap();
         assert_ne!(
             bytes_of(sink_after),
             bytes_of(&sink_before),
@@ -1052,7 +1148,13 @@ mod tests {
         let mut terrain_g = OchromaNodeGraph::new();
         let t = terrain_g.add_node(
             "t",
-            Box::new(TerrainNode { resolution: 16, amplitude: 250.0, droplet_count: 0, seed: 3, ..Default::default() }),
+            Box::new(TerrainNode {
+                resolution: 16,
+                amplitude: 250.0,
+                droplet_count: 0,
+                seed: 3,
+                ..Default::default()
+            }),
         );
         let tr = terrain_g.evaluate().unwrap();
         let terrain_data = tr.get(t, "terrain").unwrap().clone();
@@ -1071,7 +1173,8 @@ mod tests {
 
         let after = load();
         assert_eq!(
-            after, before,
+            after,
+            before,
             "descriptor()/cook() leaked {} new &'static strs over 50 iterations — must be 0",
             after - before
         );
@@ -1082,15 +1185,42 @@ mod tests {
     #[test]
     fn collapse_rejects_duplicate_labels_graph_unchanged() {
         let mut g = OchromaNodeGraph::new();
-        let a = g.add_node("dup", Box::new(TerrainNode { resolution: 16, droplet_count: 0, seed: 1, ..Default::default() }));
-        let b = g.add_node("dup", Box::new(TerrainNode { resolution: 16, droplet_count: 0, seed: 2, ..Default::default() }));
+        let a = g.add_node(
+            "dup",
+            Box::new(TerrainNode {
+                resolution: 16,
+                droplet_count: 0,
+                seed: 1,
+                ..Default::default()
+            }),
+        );
+        let b = g.add_node(
+            "dup",
+            Box::new(TerrainNode {
+                resolution: 16,
+                droplet_count: 0,
+                seed: 2,
+                ..Default::default()
+            }),
+        );
         let nodes_before = g.node_count();
         let edges_before = g.edge_count();
 
         let err = collapse_to_subgraph(&mut g, &[a, b], "Bad").unwrap_err();
-        assert!(matches!(err, SubgraphError::DuplicateLabel { ref label } if label == "dup"), "got {err:?}");
-        assert_eq!(g.node_count(), nodes_before, "node count unchanged on rejection");
-        assert_eq!(g.edge_count(), edges_before, "edge count unchanged on rejection");
+        assert!(
+            matches!(err, SubgraphError::DuplicateLabel { ref label } if label == "dup"),
+            "got {err:?}"
+        );
+        assert_eq!(
+            g.node_count(),
+            nodes_before,
+            "node count unchanged on rejection"
+        );
+        assert_eq!(
+            g.edge_count(),
+            edges_before,
+            "edge count unchanged on rejection"
+        );
     }
 
     /// collapse_to_subgraph REJECTS a selection containing a dotted label (typed
@@ -1098,12 +1228,27 @@ mod tests {
     #[test]
     fn collapse_rejects_dotted_label_graph_unchanged() {
         let mut g = OchromaNodeGraph::new();
-        let a = g.add_node("my.node", Box::new(TerrainNode { resolution: 16, droplet_count: 0, seed: 1, ..Default::default() }));
+        let a = g.add_node(
+            "my.node",
+            Box::new(TerrainNode {
+                resolution: 16,
+                droplet_count: 0,
+                seed: 1,
+                ..Default::default()
+            }),
+        );
         let nodes_before = g.node_count();
 
         let err = collapse_to_subgraph(&mut g, &[a], "Bad").unwrap_err();
-        assert!(matches!(err, SubgraphError::DottedLabel { ref label, .. } if label == "my.node"), "got {err:?}");
-        assert_eq!(g.node_count(), nodes_before, "node count unchanged on rejection");
+        assert!(
+            matches!(err, SubgraphError::DottedLabel { ref label, .. } if label == "my.node"),
+            "got {err:?}"
+        );
+        assert_eq!(
+            g.node_count(),
+            nodes_before,
+            "node count unchanged on rejection"
+        );
     }
 
     /// set_param errors (does not silently mutate one) when the inner label is
@@ -1111,11 +1256,34 @@ mod tests {
     #[test]
     fn set_param_errors_on_ambiguous_inner_label() {
         let mut inner = OchromaNodeGraph::new();
-        inner.add_node("amp", Box::new(TerrainNode { resolution: 16, droplet_count: 0, seed: 1, ..Default::default() }));
-        inner.add_node("amp", Box::new(TerrainNode { resolution: 16, droplet_count: 0, seed: 2, ..Default::default() }));
-        let def = SubgraphDef { name: "Ambig".into(), inner, inputs: vec![], outputs: vec![] };
+        inner.add_node(
+            "amp",
+            Box::new(TerrainNode {
+                resolution: 16,
+                droplet_count: 0,
+                seed: 1,
+                ..Default::default()
+            }),
+        );
+        inner.add_node(
+            "amp",
+            Box::new(TerrainNode {
+                resolution: 16,
+                droplet_count: 0,
+                seed: 2,
+                ..Default::default()
+            }),
+        );
+        let def = SubgraphDef {
+            name: "Ambig".into(),
+            inner,
+            inputs: vec![],
+            outputs: vec![],
+        };
         let mut node = SubgraphNode::new(def);
-        let err = node.set_param("amp.amplitude", ParamValue::Float(500.0)).unwrap_err();
+        let err = node
+            .set_param("amp.amplitude", ParamValue::Float(500.0))
+            .unwrap_err();
         match err {
             NodeError::CookFailed(msg) => assert!(
                 msg.contains("ambiguous"),
@@ -1129,7 +1297,10 @@ mod tests {
     #[test]
     fn invalid_selections_error_typed() {
         let (mut g, _t, _b, _w) = build_pipeline();
-        assert!(matches!(collapse_to_subgraph(&mut g, &[], "x"), Err(SubgraphError::EmptySelection)));
+        assert!(matches!(
+            collapse_to_subgraph(&mut g, &[], "x"),
+            Err(SubgraphError::EmptySelection)
+        ));
         assert!(matches!(
             collapse_to_subgraph(&mut g, &[NodeId(9999)], "x"),
             Err(SubgraphError::NodeNotFound(_))
@@ -1148,4 +1319,3 @@ mod tests {
         out
     }
 }
-

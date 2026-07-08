@@ -497,8 +497,7 @@ impl EngineLoop {
     /// [`vox_render::spectral_gi::sun_zenith_for_hour`] so it can never drift from
     /// the GPU path's `sky_ambient_for_hour`.
     fn step_gi_cpu(&mut self, splats: &[GaussianSplat], hour: f32) -> Vec<GaussianSplat> {
-        self.spectral_atmosphere.sun_zenith =
-            vox_render::spectral_gi::sun_zenith_for_hour(hour);
+        self.spectral_atmosphere.sun_zenith = vox_render::spectral_gi::sun_zenith_for_hour(hour);
         self.spectral_atmosphere.sun_elevation = self.spectral_atmosphere.sun_zenith;
         self.spectral_gi.set_sky(&self.spectral_atmosphere);
         // The emitter bound is the SHARED constant the GPU pass also uses —
@@ -521,8 +520,7 @@ impl EngineLoop {
         let sun_dir = self.sun.sun_direction(hour, 172);
         self.shadow_mapper.update(cam_pos, cam_fwd, sun_dir);
 
-        let shadow_positions: Vec<Vec3> =
-            splats.iter().map(|s| Vec3::from(s.position())).collect();
+        let shadow_positions: Vec<Vec3> = splats.iter().map(|s| Vec3::from(s.position())).collect();
         let shadow_radii: Vec<f32> = splats
             .iter()
             .map(|s| (s.scale_u().abs() + s.scale_v().abs() + s.scale_w().abs()) / 3.0)
@@ -549,7 +547,9 @@ mod tests {
     #[test]
     fn step_physics_drops_body_under_gravity_matching_reference() {
         let mut lp = test_loop();
-        let (body, _) = lp.physics.add_dynamic_box([0.0, 10.0, 0.0], [0.5, 0.5, 0.5], 1.0);
+        let (body, _) = lp
+            .physics
+            .add_dynamic_box([0.0, 10.0, 0.0], [0.5, 0.5, 0.5], 1.0);
 
         for _ in 0..60 {
             lp.step_physics(1.0 / 60.0);
@@ -562,8 +562,7 @@ mod tests {
             p.add_static_collider([0.0, -0.5, 0.0], [500.0, 0.5, 500.0]);
             p
         };
-        let (ref_body, _) =
-            reference.add_dynamic_box([0.0, 10.0, 0.0], [0.5, 0.5, 0.5], 1.0);
+        let (ref_body, _) = reference.add_dynamic_box([0.0, 10.0, 0.0], [0.5, 0.5, 0.5], 1.0);
         for _ in 0..60 {
             reference.step();
         }
@@ -659,7 +658,10 @@ mod tests {
             .world
             .resource::<FixedStepCounter>()
             .steps_this_frame;
-        assert_eq!(steps, 1, "last tick of 0.02s must run exactly one fixed step");
+        assert_eq!(
+            steps, 1,
+            "last tick of 0.02s must run exactly one fixed step"
+        );
 
         let instances = lp
             .runtime

@@ -113,16 +113,15 @@ impl SimulationRecorder {
 
     /// Save the recording to a file (JSON).
     pub fn save_recording(&self, path: &Path) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(&self.records)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(&self.records).map_err(std::io::Error::other)?;
         std::fs::write(path, json)
     }
 
     /// Load a recording from a file (JSON).
     pub fn load_recording(path: &Path) -> std::io::Result<Self> {
         let data = std::fs::read_to_string(path)?;
-        let records: BTreeMap<u64, InputRecord> = serde_json::from_str(&data)
-            .map_err(std::io::Error::other)?;
+        let records: BTreeMap<u64, InputRecord> =
+            serde_json::from_str(&data).map_err(std::io::Error::other)?;
         Ok(Self { records })
     }
 }

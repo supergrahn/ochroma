@@ -196,6 +196,9 @@ mod tests {
         });
         assert_eq!(bt.blackboard_keys.len(), 2);
         assert_eq!(bt.blackboard_keys[0].name, "target_entity");
-        assert!(matches!(bt.blackboard_keys[1].key_type, BlackboardType::Float));
+        assert!(matches!(
+            bt.blackboard_keys[1].key_type,
+            BlackboardType::Float
+        ));
     }
 }

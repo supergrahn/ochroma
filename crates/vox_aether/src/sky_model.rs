@@ -368,11 +368,7 @@ pub fn backdrop(view: Mat4, proj: Mat4, sky: Sky, width: u32, height: u32) -> Ve
 /// (non-background) it is kept but **tinted and dimmed by the light** (so the
 /// city is darker and cooler at night, warmer at golden hour); elsewhere the
 /// backdrop (sky/ground) shows. Returns the final RGBA and the geometry coverage.
-pub fn composite_lit(
-    geometry: &[[u8; 4]],
-    backdrop: &[[u8; 4]],
-    sky: Sky,
-) -> (Vec<[u8; 4]>, f32) {
+pub fn composite_lit(geometry: &[[u8; 4]], backdrop: &[[u8; 4]], sky: Sky) -> (Vec<[u8; 4]>, f32) {
     let light = sky.light();
     // Ambient floor so night geometry is dim, not black.
     let lit = 0.28 + 0.72 * light.intensity;
@@ -395,4 +391,3 @@ pub fn composite_lit(
     let coverage = covered as f32 / geometry.len().max(1) as f32;
     (out, coverage)
 }
-

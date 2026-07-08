@@ -27,8 +27,8 @@ use std::path::Path;
 use glam::{Mat4, Vec2, Vec3};
 use half::f16;
 use vox_core::types::GaussianSplat;
-use vox_data::vxm::{MaterialType, VxmFile, VxmHeader};
 use vox_data::SpectralUpsampler;
+use vox_data::vxm::{MaterialType, VxmFile, VxmHeader};
 
 /// Conversion configuration.
 #[derive(Debug, Clone, Copy)]
@@ -243,9 +243,7 @@ fn sample_primitive(
         .map(|iter| iter.map(Vec3::from).collect());
 
     // Optional per-vertex colors (RGBA, normalized to f32).
-    let vcolors: Option<Vec<[f32; 4]>> = reader
-        .read_colors(0)
-        .map(|c| c.into_rgba_f32().collect());
+    let vcolors: Option<Vec<[f32; 4]>> = reader.read_colors(0).map(|c| c.into_rgba_f32().collect());
 
     // Material base-color factor (linear RGBA).
     let base_color = primitive
@@ -306,7 +304,11 @@ fn sample_primitive(
             tangent_u
         } else {
             // fallback: any vector perpendicular to the normal
-            let helper = if normal.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+            let helper = if normal.x.abs() < 0.9 {
+                Vec3::X
+            } else {
+                Vec3::Y
+            };
             normal.cross(helper).normalize()
         };
         let tangent_v = normal.cross(tangent_u).normalize();
@@ -374,11 +376,7 @@ pub fn gltf2splat(
     let result = convert_file(input, config)?;
     let count = result.splats.len();
 
-    let header = VxmHeader::new(
-        uuid::Uuid::new_v4(),
-        count as u32,
-        MaterialType::Generic,
-    );
+    let header = VxmHeader::new(uuid::Uuid::new_v4(), count as u32, MaterialType::Generic);
     let vxm = VxmFile {
         header,
         splats: result.splats,
@@ -409,19 +407,67 @@ pub fn gltf2splat(
 pub fn unit_cube_glb(base_color: [f32; 4]) -> Vec<u8> {
     // 6 faces, each: normal + 4 corner positions (CCW) + 2 triangles.
     // Corners ordered so the face winds CCW when viewed from outside.
-    let faces: [( [f32; 3], [[f32; 3]; 4]); 6] = [
+    let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
         // +X
-        ([1.0, 0.0, 0.0], [[0.5,-0.5,-0.5],[0.5,0.5,-0.5],[0.5,0.5,0.5],[0.5,-0.5,0.5]]),
+        (
+            [1.0, 0.0, 0.0],
+            [
+                [0.5, -0.5, -0.5],
+                [0.5, 0.5, -0.5],
+                [0.5, 0.5, 0.5],
+                [0.5, -0.5, 0.5],
+            ],
+        ),
         // -X
-        ([-1.0, 0.0, 0.0], [[-0.5,-0.5,0.5],[-0.5,0.5,0.5],[-0.5,0.5,-0.5],[-0.5,-0.5,-0.5]]),
+        (
+            [-1.0, 0.0, 0.0],
+            [
+                [-0.5, -0.5, 0.5],
+                [-0.5, 0.5, 0.5],
+                [-0.5, 0.5, -0.5],
+                [-0.5, -0.5, -0.5],
+            ],
+        ),
         // +Y
-        ([0.0, 1.0, 0.0], [[-0.5,0.5,-0.5],[-0.5,0.5,0.5],[0.5,0.5,0.5],[0.5,0.5,-0.5]]),
+        (
+            [0.0, 1.0, 0.0],
+            [
+                [-0.5, 0.5, -0.5],
+                [-0.5, 0.5, 0.5],
+                [0.5, 0.5, 0.5],
+                [0.5, 0.5, -0.5],
+            ],
+        ),
         // -Y
-        ([0.0,-1.0, 0.0], [[-0.5,-0.5,0.5],[-0.5,-0.5,-0.5],[0.5,-0.5,-0.5],[0.5,-0.5,0.5]]),
+        (
+            [0.0, -1.0, 0.0],
+            [
+                [-0.5, -0.5, 0.5],
+                [-0.5, -0.5, -0.5],
+                [0.5, -0.5, -0.5],
+                [0.5, -0.5, 0.5],
+            ],
+        ),
         // +Z
-        ([0.0, 0.0, 1.0], [[-0.5,-0.5,0.5],[0.5,-0.5,0.5],[0.5,0.5,0.5],[-0.5,0.5,0.5]]),
+        (
+            [0.0, 0.0, 1.0],
+            [
+                [-0.5, -0.5, 0.5],
+                [0.5, -0.5, 0.5],
+                [0.5, 0.5, 0.5],
+                [-0.5, 0.5, 0.5],
+            ],
+        ),
         // -Z
-        ([0.0, 0.0,-1.0], [[0.5,-0.5,-0.5],[-0.5,-0.5,-0.5],[-0.5,0.5,-0.5],[0.5,0.5,-0.5]]),
+        (
+            [0.0, 0.0, -1.0],
+            [
+                [0.5, -0.5, -0.5],
+                [-0.5, -0.5, -0.5],
+                [-0.5, 0.5, -0.5],
+                [0.5, 0.5, -0.5],
+            ],
+        ),
     ];
 
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(24);
@@ -478,12 +524,24 @@ pub fn unit_cube_glb(base_color: [f32; 4]) -> Vec<u8> {
     // ---- JSON chunk.
     let json = format!(
         r#"{{"asset":{{"version":"2.0","generator":"vox_tools::gltf2splat"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1}},"indices":2,"material":0,"mode":4}}]}}],"materials":[{{"pbrMetallicRoughness":{{"baseColorFactor":[{},{},{},{}]}}}}],"buffers":[{{"byteLength":{}}}],"bufferViews":[{{"buffer":0,"byteOffset":{},"byteLength":{},"target":34962}},{{"buffer":0,"byteOffset":{},"byteLength":{},"target":34962}},{{"buffer":0,"byteOffset":{},"byteLength":{},"target":34963}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{},"type":"VEC3","min":[{},{},{}],"max":[{},{},{}]}},{{"bufferView":1,"componentType":5126,"count":{},"type":"VEC3"}},{{"bufferView":2,"componentType":5123,"count":{},"type":"SCALAR"}}]}}"#,
-        base_color[0], base_color[1], base_color[2], base_color[3],
+        base_color[0],
+        base_color[1],
+        base_color[2],
+        base_color[3],
         bin.len(),
-        pos_offset, pos_len,
-        nrm_offset, nrm_len,
-        idx_offset, idx_len,
-        positions.len(), pmin[0], pmin[1], pmin[2], pmax[0], pmax[1], pmax[2],
+        pos_offset,
+        pos_len,
+        nrm_offset,
+        nrm_len,
+        idx_offset,
+        idx_len,
+        positions.len(),
+        pmin[0],
+        pmin[1],
+        pmin[2],
+        pmax[0],
+        pmax[1],
+        pmax[2],
         normals.len(),
         indices.len(),
     );
@@ -541,11 +599,9 @@ mod tests {
         assert_eq!(&glb[0..4], b"glTF");
 
         // Parse from the in-memory GLB and convert.
-        let (doc, buffers, _images) =
-            gltf::import_slice(&glb).expect("cube GLB should parse");
+        let (doc, buffers, _images) = gltf::import_slice(&glb).expect("cube GLB should parse");
         let config = Gltf2SplatConfig::default();
-        let result =
-            convert_document(&doc, &buffers, config).expect("conversion should succeed");
+        let result = convert_document(&doc, &buffers, config).expect("conversion should succeed");
 
         // --- splat_count > 0, and "hundreds" for a unit cube at default density.
         let count = result.splats.len();
@@ -650,8 +706,7 @@ mod tests {
     #[ignore = "asset generator: run explicitly to (re)write assets/cube.glb"]
     fn generate_asset_cube_glb() {
         // workspace-relative: CARGO_MANIFEST_DIR is crates/vox_tools
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/cube.glb");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/cube.glb");
         write_unit_cube_glb(&path, [0.8, 0.1, 0.1, 1.0]).unwrap();
         // verify it parses
         let (doc, _b, _i) = gltf::import(&path).expect("written asset must parse");

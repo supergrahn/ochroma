@@ -95,7 +95,8 @@ pub fn spectral_to_audio_params(spectral: &[f32; 16], kind: AvEventKind) -> Audi
 
     // Blue energy = mean of bands 0-4; red/IR energy = mean of bands 11-15.
     let blue_energy = (spectral[0] + spectral[1] + spectral[2] + spectral[3] + spectral[4]) / 5.0;
-    let red_energy = (spectral[11] + spectral[12] + spectral[13] + spectral[14] + spectral[15]) / 5.0;
+    let red_energy =
+        (spectral[11] + spectral[12] + spectral[13] + spectral[14] + spectral[15]) / 5.0;
 
     // Intensity-independent defaults; intensity is passed via AvEvent and set as volume.
     let volume = 1.0_f32.min(0.0_f32.max(1.0)); // clamped placeholder; caller sets per-event.
@@ -114,7 +115,11 @@ pub fn spectral_to_audio_params(spectral: &[f32; 16], kind: AvEventKind) -> Audi
         _ => {}
     }
 
-    AudioParams { duration_secs, volume, pitch_shift }
+    AudioParams {
+        duration_secs,
+        volume,
+        pitch_shift,
+    }
 }
 
 /// Synthesize PCM audio for a visual event.
@@ -242,6 +247,9 @@ mod tests {
     fn synthesize_av_event_returns_samples() {
         let event = make_event(0, AvEventKind::Impact, [0.5; 16]);
         let samples = synthesize_av_event(&event);
-        assert!(!samples.is_empty(), "synthesize_av_event should return non-empty PCM samples");
+        assert!(
+            !samples.is_empty(),
+            "synthesize_av_event should return non-empty PCM samples"
+        );
     }
 }

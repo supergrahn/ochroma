@@ -176,7 +176,10 @@ mod tests {
         let grid = EditorGrid::default();
         let lines = grid.generate_lines();
         // Line at i=0 should be major (0 % 10 == 0)
-        let origin_line = lines.iter().find(|(a, _, _)| a.x == 0.0 && a.z < 0.0).unwrap();
+        let origin_line = lines
+            .iter()
+            .find(|(a, _, _)| a.x == 0.0 && a.z < 0.0)
+            .unwrap();
         assert_eq!(origin_line.2, grid.major_color);
     }
 

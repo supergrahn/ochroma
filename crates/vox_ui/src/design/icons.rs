@@ -85,7 +85,11 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        assert!(set.len() >= 6, "expected >=6 distinct icon codepoints, got {}", set.len());
+        assert!(
+            set.len() >= 6,
+            "expected >=6 distinct icon codepoints, got {}",
+            set.len()
+        );
     }
 
     #[test]
@@ -101,7 +105,10 @@ mod tests {
                     egui::FontId::proportional(20.0),
                     egui::Color32::WHITE,
                 );
-                assert!(galley.size().x > 1.0, "phosphor glyph laid out to zero width");
+                assert!(
+                    galley.size().x > 1.0,
+                    "phosphor glyph laid out to zero width"
+                );
             });
         });
     }

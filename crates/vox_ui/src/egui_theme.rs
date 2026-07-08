@@ -110,11 +110,26 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     // === TYPE RAMP — real AA vector glyphs via egui's atlas ===
     let tr = &t.type_ramp;
     style.text_styles = [
-        (TextStyle::Small, FontId::new(tr.caption, FontFamily::Proportional)),
-        (TextStyle::Body, FontId::new(tr.body, FontFamily::Proportional)),
-        (TextStyle::Monospace, FontId::new(tr.mono, FontFamily::Monospace)),
-        (TextStyle::Button, FontId::new(tr.body, FontFamily::Proportional)),
-        (TextStyle::Heading, FontId::new(tr.heading, FontFamily::Proportional)),
+        (
+            TextStyle::Small,
+            FontId::new(tr.caption, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Body,
+            FontId::new(tr.body, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Monospace,
+            FontId::new(tr.mono, FontFamily::Monospace),
+        ),
+        (
+            TextStyle::Button,
+            FontId::new(tr.body, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Heading,
+            FontId::new(tr.heading, FontFamily::Proportional),
+        ),
     ]
     .into();
 

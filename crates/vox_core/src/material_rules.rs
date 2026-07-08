@@ -59,8 +59,8 @@ pub struct DriverSample {
     pub moisture: f64,      // [0,1]
     pub flow: f64,          // [0,1]
     pub aspect: f64,        // [-1,1] sun-facing
-    pub apron: f64,         // [0,1] erosion apron: dirt/scree skirt at the FOOT of relief on flat ground
-    pub patch: f64,         // [0,1] organic low-frequency overgrown-field patchiness on flat ground
+    pub apron: f64, // [0,1] erosion apron: dirt/scree skirt at the FOOT of relief on flat ground
+    pub patch: f64, // [0,1] organic low-frequency overgrown-field patchiness on flat ground
 }
 
 /// Which driver a rule term reads.
@@ -116,7 +116,12 @@ pub enum Curve {
     /// `smoothstep(lo, hi, x)` — a soft ramp.
     Smoothstep { lo: f64, hi: f64 },
     /// A bump: `smoothstep(lo1,hi1,x) * (1 - smoothstep(lo2,hi2,x))` (opens then closes).
-    Band { lo1: f64, hi1: f64, lo2: f64, hi2: f64 },
+    Band {
+        lo1: f64,
+        hi1: f64,
+        lo2: f64,
+        hi2: f64,
+    },
 }
 
 impl Curve {
@@ -125,7 +130,9 @@ impl Curve {
         match self {
             Curve::Linear => x,
             Curve::Smoothstep { lo, hi } => smoothstep(lo, hi, x),
-            Curve::Band { lo1, hi1, lo2, hi2 } => smoothstep(lo1, hi1, x) * (1.0 - smoothstep(lo2, hi2, x)),
+            Curve::Band { lo1, hi1, lo2, hi2 } => {
+                smoothstep(lo1, hi1, x) * (1.0 - smoothstep(lo2, hi2, x))
+            }
         }
     }
 }
@@ -141,7 +148,11 @@ pub struct Term {
 impl Term {
     #[inline]
     pub fn new(driver: Driver, curve: Curve, gain: f64) -> Self {
-        Self { driver, curve, gain }
+        Self {
+            driver,
+            curve,
+            gain,
+        }
     }
 }
 
@@ -213,7 +224,10 @@ impl MaterialRuleSet {
     pub fn dominant(&self, s: &DriverSample) -> u8 {
         self.evaluate(s)
             .into_iter()
-            .fold((0u8, -1.0f32), |acc, (m, w)| if w > acc.1 { (m, w) } else { acc })
+            .fold(
+                (0u8, -1.0f32),
+                |acc, (m, w)| if w > acc.1 { (m, w) } else { acc },
+            )
             .0
     }
 }
@@ -359,7 +373,7 @@ impl Default for TerrainRuleConfig {
             dirt_cavity: 0.40,
             dirt_cavity_amp: 0.12,
             dirt_convex_suppress: 0.20,
-            rock_prior: -0.10,   // was -0.85 (rock too rare) → rock actually wins on the massif slopes
+            rock_prior: -0.10, // was -0.85 (rock too rare) → rock actually wins on the massif slopes
             rock_ramp_gain: 3.60,
             // Slope window: rock ramps in past the dirt-shoulder band and is full by the
             // massif-flank steepness (founders flanks read 0.3–0.61). Gentle buildable
@@ -503,7 +517,14 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                     Term::new(DirtFlat, Linear, 1.0),
                     // Erosion apron (foot of relief) + bare-soil patch cores.
                     Term::new(Apron, Linear, c.dirt_apron),
-                    Term::new(Patch, Smoothstep { lo: c.dirt_patch_lo, hi: c.dirt_patch_hi }, c.dirt_patch_gain),
+                    Term::new(
+                        Patch,
+                        Smoothstep {
+                            lo: c.dirt_patch_lo,
+                            hi: c.dirt_patch_hi,
+                        },
+                        c.dirt_patch_gain,
+                    ),
                 ],
             },
             // ROCK — steep ramp + convex + altitude (halo omitted, see above).
@@ -511,7 +532,14 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                 material: mat::ROCK,
                 prior: c.rock_prior,
                 terms: vec![
-                    Term::new(Steep, Smoothstep { lo: c.rock_slope_lo, hi: c.rock_slope_hi }, c.rock_ramp_gain),
+                    Term::new(
+                        Steep,
+                        Smoothstep {
+                            lo: c.rock_slope_lo,
+                            hi: c.rock_slope_hi,
+                        },
+                        c.rock_ramp_gain,
+                    ),
                     Term::new(Convex, Linear, c.rock_convex),
                     Term::new(AltRock, Linear, c.rock_alt),
                 ],
@@ -523,7 +551,14 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                 material: mat::SCREE,
                 prior: c.scree_prior,
                 terms: vec![
-                    Term::new(Apron, Smoothstep { lo: c.scree_apron_lo, hi: c.scree_apron_hi }, c.scree_apron),
+                    Term::new(
+                        Apron,
+                        Smoothstep {
+                            lo: c.scree_apron_lo,
+                            hi: c.scree_apron_hi,
+                        },
+                        c.scree_apron,
+                    ),
                     Term::new(Steep, Linear, -c.scree_steep_suppress),
                 ],
             },
@@ -542,7 +577,14 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                 material: mat::LUSH,
                 prior: c.lush_prior,
                 terms: vec![
-                    Term::new(Moisture, Smoothstep { lo: c.lush_moisture_lo, hi: c.lush_moisture_hi }, c.lush_moisture),
+                    Term::new(
+                        Moisture,
+                        Smoothstep {
+                            lo: c.lush_moisture_lo,
+                            hi: c.lush_moisture_hi,
+                        },
+                        c.lush_moisture,
+                    ),
                     Term::new(Cavity, Linear, c.lush_cavity),
                     Term::new(Steep, Linear, -c.lush_steep_suppress),
                     Term::new(Convex, Linear, -c.lush_convex_suppress),
@@ -555,8 +597,22 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                 material: mat::MUD,
                 prior: c.mud_prior,
                 terms: vec![
-                    Term::new(Flow, Smoothstep { lo: c.mud_flow_lo, hi: c.mud_flow_hi }, c.mud_flow),
-                    Term::new(Moisture, Smoothstep { lo: c.mud_moisture_lo, hi: c.mud_moisture_hi }, c.mud_moisture),
+                    Term::new(
+                        Flow,
+                        Smoothstep {
+                            lo: c.mud_flow_lo,
+                            hi: c.mud_flow_hi,
+                        },
+                        c.mud_flow,
+                    ),
+                    Term::new(
+                        Moisture,
+                        Smoothstep {
+                            lo: c.mud_moisture_lo,
+                            hi: c.mud_moisture_hi,
+                        },
+                        c.mud_moisture,
+                    ),
                     Term::new(Steep, Linear, -c.mud_steep_suppress),
                 ],
             },
@@ -568,12 +624,20 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                 terms: vec![
                     Term::new(
                         Moisture,
-                        Band { lo1: c.sand_dry_lo1, hi1: c.sand_dry_hi1, lo2: c.sand_dry_lo2, hi2: c.sand_dry_hi2 },
+                        Band {
+                            lo1: c.sand_dry_lo1,
+                            hi1: c.sand_dry_hi1,
+                            lo2: c.sand_dry_lo2,
+                            hi2: c.sand_dry_hi2,
+                        },
                         c.sand_dry_gain,
                     ),
                     Term::new(
                         Moisture,
-                        Smoothstep { lo: c.sand_moisture_suppress_lo, hi: c.sand_moisture_suppress_hi },
+                        Smoothstep {
+                            lo: c.sand_moisture_suppress_lo,
+                            hi: c.sand_moisture_suppress_hi,
+                        },
                         -c.sand_moisture_suppress,
                     ),
                     Term::new(Steep, Linear, -c.sand_steep_suppress),
@@ -588,12 +652,20 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                 terms: vec![
                     Term::new(
                         Moisture,
-                        Band { lo1: c.sand_dry_lo1, hi1: c.sand_dry_hi1, lo2: c.sand_dry_lo2, hi2: c.sand_dry_hi2 },
+                        Band {
+                            lo1: c.sand_dry_lo1,
+                            hi1: c.sand_dry_hi1,
+                            lo2: c.sand_dry_lo2,
+                            hi2: c.sand_dry_hi2,
+                        },
                         c.dry_dry_gain,
                     ),
                     Term::new(
                         Moisture,
-                        Smoothstep { lo: c.sand_moisture_suppress_lo, hi: c.sand_moisture_suppress_hi },
+                        Smoothstep {
+                            lo: c.sand_moisture_suppress_lo,
+                            hi: c.sand_moisture_suppress_hi,
+                        },
                         -c.sand_moisture_suppress,
                     ),
                     Term::new(Steep, Linear, -c.dry_steep_suppress),
@@ -602,7 +674,12 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                     // the bare-soil (DIRT) core so an old field reads grass → dry weeds → bare.
                     Term::new(
                         Patch,
-                        Band { lo1: c.dry_patch_lo1, hi1: c.dry_patch_hi1, lo2: c.dry_patch_lo2, hi2: c.dry_patch_hi2 },
+                        Band {
+                            lo1: c.dry_patch_lo1,
+                            hi1: c.dry_patch_hi1,
+                            lo2: c.dry_patch_lo2,
+                            hi2: c.dry_patch_hi2,
+                        },
                         c.dry_patch_gain,
                     ),
                 ],
@@ -612,10 +689,24 @@ pub fn standard_terrain(c: &TerrainRuleConfig) -> MaterialRuleSet {
                 material: mat::SILT,
                 prior: c.streambed_prior,
                 terms: vec![
-                    Term::new(Flow, Smoothstep { lo: c.streambed_flow_lo, hi: c.streambed_flow_hi }, c.streambed_flow_gain),
+                    Term::new(
+                        Flow,
+                        Smoothstep {
+                            lo: c.streambed_flow_lo,
+                            hi: c.streambed_flow_hi,
+                        },
+                        c.streambed_flow_gain,
+                    ),
                     Term::new(Steep, Linear, -c.streambed_steep_suppress),
                     // Bare-earth patch core: the very centre of an overgrown patch reclaims to silt.
-                    Term::new(Patch, Smoothstep { lo: c.silt_patch_lo, hi: 1.0 }, c.silt_patch_gain),
+                    Term::new(
+                        Patch,
+                        Smoothstep {
+                            lo: c.silt_patch_lo,
+                            hi: 1.0,
+                        },
+                        c.silt_patch_gain,
+                    ),
                 ],
             },
         ],
@@ -640,51 +731,89 @@ mod tests {
     #[test]
     fn steep_face_is_rock() {
         // A genuinely steep face → rock wins (the relief borders).
-        let s = DriverSample { steep: 0.9, convex: 0.3, ..Default::default() };
+        let s = DriverSample {
+            steep: 0.9,
+            convex: 0.3,
+            ..Default::default()
+        };
         assert_eq!(rules().dominant(&s), mat::ROCK);
     }
 
     #[test]
     fn high_altitude_flat_is_snow() {
         // Above the snow line, flat shelf → snow.
-        let s = DriverSample { alt_snow: 1.0, snow_hold_alt: 1.0, ..Default::default() };
+        let s = DriverSample {
+            alt_snow: 1.0,
+            snow_hold_alt: 1.0,
+            ..Default::default()
+        };
         assert_eq!(rules().dominant(&s), mat::SNOW);
     }
 
     #[test]
     fn weights_are_convex() {
         // Σ weights == 1 (no-white law: a convex blend can never blanket).
-        let s = DriverSample { steep: 0.45, convex: 0.2, dirt_flat: 0.3, ..Default::default() };
+        let s = DriverSample {
+            steep: 0.45,
+            convex: 0.2,
+            dirt_flat: 0.3,
+            ..Default::default()
+        };
         let w: f32 = rules().evaluate(&s).iter().map(|(_, w)| *w).sum();
         assert!((w - 1.0).abs() < 1e-4, "weights must sum to 1, got {w}");
     }
 
     #[test]
     fn evaluate_is_deterministic() {
-        let s = DriverSample { steep: 0.5, concave: 0.3, moisture: 0.4, flow: 0.2, ..Default::default() };
+        let s = DriverSample {
+            steep: 0.5,
+            concave: 0.3,
+            moisture: 0.4,
+            flow: 0.2,
+            ..Default::default()
+        };
         assert_eq!(rules().evaluate(&s), rules().evaluate(&s));
     }
 
     #[test]
     fn shoulder_slope_yields_dirt_band() {
         // The shoulder steepness (past flat, before full rock) opens the dirt lobe.
-        let s = DriverSample { steep: 0.28, dirt_flat: 0.2, ..Default::default() };
+        let s = DriverSample {
+            steep: 0.28,
+            dirt_flat: 0.2,
+            ..Default::default()
+        };
         let w = rules().evaluate(&s);
         let dirt = w.iter().find(|(m, _)| *m == mat::DIRT).unwrap().1;
         let rock = w.iter().find(|(m, _)| *m == mat::ROCK).unwrap().1;
-        assert!(dirt > rock, "shoulder slope should favor dirt over rock: dirt={dirt} rock={rock}");
+        assert!(
+            dirt > rock,
+            "shoulder slope should favor dirt over rock: dirt={dirt} rock={rock}"
+        );
     }
 
     #[test]
     fn wet_vs_dry() {
         // Identical steep/alt; only moisture differs. Wet → LUSH/MUD; dry → SAND/DRY.
-        let wet = DriverSample { moisture: 0.9, ..Default::default() };
-        let dry = DriverSample { moisture: 0.1, ..Default::default() };
+        let wet = DriverSample {
+            moisture: 0.9,
+            ..Default::default()
+        };
+        let dry = DriverSample {
+            moisture: 0.1,
+            ..Default::default()
+        };
         let wm = rules().dominant(&wet);
         let dm = rules().dominant(&dry);
         assert_ne!(wm, dm, "wet and dry ground must author different materials");
-        assert!(wm == mat::LUSH || wm == mat::MUD, "wet dominant should be LUSH/MUD, got {wm}");
-        assert!(dm == mat::SAND || dm == mat::DRY, "dry dominant should be SAND/DRY, got {dm}");
+        assert!(
+            wm == mat::LUSH || wm == mat::MUD,
+            "wet dominant should be LUSH/MUD, got {wm}"
+        );
+        assert!(
+            dm == mat::SAND || dm == mat::DRY,
+            "dry dominant should be SAND/DRY, got {dm}"
+        );
     }
 
     #[test]
@@ -692,61 +821,147 @@ mod tests {
         // DRY high-flow drainage → SILT (gravel bed); MUD requires moisture too, so it
         // must NOT win here. WET high-flow → MUD (streambank). Asserts the SPECIFIC
         // material each way (a permissive OR-list hid that SILT was never reachable).
-        let dry_flow = DriverSample { flow: 0.9, moisture: 0.0, ..Default::default() };
-        assert_eq!(rules().dominant(&dry_flow), mat::SILT, "dry drainage line should author SILT gravel");
-        let wet_flow = DriverSample { flow: 0.9, moisture: 0.9, ..Default::default() };
-        assert_eq!(rules().dominant(&wet_flow), mat::MUD, "wet drainage line should author MUD");
+        let dry_flow = DriverSample {
+            flow: 0.9,
+            moisture: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            rules().dominant(&dry_flow),
+            mat::SILT,
+            "dry drainage line should author SILT gravel"
+        );
+        let wet_flow = DriverSample {
+            flow: 0.9,
+            moisture: 0.9,
+            ..Default::default()
+        };
+        assert_eq!(
+            rules().dominant(&wet_flow),
+            mat::MUD,
+            "wet drainage line should author MUD"
+        );
     }
 
     #[test]
     fn typical_moisture_flat_is_grass() {
         // A flat cell at TYPICAL grass moisture (0.35) must stay GRASS — SAND is
         // arid-only and must never eat the green buildable core (review major #1).
-        let s = DriverSample { moisture: 0.35, ..Default::default() };
-        assert_eq!(rules().dominant(&s), mat::GRASS, "typical-moisture flat ground must be grass, not sand");
+        let s = DriverSample {
+            moisture: 0.35,
+            ..Default::default()
+        };
+        assert_eq!(
+            rules().dominant(&s),
+            mat::GRASS,
+            "typical-moisture flat ground must be grass, not sand"
+        );
     }
 
     #[test]
     fn aspect_shift() {
         // Identical moderate moisture; shaded (aspect -1) holds moisture → more LUSH
         // than the sunny (aspect +1) sample.
-        let shaded = DriverSample { moisture: 0.5, aspect: -1.0, ..Default::default() };
-        let sunny = DriverSample { moisture: 0.5, aspect: 1.0, ..Default::default() };
-        let lush = |s: &DriverSample| rules().evaluate(s).iter().find(|(m, _)| *m == mat::LUSH).unwrap().1;
+        let shaded = DriverSample {
+            moisture: 0.5,
+            aspect: -1.0,
+            ..Default::default()
+        };
+        let sunny = DriverSample {
+            moisture: 0.5,
+            aspect: 1.0,
+            ..Default::default()
+        };
+        let lush = |s: &DriverSample| {
+            rules()
+                .evaluate(s)
+                .iter()
+                .find(|(m, _)| *m == mat::LUSH)
+                .unwrap()
+                .1
+        };
         let (ls, lu) = (lush(&shaded), lush(&sunny));
-        assert!(ls > lu, "shaded ground should hold more LUSH than sunny: shaded={ls} sunny={lu}");
+        assert!(
+            ls > lu,
+            "shaded ground should hold more LUSH than sunny: shaded={ls} sunny={lu}"
+        );
     }
 
     #[test]
     fn apron_authors_dirt_with_scree_accent() {
         // Flat ground at the foot of relief (apron=1) must go bare: DIRT dominant, with a
         // SCREE accent present — NOT grass, and NOT a rock field.
-        let s = DriverSample { apron: 1.0, ..Default::default() };
-        assert_eq!(rules().dominant(&s), mat::DIRT, "apron foot should author dirt");
+        let s = DriverSample {
+            apron: 1.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            rules().dominant(&s),
+            mat::DIRT,
+            "apron foot should author dirt"
+        );
         let w = rules().evaluate(&s);
         let scree = w.iter().find(|(m, _)| *m == mat::SCREE).unwrap().1;
         let rock = w.iter().find(|(m, _)| *m == mat::ROCK).unwrap().1;
-        assert!(scree > 0.02, "apron should carry a scree accent, got {scree}");
-        assert!(scree < w.iter().find(|(m, _)| *m == mat::DIRT).unwrap().1, "scree must ride UNDER dirt");
-        assert!(rock < 0.05, "flat apron must not author a rock field, got {rock}");
+        assert!(
+            scree > 0.02,
+            "apron should carry a scree accent, got {scree}"
+        );
+        assert!(
+            scree < w.iter().find(|(m, _)| *m == mat::DIRT).unwrap().1,
+            "scree must ride UNDER dirt"
+        );
+        assert!(
+            rock < 0.05,
+            "flat apron must not author a rock field, got {rock}"
+        );
     }
 
     #[test]
     fn overgrown_patch_zones_grass_dry_dirt() {
         // The organic patch field reads concentric: open core (patch≈0.5) stays GRASS (buildable),
         // the mid ring (patch≈0.62) goes DRY weeds, the core (patch≈0.95) goes bare DIRT.
-        let open = DriverSample { patch: 0.50, ..Default::default() };
-        let mid = DriverSample { patch: 0.62, ..Default::default() };
-        let core = DriverSample { patch: 0.95, ..Default::default() };
-        assert_eq!(rules().dominant(&open), mat::GRASS, "open patch level must stay grass (buildable core)");
-        assert_eq!(rules().dominant(&mid), mat::DRY, "mid patch should author dry weeds");
-        assert_eq!(rules().dominant(&core), mat::DIRT, "patch core should author bare dirt");
+        let open = DriverSample {
+            patch: 0.50,
+            ..Default::default()
+        };
+        let mid = DriverSample {
+            patch: 0.62,
+            ..Default::default()
+        };
+        let core = DriverSample {
+            patch: 0.95,
+            ..Default::default()
+        };
+        assert_eq!(
+            rules().dominant(&open),
+            mat::GRASS,
+            "open patch level must stay grass (buildable core)"
+        );
+        assert_eq!(
+            rules().dominant(&mid),
+            mat::DRY,
+            "mid patch should author dry weeds"
+        );
+        assert_eq!(
+            rules().dominant(&core),
+            mat::DIRT,
+            "patch core should author bare dirt"
+        );
     }
 
     #[test]
     fn ridge_stays_bare() {
         // A convex ridge with low moisture must NOT author LUSH (deposition needs a hollow).
-        let s = DriverSample { convex: 0.9, moisture: 0.1, ..Default::default() };
-        assert_ne!(rules().dominant(&s), mat::LUSH, "convex ridge must stay bare, not lush");
+        let s = DriverSample {
+            convex: 0.9,
+            moisture: 0.1,
+            ..Default::default()
+        };
+        assert_ne!(
+            rules().dominant(&s),
+            mat::LUSH,
+            "convex ridge must stay bare, not lush"
+        );
     }
 }

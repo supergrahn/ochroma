@@ -48,7 +48,12 @@ pub struct Edges {
 
 impl Edges {
     pub const fn all(v: f32) -> Self {
-        Self { left: v, top: v, right: v, bottom: v }
+        Self {
+            left: v,
+            top: v,
+            right: v,
+            bottom: v,
+        }
     }
 }
 
@@ -231,13 +236,28 @@ impl StyleSheet {
 pub enum UiKind {
     /// Generic styled container; lays out its children via `flex_dir`.
     Panel,
-    Label { text: String },
-    Button { label: String, on_click: String },
-    Slider { value: f32, min: f32, max: f32, on_change: String },
-    ProgressBar { value: f32 },
+    Label {
+        text: String,
+    },
+    Button {
+        label: String,
+        on_click: String,
+    },
+    Slider {
+        value: f32,
+        min: f32,
+        max: f32,
+        on_change: String,
+    },
+    ProgressBar {
+        value: f32,
+    },
     /// Image-ish: a tinted rect standing in for a sampled texture (`path` is
     /// the asset reference; CPU render fills with the resolved colour x tint).
-    Image { path: String, tint: [f32; 4] },
+    Image {
+        path: String,
+        tint: [f32; 4],
+    },
 }
 
 /// A retained node: identity, kind, styling, and children.
@@ -439,7 +459,11 @@ fn place(tree: &UiTree, node: &UiNode, rect: Rect, layout: &mut Layout) {
     let mut grow_sum = 0.0f32;
     for cs in &child_styles {
         let m = cs.margin;
-        let margin_main = if row { m.left + m.right } else { m.top + m.bottom };
+        let margin_main = if row {
+            m.left + m.right
+        } else {
+            m.top + m.bottom
+        };
         let fixed = if row { cs.width } else { cs.height };
         match fixed {
             Some(v) => fixed_used += v + margin_main,
@@ -487,7 +511,11 @@ fn place(tree: &UiTree, node: &UiNode, rect: Rect, layout: &mut Layout) {
 
         place(tree, child, child_rect, layout);
 
-        let margin_main = if row { m.left + m.right } else { m.top + m.bottom };
+        let margin_main = if row {
+            m.left + m.right
+        } else {
+            m.top + m.bottom
+        };
         cursor += main_size + margin_main;
     }
 }
@@ -519,7 +547,12 @@ pub struct UiTree {
 
 impl UiTree {
     pub fn new(root: UiNode) -> Self {
-        Self { root, sheet: StyleSheet::new(), focused: None, events: Vec::new() }
+        Self {
+            root,
+            sheet: StyleSheet::new(),
+            focused: None,
+            events: Vec::new(),
+        }
     }
 
     pub fn from_doc(doc: UiDoc) -> Self {
@@ -528,7 +561,12 @@ impl UiTree {
         // author-validated JSON path.
         let mut root = doc.root;
         dedupe_ids(&mut root);
-        Self { root, sheet: doc.stylesheet, focused: None, events: Vec::new() }
+        Self {
+            root,
+            sheet: doc.stylesheet,
+            focused: None,
+            events: Vec::new(),
+        }
     }
 
     pub fn with_sheet(mut self, sheet: StyleSheet) -> Self {
@@ -573,7 +611,9 @@ impl UiTree {
 
     pub fn set_slider_value(&mut self, id: &str, v: f32) -> bool {
         if let Some(node) = self.find_mut(id)
-            && let UiKind::Slider { value, min, max, .. } = &mut node.kind
+            && let UiKind::Slider {
+                value, min, max, ..
+            } = &mut node.kind
         {
             *value = v.clamp(*min, *max);
             return true;
@@ -647,13 +687,11 @@ fn collect_state(
     }
 }
 
-fn merge_state(
-    node: &mut UiNode,
-    sliders: &HashMap<String, f32>,
-    progress: &HashMap<String, f32>,
-) {
+fn merge_state(node: &mut UiNode, sliders: &HashMap<String, f32>, progress: &HashMap<String, f32>) {
     match &mut node.kind {
-        UiKind::Slider { value, min, max, .. } => {
+        UiKind::Slider {
+            value, min, max, ..
+        } => {
             if let Some(v) = sliders.get(&node.id) {
                 *value = v.clamp(*min, *max);
             }
@@ -707,7 +745,10 @@ pub fn click(tree: &mut UiTree, layout: &Layout, point: [f32; 2]) -> Option<Stri
         && let UiKind::Button { on_click, .. } = &node.kind
     {
         let action = on_click.clone();
-        tree.events.push(UiEvent::Clicked { id: hit.clone(), action });
+        tree.events.push(UiEvent::Clicked {
+            id: hit.clone(),
+            action,
+        });
         tree.focused = Some(hit.clone());
     }
     Some(hit)
@@ -729,7 +770,11 @@ fn blend_rect(pixels: &mut [[u8; 4]], w: u32, h: u32, rect: Rect, color: [f32; 4
     if x0 >= x1 || y0 >= y1 {
         return;
     }
-    let (sr, sg, sb) = (color[0].clamp(0.0, 1.0), color[1].clamp(0.0, 1.0), color[2].clamp(0.0, 1.0));
+    let (sr, sg, sb) = (
+        color[0].clamp(0.0, 1.0),
+        color[1].clamp(0.0, 1.0),
+        color[2].clamp(0.0, 1.0),
+    );
     let inv = 1.0 - a;
     for y in y0..y1 {
         for x in x0..x1 {
@@ -738,8 +783,12 @@ fn blend_rect(pixels: &mut [[u8; 4]], w: u32, h: u32, rect: Rect, color: [f32; 4
                 continue;
             }
             let d = pixels[idx];
-            let (dr, dg, db, da) =
-                (d[0] as f32 / 255.0, d[1] as f32 / 255.0, d[2] as f32 / 255.0, d[3] as f32 / 255.0);
+            let (dr, dg, db, da) = (
+                d[0] as f32 / 255.0,
+                d[1] as f32 / 255.0,
+                d[2] as f32 / 255.0,
+                d[3] as f32 / 255.0,
+            );
             pixels[idx] = [
                 ((sr * a + dr * inv) * 255.0 + 0.5) as u8,
                 ((sg * a + dg * inv) * 255.0 + 0.5) as u8,
@@ -762,7 +811,12 @@ fn brighten(c: [u8; 3], t: f32) -> [u8; 3] {
 
 fn brighten4(c: [f32; 4], t: f32) -> [f32; 4] {
     let t = t.clamp(0.0, 1.0);
-    [c[0] + (1.0 - c[0]) * t, c[1] + (1.0 - c[1]) * t, c[2] + (1.0 - c[2]) * t, c[3]]
+    [
+        c[0] + (1.0 - c[0]) * t,
+        c[1] + (1.0 - c[1]) * t,
+        c[2] + (1.0 - c[2]) * t,
+        c[3],
+    ]
 }
 
 /// Centre a string within `rect` and render it at the resolved scale via the
@@ -784,7 +838,11 @@ fn draw_text_centered(
     // string) while nothing beyond a few thousand chars can ever be visible.
     const MAX_DRAW_CHARS: usize = 4096;
     let label = if label.chars().count() > MAX_DRAW_CHARS {
-        &label[..label.char_indices().nth(MAX_DRAW_CHARS).map(|(i, _)| i).unwrap_or(label.len())]
+        &label[..label
+            .char_indices()
+            .nth(MAX_DRAW_CHARS)
+            .map(|(i, _)| i)
+            .unwrap_or(label.len())]
     } else {
         label
     };
@@ -812,14 +870,7 @@ fn draw_text_centered(
 /// Software-rasterise the whole tree into an RGBA8 buffer (row-major,
 /// `pixels.len() >= w*h`). The focused node renders measurably brighter.
 pub fn rasterize_into(tree: &UiTree, layout: &Layout, pixels: &mut [[u8; 4]], w: u32, h: u32) {
-    fn rec(
-        tree: &UiTree,
-        node: &UiNode,
-        layout: &Layout,
-        pixels: &mut [[u8; 4]],
-        w: u32,
-        h: u32,
-    ) {
+    fn rec(tree: &UiTree, node: &UiNode, layout: &Layout, pixels: &mut [[u8; 4]], w: u32, h: u32) {
         if !node.visible {
             return;
         }
@@ -838,7 +889,11 @@ pub fn rasterize_into(tree: &UiTree, layout: &Layout, pixels: &mut [[u8; 4]], w:
                     style.color[0] * tint[0],
                     style.color[1] * tint[1],
                     style.color[2] * tint[2],
-                    if style.color[3] <= 0.0 { tint[3] } else { style.color[3] * tint[3] },
+                    if style.color[3] <= 0.0 {
+                        tint[3]
+                    } else {
+                        style.color[3] * tint[3]
+                    },
                 ];
                 blend_rect(pixels, w, h, rect, c);
             }
@@ -846,29 +901,47 @@ pub fn rasterize_into(tree: &UiTree, layout: &Layout, pixels: &mut [[u8; 4]], w:
                 if style.color[3] > 0.0 {
                     blend_rect(pixels, w, h, rect, style.color);
                 }
-                let tc = if focused { brighten(style.text_color, 0.5) } else { style.text_color };
+                let tc = if focused {
+                    brighten(style.text_color, 0.5)
+                } else {
+                    style.text_color
+                };
                 draw_text_centered(pixels, w, h, rect, text, tc, style.font_scale);
             }
             UiKind::Button { label, .. } => {
-                let bg = if focused { brighten4(style.color, 0.4) } else { style.color };
+                let bg = if focused {
+                    brighten4(style.color, 0.4)
+                } else {
+                    style.color
+                };
                 blend_rect(pixels, w, h, rect, bg);
-                let tc = if focused { brighten(style.text_color, 0.4) } else { style.text_color };
+                let tc = if focused {
+                    brighten(style.text_color, 0.4)
+                } else {
+                    style.text_color
+                };
                 draw_text_centered(pixels, w, h, rect, label, tc, style.font_scale);
             }
-            UiKind::Slider { value, min, max, .. } => {
+            UiKind::Slider {
+                value, min, max, ..
+            } => {
                 // Track, then a fill proportional to value, then a knob.
                 blend_rect(pixels, w, h, rect, style.color);
                 let t = ((value - min) / (max - min)).clamp(0.0, 1.0);
                 let fill = [rect[0], rect[1], rect[2] * t, rect[3]];
                 // Explicit fill colour if set, else brighten the track colour.
-                let fill_color = style.fill_color.unwrap_or_else(|| brighten4(style.color, 0.5));
+                let fill_color = style
+                    .fill_color
+                    .unwrap_or_else(|| brighten4(style.color, 0.5));
                 blend_rect(pixels, w, h, fill, fill_color);
             }
             UiKind::ProgressBar { value } => {
                 blend_rect(pixels, w, h, rect, style.color);
                 let t = value.clamp(0.0, 1.0);
                 let fill = [rect[0], rect[1], rect[2] * t, rect[3]];
-                let fill_color = style.fill_color.unwrap_or_else(|| brighten4(style.color, 0.6));
+                let fill_color = style
+                    .fill_color
+                    .unwrap_or_else(|| brighten4(style.color, 0.6));
                 blend_rect(pixels, w, h, fill, fill_color);
             }
         }
@@ -895,7 +968,10 @@ pub fn taffy_column_rects(viewport_w: f32, viewport_h: f32, n: usize) -> Vec<Rec
         .map(|_| {
             t.new_leaf(Style {
                 flex_grow: 1.0,
-                size: Size { width: Dimension::Auto, height: Dimension::Auto },
+                size: Size {
+                    width: Dimension::Auto,
+                    height: Dimension::Auto,
+                },
                 ..Default::default()
             })
             .expect("leaf")
@@ -906,7 +982,10 @@ pub fn taffy_column_rects(viewport_w: f32, viewport_h: f32, n: usize) -> Vec<Rec
             Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
-                size: Size { width: Dimension::Length(viewport_w), height: Dimension::Length(viewport_h) },
+                size: Size {
+                    width: Dimension::Length(viewport_w),
+                    height: Dimension::Length(viewport_h),
+                },
                 ..Default::default()
             },
             &children,
@@ -914,7 +993,10 @@ pub fn taffy_column_rects(viewport_w: f32, viewport_h: f32, n: usize) -> Vec<Rec
         .expect("root");
     t.compute_layout(
         root,
-        Size { width: AvailableSpace::Definite(viewport_w), height: AvailableSpace::Definite(viewport_h) },
+        Size {
+            width: AvailableSpace::Definite(viewport_w),
+            height: AvailableSpace::Definite(viewport_h),
+        },
     )
     .expect("compute");
     children
@@ -949,8 +1031,11 @@ mod tests {
     /// Column of 3 grow-equal children in 600px splits into 200px rects.
     #[test]
     fn column_three_grow_equal_splits_exactly() {
-        let root = UiNode::new("root", UiKind::Panel)
-            .with_children(vec![col_child("a"), col_child("b"), col_child("c")]);
+        let root = UiNode::new("root", UiKind::Panel).with_children(vec![
+            col_child("a"),
+            col_child("b"),
+            col_child("c"),
+        ]);
         let tree = UiTree::new(root);
         let layout = compute_layout(&tree, [400.0, 600.0]);
         let a = layout.rect("a").unwrap();
@@ -968,7 +1053,12 @@ mod tests {
         let mut root = UiNode::new("root", UiKind::Panel);
         root.style.padding = Some(Edges::all(10.0));
         let mut child = col_child("a");
-        child.style.margin = Some(Edges { left: 5.0, top: 7.0, right: 5.0, bottom: 0.0 });
+        child.style.margin = Some(Edges {
+            left: 5.0,
+            top: 7.0,
+            right: 5.0,
+            bottom: 0.0,
+        });
         root = root.with_children(vec![child]);
         let tree = UiTree::new(root);
         let layout = compute_layout(&tree, [400.0, 600.0]);
@@ -985,19 +1075,31 @@ mod tests {
     #[test]
     fn two_themes_differ_in_button_color_channel() {
         let root = UiNode::new("root", UiKind::Panel).with_children(vec![{
-            let mut b = UiNode::new("btn", UiKind::Button { label: "GO".into(), on_click: "go".into() })
-                .with_class("primary");
+            let mut b = UiNode::new(
+                "btn",
+                UiKind::Button {
+                    label: "GO".into(),
+                    on_click: "go".into(),
+                },
+            )
+            .with_class("primary");
             b.style.grow = Some(1.0);
             b
         }]);
 
         let blue = StyleSheet::new().with_class(
             "primary",
-            Style { color: Some([0.0, 0.0, 1.0, 1.0]), ..Default::default() },
+            Style {
+                color: Some([0.0, 0.0, 1.0, 1.0]),
+                ..Default::default()
+            },
         );
         let red = StyleSheet::new().with_class(
             "primary",
-            Style { color: Some([1.0, 0.0, 0.0, 1.0]), ..Default::default() },
+            Style {
+                color: Some([1.0, 0.0, 0.0, 1.0]),
+                ..Default::default()
+            },
         );
 
         let (w, h) = (64u32, 64u32);
@@ -1033,7 +1135,10 @@ mod tests {
                 id: "root".into(),
                 kind: UiKind::Label { text: huge },
                 classes: vec![],
-                style: Style { font_scale: Some(999_999), ..Default::default() },
+                style: Style {
+                    font_scale: Some(999_999),
+                    ..Default::default()
+                },
                 visible: true,
                 children: vec![],
             },
@@ -1065,14 +1170,27 @@ mod tests {
         // Two sibling labels share id "x". First has text "FIRST" + fixed height 30;
         // second has text "SECOND" + fixed height 90. Row layout would otherwise
         // collapse both into one rect.
-        let mut a = UiNode::new("x", UiKind::Label { text: "FIRST".into() });
+        let mut a = UiNode::new(
+            "x",
+            UiKind::Label {
+                text: "FIRST".into(),
+            },
+        );
         a.style.height = Some(30.0);
-        let mut b = UiNode::new("x", UiKind::Label { text: "SECOND".into() });
+        let mut b = UiNode::new(
+            "x",
+            UiKind::Label {
+                text: "SECOND".into(),
+            },
+        );
         b.style.height = Some(90.0);
         let mut c = UiNode::new("y", UiKind::Label { text: "C".into() });
         c.style.height = Some(30.0);
         let root = UiNode::new("root", UiKind::Panel).with_children(vec![a, b, c]);
-        let doc = UiDoc { stylesheet: StyleSheet::default(), root };
+        let doc = UiDoc {
+            stylesheet: StyleSheet::default(),
+            root,
+        };
 
         let tree = UiTree::from_doc(doc);
         // The duplicate "x" subtree is dropped: only the first "x" plus "y" remain
@@ -1081,13 +1199,18 @@ mod tests {
         // The surviving "x" is the FIRST node (text "FIRST", height 30).
         let x = tree.find("x").expect("first x kept");
         match &x.kind {
-            UiKind::Label { text } => assert_eq!(text, "FIRST", "kept the first occurrence's content"),
+            UiKind::Label { text } => {
+                assert_eq!(text, "FIRST", "kept the first occurrence's content")
+            }
             _ => panic!("x is not a label"),
         }
         // Its rect uses the first node's fixed height (30), not the second's (90).
         let layout = compute_layout(&tree, [200.0, 200.0]);
         let rx = layout.rect("x").expect("x has a rect");
-        assert_eq!(rx[3], 30.0, "kept rect is the FIRST node's height, got {rx:?}");
+        assert_eq!(
+            rx[3], 30.0,
+            "kept rect is the FIRST node's height, got {rx:?}"
+        );
         // And there's exactly one rect for "x" (no overwrite collision).
         assert!(layout.rect("y").is_some(), "sibling y still laid out");
     }
@@ -1097,10 +1220,19 @@ mod tests {
     #[test]
     fn reload_with_duplicate_ids_keeps_first_and_does_not_corrupt() {
         // Start from a clean single-slider tree.
-        let v1 = UiNode::new("root", UiKind::Panel).with_children(vec![
-            UiNode::new("vol", UiKind::Slider { value: 0.3, min: 0.0, max: 1.0, on_change: "v".into() }),
-        ]);
-        let mut tree = UiTree::from_doc(UiDoc { stylesheet: StyleSheet::default(), root: v1 });
+        let v1 = UiNode::new("root", UiKind::Panel).with_children(vec![UiNode::new(
+            "vol",
+            UiKind::Slider {
+                value: 0.3,
+                min: 0.0,
+                max: 1.0,
+                on_change: "v".into(),
+            },
+        )]);
+        let mut tree = UiTree::from_doc(UiDoc {
+            stylesheet: StyleSheet::default(),
+            root: v1,
+        });
         assert!(tree.set_slider_value("vol", 0.8));
 
         // New doc has a duplicated "dup" id across two panels with different heights.
@@ -1109,16 +1241,35 @@ mod tests {
         let mut p2 = UiNode::new("dup", UiKind::Panel);
         p2.style.height = Some(70.0);
         let v2 = UiNode::new("root", UiKind::Panel).with_children(vec![
-            UiNode::new("vol", UiKind::Slider { value: 0.1, min: 0.0, max: 1.0, on_change: "v".into() }),
+            UiNode::new(
+                "vol",
+                UiKind::Slider {
+                    value: 0.1,
+                    min: 0.0,
+                    max: 1.0,
+                    on_change: "v".into(),
+                },
+            ),
             p1,
             p2,
         ]);
-        tree.reload(&UiDoc { stylesheet: StyleSheet::default(), root: v2 });
+        tree.reload(&UiDoc {
+            stylesheet: StyleSheet::default(),
+            root: v2,
+        });
 
         // Duplicate dropped: root + vol + first dup = 3 nodes.
-        assert_eq!(tree.node_count(), 3, "reload dropped the duplicate-id subtree");
+        assert_eq!(
+            tree.node_count(),
+            3,
+            "reload dropped the duplicate-id subtree"
+        );
         // Preserved slider value survived the reload (state merge still works).
-        assert_eq!(tree.slider_value("vol"), Some(0.8), "slider value preserved across reload");
+        assert_eq!(
+            tree.slider_value("vol"),
+            Some(0.8),
+            "slider value preserved across reload"
+        );
         // Layout: the surviving "dup" uses the FIRST occurrence's height (20).
         let layout = compute_layout(&tree, [200.0, 200.0]);
         let rd = layout.rect("dup").expect("dup laid out");
@@ -1158,7 +1309,11 @@ mod tests {
         tree.reload(&doc2);
 
         // Slider value preserved across reload.
-        assert_eq!(tree.slider_value("vol"), Some(0.7), "slider value lost on reload");
+        assert_eq!(
+            tree.slider_value("vol"),
+            Some(0.7),
+            "slider value lost on reload"
+        );
 
         // The new label text actually renders (text-extraction via burn_text).
         let label = tree.find("lbl").unwrap();
@@ -1168,7 +1323,14 @@ mod tests {
         }
         // Pixel proof the new text rasterises: render and count lit text pixels.
         let mut sheet = StyleSheet::new();
-        sheet.set("lbltxt", Style { text_color: Some([255, 255, 255]), font_scale: Some(2), ..Default::default() });
+        sheet.set(
+            "lbltxt",
+            Style {
+                text_color: Some([255, 255, 255]),
+                font_scale: Some(2),
+                ..Default::default()
+            },
+        );
         if let Some(n) = tree.find_mut("lbl") {
             n.classes.push("lbltxt".into());
             n.style.height = Some(40.0);
@@ -1187,13 +1349,22 @@ mod tests {
             .filter(|p| p[0] > 60 && p[1] > 60 && p[2] > 60)
             .count();
         println!("NEW label lit text pixels = {lit}");
-        assert!(lit > 30, "expected the NEW label glyphs to rasterise, got {lit} lit px");
+        assert!(
+            lit > 30,
+            "expected the NEW label glyphs to rasterise, got {lit} lit px"
+        );
     }
 
     /// Hit-test: inside a button returns its id; 2px outside returns parent/none.
     #[test]
     fn hit_test_inside_and_outside_button() {
-        let mut btn = UiNode::new("btn", UiKind::Button { label: "X".into(), on_click: "x".into() });
+        let mut btn = UiNode::new(
+            "btn",
+            UiKind::Button {
+                label: "X".into(),
+                on_click: "x".into(),
+            },
+        );
         btn.style.width = Some(100.0);
         btn.style.height = Some(40.0);
         btn.style.anchor = Some(Anchor::TopLeft);
@@ -1211,7 +1382,10 @@ mod tests {
 
         // 2px past the button's right edge -> falls on the root panel.
         let just_outside = [btn_rect[0] + btn_rect[2] + 2.0, btn_rect[1] + 10.0];
-        assert_eq!(hit_test(&tree, &layout, just_outside).as_deref(), Some("root"));
+        assert_eq!(
+            hit_test(&tree, &layout, just_outside).as_deref(),
+            Some("root")
+        );
 
         // Far outside the whole tree -> none.
         assert_eq!(hit_test(&tree, &layout, [10_000.0, 10_000.0]), None);
@@ -1245,13 +1419,19 @@ mod tests {
 
         // Root bg class [0.07,0.07,0.10] rasterises to [18,18,26].
         let bg = [18u8, 18, 26, 255];
-        let non_bg = px.iter().filter(|p| {
-            (p[0] as i32 - bg[0] as i32).abs() > 8
-                || (p[1] as i32 - bg[1] as i32).abs() > 8
-                || (p[2] as i32 - bg[2] as i32).abs() > 8
-        }).count();
+        let non_bg = px
+            .iter()
+            .filter(|p| {
+                (p[0] as i32 - bg[0] as i32).abs() > 8
+                    || (p[1] as i32 - bg[1] as i32).abs() > 8
+                    || (p[2] as i32 - bg[2] as i32).abs() > 8
+            })
+            .count();
         println!("menu non-background px = {non_bg}");
-        assert!(non_bg > 5000, "menu should paint many non-bg px, got {non_bg}");
+        assert!(
+            non_bg > 5000,
+            "menu should paint many non-bg px, got {non_bg}"
+        );
 
         // Focused (b_start) vs unfocused (b_quit): compare interior luminance.
         let r_start = layout.rect("b_start").unwrap();
@@ -1263,7 +1443,10 @@ mod tests {
         let l_focus = luma_at(&px, w, sx, sy);
         let l_normal = luma_at(&px, w, qx, qy);
         println!("focused luma={l_focus} unfocused luma={l_normal}");
-        assert!(l_focus > l_normal + 10.0, "focused button must be brighter: {l_focus} vs {l_normal}");
+        assert!(
+            l_focus > l_normal + 10.0,
+            "focused button must be brighter: {l_focus} vs {l_normal}"
+        );
     }
 
     /// Document JSON round-trips structure + style classes.
@@ -1280,23 +1463,38 @@ mod tests {
         let tree = UiTree::from_doc(again);
         assert_eq!(tree.node_count(), 2);
         assert!(tree.find("t").is_some());
-        assert_eq!(tree.sheet.classes.get("p").unwrap().color, Some([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(
+            tree.sheet.classes.get("p").unwrap().color,
+            Some([1.0, 0.0, 0.0, 1.0])
+        );
     }
 
     /// Feature-gated: plain-math and taffy agree within 1px on the 3-child column.
     #[cfg(feature = "game-ui")]
     #[test]
     fn taffy_parity_three_child_column() {
-        let root = UiNode::new("root", UiKind::Panel)
-            .with_children(vec![col_child("a"), col_child("b"), col_child("c")]);
+        let root = UiNode::new("root", UiKind::Panel).with_children(vec![
+            col_child("a"),
+            col_child("b"),
+            col_child("c"),
+        ]);
         let tree = UiTree::new(root);
         let layout = compute_layout(&tree, [400.0, 600.0]);
-        let mine = [layout.rect("a").unwrap(), layout.rect("b").unwrap(), layout.rect("c").unwrap()];
+        let mine = [
+            layout.rect("a").unwrap(),
+            layout.rect("b").unwrap(),
+            layout.rect("c").unwrap(),
+        ];
         let taffy = taffy_column_rects(400.0, 600.0, 3);
         println!("plain={mine:?}\ntaffy={taffy:?}");
         for (m, t) in mine.iter().zip(taffy.iter()) {
             for k in 0..4 {
-                assert!((m[k] - t[k]).abs() <= 1.0, "axis {k}: plain {} vs taffy {}", m[k], t[k]);
+                assert!(
+                    (m[k] - t[k]).abs() <= 1.0,
+                    "axis {k}: plain {} vs taffy {}",
+                    m[k],
+                    t[k]
+                );
             }
         }
     }

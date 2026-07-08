@@ -462,19 +462,16 @@ pub fn meshes_to_instanced_scene(
     // two backends: CUDA (NVRTC) packs tight (132 floats / 528 bytes); Vulkan
     // (SPIR-V std430) pads every float3 to 16 bytes (156 floats / 624 bytes).
     // Pack the layout that matches the backend the renderer will actually select.
-    // Selection mirrors `select_present` in splat_backend.rs: SPECTRA_BACKEND=cuda
-    // forces CUDA (the product path on NVIDIA, set by the game launcher); anything
-    // else defaults to the Vulkan-first fallback. Feeding the wrong layout put
-    // `visibility_mask`/`albedo` in padding slots and the whole city rendered
-    // black (every mesh hit culled on a garbage visibility mask).
-    let cuda_layout = matches!(
-        std::env::var("SPECTRA_BACKEND")
-            .ok()
-            .map(|s| s.to_ascii_lowercase())
-            .as_deref(),
-        Some("cuda")
-    );
-    let mut params: Vec<f32> = if cuda_layout {
+    // Resident rendering selects CUDA on Windows at the type level
+    // (`resident_renderer::ResidentBackend = CudarcSlangBackend`). Do not depend
+    // on launcher env for this ABI: a missing `SPECTRA_BACKEND=cuda` would pack
+    // Vulkan/std430 material rows for CUDA kernels and shift every field after
+    // the first float3. Keep an explicit env override for diagnostic runs.
+    let cuda_layout = std::env::var("SPECTRA_BACKEND")
+        .ok()
+        .map(|s| s.eq_ignore_ascii_case("cuda"))
+        .unwrap_or(cfg!(target_os = "windows"));
+    let params: Vec<f32> = if cuda_layout {
         let mut p = Vec::with_capacity(materials.len() * 132);
         for m in materials {
             p.extend_from_slice(&pack_cuda_mesh_material(*m));
@@ -592,7 +589,11 @@ mod tests {
         assert!(efflor(2) < 1e-4, "flat ground has no efflorescence");
         assert!(edge(2) < 1e-4, "flat ground has no edge-wear");
         // The wall DOES get edge-wear; the ground does not.
-        assert!(edge(0) > 0.01, "vertical wall has edge-wear, got {}", edge(0));
+        assert!(
+            edge(0) > 0.01,
+            "vertical wall has edge-wear, got {}",
+            edge(0)
+        );
     }
 
     #[test]
@@ -739,9 +740,21 @@ mod tests {
             1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
         let instances = [
-            InstanceRecordGpu { proto_index: 0, transform: ident, material_base: 0 },
-            InstanceRecordGpu { proto_index: 1, transform: ident, material_base: 0 },
-            InstanceRecordGpu { proto_index: 0, transform: ident, material_base: 0 },
+            InstanceRecordGpu {
+                proto_index: 0,
+                transform: ident,
+                material_base: 0,
+            },
+            InstanceRecordGpu {
+                proto_index: 1,
+                transform: ident,
+                material_base: 0,
+            },
+            InstanceRecordGpu {
+                proto_index: 0,
+                transform: ident,
+                material_base: 0,
+            },
         ];
         let materials = [PbrMaterial::default()];
         let scene = meshes_to_instanced_scene(&blas, &instances, &materials, &[], 64, 48);
@@ -752,9 +765,18 @@ mod tests {
         // One REAL AABB per proto, and the two are DISTINCT (not the merged box).
         assert_eq!(scene.geometry.proto_aabbs.len(), 2, "one AABB per proto");
         let aabbs_distinct = scene.geometry.proto_aabbs[0] != scene.geometry.proto_aabbs[1];
-        assert!(aabbs_distinct, "protos must have distinct AABBs, not the scene-wide box");
-        assert_eq!(scene.geometry.proto_aabbs[0], ([0.0, 0.0, 0.0], [1.0, 1.0, 0.0]));
-        assert_eq!(scene.geometry.proto_aabbs[1], ([10.0, 0.0, 0.0], [12.0, 2.0, 0.0]));
+        assert!(
+            aabbs_distinct,
+            "protos must have distinct AABBs, not the scene-wide box"
+        );
+        assert_eq!(
+            scene.geometry.proto_aabbs[0],
+            ([0.0, 0.0, 0.0], [1.0, 1.0, 0.0])
+        );
+        assert_eq!(
+            scene.geometry.proto_aabbs[1],
+            ([10.0, 0.0, 0.0], [12.0, 2.0, 0.0])
+        );
         // Per-instance proto index preserved in order.
         assert_eq!(scene.geometry.instance_proto_index, vec![0u32, 1, 0]);
         // K1: per-proto soup sub-ranges (vbase, vcount, tbase, tcount), contiguous

@@ -69,7 +69,10 @@ fn crowd_replay_is_byte_identical_across_runs() {
     // rayon path; two same-seed runs must produce identical state.
     let a = run(4096, 60);
     let b = run(4096, 60);
-    assert_eq!(a, b, "same-seed crowd runs must be byte-identical (parallel path)");
+    assert_eq!(
+        a, b,
+        "same-seed crowd runs must be byte-identical (parallel path)"
+    );
 }
 
 #[test]

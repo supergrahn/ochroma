@@ -75,10 +75,11 @@ impl HotReloadManager {
         for (path, last_modified) in &mut self.watched_files {
             if let Ok(metadata) = std::fs::metadata(path)
                 && let Ok(modified) = metadata.modified()
-                    && modified > *last_modified {
-                        *last_modified = modified;
-                        events.push(classify_reload_event(path));
-                    }
+                && modified > *last_modified
+            {
+                *last_modified = modified;
+                events.push(classify_reload_event(path));
+            }
         }
 
         // Check watched directories for new files
@@ -87,12 +88,14 @@ impl HotReloadManager {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_file() && !self.watched_files.contains_key(&path)
+                    if path.is_file()
+                        && !self.watched_files.contains_key(&path)
                         && let Ok(metadata) = std::fs::metadata(&path)
-                            && let Ok(modified) = metadata.modified() {
-                                new_files.push((path.clone(), modified));
-                                events.push(classify_reload_event(&path));
-                            }
+                        && let Ok(modified) = metadata.modified()
+                    {
+                        new_files.push((path.clone(), modified));
+                        events.push(classify_reload_event(&path));
+                    }
                 }
             }
         }
@@ -139,10 +142,7 @@ mod tests {
     fn tmp_dir() -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "hot_reload_test_{}_{id}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("hot_reload_test_{}_{id}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -184,9 +184,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0],
-            HotReloadEvent::AssetChanged {
-                path: file.clone()
-            }
+            HotReloadEvent::AssetChanged { path: file.clone() }
         );
 
         let _ = fs::remove_dir_all(&dir);
@@ -242,36 +240,21 @@ mod tests {
     fn classify_rhai_as_script_changed() {
         let path = PathBuf::from("scripts/player.rhai");
         let event = classify_reload_event(&path);
-        assert_eq!(
-            event,
-            HotReloadEvent::ScriptChanged {
-                path: path.clone()
-            }
-        );
+        assert_eq!(event, HotReloadEvent::ScriptChanged { path: path.clone() });
     }
 
     #[test]
     fn classify_ply_as_asset_changed() {
         let path = PathBuf::from("assets/model.ply");
         let event = classify_reload_event(&path);
-        assert_eq!(
-            event,
-            HotReloadEvent::AssetChanged {
-                path: path.clone()
-            }
-        );
+        assert_eq!(event, HotReloadEvent::AssetChanged { path: path.clone() });
     }
 
     #[test]
     fn classify_ochroma_map_as_map_changed() {
         let path = PathBuf::from("maps/level1.ochroma_map");
         let event = classify_reload_event(&path);
-        assert_eq!(
-            event,
-            HotReloadEvent::MapChanged {
-                path: path.clone()
-            }
-        );
+        assert_eq!(event, HotReloadEvent::MapChanged { path: path.clone() });
     }
 
     #[test]
@@ -288,7 +271,10 @@ mod tests {
         fs::write(&file, "modified").unwrap();
 
         let events = mgr.poll(1.0);
-        assert!(events.is_empty(), "disabled manager should produce no events");
+        assert!(
+            events.is_empty(),
+            "disabled manager should produce no events"
+        );
         assert!(!mgr.is_enabled());
 
         let _ = fs::remove_dir_all(&dir);

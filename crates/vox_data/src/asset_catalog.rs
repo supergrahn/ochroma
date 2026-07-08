@@ -141,14 +141,16 @@ fn generate_styled_building(
     wall_spd: [f32; 8],
     roof_spd: [f32; 8],
 ) -> Vec<GaussianSplat> {
-    use rand::prelude::*;
     use rand::SeedableRng;
+    use rand::prelude::*;
 
     let mut rng = StdRng::seed_from_u64(seed);
     let total_height = floors as f32 * 3.5;
     // Extend 8-band SPDs to 16 bands by repeating
-    let wall_spectral: [u16; 16] = std::array::from_fn(|i| f16::from_f32(wall_spd[i % 8]).to_bits());
-    let roof_spectral: [u16; 16] = std::array::from_fn(|i| f16::from_f32(roof_spd[i % 8]).to_bits());
+    let wall_spectral: [u16; 16] =
+        std::array::from_fn(|i| f16::from_f32(wall_spd[i % 8]).to_bits());
+    let roof_spectral: [u16; 16] =
+        std::array::from_fn(|i| f16::from_f32(roof_spd[i % 8]).to_bits());
 
     let mut splats = Vec::new();
     let density = 400.0; // splats per m² reduced for performance
@@ -162,7 +164,13 @@ fn generate_styled_building(
             let y = rng.random_range(0.0..total_height);
             let s = 0.04 + rng.random::<f32>() * 0.04;
             splats.push(GaussianSplat::surface(
-                [x, y, z], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], s, s * 0.3, 240, wall_spectral,
+                [x, y, z],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                s,
+                s * 0.3,
+                240,
+                wall_spectral,
             ));
         }
     }
@@ -176,7 +184,13 @@ fn generate_styled_building(
             let y = rng.random_range(0.0..total_height);
             let s = 0.04 + rng.random::<f32>() * 0.04;
             splats.push(GaussianSplat::surface(
-                [x, y, z], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0], s * 0.3, s, 240, wall_spectral,
+                [x, y, z],
+                [0.0, 0.0, -1.0],
+                [0.0, 1.0, 0.0],
+                s * 0.3,
+                s,
+                240,
+                wall_spectral,
             ));
         }
     }
@@ -190,7 +204,12 @@ fn generate_styled_building(
                 total_height,
                 -rng.random_range(0.0..depth),
             ],
-            [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.06, 0.06, 245, roof_spectral,
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            0.06,
+            0.06,
+            245,
+            roof_spectral,
         ));
     }
 

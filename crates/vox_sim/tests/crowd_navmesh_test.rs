@@ -4,8 +4,16 @@ use vox_sim::crowd::{CrowdAgent, CrowdSimulation};
 
 fn two_node_navmesh() -> NavMesh {
     let mut nm = NavMesh::new();
-    nm.nodes.push(NavNode { id: 0, world_pos: [0.0, 0.0, 0.0], neighbours: vec![1] });
-    nm.nodes.push(NavNode { id: 1, world_pos: [10.0, 0.0, 0.0], neighbours: vec![0] });
+    nm.nodes.push(NavNode {
+        id: 0,
+        world_pos: [0.0, 0.0, 0.0],
+        neighbours: vec![1],
+    });
+    nm.nodes.push(NavNode {
+        id: 1,
+        world_pos: [10.0, 0.0, 0.0],
+        neighbours: vec![0],
+    });
     nm
 }
 
@@ -30,9 +38,21 @@ fn crowd_agent_set_navmesh_destination_stores_path() {
 #[test]
 fn crowd_agent_follows_navmesh_path_around_obstacle() {
     let mut nm = NavMesh::new();
-    nm.nodes.push(NavNode { id: 0, world_pos: [0.0, 0.0, 0.0], neighbours: vec![1] });
-    nm.nodes.push(NavNode { id: 1, world_pos: [5.0, 0.0, 0.0], neighbours: vec![0, 2] });
-    nm.nodes.push(NavNode { id: 2, world_pos: [10.0, 0.0, 0.0], neighbours: vec![1] });
+    nm.nodes.push(NavNode {
+        id: 0,
+        world_pos: [0.0, 0.0, 0.0],
+        neighbours: vec![1],
+    });
+    nm.nodes.push(NavNode {
+        id: 1,
+        world_pos: [5.0, 0.0, 0.0],
+        neighbours: vec![0, 2],
+    });
+    nm.nodes.push(NavNode {
+        id: 2,
+        world_pos: [10.0, 0.0, 0.0],
+        neighbours: vec![1],
+    });
 
     let mut sim = CrowdSimulation::new();
     let idx = sim.add_agent(Vec3::new(0.1, 0.0, 0.0), Vec3::new(10.0, 0.0, 0.0), 5.0);
@@ -45,7 +65,10 @@ fn crowd_agent_follows_navmesh_path_around_obstacle() {
         sim.tick(0.05);
         let pos = sim.agents[idx].position;
         if !reached_waypoint1 && (pos - Vec3::new(5.0, 0.0, 0.0)).length() < 0.5 {
-            println!("agent reached waypoint 1 at [{:.1}, {:.1}, {:.1}]", pos.x, pos.y, pos.z);
+            println!(
+                "agent reached waypoint 1 at [{:.1}, {:.1}, {:.1}]",
+                pos.x, pos.y, pos.z
+            );
             reached_waypoint1 = true;
         }
         if (pos - Vec3::new(9.9, 0.0, 0.0)).length() < 0.5 {
@@ -54,6 +77,9 @@ fn crowd_agent_follows_navmesh_path_around_obstacle() {
             break;
         }
     }
-    assert!(reached_waypoint1, "agent must pass through intermediate waypoint at [5,0,0]");
+    assert!(
+        reached_waypoint1,
+        "agent must pass through intermediate waypoint at [5,0,0]"
+    );
     assert!(reached_goal, "agent must reach goal at [10,0,0]");
 }

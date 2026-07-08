@@ -69,7 +69,9 @@ impl AgentManager {
     /// On arrival the destination is cleared.
     pub fn tick(&mut self, dt: f32) {
         for agent in self.agents.values_mut() {
-            let Some(dest) = agent.destination else { continue };
+            let Some(dest) = agent.destination else {
+                continue;
+            };
 
             // Work in a common reference frame: use the agent's own tile
             let agent_local = agent.position.local;

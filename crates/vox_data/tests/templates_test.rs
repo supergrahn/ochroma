@@ -27,6 +27,9 @@ fn no_city_builder_genre() {
     // Engine must not ship a game-specific city-builder template.
     let templates = available_templates();
     for t in &templates {
-        assert_ne!(t.name, "City Builder", "engine must not ship a city-builder template");
+        assert_ne!(
+            t.name, "City Builder",
+            "engine must not ship a city-builder template"
+        );
     }
 }

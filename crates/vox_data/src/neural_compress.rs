@@ -45,9 +45,7 @@ impl NeuralCompressor {
                 // Store only position (3 x f16) + opacity (u8) + dominant spectral band (u8)
                 for splat in splats {
                     for &p in &splat.position() {
-                        data.extend_from_slice(
-                            &half::f16::from_f32(p).to_bits().to_le_bytes(),
-                        );
+                        data.extend_from_slice(&half::f16::from_f32(p).to_bits().to_le_bytes());
                     }
                     data.push(splat.opacity());
                     // Find dominant spectral band
@@ -55,9 +53,7 @@ impl NeuralCompressor {
                         .spectral()
                         .iter()
                         .enumerate()
-                        .max_by_key(|&(_, &v)| {
-                            (half::f16::from_bits(v).to_f32() * 1000.0) as u32
-                        })
+                        .max_by_key(|&(_, &v)| (half::f16::from_bits(v).to_f32() * 1000.0) as u32)
                         .map(|(i, _)| i as u8)
                         .unwrap_or(0);
                     data.push(max_band);
@@ -67,14 +63,10 @@ impl NeuralCompressor {
                 // Store position (3 x f16) + scale average (f16) + opacity (u8) + 4 spectral bands
                 for splat in splats {
                     for &p in &splat.position() {
-                        data.extend_from_slice(
-                            &half::f16::from_f32(p).to_bits().to_le_bytes(),
-                        );
+                        data.extend_from_slice(&half::f16::from_f32(p).to_bits().to_le_bytes());
                     }
                     let avg_scale = (splat.scale_u() + splat.scale_v() + splat.scale_w()) / 3.0;
-                    data.extend_from_slice(
-                        &half::f16::from_f32(avg_scale).to_bits().to_le_bytes(),
-                    );
+                    data.extend_from_slice(&half::f16::from_f32(avg_scale).to_bits().to_le_bytes());
                     data.push(splat.opacity());
                     // Every other spectral band
                     for i in (0..8).step_by(2) {
@@ -86,14 +78,10 @@ impl NeuralCompressor {
                 // Full data with f16 precision for positions
                 for splat in splats {
                     for &p in &splat.position() {
-                        data.extend_from_slice(
-                            &half::f16::from_f32(p).to_bits().to_le_bytes(),
-                        );
+                        data.extend_from_slice(&half::f16::from_f32(p).to_bits().to_le_bytes());
                     }
                     for s in [splat.scale_u(), splat.scale_v(), splat.scale_w()] {
-                        data.extend_from_slice(
-                            &half::f16::from_f32(s).to_bits().to_le_bytes(),
-                        );
+                        data.extend_from_slice(&half::f16::from_f32(s).to_bits().to_le_bytes());
                     }
                     data.push(splat.opacity());
                     for &sp in splat.spectral() {

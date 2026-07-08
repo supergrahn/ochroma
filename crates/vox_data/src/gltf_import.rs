@@ -134,8 +134,10 @@ pub fn import_gltf(path: &Path) -> Result<ImportResult, ImportError> {
 
                     all_splats.push(GaussianSplat::surface(
                         [pos.x, pos.y, pos.z],
-                        [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
-                        scale, scale * 0.3,
+                        [1.0, 0.0, 0.0],
+                        [0.0, 0.0, -1.0],
+                        scale,
+                        scale * 0.3,
                         240,
                         spectral,
                     ));
@@ -173,7 +175,10 @@ mod tests {
     fn test_rgb_to_spectral_nonzero_for_colour() {
         let spectral = rgb_to_spectral(0.8, 0.5, 0.3);
         let any_nonzero = spectral.iter().any(|&v| v != 0);
-        assert!(any_nonzero, "spectral bands should be non-zero for coloured input");
+        assert!(
+            any_nonzero,
+            "spectral bands should be non-zero for coloured input"
+        );
     }
 
     #[test]
@@ -184,13 +189,29 @@ mod tests {
         // band 11=655nm≈0.90 (rising toward the 1.0 peak at 730–755nm).
         let band10 = f16::from_bits(spectral[10]).to_f32();
         let band11 = f16::from_bits(spectral[11]).to_f32();
-        assert!(band10 > 0.7, "red input should have high band 10 (630nm), got {}", band10);
-        assert!(band11 > 0.9, "red input should have high band 11 (655nm), got {}", band11);
+        assert!(
+            band10 > 0.7,
+            "red input should have high band 10 (630nm), got {}",
+            band10
+        );
+        assert!(
+            band11 > 0.9,
+            "red input should have high band 11 (655nm), got {}",
+            band11
+        );
         // Short-wavelength (blue) bands should be near zero for pure red.
         let band0 = f16::from_bits(spectral[0]).to_f32();
         let band3 = f16::from_bits(spectral[3]).to_f32();
-        assert!(band0 < 0.06, "red input should have ~zero band 0 (380nm), got {}", band0);
-        assert!(band3 < 0.01, "red input should have ~zero band 3 (455nm peak blue), got {}", band3);
+        assert!(
+            band0 < 0.06,
+            "red input should have ~zero band 0 (380nm), got {}",
+            band0
+        );
+        assert!(
+            band3 < 0.01,
+            "red input should have ~zero band 3 (455nm peak blue), got {}",
+            band3
+        );
     }
 
     #[test]
@@ -198,10 +219,18 @@ mod tests {
         let spectral = rgb_to_spectral(0.0, 1.0, 0.0);
         // 16-band: band 7=555nm is peak green (g * 1.0)
         let band7 = f16::from_bits(spectral[7]).to_f32();
-        assert!(band7 > 0.9, "green input should have high band 7 (555nm peak green), got {}", band7);
+        assert!(
+            band7 > 0.9,
+            "green input should have high band 7 (555nm peak green), got {}",
+            band7
+        );
         // Red bands should be low
         let band11 = f16::from_bits(spectral[11]).to_f32();
-        assert!(band11 < 0.01, "green input should have ~zero band 11 (655nm peak red), got {}", band11);
+        assert!(
+            band11 < 0.01,
+            "green input should have ~zero band 11 (655nm peak red), got {}",
+            band11
+        );
     }
 
     #[test]

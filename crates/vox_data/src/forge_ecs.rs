@@ -15,7 +15,7 @@
 use bevy_ecs::prelude::*;
 use vox_core::types::GaussianSplat;
 
-use crate::proc_gs::{emit_splats, SplatRule};
+use crate::proc_gs::{SplatRule, emit_splats};
 use crate::proc_gs_advanced::{generate_bench, generate_tree};
 
 // ── Components ─────────────────────────────────────────────────────────────
@@ -65,7 +65,9 @@ pub fn forge_pcg_system(
 ) {
     for (entity, proc_gen) in query.iter() {
         let splats = emit_splats(&proc_gen.rule, proc_gen.seed);
-        commands.entity(entity).insert(ProcGenResultComponent { splats });
+        commands
+            .entity(entity)
+            .insert(ProcGenResultComponent { splats });
     }
 }
 
@@ -79,14 +81,16 @@ pub fn advanced_forge_system(
 ) {
     for (entity, advanced) in query.iter() {
         let splats = match advanced {
-            AdvancedProcGenComponent::Tree { seed, height, canopy_radius } => {
-                generate_tree(*seed, *height, *canopy_radius)
-            }
-            AdvancedProcGenComponent::Bench { seed } => {
-                generate_bench(*seed)
-            }
+            AdvancedProcGenComponent::Tree {
+                seed,
+                height,
+                canopy_radius,
+            } => generate_tree(*seed, *height, *canopy_radius),
+            AdvancedProcGenComponent::Bench { seed } => generate_bench(*seed),
         };
-        commands.entity(entity).insert(ProcGenResultComponent { splats });
+        commands
+            .entity(entity)
+            .insert(ProcGenResultComponent { splats });
     }
 }
 
@@ -111,9 +115,7 @@ impl bevy_app::Plugin for ForgePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proc_gs::{
-        GeometryConfig, GeometryStrategy, RuleHeader, VariationConfig,
-    };
+    use crate::proc_gs::{GeometryConfig, GeometryStrategy, RuleHeader, VariationConfig};
 
     fn minimal_rule() -> SplatRule {
         SplatRule {
@@ -170,9 +172,7 @@ mod tests {
 
     #[test]
     fn proc_gen_result_holds_splats() {
-        let result = ProcGenResultComponent {
-            splats: vec![],
-        };
+        let result = ProcGenResultComponent { splats: vec![] };
         assert!(result.splats.is_empty());
     }
 
@@ -183,17 +183,22 @@ mod tests {
 
         let mut world = World::new();
 
-        let entity = world.spawn(ProcGenComponent {
-            rule: minimal_rule(),
-            seed: 1,
-        }).id();
+        let entity = world
+            .spawn(ProcGenComponent {
+                rule: minimal_rule(),
+                seed: 1,
+            })
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(forge_pcg_system);
         schedule.run(&mut world);
 
         let result = world.entity(entity).get::<ProcGenResultComponent>();
-        assert!(result.is_some(), "ProcGenResultComponent should be inserted after system runs");
+        assert!(
+            result.is_some(),
+            "ProcGenResultComponent should be inserted after system runs"
+        );
     }
 
     #[test]
@@ -204,19 +209,30 @@ mod tests {
         let mut world = World::new();
 
         // Entity already has a result — should NOT be re-generated
-        let entity = world.spawn((
-            ProcGenComponent { rule: minimal_rule(), seed: 2 },
-            ProcGenResultComponent { splats: vec![] },
-        )).id();
+        let entity = world
+            .spawn((
+                ProcGenComponent {
+                    rule: minimal_rule(),
+                    seed: 2,
+                },
+                ProcGenResultComponent { splats: vec![] },
+            ))
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(forge_pcg_system);
         schedule.run(&mut world);
 
         // Result component still present (not replaced)
-        let result = world.entity(entity).get::<ProcGenResultComponent>().unwrap();
+        let result = world
+            .entity(entity)
+            .get::<ProcGenResultComponent>()
+            .unwrap();
         // splats remains empty because we pre-inserted an empty result
-        assert!(result.splats.is_empty(), "pre-existing result should not be replaced");
+        assert!(
+            result.splats.is_empty(),
+            "pre-existing result should not be replaced"
+        );
     }
 
     #[test]
@@ -226,18 +242,23 @@ mod tests {
 
         let mut world = World::new();
 
-        let entity = world.spawn(AdvancedProcGenComponent::Tree {
-            seed: 10,
-            height: 5.0,
-            canopy_radius: 2.0,
-        }).id();
+        let entity = world
+            .spawn(AdvancedProcGenComponent::Tree {
+                seed: 10,
+                height: 5.0,
+                canopy_radius: 2.0,
+            })
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(advanced_forge_system);
         schedule.run(&mut world);
 
         let result = world.entity(entity).get::<ProcGenResultComponent>();
-        assert!(result.is_some(), "ProcGenResultComponent should be inserted for tree");
+        assert!(
+            result.is_some(),
+            "ProcGenResultComponent should be inserted for tree"
+        );
         assert!(
             !result.unwrap().splats.is_empty(),
             "tree generation should produce at least one splat"
@@ -251,14 +272,19 @@ mod tests {
 
         let mut world = World::new();
 
-        let entity = world.spawn(AdvancedProcGenComponent::Bench { seed: 20 }).id();
+        let entity = world
+            .spawn(AdvancedProcGenComponent::Bench { seed: 20 })
+            .id();
 
         let mut schedule = Schedule::default();
         schedule.add_systems(advanced_forge_system);
         schedule.run(&mut world);
 
         let result = world.entity(entity).get::<ProcGenResultComponent>();
-        assert!(result.is_some(), "ProcGenResultComponent should be inserted for bench");
+        assert!(
+            result.is_some(),
+            "ProcGenResultComponent should be inserted for bench"
+        );
         assert!(
             !result.unwrap().splats.is_empty(),
             "bench generation should produce at least one splat"

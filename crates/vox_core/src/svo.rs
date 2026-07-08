@@ -10,7 +10,10 @@ pub struct SpatialHash {
 
 impl SpatialHash {
     pub fn new(cell_size: f32) -> Self {
-        Self { cell_size, map: DashMap::new() }
+        Self {
+            cell_size,
+            map: DashMap::new(),
+        }
     }
 
     fn key(&self, pos: Vec3) -> VoxelKey {
@@ -35,7 +38,10 @@ impl SpatialHash {
 
     pub fn query_voxel(&self, position: Vec3) -> Vec<u32> {
         let key = self.key(position);
-        self.map.get(&key).map(|ids| ids.clone()).unwrap_or_default()
+        self.map
+            .get(&key)
+            .map(|ids| ids.clone())
+            .unwrap_or_default()
     }
 
     pub fn query_radius(&self, position: Vec3, radius: f32) -> Vec<u32> {

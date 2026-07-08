@@ -1,6 +1,6 @@
-use vox_core::types::{GaussianSplat, SplatInstance};
-use glam::{Vec3, Quat};
+use glam::{Quat, Vec3};
 use uuid::Uuid;
+use vox_core::types::{GaussianSplat, SplatInstance};
 
 #[test]
 fn gaussian_splat_size_is_52_bytes() {

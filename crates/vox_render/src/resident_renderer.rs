@@ -23,7 +23,7 @@ use spectra_gpu::CudarcSlangBackend;
 #[cfg(not(target_os = "windows"))]
 use spectra_gpu::VulkanSlangBackend;
 pub use spectra_renderer::FrameOutput;
-use spectra_renderer::{RenderConfig, RenderSettings, Renderer};
+use spectra_renderer::{RenderConfig, RenderSettings, Renderer, RendererTexture2D};
 
 /// The LIVE path-tracer compute backend. The standing rule: use CUDA on NVIDIA
 /// when available. On Windows (NVIDIA/CUDA box) this is the cudarc CUDA backend;
@@ -44,9 +44,9 @@ pub use spectra_renderer::{TierEntry, TierTable};
 
 use crate::scene_delta_adapter::{RetainedDeltaError, RetainedDeltaPlan, RetainedRenderMirror};
 use crate::splat_backend::{
-    pack_vulkan_directional_light, pack_vulkan_point_light, pack_vulkan_sun_disk_light,
-    resolve_slang_kernel_dir, rig_to_settings, seed_features_from_config, sun_solid_angle,
-    LightRig, VULKAN_LIGHT_FLOATS,
+    LightRig, VULKAN_LIGHT_FLOATS, pack_vulkan_directional_light, pack_vulkan_point_light,
+    pack_vulkan_sun_disk_light, resolve_slang_kernel_dir, rig_to_settings,
+    seed_features_from_config, sun_solid_angle,
 };
 
 /// Result of a scene-delta upload — the reuse-vs-rebuild proof.
@@ -96,6 +96,16 @@ pub struct ResidentSceneRenderer {
     /// `set_scene`; drives `drain_scene_deltas` so the game only emits
     /// `Vec<vox_scene::SceneDelta>`.
     retained_mirror: RetainedRenderMirror,
+    /// Last combined view-projection rendered by the live camera stream. Static
+    /// cameras may progressively accumulate; camera motion must clear the
+    /// progressive film and temporal histories without rebuilding the renderer.
+    last_view_proj: Option<[f32; 16]>,
+    /// Last projection matrix, tracked separately so tiny view-matrix float drift
+    /// does not look like a projection/camera cut.
+    last_projection: Option<[f32; 16]>,
+    /// Last camera view matrix, used to distinguish a real cut/teleport from
+    /// continuous orbit/pan motion.
+    last_camera_view: Option<[f32; 16]>,
 }
 
 impl ResidentSceneRenderer {
@@ -284,11 +294,7 @@ impl ResidentSceneRenderer {
                     .and_then(|v| v.parse::<u32>().ok())
                     .or_else(|| {
                         let ov = rcfg.glass_bounces_override;
-                        if ov >= 0 {
-                            Some(ov as u32)
-                        } else {
-                            None
-                        }
+                        if ov >= 0 { Some(ov as u32) } else { None }
                     })
                     .unwrap_or_else(|| glass_floor_for_tier(config.max_bounces));
                 floor = floor.max(g);
@@ -299,11 +305,7 @@ impl ResidentSceneRenderer {
                     .and_then(|v| v.parse::<u32>().ok())
                     .or_else(|| {
                         let ov = rcfg.water_bounces_override;
-                        if ov >= 0 {
-                            Some(ov as u32)
-                        } else {
-                            None
-                        }
+                        if ov >= 0 { Some(ov as u32) } else { None }
                     })
                     .unwrap_or_else(|| water_floor_for_tier(config.max_bounces));
                 floor = floor.max(wf);
@@ -611,6 +613,9 @@ impl ResidentSceneRenderer {
             rig,
             delta_ring: SceneDeltaRing::new(),
             retained_mirror: RetainedRenderMirror::new(),
+            last_view_proj: None,
+            last_projection: None,
+            last_camera_view: None,
         };
         // Upload the initial scene (with the rig's lights + sky/atmosphere) so the
         // first render_camera has geometry/materials/lights resident.
@@ -626,12 +631,16 @@ impl ResidentSceneRenderer {
         self.upload_scene(scene)
     }
 
-    /// Bind the path tracer's flat texture atlas (texture keystone). The
-    /// megakernel samples it (EWA) for any material whose `albedo_tex >= 0`.
-    /// MUST be called AFTER scene upload (`new_with_tier` / `set_scene`) because
-    /// the renderer's `set_texture_atlas` needs `state` to exist. `texture_descs`
-    /// + `texture_data` come from `splat_backend::build_texture_atlas`; an empty
-    /// atlas disables sampling (every material falls back to its flat colour).
+    /// Update the render-only light rig without rebuilding geometry. Returns
+    /// true when the day/night state changed, because lit-window promotion and
+    /// emissive point-light extraction are baked into the uploaded scene.
+    pub fn set_light_rig(&mut self, rig: LightRig) -> bool {
+        let day_night_changed = self.rig.is_night != rig.is_night;
+        self.rig = rig;
+        self.apply_rig_uniforms();
+        day_night_changed
+    }
+
     /// Bind an equirectangular HDRI environment map (linear RGB, `channels`
     /// usually 3). Drives the megakernel's miss-ray environment lookup + HDRI
     /// importance-sampled NEE (both already in the kernel) — replacing the
@@ -641,15 +650,60 @@ impl ResidentSceneRenderer {
         self.renderer.set_hdri(data, width, height, channels);
     }
 
-    pub fn set_texture_atlas(
+    /// Bind resident material texture objects. Call after scene upload and before
+    /// terrain/spray slots that reference the same texture-slot ordering.
+    pub fn set_material_textures(&mut self, textures: &[RendererTexture2D]) -> Result<(), String> {
+        self.renderer
+            .set_native_textures(textures)
+            .map_err(|e| format!("set_native_textures: {e:?}"))
+    }
+
+    /// Bind resident material textures and keep the host descriptor/f32 mirror
+    /// available for OptiX OMM baking while that builder is being moved to cooked
+    /// opacity payloads. Shader sampling still uses native texture objects.
+    pub fn set_material_textures_with_mirror(
         &mut self,
+        textures: &[RendererTexture2D],
         texture_descs: &[u32],
         texture_data: &[f32],
-        num_textures: u32,
     ) -> Result<(), String> {
         self.renderer
-            .set_texture_atlas(texture_descs, texture_data, num_textures)
-            .map_err(|e| format!("set_texture_atlas: {e:?}"))
+            .set_native_textures_with_host_mirror(textures, texture_descs, texture_data)
+            .map_err(|e| format!("set_native_textures_with_host_mirror: {e:?}"))
+    }
+
+    /// Bind the GPU-resident sparse virtual texture table. Slot ids are the same
+    /// integer material slots used by resident material textures; SVT changes the
+    /// backing store to paged tiles.
+    pub fn set_svt_residency(
+        &mut self,
+        texture_descs: &[i32],
+        page_table: &[i32],
+        tile_cache_rgba: &[f32],
+        texture_count: u32,
+        tile_size: u32,
+        cache_tiles: u32,
+        max_tiles_per_axis: u32,
+        texture_size: u32,
+    ) -> Result<(), String> {
+        self.renderer
+            .set_svt_residency(
+                texture_descs,
+                page_table,
+                tile_cache_rgba,
+                texture_count,
+                tile_size,
+                cache_tiles,
+                max_tiles_per_axis,
+                texture_size,
+            )
+            .map_err(|e| format!("set_svt_residency: {e:?}"))
+    }
+
+    pub fn clear_svt_residency(&mut self) -> Result<(), String> {
+        self.renderer
+            .clear_svt_residency()
+            .map_err(|e| format!("clear_svt_residency: {e:?}"))
     }
 
     /// Upload the per-vertex weathering PATTERN (the cook/geometry-anchored
@@ -670,10 +724,10 @@ impl ResidentSceneRenderer {
     }
 
     /// Upload the SPRAY FIELD (world-space ground-cover weight grid) + its
-    /// ChannelTable → atlas-slot mapping. Drives the megakernel's top-2 convex
+    /// ChannelTable → texture-slot mapping. Drives the megakernel's top-2 convex
     /// triplanar ground blend (kills biome grid seams + shows painted strokes).
-    /// MUST be called AFTER `set_texture_atlas` (the channel slots reference
-    /// resident atlas entries). An empty `packed` disables the field (the ground
+    /// MUST be called AFTER `set_material_textures` (the channel slots reference
+    /// resident texture entries). An empty `packed` disables the field (the ground
     /// falls back to its single-slot triplanar path). See
     /// `vox_core::spray::SprayField`.
     ///
@@ -697,7 +751,7 @@ impl ResidentSceneRenderer {
     }
 
     /// GROUND MACRO VARIATION LAYER. Forward ONE global aerial-scale albedo (an
-    /// atlas slot) the ground albedo lerps toward with distance — keeps meso-scale
+    /// texture slot) the ground albedo lerps toward with distance — keeps meso-scale
     /// patchiness resolving at aerial range where the ~1 m detail tile mips to a
     /// flat average ("textures are just colors"). `slot < 0` or `blend <= 0`
     /// disables (byte-identical).
@@ -748,9 +802,9 @@ impl ResidentSceneRenderer {
     /// UNDERWATER BED atlas slots (P3). Bind the submerged bed materials the
     /// megakernel blends by water depth: `wet_*` (~0 m), `mud_*` (~2 m), `silt_*`
     /// (~8 m+), and `bed_*` (riverbed, flow-driven follow-up). Each is an
-    /// (albedo, normal, roughness) atlas-slot triple; pass `-1` for an absent layer
+    /// (albedo, normal, roughness) texture-slot triple; pass `-1` for an absent layer
     /// (it rolls back to the next-shallower bed → byte-identical when all `-1`).
-    /// Resolve against the SAME atlas as the meshes (call AFTER `set_atlas`).
+    /// Resolve against the SAME resident material texture set as the meshes.
     #[allow(clippy::too_many_arguments)]
     pub fn set_underwater_layers(
         &mut self,
@@ -784,9 +838,9 @@ impl ResidentSceneRenderer {
     }
 
     /// SLOPE / HEIGHT LAYERED TERRAIN MATERIAL (#33). Bind the steep-face ROCK +
-    /// transition DIRT atlas slots the megakernel ground path blends over the biome
+    /// transition DIRT texture slots the megakernel ground path blends over the biome
     /// ground by surface slope (geometric up-cosine) + height. Slots reference
-    /// resident atlas entries — call AFTER `set_texture_atlas`. Pass `-1` for any
+    /// resident material textures. Pass `-1` for any
     /// absent layer (its weight rolls back into the biome ground → byte-identical).
     /// The slope/height THRESHOLDS are config-first (`RenderConfig.slope_layer`).
     pub fn set_slope_layers(
@@ -837,6 +891,56 @@ impl ResidentSceneRenderer {
     /// `[1.0; 7]` (full reference pattern) until called.
     pub fn set_weathering_intensity(&mut self, intensity: [f32; 7]) {
         self.renderer.set_weathering_intensity(intensity);
+    }
+
+    fn apply_rig_uniforms(&mut self) {
+        let rig = self.rig;
+        let sun = glam::Vec3::from(rig.sun_dir).normalize_or_zero();
+        let e_sun = rig.sun_radiance;
+        self.renderer
+            .set_weathering_intensity(rig.weathering_intensity);
+        self.renderer.set_sky_gradient(
+            rig.sky_dome_zenith,
+            rig.sky_dome_horizon,
+            rig.sky_dome_intensity,
+        );
+        if std::env::var("SPECTRA_FILM_DIAG").is_ok() {
+            eprintln!(
+                "[atm_diag] resident update: rig.atmosphere_enabled={} mie={} turbidity={} sun_dir={:?} e_sun={} fog_enabled={} fog_density={} fog_aniso={}",
+                rig.atmosphere_enabled,
+                rig.atmosphere_mie,
+                rig.atmosphere_turbidity,
+                rig.sun_dir,
+                e_sun,
+                rig.fog_enabled,
+                rig.fog_density,
+                rig.fog_anisotropy
+            );
+        }
+        // THE SUN LIGHTS SURFACES REGARDLESS OF THE ATMOSPHERE FLAG (2026-07-02).
+        // set_sun used to live INSIDE `if rig.atmosphere_enabled` — so disabling the
+        // Bruneton haze in render.ron silently left u_sun_radiance at 0. The
+        // atmosphere flag gates only the haze/scatter integrals.
+        self.renderer.set_sun(sun.to_array(), e_sun);
+        self.renderer.set_moon(
+            rig.moon_dir,
+            rig.moon_color,
+            rig.moon_radiance,
+            rig.moon_phase,
+            rig.moon_bright_limb_angle,
+        );
+        self.renderer.set_atmosphere(
+            rig.atmosphere_enabled,
+            rig.atmosphere_mie,
+            rig.atmosphere_turbidity,
+        );
+        self.renderer.set_fog(
+            rig.fog_enabled,
+            rig.fog_density,
+            rig.fog_color,
+            rig.fog_height_falloff,
+            rig.fog_anisotropy,
+        );
     }
 
     /// Shared upload body used by both `new` and `set_scene`.
@@ -1054,14 +1158,10 @@ impl ResidentSceneRenderer {
         self.renderer
             .set_weathering_masks(&weathering_masks)
             .map_err(|e| format!("set_weathering_masks: {e:?}"))?;
-        // FIX 2: drive the per-channel weathering INTENSITY from the rig (config-
-        // first, from render.ron `weathering`). Without this the megakernel's
-        // `u_weathering_intensity_*` keep their legacy default of 1.0 (FULL moss →
-        // facades lerp toward saturated green, the "buildings look green" streaks);
-        // the cooked PATTERN is then scaled to the authored, tasteful level.
-        // Copied out of `&self.rig` so it doesn't alias the `&mut self.renderer` call.
-        let weathering_intensity = self.rig.weathering_intensity;
-        self.renderer.set_weathering_intensity(weathering_intensity);
+        self.renderer.reset_camera_accumulation();
+        self.last_view_proj = None;
+        self.last_projection = None;
+        self.last_camera_view = None;
         if std::env::var("SPECTRA_DISPATCH_TIMING").as_deref() == Ok("1") {
             eprintln!(
                 "[dispatch_timing] load_scene_state (BVH/TLAS upload): {:.1} ms",
@@ -1071,71 +1171,7 @@ impl ResidentSceneRenderer {
 
         // Sky-dome + atmosphere from the rig — set after the scene so the state
         // exists. These setters are idempotent and cheap (no GPU rebuild).
-        self.renderer.set_sky_gradient(
-            rig.sky_dome_zenith,
-            rig.sky_dome_horizon,
-            rig.sky_dome_intensity,
-        );
-        if std::env::var("SPECTRA_FILM_DIAG").is_ok() {
-            eprintln!(
-                "[atm_diag] resident update: rig.atmosphere_enabled={} mie={} turbidity={} sun_dir={:?} e_sun={} fog_enabled={} fog_density={} fog_aniso={}",
-                rig.atmosphere_enabled,
-                rig.atmosphere_mie,
-                rig.atmosphere_turbidity,
-                rig.sun_dir,
-                e_sun,
-                rig.fog_enabled,
-                rig.fog_density,
-                rig.fog_anisotropy
-            );
-        }
-        // THE SUN LIGHTS SURFACES REGARDLESS OF THE ATMOSPHERE FLAG (2026-07-02).
-        // set_sun used to live INSIDE `if rig.atmosphere_enabled` — so disabling the
-        // Bruneton haze in render.ron (atmosphere_enabled: false, done to kill the
-        // aerial-perspective washout) silently left u_sun_radiance at 0 and the
-        // megakernel's inline Lambert sun term dead: EVERY opaque surface was lit
-        // by the blue sky-dome ambient only. Measured: SUN scale 5.0 vs 0.1 =
-        // bit-identical terrain pixels; a constant warm-tan albedo rendered pale
-        // sage (the "green felt" wash). u_sun_radiance drives SURFACE lighting;
-        // the atmosphere flag gates only the haze/scatter integrals below.
-        //
-        // (P1 residual note kept: u_sun_radiance is OVERLOADED — it also drives
-        // the visible disk display + aerial-perspective/fog in-scatter, tuned to
-        // the ~8-30 display scale. Splitting the disk-display scale out is a P4
-        // task; e_sun here matches what those paths were tuned against.)
-        self.renderer.set_sun(sun.to_array(), e_sun);
-        // MOON DISK — drive the phase-lit silver moon from the rig's Meeus
-        // ephemeris (`moon_*`, populated each frame in the game's light_rig).
-        // `moon_radiance` defaults to 0 (day / no-moon) → the GPU disk path is
-        // skipped. Like the sun, the moon is a LIGHT, not an atmosphere effect.
-        self.renderer.set_moon(
-            rig.moon_dir,
-            rig.moon_color,
-            rig.moon_radiance,
-            rig.moon_phase,
-            rig.moon_bright_limb_angle,
-        );
-        // ALWAYS forward the flag — both ways. This used to be
-        // `if rig.atmosphere_enabled { set_atmosphere(true, ..) }` with NO else,
-        // so a game rig with atmosphere_enabled:false never reached the GPU and
-        // spectra's AtmosphereParams DEFAULT (enabled: true) stood: the kernel
-        // kept taking the atmospheric_sky dome-ambient branch while the game
-        // believed it had selected the config gradient sky (u_sky_horizon/zenith).
-        // An inverted gate = ambient light the config can't explain or tune.
-        self.renderer.set_atmosphere(
-            rig.atmosphere_enabled,
-            rig.atmosphere_mie,
-            rig.atmosphere_turbidity,
-        );
-        // Height fog (aerial depth + crepuscular cue). Driven every resident
-        // update; fog_enabled=false (legacy/Default rig) → byte-identical no-fog.
-        self.renderer.set_fog(
-            rig.fog_enabled,
-            rig.fog_density,
-            rig.fog_color,
-            rig.fog_height_falloff,
-            rig.fog_anisotropy,
-        );
+        self.apply_rig_uniforms();
 
         let (rebuilt, reused) = self.renderer.last_scene_sync();
         Ok(SceneSyncReport {
@@ -1306,6 +1342,26 @@ impl ResidentSceneRenderer {
         let view_m = glam::Mat4::from_cols_array(&view);
         let proj_m = glam::Mat4::from_cols_array(&proj);
         let view_proj = (proj_m * view_m).to_cols_array();
+        let projection_changed = self
+            .last_projection
+            .is_some_and(|prev| matrix_changed(prev, proj));
+        let camera_moved = self
+            .last_camera_view
+            .is_some_and(|prev| camera_motion_changed(prev, view));
+        if projection_changed || camera_moved {
+            if projection_changed
+                || self
+                    .last_camera_view
+                    .is_some_and(|prev| camera_cut(prev, view))
+            {
+                self.renderer.reset_camera_accumulation();
+            } else {
+                self.renderer.reset_camera_color_accumulation();
+            }
+        }
+        self.last_view_proj = Some(view_proj);
+        self.last_projection = Some(proj);
+        self.last_camera_view = Some(view);
         // Keep the camera frame (eye/forward) from the view matrix; then set the
         // COMBINED view-projection as u_view_proj.
         self.renderer.set_camera_view_matrix(view);
@@ -1496,6 +1552,12 @@ impl ResidentSceneRenderer {
         self.renderer.rr_guide_ptrs()
     }
 
+    /// CUDA event recorded behind the latest interop payload writes. CUDA present
+    /// waits it on its own stream before consuming guide/color pointers.
+    pub fn rr_payload_ready_event(&mut self) -> u64 {
+        self.renderer.rr_payload_ready_event()
+    }
+
     /// The sub-pixel camera jitter (PIXELS, Halton(2,3)−0.5 ∈ [-0.5, 0.5]) the
     /// last frame applied to the primary ray when an upscaler is active. The
     /// RR/DLSS present feeds this IDENTICAL offset to `Jitter.Offset.X/Y` to
@@ -1516,19 +1578,18 @@ impl ResidentSceneRenderer {
 ///
 /// The quality caveat: geometric glass needs ~4-5 bounces (enter front face ->
 /// through interior -> exit back face -> reach a lit surface -> back), so a
-/// pane at 2 bounces can read BLACK. The floor is therefore keyed off the
-/// tier's OWN base bounce count (the tier identity: Performance 2, Balanced 3,
-/// Beauty 6) so each tier gets the lowest floor that still refracts through
-/// both faces and reaches light:
-///   - Performance (base <=2): floor 4  — enough for enter/exit + one light hop
-///   - Balanced    (base 3..=5): floor 5
+/// pane at 2 bounces can read BLACK in close shots. The floor is therefore
+/// keyed off the tier's OWN base bounce count (the tier identity: Performance 2,
+/// Balanced 3, Beauty 6) so each tier gets its configured target:
+///   - Performance (base <=2): floor 2  — wide-city RR path stays above 25 FPS
+///   - Balanced    (base 3..=5): floor 4
 ///   - Beauty      (base >=6): floor 8  — unchanged, full geometric glass
 /// `SPECTRA_GLASS_BOUNCES` still overrides this (config-first); 0 disables.
 /// Deterministic: a pure function of the tier's config value, never reordered.
 fn glass_floor_for_tier(base_bounces: u32) -> u32 {
     // CONFIG-FIRST: the per-tier glass bounce floors are `config/ochroma.ron`
     // (`resident_renderer.glass_floor_{performance,balanced,beauty}`). Defaults
-    // 4 / 5 / 8 equal the old literals.
+    // 2 / 4 / 8 match the measured Urban Horizon performance path.
     let rcfg = &vox_config::config().resident_renderer;
     match base_bounces {
         0..=2 => rcfg.glass_floor_performance,
@@ -1557,6 +1618,7 @@ fn water_floor_for_tier(base_bounces: u32) -> u32 {
 /// which sets 8 when `has_glass`): a glass pane needs enough depth to refract
 /// through both faces and reach a lit surface, or it terminates dark and reads
 /// opaque/matte.
+#[cfg(test)]
 const GLASS_MIN_BOUNCES: u32 = 8;
 
 /// The material-type tag value for transmissive glass. MUST match the
@@ -1837,22 +1899,58 @@ fn scene_camera_forward(scene: &SceneState) -> glam::Vec3 {
     fwd.normalize_or_zero()
 }
 
+fn matrix_changed(a: [f32; 16], b: [f32; 16]) -> bool {
+    a.iter()
+        .zip(b.iter())
+        .any(|(x, y)| (*x - *y).abs() > 1.0e-5)
+}
+
+fn camera_motion_changed(prev_view: [f32; 16], next_view: [f32; 16]) -> bool {
+    let moved_m = camera_eye(prev_view).distance(camera_eye(next_view));
+    let prev_fwd = camera_forward(prev_view);
+    let next_fwd = camera_forward(next_view);
+    let rotated_rad = prev_fwd.dot(next_fwd).clamp(-1.0, 1.0).acos();
+    moved_m > 0.02 || rotated_rad > 1.0e-4
+}
+
+fn camera_cut(prev_view: [f32; 16], next_view: [f32; 16]) -> bool {
+    let prev_eye = camera_eye(prev_view);
+    let next_eye = camera_eye(next_view);
+    let moved_m = prev_eye.distance(next_eye);
+    let prev_fwd = camera_forward(prev_view);
+    let next_fwd = camera_forward(next_view);
+    let dot = prev_fwd.dot(next_fwd).clamp(-1.0, 1.0);
+    let rotated_rad = dot.acos();
+
+    // Treat ordinary orbit/pan as continuous motion. Full reset is reserved for
+    // save-load framing jumps, dev-camera teleports, and scripted cut cameras.
+    moved_m > 500.0 || rotated_rad > 0.50
+}
+
+fn camera_eye(view: [f32; 16]) -> glam::Vec3 {
+    glam::Mat4::from_cols_array(&view)
+        .inverse()
+        .transform_point3(glam::Vec3::ZERO)
+}
+
+fn camera_forward(view: [f32; 16]) -> glam::Vec3 {
+    let m = glam::Mat4::from_cols_array(&view);
+    glam::Vec3::new(-m.x_axis.z, -m.y_axis.z, -m.z_axis.z).normalize_or_zero()
+}
+
 #[cfg(test)]
 mod glass_floor_tests {
-    use super::{glass_floor_for_tier, water_floor_for_tier, GLASS_MIN_BOUNCES};
+    use super::{GLASS_MIN_BOUNCES, glass_floor_for_tier, water_floor_for_tier};
 
     /// Locks the per-tier glass bounce caps to the exact values witnessed on the
-    /// box (Performance base 2 -> floor 4, Balanced base 3 -> floor 4, Beauty
-    /// base 6 -> floor 8). These are the SHIP-GATE perf knob: the cap is the
-    /// lowest depth that still refracts a curtain-wall pane through both faces
-    /// and reaches a lit surface (verified glass4 == glass8 in the STYLE_PROBE
-    /// close-up), while 8->4 cuts ~30% of the sample loop.
+    /// box. Performance stays at its own base depth for the 3440x1440 DLSS-RR
+    /// wide-city path; Balanced/Beauty keep deeper geometric glass.
     #[test]
     fn per_tier_caps_are_the_witnessed_values() {
         // Performance tier (base bounces 2).
-        assert_eq!(glass_floor_for_tier(2), 4, "Performance glass floor");
-        assert_eq!(glass_floor_for_tier(1), 4, "sub-Performance floors to 4");
-        assert_eq!(glass_floor_for_tier(0), 4, "zero-bounce floors to 4");
+        assert_eq!(glass_floor_for_tier(2), 2, "Performance glass floor");
+        assert_eq!(glass_floor_for_tier(1), 2, "sub-Performance floors to 2");
+        assert_eq!(glass_floor_for_tier(0), 2, "zero-bounce floors to 2");
         // Balanced tier (base bounces 3).
         assert_eq!(glass_floor_for_tier(3), 4, "Balanced glass floor");
         assert_eq!(
@@ -1885,21 +1983,15 @@ mod glass_floor_tests {
         assert_eq!(water_floor_for_tier(6), 4, "Beauty water floor");
     }
 
-    /// The floor only ever RAISES the budget (the caller guards `floor >
-    /// max_bounces`); a tier whose base already exceeds its floor must not be
-    /// lowered. Beauty (base 6) floors to 8 (> 6, raises); Performance (base 2)
-    /// floors to 4 (> 2, raises). No tier's floor is below its own base.
+    /// The configured floor is a per-tier target. Performance is intentionally
+    /// allowed to stay at two bounces for the 25+ FPS wide-city RR path; deeper
+    /// tiers keep the higher glass targets.
     #[test]
-    fn floor_never_lowers_the_tier_budget() {
+    fn floor_matches_the_tier_target() {
         for base in [0u32, 1, 2, 3, 4, 5, 6, 7, 8] {
             let floor = glass_floor_for_tier(base);
-            // Within each band the floor is the band's fixed cap; for the bands
-            // that map a base at-or-below the cap this is a raise (or equal at
-            // the Balanced/Beauty upper edges), never a reduction below base
-            // that would silently degrade the chosen tier when applied with the
-            // `floor > max_bounces` guard.
             assert!(
-                floor == 4 || floor == 5 || floor == GLASS_MIN_BOUNCES,
+                floor == 2 || floor == 4 || floor == GLASS_MIN_BOUNCES,
                 "base {base} -> unexpected floor {floor}"
             );
         }

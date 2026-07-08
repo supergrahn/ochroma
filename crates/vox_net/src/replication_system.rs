@@ -40,9 +40,21 @@ impl StateDelta {
         Self {
             entity_id: new.entity_id,
             sequence: new.sequence,
-            position: if pos_changed { Some(new.position) } else { None },
-            rotation: if rot_changed { Some(new.rotation) } else { None },
-            velocity: if vel_changed { Some(new.velocity) } else { None },
+            position: if pos_changed {
+                Some(new.position)
+            } else {
+                None
+            },
+            rotation: if rot_changed {
+                Some(new.rotation)
+            } else {
+                None
+            },
+            velocity: if vel_changed {
+                Some(new.velocity)
+            } else {
+                None
+            },
             custom_changes,
         }
     }

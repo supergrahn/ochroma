@@ -130,7 +130,10 @@ pub enum GraphAction {
     StopSound(String),
     Print(String),
     ApplyForce(u32, [f32; 3]),
-    Raycast { origin: [f32; 3], direction: [f32; 3] },
+    Raycast {
+        origin: [f32; 3],
+        direction: [f32; 3],
+    },
     FindByTag(String),
 }
 
@@ -210,18 +213,29 @@ impl VisualGraph {
         };
         match &node.node_type {
             // Flow control nodes
-            NodeType::EventStart | NodeType::EventUpdate | NodeType::EventCollision
-            | NodeType::EventInput { .. } | NodeType::ForLoop { .. }
-            | NodeType::Sequence | NodeType::Delay { .. } => {
+            NodeType::EventStart
+            | NodeType::EventUpdate
+            | NodeType::EventCollision
+            | NodeType::EventInput { .. }
+            | NodeType::ForLoop { .. }
+            | NodeType::Sequence
+            | NodeType::Delay { .. } => {
                 self.execute_flow_node(node_id, &node.node_type, ctx, actions);
             }
 
             // Action nodes (side effects + follow flow)
-            NodeType::Print { .. } | NodeType::SetPosition | NodeType::SetRotation
-            | NodeType::Spawn { .. } | NodeType::Destroy | NodeType::FindByTag { .. }
-            | NodeType::PlaySound { .. } | NodeType::StopSound
-            | NodeType::SetVariable { .. } | NodeType::Custom { .. }
-            | NodeType::Raycast | NodeType::ApplyForce => {
+            NodeType::Print { .. }
+            | NodeType::SetPosition
+            | NodeType::SetRotation
+            | NodeType::Spawn { .. }
+            | NodeType::Destroy
+            | NodeType::FindByTag { .. }
+            | NodeType::PlaySound { .. }
+            | NodeType::StopSound
+            | NodeType::SetVariable { .. }
+            | NodeType::Custom { .. }
+            | NodeType::Raycast
+            | NodeType::ApplyForce => {
                 self.execute_action_node(node_id, &node.node_type, ctx, actions);
             }
 
@@ -231,30 +245,51 @@ impl VisualGraph {
             }
 
             // Pure data nodes (no flow execution, results via evaluate_node)
-            NodeType::GetPosition | NodeType::GetRotation | NodeType::GetVariable { .. }
+            NodeType::GetPosition
+            | NodeType::GetRotation
+            | NodeType::GetVariable { .. }
             | NodeType::IsGrounded => {}
 
             // Math and comparison data nodes (follow flow if connected)
-            NodeType::Add | NodeType::Subtract | NodeType::Multiply | NodeType::Divide
-            | NodeType::Clamp | NodeType::Lerp | NodeType::Random
-            | NodeType::Equal | NodeType::NotEqual | NodeType::Greater | NodeType::Less
-            | NodeType::And | NodeType::Or | NodeType::Not => {
+            NodeType::Add
+            | NodeType::Subtract
+            | NodeType::Multiply
+            | NodeType::Divide
+            | NodeType::Clamp
+            | NodeType::Lerp
+            | NodeType::Random
+            | NodeType::Equal
+            | NodeType::NotEqual
+            | NodeType::Greater
+            | NodeType::Less
+            | NodeType::And
+            | NodeType::Or
+            | NodeType::Not => {
                 self.follow_flow(node_id, ctx, actions);
             }
         }
     }
 
     /// Execute flow-control nodes: events, loops, sequences, delays.
-    fn execute_flow_node(&self, node_id: u32, node_type: &NodeType, ctx: &mut GraphContext, actions: &mut Vec<GraphAction>) {
+    fn execute_flow_node(
+        &self,
+        node_id: u32,
+        node_type: &NodeType,
+        ctx: &mut GraphContext,
+        actions: &mut Vec<GraphAction>,
+    ) {
         match node_type {
-            NodeType::EventStart | NodeType::EventUpdate | NodeType::EventCollision
+            NodeType::EventStart
+            | NodeType::EventUpdate
+            | NodeType::EventCollision
             | NodeType::EventInput { .. } => {
                 self.follow_flow(node_id, ctx, actions);
             }
             NodeType::ForLoop { count } => {
                 let n = *count;
                 for i in 0..n {
-                    ctx.variables.insert("__loop_index".to_string(), PinValue::Float(i as f32));
+                    ctx.variables
+                        .insert("__loop_index".to_string(), PinValue::Float(i as f32));
                     for conn in &self.connections {
                         if conn.from_node == node_id && conn.from_pin == "loop_body" {
                             self.execute_node(conn.to_node, ctx, actions);
@@ -293,7 +328,13 @@ impl VisualGraph {
     }
 
     /// Execute action nodes: print, transform, spawn, destroy, audio, physics, variables, custom.
-    fn execute_action_node(&self, node_id: u32, node_type: &NodeType, ctx: &mut GraphContext, actions: &mut Vec<GraphAction>) {
+    fn execute_action_node(
+        &self,
+        node_id: u32,
+        node_type: &NodeType,
+        ctx: &mut GraphContext,
+        actions: &mut Vec<GraphAction>,
+    ) {
         match node_type {
             NodeType::Print { message } => {
                 actions.push(GraphAction::Print(message.clone()));
@@ -305,13 +346,22 @@ impl VisualGraph {
             }
             NodeType::SetRotation => {
                 if let Some(PinValue::Vec3(rot)) = self.read_input(node_id, "rotation", ctx) {
-                    actions.push(GraphAction::SetRotation(ctx.entity_id, [rot[0], rot[1], rot[2], 1.0]));
+                    actions.push(GraphAction::SetRotation(
+                        ctx.entity_id,
+                        [rot[0], rot[1], rot[2], 1.0],
+                    ));
                 }
             }
             NodeType::Spawn { asset } => {
                 let pos = self
                     .read_input(node_id, "position", ctx)
-                    .and_then(|v| if let PinValue::Vec3(p) = v { Some(p) } else { None })
+                    .and_then(|v| {
+                        if let PinValue::Vec3(p) = v {
+                            Some(p)
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or([0.0; 3]);
                 actions.push(GraphAction::Spawn(asset.clone(), pos));
             }
@@ -327,7 +377,13 @@ impl VisualGraph {
             NodeType::StopSound => {
                 let clip = self
                     .read_input(node_id, "clip", ctx)
-                    .and_then(|v| if let PinValue::String(s) = v { Some(s) } else { None })
+                    .and_then(|v| {
+                        if let PinValue::String(s) = v {
+                            Some(s)
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or_default();
                 actions.push(GraphAction::StopSound(clip));
             }
@@ -339,18 +395,36 @@ impl VisualGraph {
             NodeType::Raycast => {
                 let origin = self
                     .read_input(node_id, "origin", ctx)
-                    .and_then(|v| if let PinValue::Vec3(p) = v { Some(p) } else { None })
+                    .and_then(|v| {
+                        if let PinValue::Vec3(p) = v {
+                            Some(p)
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or(ctx.entity_position);
                 let direction = self
                     .read_input(node_id, "direction", ctx)
-                    .and_then(|v| if let PinValue::Vec3(d) = v { Some(d) } else { None })
+                    .and_then(|v| {
+                        if let PinValue::Vec3(d) = v {
+                            Some(d)
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or([0.0, -1.0, 0.0]);
                 actions.push(GraphAction::Raycast { origin, direction });
             }
             NodeType::ApplyForce => {
                 let force = self
                     .read_input(node_id, "force", ctx)
-                    .and_then(|v| if let PinValue::Vec3(f) = v { Some(f) } else { None })
+                    .and_then(|v| {
+                        if let PinValue::Vec3(f) = v {
+                            Some(f)
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or([0.0; 3]);
                 actions.push(GraphAction::ApplyForce(ctx.entity_id, force));
             }
@@ -363,10 +437,21 @@ impl VisualGraph {
     }
 
     /// Execute logic node (Branch): evaluate condition and follow the appropriate output.
-    fn execute_logic_node(&self, node_id: u32, ctx: &mut GraphContext, actions: &mut Vec<GraphAction>) {
+    fn execute_logic_node(
+        &self,
+        node_id: u32,
+        ctx: &mut GraphContext,
+        actions: &mut Vec<GraphAction>,
+    ) {
         let cond = self
             .read_input(node_id, "condition", ctx)
-            .and_then(|v| if let PinValue::Bool(b) = v { Some(b) } else { None })
+            .and_then(|v| {
+                if let PinValue::Bool(b) = v {
+                    Some(b)
+                } else {
+                    None
+                }
+            })
             .unwrap_or(false);
         let pin = if cond { "true" } else { "false" };
         for conn in &self.connections {
@@ -401,7 +486,12 @@ impl VisualGraph {
     }
 
     /// Evaluate a pure data node and return its output value.
-    fn evaluate_node(&self, node_id: u32, output_pin: &str, ctx: &GraphContext) -> Option<PinValue> {
+    fn evaluate_node(
+        &self,
+        node_id: u32,
+        output_pin: &str,
+        ctx: &GraphContext,
+    ) -> Option<PinValue> {
         let node = self.nodes.iter().find(|n| n.id == node_id)?;
         match &node.node_type {
             NodeType::GetVariable { name } => ctx.variables.get(name).cloned(),
@@ -503,7 +593,11 @@ impl VisualGraph {
             // For any other node type, try default pin value
             _ => {
                 let node = self.nodes.iter().find(|n| n.id == node_id)?;
-                node.outputs.iter().find(|p| p.name == output_pin)?.default_value.clone()
+                node.outputs
+                    .iter()
+                    .find(|p| p.name == output_pin)?
+                    .default_value
+                    .clone()
             }
         }
     }
@@ -549,141 +643,366 @@ fn default_pins_for(node_type: &NodeType) -> (Vec<Pin>, Vec<Pin>) {
         ),
         NodeType::Branch => (
             vec![
-                Pin { name: "flow_in".into(), pin_type: PinType::Flow, default_value: None },
-                Pin { name: "condition".into(), pin_type: PinType::Bool, default_value: Some(PinValue::Bool(false)) },
+                Pin {
+                    name: "flow_in".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
+                Pin {
+                    name: "condition".into(),
+                    pin_type: PinType::Bool,
+                    default_value: Some(PinValue::Bool(false)),
+                },
             ],
             vec![
-                Pin { name: "true".into(), pin_type: PinType::Flow, default_value: None },
-                Pin { name: "false".into(), pin_type: PinType::Flow, default_value: None },
+                Pin {
+                    name: "true".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
+                Pin {
+                    name: "false".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
             ],
         ),
         NodeType::ForLoop { .. } => (
-            vec![Pin { name: "flow_in".into(), pin_type: PinType::Flow, default_value: None }],
+            vec![Pin {
+                name: "flow_in".into(),
+                pin_type: PinType::Flow,
+                default_value: None,
+            }],
             vec![
-                Pin { name: "loop_body".into(), pin_type: PinType::Flow, default_value: None },
-                Pin { name: "completed".into(), pin_type: PinType::Flow, default_value: None },
-                Pin { name: "index".into(), pin_type: PinType::Float, default_value: Some(PinValue::Float(0.0)) },
+                Pin {
+                    name: "loop_body".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
+                Pin {
+                    name: "completed".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
+                Pin {
+                    name: "index".into(),
+                    pin_type: PinType::Float,
+                    default_value: Some(PinValue::Float(0.0)),
+                },
             ],
         ),
         NodeType::Sequence => (
-            vec![Pin { name: "flow_in".into(), pin_type: PinType::Flow, default_value: None }],
+            vec![Pin {
+                name: "flow_in".into(),
+                pin_type: PinType::Flow,
+                default_value: None,
+            }],
             vec![
-                Pin { name: "then_0".into(), pin_type: PinType::Flow, default_value: None },
-                Pin { name: "then_1".into(), pin_type: PinType::Flow, default_value: None },
-                Pin { name: "then_2".into(), pin_type: PinType::Flow, default_value: None },
+                Pin {
+                    name: "then_0".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
+                Pin {
+                    name: "then_1".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
+                Pin {
+                    name: "then_2".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
             ],
         ),
-        NodeType::Print { .. } | NodeType::Destroy | NodeType::StopSound
-        | NodeType::Delay { .. } | NodeType::Custom { .. } => (
-            vec![Pin { name: "flow_in".into(), pin_type: PinType::Flow, default_value: None }],
-            vec![Pin { name: "flow_out".into(), pin_type: PinType::Flow, default_value: None }],
+        NodeType::Print { .. }
+        | NodeType::Destroy
+        | NodeType::StopSound
+        | NodeType::Delay { .. }
+        | NodeType::Custom { .. } => (
+            vec![Pin {
+                name: "flow_in".into(),
+                pin_type: PinType::Flow,
+                default_value: None,
+            }],
+            vec![Pin {
+                name: "flow_out".into(),
+                pin_type: PinType::Flow,
+                default_value: None,
+            }],
         ),
         NodeType::SetPosition | NodeType::SetRotation => (
             vec![
-                Pin { name: "flow_in".into(), pin_type: PinType::Flow, default_value: None },
-                Pin { name: "position".into(), pin_type: PinType::Vec3, default_value: Some(PinValue::Vec3([0.0; 3])) },
+                Pin {
+                    name: "flow_in".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
+                Pin {
+                    name: "position".into(),
+                    pin_type: PinType::Vec3,
+                    default_value: Some(PinValue::Vec3([0.0; 3])),
+                },
             ],
-            vec![Pin { name: "flow_out".into(), pin_type: PinType::Flow, default_value: None }],
+            vec![Pin {
+                name: "flow_out".into(),
+                pin_type: PinType::Flow,
+                default_value: None,
+            }],
         ),
         NodeType::GetPosition | NodeType::GetRotation => (
             vec![],
-            vec![Pin { name: "value".into(), pin_type: PinType::Vec3, default_value: None }],
+            vec![Pin {
+                name: "value".into(),
+                pin_type: PinType::Vec3,
+                default_value: None,
+            }],
         ),
         NodeType::IsGrounded => (
             vec![],
-            vec![Pin { name: "value".into(), pin_type: PinType::Bool, default_value: None }],
+            vec![Pin {
+                name: "value".into(),
+                pin_type: PinType::Bool,
+                default_value: None,
+            }],
         ),
         NodeType::Spawn { .. } => (
             vec![
-                Pin { name: "flow_in".into(), pin_type: PinType::Flow, default_value: None },
-                Pin { name: "position".into(), pin_type: PinType::Vec3, default_value: Some(PinValue::Vec3([0.0; 3])) },
+                Pin {
+                    name: "flow_in".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
+                Pin {
+                    name: "position".into(),
+                    pin_type: PinType::Vec3,
+                    default_value: Some(PinValue::Vec3([0.0; 3])),
+                },
             ],
-            vec![Pin { name: "flow_out".into(), pin_type: PinType::Flow, default_value: None }],
+            vec![Pin {
+                name: "flow_out".into(),
+                pin_type: PinType::Flow,
+                default_value: None,
+            }],
         ),
         NodeType::PlaySound { .. } => (
-            vec![Pin { name: "flow_in".into(), pin_type: PinType::Flow, default_value: None }],
-            vec![Pin { name: "flow_out".into(), pin_type: PinType::Flow, default_value: None }],
+            vec![Pin {
+                name: "flow_in".into(),
+                pin_type: PinType::Flow,
+                default_value: None,
+            }],
+            vec![Pin {
+                name: "flow_out".into(),
+                pin_type: PinType::Flow,
+                default_value: None,
+            }],
         ),
         NodeType::FindByTag { .. } => (
             vec![],
-            vec![Pin { name: "entity".into(), pin_type: PinType::Entity, default_value: None }],
+            vec![Pin {
+                name: "entity".into(),
+                pin_type: PinType::Entity,
+                default_value: None,
+            }],
         ),
         NodeType::SetVariable { .. } => (
             vec![
-                Pin { name: "flow_in".into(), pin_type: PinType::Flow, default_value: None },
-                Pin { name: "value".into(), pin_type: PinType::Any, default_value: None },
+                Pin {
+                    name: "flow_in".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
+                Pin {
+                    name: "value".into(),
+                    pin_type: PinType::Any,
+                    default_value: None,
+                },
             ],
-            vec![Pin { name: "flow_out".into(), pin_type: PinType::Flow, default_value: None }],
+            vec![Pin {
+                name: "flow_out".into(),
+                pin_type: PinType::Flow,
+                default_value: None,
+            }],
         ),
         NodeType::GetVariable { .. } => (
             vec![],
-            vec![Pin { name: "value".into(), pin_type: PinType::Any, default_value: None }],
+            vec![Pin {
+                name: "value".into(),
+                pin_type: PinType::Any,
+                default_value: None,
+            }],
         ),
         // Math: two float inputs, one float output
         NodeType::Add | NodeType::Subtract | NodeType::Multiply | NodeType::Divide => (
             vec![
-                Pin { name: "a".into(), pin_type: PinType::Float, default_value: Some(PinValue::Float(0.0)) },
-                Pin { name: "b".into(), pin_type: PinType::Float, default_value: Some(PinValue::Float(0.0)) },
+                Pin {
+                    name: "a".into(),
+                    pin_type: PinType::Float,
+                    default_value: Some(PinValue::Float(0.0)),
+                },
+                Pin {
+                    name: "b".into(),
+                    pin_type: PinType::Float,
+                    default_value: Some(PinValue::Float(0.0)),
+                },
             ],
-            vec![Pin { name: "result".into(), pin_type: PinType::Float, default_value: None }],
+            vec![Pin {
+                name: "result".into(),
+                pin_type: PinType::Float,
+                default_value: None,
+            }],
         ),
         NodeType::Clamp => (
             vec![
-                Pin { name: "value".into(), pin_type: PinType::Float, default_value: Some(PinValue::Float(0.0)) },
-                Pin { name: "min".into(), pin_type: PinType::Float, default_value: Some(PinValue::Float(0.0)) },
-                Pin { name: "max".into(), pin_type: PinType::Float, default_value: Some(PinValue::Float(1.0)) },
+                Pin {
+                    name: "value".into(),
+                    pin_type: PinType::Float,
+                    default_value: Some(PinValue::Float(0.0)),
+                },
+                Pin {
+                    name: "min".into(),
+                    pin_type: PinType::Float,
+                    default_value: Some(PinValue::Float(0.0)),
+                },
+                Pin {
+                    name: "max".into(),
+                    pin_type: PinType::Float,
+                    default_value: Some(PinValue::Float(1.0)),
+                },
             ],
-            vec![Pin { name: "result".into(), pin_type: PinType::Float, default_value: None }],
+            vec![Pin {
+                name: "result".into(),
+                pin_type: PinType::Float,
+                default_value: None,
+            }],
         ),
         NodeType::Lerp => (
             vec![
-                Pin { name: "a".into(), pin_type: PinType::Float, default_value: Some(PinValue::Float(0.0)) },
-                Pin { name: "b".into(), pin_type: PinType::Float, default_value: Some(PinValue::Float(1.0)) },
-                Pin { name: "t".into(), pin_type: PinType::Float, default_value: Some(PinValue::Float(0.5)) },
+                Pin {
+                    name: "a".into(),
+                    pin_type: PinType::Float,
+                    default_value: Some(PinValue::Float(0.0)),
+                },
+                Pin {
+                    name: "b".into(),
+                    pin_type: PinType::Float,
+                    default_value: Some(PinValue::Float(1.0)),
+                },
+                Pin {
+                    name: "t".into(),
+                    pin_type: PinType::Float,
+                    default_value: Some(PinValue::Float(0.5)),
+                },
             ],
-            vec![Pin { name: "result".into(), pin_type: PinType::Float, default_value: None }],
+            vec![Pin {
+                name: "result".into(),
+                pin_type: PinType::Float,
+                default_value: None,
+            }],
         ),
         NodeType::Random => (
             vec![],
-            vec![Pin { name: "result".into(), pin_type: PinType::Float, default_value: None }],
+            vec![Pin {
+                name: "result".into(),
+                pin_type: PinType::Float,
+                default_value: None,
+            }],
         ),
         // Comparison: two float inputs, one bool output
         NodeType::Equal | NodeType::NotEqual | NodeType::Greater | NodeType::Less => (
             vec![
-                Pin { name: "a".into(), pin_type: PinType::Float, default_value: Some(PinValue::Float(0.0)) },
-                Pin { name: "b".into(), pin_type: PinType::Float, default_value: Some(PinValue::Float(0.0)) },
+                Pin {
+                    name: "a".into(),
+                    pin_type: PinType::Float,
+                    default_value: Some(PinValue::Float(0.0)),
+                },
+                Pin {
+                    name: "b".into(),
+                    pin_type: PinType::Float,
+                    default_value: Some(PinValue::Float(0.0)),
+                },
             ],
-            vec![Pin { name: "result".into(), pin_type: PinType::Bool, default_value: None }],
+            vec![Pin {
+                name: "result".into(),
+                pin_type: PinType::Bool,
+                default_value: None,
+            }],
         ),
         // Logic: two bool inputs, one bool output (Not has one input)
         NodeType::And | NodeType::Or => (
             vec![
-                Pin { name: "a".into(), pin_type: PinType::Bool, default_value: Some(PinValue::Bool(false)) },
-                Pin { name: "b".into(), pin_type: PinType::Bool, default_value: Some(PinValue::Bool(false)) },
+                Pin {
+                    name: "a".into(),
+                    pin_type: PinType::Bool,
+                    default_value: Some(PinValue::Bool(false)),
+                },
+                Pin {
+                    name: "b".into(),
+                    pin_type: PinType::Bool,
+                    default_value: Some(PinValue::Bool(false)),
+                },
             ],
-            vec![Pin { name: "result".into(), pin_type: PinType::Bool, default_value: None }],
+            vec![Pin {
+                name: "result".into(),
+                pin_type: PinType::Bool,
+                default_value: None,
+            }],
         ),
         NodeType::Not => (
-            vec![
-                Pin { name: "a".into(), pin_type: PinType::Bool, default_value: Some(PinValue::Bool(false)) },
-            ],
-            vec![Pin { name: "result".into(), pin_type: PinType::Bool, default_value: None }],
+            vec![Pin {
+                name: "a".into(),
+                pin_type: PinType::Bool,
+                default_value: Some(PinValue::Bool(false)),
+            }],
+            vec![Pin {
+                name: "result".into(),
+                pin_type: PinType::Bool,
+                default_value: None,
+            }],
         ),
         // Physics
         NodeType::Raycast => (
             vec![
-                Pin { name: "flow_in".into(), pin_type: PinType::Flow, default_value: None },
-                Pin { name: "origin".into(), pin_type: PinType::Vec3, default_value: Some(PinValue::Vec3([0.0; 3])) },
-                Pin { name: "direction".into(), pin_type: PinType::Vec3, default_value: Some(PinValue::Vec3([0.0, -1.0, 0.0])) },
+                Pin {
+                    name: "flow_in".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
+                Pin {
+                    name: "origin".into(),
+                    pin_type: PinType::Vec3,
+                    default_value: Some(PinValue::Vec3([0.0; 3])),
+                },
+                Pin {
+                    name: "direction".into(),
+                    pin_type: PinType::Vec3,
+                    default_value: Some(PinValue::Vec3([0.0, -1.0, 0.0])),
+                },
             ],
-            vec![Pin { name: "flow_out".into(), pin_type: PinType::Flow, default_value: None }],
+            vec![Pin {
+                name: "flow_out".into(),
+                pin_type: PinType::Flow,
+                default_value: None,
+            }],
         ),
         NodeType::ApplyForce => (
             vec![
-                Pin { name: "flow_in".into(), pin_type: PinType::Flow, default_value: None },
-                Pin { name: "force".into(), pin_type: PinType::Vec3, default_value: Some(PinValue::Vec3([0.0; 3])) },
+                Pin {
+                    name: "flow_in".into(),
+                    pin_type: PinType::Flow,
+                    default_value: None,
+                },
+                Pin {
+                    name: "force".into(),
+                    pin_type: PinType::Vec3,
+                    default_value: Some(PinValue::Vec3([0.0; 3])),
+                },
             ],
-            vec![Pin { name: "flow_out".into(), pin_type: PinType::Flow, default_value: None }],
+            vec![Pin {
+                name: "flow_out".into(),
+                pin_type: PinType::Flow,
+                default_value: None,
+            }],
         ),
     }
 }
@@ -699,7 +1018,12 @@ mod tests {
         assert_eq!(graph.node_count(), 0);
 
         let id1 = graph.add_node(NodeType::EventStart, [0.0, 0.0]);
-        let id2 = graph.add_node(NodeType::Print { message: "hello".into() }, [100.0, 0.0]);
+        let id2 = graph.add_node(
+            NodeType::Print {
+                message: "hello".into(),
+            },
+            [100.0, 0.0],
+        );
         assert_eq!(graph.node_count(), 2);
         assert_ne!(id1, id2);
     }
@@ -708,7 +1032,12 @@ mod tests {
     fn test_add_connections() {
         let mut graph = VisualGraph::new("ConnTest");
         let start = graph.add_node(NodeType::EventStart, [0.0, 0.0]);
-        let print = graph.add_node(NodeType::Print { message: "hi".into() }, [100.0, 0.0]);
+        let print = graph.add_node(
+            NodeType::Print {
+                message: "hi".into(),
+            },
+            [100.0, 0.0],
+        );
         graph.connect(start, "flow_out", print, "flow_in");
         assert_eq!(graph.connection_count(), 1);
 
@@ -720,8 +1049,18 @@ mod tests {
     fn test_execute_prints() {
         let mut graph = VisualGraph::new("ExecTest");
         let start = graph.add_node(NodeType::EventStart, [0.0, 0.0]);
-        let p1 = graph.add_node(NodeType::Print { message: "first".into() }, [100.0, 0.0]);
-        let p2 = graph.add_node(NodeType::Print { message: "second".into() }, [200.0, 0.0]);
+        let p1 = graph.add_node(
+            NodeType::Print {
+                message: "first".into(),
+            },
+            [100.0, 0.0],
+        );
+        let p2 = graph.add_node(
+            NodeType::Print {
+                message: "second".into(),
+            },
+            [200.0, 0.0],
+        );
         graph.connect(start, "flow_out", p1, "flow_in");
         graph.connect(p1, "flow_out", p2, "flow_in");
 
@@ -746,10 +1085,25 @@ mod tests {
     fn test_branch_true_false() {
         let mut graph = VisualGraph::new("BranchTest");
         let start = graph.add_node(NodeType::EventStart, [0.0, 0.0]);
-        let get_var = graph.add_node(NodeType::GetVariable { name: "flag".into() }, [50.0, 50.0]);
+        let get_var = graph.add_node(
+            NodeType::GetVariable {
+                name: "flag".into(),
+            },
+            [50.0, 50.0],
+        );
         let branch = graph.add_node(NodeType::Branch, [100.0, 0.0]);
-        let print_true = graph.add_node(NodeType::Print { message: "yes".into() }, [200.0, -50.0]);
-        let print_false = graph.add_node(NodeType::Print { message: "no".into() }, [200.0, 50.0]);
+        let print_true = graph.add_node(
+            NodeType::Print {
+                message: "yes".into(),
+            },
+            [200.0, -50.0],
+        );
+        let print_false = graph.add_node(
+            NodeType::Print {
+                message: "no".into(),
+            },
+            [200.0, 50.0],
+        );
 
         graph.connect(start, "flow_out", branch, "flow_in");
         graph.connect(get_var, "value", branch, "condition");
@@ -773,7 +1127,8 @@ mod tests {
         assert!(matches!(&actions[0], GraphAction::Print(m) if m == "yes"));
 
         // Test with false
-        ctx.variables.insert("flag".to_string(), PinValue::Bool(false));
+        ctx.variables
+            .insert("flag".to_string(), PinValue::Bool(false));
         let actions = graph.execute(&mut ctx);
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], GraphAction::Print(m) if m == "no"));
@@ -783,9 +1138,19 @@ mod tests {
     fn test_variable_set_get() {
         let mut graph = VisualGraph::new("VarTest");
         let start = graph.add_node(NodeType::EventStart, [0.0, 0.0]);
-        let set_var = graph.add_node(NodeType::SetVariable { name: "score".into() }, [100.0, 0.0]);
+        let set_var = graph.add_node(
+            NodeType::SetVariable {
+                name: "score".into(),
+            },
+            [100.0, 0.0],
+        );
         // Connect a GetVariable as the value source
-        let get_var = graph.add_node(NodeType::GetVariable { name: "input_val".into() }, [50.0, 50.0]);
+        let get_var = graph.add_node(
+            NodeType::GetVariable {
+                name: "input_val".into(),
+            },
+            [50.0, 50.0],
+        );
 
         graph.connect(start, "flow_out", set_var, "flow_in");
         graph.connect(get_var, "value", set_var, "value");
@@ -802,14 +1167,21 @@ mod tests {
             input_actions: HashSet::new(),
         };
         graph.execute(&mut ctx);
-        assert!(matches!(ctx.variables.get("score"), Some(PinValue::Float(v)) if (*v - 42.0).abs() < f32::EPSILON));
+        assert!(
+            matches!(ctx.variables.get("score"), Some(PinValue::Float(v)) if (*v - 42.0).abs() < f32::EPSILON)
+        );
     }
 
     #[test]
     fn test_json_round_trip() {
         let mut graph = VisualGraph::new("SerdeTest");
         let start = graph.add_node(NodeType::EventStart, [0.0, 0.0]);
-        let print = graph.add_node(NodeType::Print { message: "hello".into() }, [100.0, 0.0]);
+        let print = graph.add_node(
+            NodeType::Print {
+                message: "hello".into(),
+            },
+            [100.0, 0.0],
+        );
         graph.connect(start, "flow_out", print, "flow_in");
 
         let json = graph.save_json().unwrap();
@@ -838,14 +1210,22 @@ mod tests {
         let mut graph = VisualGraph::new("ForLoopTest");
         let start = graph.add_node(NodeType::EventStart, [0.0, 0.0]);
         let for_node = graph.add_node(NodeType::ForLoop { count: 3 }, [100.0, 0.0]);
-        let print = graph.add_node(NodeType::Print { message: "tick".into() }, [200.0, 0.0]);
+        let print = graph.add_node(
+            NodeType::Print {
+                message: "tick".into(),
+            },
+            [200.0, 0.0],
+        );
 
         graph.connect(start, "flow_out", for_node, "flow_in");
         graph.connect(for_node, "loop_body", print, "flow_in");
 
         let mut ctx = make_ctx();
         let actions = graph.execute(&mut ctx);
-        let print_count = actions.iter().filter(|a| matches!(a, GraphAction::Print(m) if m == "tick")).count();
+        let print_count = actions
+            .iter()
+            .filter(|a| matches!(a, GraphAction::Print(m) if m == "tick"))
+            .count();
         assert_eq!(print_count, 3);
     }
 
@@ -858,7 +1238,12 @@ mod tests {
         let get_a = graph.add_node(NodeType::GetVariable { name: "a".into() }, [50.0, 50.0]);
         let get_b = graph.add_node(NodeType::GetVariable { name: "b".into() }, [100.0, 50.0]);
         let add = graph.add_node(NodeType::Add, [150.0, 0.0]);
-        let set_result = graph.add_node(NodeType::SetVariable { name: "result".into() }, [200.0, 0.0]);
+        let set_result = graph.add_node(
+            NodeType::SetVariable {
+                name: "result".into(),
+            },
+            [200.0, 0.0],
+        );
 
         // Flow: start -> set_a -> set_b -> set_result
         graph.connect(start, "flow_out", set_a, "flow_in");
@@ -877,8 +1262,11 @@ mod tests {
         // Let's wire it properly: set_a sets a=10 from get_input_val
         // Actually simpler: just pre-set the variables and test the add node
         let actions = graph.execute(&mut ctx);
-        assert!(matches!(ctx.variables.get("result"), Some(PinValue::Float(v)) if (*v - 35.0).abs() < 0.001),
-            "Expected 35.0, got {:?}", ctx.variables.get("result"));
+        assert!(
+            matches!(ctx.variables.get("result"), Some(PinValue::Float(v)) if (*v - 35.0).abs() < 0.001),
+            "Expected 35.0, got {:?}",
+            ctx.variables.get("result")
+        );
         let _ = actions;
     }
 
@@ -890,8 +1278,18 @@ mod tests {
         let get_b = graph.add_node(NodeType::GetVariable { name: "b".into() }, [50.0, 100.0]);
         let equal = graph.add_node(NodeType::Equal, [100.0, 50.0]);
         let branch = graph.add_node(NodeType::Branch, [150.0, 0.0]);
-        let print_yes = graph.add_node(NodeType::Print { message: "equal".into() }, [200.0, -50.0]);
-        let print_no = graph.add_node(NodeType::Print { message: "not_equal".into() }, [200.0, 50.0]);
+        let print_yes = graph.add_node(
+            NodeType::Print {
+                message: "equal".into(),
+            },
+            [200.0, -50.0],
+        );
+        let print_no = graph.add_node(
+            NodeType::Print {
+                message: "not_equal".into(),
+            },
+            [200.0, 50.0],
+        );
 
         graph.connect(start, "flow_out", branch, "flow_in");
         graph.connect(get_a, "value", equal, "a");
@@ -965,7 +1363,9 @@ mod tests {
         let mut ctx = make_ctx(); // position = [10, 20, 30]
         let actions = graph.execute(&mut ctx);
         assert_eq!(actions.len(), 1);
-        assert!(matches!(&actions[0], GraphAction::SetPosition(1, pos) if pos == &[10.0, 20.0, 30.0]));
+        assert!(
+            matches!(&actions[0], GraphAction::SetPosition(1, pos) if pos == &[10.0, 20.0, 30.0])
+        );
     }
 
     #[test]
@@ -973,14 +1373,39 @@ mod tests {
         // Full graph: get two vars, multiply them, compare > 100, branch to different prints
         let mut graph = VisualGraph::new("MathBranchTest");
         let start = graph.add_node(NodeType::EventStart, [0.0, 0.0]);
-        let get_a = graph.add_node(NodeType::GetVariable { name: "speed".into() }, [50.0, 50.0]);
-        let get_b = graph.add_node(NodeType::GetVariable { name: "factor".into() }, [50.0, 100.0]);
+        let get_a = graph.add_node(
+            NodeType::GetVariable {
+                name: "speed".into(),
+            },
+            [50.0, 50.0],
+        );
+        let get_b = graph.add_node(
+            NodeType::GetVariable {
+                name: "factor".into(),
+            },
+            [50.0, 100.0],
+        );
         let mul = graph.add_node(NodeType::Multiply, [100.0, 50.0]);
-        let get_threshold = graph.add_node(NodeType::GetVariable { name: "threshold".into() }, [100.0, 100.0]);
+        let get_threshold = graph.add_node(
+            NodeType::GetVariable {
+                name: "threshold".into(),
+            },
+            [100.0, 100.0],
+        );
         let gt = graph.add_node(NodeType::Greater, [150.0, 50.0]);
         let branch = graph.add_node(NodeType::Branch, [200.0, 0.0]);
-        let print_fast = graph.add_node(NodeType::Print { message: "fast".into() }, [300.0, -50.0]);
-        let print_slow = graph.add_node(NodeType::Print { message: "slow".into() }, [300.0, 50.0]);
+        let print_fast = graph.add_node(
+            NodeType::Print {
+                message: "fast".into(),
+            },
+            [300.0, -50.0],
+        );
+        let print_slow = graph.add_node(
+            NodeType::Print {
+                message: "slow".into(),
+            },
+            [300.0, 50.0],
+        );
 
         graph.connect(start, "flow_out", branch, "flow_in");
         graph.connect(get_a, "value", mul, "a");
@@ -992,9 +1417,12 @@ mod tests {
         graph.connect(branch, "false", print_slow, "flow_in");
 
         let mut ctx = make_ctx();
-        ctx.variables.insert("speed".to_string(), PinValue::Float(15.0));
-        ctx.variables.insert("factor".to_string(), PinValue::Float(8.0));
-        ctx.variables.insert("threshold".to_string(), PinValue::Float(100.0));
+        ctx.variables
+            .insert("speed".to_string(), PinValue::Float(15.0));
+        ctx.variables
+            .insert("factor".to_string(), PinValue::Float(8.0));
+        ctx.variables
+            .insert("threshold".to_string(), PinValue::Float(100.0));
 
         // 15 * 8 = 120 > 100 → "fast"
         let actions = graph.execute(&mut ctx);
@@ -1002,7 +1430,8 @@ mod tests {
         assert!(matches!(&actions[0], GraphAction::Print(m) if m == "fast"));
 
         // Change so product < threshold: 5 * 8 = 40 < 100 → "slow"
-        ctx.variables.insert("speed".to_string(), PinValue::Float(5.0));
+        ctx.variables
+            .insert("speed".to_string(), PinValue::Float(5.0));
         let actions = graph.execute(&mut ctx);
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], GraphAction::Print(m) if m == "slow"));

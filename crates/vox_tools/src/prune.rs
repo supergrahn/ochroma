@@ -12,10 +12,10 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use glam::{Mat4, Vec3};
 use vox_core::types::GaussianSplat;
-use vox_render::importance::{prune, PruneResult, PruneTarget};
+use vox_render::importance::{PruneResult, PruneTarget, prune};
 use vox_render::spectral::RenderCamera;
 // The render guard renders through the banned CPU software rasterizer; it is
 // available only with the opt-in `legacy-raster` feature (THE LAW: Spectra is the
@@ -32,16 +32,17 @@ fn load_any(path: &Path) -> Result<Vec<GaussianSplat>> {
         .unwrap_or_default();
     match ext.as_str() {
         "vxm" => {
-            let f = std::fs::File::open(path)
-                .with_context(|| format!("open {}", path.display()))?;
+            let f =
+                std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
             let vxm = vox_data::vxm::VxmFile::read(f)
                 .with_context(|| format!("read vxm {}", path.display()))?;
             Ok(vxm.splats)
         }
         "ply" => vox_data::ply_loader::load_ply(path)
             .map_err(|e| anyhow!("read ply {}: {e}", path.display())),
-        "spz" => vox_data::spz::load_spz(path)
-            .map_err(|e| anyhow!("read spz {}: {e}", path.display())),
+        "spz" => {
+            vox_data::spz::load_spz(path).map_err(|e| anyhow!("read spz {}: {e}", path.display()))
+        }
         other => Err(anyhow!(
             "unsupported input extension {:?} (expected vxm, ply, or spz)",
             other
@@ -59,8 +60,8 @@ fn write_vxm(path: &Path, splats: Vec<GaussianSplat>) -> Result<()> {
         ),
         splats,
     };
-    let mut out = std::fs::File::create(path)
-        .with_context(|| format!("create {}", path.display()))?;
+    let mut out =
+        std::fs::File::create(path).with_context(|| format!("create {}", path.display()))?;
     file.write(&mut out)
         .with_context(|| format!("write vxm {}", path.display()))?;
     Ok(())
@@ -256,8 +257,7 @@ mod tests {
         write_vxm(&input, scene).expect("write input vxm");
 
         // Run the prune (guard on, lenient bound so 0.4 keep is accepted).
-        let result =
-            run_prune(&input, &output, 0.4, 0.5, false).expect("prune runs");
+        let result = run_prune(&input, &output, 0.4, 0.5, false).expect("prune runs");
 
         // The output must load and its count must match the reported kept count.
         let reloaded = load_any(&output).expect("reload output");

@@ -407,8 +407,7 @@ pub fn get_vegetation_seasonal_state(
     season: Season,
     is_evergreen: bool,
 ) -> VegetationSeasonalState {
-    let is_ev = is_evergreen
-        || EVERGREEN_SPECIES.contains(&tree_family.to_lowercase().as_str());
+    let is_ev = is_evergreen || EVERGREEN_SPECIES.contains(&tree_family.to_lowercase().as_str());
 
     if is_ev {
         match season {

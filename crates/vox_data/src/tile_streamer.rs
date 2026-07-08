@@ -103,7 +103,10 @@ pub struct StreamerConfig {
 
 impl Default for StreamerConfig {
     fn default() -> Self {
-        Self { workers: 2, max_retries: 1 }
+        Self {
+            workers: 2,
+            max_retries: 1,
+        }
     }
 }
 
@@ -196,7 +199,11 @@ impl TileStreamer {
             workers.push(std::thread::spawn(move || worker_loop(shared, max_retries)));
         }
 
-        Self { shared, workers, config }
+        Self {
+            shared,
+            workers,
+            config,
+        }
     }
 
     /// Enqueue a tile load. Workers pick the highest-`priority` request first.
@@ -220,7 +227,9 @@ impl TileStreamer {
     /// as [`StreamError::Stale`] without any disk I/O; already-completed loads from
     /// older generations are dropped on the next [`Self::drain_completed`].
     pub fn set_min_generation(&self, generation: u64) {
-        self.shared.min_generation.store(generation, AtomicOrdering::SeqCst);
+        self.shared
+            .min_generation
+            .store(generation, AtomicOrdering::SeqCst);
     }
 
     /// Current minimum generation gate.
@@ -323,7 +332,12 @@ fn process_request(shared: &Shared, req: Request, max_retries: u32) -> LoadedTil
     }
 
     let (attempts, result) = load_tile_with_retries(&req.path, max_retries);
-    LoadedTile { key: req.key, generation: req.generation, attempts, result }
+    LoadedTile {
+        key: req.key,
+        generation: req.generation,
+        attempts,
+        result,
+    }
 }
 
 /// Open + decode a tile, retrying on I/O errors up to `max_retries` extra times.
@@ -338,10 +352,7 @@ fn process_request(shared: &Shared, req: Request, max_retries: u32) -> LoadedTil
 ///     decompression / alignment → any non-`Io` `VxmError`) is terminal and
 ///     reported as [`StreamError::Decode`] — retrying a corrupt file would only
 ///     waste I/O.
-fn load_tile_with_retries(
-    path: &Path,
-    max_retries: u32,
-) -> (u32, Result<VxmFileV2, StreamError>) {
+fn load_tile_with_retries(path: &Path, max_retries: u32) -> (u32, Result<VxmFileV2, StreamError>) {
     let total_attempts = max_retries + 1;
     let mut last_io_err = String::new();
 
@@ -397,7 +408,10 @@ impl Default for ResidencyCache {
 
 impl ResidencyCache {
     pub fn new() -> Self {
-        Self { entries: HashMap::new(), clock: 0 }
+        Self {
+            entries: HashMap::new(),
+            clock: 0,
+        }
     }
 
     /// Exact resident byte size of a tile.
@@ -410,7 +424,14 @@ impl ResidencyCache {
     /// computed it don't recompute. Counts as a touch (most-recently-used).
     pub fn insert(&mut self, key: TileKey, tile: VxmFileV2, size_bytes: usize) {
         let last_touch = self.tick();
-        self.entries.insert(key, CacheEntry { tile, size_bytes, last_touch });
+        self.entries.insert(
+            key,
+            CacheEntry {
+                tile,
+                size_bytes,
+                last_touch,
+            },
+        );
     }
 
     /// Get a tile, touching it so it becomes most-recently-used.
@@ -490,7 +511,11 @@ mod tests {
         let mut splats = Vec::with_capacity(n);
         for i in 0..n {
             let mut s = GaussianSplatV2::zeroed();
-            s.position = if i == 0 { first_pos } else { [i as f32, 0.0, 0.0] };
+            s.position = if i == 0 {
+                first_pos
+            } else {
+                [i as f32, 0.0, 0.0]
+            };
             s.opacity = 255;
             splats.push(s);
         }
@@ -515,7 +540,10 @@ mod tests {
             if out.len() >= want {
                 break;
             }
-            assert!(Instant::now() < deadline, "timed out waiting for {want} tiles");
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {want} tiles"
+            );
             std::thread::sleep(Duration::from_millis(2));
         }
         out
@@ -551,7 +579,11 @@ mod tests {
             };
             let (exp_count, exp_pos) = expected[&lt.key];
             assert_eq!(tile.splats.len(), exp_count, "splat count for {:?}", lt.key);
-            assert_eq!(tile.splats[0].position, exp_pos, "splat[0] pos for {:?}", lt.key);
+            assert_eq!(
+                tile.splats[0].position, exp_pos,
+                "splat[0] pos for {:?}",
+                lt.key
+            );
         }
     }
 
@@ -560,7 +592,10 @@ mod tests {
     #[test]
     fn priority_order_is_descending() {
         let dir = tempfile::tempdir().unwrap();
-        let streamer = TileStreamer::new(StreamerConfig { workers: 0, max_retries: 0 });
+        let streamer = TileStreamer::new(StreamerConfig {
+            workers: 0,
+            max_retries: 0,
+        });
 
         // Enqueue in a deliberately non-sorted order with distinct priorities.
         // key.0 is set equal to the priority so we can read order off the result.
@@ -586,7 +621,10 @@ mod tests {
 
     #[test]
     fn stale_generation_skips_disk_io() {
-        let streamer = TileStreamer::new(StreamerConfig { workers: 0, max_retries: 3 });
+        let streamer = TileStreamer::new(StreamerConfig {
+            workers: 0,
+            max_retries: 3,
+        });
         // Path that does NOT exist. If the streamer opened it we'd get Io, not Stale.
         let missing = PathBuf::from("/nonexistent/definitely/not/here_stale.vxm");
         streamer.request((42, 0, 0), missing, 1.0, 1);
@@ -607,7 +645,10 @@ mod tests {
         let missing = PathBuf::from("/nonexistent/definitely/not/here_missing.vxm");
 
         // max_retries = 0 → exactly 1 attempt.
-        let s0 = TileStreamer::new(StreamerConfig { workers: 0, max_retries: 0 });
+        let s0 = TileStreamer::new(StreamerConfig {
+            workers: 0,
+            max_retries: 0,
+        });
         s0.request((1, 0, 0), missing.clone(), 1.0, 1);
         assert!(s0.step_one());
         let d0 = s0.drain_completed();
@@ -616,7 +657,10 @@ mod tests {
         assert_eq!(d0[0].attempts, 1);
 
         // max_retries = 2 → exactly 3 attempts.
-        let s2 = TileStreamer::new(StreamerConfig { workers: 0, max_retries: 2 });
+        let s2 = TileStreamer::new(StreamerConfig {
+            workers: 0,
+            max_retries: 2,
+        });
         s2.request((2, 0, 0), missing, 1.0, 1);
         assert!(s2.step_one());
         let d2 = s2.drain_completed();
@@ -641,7 +685,10 @@ mod tests {
         drop(f);
 
         // max_retries = 2 → exactly 3 attempts, all transient I/O failures.
-        let s = TileStreamer::new(StreamerConfig { workers: 0, max_retries: 2 });
+        let s = TileStreamer::new(StreamerConfig {
+            workers: 0,
+            max_retries: 2,
+        });
         s.request((7, 0, 0), path, 1.0, 1);
         assert!(s.step_one());
         let done = s.drain_completed();
@@ -651,7 +698,10 @@ mod tests {
             "truncated file must be classified Io (transient), got err={:?}",
             done[0].result.as_ref().err()
         );
-        assert_eq!(done[0].attempts, 3, "transient I/O must exhaust all retries");
+        assert_eq!(
+            done[0].attempts, 3,
+            "transient I/O must exhaust all retries"
+        );
     }
 
     // --- LRU eviction: exact victims, remaining within budget ----------------

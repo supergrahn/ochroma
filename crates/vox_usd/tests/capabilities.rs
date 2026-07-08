@@ -10,7 +10,9 @@ use half::f16;
 use vox_data::SpectralUpsampler;
 
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(name)
 }
 
 /// Serialize all tests in this binary: openusd-rs keeps a process-global
@@ -97,7 +99,10 @@ fn xform_translate_moves_splat_mean() {
     let inst = import_usd(&fixture("instancer.usdc")).unwrap();
     let vol: Vec<_> = inst.splats.iter().filter(|s| s.is_volume()).collect();
     let mean_x: f32 = vol.iter().map(|s| s.position()[0]).sum::<f32>() / vol.len() as f32;
-    assert!((mean_x - 4.0 / 3.0).abs() < 0.05, "instancer mean x = {mean_x}");
+    assert!(
+        (mean_x - 4.0 / 3.0).abs() < 0.05,
+        "instancer mean x = {mean_x}"
+    );
 }
 
 // --- Mesh → 2DGS sampling (exact count + every splat is surface) ----------
@@ -121,7 +126,10 @@ fn mesh_splat_count_matches_sampler_formula() {
 fn mesh_splat_count_scales_with_density_setting() {
     let _serial = serial();
     // At 10 spm each 2 m² triangle yields clamp(ceil(20),1,50)=20 → 240.
-    let settings = UsdImportSettings { mesh_splats_per_sqm: 10.0, ..Default::default() };
+    let settings = UsdImportSettings {
+        mesh_splats_per_sqm: 10.0,
+        ..Default::default()
+    };
     let imp = import_usd_with(&fixture("cube_lit.usdc"), &settings).unwrap();
     let surface = imp.splats.iter().filter(|s| s.is_surface()).count();
     assert_eq!(surface, cube_expected_splats(10.0));
@@ -138,11 +146,7 @@ fn instancer_emits_exact_volume_splats() {
     assert_eq!(vol.len(), 3, "exactly 3 instances");
     assert!(imp.splats.iter().all(|s| s.is_volume()), "all volume");
 
-    let expected = [
-        [1.0_f32, 2.0, 3.0],
-        [-4.0, 5.0, -6.0],
-        [7.0, -8.0, 9.0],
-    ];
+    let expected = [[1.0_f32, 2.0, 3.0], [-4.0, 5.0, -6.0], [7.0, -8.0, 9.0]];
     // Match each authored position to some emitted splat within 1e-4.
     for want in expected {
         let found = vol.iter().any(|s| {
@@ -336,7 +340,10 @@ fn prim_count_cap_stops_hostile_breadth() {
     let p = std::env::temp_dir().join("vox_usd_wide.usda");
     std::fs::write(&p, text).unwrap();
 
-    let settings = UsdImportSettings { max_prims: 100, ..Default::default() };
+    let settings = UsdImportSettings {
+        max_prims: 100,
+        ..Default::default()
+    };
     let imp = import_usd_with(&p, &settings).expect("wide scene must import, capped");
     assert!(
         imp.warnings.iter().any(|w| w.contains("exceeds 100 prims")),

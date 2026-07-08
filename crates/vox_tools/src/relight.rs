@@ -13,9 +13,9 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use vox_core::types::GaussianSplat;
-use vox_render::relight::{relight_scene, IlluminantSpec, RelightSettings};
+use vox_render::relight::{IlluminantSpec, RelightSettings, relight_scene};
 
 /// Load splats from any supported format, dispatching on the file extension.
 /// Mirrors `prune.rs::load_any`.
@@ -27,7 +27,8 @@ fn load_any(path: &Path) -> Result<Vec<GaussianSplat>> {
         .unwrap_or_default();
     match ext.as_str() {
         "vxm" => {
-            let f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+            let f =
+                std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
             let vxm = vox_data::vxm::VxmFile::read(f)
                 .with_context(|| format!("read vxm {}", path.display()))?;
             Ok(vxm.splats)
@@ -151,10 +152,7 @@ pub fn run_relight(
         report.f16_roundtrip_error
     );
     if report.clamped_bands > 0 {
-        println!(
-            "relight: {} bands clamped to f16 max",
-            report.clamped_bands
-        );
+        println!("relight: {} bands clamped to f16 max", report.clamped_bands);
     }
 
     write_vxm(output, relit)?;
@@ -196,8 +194,7 @@ mod tests {
         let output = dir.join(format!("ochroma_relight_out_{pid}.vxm"));
 
         write_demo(&input, 512);
-        run_relight(&input, &output, "tungsten", "daylight", true, true)
-            .expect("relight runs");
+        run_relight(&input, &output, "tungsten", "daylight", true, true).expect("relight runs");
 
         // Output must load and round-trip its count.
         let reloaded = load_any(&output).expect("reload output");
@@ -254,8 +251,7 @@ mod tests {
         let settings = RelightSettings::new(reference, target)
             .with_shadows(!no_shadows && !is_identity)
             .with_sky_ambient(true);
-        let shadows_active =
-            settings.cast_shadows() && settings.target().sun_direction().is_some();
+        let shadows_active = settings.cast_shadows() && settings.target().sun_direction().is_some();
         assert!(
             !shadows_active,
             "ambient daylight target must trace no shadow rays => shadows=off"

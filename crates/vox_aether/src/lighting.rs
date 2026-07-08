@@ -458,10 +458,8 @@ impl LightingDesigner {
 
         LightingSetup {
             name: format!("{time_of_day:?}_{weather:?}_{mood:?}").to_lowercase(),
-            description: format!(
-                "{time_of_day:?} lighting, {weather:?} weather, {mood:?} mood"
-            )
-            .to_lowercase(),
+            description: format!("{time_of_day:?} lighting, {weather:?} weather, {mood:?} mood")
+                .to_lowercase(),
             time_of_day,
             weather,
             mood,
@@ -560,8 +558,11 @@ impl LightingDesigner {
     }
 
     fn create_practical_lights(&self, time_of_day: &TimeOfDay) -> Vec<LightSource> {
-        let base_intensity =
-            if matches!(time_of_day, TimeOfDay::Night | TimeOfDay::Midnight) { 0.3 } else { 0.1 };
+        let base_intensity = if matches!(time_of_day, TimeOfDay::Night | TimeOfDay::Midnight) {
+            0.3
+        } else {
+            0.1
+        };
         vec![LightSource {
             name: "lamp_a".to_string(),
             light_type: "point".to_string(),

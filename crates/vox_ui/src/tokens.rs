@@ -232,7 +232,10 @@ mod tests {
         // after deserialization (the design's round-trip invariant).
         let loaded = Tokens::load(theme_path("ochroma.theme.json")).expect("load dark theme");
         let def = Tokens::default();
-        assert_eq!(loaded, def, "Tokens::default() drifted from ochroma.theme.json");
+        assert_eq!(
+            loaded, def,
+            "Tokens::default() drifted from ochroma.theme.json"
+        );
     }
 
     #[test]

@@ -173,10 +173,7 @@ impl SceneBounds {
 // ---------------------------------------------------------------------------
 
 /// Expand `bounds` to include all vertex positions in `meshes`.
-pub fn include_mesh_bounds(
-    bounds: &mut SceneBounds,
-    meshes: &[crate::hybrid_compose::HybridMesh],
-) {
+pub fn include_mesh_bounds(bounds: &mut SceneBounds, meshes: &[crate::hybrid_compose::HybridMesh]) {
     for mesh in meshes {
         for position in &mesh.positions {
             bounds.include_point(Vec3::from(*position));
@@ -195,10 +192,7 @@ pub fn include_aabb_bounds(bounds: &mut SceneBounds, aabbs: &[([f32; 3], [f32; 3
 }
 
 /// Expand `bounds` to include all Gaussian splat volumes in `splats`.
-pub fn include_splat_bounds(
-    bounds: &mut SceneBounds,
-    splats: &[vox_core::types::GaussianSplat],
-) {
+pub fn include_splat_bounds(bounds: &mut SceneBounds, splats: &[vox_core::types::GaussianSplat]) {
     for splat in splats {
         let radius = splat
             .scales()
@@ -222,8 +216,7 @@ mod tests {
             glam::vec3(0.0, 0.0, 0.0),
             glam::vec3(0.0, 0.0, -1.0),
         );
-        let proj =
-            Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 500.0);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 500.0);
         // Centre pixel of a 100x100 viewport — ray hits y=0 plane somewhere near origin
         let hit = screen_to_ground(view, proj, 50.0, 50.0, 100, 100);
         assert!(hit.is_some(), "centre ray must intersect ground plane");
@@ -247,7 +240,10 @@ mod tests {
         let mut b = SceneBounds::empty();
         include_aabb_bounds(
             &mut b,
-            &[([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]), ([2.0, 2.0, 2.0], [3.0, 3.0, 3.0])],
+            &[
+                ([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
+                ([2.0, 2.0, 2.0], [3.0, 3.0, 3.0]),
+            ],
         );
         assert!(!b.is_empty());
         assert_eq!(b.min, Vec3::splat(0.0));

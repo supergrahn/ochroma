@@ -10,9 +10,19 @@ fn generates_splats() {
 #[test]
 fn has_height_variation() {
     let splats = generate_map(42, 200.0, 0.5);
-    let min_y = splats.iter().map(|s| s.position()[1]).fold(f32::MAX, f32::min);
-    let max_y = splats.iter().map(|s| s.position()[1]).fold(f32::MIN, f32::max);
-    assert!(max_y - min_y > 1.0, "Expected height variation, got range {}", max_y - min_y);
+    let min_y = splats
+        .iter()
+        .map(|s| s.position()[1])
+        .fold(f32::MAX, f32::min);
+    let max_y = splats
+        .iter()
+        .map(|s| s.position()[1])
+        .fold(f32::MIN, f32::max);
+    assert!(
+        max_y - min_y > 1.0,
+        "Expected height variation, got range {}",
+        max_y - min_y
+    );
 }
 
 #[test]

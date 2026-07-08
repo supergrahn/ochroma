@@ -624,7 +624,11 @@ impl WaterField {
                 // Fraction of i's water (and thus its dissolved load) that leaves.
                 // `out_water < depth` always (CFL FLUX_FRAC limiter), so the
                 // out fraction is in [0, 1) and contaminant can never go negative.
-                let out_contam = if d_i > 0.0 { c_i * (out_water / d_i) } else { 0.0 };
+                let out_contam = if d_i > 0.0 {
+                    c_i * (out_water / d_i)
+                } else {
+                    0.0
+                };
                 let moved = (c_i - out_contam + in_contam).max(0.0);
                 let cn = moved * (1.0 - CONTAM_DECAY);
                 max_delta = max_delta.max((cn - self.contam[i]).abs());
@@ -849,7 +853,10 @@ mod tests {
 
         // Volume strictly increased (a real computed witness, not is_some).
         let v1 = w.total_volume(1.0);
-        assert!(v1 > v0 + 100.0, "water volume did not grow (v0={v0}, v1={v1})");
+        assert!(
+            v1 > v0 + 100.0,
+            "water volume did not grow (v0={v0}, v1={v1})"
+        );
     }
 
     /// FLOW: water RELEASED on a tilted bed (no sea source) flows DOWNHILL to the
@@ -879,8 +886,15 @@ mod tests {
 
         let v0 = w.total_volume(1.0);
         let high0 = w.depth_at(0, row as u32);
-        assert_eq!(high0, released, "precondition: column released on high cell");
-        assert_eq!(w.depth_at((size - 1) as u32, row as u32), 0.0, "low cell dry");
+        assert_eq!(
+            high0, released,
+            "precondition: column released on high cell"
+        );
+        assert_eq!(
+            w.depth_at((size - 1) as u32, row as u32),
+            0.0,
+            "low cell dry"
+        );
 
         for _ in 0..400 {
             w.step(&bed, sea_level);
@@ -950,12 +964,25 @@ mod tests {
         let (wa, ha) = run();
         let (wb, hb) = run();
         assert_eq!(ha, hb, "flow replay-hash trajectory diverged");
-        let depth_bits = |w: &WaterField| -> Vec<u64> { w.depth.iter().map(|d| d.to_bits()).collect() };
+        let depth_bits =
+            |w: &WaterField| -> Vec<u64> { w.depth.iter().map(|d| d.to_bits()).collect() };
         let vel_bits = |w: &WaterField| -> Vec<u64> {
-            w.vel_x.iter().chain(w.vel_z.iter()).map(|v| v.to_bits()).collect()
+            w.vel_x
+                .iter()
+                .chain(w.vel_z.iter())
+                .map(|v| v.to_bits())
+                .collect()
         };
-        assert_eq!(depth_bits(&wa), depth_bits(&wb), "flow depth grid diverged (ULP)");
-        assert_eq!(vel_bits(&wa), vel_bits(&wb), "flow velocity grid diverged (ULP)");
+        assert_eq!(
+            depth_bits(&wa),
+            depth_bits(&wb),
+            "flow depth grid diverged (ULP)"
+        );
+        assert_eq!(
+            vel_bits(&wa),
+            vel_bits(&wb),
+            "flow velocity grid diverged (ULP)"
+        );
     }
 
     /// POLLUTION: a contaminant injected on the HIGH (release) cell of a tilted,
@@ -1028,7 +1055,10 @@ mod tests {
             }
             if den > 0.0 { num / den } else { 0.0 }
         };
-        assert!(com > 1.0, "contaminant centre-of-mass did not advance down-slope ({com})");
+        assert!(
+            com > 1.0,
+            "contaminant centre-of-mass did not advance down-slope ({com})"
+        );
     }
 
     /// A SEALED interior pit (walled off from the border sea, no breach to it)
@@ -1074,7 +1104,10 @@ mod tests {
         }
         let (cx, cz) = (size / 2, size / 2);
         let i = cz * size + cx;
-        assert!(w.depth_at(cx as u32, cz as u32) > 0.0, "precondition: filled");
+        assert!(
+            w.depth_at(cx as u32, cz as u32) > 0.0,
+            "precondition: filled"
+        );
 
         // RAISE the cell's bed above sea_level (a dam/landfill) + mark dirty.
         bed[i] = 6.0; // above sea_level 4.0

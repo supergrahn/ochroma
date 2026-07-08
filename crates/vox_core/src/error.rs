@@ -20,10 +20,14 @@ pub enum EngineError {
 impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AssetCorrupted { path, reason } => write!(f, "Corrupted asset '{}': {}", path, reason),
+            Self::AssetCorrupted { path, reason } => {
+                write!(f, "Corrupted asset '{}': {}", path, reason)
+            }
             Self::AssetMissing { uuid } => write!(f, "Missing asset: {}", uuid),
             Self::RenderError { reason } => write!(f, "Render error: {}", reason),
-            Self::SaveCorrupted { path, reason } => write!(f, "Corrupted save '{}': {}", path, reason),
+            Self::SaveCorrupted { path, reason } => {
+                write!(f, "Corrupted save '{}': {}", path, reason)
+            }
             Self::ResourceExhausted { resource } => write!(f, "Resource exhausted: {}", resource),
             Self::IoError(e) => write!(f, "IO error: {}", e),
         }
@@ -33,12 +37,17 @@ impl fmt::Display for EngineError {
 impl std::error::Error for EngineError {}
 
 impl From<std::io::Error> for EngineError {
-    fn from(e: std::io::Error) -> Self { Self::IoError(e) }
+    fn from(e: std::io::Error) -> Self {
+        Self::IoError(e)
+    }
 }
 
 impl From<serde_json::Error> for EngineError {
     fn from(e: serde_json::Error) -> Self {
-        Self::SaveCorrupted { path: String::new(), reason: e.to_string() }
+        Self::SaveCorrupted {
+            path: String::new(),
+            reason: e.to_string(),
+        }
     }
 }
 

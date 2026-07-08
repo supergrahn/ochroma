@@ -12,7 +12,7 @@
 
 use crate::quic_transport::TransportError;
 use crate::replication_packet::PlayerStatePacket;
-use crate::rollback::{GameState, InputFrame, Predictor, WorldSim, INPUT_RIGHT, INPUT_UP};
+use crate::rollback::{GameState, INPUT_RIGHT, INPUT_UP, InputFrame, Predictor, WorldSim};
 use crate::{QuicClient, QuicServer};
 use std::collections::VecDeque;
 
@@ -32,7 +32,12 @@ pub struct WalkDemoConfig {
 
 impl Default for WalkDemoConfig {
     fn default() -> Self {
-        Self { ticks: 60, dt: 0.016, host_speed_x: 2.0, client_speed_z: 3.0 }
+        Self {
+            ticks: 60,
+            dt: 0.016,
+            host_speed_x: 2.0,
+            client_speed_z: 3.0,
+        }
     }
 }
 
@@ -228,7 +233,11 @@ pub struct RollbackQuicConfig {
 
 impl Default for RollbackQuicConfig {
     fn default() -> Self {
-        Self { ticks: 24, turn_tick: 10, recv_delay_ticks: 3 }
+        Self {
+            ticks: 24,
+            turn_tick: 10,
+            recv_delay_ticks: 3,
+        }
     }
 }
 
@@ -260,7 +269,9 @@ fn b_input_bits(tick: u64, turn_tick: u64) -> u32 {
 }
 
 /// Run the rollback core over real QUIC loopback (blocking).
-pub fn run_rollback_quic_demo(cfg: RollbackQuicConfig) -> Result<RollbackQuicReport, WalkDemoError> {
+pub fn run_rollback_quic_demo(
+    cfg: RollbackQuicConfig,
+) -> Result<RollbackQuicReport, WalkDemoError> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -288,7 +299,11 @@ async fn run_rollback_async(cfg: RollbackQuicConfig) -> Result<RollbackQuicRepor
         let mut b_final = [0.0f32; 3];
         for tick in 1..=cfg.ticks {
             let bits = b_input_bits(tick, cfg.turn_tick);
-            b_truth.apply_input(&[InputFrame { frame: tick, player_id: 1, input_bits: bits }]);
+            b_truth.apply_input(&[InputFrame {
+                frame: tick,
+                player_id: 1,
+                input_bits: bits,
+            }]);
             b_final = b_truth.position_of(1);
 
             // Pack input bits into spectral[0]; carry B's true position for x-check.
@@ -329,20 +344,32 @@ async fn run_rollback_async(cfg: RollbackQuicConfig) -> Result<RollbackQuicRepor
 
         // Advance A's reference ground truth for B (what B truly did this tick).
         let true_bits = b_input_bits(tick, cfg.turn_tick);
-        b_reference.apply_input(&[InputFrame { frame: tick, player_id: 1, input_bits: true_bits }]);
+        b_reference.apply_input(&[InputFrame {
+            frame: tick,
+            player_id: 1,
+            input_bits: true_bits,
+        }]);
 
         // Queue B's received input for delayed consumption.
         let recv_bits = received.spectral[0] as u32;
         pending.push_back((
             tick + cfg.recv_delay_ticks,
-            InputFrame { frame: tick, player_id: 1, input_bits: recv_bits },
+            InputFrame {
+                frame: tick,
+                player_id: 1,
+                input_bits: recv_bits,
+            },
         ));
 
         // A advances one tick (predicting B by retaining its velocity).
         a.tick(0, 0);
 
         // Release any inputs whose delay has elapsed and reconcile.
-        while pending.front().map(|(release, _)| *release <= tick).unwrap_or(false) {
+        while pending
+            .front()
+            .map(|(release, _)| *release <= tick)
+            .unwrap_or(false)
+        {
             let (_, input) = pending.pop_front().expect("front checked");
             a.receive_remote_input(input);
         }
@@ -362,8 +389,9 @@ async fn run_rollback_async(cfg: RollbackQuicConfig) -> Result<RollbackQuicRepor
     }
     a.resimulate_if_needed();
 
-    let (b_true_final, host_conn, host_server) =
-        host_task.await.map_err(|e| WalkDemoError::Join(e.to_string()))??;
+    let (b_true_final, host_conn, host_server) = host_task
+        .await
+        .map_err(|e| WalkDemoError::Join(e.to_string()))??;
     // A's loop is done and B's handles were held in the task output — teardown
     // order no longer matters.
     drop(host_conn);
@@ -423,7 +451,12 @@ where
         msgs_received += 1;
     }
 
-    Ok(SideResult { own_final, peer_final, peer_spectral, msgs_received })
+    Ok(SideResult {
+        own_final,
+        peer_final,
+        peer_spectral,
+        msgs_received,
+    })
 }
 
 #[cfg(test)]
@@ -443,7 +476,11 @@ mod tests {
 
     #[test]
     fn spectral_is_deterministic_and_distinguishes_entities() {
-        assert_eq!(spectral_for(1, 5), spectral_for(1, 5), "same inputs -> same signature");
+        assert_eq!(
+            spectral_for(1, 5),
+            spectral_for(1, 5),
+            "same inputs -> same signature"
+        );
         assert_ne!(
             spectral_for(1, 5),
             spectral_for(2, 5),
@@ -465,10 +502,16 @@ mod tests {
         let report = run_rollback_quic_demo(cfg).expect("rollback-over-QUIC demo failed");
 
         // A received one input packet per tick over real QUIC.
-        assert_eq!(report.inputs_received, cfg.ticks as u32, "one input packet per tick");
+        assert_eq!(
+            report.inputs_received, cfg.ticks as u32,
+            "one input packet per tick"
+        );
 
         // Prediction genuinely DIVERGED while B's turn was in flight.
-        println!("[rollback-quic] peak divergence = {:.6} m", report.peak_divergence);
+        println!(
+            "[rollback-quic] peak divergence = {:.6} m",
+            report.peak_divergence
+        );
         assert!(
             report.peak_divergence > 1e-3,
             "A's prediction of B must diverge during transit, got {}",
@@ -484,10 +527,18 @@ mod tests {
         let d = dist3(report.a_view_of_b_final, report.b_true_final);
         println!(
             "[rollback-quic] reconciled: A_view_of_B=({:.4},{:.4},{:.4}) b_true=({:.4},{:.4},{:.4}) dist={:.9}",
-            report.a_view_of_b_final[0], report.a_view_of_b_final[1], report.a_view_of_b_final[2],
-            report.b_true_final[0], report.b_true_final[1], report.b_true_final[2], d
+            report.a_view_of_b_final[0],
+            report.a_view_of_b_final[1],
+            report.a_view_of_b_final[2],
+            report.b_true_final[0],
+            report.b_true_final[1],
+            report.b_true_final[2],
+            d
         );
-        assert!(d < 1e-5, "reconciled view must match ground truth (<1e-5), got {d}");
+        assert!(
+            d < 1e-5,
+            "reconciled view must match ground truth (<1e-5), got {d}"
+        );
         for axis in 0..3 {
             assert_eq!(
                 report.a_view_of_b_final[axis].to_bits(),
@@ -505,16 +556,28 @@ mod tests {
         let report = run_loopback_walk_demo(cfg).expect("demo run failed");
 
         // Each side ran every tick and received one packet per tick.
-        assert_eq!(report.msgs_host, cfg.ticks, "host should receive one packet per tick");
-        assert_eq!(report.msgs_client, cfg.ticks, "client should receive one packet per tick");
+        assert_eq!(
+            report.msgs_host, cfg.ticks,
+            "host should receive one packet per tick"
+        );
+        assert_eq!(
+            report.msgs_client, cfg.ticks,
+            "client should receive one packet per tick"
+        );
         assert!(report.msgs_host > 30, "host msgs must exceed 30");
         assert!(report.msgs_client > 30, "client msgs must exceed 30");
 
         // Own positions match the deterministic math exactly.
         let host_exp = cfg.expected_host_final();
         let client_exp = cfg.expected_client_final();
-        assert!((report.host_final[0] - host_exp[0]).abs() < 1e-4, "host x = 1.92");
-        assert!((report.client_final[2] - client_exp[2]).abs() < 1e-4, "client z = 2.88");
+        assert!(
+            (report.host_final[0] - host_exp[0]).abs() < 1e-4,
+            "host x = 1.92"
+        );
+        assert!(
+            (report.client_final[2] - client_exp[2]).abs() < 1e-4,
+            "client z = 2.88"
+        );
 
         // Each side tracked the OTHER's final position to within one tick of movement.
         let host_tol = cfg.host_tick_step();
@@ -523,13 +586,17 @@ mod tests {
         assert!(
             (report.client_saw_host[0] - host_exp[0]).abs() <= host_tol + 1e-4,
             "client_saw_host.x {} should track host.x {} within one tick {}",
-            report.client_saw_host[0], host_exp[0], host_tol
+            report.client_saw_host[0],
+            host_exp[0],
+            host_tol
         );
         // Host's view of client along Z.
         assert!(
             (report.host_saw_client[2] - client_exp[2]).abs() <= client_tol + 1e-4,
             "host_saw_client.z {} should track client.z {} within one tick {}",
-            report.host_saw_client[2], client_exp[2], client_tol
+            report.host_saw_client[2],
+            client_exp[2],
+            client_tol
         );
 
         // The replicated spectral signatures are the peer's, not our own.

@@ -308,7 +308,7 @@ mod bevy_integration {
 }
 
 #[cfg(feature = "bevy")]
-pub use bevy_integration::{sky_update_system, SkyDeltaTime, SkyModelResource, SkyPlugin};
+pub use bevy_integration::{SkyDeltaTime, SkyModelResource, SkyPlugin, sky_update_system};
 
 #[cfg(test)]
 mod tests {

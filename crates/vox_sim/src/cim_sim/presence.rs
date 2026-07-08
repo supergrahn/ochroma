@@ -31,7 +31,9 @@ impl CimPresence {
     /// store grows lazily, so this is sized to the building count, not the cim
     /// count.
     pub fn new(n_buildings: usize) -> Self {
-        Self { ledger: PresenceLedger::new(n_buildings) }
+        Self {
+            ledger: PresenceLedger::new(n_buildings),
+        }
     }
 
     /// Record an Individual-tier cim arriving at workplace building `b` (integer

@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::import_pipeline::{import_asset, ImportSettings};
+use crate::import_pipeline::{ImportSettings, import_asset};
 
 /// A successfully imported and cached asset.
 pub struct ImportedAsset {
@@ -19,10 +19,7 @@ pub struct ImportedAsset {
 /// Import any supported asset file and save as .vxm for fast loading.
 ///
 /// The resulting `.vxm` is written into `cache_dir` with the same stem as the source.
-pub fn import_and_cache(
-    source_path: &Path,
-    cache_dir: &Path,
-) -> Result<ImportedAsset, String> {
+pub fn import_and_cache(source_path: &Path, cache_dir: &Path) -> Result<ImportedAsset, String> {
     let settings = ImportSettings::default();
     let result = import_asset(source_path, &settings)?;
 
@@ -87,23 +84,41 @@ mod tests {
         use std::io::BufWriter;
         let ply_path = dir.join("test_import.ply");
         let mut f = BufWriter::new(std::fs::File::create(&ply_path).unwrap());
-        write!(f, "ply\nformat binary_little_endian 1.0\nelement vertex 50\n").unwrap();
+        write!(
+            f,
+            "ply\nformat binary_little_endian 1.0\nelement vertex 50\n"
+        )
+        .unwrap();
         write!(f, "property float x\nproperty float y\nproperty float z\n").unwrap();
-        write!(f, "property float scale_0\nproperty float scale_1\nproperty float scale_2\n").unwrap();
+        write!(
+            f,
+            "property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+        )
+        .unwrap();
         write!(f, "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n").unwrap();
         write!(f, "property float opacity\n").unwrap();
-        write!(f, "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n").unwrap();
+        write!(
+            f,
+            "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n"
+        )
+        .unwrap();
         write!(f, "end_header\n").unwrap();
         for i in 0..50u32 {
             let x = i as f32 * 0.1;
             f.write_all(&x.to_le_bytes()).unwrap();
             f.write_all(&0.0f32.to_le_bytes()).unwrap();
             f.write_all(&0.0f32.to_le_bytes()).unwrap();
-            for _ in 0..3 { f.write_all(&(-2.3f32).to_le_bytes()).unwrap(); } // scale
-            f.write_all(&1.0f32.to_le_bytes()).unwrap();                       // rot_0 (w)
-            for _ in 0..3 { f.write_all(&0.0f32.to_le_bytes()).unwrap(); }    // rot x,y,z
-            f.write_all(&0.0f32.to_le_bytes()).unwrap();                       // opacity
-            for _ in 0..3 { f.write_all(&0.5f32.to_le_bytes()).unwrap(); }    // f_dc
+            for _ in 0..3 {
+                f.write_all(&(-2.3f32).to_le_bytes()).unwrap();
+            } // scale
+            f.write_all(&1.0f32.to_le_bytes()).unwrap(); // rot_0 (w)
+            for _ in 0..3 {
+                f.write_all(&0.0f32.to_le_bytes()).unwrap();
+            } // rot x,y,z
+            f.write_all(&0.0f32.to_le_bytes()).unwrap(); // opacity
+            for _ in 0..3 {
+                f.write_all(&0.5f32.to_le_bytes()).unwrap();
+            } // f_dc
         }
         ply_path
     }

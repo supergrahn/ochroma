@@ -59,7 +59,9 @@ async fn client_server_round_trip() {
     // Start server on port 0 (OS picks a free port)
     let mut server = GameServer::new(0);
     server.start().await.unwrap();
-    let port = server.bound_port().expect("Server should have a bound port");
+    let port = server
+        .bound_port()
+        .expect("Server should have a bound port");
 
     // Connect client
     let mut client = GameClient::new();
@@ -85,7 +87,9 @@ async fn client_server_round_trip() {
 
     // Server sends a response
     let response = NetMessage::Pong { timestamp: 42 };
-    GameServer::send(&mut server_stream, &response).await.unwrap();
+    GameServer::send(&mut server_stream, &response)
+        .await
+        .unwrap();
 
     // Client receives it
     let received = client.recv().await.unwrap();

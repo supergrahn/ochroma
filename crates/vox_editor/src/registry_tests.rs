@@ -11,9 +11,14 @@ mod tests {
         // Every node module is represented.
         assert!(!reg.is_empty());
         for expected in [
-            "TerrainNode", "BiomeNode", "MoistureNode", "VegetationNode",
-            "SplatizeNode", "SplatWeightNode",
-            "CatenaryNode", "PropPlacementNode",
+            "TerrainNode",
+            "BiomeNode",
+            "MoistureNode",
+            "VegetationNode",
+            "SplatizeNode",
+            "SplatWeightNode",
+            "CatenaryNode",
+            "PropPlacementNode",
         ] {
             assert!(reg.get(expected).is_some(), "registry missing {expected}");
         }
@@ -38,7 +43,11 @@ mod tests {
         // "bio" is a prefix of BiomeNode -> it must be the first hit.
         let hits = reg.search("bio");
         assert!(!hits.is_empty(), "search('bio') found nothing");
-        assert_eq!(hits[0].name(), "BiomeNode", "BiomeNode should rank first for 'bio'");
+        assert_eq!(
+            hits[0].name(),
+            "BiomeNode",
+            "BiomeNode should rank first for 'bio'"
+        );
         assert_eq!(hits[0].tier, MatchTier::Prefix);
     }
 
@@ -47,7 +56,11 @@ mod tests {
         let reg = NodeRegistry::new();
         let hits = reg.search("ter");
         assert!(!hits.is_empty());
-        assert_eq!(hits[0].name(), "TerrainNode", "TerrainNode should rank first for 'ter'");
+        assert_eq!(
+            hits[0].name(),
+            "TerrainNode",
+            "TerrainNode should rank first for 'ter'"
+        );
     }
 
     #[test]
@@ -60,18 +73,33 @@ mod tests {
         let hits = reg.search("lat");
         assert!(!hits.is_empty());
         let first_tier = hits[0].tier;
-        assert_eq!(first_tier, MatchTier::Substring, "contiguous 'lat' should be a substring match");
+        assert_eq!(
+            first_tier,
+            MatchTier::Substring,
+            "contiguous 'lat' should be a substring match"
+        );
         // Tiers are non-decreasing through the result list.
         for w in hits.windows(2) {
-            assert!(w[0].tier <= w[1].tier, "search results must be ordered by tier");
+            assert!(
+                w[0].tier <= w[1].tier,
+                "search results must be ordered by tier"
+            );
         }
     }
 
     #[test]
     fn search_is_deterministic_and_stable() {
         let reg = NodeRegistry::new();
-        let a: Vec<String> = reg.search("node").iter().map(|h| h.name().to_string()).collect();
-        let b: Vec<String> = reg.search("node").iter().map(|h| h.name().to_string()).collect();
+        let a: Vec<String> = reg
+            .search("node")
+            .iter()
+            .map(|h| h.name().to_string())
+            .collect();
+        let b: Vec<String> = reg
+            .search("node")
+            .iter()
+            .map(|h| h.name().to_string())
+            .collect();
         assert_eq!(a, b, "identical queries must return identical ordering");
     }
 
@@ -92,32 +120,57 @@ mod tests {
         // Dragging a Terrain output: only nodes with a Terrain input are valid.
         let compat = reg.compatible_with(PortType::Terrain);
         let names: Vec<&str> = compat.iter().map(|k| k.name).collect();
-        assert!(names.contains(&"BiomeNode"), "BiomeNode accepts Terrain input");
+        assert!(
+            names.contains(&"BiomeNode"),
+            "BiomeNode accepts Terrain input"
+        );
         // TerrainNode has NO inputs -> must be excluded.
-        assert!(!names.contains(&"TerrainNode"), "TerrainNode has no Terrain input, must be filtered out");
+        assert!(
+            !names.contains(&"TerrainNode"),
+            "TerrainNode has no Terrain input, must be filtered out"
+        );
         // SplatizeNode only accepts Mesh -> excluded for a Terrain wire.
-        assert!(!names.contains(&"SplatizeNode"), "SplatizeNode accepts Mesh, not Terrain");
+        assert!(
+            !names.contains(&"SplatizeNode"),
+            "SplatizeNode accepts Mesh, not Terrain"
+        );
     }
 
     #[test]
     fn compatible_with_mesh_targets_splatize() {
         let reg = NodeRegistry::new();
-        let names: Vec<&str> = reg.compatible_with(PortType::Mesh).iter().map(|k| k.name).collect();
-        assert!(names.contains(&"SplatizeNode"), "SplatizeNode accepts a Mesh input");
-        assert!(!names.contains(&"BiomeNode"), "BiomeNode does not accept Mesh");
+        let names: Vec<&str> = reg
+            .compatible_with(PortType::Mesh)
+            .iter()
+            .map(|k| k.name)
+            .collect();
+        assert!(
+            names.contains(&"SplatizeNode"),
+            "SplatizeNode accepts a Mesh input"
+        );
+        assert!(
+            !names.contains(&"BiomeNode"),
+            "BiomeNode does not accept Mesh"
+        );
     }
 
     #[test]
     fn producing_biomemap_finds_biome() {
         let reg = NodeRegistry::new();
-        let names: Vec<&str> = reg.producing(PortType::BiomeMap).iter().map(|k| k.name).collect();
+        let names: Vec<&str> = reg
+            .producing(PortType::BiomeMap)
+            .iter()
+            .map(|k| k.name)
+            .collect();
         assert!(names.contains(&"BiomeNode"), "BiomeNode outputs a BiomeMap");
     }
 
     #[test]
     fn created_node_evaluates_in_a_graph() {
         let reg = NodeRegistry::new();
-        let node = reg.create("TerrainNode").expect("TerrainNode is registered");
+        let node = reg
+            .create("TerrainNode")
+            .expect("TerrainNode is registered");
         let mut graph = OchromaNodeGraph::new();
         let id = graph.add_node("terrain", node);
         // A registry-created node must produce a real output through evaluate().
@@ -139,7 +192,11 @@ mod tests {
         let result = graph.evaluate().unwrap();
         let biome = result.get(b, "biome_map").unwrap().as_biome_map().unwrap();
         let terrain = result.get(t, "terrain").unwrap().as_terrain().unwrap();
-        assert_eq!(biome.len(), terrain.heights.len(), "one biome byte per terrain cell");
+        assert_eq!(
+            biome.len(),
+            terrain.heights.len(),
+            "one biome byte per terrain cell"
+        );
     }
 
     #[test]
@@ -196,7 +253,11 @@ mod tests {
         reg.register_subgraph(terrain_def("Same", 100.0)); // v1
         assert_eq!(reg.len(), base_len + 1, "first registration adds one kind");
         reg.register_subgraph(terrain_def("Same", 999.0)); // v2, same name
-        assert_eq!(reg.len(), base_len + 1, "same-name re-registration must NOT add a second kind");
+        assert_eq!(
+            reg.len(),
+            base_len + 1,
+            "same-name re-registration must NOT add a second kind"
+        );
 
         // search returns exactly one "Same".
         let search = reg.search("Same");
@@ -211,6 +272,9 @@ mod tests {
         let inst = reg.create("Same").expect("creatable");
         let produced = inst.cook(NodeInputs::new()).unwrap();
         let h = produced["out"].as_terrain().unwrap().heights[100];
-        assert_eq!(h, v2_ref, "create() must build the replacement (v2), not the stale v1");
+        assert_eq!(
+            h, v2_ref,
+            "create() must build the replacement (v2), not the stale v1"
+        );
     }
 }

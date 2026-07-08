@@ -220,12 +220,12 @@ pub fn import_usd_with(path: &Path, settings: &UsdImportSettings) -> Result<UsdI
 
 /// The actual open+compose+traverse, with openusd-rs's panics NOT yet contained.
 /// Only ever called through `import_usd_with`'s catch_unwind.
-fn import_usd_unguarded(
-    path: &Path,
-    settings: &UsdImportSettings,
-) -> Result<UsdImport, UsdError> {
+fn import_usd_unguarded(path: &Path, settings: &UsdImportSettings) -> Result<UsdImport, UsdError> {
     let is_text = matches!(
-        path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref(),
         Some("usda"),
     );
 
@@ -241,8 +241,11 @@ fn import_usd_unguarded(
     let up_axis: tf::Token = root.metadata(&tf::Token::new("upAxis")).unwrap_or_default();
     let meters_per_unit = read_meters_per_unit(&root);
 
-    let root_correction =
-        root_correction_matrix(settings.up_axis_correction, up_axis.as_str(), meters_per_unit);
+    let root_correction = root_correction_matrix(
+        settings.up_axis_correction,
+        up_axis.as_str(),
+        meters_per_unit,
+    );
 
     let mut walk = Walk {
         stage: &stage,
@@ -281,7 +284,10 @@ fn import_usd_unguarded(
     out.stats.splats = out.splats.len();
     out.stats.lights = out.lights.len();
 
-    if out.splats.is_empty() && out.lights.is_empty() && out.camera.is_none() && out.entities.is_empty()
+    if out.splats.is_empty()
+        && out.lights.is_empty()
+        && out.camera.is_none()
+        && out.entities.is_empty()
     {
         return Err(UsdError::Empty);
     }
@@ -355,8 +361,7 @@ impl Walk<'_> {
     /// reverse so pop order preserves the authored prim order (entities,
     /// geom_log, and the CLI per-prim lines stay stable).
     fn visit(&mut self, prim: &usd::Prim, parent_world: DMat4) {
-        let mut stack: Vec<(sdf::Path, DMat4, u32)> =
-            vec![(prim.path().clone(), parent_world, 0)];
+        let mut stack: Vec<(sdf::Path, DMat4, u32)> = vec![(prim.path().clone(), parent_world, 0)];
         let mut depth_warned = false;
 
         while let Some((path, parent_world, depth)) = stack.pop() {
@@ -389,8 +394,7 @@ impl Walk<'_> {
 
             if !prim.is_valid() {
                 // Skip the prim itself but still descend (its subtree may be valid).
-                let children: Vec<sdf::Path> =
-                    prim.children().map(|c| c.path().clone()).collect();
+                let children: Vec<sdf::Path> = prim.children().map(|c| c.path().clone()).collect();
                 for child in children.into_iter().rev() {
                     stack.push((child, parent_world, depth + 1));
                 }
@@ -573,7 +577,11 @@ impl Walk<'_> {
                 let t = si as f32 / splat_count as f32;
                 let u = ((t * 7.3 + 0.1).fract()).min(0.999);
                 let v = ((t * 13.7 + 0.2).fract()).min(0.999);
-                let (u, v) = if u + v > 1.0 { (1.0 - u, 1.0 - v) } else { (u, v) };
+                let (u, v) = if u + v > 1.0 {
+                    (1.0 - u, 1.0 - v)
+                } else {
+                    (u, v)
+                };
 
                 let pos = v0 * (1.0 - u - v) + v1 * u + v2 * v;
                 let scale = (area / splat_count as f32).sqrt().clamp(0.001, 0.1);
@@ -639,9 +647,7 @@ impl Walk<'_> {
             let rot = orientations
                 .as_ref()
                 .and_then(|o| (i < o.len()).then(|| o[i]))
-                .map(|q| {
-                    Quat::from_xyzw(q.i.to_f32(), q.j.to_f32(), q.k.to_f32(), q.w.to_f32())
-                })
+                .map(|q| Quat::from_xyzw(q.i.to_f32(), q.j.to_f32(), q.k.to_f32(), q.w.to_f32()))
                 .unwrap_or(Quat::IDENTITY);
 
             self.out
@@ -796,10 +802,30 @@ impl Walk<'_> {
     fn push_entity(&mut self, prim: &usd::Prim, world: DMat4) {
         let cols = world.to_cols_array_2d();
         let world_f32 = [
-            [cols[0][0] as f32, cols[0][1] as f32, cols[0][2] as f32, cols[0][3] as f32],
-            [cols[1][0] as f32, cols[1][1] as f32, cols[1][2] as f32, cols[1][3] as f32],
-            [cols[2][0] as f32, cols[2][1] as f32, cols[2][2] as f32, cols[2][3] as f32],
-            [cols[3][0] as f32, cols[3][1] as f32, cols[3][2] as f32, cols[3][3] as f32],
+            [
+                cols[0][0] as f32,
+                cols[0][1] as f32,
+                cols[0][2] as f32,
+                cols[0][3] as f32,
+            ],
+            [
+                cols[1][0] as f32,
+                cols[1][1] as f32,
+                cols[1][2] as f32,
+                cols[1][3] as f32,
+            ],
+            [
+                cols[2][0] as f32,
+                cols[2][1] as f32,
+                cols[2][2] as f32,
+                cols[2][3] as f32,
+            ],
+            [
+                cols[3][0] as f32,
+                cols[3][1] as f32,
+                cols[3][2] as f32,
+                cols[3][3] as f32,
+            ],
         ];
         self.out.entities.push(UsdEntity {
             name: prim.name().as_str().to_string(),
@@ -812,7 +838,8 @@ impl Walk<'_> {
     // -- Material → diffuse RGB ---------------------------------------------
 
     fn bound_diffuse_rgb(&self, prim: &usd::Prim) -> [f32; 3] {
-        let binding = usd_shade::MaterialBindingAPI::new(self.stage.prim_at_path(prim.path().clone()));
+        let binding =
+            usd_shade::MaterialBindingAPI::new(self.stage.prim_at_path(prim.path().clone()));
         let Some(material) = binding.bound_material(self.stage) else {
             return [0.5, 0.5, 0.5];
         };

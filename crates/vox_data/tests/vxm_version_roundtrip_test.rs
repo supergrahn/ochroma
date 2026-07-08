@@ -11,7 +11,7 @@ use uuid::Uuid;
 use vox_core::types::GaussianSplat;
 use vox_data::vxm::{MaterialType, VxmError, VxmFile, VxmFileV3, VxmHeader};
 use vox_data::vxm_v2::{GaussianSplatV2, VxmFileV2, VxmHeaderV2};
-use vox_data::{import_asset, ImportSettings};
+use vox_data::{ImportSettings, import_asset};
 
 fn band16(values: [f32; 16]) -> [u16; 16] {
     std::array::from_fn(|i| half::f16::from_f32(values[i]).to_bits())
@@ -21,9 +21,27 @@ fn band16(values: [f32; 16]) -> [u16; 16] {
 #[test]
 fn v3_write_then_vxmfile_read_recovers_positions() {
     let splats = vec![
-        GaussianSplat::volume([1.5, -2.0, 3.25], [0.1, 0.1, 0.1], Quat::IDENTITY, 200, band16([0.3; 16])),
-        GaussianSplat::volume([10.0, 20.0, 30.0], [0.2, 0.2, 0.2], Quat::IDENTITY, 255, band16([0.7; 16])),
-        GaussianSplat::volume([-5.0, 0.0, 7.0], [0.05, 0.05, 0.05], Quat::IDENTITY, 128, band16([0.1; 16])),
+        GaussianSplat::volume(
+            [1.5, -2.0, 3.25],
+            [0.1, 0.1, 0.1],
+            Quat::IDENTITY,
+            200,
+            band16([0.3; 16]),
+        ),
+        GaussianSplat::volume(
+            [10.0, 20.0, 30.0],
+            [0.2, 0.2, 0.2],
+            Quat::IDENTITY,
+            255,
+            band16([0.7; 16]),
+        ),
+        GaussianSplat::volume(
+            [-5.0, 0.0, 7.0],
+            [0.05, 0.05, 0.05],
+            Quat::IDENTITY,
+            128,
+            band16([0.1; 16]),
+        ),
     ];
     let original_positions: Vec<[f32; 3]> = splats.iter().map(|s| s.position()).collect();
 
@@ -46,20 +64,39 @@ fn v3_write_then_vxmfile_read_recovers_positions() {
         assert_eq!(got.position(), *want, "splat {i} position mismatch");
     }
     // Spectral survives the round trip (sanity on splat payload, not just count).
-    assert!((loaded.splats[1].spectral_f32(0) - 0.7).abs() < 1e-2,
-        "spectral band 0 of splat 1 = {}", loaded.splats[1].spectral_f32(0));
+    assert!(
+        (loaded.splats[1].spectral_f32(0) - 0.7).abs() < 1e-2,
+        "spectral band 0 of splat 1 = {}",
+        loaded.splats[1].spectral_f32(0)
+    );
 }
 
 /// V3 (ochroma-tools) writer -> import pipeline (`import_asset` on a .vxm path).
 #[test]
 fn v3_write_then_import_pipeline_loads_splats() {
     let splats = vec![
-        GaussianSplat::volume([2.0, 4.0, 6.0], [0.1, 0.1, 0.1], Quat::IDENTITY, 200, band16([0.5; 16])),
-        GaussianSplat::volume([8.0, 16.0, 24.0], [0.1, 0.1, 0.1], Quat::IDENTITY, 200, band16([0.5; 16])),
+        GaussianSplat::volume(
+            [2.0, 4.0, 6.0],
+            [0.1, 0.1, 0.1],
+            Quat::IDENTITY,
+            200,
+            band16([0.5; 16]),
+        ),
+        GaussianSplat::volume(
+            [8.0, 16.0, 24.0],
+            [0.1, 0.1, 0.1],
+            Quat::IDENTITY,
+            200,
+            band16([0.5; 16]),
+        ),
     ];
     let want_first = splats[0].position();
 
-    let v3 = VxmFileV3 { splats, material_ids: vec![], spectral_level: 1 };
+    let v3 = VxmFileV3 {
+        splats,
+        material_ids: vec![],
+        spectral_level: 1,
+    };
 
     let dir = std::env::temp_dir().join("ochroma_vxm_v3_import_test");
     std::fs::create_dir_all(&dir).unwrap();
@@ -72,7 +109,10 @@ fn v3_write_then_import_pipeline_loads_splats() {
     let result = import_asset(&path, &ImportSettings::default())
         .expect("import pipeline must load v3 .vxm written by ochroma-tools");
 
-    assert!(!result.splats.is_empty(), "import produced no splats from v3 file");
+    assert!(
+        !result.splats.is_empty(),
+        "import produced no splats from v3 file"
+    );
     assert_eq!(result.splats.len(), 2);
     assert_eq!(result.splats[0].position(), want_first);
     // Collision box is computed from real splat positions.
@@ -88,7 +128,11 @@ fn v3_write_then_import_pipeline_loads_splats() {
 fn v1_write_then_vxmfile_read_still_works() {
     let uuid = Uuid::new_v4();
     let splats = vec![GaussianSplat::volume(
-        [1.0, 2.0, 3.0], [0.1, 0.1, 0.1], Quat::IDENTITY, 255, band16([0.4; 16]),
+        [1.0, 2.0, 3.0],
+        [0.1, 0.1, 0.1],
+        Quat::IDENTITY,
+        255,
+        band16([0.4; 16]),
     )];
     let file = VxmFile {
         header: VxmHeader::new(uuid, splats.len() as u32, MaterialType::Concrete),
@@ -141,8 +185,11 @@ fn v2_write_then_vxmfile_read_upcasts() {
     assert_eq!(loaded.splats[1].position(), [-1.0, -2.0, -3.0]);
     assert_eq!(loaded.splats[0].opacity(), 200);
     // First 8 spectral bands carried over from the v2 8-band layout.
-    assert!((loaded.splats[0].spectral_f32(0) - 0.6).abs() < 1e-2,
-        "upcast spectral band 0 = {}", loaded.splats[0].spectral_f32(0));
+    assert!(
+        (loaded.splats[0].spectral_f32(0) - 0.6).abs() < 1e-2,
+        "upcast spectral band 0 = {}",
+        loaded.splats[0].spectral_f32(0)
+    );
     // Scales carried over.
     assert_eq!(loaded.splats[0].scales(), [0.1, 0.2, 0.3]);
 }
@@ -155,7 +202,11 @@ fn unknown_version_rejected() {
     header.version = 99;
     let mut buf = bytemuck::bytes_of(&header).to_vec();
     buf.extend_from_slice(&0u64.to_le_bytes()); // empty compressed block size
-    let err = VxmFile::read(&buf[..]).err().expect("unknown version must error");
-    assert!(matches!(err, VxmError::UnsupportedVersion(99)),
-        "expected UnsupportedVersion(99), got {err:?}");
+    let err = VxmFile::read(&buf[..])
+        .err()
+        .expect("unknown version must error");
+    assert!(
+        matches!(err, VxmError::UnsupportedVersion(99)),
+        "expected UnsupportedVersion(99), got {err:?}"
+    );
 }

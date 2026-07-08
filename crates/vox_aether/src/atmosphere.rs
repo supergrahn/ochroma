@@ -535,11 +535,7 @@ impl AtmosphereGenerator {
 
     // Private helpers
 
-    fn create_fog_for_weather(
-        &self,
-        weather: &str,
-        environment_type: &str,
-    ) -> Option<FogSettings> {
+    fn create_fog_for_weather(&self, weather: &str, environment_type: &str) -> Option<FogSettings> {
         let preset_name: Option<&str> = match weather {
             "foggy" => Some("dense_fog"),
             "rainy" | "overcast" | "stormy" => Some("light_mist"),

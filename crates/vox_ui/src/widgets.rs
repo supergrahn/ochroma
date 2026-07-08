@@ -117,7 +117,12 @@ impl WidgetKit {
     pub fn new(tokens: Tokens) -> Self {
         WidgetKit { tokens }
     }
-    pub fn scrub_drag(&self, ui: &mut egui::Ui, value: &mut f32, opts: ScrubOpts) -> egui::Response {
+    pub fn scrub_drag(
+        &self,
+        ui: &mut egui::Ui,
+        value: &mut f32,
+        opts: ScrubOpts,
+    ) -> egui::Response {
         scrub_drag(ui, value, &self.tokens, opts)
     }
     pub fn foldout<R>(
@@ -194,9 +199,8 @@ mod tests {
             // Seed the persisted open state, then run several frames so the
             // open/close animation settles to its final height.
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                let mut st = egui::collapsing_header::CollapsingState::load_with_default_open(
-                    ctx, id, open,
-                );
+                let mut st =
+                    egui::collapsing_header::CollapsingState::load_with_default_open(ctx, id, open);
                 st.set_open(open);
                 st.store(ctx);
             });

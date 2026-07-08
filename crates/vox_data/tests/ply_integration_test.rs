@@ -69,7 +69,9 @@ fn generate_1000_splat_ply() -> Vec<u8> {
         let axis_x = theta.sin();
         let axis_y = phi.cos();
         let axis_z = (theta + phi).sin();
-        let axis_len = (axis_x * axis_x + axis_y * axis_y + axis_z * axis_z).sqrt().max(1e-6);
+        let axis_len = (axis_x * axis_x + axis_y * axis_y + axis_z * axis_z)
+            .sqrt()
+            .max(1e-6);
         let half_angle = angle * 0.5;
         let qw = half_angle.cos();
         let qx = half_angle.sin() * axis_x / axis_len;
@@ -86,7 +88,20 @@ fn generate_1000_splat_ply() -> Vec<u8> {
         let b_dc = (theta - 2.0 * std::f32::consts::TAU / 3.0).cos() * 1.5;
 
         let values: [f32; 14] = [
-            x, y, z, log_sx, log_sy, log_sz, qw, qx, qy, qz, logit_opacity, r_dc, g_dc, b_dc,
+            x,
+            y,
+            z,
+            log_sx,
+            log_sy,
+            log_sz,
+            qw,
+            qx,
+            qy,
+            qz,
+            logit_opacity,
+            r_dc,
+            g_dc,
+            b_dc,
         ];
         for val in &values {
             data.extend_from_slice(&val.to_le_bytes());
@@ -194,7 +209,10 @@ fn ply_integration_render_has_visible_content() {
         ppm.push(p[2]);
     }
     std::fs::write(&path, &ppm).unwrap();
-    println!("[ply_integration] Saved rendered image to: {}", path.display());
+    println!(
+        "[ply_integration] Saved rendered image to: {}",
+        path.display()
+    );
 }
 
 #[test]
@@ -222,9 +240,9 @@ fn ply_integration_render_from_multiple_angles() {
     let splats = load_ply_from_reader(&mut Cursor::new(&ply_data)).unwrap();
 
     let angles = [
-        Vec3::new(10.0, 5.0, 0.0),   // side
-        Vec3::new(0.0, 12.0, 0.1),    // top-down
-        Vec3::new(-8.0, 2.0, -8.0),   // behind
+        Vec3::new(10.0, 5.0, 0.0),  // side
+        Vec3::new(0.0, 12.0, 0.1),  // top-down
+        Vec3::new(-8.0, 2.0, -8.0), // behind
     ];
 
     for (idx, &eye) in angles.iter().enumerate() {
@@ -311,11 +329,26 @@ fn load_ply_from_file_path() {
         // SH DC with colour variation (not uniform)
         let hue = (i as f32 * 0.013) % 1.0;
         let r_dc = if hue < 0.33 { 1.0 } else { -0.5 } + (i as f32 * 0.007).sin() * 0.3;
-        let g_dc = if hue >= 0.33 && hue < 0.66 { 1.0 } else { -0.5 } + (i as f32 * 0.011).cos() * 0.3;
+        let g_dc =
+            if hue >= 0.33 && hue < 0.66 { 1.0 } else { -0.5 } + (i as f32 * 0.011).cos() * 0.3;
         let b_dc = if hue >= 0.66 { 1.0 } else { -0.5 } + (i as f32 * 0.003).sin() * 0.3;
 
-        for val in &[x, y, z, base_scale, base_scale * 0.8, base_scale * 1.2,
-                     qw, qx, qy, qz, logit_opacity, r_dc, g_dc, b_dc] {
+        for val in &[
+            x,
+            y,
+            z,
+            base_scale,
+            base_scale * 0.8,
+            base_scale * 1.2,
+            qw,
+            qx,
+            qy,
+            qz,
+            logit_opacity,
+            r_dc,
+            g_dc,
+            b_dc,
+        ] {
             file.write_all(&val.to_le_bytes()).unwrap();
         }
     }
@@ -326,13 +359,20 @@ fn load_ply_from_file_path() {
     assert_eq!(splats.len(), 5000, "Should load all 5000 splats");
 
     // Verify realistic properties
-    let avg_opacity: f32 = splats.iter().map(|s| s.opacity() as f32).sum::<f32>() / splats.len() as f32;
-    assert!(avg_opacity > 50.0 && avg_opacity < 240.0,
-        "Average opacity should be realistic: {}", avg_opacity);
+    let avg_opacity: f32 =
+        splats.iter().map(|s| s.opacity() as f32).sum::<f32>() / splats.len() as f32;
+    assert!(
+        avg_opacity > 50.0 && avg_opacity < 240.0,
+        "Average opacity should be realistic: {}",
+        avg_opacity
+    );
 
     let avg_scale: f32 = splats.iter().map(|s| s.scale_u()).sum::<f32>() / splats.len() as f32;
-    assert!(avg_scale > 0.001 && avg_scale < 0.1,
-        "Average scale should be small: {}", avg_scale);
+    assert!(
+        avg_scale > 0.001 && avg_scale < 0.1,
+        "Average scale should be small: {}",
+        avg_scale
+    );
 
     // Verify colour variation
     let first_spectral = *splats[0].spectral();
@@ -346,20 +386,37 @@ fn load_ply_from_file_path() {
         proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 50.0),
     };
     let fb = rast.render(&splats, &cam, &Illuminant::d65(), None);
-    let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();
+    let non_black = fb
+        .pixels
+        .iter()
+        .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+        .count();
     let coverage = non_black as f32 / fb.pixels.len() as f32 * 100.0;
 
-    println!("Realistic PLY: {} splats, avg opacity {:.0}, avg scale {:.4}, coverage {:.1}%",
-        splats.len(), avg_opacity, avg_scale, coverage);
+    println!(
+        "Realistic PLY: {} splats, avg opacity {:.0}, avg scale {:.4}, coverage {:.1}%",
+        splats.len(),
+        avg_opacity,
+        avg_scale,
+        coverage
+    );
 
-    assert!(coverage > 5.0, "Loaded PLY should render visibly: {:.1}%", coverage);
+    assert!(
+        coverage > 5.0,
+        "Loaded PLY should render visibly: {:.1}%",
+        coverage
+    );
 
     // Save rendered image
     let dir2 = std::env::temp_dir().join("ochroma_visual");
     std::fs::create_dir_all(&dir2).unwrap();
     let img_path = dir2.join("ply_loaded_scene.ppm");
     let mut data = format!("P6\n256 256\n255\n").into_bytes();
-    for p in &fb.pixels { data.push(p[0]); data.push(p[1]); data.push(p[2]); }
+    for p in &fb.pixels {
+        data.push(p[0]);
+        data.push(p[1]);
+        data.push(p[2]);
+    }
     std::fs::write(&img_path, &data).unwrap();
     println!("Saved: {}", img_path.display());
 
@@ -383,30 +440,41 @@ fn load_real_aetherspectra_ply() {
     println!("Splats: {}", splats.len());
     println!("Load time: {:?}", load_time);
     let p0 = splats[0].position();
-    println!("First splat: pos=({:.3},{:.3},{:.3}) opacity={} scale=({:.4},{:.4},{:.4})",
-        p0[0], p0[1], p0[2],
-        splats[0].opacity(), splats[0].scale_u(), splats[0].scale_v(), splats[0].scale_w());
+    println!(
+        "First splat: pos=({:.3},{:.3},{:.3}) opacity={} scale=({:.4},{:.4},{:.4})",
+        p0[0],
+        p0[1],
+        p0[2],
+        splats[0].opacity(),
+        splats[0].scale_u(),
+        splats[0].scale_v(),
+        splats[0].scale_w()
+    );
 
     assert_eq!(splats.len(), 308078, "Should load all 308k splats");
     assert!(load_time.as_secs() < 30, "Should load in under 30 seconds");
 
     // Render it
+    use glam::{Mat4, Vec3};
+    use vox_core::spectral::Illuminant;
     use vox_render::gpu::software_rasteriser::SoftwareRasteriser;
     use vox_render::spectral::RenderCamera;
-    use vox_core::spectral::Illuminant;
-    use glam::{Mat4, Vec3};
 
     let mut rast = SoftwareRasteriser::new(512, 384);
     let cam = RenderCamera {
         view: Mat4::look_at_rh(Vec3::new(0.0, 0.5, 2.0), Vec3::new(0.0, 0.3, 0.0), Vec3::Y),
-        proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 512.0/384.0, 0.01, 50.0),
+        proj: Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 512.0 / 384.0, 0.01, 50.0),
     };
 
     let render_start = std::time::Instant::now();
     let fb = rast.render(&splats, &cam, &Illuminant::d65(), None);
     let render_time = render_start.elapsed();
 
-    let non_black = fb.pixels.iter().filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0).count();
+    let non_black = fb
+        .pixels
+        .iter()
+        .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+        .count();
     let coverage = non_black as f32 / fb.pixels.len() as f32 * 100.0;
 
     println!("Render time: {:?}", render_time);
@@ -417,9 +485,17 @@ fn load_real_aetherspectra_ply() {
     std::fs::create_dir_all(&dir).unwrap();
     let img_path = dir.join("real_character_hero.ppm");
     let mut data = format!("P6\n512 384\n255\n").into_bytes();
-    for p in &fb.pixels { data.push(p[0]); data.push(p[1]); data.push(p[2]); }
+    for p in &fb.pixels {
+        data.push(p[0]);
+        data.push(p[1]);
+        data.push(p[2]);
+    }
     std::fs::write(&img_path, &data).unwrap();
     println!("Image saved: {}", img_path.display());
 
-    assert!(coverage > 1.0, "Real PLY should render visibly: {:.1}%", coverage);
+    assert!(
+        coverage > 1.0,
+        "Real PLY should render visibly: {:.1}%",
+        coverage
+    );
 }

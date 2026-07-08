@@ -67,7 +67,9 @@ const SEED_CAP_MIN: u32 = 64;
 pub enum Df2dError {
     /// Size must be a multiple of 128 in 128..=4096 so every
     /// buffer→texture row copy stays 256-byte aligned at 2 B/texel.
-    InvalidSize { size: u32 },
+    InvalidSize {
+        size: u32,
+    },
     DeviceLimits(String),
 }
 
@@ -347,12 +349,7 @@ impl DistanceTransform2d {
     /// `mask_cells` is one u8 per cell, row-major, `size`² long; 255 =
     /// impassable. `seeds` are cell coords; seeds on impassable cells are
     /// ignored. `ctx` must be the context the transform was built with.
-    pub fn encode_from_cells(
-        &mut self,
-        ctx: &GpuContext,
-        mask_cells: &[u8],
-        seeds: &[[u32; 2]],
-    ) {
+    pub fn encode_from_cells(&mut self, ctx: &GpuContext, mask_cells: &[u8], seeds: &[[u32; 2]]) {
         let n = (self.size * self.size) as usize;
         assert_eq!(
             mask_cells.len(),
@@ -432,31 +429,30 @@ impl DistanceTransform2d {
             pass.set_bind_group(0, &self.resolve_group, &[]);
             pass.dispatch_workgroups(groups_x, groups_y, 1);
         }
-        let copy_to_tex = |encoder: &mut wgpu::CommandEncoder,
-                           buf: &wgpu::Buffer,
-                           tex: &wgpu::Texture| {
-            encoder.copy_buffer_to_texture(
-                wgpu::TexelCopyBufferInfo {
-                    buffer: buf,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(self.size * 2),
-                        rows_per_image: Some(self.size),
+        let copy_to_tex =
+            |encoder: &mut wgpu::CommandEncoder, buf: &wgpu::Buffer, tex: &wgpu::Texture| {
+                encoder.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: buf,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(self.size * 2),
+                            rows_per_image: Some(self.size),
+                        },
                     },
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: tex,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d {
-                    width: self.size,
-                    height: self.size,
-                    depth_or_array_layers: 1,
-                },
-            );
-        };
+                    wgpu::TexelCopyTextureInfo {
+                        texture: tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: self.size,
+                        height: self.size,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            };
         copy_to_tex(&mut encoder, &self.dist_pack, &self.dist_tex);
         copy_to_tex(&mut encoder, &self.id_pack, &self.id_tex);
         // The readback staging copy rides the same submit so `read_back`
@@ -504,9 +500,7 @@ impl DistanceTransform2d {
             tx.send(r).ok();
         });
         device.poll(wgpu::Maintain::Wait);
-        rx.recv()
-            .expect("readback channel")
-            .expect("readback map");
+        rx.recv().expect("readback channel").expect("readback map");
         let parents: Vec<u32> = bytemuck::cast_slice(&slice.get_mapped_range()).to_vec();
         self.staging.unmap();
 
@@ -707,8 +701,8 @@ impl Df2dReadback {
 mod tests {
     use super::*;
     use crate::gpu::GpuContext;
-    use std::collections::BinaryHeap;
     use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
 
     /// Build a headless [`GpuContext`] over a real device — the house pattern
     /// from `spectral_gi.rs::try_gpu_context`. Returns `None` (printing the
@@ -848,8 +842,8 @@ mod tests {
         let g = rb
             .distance_m(probe[0], probe[1], cell_m)
             .expect("probe is reachable through the gap below the wall");
-        let e = (((probe[0] - seed[0]).pow(2) + (probe[1] - seed[1]).pow(2)) as f32).sqrt()
-            * cell_m;
+        let e =
+            (((probe[0] - seed[0]).pow(2) + (probe[1] - seed[1]).pow(2)) as f32).sqrt() * cell_m;
         println!("[df2d] field={g:.1} m euclidean={e:.1} m");
         assert!(
             g > 3.0 * e,
@@ -986,7 +980,10 @@ mod tests {
             pct >= 95.0,
             "masked JFA must land within 15% of Dijkstra on ≥95% of cells, got {pct:.1}%"
         );
-        assert!(all_inf, "island interior must be unreachable in the field too");
+        assert!(
+            all_inf,
+            "island interior must be unreachable in the field too"
+        );
         assert_eq!(
             unreachable, 256,
             "the 16×16 island interior is the only unreachable region"
@@ -1060,11 +1057,7 @@ mod tests {
         println!("[df2d] steady iterations: {iter_list} ms");
         println!("[df2d] build {steady_ms:.2} ms (gpu jfa 1024^2, steady-state)");
 
-        let covered = rb1
-            .parent_grid()
-            .iter()
-            .filter(|&&p| p != u32::MAX)
-            .count();
+        let covered = rb1.parent_grid().iter().filter(|&&p| p != u32::MAX).count();
         println!("[df2d] covered cells = {covered} of {}", S * S);
         assert!(
             covered > 900_000,

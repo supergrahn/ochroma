@@ -1,4 +1,4 @@
-use rhai::{Engine, AST, Scope, Dynamic};
+use rhai::{AST, Dynamic, Engine, Scope};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use vox_core::script_interface::ScriptCommand;
@@ -103,14 +103,20 @@ impl RhaiRuntime {
             }
         });
 
-        engine.register_fn("distance", |x1: f64, y1: f64, z1: f64, x2: f64, y2: f64, z2: f64| -> f64 {
-            ((x2-x1).powi(2) + (y2-y1).powi(2) + (z2-z1).powi(2)).sqrt()
-        });
+        engine.register_fn(
+            "distance",
+            |x1: f64, y1: f64, z1: f64, x2: f64, y2: f64, z2: f64| -> f64 {
+                ((x2 - x1).powi(2) + (y2 - y1).powi(2) + (z2 - z1).powi(2)).sqrt()
+            },
+        );
 
         engine.register_fn("random", || -> f64 {
             // Simple deterministic pseudo-random for scripts
             use std::time::SystemTime;
-            let t = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().subsec_nanos();
+            let t = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos();
             (t as f64 % 1000.0) / 1000.0
         });
 
@@ -121,25 +127,31 @@ impl RhaiRuntime {
         // get_band(x, y, z, band) -> energy at the sampled band.
         {
             let s = spectral.clone();
-            engine.register_fn("get_band", move |_x: f64, _y: f64, _z: f64, band: i64| -> f64 {
-                if !(0..16).contains(&band) {
-                    return 0.0;
-                }
-                let guard = s.lock().unwrap();
-                guard.band_energy(band as usize) as f64
-            });
+            engine.register_fn(
+                "get_band",
+                move |_x: f64, _y: f64, _z: f64, band: i64| -> f64 {
+                    if !(0..16).contains(&band) {
+                        return 0.0;
+                    }
+                    let guard = s.lock().unwrap();
+                    guard.band_energy(band as usize) as f64
+                },
+            );
         }
 
         // field_energy(x, y, z, radius, band) -> energy at the sampled band.
         {
             let s = spectral.clone();
-            engine.register_fn("field_energy", move |_x: f64, _y: f64, _z: f64, _radius: f64, band: i64| -> f64 {
-                if !(0..16).contains(&band) {
-                    return 0.0;
-                }
-                let guard = s.lock().unwrap();
-                guard.band_energy(band as usize) as f64
-            });
+            engine.register_fn(
+                "field_energy",
+                move |_x: f64, _y: f64, _z: f64, _radius: f64, band: i64| -> f64 {
+                    if !(0..16).contains(&band) {
+                        return 0.0;
+                    }
+                    let guard = s.lock().unwrap();
+                    guard.band_energy(band as usize) as f64
+                },
+            );
         }
 
         Self {
@@ -156,7 +168,11 @@ impl RhaiRuntime {
     }
 
     /// Load a script from source code string.
-    pub fn load_script(&mut self, name: &str, source: &str) -> Result<usize, Box<rhai::EvalAltResult>> {
+    pub fn load_script(
+        &mut self,
+        name: &str,
+        source: &str,
+    ) -> Result<usize, Box<rhai::EvalAltResult>> {
         let ast = self.engine.compile(source)?;
         let idx = self.scripts.len();
         self.scripts.push(RhaiScript {
@@ -172,7 +188,10 @@ impl RhaiRuntime {
     /// Load a script from a file.
     pub fn load_script_file(&mut self, name: &str, path: &Path) -> Result<usize, String> {
         let source = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let ast = self.engine.compile(&source).map_err(|e| format!("Compile error in {}: {}", path.display(), e))?;
+        let ast = self
+            .engine
+            .compile(&source)
+            .map_err(|e| format!("Compile error in {}: {}", path.display(), e))?;
         let idx = self.scripts.len();
         let (mtime, len) = std::fs::metadata(path)
             .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()))
@@ -189,11 +208,18 @@ impl RhaiRuntime {
 
     /// Hot-reload a script by index (re-read from file and recompile).
     pub fn reload(&mut self, index: usize) -> Result<(), String> {
-        if index >= self.scripts.len() { return Err("Invalid script index".into()); }
-        let path = self.scripts[index].source_path.clone()
+        if index >= self.scripts.len() {
+            return Err("Invalid script index".into());
+        }
+        let path = self.scripts[index]
+            .source_path
+            .clone()
             .ok_or("Script was not loaded from file")?;
         let source = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let ast = self.engine.compile(&source).map_err(|e| format!("Reload error: {}", e))?;
+        let ast = self
+            .engine
+            .compile(&source)
+            .map_err(|e| format!("Reload error: {}", e))?;
         self.scripts[index].ast = ast;
         println!("[rhai] Reloaded script: {}", self.scripts[index].name);
         Ok(())
@@ -290,27 +316,40 @@ impl RhaiRuntime {
     }
 
     /// Call a function in a script.
-    pub fn call_fn(&mut self, index: usize, fn_name: &str, args: &[Dynamic]) -> Result<Dynamic, Box<rhai::EvalAltResult>> {
+    pub fn call_fn(
+        &mut self,
+        index: usize,
+        fn_name: &str,
+        args: &[Dynamic],
+    ) -> Result<Dynamic, Box<rhai::EvalAltResult>> {
         let script = &self.scripts[index];
-        self.engine.call_fn(&mut Scope::new(), &script.ast, fn_name, args.to_vec())
+        self.engine
+            .call_fn(&mut Scope::new(), &script.ast, fn_name, args.to_vec())
     }
 
     /// Run the top-level code of a script.
     pub fn run(&self, index: usize) -> Result<(), String> {
-        if index >= self.scripts.len() { return Err("Invalid script index".into()); }
+        if index >= self.scripts.len() {
+            return Err("Invalid script index".into());
+        }
         let mut scope = Scope::new();
-        self.engine.run_ast_with_scope(&mut scope, &self.scripts[index].ast)
+        self.engine
+            .run_ast_with_scope(&mut scope, &self.scripts[index].ast)
             .map_err(|e| format!("Runtime error in {}: {}", self.scripts[index].name, e))
     }
 
     /// Evaluate a one-off expression (for debug console).
     pub fn eval(&self, expr: &str) -> Result<String, String> {
-        let result = self.engine.eval::<Dynamic>(expr)
+        let result = self
+            .engine
+            .eval::<Dynamic>(expr)
             .map_err(|e| format!("Eval error: {}", e))?;
         Ok(format!("{}", result))
     }
 
-    pub fn script_count(&self) -> usize { self.scripts.len() }
+    pub fn script_count(&self) -> usize {
+        self.scripts.len()
+    }
 
     pub fn script_names(&self) -> Vec<&str> {
         self.scripts.iter().map(|s| s.name.as_str()).collect()
@@ -326,13 +365,19 @@ impl RhaiRuntime {
     /// Clean host-side write API: push one band from the engine-canonical `u16`
     /// (f16-bits) spectral encoding. Returns `false` if `band` is out of range.
     pub fn set_band_energy_u16(&self, band: usize, bits: u16) -> bool {
-        self.spectral.lock().unwrap().set_band_energy_u16(band, bits)
+        self.spectral
+            .lock()
+            .unwrap()
+            .set_band_energy_u16(band, bits)
     }
 
     /// Clean host-side write API: overwrite all 16 bands at once from an
     /// engine-canonical `[u16; 16]` f16-bit spectral sample.
     pub fn set_band_energy_all_u16(&self, spectral: &[u16; 16]) {
-        self.spectral.lock().unwrap().set_band_energy_all_u16(spectral);
+        self.spectral
+            .lock()
+            .unwrap()
+            .set_band_energy_all_u16(spectral);
     }
 
     /// Handle to the live spectral field, so the host can share the SAME state
@@ -355,7 +400,8 @@ mod tests {
     #[test]
     fn rhai_runtime_loads_and_runs_script() {
         let mut rt = RhaiRuntime::new();
-        rt.load_script("hello", r#"fn greet() { "hello" }"#).unwrap();
+        rt.load_script("hello", r#"fn greet() { "hello" }"#)
+            .unwrap();
         let result = rt.call_fn(0, "greet", &[]);
         assert!(result.is_ok());
     }
@@ -363,11 +409,15 @@ mod tests {
     #[test]
     fn call_fn_passes_args_to_script() {
         let mut rt = RhaiRuntime::new();
-        rt.load_script("test", r#"fn on_update(dt) { dt }"#).unwrap();
+        rt.load_script("test", r#"fn on_update(dt) { dt }"#)
+            .unwrap();
         let result = rt.call_fn(0, "on_update", &[rhai::Dynamic::from(0.016f64)]);
         assert!(result.is_ok(), "call_fn with args must not error");
         let val: f64 = result.unwrap().cast();
-        assert!((val - 0.016).abs() < 1e-6, "returned value must match input arg");
+        assert!(
+            (val - 0.016).abs() < 1e-6,
+            "returned value must match input arg"
+        );
     }
 
     #[test]
@@ -384,11 +434,15 @@ mod tests {
         let _ = drain_pending_commands();
 
         let mut rt = RhaiRuntime::new();
-        rt.load_script("test", r#"fn trigger() { log("hello from script"); }"#).unwrap();
+        rt.load_script("test", r#"fn trigger() { log("hello from script"); }"#)
+            .unwrap();
         let _ = rt.call_fn(0, "trigger", &[]);
 
         let cmds = drain_pending_commands();
-        assert!(!cmds.is_empty(), "log() call should produce a ScriptCommand::Log");
+        assert!(
+            !cmds.is_empty(),
+            "log() call should produce a ScriptCommand::Log"
+        );
     }
 }
 
@@ -403,7 +457,10 @@ mod hot_reload_tests {
         rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(15);
         let _first = rt.poll_reload();
         let second = rt.poll_reload();
-        assert!(second.is_empty(), "second poll within interval must return empty");
+        assert!(
+            second.is_empty(),
+            "second poll within interval must return empty"
+        );
     }
 
     #[test]
@@ -494,7 +551,10 @@ mod hot_reload_tests {
         assert!(rt.last_error.is_some(), "last_error must be surfaced");
         // Last-good AST still drives the same value — the game did not crash.
         let after: i64 = rt.call_fn(0, "amp", &[]).unwrap().cast();
-        assert_eq!(after, 7, "last-good behaviour must persist through a bad edit");
+        assert_eq!(
+            after, 7,
+            "last-good behaviour must persist through a bad edit"
+        );
 
         // Polling again without a new edit must NOT re-count the same error
         // (mtime was advanced), so the error counter stays at 1.
@@ -533,10 +593,17 @@ mod hot_reload_tests {
         rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
         let reloaded = rt.poll_reload();
 
-        assert_eq!(reloaded.len(), 1, "same-mtime fix must reload via length change");
+        assert_eq!(
+            reloaded.len(),
+            1,
+            "same-mtime fix must reload via length change"
+        );
         let v: i64 = rt.call_fn(0, "amp", &[]).unwrap().cast();
         assert_eq!(v, 11, "the fixed AST must actually run");
-        assert!(rt.last_error.is_none(), "recovery must clear the error banner");
+        assert!(
+            rt.last_error.is_none(),
+            "recovery must clear the error banner"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -578,7 +645,10 @@ mod hot_reload_tests {
         std::fs::write(&pa, "fn a() { 10 }").unwrap();
         rt.last_reload_check = std::time::Instant::now() - std::time::Duration::from_secs(5);
         let _ = rt.poll_reload();
-        assert!(rt.last_error.is_none(), "A's own recovery clears the banner");
+        assert!(
+            rt.last_error.is_none(),
+            "A's own recovery clears the banner"
+        );
         let va: i64 = rt.call_fn(0, "a", &[]).unwrap().cast();
         assert_eq!(va, 10);
 

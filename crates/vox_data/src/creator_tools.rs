@@ -135,7 +135,13 @@ impl CutsceneTimeline {
         }
     }
 
-    pub fn add_camera_keyframe(&mut self, time: f32, position: [f32; 3], look_at: [f32; 3], fov: f32) {
+    pub fn add_camera_keyframe(
+        &mut self,
+        time: f32,
+        position: [f32; 3],
+        look_at: [f32; 3],
+        fov: f32,
+    ) {
         self.camera_keyframes.push(CameraKeyframe {
             time,
             position,
@@ -191,9 +197,7 @@ impl CutsceneTimeline {
     /// Get the interpolated camera position at a given time.
     /// Returns the position of the nearest keyframe before or at the given time.
     pub fn camera_at(&self, time: f32) -> Option<&CameraKeyframe> {
-        self.camera_keyframes
-            .iter()
-            .rfind(|k| k.time <= time)
+        self.camera_keyframes.iter().rfind(|k| k.time <= time)
     }
 }
 
@@ -276,9 +280,7 @@ mod tests {
     fn test_sculpt_ops() {
         assert!((TerrainSculptOp::Raise(5.0).apply_to_height(10.0) - 15.0).abs() < f32::EPSILON);
         assert!((TerrainSculptOp::Lower(3.0).apply_to_height(10.0) - 7.0).abs() < f32::EPSILON);
-        assert!(
-            (TerrainSculptOp::Flatten(20.0).apply_to_height(10.0) - 20.0).abs() < f32::EPSILON
-        );
+        assert!((TerrainSculptOp::Flatten(20.0).apply_to_height(10.0) - 20.0).abs() < f32::EPSILON);
     }
 
     #[test]

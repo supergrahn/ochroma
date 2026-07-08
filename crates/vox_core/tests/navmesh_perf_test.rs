@@ -7,7 +7,11 @@ fn navmesh_nearest_node_1000_nodes_under_1ms() {
     for i in 0u32..1000 {
         let x = (i % 32) as f32 * 3.16;
         let z = (i / 32) as f32 * 3.16;
-        nm.nodes.push(NavNode { id: i, world_pos: [x, 0.0, z], neighbours: vec![] });
+        nm.nodes.push(NavNode {
+            id: i,
+            world_pos: [x, 0.0, z],
+            neighbours: vec![],
+        });
     }
     nm.rebuild_grid();
 
@@ -28,5 +32,9 @@ fn navmesh_nearest_node_1000_nodes_under_1ms() {
     let result = nm.nearest_node(query_pos).unwrap();
     let found = nm.nodes.iter().find(|n| n.id == result).unwrap();
     let dist = ((found.world_pos[0] - 50.0).powi(2) + (found.world_pos[2] - 50.0).powi(2)).sqrt();
-    assert!(dist < 4.0, "nearest node must be within 4m of query, got {:.2}m", dist);
+    assert!(
+        dist < 4.0,
+        "nearest node must be within 4m of query, got {:.2}m",
+        dist
+    );
 }

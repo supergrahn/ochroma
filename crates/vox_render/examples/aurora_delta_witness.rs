@@ -111,7 +111,9 @@ fn run(n: usize, frames: u32, width: u32, height: u32) -> Result<(), String> {
 
     println!("==================== AURORA STEP 1 WITNESS ====================");
     println!("resident_instances        = {resident_count}  (persistent g_instances, 128B each)");
-    println!("(a) max ring depth/frame  = {max_ring_depth}  (== distinct slots; O(deltas), no growing Vec)");
+    println!(
+        "(a) max ring depth/frame  = {max_ring_depth}  (== distinct slots; O(deltas), no growing Vec)"
+    );
     println!("(b) resident hash run #1  = {hash1:#018x}");
     println!("(b) resident hash run #2  = {hash2:#018x}");
     println!("(b) byte-identical        = {det}");
@@ -191,7 +193,8 @@ fn drive(
         // Flush through the GPU indexed scatter (ONE upload + ONE dispatch) and
         // time JUST that path — no render contamination.
         let t = Instant::now();
-        r.flush_scene_delta().map_err(|e| format!("flush (frame {frame}): {e}"))?;
+        r.flush_scene_delta()
+            .map_err(|e| format!("flush (frame {frame}): {e}"))?;
         apply_total += t.elapsed().as_secs_f64() * 1000.0;
     }
     let apply_ms_avg = apply_total / frames.max(1) as f64;
@@ -261,11 +264,7 @@ fn perturbed(i: usize, n: usize, frame: u32) -> [[f32; 4]; 3] {
     let x = (gx - cols as f32 * 0.5) * spacing;
     let z = (gz - (n as f32 / cols as f32) * 0.5) * spacing;
     let bob = ((frame % 16) as f32) * 0.05 - 0.4;
-    [
-        [1.0, 0.0, 0.0, x],
-        [0.0, 1.0, 0.0, bob],
-        [0.0, 0.0, 1.0, z],
-    ]
+    [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, bob], [0.0, 0.0, 1.0, z]]
 }
 
 /// FNV-1a 64-bit over the raw u32 words (little-endian). A stable, dependency-free
@@ -315,8 +314,14 @@ fn unit_cube_blas() -> vox_render::splat_backend::BlasDesc {
     let mut material_ids: Vec<u32> = Vec::new();
     let h = 0.5f32;
     let corners = [
-        [-h, -h, -h], [h, -h, -h], [h, h, -h], [-h, h, -h],
-        [-h, -h, h], [h, -h, h], [h, h, h], [-h, h, h],
+        [-h, -h, -h],
+        [h, -h, -h],
+        [h, h, -h],
+        [-h, h, -h],
+        [-h, -h, h],
+        [h, -h, h],
+        [h, h, h],
+        [-h, h, h],
     ];
     let faces: [([usize; 4], [f32; 3]); 6] = [
         ([0, 1, 2, 3], [0.0, 0.0, -1.0]),
@@ -365,10 +370,7 @@ fn grid_instances(n: usize) -> Vec<vox_render::splat_backend::InstanceRecordGpu>
         out.push(InstanceRecordGpu {
             proto_index: 0,
             transform: [
-                1.0, 0.0, 0.0, 0.0,
-                0.0, 1.0, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-                x, 0.0, z, 1.0,
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, 0.0, z, 1.0,
             ],
             material_base: 0,
         });
@@ -378,10 +380,16 @@ fn grid_instances(n: usize) -> Vec<vox_render::splat_backend::InstanceRecordGpu>
 
 #[cfg(feature = "spectra-native")]
 fn env_u32(key: &str, default: u32) -> u32 {
-    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
 }
 
 #[cfg(feature = "spectra-native")]
 fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
 }

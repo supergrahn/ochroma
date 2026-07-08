@@ -1,7 +1,7 @@
 //! Denoiser CNN for noisy spectral renders.
 //! Format: safetensors (NOT GGUF — GGUF is for LLMs; CNNs export via safetensors).
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::PathBuf;
 
 #[repr(C)]
@@ -21,7 +21,12 @@ impl SpectralFramebuffer {
         Self {
             width,
             height,
-            pixels: vec![SpectralPixel { bands: [0.0f32; 16] }; width * height],
+            pixels: vec![
+                SpectralPixel {
+                    bands: [0.0f32; 16]
+                };
+                width * height
+            ],
         }
     }
 
@@ -34,7 +39,10 @@ impl SpectralFramebuffer {
     }
 
     pub fn total_energy(&self) -> f32 {
-        self.pixels.iter().flat_map(|p| p.bands.iter().copied()).sum()
+        self.pixels
+            .iter()
+            .flat_map(|p| p.bands.iter().copied())
+            .sum()
     }
 }
 
@@ -68,11 +76,19 @@ impl SpectralDenoiser {
                 path.display()
             );
         }
-        Ok(Self { model_path: path, weights_loaded: true, blur_radius: 1 })
+        Ok(Self {
+            model_path: path,
+            weights_loaded: true,
+            blur_radius: 1,
+        })
     }
 
     pub fn stub(blur_radius: usize) -> Self {
-        Self { model_path: PathBuf::from("<stub>"), weights_loaded: false, blur_radius }
+        Self {
+            model_path: PathBuf::from("<stub>"),
+            weights_loaded: false,
+            blur_radius,
+        }
     }
 
     /// True once a safetensors header has been validated via [`Self::load`].
@@ -189,7 +205,10 @@ mod tests {
     #[test]
     fn stub_reports_weights_not_loaded() {
         let denoiser = SpectralDenoiser::stub(2);
-        assert!(!denoiser.weights_loaded(), "stub must report no weights loaded");
+        assert!(
+            !denoiser.weights_loaded(),
+            "stub must report no weights loaded"
+        );
         assert_eq!(denoiser.blur_radius, 2);
     }
 
@@ -215,7 +234,11 @@ mod tests {
         let result = SpectralDenoiser::load("/tmp/__no_denoiser__.safetensors");
         assert!(result.is_err(), "missing file must return Err");
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("not found"), "error must say 'not found': {}", msg);
+        assert!(
+            msg.contains("not found"),
+            "error must say 'not found': {}",
+            msg
+        );
     }
 
     #[test]
@@ -228,7 +251,8 @@ mod tests {
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("header length") || msg.contains("header"),
-            "error must mention header length, got: {}", msg
+            "error must mention header length, got: {}",
+            msg
         );
     }
 

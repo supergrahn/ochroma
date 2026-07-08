@@ -40,11 +40,9 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use vox_net::quic_transport::{
-    QuicClient, QuicServer, TransportError, TransportTuning,
-};
+use vox_net::quic_transport::{QuicClient, QuicServer, TransportError, TransportTuning};
 use vox_net::replication_packet::PlayerStatePacket;
-use vox_net::rollback::{InputFrame, Predictor, WorldSim, GameState};
+use vox_net::rollback::{GameState, InputFrame, Predictor, WorldSim};
 
 /// Entity id of the authoritative host-controlled player.
 const HOST_PLAYER: u8 = 1;
@@ -87,9 +85,13 @@ fn run(args: &[String]) -> Result<(), String> {
         "client" => {
             let opts = Opts::parse(args)?;
             let connect = opts.connect.ok_or("client requires --connect HOST:PORT")?;
-            let report =
-                run_client(&connect, opts.ticks, opts.seed).map_err(|e| e.to_string())?;
-            print_final("client", report.final_tick, report.final_pos, report.checksum);
+            let report = run_client(&connect, opts.ticks, opts.seed).map_err(|e| e.to_string())?;
+            print_final(
+                "client",
+                report.final_tick,
+                report.final_pos,
+                report.checksum,
+            );
             Ok(())
         }
         "selftest" => {
@@ -101,8 +103,8 @@ fn run(args: &[String]) -> Result<(), String> {
             // and Command::new does no shell-style PATH resolution — yielding ENOENT.
             // current_exe() returns the real binary path regardless of how argv0 was
             // set; we fall back to args[0] only if it errors.
-            let self_exe = std::env::current_exe()
-                .unwrap_or_else(|_| std::path::PathBuf::from(&args[0]));
+            let self_exe =
+                std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from(&args[0]));
             run_selftest(opts.port, &self_exe)
         }
         other => Err(format!(
@@ -131,7 +133,11 @@ impl Opts {
         let mut i = 2;
         while i < args.len() {
             let flag = args[i].as_str();
-            let val = || args.get(i + 1).cloned().ok_or(format!("{flag} needs a value"));
+            let val = || {
+                args.get(i + 1)
+                    .cloned()
+                    .ok_or(format!("{flag} needs a value"))
+            };
             match flag {
                 "--port" => port = val()?.parse().map_err(|e| format!("bad --port: {e}"))?,
                 "--connect" => connect = Some(val()?),
@@ -141,7 +147,12 @@ impl Opts {
             }
             i += 2;
         }
-        Ok(Opts { port, connect, ticks, seed })
+        Ok(Opts {
+            port,
+            connect,
+            ticks,
+            seed,
+        })
     }
 }
 
@@ -237,7 +248,10 @@ fn run_host(port: u16, ticks: u32, seed: u64) -> Result<EndpointReport, Transpor
                 }
             }
         };
-        eprintln!("[net_session] host accepted client {}", conn.remote_address());
+        eprintln!(
+            "[net_session] host accepted client {}",
+            conn.remote_address()
+        );
 
         let mut sim = WorldSim::new();
         let mut final_pos = [0.0f32; 3];
@@ -245,7 +259,11 @@ fn run_host(port: u16, ticks: u32, seed: u64) -> Result<EndpointReport, Transpor
 
         for tick in 1..=ticks as u64 {
             let bits = host_input_bits(seed, tick);
-            sim.apply_input(&[InputFrame { frame: tick, player_id: HOST_PLAYER, input_bits: bits }]);
+            sim.apply_input(&[InputFrame {
+                frame: tick,
+                player_id: HOST_PLAYER,
+                input_bits: bits,
+            }]);
             final_pos = sim.position_of(HOST_PLAYER as usize);
 
             // Pack the authoritative input bits into spectral[0] (so the client can
@@ -281,7 +299,11 @@ fn run_host(port: u16, ticks: u32, seed: u64) -> Result<EndpointReport, Transpor
         conn.recv_player_state().await?; // client's FINAL ack
         conn.raw().close(0u32.into(), b"done");
 
-        Ok(EndpointReport { final_tick: ticks, final_pos, checksum })
+        Ok(EndpointReport {
+            final_tick: ticks,
+            final_pos,
+            checksum,
+        })
     })
 }
 
@@ -296,14 +318,18 @@ fn run_client(connect: &str, ticks: u32, seed: u64) -> Result<EndpointReport, Tr
         .build()
         .map_err(|e| TransportError::Endpoint(e.to_string()))?;
     rt.block_on(async move {
-        let _addr: SocketAddr =
-            connect.parse().map_err(|e: std::net::AddrParseError| TransportError::Connection(e.to_string()))?;
+        let _addr: SocketAddr = connect
+            .parse()
+            .map_err(|e: std::net::AddrParseError| TransportError::Connection(e.to_string()))?;
 
         // Retry the connect for CONNECT_RETRY_TOTAL: the client may legitimately
         // start before the host is listening.
         let client = connect_with_retry(connect).await?;
         let conn = client.connection().clone();
-        eprintln!("[net_session] client connected to {}", conn.remote_address());
+        eprintln!(
+            "[net_session] client connected to {}",
+            conn.remote_address()
+        );
 
         let mut predictor = Predictor::new(WorldSim::new());
         let mut pending: std::collections::VecDeque<(u64, InputFrame)> = Default::default();
@@ -323,14 +349,22 @@ fn run_client(connect: &str, ticks: u32, seed: u64) -> Result<EndpointReport, Tr
             let recv_bits = received.spectral[0] as u32;
             pending.push_back((
                 tick + RECV_DELAY_TICKS,
-                InputFrame { frame: tick, player_id: HOST_PLAYER, input_bits: recv_bits },
+                InputFrame {
+                    frame: tick,
+                    player_id: HOST_PLAYER,
+                    input_bits: recv_bits,
+                },
             ));
 
             // Advance the local predictor one tick (host is predicted by velocity
             // retention until its authoritative input is released below).
             predictor.tick(0, 0);
 
-            while pending.front().map(|(rel, _)| *rel <= tick).unwrap_or(false) {
+            while pending
+                .front()
+                .map(|(rel, _)| *rel <= tick)
+                .unwrap_or(false)
+            {
                 let (_, input) = pending.pop_front().expect("front checked");
                 predictor.receive_remote_input(input);
             }
@@ -361,14 +395,19 @@ fn run_client(connect: &str, ticks: u32, seed: u64) -> Result<EndpointReport, Tr
         // run_async fix (handles held past `join!`). If the host DIES instead of
         // closing (probe 2), `closed()` still returns within the test-harness idle
         // timeout, so the host-killed death-detection bound is unchanged.
-        conn.send_player_state(&PlayerStatePacket::new(0, final_pos, [0u16; 16])).await?;
+        conn.send_player_state(&PlayerStatePacket::new(0, final_pos, [0u16; 16]))
+            .await?;
         conn.raw().closed().await;
         // Keep `client` (the endpoint) alive until here so it is never dropped mid
         // handshake; explicit drops document the lifetime, mirroring run_async.
         drop(conn);
         drop(client);
 
-        Ok(EndpointReport { final_tick: ticks, final_pos, checksum })
+        Ok(EndpointReport {
+            final_tick: ticks,
+            final_pos,
+            checksum,
+        })
     })
 }
 
@@ -444,7 +483,11 @@ fn parse_final(stdout: &str) -> Option<Final> {
             }
         }
     }
-    Some(Final { tick: tick?, pos: pos?, checksum: checksum? })
+    Some(Final {
+        tick: tick?,
+        pos: pos?,
+        checksum: checksum?,
+    })
 }
 
 /// Outcome of running a child to completion (with hard timeout).
@@ -463,10 +506,7 @@ struct ChildOutput {
 /// line-by-line for the early `[net_session] LISTENING addr=ADDR` marker — the bound
 /// address is sent on a one-shot channel as soon as it appears, letting the parent
 /// learn the OS-chosen port WITHOUT pre-picking it (closing the TOCTOU window).
-fn spawn_managed(
-    self_exe: &std::path::Path,
-    args: &[&str],
-) -> Result<ManagedChild, String> {
+fn spawn_managed(self_exe: &std::path::Path, args: &[&str]) -> Result<ManagedChild, String> {
     let mut child = Command::new(self_exe)
         .args(args)
         .stdout(Stdio::piped())
@@ -508,7 +548,12 @@ fn spawn_managed(
         let _ = err_tx.send(err);
     });
 
-    Ok(ManagedChild { child, out_rx, err_rx, addr_rx })
+    Ok(ManagedChild {
+        child,
+        out_rx,
+        err_rx,
+        addr_rx,
+    })
 }
 
 struct ManagedChild {
@@ -536,9 +581,19 @@ impl ManagedChild {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
                     // Collect piped output (the reader threads fill the channels).
-                    let out = self.out_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
-                    let err = self.err_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
-                    return Ok(ChildOutput { code: status.code(), stdout: out, stderr: err });
+                    let out = self
+                        .out_rx
+                        .recv_timeout(Duration::from_secs(2))
+                        .unwrap_or_default();
+                    let err = self
+                        .err_rx
+                        .recv_timeout(Duration::from_secs(2))
+                        .unwrap_or_default();
+                    return Ok(ChildOutput {
+                        code: status.code(),
+                        stdout: out,
+                        stderr: err,
+                    });
                 }
                 Ok(None) => {
                     if Instant::now() >= deadline {
@@ -574,7 +629,15 @@ fn run_selftest(base_port: u16, self_exe: &std::path::Path) -> Result<(), String
     let probe1_port = base_port.to_string();
     let host = spawn_managed(
         self_exe,
-        &["host", "--port", &probe1_port, "--ticks", &ticks.to_string(), "--seed", &seed.to_string()],
+        &[
+            "host",
+            "--port",
+            &probe1_port,
+            "--ticks",
+            &ticks.to_string(),
+            "--seed",
+            &seed.to_string(),
+        ],
     )?;
     let host_addr = host.bound_addr(Duration::from_secs(10))?;
     let connect_addr = host_addr.to_string();
@@ -582,7 +645,15 @@ fn run_selftest(base_port: u16, self_exe: &std::path::Path) -> Result<(), String
 
     let client = spawn_managed(
         self_exe,
-        &["client", "--connect", &connect_addr, "--ticks", &ticks.to_string(), "--seed", &seed.to_string()],
+        &[
+            "client",
+            "--connect",
+            &connect_addr,
+            "--ticks",
+            &ticks.to_string(),
+            "--seed",
+            &seed.to_string(),
+        ],
     )?;
 
     let host_out = host.wait(CHILD_HARD_TIMEOUT)?;
@@ -596,10 +667,10 @@ fn run_selftest(base_port: u16, self_exe: &std::path::Path) -> Result<(), String
     print_child("host", &host_out);
     print_child("client", &client_out);
 
-    let host_final = parse_final(&host_out.stdout)
-        .ok_or("host produced no parseable FINAL line")?;
-    let client_final = parse_final(&client_out.stdout)
-        .ok_or("client produced no parseable FINAL line")?;
+    let host_final =
+        parse_final(&host_out.stdout).ok_or("host produced no parseable FINAL line")?;
+    let client_final =
+        parse_final(&client_out.stdout).ok_or("client produced no parseable FINAL line")?;
 
     // --- Assertion 1: checksum equality ACROSS the process boundary. ---
     if host_final.checksum != client_final.checksum {
@@ -620,7 +691,10 @@ fn run_selftest(base_port: u16, self_exe: &std::path::Path) -> Result<(), String
             host_final.tick, client_final.tick
         ));
     }
-    println!("[selftest] PASS tick count = {} on both sides", host_final.tick);
+    println!(
+        "[selftest] PASS tick count = {} on both sides",
+        host_final.tick
+    );
 
     // --- Assertion 3: convergence within epsilon (client reconciled to host). ---
     let conv = dist3(host_final.pos, client_final.pos);
@@ -631,9 +705,7 @@ fn run_selftest(base_port: u16, self_exe: &std::path::Path) -> Result<(), String
             host_final.pos, client_final.pos
         ));
     }
-    println!(
-        "[selftest] PASS convergence: client reconciled to host, dist={conv:.9} m (< {EPS})"
-    );
+    println!("[selftest] PASS convergence: client reconciled to host, dist={conv:.9} m (< {EPS})");
 
     println!("[selftest] === Probe 1b: client-first connect FORCES real retries ===");
     probe_client_retry(self_exe)?;
@@ -657,14 +729,30 @@ fn probe_host_killed(self_exe: &std::path::Path) -> Result<(), String> {
 
     let mut host = spawn_managed(
         self_exe,
-        &["host", "--port", "0", "--ticks", &ticks.to_string(), "--seed", "3"],
+        &[
+            "host",
+            "--port",
+            "0",
+            "--ticks",
+            &ticks.to_string(),
+            "--seed",
+            "3",
+        ],
     )?;
     // Host self-reports its bound port (no pre-pick TOCTOU); then start the client.
     let host_addr = host.bound_addr(Duration::from_secs(10))?;
     let connect_addr = host_addr.to_string();
     let client = spawn_managed(
         self_exe,
-        &["client", "--connect", &connect_addr, "--ticks", &ticks.to_string(), "--seed", "3"],
+        &[
+            "client",
+            "--connect",
+            &connect_addr,
+            "--ticks",
+            &ticks.to_string(),
+            "--seed",
+            "3",
+        ],
     )?;
     // Let the session run a bit so it's genuinely mid-session, then kill the host.
     std::thread::sleep(Duration::from_millis(1000));
@@ -712,7 +800,15 @@ fn probe_client_retry(self_exe: &std::path::Path) -> Result<(), String> {
 
     let client = spawn_managed(
         self_exe,
-        &["client", "--connect", &connect_addr, "--ticks", &ticks.to_string(), "--seed", &seed.to_string()],
+        &[
+            "client",
+            "--connect",
+            &connect_addr,
+            "--ticks",
+            &ticks.to_string(),
+            "--seed",
+            &seed.to_string(),
+        ],
     )?;
     // CONNECT_RETRY_STEP is 100ms; wait well past several windows so the client's
     // first connect has provably failed and it has retried at least once before the
@@ -720,7 +816,15 @@ fn probe_client_retry(self_exe: &std::path::Path) -> Result<(), String> {
     std::thread::sleep(Duration::from_millis(600));
     let host = spawn_managed(
         self_exe,
-        &["host", "--port", &port.to_string(), "--ticks", &ticks.to_string(), "--seed", &seed.to_string()],
+        &[
+            "host",
+            "--port",
+            &port.to_string(),
+            "--ticks",
+            &ticks.to_string(),
+            "--seed",
+            &seed.to_string(),
+        ],
     )?;
 
     let host_out = host.wait(CHILD_HARD_TIMEOUT)?;
@@ -754,10 +858,20 @@ fn probe_sequential_rebind(self_exe: &std::path::Path) -> Result<(), String> {
     let mut port: Option<u16> = None;
 
     let run_once = |label: &str, port: &mut Option<u16>| -> Result<u64, String> {
-        let bind_port = port.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string());
+        let bind_port = port
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "0".to_string());
         let host = spawn_managed(
             self_exe,
-            &["host", "--port", &bind_port, "--ticks", &ticks.to_string(), "--seed", "5"],
+            &[
+                "host",
+                "--port",
+                &bind_port,
+                "--ticks",
+                &ticks.to_string(),
+                "--seed",
+                "5",
+            ],
         )?;
         let host_addr = host.bound_addr(Duration::from_secs(10))?;
         if port.is_none() {
@@ -766,7 +880,15 @@ fn probe_sequential_rebind(self_exe: &std::path::Path) -> Result<(), String> {
         let connect_addr = host_addr.to_string();
         let client = spawn_managed(
             self_exe,
-            &["client", "--connect", &connect_addr, "--ticks", &ticks.to_string(), "--seed", "5"],
+            &[
+                "client",
+                "--connect",
+                &connect_addr,
+                "--ticks",
+                &ticks.to_string(),
+                "--seed",
+                "5",
+            ],
         )?;
         let host_out = host.wait(Duration::from_secs(30))?;
         let client_out = client.wait(Duration::from_secs(30))?;
@@ -804,7 +926,9 @@ fn assert_zero(who: &str, out: &ChildOutput) -> Result<(), String> {
     if out.code != Some(0) {
         return Err(format!(
             "{who} exited {:?} (expected 0).\n--- {who} stdout ---\n{}\n--- {who} stderr ---\n{}",
-            out.code, out.stdout.trim(), out.stderr.trim()
+            out.code,
+            out.stdout.trim(),
+            out.stderr.trim()
         ));
     }
     Ok(())
@@ -821,8 +945,7 @@ fn print_child(who: &str, out: &ChildOutput) {
 
 fn extract_attempts(stderr: &str) -> Option<u32> {
     let line = stderr.lines().find(|l| l.contains("connected after"))?;
-    line.split_whitespace()
-        .find_map(|t| t.parse::<u32>().ok())
+    line.split_whitespace().find_map(|t| t.parse::<u32>().ok())
 }
 
 fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {

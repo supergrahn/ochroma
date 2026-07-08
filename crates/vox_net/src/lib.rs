@@ -1,28 +1,30 @@
 use thiserror::Error;
 
-pub mod quic_transport;
-pub mod spectral_relevance;
-pub mod replication_packet;
-pub mod replication_loop;
-pub mod world_replication;
 pub mod crdt;
-pub mod rollback;
-pub mod splat_replication;
 pub mod lobby;
+pub mod net_walk_demo;
+pub mod quic_transport;
 pub mod replication;
+pub mod replication_loop;
+pub mod replication_packet;
 pub mod replication_system;
+pub mod rollback;
+pub mod spectral_relevance;
+pub mod splat_replication;
 pub mod transport;
 pub mod world_hosting;
-pub mod net_walk_demo;
+pub mod world_replication;
+pub use net_walk_demo::{
+    RollbackQuicConfig, RollbackQuicReport, WalkDemoConfig, WalkDemoError, WalkDemoReport,
+    run_loopback_walk_demo, run_rollback_quic_demo,
+};
 pub use quic_transport::{
     QuicClient, QuicConnection, QuicServer, QuicTransport, TransportError, TransportRole,
 };
-pub use replication::{CommandPayload, EntityDelta, NetMessage, ReplicationClient, ReplicationServer};
-pub use replication_packet::{PlayerStatePacket, ReplicationPacket};
-pub use net_walk_demo::{
-    run_loopback_walk_demo, run_rollback_quic_demo, RollbackQuicConfig, RollbackQuicReport,
-    WalkDemoConfig, WalkDemoError, WalkDemoReport,
+pub use replication::{
+    CommandPayload, EntityDelta, NetMessage, ReplicationClient, ReplicationServer,
 };
+pub use replication_packet::{PlayerStatePacket, ReplicationPacket};
 pub use transport::{GameClient, GameServer};
 
 #[derive(Debug, Error)]

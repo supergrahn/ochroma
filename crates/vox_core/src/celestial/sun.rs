@@ -256,8 +256,7 @@ pub fn compute_sun_position_tz(
     // ── Step 2: equation of time (minutes) ───────────────────────────────────
     // NOAA formula from solareqns.PDF, accurate to < 0.5 min.
     let eqtime = 229.18
-        * (0.000075
-            + 0.001868 * gamma.cos()
+        * (0.000075 + 0.001868 * gamma.cos()
             - 0.032077 * gamma.sin()
             - 0.014615 * (2.0 * gamma).cos()
             - 0.04089 * (2.0 * gamma).sin());
@@ -268,21 +267,17 @@ pub fn compute_sun_position_tz(
     // caller explicitly set a non-Earth value (i.e. not 23.44 exactly).
     let decl = {
         let tilt = config.axial_tilt_deg;
-        let use_noaa = tilt.is_nan()
-            || (tilt - 23.44).abs() < 0.01;  // default Earth → NOAA series
+        let use_noaa = tilt.is_nan() || (tilt - 23.44).abs() < 0.01; // default Earth → NOAA series
         if use_noaa {
             // NOAA Fourier series (Meeus simplified).
-            0.006918
-                - 0.399912 * gamma.cos()
-                + 0.070257 * gamma.sin()
+            0.006918 - 0.399912 * gamma.cos() + 0.070257 * gamma.sin()
                 - 0.006758 * (2.0 * gamma).cos()
                 + 0.000907 * (2.0 * gamma).sin()
                 - 0.002697 * (3.0 * gamma).cos()
                 + 0.00148 * (3.0 * gamma).sin()
         } else {
             // Simple axial-tilt sine for alien worlds / zero-tilt tests.
-            (tilt as f64).to_radians()
-                * (TAU * (day_of_year as f64 - 81.0) / 365.0).sin()
+            (tilt as f64).to_radians() * (TAU * (day_of_year as f64 - 81.0) / 365.0).sin()
         }
     };
 
@@ -651,9 +646,15 @@ mod tests {
         let d0 = solar_day_from_civic_day(0, 360);
         assert!((d0 - 0.0).abs() < 1e-6, "civic 0 → solar 0; got {d0}");
         let d360 = solar_day_from_civic_day(360, 360);
-        assert!((d360 - 365.0).abs() < 1e-4, "civic 360 → solar 365; got {d360}");
+        assert!(
+            (d360 - 365.0).abs() < 1e-4,
+            "civic 360 → solar 365; got {d360}"
+        );
         let d180 = solar_day_from_civic_day(180, 360);
-        assert!((d180 - 182.5).abs() < 0.01, "civic 180 → solar 182.5; got {d180}");
+        assert!(
+            (d180 - 182.5).abs() < 0.01,
+            "civic 180 → solar 182.5; got {d180}"
+        );
     }
 
     // ── Refraction + timezone (ultra-realistic additions) ─────────────────────
@@ -670,7 +671,10 @@ mod tests {
         );
         // High sun (~60°): refraction is tiny (< 0.02°).
         let r60 = atmospheric_refraction_deg(60.0);
-        assert!(r60 >= 0.0 && r60 < 0.02, "high-sun refraction ≈0, got {r60:.4}°");
+        assert!(
+            r60 >= 0.0 && r60 < 0.02,
+            "high-sun refraction ≈0, got {r60:.4}°"
+        );
         // Find a sample where the sun is just ABOVE the horizon (0..5°) and verify
         // the apparent altitude is strictly lifted there. Scan the sunrise window.
         let mut found = false;
@@ -686,8 +690,15 @@ mod tests {
                     pos.altitude_rad
                 );
                 // Geometric altitude_rad is NOT mutated by refraction (legacy-stable).
-                let geom =
-                    compute_sun_position_tz(80, hour, NYC_LAT, NYC_LON, NYC_LON / 15.0, false, &EARTH_CONFIG);
+                let geom = compute_sun_position_tz(
+                    80,
+                    hour,
+                    NYC_LAT,
+                    NYC_LON,
+                    NYC_LON / 15.0,
+                    false,
+                    &EARTH_CONFIG,
+                );
                 assert!(
                     (geom.altitude_rad - pos.altitude_rad).abs() < 1e-12,
                     "geometric altitude must be identical with/without refraction"
@@ -715,17 +726,23 @@ mod tests {
         let cfg = EARTH_CONFIG;
         // Standard meridian: clock noon ≈ solar noon (offset only by equation of
         // time), so the sun is near south.
-        let at_meridian = compute_sun_position_tz(80, 12.0, 40.0, 0.0, 0.0, false, &cfg).azimuth_rad.to_degrees();
+        let at_meridian = compute_sun_position_tz(80, 12.0, 40.0, 0.0, 0.0, false, &cfg)
+            .azimuth_rad
+            .to_degrees();
         // 7.5° EAST of the meridian, SAME timezone (offset 0): solar noon is
         // ~30 min EARLIER, so at clock noon the sun has moved further past south.
-        let east = compute_sun_position_tz(80, 12.0, 40.0, 7.5, 0.0, false, &cfg).azimuth_rad.to_degrees();
+        let east = compute_sun_position_tz(80, 12.0, 40.0, 7.5, 0.0, false, &cfg)
+            .azimuth_rad
+            .to_degrees();
         assert!(
             east > at_meridian + 5.0,
             "7.5°E (same tz) should push clock-noon azimuth >5° further west: meridian={at_meridian:.2}° east={east:.2}°"
         );
         // The legacy default (timezone = longitude/15) CANCELS the longitude, so
         // clock noon is unchanged by longitude — proves the cancellation is intact.
-        let legacy = compute_sun_position(80, 12.0, 40.0, 7.5, &cfg).azimuth_rad.to_degrees();
+        let legacy = compute_sun_position(80, 12.0, 40.0, 7.5, &cfg)
+            .azimuth_rad
+            .to_degrees();
         assert!(
             (legacy - at_meridian).abs() < 0.5,
             "legacy lon/15 path keeps clock-noon azimuth longitude-independent: legacy={legacy:.2}° meridian={at_meridian:.2}°"

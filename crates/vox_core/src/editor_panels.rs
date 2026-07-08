@@ -110,9 +110,7 @@ impl Default for DetailsPanel {
 
 impl DetailsPanel {
     pub fn new() -> Self {
-        Self {
-            editing_name: None,
-        }
+        Self { editing_name: None }
     }
 }
 

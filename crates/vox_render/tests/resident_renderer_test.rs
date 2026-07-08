@@ -106,10 +106,7 @@ fn camera_only_frame_reuses_scene() {
         "identical scene must not rebuild layers (got {})",
         delta.layers_rebuilt()
     );
-    assert!(
-        delta.layers_reused() > 0,
-        "expected reused layers, got 0"
-    );
+    assert!(delta.layers_reused() > 0, "expected reused layers, got 0");
 }
 
 /// Task 3 determinism witness: replaying the same `SceneDelta` log from scratch
@@ -219,7 +216,11 @@ fn scene_delta_replay_exact() {
         .expect("replay download must succeed");
 
     // (b) Replay of the same delta log must produce byte-identical output.
-    assert_eq!(buf2.len(), post_buf.len(), "instance buffer lengths must match");
+    assert_eq!(
+        buf2.len(),
+        post_buf.len(),
+        "instance buffer lengths must match"
+    );
     let replay_matches = post_buf == buf2;
     println!(
         "instance_buf[0]={} instance_buf[1]={} replay_matches={replay_matches}",

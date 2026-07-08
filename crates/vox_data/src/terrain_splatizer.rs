@@ -6,8 +6,17 @@
 /// Biome kind — mirrors forge-terrain Biome enum (re-defined here to avoid forge dep).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BiomeKind {
-    Alpine, Tundra, Forest, Grassland, Desert, Wetland, Coastal,
-    SubalpineShrub, Savanna, Taiga, TropicalRainforest,
+    Alpine,
+    Tundra,
+    Forest,
+    Grassland,
+    Desert,
+    Wetland,
+    Coastal,
+    SubalpineShrub,
+    Savanna,
+    Taiga,
+    TropicalRainforest,
 }
 
 /// 7-slot spectral terrain material palette (16 bands each, 380–755nm).
@@ -21,19 +30,40 @@ impl Default for SpectralTerrainMaterials {
         Self {
             slots: [
                 // Water (0)
-                [0.03, 0.04, 0.05, 0.05, 0.05, 0.04, 0.03, 0.03, 0.02, 0.02, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+                [
+                    0.03, 0.04, 0.05, 0.05, 0.05, 0.04, 0.03, 0.03, 0.02, 0.02, 0.01, 0.01, 0.01,
+                    0.01, 0.01, 0.01,
+                ],
                 // Sand (1)
-                [0.25, 0.28, 0.31, 0.34, 0.36, 0.38, 0.39, 0.40, 0.41, 0.42, 0.43, 0.44, 0.45, 0.46, 0.47, 0.48],
+                [
+                    0.25, 0.28, 0.31, 0.34, 0.36, 0.38, 0.39, 0.40, 0.41, 0.42, 0.43, 0.44, 0.45,
+                    0.46, 0.47, 0.48,
+                ],
                 // Grass (2)
-                [0.04, 0.04, 0.05, 0.07, 0.08, 0.10, 0.12, 0.12, 0.08, 0.05, 0.04, 0.04, 0.05, 0.20, 0.45, 0.55],
+                [
+                    0.04, 0.04, 0.05, 0.07, 0.08, 0.10, 0.12, 0.12, 0.08, 0.05, 0.04, 0.04, 0.05,
+                    0.20, 0.45, 0.55,
+                ],
                 // Dirt (3)
-                [0.07, 0.09, 0.11, 0.13, 0.14, 0.16, 0.18, 0.20, 0.22, 0.23, 0.24, 0.25, 0.26, 0.27, 0.28, 0.30],
+                [
+                    0.07, 0.09, 0.11, 0.13, 0.14, 0.16, 0.18, 0.20, 0.22, 0.23, 0.24, 0.25, 0.26,
+                    0.27, 0.28, 0.30,
+                ],
                 // Rock (4)
-                [0.15, 0.17, 0.19, 0.21, 0.22, 0.23, 0.24, 0.25, 0.26, 0.27, 0.28, 0.29, 0.30, 0.31, 0.32, 0.33],
+                [
+                    0.15, 0.17, 0.19, 0.21, 0.22, 0.23, 0.24, 0.25, 0.26, 0.27, 0.28, 0.29, 0.30,
+                    0.31, 0.32, 0.33,
+                ],
                 // Snow (5)
-                [0.93, 0.94, 0.95, 0.95, 0.95, 0.94, 0.93, 0.92, 0.91, 0.90, 0.89, 0.88, 0.87, 0.86, 0.85, 0.85],
+                [
+                    0.93, 0.94, 0.95, 0.95, 0.95, 0.94, 0.93, 0.92, 0.91, 0.90, 0.89, 0.88, 0.87,
+                    0.86, 0.85, 0.85,
+                ],
                 // Forest/Bark (6)
-                [0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19, 0.20],
+                [
+                    0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17,
+                    0.18, 0.19, 0.20,
+                ],
             ],
         }
     }
@@ -45,16 +75,16 @@ impl Default for SpectralTerrainMaterials {
 pub fn biome_to_splat_weights(biome: BiomeKind, height: f32, world_height: f32) -> [f32; 4] {
     let t = (height / world_height.max(1.0)).clamp(0.0, 1.0);
     let base: [f32; 4] = match biome {
-        BiomeKind::Alpine             => [0.00, 0.50, 0.05, 0.45],
-        BiomeKind::Tundra             => [0.00, 0.40, 0.20, 0.40],
-        BiomeKind::Forest             => [0.00, 0.05, 0.70, 0.25],
-        BiomeKind::Grassland          => [0.00, 0.05, 0.75, 0.20],
-        BiomeKind::Desert             => [0.00, 0.10, 0.00, 0.90],
-        BiomeKind::Wetland            => [0.60, 0.00, 0.30, 0.10],
-        BiomeKind::Coastal            => [0.30, 0.10, 0.25, 0.35],
-        BiomeKind::SubalpineShrub     => [0.00, 0.25, 0.50, 0.25],
-        BiomeKind::Savanna            => [0.00, 0.10, 0.55, 0.35],
-        BiomeKind::Taiga              => [0.00, 0.10, 0.65, 0.25],
+        BiomeKind::Alpine => [0.00, 0.50, 0.05, 0.45],
+        BiomeKind::Tundra => [0.00, 0.40, 0.20, 0.40],
+        BiomeKind::Forest => [0.00, 0.05, 0.70, 0.25],
+        BiomeKind::Grassland => [0.00, 0.05, 0.75, 0.20],
+        BiomeKind::Desert => [0.00, 0.10, 0.00, 0.90],
+        BiomeKind::Wetland => [0.60, 0.00, 0.30, 0.10],
+        BiomeKind::Coastal => [0.30, 0.10, 0.25, 0.35],
+        BiomeKind::SubalpineShrub => [0.00, 0.25, 0.50, 0.25],
+        BiomeKind::Savanna => [0.00, 0.10, 0.55, 0.35],
+        BiomeKind::Taiga => [0.00, 0.10, 0.65, 0.25],
         BiomeKind::TropicalRainforest => [0.10, 0.00, 0.80, 0.10],
     };
     // Above 60% elevation blend extra snow, redistributed from vegetation and ground.
@@ -98,7 +128,10 @@ mod tests {
         let weights = biome_to_splat_weights(BiomeKind::Alpine, 320.0, 400.0);
         let spectral = blend_spectral_terrain(&mats, &weights);
         let avg_reflectance: f32 = spectral.iter().sum::<f32>() / 16.0;
-        println!("alpine snow blend should be bright, avg_reflectance = {:.3}", avg_reflectance);
+        println!(
+            "alpine snow blend should be bright, avg_reflectance = {:.3}",
+            avg_reflectance
+        );
         assert!(
             avg_reflectance > 0.4,
             "alpine snow blend should be bright, avg_reflectance = {:.3}",
@@ -112,7 +145,10 @@ mod tests {
         let weights = biome_to_splat_weights(BiomeKind::Wetland, 5.0, 100.0);
         let spectral = blend_spectral_terrain(&mats, &weights);
         let near_ir_avg: f32 = spectral[8..16].iter().sum::<f32>() / 8.0;
-        println!("wetland near-IR should be dark (water dominant), near_ir_avg = {:.3}", near_ir_avg);
+        println!(
+            "wetland near-IR should be dark (water dominant), near_ir_avg = {:.3}",
+            near_ir_avg
+        );
         assert!(
             near_ir_avg < 0.15,
             "wetland near-IR should be dark (water dominant), near_ir_avg = {:.3}",

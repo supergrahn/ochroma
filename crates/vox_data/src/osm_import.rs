@@ -160,11 +160,7 @@ pub fn extract_roads(data: &OsmData) -> Vec<OsmRoad> {
 
     for way in &data.ways {
         if let Some(road_type) = way.tags.get("highway") {
-            let name = way
-                .tags
-                .get("name")
-                .cloned()
-                .unwrap_or_default();
+            let name = way.tags.get("name").cloned().unwrap_or_default();
 
             let points: Vec<(f32, f32)> = way
                 .node_refs

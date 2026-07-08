@@ -6,12 +6,15 @@ use std::sync::{Arc, Mutex};
 
 pub struct EntityStore {
     pub positions: HashMap<u32, [f32; 3]>,
-    pub spectral:  HashMap<u32, [f32; 16]>,
+    pub spectral: HashMap<u32, [f32; 16]>,
 }
 
 impl EntityStore {
     pub fn new() -> Self {
-        Self { positions: HashMap::new(), spectral: HashMap::new() }
+        Self {
+            positions: HashMap::new(),
+            spectral: HashMap::new(),
+        }
     }
 
     pub fn insert(&mut self, id: u32, pos: [f32; 3], spectral: [f32; 16]) {
@@ -50,7 +53,9 @@ impl EntityStore {
 }
 
 impl Default for EntityStore {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub fn register_entity_bindings(
@@ -61,39 +66,54 @@ pub fn register_entity_bindings(
 
     {
         let s = store.clone();
-        entity.set("get_position", lua.create_function(move |lua_ctx, id: u32| {
-            let guard = s.lock().unwrap();
-            let pos = guard.positions.get(&id).copied().unwrap_or([0.0, 0.0, 0.0]);
-            let t = lua_ctx.create_table()?;
-            t.set("x", pos[0])?;
-            t.set("y", pos[1])?;
-            t.set("z", pos[2])?;
-            Ok(t)
-        })?)?;
+        entity.set(
+            "get_position",
+            lua.create_function(move |lua_ctx, id: u32| {
+                let guard = s.lock().unwrap();
+                let pos = guard.positions.get(&id).copied().unwrap_or([0.0, 0.0, 0.0]);
+                let t = lua_ctx.create_table()?;
+                t.set("x", pos[0])?;
+                t.set("y", pos[1])?;
+                t.set("z", pos[2])?;
+                Ok(t)
+            })?,
+        )?;
     }
 
     {
         let s = store.clone();
-        entity.set("set_spectral", lua.create_function(move |_, (id, band, value): (u32, usize, f32)| {
-            if band >= 16 {
-                return Err(mlua::Error::RuntimeError(format!("band {} out of range [0,15]", band)));
-            }
-            let mut guard = s.lock().unwrap();
-            let entry = guard.spectral.entry(id).or_insert([0.0f32; 16]);
-            entry[band] = value.clamp(0.0, 1.0);
-            Ok(())
-        })?)?;
+        entity.set(
+            "set_spectral",
+            lua.create_function(move |_, (id, band, value): (u32, usize, f32)| {
+                if band >= 16 {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "band {} out of range [0,15]",
+                        band
+                    )));
+                }
+                let mut guard = s.lock().unwrap();
+                let entry = guard.spectral.entry(id).or_insert([0.0f32; 16]);
+                entry[band] = value.clamp(0.0, 1.0);
+                Ok(())
+            })?,
+        )?;
     }
 
     {
         let s = store.clone();
-        entity.set("get_spectral", lua.create_function(move |_, (id, band): (u32, usize)| {
-            if band >= 16 {
-                return Err(mlua::Error::RuntimeError(format!("band {} out of range [0,15]", band)));
-            }
-            let guard = s.lock().unwrap();
-            Ok(guard.spectral.get(&id).map_or(0.0, |s| s[band]))
-        })?)?;
+        entity.set(
+            "get_spectral",
+            lua.create_function(move |_, (id, band): (u32, usize)| {
+                if band >= 16 {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "band {} out of range [0,15]",
+                        band
+                    )));
+                }
+                let guard = s.lock().unwrap();
+                Ok(guard.spectral.get(&id).map_or(0.0, |s| s[band]))
+            })?,
+        )?;
     }
 
     lua.globals().set("entity", entity)?;
@@ -123,7 +143,10 @@ mod tests {
     fn get_position_unknown_entity_returns_zero() {
         let lua = Lua::new();
         register_entity_bindings(&lua, make_store()).unwrap();
-        let x: f32 = lua.load("return entity.get_position(999).x").eval().unwrap();
+        let x: f32 = lua
+            .load("return entity.get_position(999).x")
+            .eval()
+            .unwrap();
         assert_eq!(x, 0.0);
     }
 
@@ -145,7 +168,11 @@ mod tests {
         register_entity_bindings(&lua, store.clone()).unwrap();
         lua.load("entity.set_spectral(1, 0, 2.5)").exec().unwrap();
         let v = store.lock().unwrap().spectral[&1][0];
-        assert!((v - 1.0).abs() < 1e-5, "value 2.5 should clamp to 1.0, got {}", v);
+        assert!(
+            (v - 1.0).abs() < 1e-5,
+            "value 2.5 should clamp to 1.0, got {}",
+            v
+        );
     }
 
     #[test]

@@ -82,11 +82,7 @@ impl CinePose {
 
         let view = Mat4::look_at_rh(eye, target, up);
 
-        let aspect = if h == 0 {
-            1.0
-        } else {
-            w as f32 / h as f32
-        };
+        let aspect = if h == 0 { 1.0 } else { w as f32 / h as f32 };
         let proj = Mat4::perspective_rh(self.fov_y(), aspect, CINE_NEAR, CINE_FAR);
 
         // Shared builder threads lens_radius/focus_distance (stops zeroing DoF).
@@ -189,7 +185,11 @@ mod tests {
             eye, focus, 0.0, 0.785, 2.8, 50.0, distance, 0.5, 0.5, 0, 0.0,
         );
         let orbit = pose.to_orbit();
-        assert!((orbit.distance - distance).abs() < 1e-4, "dist {}", orbit.distance);
+        assert!(
+            (orbit.distance - distance).abs() < 1e-4,
+            "dist {}",
+            orbit.distance
+        );
         assert!((orbit.yaw - yaw).abs() < 1e-4, "yaw {}", orbit.yaw);
         assert!((orbit.pitch - pitch).abs() < 1e-4, "pitch {}", orbit.pitch);
         assert!((orbit.focus - focus).length() < 1e-5);
@@ -214,6 +214,10 @@ mod tests {
         let cam = pose.to_camera_layer(800, 600);
         let view = Mat4::from_cols_array(&cam.view_matrix);
         let eye_in_view = view.transform_point3(glam::vec3(4.0, 3.0, 5.0));
-        assert!(eye_in_view.length() < 1e-4, "eye not at origin: {:?}", eye_in_view);
+        assert!(
+            eye_in_view.length() < 1e-4,
+            "eye not at origin: {:?}",
+            eye_in_view
+        );
     }
 }

@@ -85,11 +85,7 @@ pub fn diff_splat(
     }
 
     // Return None if nothing changed
-    if d_position == [0i8; 3]
-        && d_scale == [0i8; 3]
-        && d_opacity == 0
-        && spectral_changed == 0
-    {
+    if d_position == [0i8; 3] && d_scale == [0i8; 3] && d_opacity == 0 && spectral_changed == 0 {
         return None;
     }
 
@@ -193,9 +189,10 @@ impl Default for SplatReplicationState {
 ///
 /// Per packet: 4 (id) + 3 (pos) + 3 (scale) + 1 (opacity) + 1 (mask) + 2 * popcount(spectral_changed)
 pub fn estimate_delta_bytes(deltas: &[SplatDeltaPacket]) -> usize {
-    deltas.iter().map(|pkt| {
-        4 + 3 + 3 + 1 + 1 + 2 * pkt.spectral_changed.count_ones() as usize
-    }).sum()
+    deltas
+        .iter()
+        .map(|pkt| 4 + 3 + 3 + 1 + 1 + 2 * pkt.spectral_changed.count_ones() as usize)
+        .sum()
 }
 
 #[cfg(test)]
@@ -243,7 +240,10 @@ mod tests {
         // Check within quantization error (1/POSITION_QUANT ≈ 0.002)
         for i in 0..3 {
             let err = (reconstructed.position[i] - modified.position[i]).abs();
-            assert!(err < 1.0 / POSITION_QUANT + 1e-6, "pos[{i}] error {err} too large");
+            assert!(
+                err < 1.0 / POSITION_QUANT + 1e-6,
+                "pos[{i}] error {err} too large"
+            );
         }
         // Opacity exact (integer arithmetic)
         assert_eq!(reconstructed.opacity, modified.opacity);

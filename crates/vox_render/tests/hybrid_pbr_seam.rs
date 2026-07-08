@@ -27,8 +27,14 @@ fn hybrid_pbr_seam_carries_relief_and_transmission() {
         .with_transmission(0.6, 1.33);
 
     // Real carried values — not None, not the -1/0.0 defaults.
-    assert_eq!(mesh.albedo_tex_path.as_deref(), Some("polyhaven://brick_diff"));
-    assert_eq!(mesh.normal_tex_path.as_deref(), Some("polyhaven://brick_nor"));
+    assert_eq!(
+        mesh.albedo_tex_path.as_deref(),
+        Some("polyhaven://brick_diff")
+    );
+    assert_eq!(
+        mesh.normal_tex_path.as_deref(),
+        Some("polyhaven://brick_nor")
+    );
     assert_eq!(
         mesh.roughness_tex_path.as_deref(),
         Some("polyhaven://brick_rough")
@@ -37,6 +43,7 @@ fn hybrid_pbr_seam_carries_relief_and_transmission() {
         mesh.displacement_tex_path.as_deref(),
         Some("polyhaven://brick_disp")
     );
+    assert!(mesh.opacity_tex_path.is_none());
     // A displacement map auto-enables POM at the proven brick depth.
     assert!(
         mesh.displacement_scale > 0.0,
@@ -67,9 +74,24 @@ fn hybrid_defaults_leave_pbr_unset() {
     assert!(mesh.normal_tex_path.is_none());
     assert!(mesh.roughness_tex_path.is_none());
     assert!(mesh.displacement_tex_path.is_none());
+    assert!(mesh.opacity_tex_path.is_none());
     assert_eq!(mesh.displacement_scale, 0.0);
     assert!(mesh.transmission_override.is_none());
     assert!(mesh.ior_override.is_none());
+    assert!(!mesh.vegetation_bsdf);
+}
+
+#[test]
+fn hybrid_pbr_seam_carries_vegetation_bsdf_flag() {
+    let (positions, indices) = unit_tri();
+    let mesh = HybridMesh::from_rgb(positions, indices, [0.2, 0.5, 0.2], 9)
+        .with_vegetation_bsdf()
+        .with_opacity_texture("polyhaven://leaf_alpha".to_string());
+    assert!(mesh.vegetation_bsdf);
+    assert_eq!(
+        mesh.opacity_tex_path.as_deref(),
+        Some("polyhaven://leaf_alpha")
+    );
 }
 
 /// Build a `RenderScene` from two axis-aligned meshes and verify the computed
@@ -108,8 +130,12 @@ fn render_scene_two_meshes_aabb() {
     for mesh in &scene.meshes {
         for p in &mesh.positions {
             for i in 0..3 {
-                if p[i] < min[i] { min[i] = p[i]; }
-                if p[i] > max[i] { max[i] = p[i]; }
+                if p[i] < min[i] {
+                    min[i] = p[i];
+                }
+                if p[i] > max[i] {
+                    max[i] = p[i];
+                }
             }
         }
     }
@@ -117,25 +143,35 @@ fn render_scene_two_meshes_aabb() {
     // Expected combined extent: x in [-2, 3], y in [0, 5], z in [-3, 1]
     assert!(
         (min[0] - (-2.0_f32)).abs() < 1e-5,
-        "min x must be -2.0, got {}", min[0]
+        "min x must be -2.0, got {}",
+        min[0]
     );
     assert!(
         (max[0] - 3.0_f32).abs() < 1e-5,
-        "max x must be 3.0, got {}", max[0]
+        "max x must be 3.0, got {}",
+        max[0]
     );
     assert!(
         (min[1] - 0.0_f32).abs() < 1e-5,
-        "min y must be 0.0, got {}", min[1]
+        "min y must be 0.0, got {}",
+        min[1]
     );
     assert!(
         (max[1] - 5.0_f32).abs() < 1e-5,
-        "max y must be 5.0, got {}", max[1]
+        "max y must be 5.0, got {}",
+        max[1]
     );
     // clone must be identical
     let cloned = scene.clone();
     assert_eq!(cloned.meshes.len(), 2, "clone must preserve mesh count");
     println!(
         "aabb_min=[{:.1},{:.1},{:.1}] aabb_max=[{:.1},{:.1},{:.1}] meshes={}",
-        min[0], min[1], min[2], max[0], max[1], max[2], scene.meshes.len()
+        min[0],
+        min[1],
+        min[2],
+        max[0],
+        max[1],
+        max[2],
+        scene.meshes.len()
     );
 }

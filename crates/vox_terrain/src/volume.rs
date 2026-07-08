@@ -1,7 +1,7 @@
-use vox_core::types::GaussianSplat;
 use half::f16;
-use rand::prelude::*;
 use rand::SeedableRng;
+use rand::prelude::*;
+use vox_core::types::GaussianSplat;
 
 /// A 3D signed distance field for volumetric terrain.
 #[derive(bevy_ecs::prelude::Resource)]
@@ -24,7 +24,10 @@ impl TerrainVolume {
     pub fn new(size_x: usize, size_y: usize, size_z: usize, voxel_size: f32) -> Self {
         let count = size_x * size_y * size_z;
         Self {
-            size_x, size_y, size_z, voxel_size,
+            size_x,
+            size_y,
+            size_z,
+            voxel_size,
             origin: [
                 -(size_x as f32 * voxel_size) / 2.0,
                 -(size_y as f32 * voxel_size) / 4.0, // terrain center is lower
@@ -83,7 +86,11 @@ impl TerrainVolume {
         let x = ((wx - self.origin[0]) / self.voxel_size).max(0.0) as usize;
         let y = ((wy - self.origin[1]) / self.voxel_size).max(0.0) as usize;
         let z = ((wz - self.origin[2]) / self.voxel_size).max(0.0) as usize;
-        (x.min(self.size_x - 1), y.min(self.size_y - 1), z.min(self.size_z - 1))
+        (
+            x.min(self.size_x - 1),
+            y.min(self.size_y - 1),
+            z.min(self.size_z - 1),
+        )
     }
 
     /// Sample the SDF at a world position (trilinear interpolation).
@@ -123,11 +130,11 @@ impl TerrainVolume {
     /// Compute gradient (surface normal) at a point using central differences.
     pub fn gradient(&self, x: usize, y: usize, z: usize) -> [f32; 3] {
         let dx = self.get(x.wrapping_add(1).min(self.size_x - 1), y, z)
-               - self.get(x.saturating_sub(1), y, z);
+            - self.get(x.saturating_sub(1), y, z);
         let dy = self.get(x, y.wrapping_add(1).min(self.size_y - 1), z)
-               - self.get(x, y.saturating_sub(1), z);
+            - self.get(x, y.saturating_sub(1), z);
         let dz = self.get(x, y, z.wrapping_add(1).min(self.size_z - 1))
-               - self.get(x, y, z.saturating_sub(1));
+            - self.get(x, y, z.saturating_sub(1));
         let len = (dx * dx + dy * dy + dz * dz).sqrt().max(1e-8);
         [dx / len, dy / len, dz / len]
     }
@@ -135,16 +142,23 @@ impl TerrainVolume {
     /// Is this voxel on the surface (SDF crosses zero)?
     pub fn is_surface(&self, x: usize, y: usize, z: usize) -> bool {
         let v = self.get(x, y, z);
-        if v > 0.0 { return false; } // in air
+        if v > 0.0 {
+            return false;
+        } // in air
 
         // Check if any neighbour is air
         let neighbours = [
-            (x.wrapping_sub(1), y, z), (x + 1, y, z),
-            (x, y.wrapping_sub(1), z), (x, y + 1, z),
-            (x, y, z.wrapping_sub(1)), (x, y, z + 1),
+            (x.wrapping_sub(1), y, z),
+            (x + 1, y, z),
+            (x, y.wrapping_sub(1), z),
+            (x, y + 1, z),
+            (x, y, z.wrapping_sub(1)),
+            (x, y, z + 1),
         ];
 
-        neighbours.iter().any(|&(nx, ny, nz)| self.get(nx, ny, nz) > 0.0)
+        neighbours
+            .iter()
+            .any(|&(nx, ny, nz)| self.get(nx, ny, nz) > 0.0)
     }
 
     /// Count solid voxels.
@@ -158,7 +172,9 @@ impl TerrainVolume {
         for z in 0..self.size_z {
             for y in 0..self.size_y {
                 for x in 0..self.size_x {
-                    if self.is_surface(x, y, z) { count += 1; }
+                    if self.is_surface(x, y, z) {
+                        count += 1;
+                    }
                 }
             }
         }
@@ -193,10 +209,15 @@ pub mod sculpt {
                     let x = (cx as i32 + dx).max(0) as usize;
                     let y = (cy as i32 + dy).max(0) as usize;
                     let z = (cz as i32 + dz).max(0) as usize;
-                    if x >= vol.size_x || y >= vol.size_y || z >= vol.size_z { continue; }
+                    if x >= vol.size_x || y >= vol.size_y || z >= vol.size_z {
+                        continue;
+                    }
 
                     let wp = vol.voxel_to_world(x, y, z);
-                    let dist = ((wp[0] - center[0]).powi(2) + (wp[1] - center[1]).powi(2) + (wp[2] - center[2]).powi(2)).sqrt();
+                    let dist = ((wp[0] - center[0]).powi(2)
+                        + (wp[1] - center[1]).powi(2)
+                        + (wp[2] - center[2]).powi(2))
+                    .sqrt();
                     let sdf = dist - radius;
 
                     // Smooth min: blend with existing value
@@ -221,10 +242,15 @@ pub mod sculpt {
                     let x = (cx as i32 + dx).max(0) as usize;
                     let y = (cy as i32 + dy).max(0) as usize;
                     let z = (cz as i32 + dz).max(0) as usize;
-                    if x >= vol.size_x || y >= vol.size_y || z >= vol.size_z { continue; }
+                    if x >= vol.size_x || y >= vol.size_y || z >= vol.size_z {
+                        continue;
+                    }
 
                     let wp = vol.voxel_to_world(x, y, z);
-                    let dist = ((wp[0] - center[0]).powi(2) + (wp[1] - center[1]).powi(2) + (wp[2] - center[2]).powi(2)).sqrt();
+                    let dist = ((wp[0] - center[0]).powi(2)
+                        + (wp[1] - center[1]).powi(2)
+                        + (wp[2] - center[2]).powi(2))
+                    .sqrt();
                     let sdf = -(dist - radius); // inverted: inside sphere becomes air
 
                     let current = vol.get(x, y, z);
@@ -252,7 +278,14 @@ pub mod sculpt {
     }
 
     /// Add an overhanging cliff.
-    pub fn add_cliff(vol: &mut TerrainVolume, base: [f32; 3], height: f32, overhang: f32, width: f32, material: u8) {
+    pub fn add_cliff(
+        vol: &mut TerrainVolume,
+        base: [f32; 3],
+        height: f32,
+        overhang: f32,
+        width: f32,
+        material: u8,
+    ) {
         // Cliff is a box that curves outward at the top
         let r = (height.max(width).max(overhang) / vol.voxel_size).ceil() as i32 + 2;
         let (cx, cy, cz) = vol.world_to_voxel(base[0], base[1], base[2]);
@@ -263,7 +296,9 @@ pub mod sculpt {
                     let x = (cx as i32 + dx).max(0) as usize;
                     let y = (cy as i32 + dy).max(0) as usize;
                     let z = (cz as i32 + dz).max(0) as usize;
-                    if x >= vol.size_x || y >= vol.size_y || z >= vol.size_z { continue; }
+                    if x >= vol.size_x || y >= vol.size_y || z >= vol.size_z {
+                        continue;
+                    }
 
                     let wp = vol.voxel_to_world(x, y, z);
                     let local_y = (wp[1] - base[1]) / height; // 0 at base, 1 at top
@@ -296,7 +331,9 @@ pub mod sculpt {
     pub fn add_cave(vol: &mut TerrainVolume, start: [f32; 3], end: [f32; 3], radius: f32) {
         let dir = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
         let length = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
-        if length < 0.01 { return; }
+        if length < 0.01 {
+            return;
+        }
 
         let steps = (length / (vol.voxel_size * 0.5)).ceil() as usize;
         for step in 0..=steps {
@@ -311,7 +348,14 @@ pub mod sculpt {
     }
 
     /// Add a natural arch.
-    pub fn add_arch(vol: &mut TerrainVolume, center: [f32; 3], span: f32, height: f32, thickness: f32, material: u8) {
+    pub fn add_arch(
+        vol: &mut TerrainVolume,
+        center: [f32; 3],
+        span: f32,
+        height: f32,
+        thickness: f32,
+        material: u8,
+    ) {
         let steps = 20;
         for i in 0..=steps {
             let t = i as f32 / steps as f32;
@@ -333,26 +377,64 @@ pub struct VolumeMaterial {
 
 pub fn default_volume_materials() -> Vec<VolumeMaterial> {
     vec![
-        VolumeMaterial { id: 0, name: "rock".into(), spectral: [0.12, 0.13, 0.15, 0.17, 0.18, 0.18, 0.17, 0.16] },
-        VolumeMaterial { id: 1, name: "grass".into(), spectral: [0.03, 0.04, 0.06, 0.10, 0.40, 0.25, 0.08, 0.04] },
-        VolumeMaterial { id: 2, name: "dirt".into(), spectral: [0.10, 0.12, 0.15, 0.20, 0.22, 0.20, 0.18, 0.15] },
-        VolumeMaterial { id: 3, name: "sand".into(), spectral: [0.20, 0.22, 0.25, 0.30, 0.35, 0.38, 0.36, 0.32] },
-        VolumeMaterial { id: 4, name: "snow".into(), spectral: [0.85, 0.87, 0.89, 0.90, 0.90, 0.89, 0.87, 0.85] },
-        VolumeMaterial { id: 5, name: "clay".into(), spectral: [0.15, 0.16, 0.18, 0.22, 0.28, 0.35, 0.32, 0.28] },
-        VolumeMaterial { id: 6, name: "moss".into(), spectral: [0.02, 0.03, 0.05, 0.08, 0.30, 0.18, 0.06, 0.03] },
-        VolumeMaterial { id: 7, name: "ice".into(), spectral: [0.70, 0.75, 0.80, 0.82, 0.80, 0.75, 0.70, 0.65] },
+        VolumeMaterial {
+            id: 0,
+            name: "rock".into(),
+            spectral: [0.12, 0.13, 0.15, 0.17, 0.18, 0.18, 0.17, 0.16],
+        },
+        VolumeMaterial {
+            id: 1,
+            name: "grass".into(),
+            spectral: [0.03, 0.04, 0.06, 0.10, 0.40, 0.25, 0.08, 0.04],
+        },
+        VolumeMaterial {
+            id: 2,
+            name: "dirt".into(),
+            spectral: [0.10, 0.12, 0.15, 0.20, 0.22, 0.20, 0.18, 0.15],
+        },
+        VolumeMaterial {
+            id: 3,
+            name: "sand".into(),
+            spectral: [0.20, 0.22, 0.25, 0.30, 0.35, 0.38, 0.36, 0.32],
+        },
+        VolumeMaterial {
+            id: 4,
+            name: "snow".into(),
+            spectral: [0.85, 0.87, 0.89, 0.90, 0.90, 0.89, 0.87, 0.85],
+        },
+        VolumeMaterial {
+            id: 5,
+            name: "clay".into(),
+            spectral: [0.15, 0.16, 0.18, 0.22, 0.28, 0.35, 0.32, 0.28],
+        },
+        VolumeMaterial {
+            id: 6,
+            name: "moss".into(),
+            spectral: [0.02, 0.03, 0.05, 0.08, 0.30, 0.18, 0.06, 0.03],
+        },
+        VolumeMaterial {
+            id: 7,
+            name: "ice".into(),
+            spectral: [0.70, 0.75, 0.80, 0.82, 0.80, 0.75, 0.70, 0.65],
+        },
     ]
 }
 
 /// Convert surface voxels of a TerrainVolume to Gaussian splats.
-pub fn volume_to_splats(vol: &TerrainVolume, materials: &[VolumeMaterial], seed: u64) -> Vec<GaussianSplat> {
+pub fn volume_to_splats(
+    vol: &TerrainVolume,
+    materials: &[VolumeMaterial],
+    seed: u64,
+) -> Vec<GaussianSplat> {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut splats = Vec::new();
 
     for z in 1..vol.size_z - 1 {
         for y in 1..vol.size_y - 1 {
             for x in 1..vol.size_x - 1 {
-                if !vol.is_surface(x, y, z) { continue; }
+                if !vol.is_surface(x, y, z) {
+                    continue;
+                }
 
                 let wp = vol.voxel_to_world(x, y, z);
                 let _normal = vol.gradient(x, y, z);
@@ -375,8 +457,10 @@ pub fn volume_to_splats(vol: &TerrainVolume, materials: &[VolumeMaterial], seed:
 
                 splats.push(GaussianSplat::surface(
                     [wp[0] + jx, wp[1] + jy, wp[2] + jz],
-                    [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
-                    scale, scale,
+                    [1.0, 0.0, 0.0],
+                    [0.0, 0.0, -1.0],
+                    scale,
+                    scale,
                     245,
                     spectral,
                 ));
@@ -395,9 +479,9 @@ pub fn generate_demo_volume(_seed: u64) -> TerrainVolume {
     sculpt::add_ground_plane(&mut vol, 0.0, 1); // grass
 
     // Hills
-    sculpt::add_sphere(&mut vol, [10.0, -2.0, 10.0], 8.0, 1);  // grass hill
+    sculpt::add_sphere(&mut vol, [10.0, -2.0, 10.0], 8.0, 1); // grass hill
     sculpt::add_sphere(&mut vol, [-15.0, -3.0, -10.0], 10.0, 0); // rock hill
-    sculpt::add_sphere(&mut vol, [20.0, -1.0, -15.0], 6.0, 2);  // dirt mound
+    sculpt::add_sphere(&mut vol, [20.0, -1.0, -15.0], 6.0, 2); // dirt mound
 
     // Overhanging cliff!
     sculpt::add_cliff(&mut vol, [-10.0, 0.0, 0.0], 12.0, 5.0, 6.0, 0);

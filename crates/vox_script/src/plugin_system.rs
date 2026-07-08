@@ -205,7 +205,6 @@ impl PluginManager {
 
         updated
     }
-
 }
 
 /// Simple semver comparison: check if version is in [min, max] range.
@@ -217,10 +216,7 @@ fn version_in_range(version: &str, min: &str, max: &str) -> bool {
 }
 
 fn parse_version(s: &str) -> (u32, u32, u32) {
-    let parts: Vec<u32> = s
-        .split('.')
-        .filter_map(|p| p.parse().ok())
-        .collect();
+    let parts: Vec<u32> = s.split('.').filter_map(|p| p.parse().ok()).collect();
     (
         parts.first().copied().unwrap_or(0),
         parts.get(1).copied().unwrap_or(0),

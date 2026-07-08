@@ -101,7 +101,10 @@ impl UICanvas {
     }
 
     pub fn find_element(&self, id: &str) -> Option<&UICanvasElement> {
-        fn find_recursive<'a>(elements: &'a [UICanvasElement], id: &str) -> Option<&'a UICanvasElement> {
+        fn find_recursive<'a>(
+            elements: &'a [UICanvasElement],
+            id: &str,
+        ) -> Option<&'a UICanvasElement> {
             for el in elements {
                 if el.id == id {
                     return Some(el);
@@ -139,7 +142,9 @@ impl UICanvas {
 
     pub fn set_text(&mut self, id: &str, text: &str) -> bool {
         if let Some(el) = self.find_element_mut(id)
-            && let CanvasElementType::Text { ref mut content, .. } = el.element_type
+            && let CanvasElementType::Text {
+                ref mut content, ..
+            } = el.element_type
         {
             *content = text.to_string();
             return true;
@@ -149,7 +154,9 @@ impl UICanvas {
 
     pub fn set_progress(&mut self, id: &str, value: f32) -> bool {
         if let Some(el) = self.find_element_mut(id)
-            && let CanvasElementType::ProgressBar { value: ref mut v, .. } = el.element_type
+            && let CanvasElementType::ProgressBar {
+                value: ref mut v, ..
+            } = el.element_type
         {
             *v = value.clamp(0.0, 1.0);
             return true;
@@ -214,7 +221,11 @@ impl UICanvas {
             CanvasElementType::Panel { color, .. } => *color,
             CanvasElementType::Text { color, .. } => *color,
             CanvasElementType::Button { .. } => [128, 128, 128, 255],
-            CanvasElementType::ProgressBar { value, fill_color, bg_color } => {
+            CanvasElementType::ProgressBar {
+                value,
+                fill_color,
+                bg_color,
+            } => {
                 // Render background then fill
                 let fill_w = (pw as f32 * value) as i32;
                 // Background

@@ -19,14 +19,12 @@ mod spline;
 
 pub use channel::{Channel, FrameRate, Interp, Key};
 #[cfg(feature = "spectra-native")]
-pub use export::{
-    beauty_to_rgba8, render_cine_frame, write_png, write_png16, CINE_BASE_SEED,
-};
+pub use export::{CINE_BASE_SEED, beauty_to_rgba8, render_cine_frame, write_png, write_png16};
 #[cfg(feature = "spectra-native")]
 pub use pose_adapt::CineOrbit;
 pub use rotation::QuatTrack;
 pub use sequence::{
-    eye_from_framing, BokehShape, CameraSequence, CineFraming, CinePose, CinematicConfig,
-    FocusMode, KeyRef,
+    BokehShape, CameraSequence, CineFraming, CinePose, CinematicConfig, FocusMode, KeyRef,
+    eye_from_framing,
 };
 pub use spline::{ArcLengthLut, Spline3};

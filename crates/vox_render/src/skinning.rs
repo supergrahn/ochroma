@@ -134,7 +134,11 @@ fn bracket(times: &[f32], time: f32) -> (usize, usize, f32) {
 /// bind-pose local transform; per-component (T/R/S) fallback to bind is honored.
 pub fn sample_clip(clip: &AnimationClip, skel: &Skeleton, time_s: f32) -> Vec<TransformTRS> {
     let mut out: Vec<TransformTRS> = skel.local_bind.clone();
-    debug_assert_eq!(out.len(), skel.joint_count(), "local_bind must cover all joints");
+    debug_assert_eq!(
+        out.len(),
+        skel.joint_count(),
+        "local_bind must cover all joints"
+    );
 
     for ch in &clip.channels {
         if ch.joint >= out.len() {
@@ -191,8 +195,14 @@ pub fn joint_matrices(skel: &Skeleton, local: &[TransformTRS]) -> Vec<[[f32; 4];
 /// Returns deformed `(positions, normals)` parallel to `mesh.positions`.
 /// Per-vertex weights are renormalized; normals use the same blended matrix
 /// (rotation/scale only) and are re-normalized.
-pub fn skin_mesh(mesh: &SkinnedMesh, skin_mats: &[[[f32; 4]; 4]]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
-    let mats: Vec<Mat4> = skin_mats.iter().map(|m| Mat4::from_cols_array_2d(m)).collect();
+pub fn skin_mesh(
+    mesh: &SkinnedMesh,
+    skin_mats: &[[[f32; 4]; 4]],
+) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+    let mats: Vec<Mat4> = skin_mats
+        .iter()
+        .map(|m| Mat4::from_cols_array_2d(m))
+        .collect();
     let n = mesh.positions.len();
     let mut out_pos = Vec::with_capacity(n);
     let mut out_nrm = Vec::with_capacity(n);
@@ -227,7 +237,11 @@ pub fn skin_mesh(mesh: &SkinnedMesh, skin_mats: &[[[f32; 4]; 4]]) -> (Vec<[f32; 
         let pp = blended.transform_point3(p);
         let nn = blended.transform_vector3(nrm).normalize_or_zero();
         out_pos.push(pp.to_array());
-        out_nrm.push(if nn == Vec3::ZERO { [0.0, 1.0, 0.0] } else { nn.to_array() });
+        out_nrm.push(if nn == Vec3::ZERO {
+            [0.0, 1.0, 0.0]
+        } else {
+            nn.to_array()
+        });
     }
     (out_pos, out_nrm)
 }

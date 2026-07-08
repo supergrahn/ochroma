@@ -23,23 +23,30 @@ impl ScriptWatcher {
 
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
             if let Ok(event) = res
-                && matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                    let mut lock = changed_clone.lock().unwrap();
-                    for path in event.paths {
-                        if path.extension().is_some_and(|e| e == "lua") {
-                            lock.push(path);
-                        }
+                && matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+            {
+                let mut lock = changed_clone.lock().unwrap();
+                for path in event.paths {
+                    if path.extension().is_some_and(|e| e == "lua") {
+                        lock.push(path);
                     }
                 }
+            }
         })?;
 
         if let Err(e) = watcher.watch(dir, RecursiveMode::Recursive) {
             // Directory may not exist yet (created at runtime) — this is expected at startup
             // Log non-trivially so the caller knows hot-reload is inactive
-            eprintln!("[ochroma/hot_reload] ScriptWatcher: cannot watch {:?}: {}", dir, e);
+            eprintln!(
+                "[ochroma/hot_reload] ScriptWatcher: cannot watch {:?}: {}",
+                dir, e
+            );
         }
 
-        Ok(Self { _watcher: watcher, changed_paths: changed })
+        Ok(Self {
+            _watcher: watcher,
+            changed_paths: changed,
+        })
     }
 
     pub fn drain(&self) -> Vec<PathBuf> {
@@ -54,24 +61,40 @@ mod tests {
     #[test]
     fn watcher_creates_for_nonexistent_dir() {
         let result = ScriptWatcher::new(Path::new("/tmp/ochroma_test_scripts_nonexistent"));
-        assert!(result.is_ok(), "watcher should tolerate missing directory at startup");
+        assert!(
+            result.is_ok(),
+            "watcher should tolerate missing directory at startup"
+        );
     }
 
     #[test]
     fn drain_returns_empty_initially() {
         let watcher = ScriptWatcher::new(Path::new("/tmp/ochroma_hr_empty_test_dir")).unwrap();
         let paths = watcher.drain();
-        assert!(paths.is_empty(), "fresh watcher should drain empty, got {} paths", paths.len());
+        assert!(
+            paths.is_empty(),
+            "fresh watcher should drain empty, got {} paths",
+            paths.len()
+        );
     }
 
     #[test]
     fn drain_manually_queued_path() {
         // Watch a non-existent dir so concurrent test writes to /tmp don't race
         let watcher = ScriptWatcher::new(Path::new("/tmp/ochroma_hr_drain_test_dir")).unwrap();
-        watcher.changed_paths.lock().unwrap().push(PathBuf::from("test.lua"));
+        watcher
+            .changed_paths
+            .lock()
+            .unwrap()
+            .push(PathBuf::from("test.lua"));
         let drained = watcher.drain();
         println!("drained {} path: {}", drained.len(), drained[0].display());
-        assert_eq!(drained.len(), 1, "drained {} paths, expected 1", drained.len());
+        assert_eq!(
+            drained.len(),
+            1,
+            "drained {} paths, expected 1",
+            drained.len()
+        );
         assert_eq!(drained[0], PathBuf::from("test.lua"));
         assert!(watcher.drain().is_empty());
     }

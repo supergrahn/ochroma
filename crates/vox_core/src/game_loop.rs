@@ -2,10 +2,10 @@ use std::time::Instant;
 
 /// Game loop timing with fixed timestep for simulation and variable for rendering.
 pub struct GameClock {
-    pub fixed_dt: f32,          // simulation timestep (seconds)
+    pub fixed_dt: f32, // simulation timestep (seconds)
     pub accumulator: f32,
-    pub time_scale: f32,        // 0.0 = paused, 1.0 = normal
-    pub total_time: f64,        // total elapsed time (seconds)
+    pub time_scale: f32, // 0.0 = paused, 1.0 = normal
+    pub total_time: f64, // total elapsed time (seconds)
     pub frame_count: u64,
     last_update: Instant,
 }
@@ -52,14 +52,20 @@ impl GameClock {
     }
 
     pub fn fps(&self) -> f32 {
-        if self.total_time > 0.0 { self.frame_count as f32 / self.total_time as f32 } else { 0.0 }
+        if self.total_time > 0.0 {
+            self.frame_count as f32 / self.total_time as f32
+        } else {
+            0.0
+        }
     }
 
     pub fn set_paused(&mut self, paused: bool) {
         self.time_scale = if paused { 0.0 } else { 1.0 };
     }
 
-    pub fn is_paused(&self) -> bool { self.time_scale == 0.0 }
+    pub fn is_paused(&self) -> bool {
+        self.time_scale == 0.0
+    }
 }
 
 /// Game loop phase ordering.

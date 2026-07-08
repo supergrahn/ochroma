@@ -1,4 +1,4 @@
-use vox_data::save::{save_game, load_game, GameState, SaveHeader};
+use vox_data::save::{GameState, SaveHeader, load_game, save_game};
 
 #[test]
 fn save_and_load_round_trip() {

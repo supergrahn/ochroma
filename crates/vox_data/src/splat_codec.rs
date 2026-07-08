@@ -106,15 +106,31 @@ mod tests {
             spectral_bits(0.5),
         );
         let vol_rt = from_saved_geom(&to_saved_geom(&vol));
-        assert_eq!(vol_rt.spectral(), vol.spectral(), "volume spectral must be bit-identical");
-        assert_eq!(vol_rt.rotation_raw(), vol.rotation_raw(), "volume rotation i16 must be bit-identical");
-        assert_eq!(vol_rt.position(), vol.position(), "volume position must match");
+        assert_eq!(
+            vol_rt.spectral(),
+            vol.spectral(),
+            "volume spectral must be bit-identical"
+        );
+        assert_eq!(
+            vol_rt.rotation_raw(),
+            vol.rotation_raw(),
+            "volume rotation i16 must be bit-identical"
+        );
+        assert_eq!(
+            vol_rt.position(),
+            vol.position(),
+            "volume position must match"
+        );
         assert_eq!(vol_rt.scales(), vol.scales(), "volume scales must match");
         assert_eq!(vol_rt.opacity(), vol.opacity(), "volume opacity must match");
         assert_eq!(vol_rt.kind(), vol.kind(), "volume kind must match");
         // Guard: the rotation is genuinely non-identity (the test would be hollow
         // if it accidentally quantized to the identity [0,0,0,32767]).
-        assert_ne!(vol.rotation_raw(), [0, 0, 0, 32767], "test rotation must be non-identity");
+        assert_ne!(
+            vol.rotation_raw(),
+            [0, 0, 0, 32767],
+            "test rotation must be non-identity"
+        );
 
         // --- Surface splat with a DISTINCTIVE spectral pattern ---
         let surf = GaussianSplat::surface(
@@ -127,14 +143,34 @@ mod tests {
             spectral_bits(0.125),
         );
         let surf_rt = from_saved_geom(&to_saved_geom(&surf));
-        assert_eq!(surf_rt.spectral(), surf.spectral(), "surface spectral must be bit-identical");
-        assert_eq!(surf_rt.rotation_raw(), surf.rotation_raw(), "surface rotation i16 must be bit-identical");
-        assert_eq!(surf_rt.position(), surf.position(), "surface position must match");
+        assert_eq!(
+            surf_rt.spectral(),
+            surf.spectral(),
+            "surface spectral must be bit-identical"
+        );
+        assert_eq!(
+            surf_rt.rotation_raw(),
+            surf.rotation_raw(),
+            "surface rotation i16 must be bit-identical"
+        );
+        assert_eq!(
+            surf_rt.position(),
+            surf.position(),
+            "surface position must match"
+        );
         assert_eq!(surf_rt.scales(), surf.scales(), "surface scales must match");
-        assert_eq!(surf_rt.opacity(), surf.opacity(), "surface opacity must match");
+        assert_eq!(
+            surf_rt.opacity(),
+            surf.opacity(),
+            "surface opacity must match"
+        );
         assert_eq!(surf_rt.kind(), surf.kind(), "surface kind must match");
         // The two splats must carry genuinely different spectra (not aliased).
-        assert_ne!(surf.spectral(), vol.spectral(), "the two test spectra must differ");
+        assert_ne!(
+            surf.spectral(),
+            vol.spectral(),
+            "the two test spectra must differ"
+        );
     }
 
     #[test]
@@ -150,6 +186,10 @@ mod tests {
         g.scale_u = f32::NAN;
         g.scale_v = f32::INFINITY;
         let s = from_saved_geom(&g);
-        assert_eq!(s.scales(), [0.0, 0.0, 1.0], "non-finite scales must be sanitized to 0.0");
+        assert_eq!(
+            s.scales(),
+            [0.0, 0.0, 1.0],
+            "non-finite scales must be sanitized to 0.0"
+        );
     }
 }

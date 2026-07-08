@@ -4,8 +4,8 @@
 //! Pathfinding uses A* over this graph.
 //! `invalidate_region` + `merge` enable cheap incremental updates after deformation.
 
-use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 /// Spatial grid index for O(1) average nearest-node lookup.
 #[derive(Default, Clone, Debug)]
@@ -16,10 +16,16 @@ struct NavMeshGrid {
 
 impl NavMeshGrid {
     fn new(cell_size: f32) -> Self {
-        Self { cell_size, cells: HashMap::new() }
+        Self {
+            cell_size,
+            cells: HashMap::new(),
+        }
     }
     fn cell(&self, pos: [f32; 3]) -> (i32, i32) {
-        ((pos[0] / self.cell_size).floor() as i32, (pos[2] / self.cell_size).floor() as i32)
+        (
+            (pos[0] / self.cell_size).floor() as i32,
+            (pos[2] / self.cell_size).floor() as i32,
+        )
     }
     fn insert(&mut self, id: u32, pos: [f32; 3]) {
         self.cells.entry(self.cell(pos)).or_default().push(id);
@@ -56,15 +62,22 @@ pub struct NavMesh {
 
 impl Default for NavMesh {
     fn default() -> Self {
-        Self { nodes: Vec::new(), grid: NavMeshGrid::new(5.0) }
+        Self {
+            nodes: Vec::new(),
+            grid: NavMeshGrid::new(5.0),
+        }
     }
 }
 
 impl NavMesh {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Number of walkable nodes.
-    pub fn node_count(&self) -> usize { self.nodes.len() }
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
 
     /// Rebuild the spatial grid index from current nodes.
     /// Call after batch-inserting nodes or after `merge()` / `invalidate_region()`.
@@ -86,7 +99,8 @@ impl NavMesh {
                 da.partial_cmp(&db).unwrap_or(Ordering::Equal)
             });
         }
-        self.nodes.iter()
+        self.nodes
+            .iter()
             .min_by(|a, b| {
                 let da = dist2(a.world_pos, world_pos);
                 let db = dist2(b.world_pos, world_pos);
@@ -111,7 +125,10 @@ impl NavMesh {
         let mut came_from: HashMap<u32, u32> = HashMap::new();
 
         g_cost.insert(start_id, 0.0);
-        open.push(AStarEntry { node: start_id, f: heuristic(self.nodes[start_id as usize].world_pos, goal_pos) });
+        open.push(AStarEntry {
+            node: start_id,
+            f: heuristic(self.nodes[start_id as usize].world_pos, goal_pos),
+        });
 
         while let Some(AStarEntry { node: current, .. }) = open.pop() {
             if current == goal_id {
@@ -119,8 +136,10 @@ impl NavMesh {
             }
             let current_g = *g_cost.get(&current).unwrap_or(&f32::MAX);
             for &neighbour in &self.nodes[current as usize].neighbours {
-                let edge_cost = dist(self.nodes[current as usize].world_pos,
-                                    self.nodes[neighbour as usize].world_pos);
+                let edge_cost = dist(
+                    self.nodes[current as usize].world_pos,
+                    self.nodes[neighbour as usize].world_pos,
+                );
                 let new_g = current_g + edge_cost;
                 if new_g < *g_cost.get(&neighbour).unwrap_or(&f32::MAX) {
                     g_cost.insert(neighbour, new_g);
@@ -136,7 +155,9 @@ impl NavMesh {
     /// Remove nodes in a sphere (call after terrain deformation).
     pub fn invalidate_region(&mut self, center: [f32; 3], radius: f32) {
         let r2 = radius * radius;
-        let removed: HashSet<u32> = self.nodes.iter()
+        let removed: HashSet<u32> = self
+            .nodes
+            .iter()
             .filter(|n| dist2(n.world_pos, center) <= r2)
             .map(|n| n.id)
             .collect();
@@ -175,23 +196,37 @@ impl NavMesh {
 }
 
 fn dist2(a: [f32; 3], b: [f32; 3]) -> f32 {
-    let dx = a[0]-b[0]; let dy = a[1]-b[1]; let dz = a[2]-b[2];
-    dx*dx + dy*dy + dz*dz
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    dx * dx + dy * dy + dz * dz
 }
-fn dist(a: [f32; 3], b: [f32; 3]) -> f32 { dist2(a, b).sqrt() }
-fn heuristic(a: [f32; 3], b: [f32; 3]) -> f32 { dist(a, b) }
+fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
+    dist2(a, b).sqrt()
+}
+fn heuristic(a: [f32; 3], b: [f32; 3]) -> f32 {
+    dist(a, b)
+}
 
 #[derive(PartialEq)]
-struct AStarEntry { node: u32, f: f32 }
+struct AStarEntry {
+    node: u32,
+    f: f32,
+}
 impl Eq for AStarEntry {}
 impl Ord for AStarEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.f.partial_cmp(&self.f).unwrap_or(Ordering::Equal)
+        other
+            .f
+            .partial_cmp(&self.f)
+            .unwrap_or(Ordering::Equal)
             .then_with(|| other.node.cmp(&self.node))
     }
 }
 impl PartialOrd for AStarEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[cfg(test)]
@@ -234,8 +269,16 @@ mod tests {
     #[test]
     fn find_path_disconnected_returns_none() {
         let mut mesh = NavMesh::new();
-        mesh.nodes.push(NavNode { id: 0, world_pos: [0.0; 3], neighbours: vec![] });
-        mesh.nodes.push(NavNode { id: 1, world_pos: [5.0, 0.0, 0.0], neighbours: vec![] });
+        mesh.nodes.push(NavNode {
+            id: 0,
+            world_pos: [0.0; 3],
+            neighbours: vec![],
+        });
+        mesh.nodes.push(NavNode {
+            id: 1,
+            world_pos: [5.0, 0.0, 0.0],
+            neighbours: vec![],
+        });
         assert!(mesh.find_path(0, 1).is_none());
     }
 

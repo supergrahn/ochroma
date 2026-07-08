@@ -37,7 +37,11 @@ pub struct FrameTime {
 
 impl Default for FrameTime {
     fn default() -> Self {
-        Self { dt: 0.0, total: 0.0, frame: 0 }
+        Self {
+            dt: 0.0,
+            total: 0.0,
+            frame: 0,
+        }
     }
 }
 
@@ -214,7 +218,8 @@ fn script_update_system(world: &mut World) {
     // Collect entity data first to avoid borrow conflicts.
     let entity_data: Vec<(bevy_ecs::entity::Entity, Vec<String>)> = {
         let mut query = world.query::<(Entity, &ScriptComponent)>();
-        query.iter(world)
+        query
+            .iter(world)
             .map(|(e, sc)| (e, sc.scripts.clone()))
             .collect()
     };
@@ -222,7 +227,10 @@ fn script_update_system(world: &mut World) {
     let fixed_dt = world.resource::<FixedTime>().dt;
 
     // Reuse the persistent command buffer — clear without deallocating.
-    world.resource_mut::<PendingScriptCommands>().commands.clear();
+    world
+        .resource_mut::<PendingScriptCommands>()
+        .commands
+        .clear();
 
     for (entity, scripts) in &entity_data {
         // Get or skip context
@@ -263,13 +271,19 @@ fn script_update_system(world: &mut World) {
                 // Put the (possibly newly created) instance back so the next
                 // frame reuses it. Only cache instances the registry knew about.
                 if let Some(script) = script {
-                    world.resource_mut::<ScriptInstances>().scripts.insert(key, script);
+                    world
+                        .resource_mut::<ScriptInstances>()
+                        .scripts
+                        .insert(key, script);
                 }
             }
 
             let commands = ctx.take_commands();
             if !commands.is_empty() {
-                world.resource_mut::<PendingScriptCommands>().commands.push((*entity, commands));
+                world
+                    .resource_mut::<PendingScriptCommands>()
+                    .commands
+                    .push((*entity, commands));
             }
 
             // Put context back
@@ -293,23 +307,35 @@ fn process_script_commands_system(world: &mut World) {
                 }
                 ScriptCommand::SetRotation { rotation } => {
                     if let Some(mut transform) = world.get_mut::<TransformComponent>(entity) {
-                        transform.rotation = Quat::from_xyzw(
-                            rotation[0], rotation[1], rotation[2], rotation[3],
-                        );
+                        transform.rotation =
+                            Quat::from_xyzw(rotation[0], rotation[1], rotation[2], rotation[3]);
                     }
                 }
-                ScriptCommand::Spawn { asset_path, position, rotation, scale } => {
-                    let handle = world.resource_mut::<AssetManagerResource>().register_asset(&asset_path);
+                ScriptCommand::Spawn {
+                    asset_path,
+                    position,
+                    rotation,
+                    scale,
+                } => {
+                    let handle = world
+                        .resource_mut::<AssetManagerResource>()
+                        .register_asset(&asset_path);
                     world.spawn((
                         NameComponent("Spawned".to_string()),
                         TransformComponent {
                             position: Vec3::from_array(position),
                             rotation: Quat::from_xyzw(
-                                rotation[0], rotation[1], rotation[2], rotation[3],
+                                rotation[0],
+                                rotation[1],
+                                rotation[2],
+                                rotation[3],
                             ),
                             scale: Vec3::from_array(scale),
                         },
-                        AssetRefComponent { path: asset_path, handle },
+                        AssetRefComponent {
+                            path: asset_path,
+                            handle,
+                        },
                     ));
                 }
                 ScriptCommand::Destroy { entity_id } => {
@@ -317,9 +343,7 @@ fn process_script_commands_system(world: &mut World) {
                     // Resolve it back to a live Bevy Entity and despawn it.
                     let target = {
                         let mut query = world.query::<Entity>();
-                        query
-                            .iter(world)
-                            .find(|e| e.index() == entity_id)
+                        query.iter(world).find(|e| e.index() == entity_id)
                     };
                     if let Some(target) = target {
                         // Drop any cached state tied to this entity so a future
@@ -371,7 +395,12 @@ fn process_script_commands_system(world: &mut World) {
 
                     let path = std::env::temp_dir().join(format!("ochroma_{}.wav", clip));
                     let _ = std::fs::write(&path, &wav);
-                    println!("[engine] play_sound: {} vol={} -> {}", clip, volume, path.display());
+                    println!(
+                        "[engine] play_sound: {} vol={} -> {}",
+                        clip,
+                        volume,
+                        path.display()
+                    );
                 }
                 ScriptCommand::ApplyForce { force } => {
                     // Record the force on a ForceComponent (read by the physics
@@ -385,14 +414,18 @@ fn process_script_commands_system(world: &mut World) {
                     if let Some(mut fc) = world.get_mut::<ForceComponent>(entity) {
                         fc.accumulated += f;
                     } else {
-                        world.entity_mut(entity).insert(ForceComponent { accumulated: f });
+                        world
+                            .entity_mut(entity)
+                            .insert(ForceComponent { accumulated: f });
                     }
 
                     // Integrate into velocity (create the component if absent).
                     if let Some(mut vel) = world.get_mut::<VelocityComponent>(entity) {
                         vel.linear += f * dt;
                     } else {
-                        world.entity_mut(entity).insert(VelocityComponent { linear: f * dt });
+                        world
+                            .entity_mut(entity)
+                            .insert(VelocityComponent { linear: f * dt });
                     }
                 }
                 ScriptCommand::SendEvent { name, data } => {
@@ -426,10 +459,7 @@ fn physics_integration_system(world: &mut World) {
 
     let moves: Vec<(bevy_ecs::entity::Entity, Vec3)> = {
         let mut query = world.query::<(Entity, &VelocityComponent)>();
-        query
-            .iter(world)
-            .map(|(e, v)| (e, v.linear))
-            .collect()
+        query.iter(world).map(|(e, v)| (e, v.linear)).collect()
     };
 
     for (entity, linear) in moves {
@@ -447,7 +477,8 @@ fn physics_integration_system(world: &mut World) {
 fn physics_collision_system(world: &mut World) {
     let entities: Vec<(bevy_ecs::entity::Entity, Vec3, ColliderShape)> = {
         let mut query = world.query::<(Entity, &TransformComponent, &ColliderComponent)>();
-        query.iter(world)
+        query
+            .iter(world)
             .map(|(e, t, c)| (e, t.position, c.shape.clone()))
             .collect()
     };
@@ -484,8 +515,10 @@ fn frustum_cull_system(world: &mut World) {
 
     // Mark entities within a generous view distance as visible.
     let to_mark: Vec<bevy_ecs::entity::Entity> = {
-        let mut query = world.query_filtered::<(Entity, &TransformComponent), With<AssetRefComponent>>();
-        query.iter(world)
+        let mut query =
+            world.query_filtered::<(Entity, &TransformComponent), With<AssetRefComponent>>();
+        query
+            .iter(world)
             .filter(|(_, t)| t.position.distance(camera_pos) < 500.0)
             .map(|(e, _)| e)
             .collect()
@@ -513,7 +546,8 @@ fn gather_splats_system(world: &mut World) {
     // Gather lights from point light entities.
     let lights: Vec<LightData> = {
         let mut query = world.query::<(&TransformComponent, &PointLightComponent)>();
-        query.iter(world)
+        query
+            .iter(world)
             .map(|(t, l)| LightData {
                 position: t.position,
                 color: l.color,
@@ -525,13 +559,15 @@ fn gather_splats_system(world: &mut World) {
 
     // Gather splats from visible entities that carry SplatAssetComponent.
     let gathered: Vec<GaussianSplat> = {
-        let mut query = world.query_filtered::<
-            (&SplatAssetComponent, &TransformComponent),
-            With<Visible>,
-        >();
-        query.iter(world)
+        let mut query =
+            world.query_filtered::<(&SplatAssetComponent, &TransformComponent), With<Visible>>();
+        query
+            .iter(world)
             .flat_map(|(asset, transform)| {
-                asset.splats.iter().map(|&splat| transform_splat(splat, transform))
+                asset
+                    .splats
+                    .iter()
+                    .map(|&splat| transform_splat(splat, transform))
             })
             .collect()
     };
@@ -642,15 +678,20 @@ impl EngineRuntime {
 
     /// Spawn an entity with a name and return a builder for adding components.
     pub fn spawn(&mut self, name: &str) -> EntityBuilder<'_> {
-        let entity = self.world.spawn((
-            NameComponent(name.to_string()),
-            TransformComponent::default(),
-            TagsComponent::default(),
-        )).id();
+        let entity = self
+            .world
+            .spawn((
+                NameComponent(name.to_string()),
+                TransformComponent::default(),
+                TagsComponent::default(),
+            ))
+            .id();
 
         // Create a script context for this entity.
-        self.world.resource_mut::<ScriptContexts>()
-            .contexts.insert(entity, ScriptContext::new(entity.index()));
+        self.world
+            .resource_mut::<ScriptContexts>()
+            .contexts
+            .insert(entity, ScriptContext::new(entity.index()));
 
         EntityBuilder {
             runtime: self,
@@ -663,8 +704,10 @@ impl EngineRuntime {
     where
         F: Fn() -> Box<dyn GameScript> + Send + Sync + 'static,
     {
-        self.world.resource_mut::<ScriptRegistryResource>()
-            .registry.register(name, factory);
+        self.world
+            .resource_mut::<ScriptRegistryResource>()
+            .registry
+            .register(name, factory);
     }
 
     /// Run one frame. Returns false when the engine should quit.
@@ -701,7 +744,9 @@ impl EngineRuntime {
             physics_collision_system(&mut self.world);
         }
 
-        self.world.resource_mut::<FixedStepCounter>().steps_this_frame = fixed_steps;
+        self.world
+            .resource_mut::<FixedStepCounter>()
+            .steps_this_frame = fixed_steps;
 
         // --- Per-frame systems ---
         frustum_cull_system(&mut self.world);
@@ -727,7 +772,8 @@ impl EngineRuntime {
     pub fn init_scripts(&mut self) {
         let scripted: Vec<(bevy_ecs::entity::Entity, Vec<String>)> = {
             let mut query = self.world.query::<(Entity, &ScriptComponent)>();
-            query.iter(&self.world)
+            query
+                .iter(&self.world)
                 .map(|(e, sc)| (e, sc.scripts.clone()))
                 .collect()
         };
@@ -755,12 +801,17 @@ impl EngineRuntime {
             // Process start commands.
             let commands = ctx.take_commands();
             if !commands.is_empty() {
-                self.world.resource_mut::<PendingScriptCommands>().commands.push((*entity, commands));
+                self.world
+                    .resource_mut::<PendingScriptCommands>()
+                    .commands
+                    .push((*entity, commands));
             }
 
             // Store fresh context.
-            self.world.resource_mut::<ScriptContexts>()
-                .contexts.insert(*entity, ScriptContext::new(entity.index()));
+            self.world
+                .resource_mut::<ScriptContexts>()
+                .contexts
+                .insert(*entity, ScriptContext::new(entity.index()));
         }
 
         // Process any commands from on_start.
@@ -772,13 +823,20 @@ impl EngineRuntime {
         self.running = true;
         self.init_scripts();
 
-        let script_count = self.world.resource::<ScriptRegistryResource>()
-            .registry.registered_scripts().len();
+        let script_count = self
+            .world
+            .resource::<ScriptRegistryResource>()
+            .registry
+            .registered_scripts()
+            .len();
         let entity_count = {
             let mut q = self.world.query::<&NameComponent>();
             q.iter(&self.world).count()
         };
-        println!("[engine] Started — {} entities, {} scripts registered", entity_count, script_count);
+        println!(
+            "[engine] Started — {} entities, {} scripts registered",
+            entity_count, script_count
+        );
     }
 
     /// Stop the engine.
@@ -799,8 +857,11 @@ impl EngineRuntime {
 
     /// Get the number of registered scripts.
     pub fn registered_script_count(&self) -> usize {
-        self.world.resource::<ScriptRegistryResource>()
-            .registry.registered_scripts().len()
+        self.world
+            .resource::<ScriptRegistryResource>()
+            .registry
+            .registered_scripts()
+            .len()
     }
 
     /// Get mutable reference to time of day resource.
@@ -827,19 +888,29 @@ pub struct EntityBuilder<'a> {
 impl<'a> EntityBuilder<'a> {
     /// Attach an asset reference.
     pub fn with_asset(self, path: &str) -> Self {
-        let handle = self.runtime.world
+        let handle = self
+            .runtime
+            .world
             .resource_mut::<AssetManagerResource>()
             .register_asset(path);
-        self.runtime.world.entity_mut(self.entity).insert(AssetRefComponent {
-            path: path.to_string(),
-            handle,
-        });
+        self.runtime
+            .world
+            .entity_mut(self.entity)
+            .insert(AssetRefComponent {
+                path: path.to_string(),
+                handle,
+            });
         self
     }
 
     /// Set position.
     pub fn with_position(self, pos: Vec3) -> Self {
-        if let Some(mut transform) = self.runtime.world.entity_mut(self.entity).get_mut::<TransformComponent>() {
+        if let Some(mut transform) = self
+            .runtime
+            .world
+            .entity_mut(self.entity)
+            .get_mut::<TransformComponent>()
+        {
             transform.position = pos;
         }
         self
@@ -847,57 +918,79 @@ impl<'a> EntityBuilder<'a> {
 
     /// Attach a script by name.
     pub fn with_script(self, name: &str) -> Self {
-        if let Some(mut sc) = self.runtime.world.entity_mut(self.entity).get_mut::<ScriptComponent>() {
+        if let Some(mut sc) = self
+            .runtime
+            .world
+            .entity_mut(self.entity)
+            .get_mut::<ScriptComponent>()
+        {
             sc.scripts.push(name.to_string());
         } else {
-            self.runtime.world.entity_mut(self.entity).insert(ScriptComponent {
-                scripts: vec![name.to_string()],
-            });
+            self.runtime
+                .world
+                .entity_mut(self.entity)
+                .insert(ScriptComponent {
+                    scripts: vec![name.to_string()],
+                });
         }
         self
     }
 
     /// Attach a collider.
     pub fn with_collider(self, shape: ColliderShape) -> Self {
-        self.runtime.world.entity_mut(self.entity).insert(ColliderComponent { shape });
+        self.runtime
+            .world
+            .entity_mut(self.entity)
+            .insert(ColliderComponent { shape });
         self
     }
 
     /// Attach a zeroed velocity (and force accumulator) so this entity is moved
     /// by the physics integration step and can receive `ApplyForce`.
     pub fn with_velocity(self) -> Self {
-        self.runtime.world.entity_mut(self.entity).insert((
-            VelocityComponent::default(),
-            ForceComponent::default(),
-        ));
+        self.runtime
+            .world
+            .entity_mut(self.entity)
+            .insert((VelocityComponent::default(), ForceComponent::default()));
         self
     }
 
     /// Attach a point light.
     pub fn with_light(self, color: [f32; 3], intensity: f32, radius: f32) -> Self {
-        self.runtime.world.entity_mut(self.entity).insert(PointLightComponent {
-            color,
-            intensity,
-            radius,
-        });
+        self.runtime
+            .world
+            .entity_mut(self.entity)
+            .insert(PointLightComponent {
+                color,
+                intensity,
+                radius,
+            });
         self
     }
 
     /// Attach an audio emitter.
     pub fn with_audio(self, clip: &str, volume: f32, looping: bool) -> Self {
-        self.runtime.world.entity_mut(self.entity).insert(AudioEmitterComponent {
-            clip_path: clip.to_string(),
-            volume,
-            looping,
-            playing: false,
-            spatial: true,
-        });
+        self.runtime
+            .world
+            .entity_mut(self.entity)
+            .insert(AudioEmitterComponent {
+                clip_path: clip.to_string(),
+                volume,
+                looping,
+                playing: false,
+                spatial: true,
+            });
         self
     }
 
     /// Add a tag.
     pub fn with_tag(self, tag: &str) -> Self {
-        if let Some(mut tags) = self.runtime.world.entity_mut(self.entity).get_mut::<TagsComponent>() {
+        if let Some(mut tags) = self
+            .runtime
+            .world
+            .entity_mut(self.entity)
+            .get_mut::<TagsComponent>()
+        {
             tags.0.push(tag.to_string());
         }
         self
@@ -925,25 +1018,41 @@ mod tests {
         fn on_update(&mut self, ctx: &mut ScriptContext, _dt: f32) {
             ctx.log("Test script update");
         }
-        fn name(&self) -> &str { "TestScript" }
+        fn name(&self) -> &str {
+            "TestScript"
+        }
     }
 
     #[test]
     fn create_engine_and_spawn_entities() {
         let mut engine = EngineRuntime::new(EngineConfig::default());
-        engine.spawn("Player").with_asset("player.ply").with_position(Vec3::new(0.0, 1.0, 0.0));
-        engine.spawn("Enemy").with_asset("enemy.ply").with_position(Vec3::new(10.0, 0.0, 5.0));
+        engine
+            .spawn("Player")
+            .with_asset("player.ply")
+            .with_position(Vec3::new(0.0, 1.0, 0.0));
+        engine
+            .spawn("Enemy")
+            .with_asset("enemy.ply")
+            .with_position(Vec3::new(10.0, 0.0, 5.0));
 
-        let count = engine.world.query::<&NameComponent>().iter(&engine.world).count();
+        let count = engine
+            .world
+            .query::<&NameComponent>()
+            .iter(&engine.world)
+            .count();
         assert_eq!(count, 2);
     }
 
     #[test]
     fn find_entity_by_name() {
         let mut engine = EngineRuntime::new(EngineConfig::default());
-        engine.spawn("Player").with_asset("player.ply").with_position(Vec3::new(0.0, 1.0, 0.0));
+        engine
+            .spawn("Player")
+            .with_asset("player.ply")
+            .with_position(Vec3::new(0.0, 1.0, 0.0));
 
-        let found: Vec<(&NameComponent, &TransformComponent)> = engine.world
+        let found: Vec<(&NameComponent, &TransformComponent)> = engine
+            .world
             .query::<(&NameComponent, &TransformComponent)>()
             .iter(&engine.world)
             .filter(|(n, _)| n.0 == "Player")
@@ -957,9 +1066,14 @@ mod tests {
     fn spawn_with_script() {
         let mut engine = EngineRuntime::new(EngineConfig::default());
         engine.register_script("TestScript", || Box::new(TestScript));
-        engine.spawn("NPC").with_asset("npc.ply").with_position(Vec3::new(5.0, 0.0, 5.0)).with_script("TestScript");
+        engine
+            .spawn("NPC")
+            .with_asset("npc.ply")
+            .with_position(Vec3::new(5.0, 0.0, 5.0))
+            .with_script("TestScript");
 
-        let scripts: Vec<&ScriptComponent> = engine.world
+        let scripts: Vec<&ScriptComponent> = engine
+            .world
             .query::<&ScriptComponent>()
             .iter(&engine.world)
             .collect();
@@ -981,24 +1095,43 @@ mod tests {
     fn destroy_entity() {
         let mut engine = EngineRuntime::new(EngineConfig::default());
         let entity = engine.spawn("Temp").id();
-        assert_eq!(engine.world.query::<&NameComponent>().iter(&engine.world).count(), 1);
+        assert_eq!(
+            engine
+                .world
+                .query::<&NameComponent>()
+                .iter(&engine.world)
+                .count(),
+            1
+        );
         engine.world.despawn(entity);
-        assert_eq!(engine.world.query::<&NameComponent>().iter(&engine.world).count(), 0);
+        assert_eq!(
+            engine
+                .world
+                .query::<&NameComponent>()
+                .iter(&engine.world)
+                .count(),
+            0
+        );
     }
 
     #[test]
     fn tags_and_find() {
         let mut engine = EngineRuntime::new(EngineConfig::default());
-        engine.spawn("Coin").with_asset("coin.ply").with_position(Vec3::new(5.0, 1.0, 5.0)).with_tag("collectible");
+        engine
+            .spawn("Coin")
+            .with_asset("coin.ply")
+            .with_position(Vec3::new(5.0, 1.0, 5.0))
+            .with_tag("collectible");
 
-        let collectibles: Vec<(&NameComponent, &TagsComponent)> = engine.world
+        let collectibles: Vec<(&NameComponent, &TagsComponent)> = engine
+            .world
             .query::<(&NameComponent, &TagsComponent)>()
             .iter(&engine.world)
             .filter(|(_, t)| t.0.contains(&"collectible".to_string()))
             .collect();
 
         assert_eq!(collectibles.len(), 1);
-        assert_eq!(collectibles[0].0 .0, "Coin");
+        assert_eq!(collectibles[0].0.0, "Coin");
     }
 
     // --- Script that moves entities ---
@@ -1008,7 +1141,9 @@ mod tests {
         fn on_update(&mut self, ctx: &mut ScriptContext, _dt: f32) {
             ctx.set_position([99.0, 0.0, 0.0]);
         }
-        fn name(&self) -> &str { "Mover" }
+        fn name(&self) -> &str {
+            "Mover"
+        }
     }
 
     #[test]
@@ -1020,7 +1155,11 @@ mod tests {
         engine.tick(0.02); // must exceed fixed_dt (1/60) to trigger at least one fixed step
 
         let transform = engine.world.get::<TransformComponent>(entity).unwrap();
-        assert_eq!(transform.position, Vec3::new(99.0, 0.0, 0.0), "Script should have moved entity");
+        assert_eq!(
+            transform.position,
+            Vec3::new(99.0, 0.0, 0.0),
+            "Script should have moved entity"
+        );
     }
 
     // --- AABB collision detection ---
@@ -1028,13 +1167,19 @@ mod tests {
     #[test]
     fn aabb_collision_detected_when_overlapping() {
         let mut engine = EngineRuntime::new(EngineConfig::default());
-        let ea = engine.spawn("BoxA")
+        let ea = engine
+            .spawn("BoxA")
             .with_position(Vec3::new(0.0, 0.0, 0.0))
-            .with_collider(ColliderShape::Box { half_extents: [1.0, 1.0, 1.0] })
+            .with_collider(ColliderShape::Box {
+                half_extents: [1.0, 1.0, 1.0],
+            })
             .id();
-        let eb = engine.spawn("BoxB")
+        let eb = engine
+            .spawn("BoxB")
             .with_position(Vec3::new(1.5, 0.0, 0.0))
-            .with_collider(ColliderShape::Box { half_extents: [1.0, 1.0, 1.0] })
+            .with_collider(ColliderShape::Box {
+                half_extents: [1.0, 1.0, 1.0],
+            })
             .id();
         engine.start();
         engine.tick(0.02);
@@ -1047,12 +1192,18 @@ mod tests {
     #[test]
     fn aabb_no_collision_when_separated() {
         let mut engine = EngineRuntime::new(EngineConfig::default());
-        engine.spawn("BoxA")
+        engine
+            .spawn("BoxA")
             .with_position(Vec3::new(0.0, 0.0, 0.0))
-            .with_collider(ColliderShape::Box { half_extents: [1.0, 1.0, 1.0] });
-        engine.spawn("BoxB")
+            .with_collider(ColliderShape::Box {
+                half_extents: [1.0, 1.0, 1.0],
+            });
+        engine
+            .spawn("BoxB")
             .with_position(Vec3::new(10.0, 0.0, 0.0))
-            .with_collider(ColliderShape::Box { half_extents: [1.0, 1.0, 1.0] });
+            .with_collider(ColliderShape::Box {
+                half_extents: [1.0, 1.0, 1.0],
+            });
         engine.start();
         engine.tick(0.02);
 
@@ -1063,11 +1214,13 @@ mod tests {
     #[test]
     fn sphere_collision_detected() {
         let mut engine = EngineRuntime::new(EngineConfig::default());
-        let ea = engine.spawn("SphereA")
+        let ea = engine
+            .spawn("SphereA")
             .with_position(Vec3::ZERO)
             .with_collider(ColliderShape::Sphere { radius: 2.0 })
             .id();
-        let eb = engine.spawn("SphereB")
+        let eb = engine
+            .spawn("SphereB")
             .with_position(Vec3::new(3.0, 0.0, 0.0))
             .with_collider(ColliderShape::Sphere { radius: 2.0 })
             .id();
@@ -1075,7 +1228,10 @@ mod tests {
         engine.tick(0.02);
 
         let collisions = &engine.world.resource::<CollisionPairs>().0;
-        assert!(collisions.contains(&(ea, eb)), "Overlapping spheres should collide");
+        assert!(
+            collisions.contains(&(ea, eb)),
+            "Overlapping spheres should collide"
+        );
     }
 
     // --- Audio proof ---
@@ -1085,7 +1241,9 @@ mod tests {
         fn on_start(&mut self, ctx: &mut ScriptContext) {
             ctx.play_sound("test_sound", 1.0);
         }
-        fn name(&self) -> &str { "SoundScript" }
+        fn name(&self) -> &str {
+            "SoundScript"
+        }
     }
 
     #[test]
@@ -1096,7 +1254,11 @@ mod tests {
         engine.start();
 
         let wav_path = std::env::temp_dir().join("ochroma_test_sound.wav");
-        assert!(wav_path.exists(), "WAV file should exist at {}", wav_path.display());
+        assert!(
+            wav_path.exists(),
+            "WAV file should exist at {}",
+            wav_path.display()
+        );
 
         let data = std::fs::read(&wav_path).unwrap();
         assert!(data.len() > 44, "WAV file should have header + data");
@@ -1116,28 +1278,43 @@ mod tests {
         engine.tick(1.0 / 30.0);
 
         let steps = engine.world.resource::<FixedStepCounter>().steps_this_frame;
-        assert_eq!(steps, 2, "With frame_dt=1/30 and fixed_dt=1/60, should run 2 physics steps");
+        assert_eq!(
+            steps, 2,
+            "With frame_dt=1/30 and fixed_dt=1/60, should run 2 physics steps"
+        );
     }
 
     #[test]
     fn spawn_with_builder_pattern() {
         let mut engine = EngineRuntime::new(EngineConfig::default());
-        engine.spawn("Player")
+        engine
+            .spawn("Player")
             .with_asset("player.ply")
             .with_position(Vec3::new(0.0, 2.0, 0.0))
             .with_script("PlayerController")
-            .with_collider(ColliderShape::Capsule { radius: 0.3, height: 1.8 })
+            .with_collider(ColliderShape::Capsule {
+                radius: 0.3,
+                height: 1.8,
+            })
             .with_tag("player");
 
-        let count = engine.world
+        let count = engine
+            .world
             .query::<(&NameComponent, &AssetRefComponent, &ScriptComponent)>()
             .iter(&engine.world)
             .count();
         assert_eq!(count, 1);
 
         // Verify collider and tag are present too.
-        let full_count = engine.world
-            .query::<(&NameComponent, &AssetRefComponent, &ScriptComponent, &ColliderComponent, &TagsComponent)>()
+        let full_count = engine
+            .world
+            .query::<(
+                &NameComponent,
+                &AssetRefComponent,
+                &ScriptComponent,
+                &ColliderComponent,
+                &TagsComponent,
+            )>()
             .iter(&engine.world)
             .count();
         assert_eq!(full_count, 1);
@@ -1151,7 +1328,10 @@ mod tests {
             forward: Vec3::NEG_Z,
             view_proj: Mat4::IDENTITY,
         });
-        engine.spawn("Building").with_asset("test.ply").with_position(Vec3::ZERO);
+        engine
+            .spawn("Building")
+            .with_asset("test.ply")
+            .with_position(Vec3::ZERO);
         engine.start();
         engine.tick(0.016);
 
@@ -1177,7 +1357,15 @@ mod tests {
     // --- transform_splat ---
 
     fn zero_splat(pos: [f32; 3]) -> GaussianSplat {
-        GaussianSplat::surface(pos, [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.1, 0.1, 255, [0; 16])
+        GaussianSplat::surface(
+            pos,
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            0.1,
+            0.1,
+            255,
+            [0; 16],
+        )
     }
 
     #[test]
@@ -1190,7 +1378,10 @@ mod tests {
         };
         let out = transform_splat(splat, &transform);
         assert!((out.position()[0] - 1.0).abs() < 1e-5, "x unchanged");
-        assert!((out.position()[1] - 5.0).abs() < 1e-5, "y shifted by entity position");
+        assert!(
+            (out.position()[1] - 5.0).abs() < 1e-5,
+            "y shifted by entity position"
+        );
         assert!((out.position()[2] - 0.0).abs() < 1e-5, "z unchanged");
     }
 
@@ -1211,20 +1402,21 @@ mod tests {
 
     #[test]
     fn gather_splats_fills_render_buffer() {
-        use bevy_ecs::world::World;
         use crate::ecs::{SplatAssetComponent, TransformComponent, Visible};
+        use bevy_ecs::world::World;
         use uuid::Uuid;
 
         let mut world = World::new();
         world.insert_resource(RenderBuffer::default());
 
         // Spawn a visible entity with 2 splats.
-        let splats = vec![
-            zero_splat([0.0, 0.0, 0.0]),
-            zero_splat([1.0, 0.0, 0.0]),
-        ];
+        let splats = vec![zero_splat([0.0, 0.0, 0.0]), zero_splat([1.0, 0.0, 0.0])];
         world.spawn((
-            SplatAssetComponent { uuid: Uuid::nil(), splat_count: 2, splats },
+            SplatAssetComponent {
+                uuid: Uuid::nil(),
+                splat_count: 2,
+                splats,
+            },
             TransformComponent {
                 position: Vec3::new(0.0, 10.0, 0.0),
                 rotation: Quat::IDENTITY,
@@ -1237,8 +1429,10 @@ mod tests {
 
         let buffer = world.resource::<RenderBuffer>();
         assert_eq!(buffer.splats.len(), 2, "both splats should be gathered");
-        assert!((buffer.splats[0].position()[1] - 10.0).abs() < 1e-5,
-            "splat should be translated to entity world y=10");
+        assert!(
+            (buffer.splats[0].position()[1] - 10.0).abs() < 1e-5,
+            "splat should be translated to entity world y=10"
+        );
     }
 
     // --- (A) Stateful script persistence across ticks ---
@@ -1255,8 +1449,12 @@ mod tests {
             // Stash the live counter where the test can read it (via UI text).
             ctx.set_ui_text("counter", &self.ticks.to_string());
         }
-        fn name(&self) -> &str { "Counter" }
-        fn as_any(&self) -> &dyn std::any::Any { self }
+        fn name(&self) -> &str {
+            "Counter"
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     #[test]
@@ -1283,7 +1481,10 @@ mod tests {
             .as_any()
             .downcast_ref::<CounterScript>()
             .expect("cached instance should be a CounterScript");
-        assert_eq!(counter.ticks, 3, "script counter must persist and reach 3 across 3 ticks");
+        assert_eq!(
+            counter.ticks, 3,
+            "script counter must persist and reach 3 across 3 ticks"
+        );
     }
 
     // --- (B) Destroy actually despawns the target entity ---
@@ -1300,7 +1501,9 @@ mod tests {
                 self.fired = true;
             }
         }
-        fn name(&self) -> &str { "Destroyer" }
+        fn name(&self) -> &str {
+            "Destroyer"
+        }
     }
 
     #[test]
@@ -1311,13 +1514,20 @@ mod tests {
         let victim_index = victim.index();
 
         engine.register_script("Destroyer", move || {
-            Box::new(DestroyerScript { target: victim_index, fired: false })
+            Box::new(DestroyerScript {
+                target: victim_index,
+                fired: false,
+            })
         });
         engine.spawn("Killer").with_script("Destroyer");
         engine.start();
 
         // Sanity: both entities exist before the tick.
-        let before = engine.world.query::<&NameComponent>().iter(&engine.world).count();
+        let before = engine
+            .world
+            .query::<&NameComponent>()
+            .iter(&engine.world)
+            .count();
         assert_eq!(before, 2, "two entities before destroy");
 
         engine.tick(0.02); // one fixed step -> Destroyer fires -> victim despawned
@@ -1326,8 +1536,15 @@ mod tests {
             engine.world.get_entity(victim).is_err(),
             "victim entity should be removed from the world after Destroy"
         );
-        let after = engine.world.query::<&NameComponent>().iter(&engine.world).count();
-        assert_eq!(after, 1, "only the Killer entity should remain after Destroy");
+        let after = engine
+            .world
+            .query::<&NameComponent>()
+            .iter(&engine.world)
+            .count();
+        assert_eq!(
+            after, 1,
+            "only the Killer entity should remain after Destroy"
+        );
     }
 
     // --- (B) ApplyForce actually changes velocity ---
@@ -1338,7 +1555,9 @@ mod tests {
         fn on_update(&mut self, ctx: &mut ScriptContext, _dt: f32) {
             ctx.apply_force([10.0, 0.0, 0.0]);
         }
-        fn name(&self) -> &str { "Thruster" }
+        fn name(&self) -> &str {
+            "Thruster"
+        }
     }
 
     #[test]
@@ -1354,13 +1573,21 @@ mod tests {
         engine.start();
 
         // Velocity starts at zero.
-        let v0 = engine.world.get::<VelocityComponent>(entity).unwrap().linear;
+        let v0 = engine
+            .world
+            .get::<VelocityComponent>(entity)
+            .unwrap()
+            .linear;
         assert_eq!(v0, Vec3::ZERO, "velocity starts at zero");
 
         // fixed_dt = 1/60. force 10 over dt => dv = 10 * (1/60) = 0.16666..
         engine.tick(0.02);
 
-        let v1 = engine.world.get::<VelocityComponent>(entity).unwrap().linear;
+        let v1 = engine
+            .world
+            .get::<VelocityComponent>(entity)
+            .unwrap()
+            .linear;
         let expected_dv = 10.0 * (1.0 / 60.0);
         assert!(
             (v1.x - expected_dv).abs() < 1e-5,
@@ -1371,7 +1598,11 @@ mod tests {
         assert_eq!(v1.z, 0.0);
 
         // Position should have advanced by velocity * dt as well.
-        let pos = engine.world.get::<TransformComponent>(entity).unwrap().position;
+        let pos = engine
+            .world
+            .get::<TransformComponent>(entity)
+            .unwrap()
+            .position;
         let expected_pos = expected_dv * (1.0 / 60.0);
         assert!(
             (pos.x - expected_pos).abs() < 1e-5,
@@ -1382,8 +1613,8 @@ mod tests {
 
     #[test]
     fn gather_splats_skips_non_visible() {
-        use bevy_ecs::world::World;
         use crate::ecs::{SplatAssetComponent, TransformComponent};
+        use bevy_ecs::world::World;
         use uuid::Uuid;
 
         let mut world = World::new();
@@ -1406,6 +1637,10 @@ mod tests {
         gather_splats_system(&mut world);
 
         let buffer = world.resource::<RenderBuffer>();
-        assert_eq!(buffer.splats.len(), 0, "non-visible entity splats should be skipped");
+        assert_eq!(
+            buffer.splats.len(),
+            0,
+            "non-visible entity splats should be skipped"
+        );
     }
 }

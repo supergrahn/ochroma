@@ -42,8 +42,8 @@ fn test_scene_with_bright_point(eye: [f32; 3]) -> SceneState {
         )
     };
     let splats = vec![
-        mk([0.0, 0.0, 0.0]),   // near (in focus)
-        mk([1.5, 0.5, -4.0]),  // mid
+        mk([0.0, 0.0, 0.0]),    // near (in focus)
+        mk([1.5, 0.5, -4.0]),   // mid
         mk([-1.0, -0.4, -9.0]), // far (out of focus -> blurred by DoF)
     ];
     let mut scene = splats_to_lit_scene(&splats, W, H, eye);
@@ -60,12 +60,8 @@ fn test_scene_with_bright_point(eye: [f32; 3]) -> SceneState {
 }
 
 fn test_cam_layer(eye: [f32; 3], lens_radius: f32, focus: f32, bokeh: i32) -> CameraLayer {
-    let view = glam::Mat4::look_at_rh(
-        glam::Vec3::from(eye),
-        glam::Vec3::ZERO,
-        glam::Vec3::Y,
-    )
-    .to_cols_array();
+    let view = glam::Mat4::look_at_rh(glam::Vec3::from(eye), glam::Vec3::ZERO, glam::Vec3::Y)
+        .to_cols_array();
     let mut cam = camera_layer(view, std::f32::consts::FRAC_PI_4, W, H, lens_radius, focus);
     cam.bokeh_blades = bokeh;
     cam.shutter_open = 0.0;
@@ -86,8 +82,7 @@ fn test_backend() -> Option<Renderer<VulkanSlangBackend>> {
     if let Ok(d) = std::env::var("SPECTRA_SLANG_DIR") {
         config.slang_kernel_dir = Some(std::path::PathBuf::from(d));
     } else {
-        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../spectra/slang");
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../spectra/slang");
         if p.is_dir() {
             config.slang_kernel_dir = Some(p);
         }
@@ -102,12 +97,26 @@ fn cine_export_deterministic() {
     };
     let eye = [3.0, 2.0, 6.0];
     let scene = test_scene_with_bright_point(eye);
-    let cam = test_cam_layer(eye, /*lens_radius*/ 5.0, /*focus*/ 8.0, /*bokeh*/ 6);
+    let cam = test_cam_layer(
+        eye, /*lens_radius*/ 5.0, /*focus*/ 8.0, /*bokeh*/ 6,
+    );
 
-    let a = vox_render::render_cine_frame(&mut backend, &scene, &cam, /*seed*/ 1234, /*spp*/ 64)
-        .expect("render a");
-    let b = vox_render::render_cine_frame(&mut backend, &scene, &cam, /*seed*/ 1234, /*spp*/ 64)
-        .expect("render b");
+    let a = vox_render::render_cine_frame(
+        &mut backend,
+        &scene,
+        &cam,
+        /*seed*/ 1234,
+        /*spp*/ 64,
+    )
+    .expect("render a");
+    let b = vox_render::render_cine_frame(
+        &mut backend,
+        &scene,
+        &cam,
+        /*seed*/ 1234,
+        /*spp*/ 64,
+    )
+    .expect("render b");
 
     assert_eq!(a.beauty.len(), (W * H * 4) as usize);
     let ha = sha256_hex(bytemuck::cast_slice(&a.beauty));

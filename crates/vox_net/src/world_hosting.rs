@@ -175,7 +175,10 @@ impl WorldHost {
 
     /// Get statistics for a world.
     pub fn world_stats(&self, world_id: Uuid) -> Result<WorldStats, WorldHostError> {
-        let world = self.worlds.get(&world_id).ok_or(WorldHostError::WorldNotFound)?;
+        let world = self
+            .worlds
+            .get(&world_id)
+            .ok_or(WorldHostError::WorldNotFound)?;
         let portal_count = self
             .portals
             .iter()

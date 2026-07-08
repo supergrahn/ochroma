@@ -863,5 +863,4 @@ mod tests {
             tol
         );
     }
-
 }

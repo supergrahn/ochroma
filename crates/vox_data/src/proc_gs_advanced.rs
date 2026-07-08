@@ -1,7 +1,7 @@
 use glam;
 use half::f16;
-use rand::prelude::*;
 use rand::SeedableRng;
+use rand::prelude::*;
 use vox_core::types::GaussianSplat;
 
 /// Growth algorithm for trees and organic structures.
@@ -61,7 +61,11 @@ pub fn generate_tree(seed: u64, height: f32, canopy_radius: f32) -> Vec<Gaussian
             let x = angle.cos() * radius + (rng.random::<f32>() - 0.5) * 0.02;
             let z = angle.sin() * radius + (rng.random::<f32>() - 0.5) * 0.02;
             splats.push(GaussianSplat::volume(
-                [x, y, z], [0.04, 0.06, 0.04], glam::Quat::IDENTITY, 240, trunk_spd,
+                [x, y, z],
+                [0.04, 0.06, 0.04],
+                glam::Quat::IDENTITY,
+                240,
+                trunk_spd,
             ));
         }
     }
@@ -70,8 +74,8 @@ pub fn generate_tree(seed: u64, height: f32, canopy_radius: f32) -> Vec<Gaussian
     let num_branches = 3 + rng.random_range(0..4u32);
     for b in 0..num_branches {
         let branch_height = height * (0.4 + rng.random::<f32>() * 0.4);
-        let branch_angle = (b as f32 / num_branches as f32) * std::f32::consts::TAU
-            + rng.random::<f32>() * 0.5;
+        let branch_angle =
+            (b as f32 / num_branches as f32) * std::f32::consts::TAU + rng.random::<f32>() * 0.5;
         let branch_length = canopy_radius * (0.3 + rng.random::<f32>() * 0.5);
 
         let segments = (branch_length * 8.0) as usize;
@@ -83,7 +87,9 @@ pub fn generate_tree(seed: u64, height: f32, canopy_radius: f32) -> Vec<Gaussian
             splats.push(GaussianSplat::volume(
                 [x, y, z],
                 [0.03 * (1.0 - t * 0.7), 0.03, 0.03 * (1.0 - t * 0.7)],
-                glam::Quat::IDENTITY, 230, trunk_spd,
+                glam::Quat::IDENTITY,
+                230,
+                trunk_spd,
             ));
         }
     }
@@ -103,8 +109,11 @@ pub fn generate_tree(seed: u64, height: f32, canopy_radius: f32) -> Vec<Gaussian
         let lsx = 0.08 + rng.random::<f32>() * 0.06;
         let lsz = 0.08 + rng.random::<f32>() * 0.06;
         splats.push(GaussianSplat::surface(
-            [x, y, z], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0],
-            lsx, lsz,
+            [x, y, z],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            lsx,
+            lsz,
             (180.0 + rng.random::<f32>() * 60.0) as u8,
             leaf_spd,
         ));
@@ -147,7 +156,13 @@ pub fn generate_bench(seed: u64) -> Vec<GaussianSplat> {
         for iy in 0..10 {
             let y = iy as f32 / 10.0 * height;
             splats.push(GaussianSplat::surface(
-                [x, y, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.02, 0.015, 250, iron_spd,
+                [x, y, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                0.02,
+                0.015,
+                250,
+                iron_spd,
             ));
         }
     }
@@ -158,7 +173,13 @@ pub fn generate_bench(seed: u64) -> Vec<GaussianSplat> {
         for ix in 0..20 {
             let x = (ix as f32 / 20.0 - 0.5) * length;
             splats.push(GaussianSplat::surface(
-                [x, height, z], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.05, 0.035, 240, wood_spd,
+                [x, height, z],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                0.05,
+                0.035,
+                240,
+                wood_spd,
             ));
         }
     }
@@ -169,7 +190,13 @@ pub fn generate_bench(seed: u64) -> Vec<GaussianSplat> {
         for ix in 0..20 {
             let x = (ix as f32 / 20.0 - 0.5) * length;
             splats.push(GaussianSplat::surface(
-                [x, y, -0.15], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.05, 0.01, 240, wood_spd,
+                [x, y, -0.15],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                0.05,
+                0.01,
+                240,
+                wood_spd,
             ));
         }
     }
@@ -227,236 +254,236 @@ fn style_spds(style: &str) -> ([u16; 16], [u16; 16], [u16; 16], [u16; 16]) {
         "victorian" => (
             // Red brick wall
             [
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.10).to_bits(),
-        f16::from_f32(0.14).to_bits(),
-        f16::from_f32(0.22).to_bits(),
-        f16::from_f32(0.52).to_bits(),
-        f16::from_f32(0.62).to_bits(),
-        f16::from_f32(0.55).to_bits(),
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.10).to_bits(),
-        f16::from_f32(0.14).to_bits(),
-        f16::from_f32(0.22).to_bits(),
-        f16::from_f32(0.52).to_bits(),
-        f16::from_f32(0.62).to_bits(),
-        f16::from_f32(0.55).to_bits(),
-    ],
+                f16::from_f32(0.08).to_bits(),
+                f16::from_f32(0.08).to_bits(),
+                f16::from_f32(0.10).to_bits(),
+                f16::from_f32(0.14).to_bits(),
+                f16::from_f32(0.22).to_bits(),
+                f16::from_f32(0.52).to_bits(),
+                f16::from_f32(0.62).to_bits(),
+                f16::from_f32(0.55).to_bits(),
+                f16::from_f32(0.08).to_bits(),
+                f16::from_f32(0.08).to_bits(),
+                f16::from_f32(0.10).to_bits(),
+                f16::from_f32(0.14).to_bits(),
+                f16::from_f32(0.22).to_bits(),
+                f16::from_f32(0.52).to_bits(),
+                f16::from_f32(0.62).to_bits(),
+                f16::from_f32(0.55).to_bits(),
+            ],
             // Clear glass window (high transmittance across visible spectrum)
             [
-        f16::from_f32(0.55).to_bits(),
-        f16::from_f32(0.60).to_bits(),
-        f16::from_f32(0.65).to_bits(),
-        f16::from_f32(0.70).to_bits(),
-        f16::from_f32(0.72).to_bits(),
-        f16::from_f32(0.70).to_bits(),
-        f16::from_f32(0.65).to_bits(),
-        f16::from_f32(0.58).to_bits(),
-        f16::from_f32(0.55).to_bits(),
-        f16::from_f32(0.60).to_bits(),
-        f16::from_f32(0.65).to_bits(),
-        f16::from_f32(0.70).to_bits(),
-        f16::from_f32(0.72).to_bits(),
-        f16::from_f32(0.70).to_bits(),
-        f16::from_f32(0.65).to_bits(),
-        f16::from_f32(0.58).to_bits(),
-    ],
+                f16::from_f32(0.55).to_bits(),
+                f16::from_f32(0.60).to_bits(),
+                f16::from_f32(0.65).to_bits(),
+                f16::from_f32(0.70).to_bits(),
+                f16::from_f32(0.72).to_bits(),
+                f16::from_f32(0.70).to_bits(),
+                f16::from_f32(0.65).to_bits(),
+                f16::from_f32(0.58).to_bits(),
+                f16::from_f32(0.55).to_bits(),
+                f16::from_f32(0.60).to_bits(),
+                f16::from_f32(0.65).to_bits(),
+                f16::from_f32(0.70).to_bits(),
+                f16::from_f32(0.72).to_bits(),
+                f16::from_f32(0.70).to_bits(),
+                f16::from_f32(0.65).to_bits(),
+                f16::from_f32(0.58).to_bits(),
+            ],
             // Oak door (warm brown)
             [
-        f16::from_f32(0.06).to_bits(),
-        f16::from_f32(0.07).to_bits(),
-        f16::from_f32(0.10).to_bits(),
-        f16::from_f32(0.16).to_bits(),
-        f16::from_f32(0.24).to_bits(),
-        f16::from_f32(0.30).to_bits(),
-        f16::from_f32(0.28).to_bits(),
-        f16::from_f32(0.22).to_bits(),
-        f16::from_f32(0.06).to_bits(),
-        f16::from_f32(0.07).to_bits(),
-        f16::from_f32(0.10).to_bits(),
-        f16::from_f32(0.16).to_bits(),
-        f16::from_f32(0.24).to_bits(),
-        f16::from_f32(0.30).to_bits(),
-        f16::from_f32(0.28).to_bits(),
-        f16::from_f32(0.22).to_bits(),
-    ],
+                f16::from_f32(0.06).to_bits(),
+                f16::from_f32(0.07).to_bits(),
+                f16::from_f32(0.10).to_bits(),
+                f16::from_f32(0.16).to_bits(),
+                f16::from_f32(0.24).to_bits(),
+                f16::from_f32(0.30).to_bits(),
+                f16::from_f32(0.28).to_bits(),
+                f16::from_f32(0.22).to_bits(),
+                f16::from_f32(0.06).to_bits(),
+                f16::from_f32(0.07).to_bits(),
+                f16::from_f32(0.10).to_bits(),
+                f16::from_f32(0.16).to_bits(),
+                f16::from_f32(0.24).to_bits(),
+                f16::from_f32(0.30).to_bits(),
+                f16::from_f32(0.28).to_bits(),
+                f16::from_f32(0.22).to_bits(),
+            ],
             // Slate roof (dark grey)
             [
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.09).to_bits(),
-        f16::from_f32(0.10).to_bits(),
-        f16::from_f32(0.11).to_bits(),
-        f16::from_f32(0.12).to_bits(),
-        f16::from_f32(0.12).to_bits(),
-        f16::from_f32(0.11).to_bits(),
-        f16::from_f32(0.10).to_bits(),
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.09).to_bits(),
-        f16::from_f32(0.10).to_bits(),
-        f16::from_f32(0.11).to_bits(),
-        f16::from_f32(0.12).to_bits(),
-        f16::from_f32(0.12).to_bits(),
-        f16::from_f32(0.11).to_bits(),
-        f16::from_f32(0.10).to_bits(),
-    ],
+                f16::from_f32(0.08).to_bits(),
+                f16::from_f32(0.09).to_bits(),
+                f16::from_f32(0.10).to_bits(),
+                f16::from_f32(0.11).to_bits(),
+                f16::from_f32(0.12).to_bits(),
+                f16::from_f32(0.12).to_bits(),
+                f16::from_f32(0.11).to_bits(),
+                f16::from_f32(0.10).to_bits(),
+                f16::from_f32(0.08).to_bits(),
+                f16::from_f32(0.09).to_bits(),
+                f16::from_f32(0.10).to_bits(),
+                f16::from_f32(0.11).to_bits(),
+                f16::from_f32(0.12).to_bits(),
+                f16::from_f32(0.12).to_bits(),
+                f16::from_f32(0.11).to_bits(),
+                f16::from_f32(0.10).to_bits(),
+            ],
         ),
         "modern" => (
             // Concrete wall (neutral grey)
             [
-        f16::from_f32(0.25).to_bits(),
-        f16::from_f32(0.26).to_bits(),
-        f16::from_f32(0.27).to_bits(),
-        f16::from_f32(0.28).to_bits(),
-        f16::from_f32(0.28).to_bits(),
-        f16::from_f32(0.27).to_bits(),
-        f16::from_f32(0.26).to_bits(),
-        f16::from_f32(0.25).to_bits(),
-        f16::from_f32(0.25).to_bits(),
-        f16::from_f32(0.26).to_bits(),
-        f16::from_f32(0.27).to_bits(),
-        f16::from_f32(0.28).to_bits(),
-        f16::from_f32(0.28).to_bits(),
-        f16::from_f32(0.27).to_bits(),
-        f16::from_f32(0.26).to_bits(),
-        f16::from_f32(0.25).to_bits(),
-    ],
+                f16::from_f32(0.25).to_bits(),
+                f16::from_f32(0.26).to_bits(),
+                f16::from_f32(0.27).to_bits(),
+                f16::from_f32(0.28).to_bits(),
+                f16::from_f32(0.28).to_bits(),
+                f16::from_f32(0.27).to_bits(),
+                f16::from_f32(0.26).to_bits(),
+                f16::from_f32(0.25).to_bits(),
+                f16::from_f32(0.25).to_bits(),
+                f16::from_f32(0.26).to_bits(),
+                f16::from_f32(0.27).to_bits(),
+                f16::from_f32(0.28).to_bits(),
+                f16::from_f32(0.28).to_bits(),
+                f16::from_f32(0.27).to_bits(),
+                f16::from_f32(0.26).to_bits(),
+                f16::from_f32(0.25).to_bits(),
+            ],
             // Tinted glass (blue-green tint)
             [
-        f16::from_f32(0.15).to_bits(),
-        f16::from_f32(0.20).to_bits(),
-        f16::from_f32(0.35).to_bits(),
-        f16::from_f32(0.45).to_bits(),
-        f16::from_f32(0.50).to_bits(),
-        f16::from_f32(0.40).to_bits(),
-        f16::from_f32(0.25).to_bits(),
-        f16::from_f32(0.15).to_bits(),
-        f16::from_f32(0.15).to_bits(),
-        f16::from_f32(0.20).to_bits(),
-        f16::from_f32(0.35).to_bits(),
-        f16::from_f32(0.45).to_bits(),
-        f16::from_f32(0.50).to_bits(),
-        f16::from_f32(0.40).to_bits(),
-        f16::from_f32(0.25).to_bits(),
-        f16::from_f32(0.15).to_bits(),
-    ],
+                f16::from_f32(0.15).to_bits(),
+                f16::from_f32(0.20).to_bits(),
+                f16::from_f32(0.35).to_bits(),
+                f16::from_f32(0.45).to_bits(),
+                f16::from_f32(0.50).to_bits(),
+                f16::from_f32(0.40).to_bits(),
+                f16::from_f32(0.25).to_bits(),
+                f16::from_f32(0.15).to_bits(),
+                f16::from_f32(0.15).to_bits(),
+                f16::from_f32(0.20).to_bits(),
+                f16::from_f32(0.35).to_bits(),
+                f16::from_f32(0.45).to_bits(),
+                f16::from_f32(0.50).to_bits(),
+                f16::from_f32(0.40).to_bits(),
+                f16::from_f32(0.25).to_bits(),
+                f16::from_f32(0.15).to_bits(),
+            ],
             // Metal door (dark metallic)
             [
-        f16::from_f32(0.12).to_bits(),
-        f16::from_f32(0.13).to_bits(),
-        f16::from_f32(0.14).to_bits(),
-        f16::from_f32(0.15).to_bits(),
-        f16::from_f32(0.16).to_bits(),
-        f16::from_f32(0.16).to_bits(),
-        f16::from_f32(0.15).to_bits(),
-        f16::from_f32(0.14).to_bits(),
-        f16::from_f32(0.12).to_bits(),
-        f16::from_f32(0.13).to_bits(),
-        f16::from_f32(0.14).to_bits(),
-        f16::from_f32(0.15).to_bits(),
-        f16::from_f32(0.16).to_bits(),
-        f16::from_f32(0.16).to_bits(),
-        f16::from_f32(0.15).to_bits(),
-        f16::from_f32(0.14).to_bits(),
-    ],
+                f16::from_f32(0.12).to_bits(),
+                f16::from_f32(0.13).to_bits(),
+                f16::from_f32(0.14).to_bits(),
+                f16::from_f32(0.15).to_bits(),
+                f16::from_f32(0.16).to_bits(),
+                f16::from_f32(0.16).to_bits(),
+                f16::from_f32(0.15).to_bits(),
+                f16::from_f32(0.14).to_bits(),
+                f16::from_f32(0.12).to_bits(),
+                f16::from_f32(0.13).to_bits(),
+                f16::from_f32(0.14).to_bits(),
+                f16::from_f32(0.15).to_bits(),
+                f16::from_f32(0.16).to_bits(),
+                f16::from_f32(0.16).to_bits(),
+                f16::from_f32(0.15).to_bits(),
+                f16::from_f32(0.14).to_bits(),
+            ],
             // Flat dark roof
             [
-        f16::from_f32(0.05).to_bits(),
-        f16::from_f32(0.06).to_bits(),
-        f16::from_f32(0.06).to_bits(),
-        f16::from_f32(0.07).to_bits(),
-        f16::from_f32(0.07).to_bits(),
-        f16::from_f32(0.07).to_bits(),
-        f16::from_f32(0.06).to_bits(),
-        f16::from_f32(0.06).to_bits(),
-        f16::from_f32(0.05).to_bits(),
-        f16::from_f32(0.06).to_bits(),
-        f16::from_f32(0.06).to_bits(),
-        f16::from_f32(0.07).to_bits(),
-        f16::from_f32(0.07).to_bits(),
-        f16::from_f32(0.07).to_bits(),
-        f16::from_f32(0.06).to_bits(),
-        f16::from_f32(0.06).to_bits(),
-    ],
+                f16::from_f32(0.05).to_bits(),
+                f16::from_f32(0.06).to_bits(),
+                f16::from_f32(0.06).to_bits(),
+                f16::from_f32(0.07).to_bits(),
+                f16::from_f32(0.07).to_bits(),
+                f16::from_f32(0.07).to_bits(),
+                f16::from_f32(0.06).to_bits(),
+                f16::from_f32(0.06).to_bits(),
+                f16::from_f32(0.05).to_bits(),
+                f16::from_f32(0.06).to_bits(),
+                f16::from_f32(0.06).to_bits(),
+                f16::from_f32(0.07).to_bits(),
+                f16::from_f32(0.07).to_bits(),
+                f16::from_f32(0.07).to_bits(),
+                f16::from_f32(0.06).to_bits(),
+                f16::from_f32(0.06).to_bits(),
+            ],
         ),
         _ => (
             // Painted wood wall (off-white/cream)
             [
-        f16::from_f32(0.40).to_bits(),
-        f16::from_f32(0.42).to_bits(),
-        f16::from_f32(0.45).to_bits(),
-        f16::from_f32(0.50).to_bits(),
-        f16::from_f32(0.55).to_bits(),
-        f16::from_f32(0.58).to_bits(),
-        f16::from_f32(0.56).to_bits(),
-        f16::from_f32(0.50).to_bits(),
-        f16::from_f32(0.40).to_bits(),
-        f16::from_f32(0.42).to_bits(),
-        f16::from_f32(0.45).to_bits(),
-        f16::from_f32(0.50).to_bits(),
-        f16::from_f32(0.55).to_bits(),
-        f16::from_f32(0.58).to_bits(),
-        f16::from_f32(0.56).to_bits(),
-        f16::from_f32(0.50).to_bits(),
-    ],
+                f16::from_f32(0.40).to_bits(),
+                f16::from_f32(0.42).to_bits(),
+                f16::from_f32(0.45).to_bits(),
+                f16::from_f32(0.50).to_bits(),
+                f16::from_f32(0.55).to_bits(),
+                f16::from_f32(0.58).to_bits(),
+                f16::from_f32(0.56).to_bits(),
+                f16::from_f32(0.50).to_bits(),
+                f16::from_f32(0.40).to_bits(),
+                f16::from_f32(0.42).to_bits(),
+                f16::from_f32(0.45).to_bits(),
+                f16::from_f32(0.50).to_bits(),
+                f16::from_f32(0.55).to_bits(),
+                f16::from_f32(0.58).to_bits(),
+                f16::from_f32(0.56).to_bits(),
+                f16::from_f32(0.50).to_bits(),
+            ],
             // Clear glass window
             [
-        f16::from_f32(0.50).to_bits(),
-        f16::from_f32(0.55).to_bits(),
-        f16::from_f32(0.60).to_bits(),
-        f16::from_f32(0.65).to_bits(),
-        f16::from_f32(0.68).to_bits(),
-        f16::from_f32(0.65).to_bits(),
-        f16::from_f32(0.60).to_bits(),
-        f16::from_f32(0.55).to_bits(),
-        f16::from_f32(0.50).to_bits(),
-        f16::from_f32(0.55).to_bits(),
-        f16::from_f32(0.60).to_bits(),
-        f16::from_f32(0.65).to_bits(),
-        f16::from_f32(0.68).to_bits(),
-        f16::from_f32(0.65).to_bits(),
-        f16::from_f32(0.60).to_bits(),
-        f16::from_f32(0.55).to_bits(),
-    ],
+                f16::from_f32(0.50).to_bits(),
+                f16::from_f32(0.55).to_bits(),
+                f16::from_f32(0.60).to_bits(),
+                f16::from_f32(0.65).to_bits(),
+                f16::from_f32(0.68).to_bits(),
+                f16::from_f32(0.65).to_bits(),
+                f16::from_f32(0.60).to_bits(),
+                f16::from_f32(0.55).to_bits(),
+                f16::from_f32(0.50).to_bits(),
+                f16::from_f32(0.55).to_bits(),
+                f16::from_f32(0.60).to_bits(),
+                f16::from_f32(0.65).to_bits(),
+                f16::from_f32(0.68).to_bits(),
+                f16::from_f32(0.65).to_bits(),
+                f16::from_f32(0.60).to_bits(),
+                f16::from_f32(0.55).to_bits(),
+            ],
             // Wood door (warm brown)
             [
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.09).to_bits(),
-        f16::from_f32(0.12).to_bits(),
-        f16::from_f32(0.18).to_bits(),
-        f16::from_f32(0.26).to_bits(),
-        f16::from_f32(0.32).to_bits(),
-        f16::from_f32(0.30).to_bits(),
-        f16::from_f32(0.24).to_bits(),
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.09).to_bits(),
-        f16::from_f32(0.12).to_bits(),
-        f16::from_f32(0.18).to_bits(),
-        f16::from_f32(0.26).to_bits(),
-        f16::from_f32(0.32).to_bits(),
-        f16::from_f32(0.30).to_bits(),
-        f16::from_f32(0.24).to_bits(),
-    ],
+                f16::from_f32(0.08).to_bits(),
+                f16::from_f32(0.09).to_bits(),
+                f16::from_f32(0.12).to_bits(),
+                f16::from_f32(0.18).to_bits(),
+                f16::from_f32(0.26).to_bits(),
+                f16::from_f32(0.32).to_bits(),
+                f16::from_f32(0.30).to_bits(),
+                f16::from_f32(0.24).to_bits(),
+                f16::from_f32(0.08).to_bits(),
+                f16::from_f32(0.09).to_bits(),
+                f16::from_f32(0.12).to_bits(),
+                f16::from_f32(0.18).to_bits(),
+                f16::from_f32(0.26).to_bits(),
+                f16::from_f32(0.32).to_bits(),
+                f16::from_f32(0.30).to_bits(),
+                f16::from_f32(0.24).to_bits(),
+            ],
             // Terracotta roof (warm orange-brown)
             [
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.09).to_bits(),
-        f16::from_f32(0.12).to_bits(),
-        f16::from_f32(0.18).to_bits(),
-        f16::from_f32(0.28).to_bits(),
-        f16::from_f32(0.42).to_bits(),
-        f16::from_f32(0.48).to_bits(),
-        f16::from_f32(0.40).to_bits(),
-        f16::from_f32(0.08).to_bits(),
-        f16::from_f32(0.09).to_bits(),
-        f16::from_f32(0.12).to_bits(),
-        f16::from_f32(0.18).to_bits(),
-        f16::from_f32(0.28).to_bits(),
-        f16::from_f32(0.42).to_bits(),
-        f16::from_f32(0.48).to_bits(),
-        f16::from_f32(0.40).to_bits(),
-    ],
+                f16::from_f32(0.08).to_bits(),
+                f16::from_f32(0.09).to_bits(),
+                f16::from_f32(0.12).to_bits(),
+                f16::from_f32(0.18).to_bits(),
+                f16::from_f32(0.28).to_bits(),
+                f16::from_f32(0.42).to_bits(),
+                f16::from_f32(0.48).to_bits(),
+                f16::from_f32(0.40).to_bits(),
+                f16::from_f32(0.08).to_bits(),
+                f16::from_f32(0.09).to_bits(),
+                f16::from_f32(0.12).to_bits(),
+                f16::from_f32(0.18).to_bits(),
+                f16::from_f32(0.28).to_bits(),
+                f16::from_f32(0.42).to_bits(),
+                f16::from_f32(0.48).to_bits(),
+                f16::from_f32(0.40).to_bits(),
+            ],
         ),
     }
 }
@@ -515,7 +542,13 @@ fn scatter_wall_surface(
         let z = min[2];
 
         splats.push(GaussianSplat::surface(
-            [x, y, z], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.05, 0.05, 240, spd,
+            [x, y, z],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            0.05,
+            0.05,
+            240,
+            spd,
         ));
     }
 }
@@ -541,7 +574,13 @@ fn scatter_wall_surface_xz(
         let y = min[1] + rng.random::<f32>() * (max[1] - min[1]);
 
         splats.push(GaussianSplat::surface(
-            [x, y, z], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0], 0.05, 0.05, 240, spd,
+            [x, y, z],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+            0.05,
+            0.05,
+            240,
+            spd,
         ));
     }
 }
@@ -560,14 +599,22 @@ fn place_window(
 
     for iy in 0..rows {
         for ix in 0..cols {
-            let x = center[0] - w * 0.5 + (ix as f32 + 0.5) * w / cols as f32
+            let x = center[0] - w * 0.5
+                + (ix as f32 + 0.5) * w / cols as f32
                 + (rng.random::<f32>() - 0.5) * 0.02;
-            let y = center[1] + (iy as f32 + 0.5) * h / rows as f32
+            let y = center[1]
+                + (iy as f32 + 0.5) * h / rows as f32
                 + (rng.random::<f32>() - 0.5) * 0.02;
             let z = center[2];
 
             splats.push(GaussianSplat::surface(
-                [x, y, z], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.06, 0.06, 200, spd,
+                [x, y, z],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                0.06,
+                0.06,
+                200,
+                spd,
             ));
         }
     }
@@ -587,13 +634,20 @@ fn place_door(
 
     for iy in 0..rows {
         for ix in 0..cols {
-            let x = center[0] - w * 0.5 + (ix as f32 + 0.5) * w / cols as f32
+            let x = center[0] - w * 0.5
+                + (ix as f32 + 0.5) * w / cols as f32
                 + (rng.random::<f32>() - 0.5) * 0.01;
             let y = center[1] + (iy as f32 + 0.5) * h / rows as f32;
             let z = center[2];
 
             splats.push(GaussianSplat::surface(
-                [x, y, z], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.05, 0.05, 250, spd,
+                [x, y, z],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                0.05,
+                0.05,
+                250,
+                spd,
             ));
         }
     }
@@ -620,7 +674,13 @@ fn scatter_roof(
         let y = min[1] + pitch_offset + (rng.random::<f32>() - 0.5) * 0.02;
 
         splats.push(GaussianSplat::surface(
-            [x, y, z], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.06, 0.06, 245, spd,
+            [x, y, z],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            0.06,
+            0.06,
+            245,
+            spd,
         ));
     }
 }
@@ -647,30 +707,46 @@ pub fn generate_detailed_building(
 
     // Front wall (+Z face)
     scatter_wall_surface(
-        &mut splats, &mut rng,
-        [0.0, 0.0, 0.0], [width, total_height, 0.0],
-        wall_spd, 200.0, [0.0, 0.0, 1.0],
+        &mut splats,
+        &mut rng,
+        [0.0, 0.0, 0.0],
+        [width, total_height, 0.0],
+        wall_spd,
+        200.0,
+        [0.0, 0.0, 1.0],
     );
 
     // Back wall (-Z face)
     scatter_wall_surface(
-        &mut splats, &mut rng,
-        [0.0, 0.0, -depth], [width, total_height, -depth],
-        wall_spd, 200.0, [0.0, 0.0, -1.0],
+        &mut splats,
+        &mut rng,
+        [0.0, 0.0, -depth],
+        [width, total_height, -depth],
+        wall_spd,
+        200.0,
+        [0.0, 0.0, -1.0],
     );
 
     // Left wall (-X face)
     scatter_wall_surface_xz(
-        &mut splats, &mut rng,
-        [0.0, 0.0, -depth], [0.0, total_height, 0.0],
-        wall_spd, 200.0, [-1.0, 0.0, 0.0],
+        &mut splats,
+        &mut rng,
+        [0.0, 0.0, -depth],
+        [0.0, total_height, 0.0],
+        wall_spd,
+        200.0,
+        [-1.0, 0.0, 0.0],
     );
 
     // Right wall (+X face)
     scatter_wall_surface_xz(
-        &mut splats, &mut rng,
-        [width, 0.0, -depth], [width, total_height, 0.0],
-        wall_spd, 200.0, [1.0, 0.0, 0.0],
+        &mut splats,
+        &mut rng,
+        [width, 0.0, -depth],
+        [width, total_height, 0.0],
+        wall_spd,
+        200.0,
+        [1.0, 0.0, 0.0],
     );
 
     // === WINDOWS: Rectangular clusters at regular positions ===
@@ -691,18 +767,22 @@ pub fn generate_detailed_building(
 
             // Front windows
             place_window(
-                &mut splats, &mut rng,
+                &mut splats,
+                &mut rng,
                 [cx, base_y, 0.01],
-                window_width, window_height,
+                window_width,
+                window_height,
                 window_spd,
             );
 
             // Back windows (some floors, randomly)
             if rng.random::<f32>() > 0.3 {
                 place_window(
-                    &mut splats, &mut rng,
+                    &mut splats,
+                    &mut rng,
                     [cx, base_y, -depth - 0.01],
-                    window_width, window_height,
+                    window_width,
+                    window_height,
                     window_spd,
                 );
             }
@@ -714,18 +794,22 @@ pub fn generate_detailed_building(
     let door_width = 1.0;
     let door_height = 2.2;
     place_door(
-        &mut splats, &mut rng,
+        &mut splats,
+        &mut rng,
         [door_cx, 0.0, 0.02],
-        door_width, door_height,
+        door_width,
+        door_height,
         door_spd,
     );
 
     // === ROOF: Flat with slight pitch ===
     scatter_roof(
-        &mut splats, &mut rng,
+        &mut splats,
+        &mut rng,
         [0.0, total_height, -depth],
         [width, total_height + 0.3, 0.0],
-        roof_spd, 150.0,
+        roof_spd,
+        150.0,
     );
 
     splats
@@ -743,7 +827,11 @@ pub fn generate_lamp_post(_seed: u64, height: f32) -> Vec<GaussianSplat> {
     for i in 0..pole_segments {
         let y = i as f32 / pole_segments as f32 * height;
         splats.push(GaussianSplat::volume(
-            [0.0, y, 0.0], [0.03, 0.08, 0.03], glam::Quat::IDENTITY, 250, iron_spd,
+            [0.0, y, 0.0],
+            [0.03, 0.08, 0.03],
+            glam::Quat::IDENTITY,
+            250,
+            iron_spd,
         ));
     }
 
@@ -752,7 +840,12 @@ pub fn generate_lamp_post(_seed: u64, height: f32) -> Vec<GaussianSplat> {
         for dz in -2..=2 {
             splats.push(GaussianSplat::surface(
                 [dx as f32 * 0.04, height, dz as f32 * 0.04],
-                [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.05, 0.05, 240, glass_spd,
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                0.05,
+                0.05,
+                240,
+                glass_spd,
             ));
         }
     }

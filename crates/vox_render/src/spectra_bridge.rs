@@ -316,9 +316,11 @@ mod tests {
             QualityPreset::Ultra.backend(),
             RenderBackend::SpectraRealtime
         );
-        assert!(QualityPreset::Ultra
-            .backend()
-            .requires_gpu_resident_output());
+        assert!(
+            QualityPreset::Ultra
+                .backend()
+                .requires_gpu_resident_output()
+        );
         assert_eq!(
             QualityPreset::Cinematic.backend(),
             RenderBackend::SpectraPathTracer

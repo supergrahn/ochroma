@@ -15,7 +15,11 @@ fn bilinear_interpolation() {
     data[3] = 10.0; // (1,1)
     let hm = Heightmap::from_data(2, 2, data, 1.0);
     let mid = hm.sample(0.5, 0.5);
-    assert!((mid - 5.0).abs() < 0.1, "Midpoint should be ~5.0, got {}", mid);
+    assert!(
+        (mid - 5.0).abs() < 0.1,
+        "Midpoint should be ~5.0, got {}",
+        mid
+    );
 }
 
 #[test]

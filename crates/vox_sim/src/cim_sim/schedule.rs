@@ -23,10 +23,10 @@
 //! `ArriveWork@T` is enqueued externally via `CimSim::schedule` (pathfinding plan
 //! Task 6); this module never schedules a cohort `ArriveWork`.
 
+use crate::cim_sim::TICKS_PER_DAY;
 use crate::cim_sim::hash;
 use crate::cim_sim::queue::{EventRef, WakeQueue};
 use crate::sim_types::EventKind;
-use crate::cim_sim::TICKS_PER_DAY;
 
 /// Wake at 7h (42 ticks) plus the jittered minutes.
 pub const OFF_WAKE: u64 = 42;
@@ -65,7 +65,11 @@ pub fn seed_day(q: &mut WakeQueue, id: u32, day: u64) {
     let j = day_jitter(id, day);
     let base = day * TICKS_PER_DAY;
     let push = |q: &mut WakeQueue, off: u64, kind: EventKind| {
-        q.push(EventRef { wake_tick: base + off + j, id, kind: kind as u8 });
+        q.push(EventRef {
+            wake_tick: base + off + j,
+            id,
+            kind: kind as u8,
+        });
     };
     push(q, OFF_WAKE, EventKind::Wake);
     push(q, OFF_DROP_OFF, EventKind::DropOff);
@@ -91,8 +95,16 @@ pub fn seed_day(q: &mut WakeQueue, id: u32, day: u64) {
 pub fn seed_day_gated(q: &mut WakeQueue, id: u32, day: u64) {
     let j = day_jitter(id, day);
     let base = day * TICKS_PER_DAY;
-    q.push(EventRef { wake_tick: base + OFF_WAKE + j, id, kind: EventKind::Wake as u8 });
-    q.push(EventRef { wake_tick: base + OFF_DROP_OFF + j, id, kind: EventKind::DropOff as u8 });
+    q.push(EventRef {
+        wake_tick: base + OFF_WAKE + j,
+        id,
+        kind: EventKind::Wake as u8,
+    });
+    q.push(EventRef {
+        wake_tick: base + OFF_DROP_OFF + j,
+        id,
+        kind: EventKind::DropOff as u8,
+    });
 }
 
 /// Push the post-drop-off remainder of the chain
@@ -103,10 +115,26 @@ pub fn seed_day_gated(q: &mut WakeQueue, id: u32, day: u64) {
 pub fn push_after_drop_off(q: &mut WakeQueue, id: u32, day: u64) {
     let j = day_jitter(id, day);
     let base = day * TICKS_PER_DAY;
-    q.push(EventRef { wake_tick: base + OFF_ARRIVE_WORK + j, id, kind: EventKind::ArriveWork as u8 });
-    q.push(EventRef { wake_tick: base + OFF_LEAVE_WORK + j, id, kind: EventKind::LeaveWork as u8 });
-    q.push(EventRef { wake_tick: base + OFF_SLEEP + j, id, kind: EventKind::Sleep as u8 });
-    q.push(EventRef { wake_tick: (day + 1) * TICKS_PER_DAY, id, kind: EventKind::DayRoll as u8 });
+    q.push(EventRef {
+        wake_tick: base + OFF_ARRIVE_WORK + j,
+        id,
+        kind: EventKind::ArriveWork as u8,
+    });
+    q.push(EventRef {
+        wake_tick: base + OFF_LEAVE_WORK + j,
+        id,
+        kind: EventKind::LeaveWork as u8,
+    });
+    q.push(EventRef {
+        wake_tick: base + OFF_SLEEP + j,
+        id,
+        kind: EventKind::Sleep as u8,
+    });
+    q.push(EventRef {
+        wake_tick: (day + 1) * TICKS_PER_DAY,
+        id,
+        kind: EventKind::DayRoll as u8,
+    });
 }
 
 /// Reschedule a cim's chain for the day that contains `now`. Called by the

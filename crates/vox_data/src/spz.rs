@@ -67,7 +67,10 @@ pub enum SpzError {
     Io(std::io::Error),
     BadMagic(u32),
     UnsupportedVersion(u32),
-    Truncated { expected: usize, got: usize },
+    Truncated {
+        expected: usize,
+        got: usize,
+    },
     /// A header field holds a value no conforming encoder produces
     /// (e.g. `fractionalBits` ≥ 25, or attribute sizes that overflow).
     Malformed(String),
@@ -85,10 +88,16 @@ impl std::fmt::Display for SpzError {
             Self::Io(e) => write!(f, "io error: {e}"),
             Self::BadMagic(m) => write!(f, "bad SPZ magic: {m:#010x} (expected {SPZ_MAGIC:#010x})"),
             Self::UnsupportedVersion(v) => {
-                write!(f, "unsupported SPZ version: {v} (this reader supports legacy v2 gzip)")
+                write!(
+                    f,
+                    "unsupported SPZ version: {v} (this reader supports legacy v2 gzip)"
+                )
             }
             Self::Truncated { expected, got } => {
-                write!(f, "truncated SPZ payload: expected {expected} bytes, got {got}")
+                write!(
+                    f,
+                    "truncated SPZ payload: expected {expected} bytes, got {got}"
+                )
             }
             Self::Malformed(why) => write!(f, "malformed SPZ header: {why}"),
         }
@@ -134,7 +143,10 @@ pub fn load_spz_from_reader(reader: impl Read) -> Result<Vec<GaussianSplat>, Spz
 /// Decode an already-decompressed SPZ payload (header + attribute arrays).
 fn decode_payload(payload: &[u8]) -> Result<Vec<GaussianSplat>, SpzError> {
     if payload.len() < 16 {
-        return Err(SpzError::Truncated { expected: 16, got: payload.len() });
+        return Err(SpzError::Truncated {
+            expected: 16,
+            got: payload.len(),
+        });
     }
     let magic = u32::from_le_bytes(payload[0..4].try_into().unwrap());
     if magic != SPZ_MAGIC {
@@ -175,10 +187,15 @@ fn decode_payload(payload: &[u8]) -> Result<Vec<GaussianSplat>, SpzError> {
         .checked_mul(per_point)
         .and_then(|b| b.checked_add(16))
         .ok_or_else(|| {
-            SpzError::Malformed(format!("attribute sizes overflow for numPoints = {num_points}"))
+            SpzError::Malformed(format!(
+                "attribute sizes overflow for numPoints = {num_points}"
+            ))
         })?;
     if payload.len() < expected {
-        return Err(SpzError::Truncated { expected, got: payload.len() });
+        return Err(SpzError::Truncated {
+            expected,
+            got: payload.len(),
+        });
     }
     let pos_bytes = num_points * 9;
     let alpha_bytes = num_points;
@@ -300,7 +317,9 @@ fn encode_payload(splats: &[GaussianSplat]) -> Vec<u8> {
             // invert load's display-RGB decode to recover the SH DC coefficient,
             // then apply SPZ color quantization.
             let dc = (c - 0.5) / SH_C0;
-            let q = (dc * COLOR_SCALE * 255.0 + 0.5 * 255.0).round().clamp(0.0, 255.0);
+            let q = (dc * COLOR_SCALE * 255.0 + 0.5 * 255.0)
+                .round()
+                .clamp(0.0, 255.0);
             colors.push(q as u8);
         }
 
@@ -392,12 +411,22 @@ mod tests {
         // Default 12 fractional bits → step = 1/4096; max error half a step.
         let step = position_quant_step(DEFAULT_FRACTIONAL_BITS);
         let tol = step / 2.0 + 1e-7; // +epsilon for the round() boundary
-        assert!((step - 1.0 / 4096.0).abs() < 1e-9, "step should be 1/4096, got {step}");
+        assert!(
+            (step - 1.0 / 4096.0).abs() < 1e-9,
+            "step should be 1/4096, got {step}"
+        );
 
         let original = vec![
             splat_rgb([1.0, 2.0, 3.0], [0.1, 0.2, 0.3], 0.9, 0.1, 0.1, 230),
             splat_rgb([-4.5, 0.0, 7.25], [0.5, 0.5, 0.5], 0.2, 0.8, 0.3, 128),
-            splat_rgb([10.123, -3.777, -2.001], [0.05, 0.07, 0.09], 0.1, 0.1, 0.9, 64),
+            splat_rgb(
+                [10.123, -3.777, -2.001],
+                [0.05, 0.07, 0.09],
+                0.1,
+                0.1,
+                0.9,
+                64,
+            ),
         ];
 
         let bytes = write_spz_to_bytes(&original).expect("write");
@@ -428,7 +457,11 @@ mod tests {
         let bytes = write_spz_to_bytes(&original).expect("write");
         let loaded = load_spz_from_reader(&bytes[..]).expect("load");
         for (o, l) in original.iter().zip(loaded.iter()) {
-            assert_eq!(o.opacity(), l.opacity(), "opacity u8 must round-trip exactly");
+            assert_eq!(
+                o.opacity(),
+                l.opacity(),
+                "opacity u8 must round-trip exactly"
+            );
         }
     }
 
@@ -476,9 +509,24 @@ mod tests {
             (seed >> 8) as f32 / (1u32 << 24) as f32
         };
         for _ in 0..400 {
-            let p = [next() * 20.0 - 10.0, next() * 20.0 - 10.0, next() * 20.0 - 10.0];
-            let s = [0.02 + next() * 0.2, 0.02 + next() * 0.2, 0.02 + next() * 0.2];
-            splats.push(splat_rgb(p, s, next(), next(), next(), (next() * 255.0) as u8));
+            let p = [
+                next() * 20.0 - 10.0,
+                next() * 20.0 - 10.0,
+                next() * 20.0 - 10.0,
+            ];
+            let s = [
+                0.02 + next() * 0.2,
+                0.02 + next() * 0.2,
+                0.02 + next() * 0.2,
+            ];
+            splats.push(splat_rgb(
+                p,
+                s,
+                next(),
+                next(),
+                next(),
+                (next() * 255.0) as u8,
+            ));
         }
 
         let ply = write_ply_to_bytes(&splats);
@@ -505,8 +553,7 @@ mod tests {
         // Valid gzip stream, but payload has a bogus magic.
         let mut bad_payload = vec![0u8; 16];
         bad_payload[0..4].copy_from_slice(&0xdead_beefu32.to_le_bytes());
-        let mut enc =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(&bad_payload).unwrap();
         let gz = enc.finish().unwrap();
 
@@ -519,8 +566,7 @@ mod tests {
         let mut bad_ver = vec![0u8; 16];
         bad_ver[0..4].copy_from_slice(&SPZ_MAGIC.to_le_bytes());
         bad_ver[4..8].copy_from_slice(&99u32.to_le_bytes());
-        let mut enc2 =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut enc2 = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         enc2.write_all(&bad_ver).unwrap();
         let gz2 = enc2.finish().unwrap();
         match load_spz_from_reader(&gz2[..]) {
@@ -533,8 +579,7 @@ mod tests {
         trunc[0..4].copy_from_slice(&SPZ_MAGIC.to_le_bytes());
         trunc[4..8].copy_from_slice(&SPZ_VERSION_LEGACY.to_le_bytes());
         trunc[8..12].copy_from_slice(&5u32.to_le_bytes()); // claims 5 points
-        let mut enc3 =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut enc3 = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         enc3.write_all(&trunc).unwrap();
         let gz3 = enc3.finish().unwrap();
         match load_spz_from_reader(&gz3[..]) {
@@ -551,8 +596,7 @@ mod tests {
         hostile[8..12].copy_from_slice(&1u32.to_le_bytes()); // 1 point
         hostile[12] = 0; // sh_degree
         hostile[13] = 255; // fractionalBits — hostile
-        let mut enc4 =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut enc4 = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         enc4.write_all(&hostile).unwrap();
         let gz4 = enc4.finish().unwrap();
         match load_spz_from_reader(&gz4[..]) {
@@ -570,12 +614,22 @@ mod tests {
     fn color_roundtrips_through_spectral_bottleneck() {
         // A saturated red splat should come back red-dominant after the
         // spectrum→RGB→SH-DC→spectrum round-trip.
-        let original = vec![splat_rgb([0.0, 0.0, 0.0], [0.1, 0.1, 0.1], 0.95, 0.05, 0.05, 220)];
+        let original = vec![splat_rgb(
+            [0.0, 0.0, 0.0],
+            [0.1, 0.1, 0.1],
+            0.95,
+            0.05,
+            0.05,
+            220,
+        )];
         let bytes = write_spz_to_bytes(&original).expect("write");
         let loaded = load_spz_from_reader(&bytes[..]).expect("load");
         let s = &loaded[0];
         let blue: f32 = (0..5).map(|b| s.spectral_f32(b)).sum();
         let red: f32 = (11..16).map(|b| s.spectral_f32(b)).sum();
-        assert!(red > blue, "red splat must stay red-dominant: red {red} vs blue {blue}");
+        assert!(
+            red > blue,
+            "red splat must stay red-dominant: red {red} vs blue {blue}"
+        );
     }
 }

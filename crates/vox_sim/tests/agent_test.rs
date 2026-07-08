@@ -1,5 +1,5 @@
-use vox_sim::agent::AgentManager;
 use vox_core::lwc::WorldCoord;
+use vox_sim::agent::AgentManager;
 
 #[test]
 fn test_agent_moves_toward_destination() {
@@ -15,9 +15,16 @@ fn test_agent_moves_toward_destination() {
 
     let agent = mgr.get(id).unwrap();
     let (ax, _, _) = agent.position.to_absolute();
-    assert!((ax - 5.0).abs() < 1e-3, "Agent should have moved to x=5, got {}", ax);
+    assert!(
+        (ax - 5.0).abs() < 1e-3,
+        "Agent should have moved to x=5, got {}",
+        ax
+    );
     // Destination still set since we haven't arrived yet
-    assert!(agent.destination.is_some(), "Destination should still be set");
+    assert!(
+        agent.destination.is_some(),
+        "Destination should still be set"
+    );
 }
 
 #[test]
@@ -34,11 +41,22 @@ fn test_agent_stops_at_destination() {
 
     let agent = mgr.get(id).unwrap();
     let (ax, ay, az) = agent.position.to_absolute();
-    assert!((ax - 3.0).abs() < 1e-3, "Agent x should be 3.0 at destination, got {}", ax);
+    assert!(
+        (ax - 3.0).abs() < 1e-3,
+        "Agent x should be 3.0 at destination, got {}",
+        ax
+    );
     assert!((ay - 0.0).abs() < 1e-3, "Agent y should be 0.0, got {}", ay);
     assert!((az - 0.0).abs() < 1e-3, "Agent z should be 0.0, got {}", az);
-    assert!(agent.destination.is_none(), "Destination should be cleared on arrival");
-    assert_eq!(agent.velocity.length(), 0.0, "Velocity should be zero after arrival");
+    assert!(
+        agent.destination.is_none(),
+        "Destination should be cleared on arrival"
+    );
+    assert_eq!(
+        agent.velocity.length(),
+        0.0,
+        "Velocity should be zero after arrival"
+    );
 }
 
 #[test]

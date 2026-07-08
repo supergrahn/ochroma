@@ -95,8 +95,8 @@ impl VxmFile {
 
         // Compress splat data
         let splat_bytes: &[u8] = cast_slice(&self.splats);
-        let compressed = zstd::encode_all(splat_bytes, 0)
-            .map_err(|e| VxmError::Compress(e.to_string()))?;
+        let compressed =
+            zstd::encode_all(splat_bytes, 0).map_err(|e| VxmError::Compress(e.to_string()))?;
 
         // Write compressed size as u64 le
         let compressed_size = compressed.len() as u64;
@@ -153,8 +153,8 @@ impl VxmFile {
         reader.read_exact(&mut compressed)?;
 
         // Decompress
-        let decompressed = zstd::decode_all(&compressed[..])
-            .map_err(|e| VxmError::Decompress(e.to_string()))?;
+        let decompressed =
+            zstd::decode_all(&compressed[..]).map_err(|e| VxmError::Decompress(e.to_string()))?;
 
         // Cast bytes to splats
         let splats: Vec<GaussianSplat> = try_cast_slice::<u8, GaussianSplat>(&decompressed)
@@ -215,11 +215,18 @@ impl VxmFile {
         let mut header = VxmHeader::zeroed();
         header.magic = *MAGIC;
         header.version = VERSION_V3;
-        header.flags = if v3.material_ids.is_empty() { 0 } else { FLAG_MATERIAL_IDS };
+        header.flags = if v3.material_ids.is_empty() {
+            0
+        } else {
+            FLAG_MATERIAL_IDS
+        };
         header.splat_count = v3.splats.len() as u32;
         header._pad0[0] = v3.spectral_level;
 
-        Ok(VxmFile { header, splats: v3.splats })
+        Ok(VxmFile {
+            header,
+            splats: v3.splats,
+        })
     }
 }
 
@@ -252,16 +259,16 @@ impl VxmFileV3 {
 
         // Compressed splat block
         let splat_bytes: &[u8] = bytemuck::cast_slice(&self.splats);
-        let compressed = zstd::encode_all(splat_bytes, 0)
-            .map_err(|e| VxmError::Compress(e.to_string()))?;
+        let compressed =
+            zstd::encode_all(splat_bytes, 0).map_err(|e| VxmError::Compress(e.to_string()))?;
         w.write_all(&(compressed.len() as u64).to_le_bytes())?;
         w.write_all(&compressed)?;
 
         // Optional material_ids section
         if has_mats {
             let ids_bytes: &[u8] = bytemuck::cast_slice(&self.material_ids);
-            let ids_compressed = zstd::encode_all(ids_bytes, 0)
-                .map_err(|e| VxmError::Compress(e.to_string()))?;
+            let ids_compressed =
+                zstd::encode_all(ids_bytes, 0).map_err(|e| VxmError::Compress(e.to_string()))?;
             w.write_all(&(self.material_ids.len() as u32).to_le_bytes())?;
             w.write_all(&(ids_compressed.len() as u64).to_le_bytes())?;
             w.write_all(&ids_compressed)?;
@@ -290,8 +297,8 @@ impl VxmFileV3 {
         let compressed_size = u64::from_le_bytes(size_bytes) as usize;
         let mut compressed = vec![0u8; compressed_size];
         r.read_exact(&mut compressed)?;
-        let decompressed = zstd::decode_all(&compressed[..])
-            .map_err(|e| VxmError::Decompress(e.to_string()))?;
+        let decompressed =
+            zstd::decode_all(&compressed[..]).map_err(|e| VxmError::Decompress(e.to_string()))?;
         let splats: Vec<GaussianSplat> = bytemuck::cast_slice(&decompressed).to_vec();
 
         // Optional material_ids section
@@ -311,7 +318,11 @@ impl VxmFileV3 {
             material_ids = ids_slice[..count].to_vec();
         }
 
-        Ok(Self { splats, material_ids, spectral_level })
+        Ok(Self {
+            splats,
+            material_ids,
+            spectral_level,
+        })
     }
 }
 
@@ -371,7 +382,8 @@ mod tests {
                 pos,
                 [1.0, 0.0, 0.0],
                 [0.0, 0.0, -1.0],
-                0.01, 0.01,
+                0.01,
+                0.01,
                 200,
                 [0u16; GaussianSplat::BANDS],
             )
@@ -396,17 +408,27 @@ mod tests {
             file.write(&mut buf).unwrap();
 
             let loaded = VxmFileV3::read(std::io::Cursor::new(&buf)).unwrap();
-            println!("loaded.material_ids = {:?}, expected {:?}", loaded.material_ids, material_ids);
+            println!(
+                "loaded.material_ids = {:?}, expected {:?}",
+                loaded.material_ids, material_ids
+            );
             assert_eq!(loaded.splats.len(), 2);
-            assert_eq!(loaded.material_ids, material_ids,
-                "loaded.material_ids = {:?}, expected {:?}", loaded.material_ids, material_ids);
+            assert_eq!(
+                loaded.material_ids, material_ids,
+                "loaded.material_ids = {:?}, expected {:?}",
+                loaded.material_ids, material_ids
+            );
             assert_eq!(loaded.spectral_level, 1);
         }
 
         #[test]
         fn empty_material_ids_roundtrip() {
             let splats = vec![make_splat([0.0, 1.0, 0.0])];
-            let file = VxmFileV3 { splats, material_ids: vec![], spectral_level: 2 };
+            let file = VxmFileV3 {
+                splats,
+                material_ids: vec![],
+                spectral_level: 2,
+            };
             let mut buf = Vec::new();
             file.write(&mut buf).unwrap();
             let loaded = VxmFileV3::read(std::io::Cursor::new(&buf)).unwrap();

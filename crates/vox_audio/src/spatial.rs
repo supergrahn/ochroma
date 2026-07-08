@@ -243,7 +243,9 @@ impl SpatialAudioManager {
 
     /// Returns true if the source with the given handle is still active.
     pub fn is_playing(&self, handle: u32) -> bool {
-        self.sources.iter().any(|s| s.handle == handle && !s.finished)
+        self.sources
+            .iter()
+            .any(|s| s.handle == handle && !s.finished)
     }
 
     /// Move an existing 3D source to a new position.
@@ -296,12 +298,7 @@ impl SpatialAudioManager {
 
             // Update volume & panning for spatial sources.
             if let SourceKind::Spatial { position } = source.kind {
-                let (vol, _pan) = compute_spatial(
-                    position,
-                    &listener,
-                    source.base_volume,
-                    atten,
-                );
+                let (vol, _pan) = compute_spatial(position, &listener, source.base_volume, atten);
 
                 #[cfg(feature = "audio-backend")]
                 if let Some(ref sink) = source.sink {
@@ -326,11 +323,7 @@ impl SpatialAudioManager {
     /// Compute the attenuated volume and stereo pan for a spatial source.
     ///
     /// Returns `(volume, pan)` where pan is in `[-1, 1]` (negative = left).
-    pub fn compute_spatial_for(
-        &self,
-        source_position: Vec3,
-        base_volume: f32,
-    ) -> (f32, f32) {
+    pub fn compute_spatial_for(&self, source_position: Vec3, base_volume: f32) -> (f32, f32) {
         compute_spatial(
             source_position,
             &self.listener,
@@ -405,7 +398,11 @@ mod tests {
     fn spatial_volume_at_max_distance_is_near_zero() {
         let mgr = SpatialAudioManager::new_silent();
         let (vol, _) = mgr.compute_spatial_for(Vec3::new(600.0, 0.0, 0.0), 1.0);
-        assert!(vol < 0.01, "volume beyond max_dist should be near zero, got {}", vol);
+        assert!(
+            vol < 0.01,
+            "volume beyond max_dist should be near zero, got {}",
+            vol
+        );
     }
 }
 

@@ -116,10 +116,7 @@ impl GpuTimers {
     /// half of a span covering MULTIPLE compute passes. Pair with
     /// [`Self::compute_writes_end`] on the closing pass (additive M3.2 helper:
     /// the GPU budget walk is ~35 small dispatches measured as ONE span).
-    pub fn compute_writes_begin(
-        &self,
-        slot: u32,
-    ) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
+    pub fn compute_writes_begin(&self, slot: u32) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
         let qs = self.query_set.as_ref()?;
         if !self.enabled || slot >= self.pairs {
             return None;

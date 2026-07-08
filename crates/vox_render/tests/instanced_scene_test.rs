@@ -179,10 +179,7 @@ fn per_instance_material() {
         metallic: 0.95,
         ..Default::default()
     };
-    let instances = vec![
-        inst(0, 0, [-1.6, 0.0, 0.0]),
-        inst(0, 1, [1.6, 0.0, 0.0]),
-    ];
+    let instances = vec![inst(0, 0, [-1.6, 0.0, 0.0]), inst(0, 1, [1.6, 0.0, 0.0])];
     let scene = meshes_to_instanced_scene(
         std::slice::from_ref(&cube),
         &instances,
@@ -224,9 +221,7 @@ fn per_instance_material() {
     let a = sample_window(&rgba, gx, gy); // glass instance
     let b = sample_window(&rgba, mx, my); // metal instance
     let d = (0..3).map(|c| (a[c] - b[c]).abs()).fold(0.0f32, f32::max);
-    println!(
-        "glass@({gx},{gy})={a:?} metal@({mx},{my})={b:?} max_channel_delta={d:.4}"
-    );
+    println!("glass@({gx},{gy})={a:?} metal@({mx},{my})={b:?} max_channel_delta={d:.4}");
     assert!(
         d > 0.2,
         "two instances of one BLAS with glass vs metal materials must differ; \

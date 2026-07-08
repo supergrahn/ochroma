@@ -9,7 +9,11 @@ pub struct SpectralRadianceCache {
 }
 
 impl Default for SpectralRadianceCache {
-    fn default() -> Self { Self { band_energy: [0.0; 16] } }
+    fn default() -> Self {
+        Self {
+            band_energy: [0.0; 16],
+        }
+    }
 }
 
 impl SpectralRadianceCache {
@@ -63,18 +67,20 @@ impl SpectralHUD {
     }
 
     pub fn bar_rects(
-        energy:      [f32; 16],
-        pos:         [f32; 2],
+        energy: [f32; 16],
+        pos: [f32; 2],
         total_width: f32,
-        max_height:  f32,
+        max_height: f32,
     ) -> Vec<[f32; 4]> {
         let bar_w = (total_width / 16.0 - BAR_GAP).max(1.0);
-        (0..16usize).map(|b| {
-            let h = (energy[b].clamp(0.0, 1.0) * max_height).max(0.0);
-            let x = pos[0] + b as f32 * (bar_w + BAR_GAP);
-            let y = pos[1] + (max_height - h);
-            [x, y, bar_w, h]
-        }).collect()
+        (0..16usize)
+            .map(|b| {
+                let h = (energy[b].clamp(0.0, 1.0) * max_height).max(0.0);
+                let x = pos[0] + b as f32 * (bar_w + BAR_GAP);
+                let y = pos[1] + (max_height - h);
+                [x, y, bar_w, h]
+            })
+            .collect()
     }
 
     /// Bar geometry for a live `[u16; 16]` quantized band-energy source.
@@ -83,24 +89,20 @@ impl SpectralHUD {
     /// before laying out bars, so a higher `u16` band yields a taller bar.
     /// Returns one `[x, y, w, h]` per band (16 total).
     pub fn bar_rects_u16(
-        bands:       [u16; 16],
-        pos:         [f32; 2],
+        bands: [u16; 16],
+        pos: [f32; 2],
         total_width: f32,
-        max_height:  f32,
+        max_height: f32,
     ) -> Vec<[f32; 4]> {
         let cache = SpectralRadianceCache::from_u16(bands);
         Self::bar_rects(cache.band_energy, pos, total_width, max_height)
     }
 
-    pub fn render_cpu(
-        ctx:   &mut VelloCtxCpu,
-        cache: &SpectralRadianceCache,
-        pos:   [f32; 2],
-    ) {
-        let max_height  = 60.0;
+    pub fn render_cpu(ctx: &mut VelloCtxCpu, cache: &SpectralRadianceCache, pos: [f32; 2]) {
+        let max_height = 60.0;
         let total_width = 160.0;
-        let bars        = Self::bar_rects(cache.band_energy, pos, total_width, max_height);
-        let colors      = Self::band_colors();
+        let bars = Self::bar_rects(cache.band_energy, pos, total_width, max_height);
+        let colors = Self::band_colors();
 
         for (b, rect) in bars.iter().enumerate() {
             let bg_rect = [rect[0], pos[1], rect[2], max_height];
@@ -111,14 +113,14 @@ impl SpectralHUD {
 
     #[cfg(feature = "game-ui")]
     pub fn render(
-        ctx:   &mut crate::vello_ctx::VelloCtx,
+        ctx: &mut crate::vello_ctx::VelloCtx,
         cache: &SpectralRadianceCache,
-        pos:   [f32; 2],
+        pos: [f32; 2],
     ) {
-        let max_height  = 60.0;
+        let max_height = 60.0;
         let total_width = 160.0;
-        let bars        = Self::bar_rects(cache.band_energy, pos, total_width, max_height);
-        let colors      = Self::band_colors();
+        let bars = Self::bar_rects(cache.band_energy, pos, total_width, max_height);
+        let colors = Self::band_colors();
 
         for (b, rect) in bars.iter().enumerate() {
             let bg_rect = [rect[0], pos[1], rect[2], max_height];
@@ -133,34 +135,56 @@ mod tests {
     use super::*;
 
     fn make_cache(values: [f32; 16]) -> SpectralRadianceCache {
-        SpectralRadianceCache { band_energy: values }
+        SpectralRadianceCache {
+            band_energy: values,
+        }
     }
 
     #[test]
     fn bar_heights_proportional_to_energy() {
-        let cache = make_cache([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 0.9, 0.75, 0.6, 0.5, 0.4, 0.3, 0.2]);
-        let bars  = SpectralHUD::bar_rects(cache.band_energy, [0.0, 0.0], 160.0, 100.0);
+        let cache = make_cache([
+            0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 0.9, 0.75, 0.6, 0.5, 0.4, 0.3, 0.2,
+        ]);
+        let bars = SpectralHUD::bar_rects(cache.band_energy, [0.0, 0.0], 160.0, 100.0);
         let heights: Vec<f32> = bars.iter().map(|r| r[3]).collect();
         println!("band8_h={} band0_h={}", heights[8], heights[0]);
-        assert!(heights[8] > heights[0], "band8 h={} band0 h={}", heights[8], heights[0]);
-        assert!(heights[8] > heights[1], "band8 h={} band1 h={}", heights[8], heights[1]);
+        assert!(
+            heights[8] > heights[0],
+            "band8 h={} band0 h={}",
+            heights[8],
+            heights[0]
+        );
+        assert!(
+            heights[8] > heights[1],
+            "band8 h={} band1 h={}",
+            heights[8],
+            heights[1]
+        );
     }
 
     #[test]
     fn zero_energy_bar_has_zero_height() {
         let cache = make_cache([0.0; 16]);
-        let bars  = SpectralHUD::bar_rects(cache.band_energy, [0.0, 0.0], 160.0, 100.0);
+        let bars = SpectralHUD::bar_rects(cache.band_energy, [0.0, 0.0], 160.0, 100.0);
         for bar in &bars {
-            assert!((bar[3]).abs() < 1e-6, "zero energy bar should have zero height, got {}", bar[3]);
+            assert!(
+                (bar[3]).abs() < 1e-6,
+                "zero energy bar should have zero height, got {}",
+                bar[3]
+            );
         }
     }
 
     #[test]
     fn full_energy_bar_fills_max_height() {
         let cache = make_cache([1.0; 16]);
-        let bars  = SpectralHUD::bar_rects(cache.band_energy, [0.0, 0.0], 160.0, 100.0);
+        let bars = SpectralHUD::bar_rects(cache.band_energy, [0.0, 0.0], 160.0, 100.0);
         for bar in &bars {
-            assert!((bar[3] - 100.0).abs() < 1e-5, "full-energy bar should be max_height, got {}", bar[3]);
+            assert!(
+                (bar[3] - 100.0).abs() < 1e-5,
+                "full-energy bar should be max_height, got {}",
+                bar[3]
+            );
         }
     }
 
@@ -168,8 +192,16 @@ mod tests {
     fn band_colors_violet_to_red_gradient() {
         let colors = SpectralHUD::band_colors();
         println!("band0_blue={} band15_red={}", colors[0][2], colors[15][0]);
-        assert!(colors[0][2] > 0.5, "band 0 should be violet (high blue), b={}", colors[0][2]);
-        assert!(colors[15][0] > 0.5, "band 15 should be red (high red), r={}", colors[15][0]);
+        assert!(
+            colors[0][2] > 0.5,
+            "band 0 should be violet (high blue), b={}",
+            colors[0][2]
+        );
+        assert!(
+            colors[15][0] > 0.5,
+            "band 15 should be red (high red), r={}",
+            colors[15][0]
+        );
     }
 
     #[test]
@@ -183,49 +215,108 @@ mod tests {
         let cache = make_cache([0.5; 16]);
         let mut ctx = crate::vello_ctx::VelloCtxCpu::new(800, 600);
         SpectralHUD::render_cpu(&mut ctx, &cache, [10.0, 10.0]);
-        assert!(ctx.commands().len() >= 16, "expected ≥16 draw commands, got {}", ctx.commands().len());
+        assert!(
+            ctx.commands().len() >= 16,
+            "expected ≥16 draw commands, got {}",
+            ctx.commands().len()
+        );
     }
 
     #[test]
     fn from_u16_dequantizes_full_scale_to_one() {
         // u16::MAX is full energy -> 1.0; 0 -> 0.0; midpoint -> ~0.5.
         let cache = SpectralRadianceCache::from_u16([
-            u16::MAX, 0, 32768, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            u16::MAX,
+            0,
+            32768,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         ]);
-        assert!((cache.band_energy[0] - 1.0).abs() < 1e-4, "full-scale u16 should map to 1.0, got {}", cache.band_energy[0]);
-        assert!(cache.band_energy[1].abs() < 1e-6, "zero u16 should map to 0.0, got {}", cache.band_energy[1]);
-        assert!((cache.band_energy[2] - 0.5).abs() < 1e-2, "mid u16 should map to ~0.5, got {}", cache.band_energy[2]);
+        assert!(
+            (cache.band_energy[0] - 1.0).abs() < 1e-4,
+            "full-scale u16 should map to 1.0, got {}",
+            cache.band_energy[0]
+        );
+        assert!(
+            cache.band_energy[1].abs() < 1e-6,
+            "zero u16 should map to 0.0, got {}",
+            cache.band_energy[1]
+        );
+        assert!(
+            (cache.band_energy[2] - 0.5).abs() < 1e-2,
+            "mid u16 should map to ~0.5, got {}",
+            cache.band_energy[2]
+        );
     }
 
     #[test]
     fn bar_rects_u16_high_band_taller_than_low_band() {
         // Live quantized input: band 12 is full energy, band 3 is near-zero.
         let mut bands = [0u16; 16];
-        bands[3]  = 256;        // very low energy
-        bands[12] = u16::MAX;   // full energy
+        bands[3] = 256; // very low energy
+        bands[12] = u16::MAX; // full energy
         let bars = SpectralHUD::bar_rects_u16(bands, [0.0, 0.0], 160.0, 100.0);
         assert_eq!(bars.len(), 16, "expected 16 bars, got {}", bars.len());
         let h_high = bars[12][3];
-        let h_low  = bars[3][3];
+        let h_low = bars[3][3];
         println!("u16 band12_h={} band3_h={}", h_high, h_low);
-        assert!(h_high > h_low, "full-scale band12 h={} should be taller than low band3 h={}", h_high, h_low);
+        assert!(
+            h_high > h_low,
+            "full-scale band12 h={} should be taller than low band3 h={}",
+            h_high,
+            h_low
+        );
         // Full-scale band must reach (within epsilon) the max height.
-        assert!((h_high - 100.0).abs() < 1e-3, "full-scale u16 band should fill max_height, got {}", h_high);
+        assert!(
+            (h_high - 100.0).abs() < 1e-3,
+            "full-scale u16 band should fill max_height, got {}",
+            h_high
+        );
     }
 
     #[test]
     fn bar_rects_u16_matches_dequantized_f32_path() {
         // The u16 convenience path must agree with dequantize-then-bar_rects.
         let bands: [u16; 16] = [
-            0, 4096, 8192, 12288, 16384, 20480, 24576, 28672,
-            u16::MAX, 49152, 40960, 32768, 24576, 16384, 8192, 4096,
+            0,
+            4096,
+            8192,
+            12288,
+            16384,
+            20480,
+            24576,
+            28672,
+            u16::MAX,
+            49152,
+            40960,
+            32768,
+            24576,
+            16384,
+            8192,
+            4096,
         ];
         let via_u16 = SpectralHUD::bar_rects_u16(bands, [5.0, 7.0], 160.0, 100.0);
-        let cache   = SpectralRadianceCache::from_u16(bands);
+        let cache = SpectralRadianceCache::from_u16(bands);
         let via_f32 = SpectralHUD::bar_rects(cache.band_energy, [5.0, 7.0], 160.0, 100.0);
         for b in 0..16 {
-            assert!((via_u16[b][3] - via_f32[b][3]).abs() < 1e-4,
-                "band {} height mismatch: u16 path={} f32 path={}", b, via_u16[b][3], via_f32[b][3]);
+            assert!(
+                (via_u16[b][3] - via_f32[b][3]).abs() < 1e-4,
+                "band {} height mismatch: u16 path={} f32 path={}",
+                b,
+                via_u16[b][3],
+                via_f32[b][3]
+            );
         }
     }
 
@@ -259,7 +350,7 @@ mod tests {
 
         // Geometry of the bars (must match render()'s internal constants).
         let total_width = 160.0f32;
-        let max_height  = 60.0f32;
+        let max_height = 60.0f32;
         let bars = SpectralHUD::bar_rects([1.0; 16], pos, total_width, max_height);
 
         // Sample the centre of band 0's bar (violet: blue >> red) and band 15's
@@ -269,11 +360,19 @@ mod tests {
             let sy = (rect[1] + rect[3] - 4.0).round() as u32;
             pixels[(sy.min(h - 1) * w + sx.min(w - 1)) as usize]
         };
-        let b0 = sample(bars[0]);   // violet
+        let b0 = sample(bars[0]); // violet
         let b15 = sample(bars[15]); // red
         println!("[vello] hud band0={:?} band15={:?}", b0, b15);
-        assert!(b0[2] > b0[0] + 40, "band 0 should be violet (blue>>red), got {:?}", b0);
-        assert!(b15[0] > b15[2] + 40, "band 15 should be red (red>>blue), got {:?}", b15);
+        assert!(
+            b0[2] > b0[0] + 40,
+            "band 0 should be violet (blue>>red), got {:?}",
+            b0
+        );
+        assert!(
+            b15[0] > b15[2] + 40,
+            "band 15 should be red (red>>blue), got {:?}",
+            b15
+        );
 
         // Count distinct colours inside the HUD region — the 16-band gradient
         // plus the dark backdrop must yield many unique colours.
@@ -298,8 +397,14 @@ mod tests {
             "[vello] HUD {}x{} non_background_px={} distinct_colors={}",
             w, h, non_background, distinct,
         );
-        assert!(non_background > 2000, "HUD region should be mostly painted, got {non_background}");
+        assert!(
+            non_background > 2000,
+            "HUD region should be mostly painted, got {non_background}"
+        );
         // 16 bars of distinct hues -> comfortably more than 8 quantised colours.
-        assert!(distinct >= 12, "expected >=12 distinct colours, got {distinct}");
+        assert!(
+            distinct >= 12,
+            "expected >=12 distinct colours, got {distinct}"
+        );
     }
 }

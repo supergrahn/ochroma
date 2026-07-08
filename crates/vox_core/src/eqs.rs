@@ -12,9 +12,17 @@ pub struct EQSQuery {
 /// How to generate candidate points.
 pub enum QueryGenerator {
     /// Points on a circle around a center.
-    Circle { center: Vec3, radius: f32, count: u32 },
+    Circle {
+        center: Vec3,
+        radius: f32,
+        count: u32,
+    },
     /// Points on a grid.
-    Grid { center: Vec3, half_extent: f32, spacing: f32 },
+    Grid {
+        center: Vec3,
+        half_extent: f32,
+        spacing: f32,
+    },
     /// Points along a line.
     Line { start: Vec3, end: Vec3, count: u32 },
 }
@@ -26,11 +34,19 @@ pub enum QueryTest {
     /// Score by distance FROM a point. Further = higher score.
     DistanceFrom { point: Vec3, weight: f32 },
     /// Score by dot product with a direction (prefer points in a direction).
-    DirectionPreference { origin: Vec3, direction: Vec3, weight: f32 },
+    DirectionPreference {
+        origin: Vec3,
+        direction: Vec3,
+        weight: f32,
+    },
     /// Score by height (prefer higher/lower ground).
     HeightPreference { prefer_high: bool, weight: f32 },
     /// Filter: only keep points within range.
-    RangeFilter { center: Vec3, min_dist: f32, max_dist: f32 },
+    RangeFilter {
+        center: Vec3,
+        min_dist: f32,
+        max_dist: f32,
+    },
 }
 
 /// A scored candidate position.
@@ -44,7 +60,11 @@ impl QueryGenerator {
     /// Generate candidate positions.
     pub fn generate(&self) -> Vec<Vec3> {
         match self {
-            QueryGenerator::Circle { center, radius, count } => {
+            QueryGenerator::Circle {
+                center,
+                radius,
+                count,
+            } => {
                 let mut points = Vec::with_capacity(*count as usize);
                 for i in 0..*count {
                     let angle = (i as f32 / *count as f32) * std::f32::consts::TAU;
@@ -54,7 +74,11 @@ impl QueryGenerator {
                 }
                 points
             }
-            QueryGenerator::Grid { center, half_extent, spacing } => {
+            QueryGenerator::Grid {
+                center,
+                half_extent,
+                spacing,
+            } => {
                 let mut points = Vec::new();
                 let start = -(*half_extent);
                 let end = *half_extent;
@@ -97,18 +121,29 @@ impl QueryTest {
                 let dist = position.distance(*point);
                 Some(weight * dist)
             }
-            QueryTest::DirectionPreference { origin, direction, weight } => {
+            QueryTest::DirectionPreference {
+                origin,
+                direction,
+                weight,
+            } => {
                 let to_point = (position - *origin).normalize_or_zero();
                 let dir = direction.normalize_or_zero();
                 let dot = to_point.dot(dir).max(0.0);
                 Some(weight * dot)
             }
-            QueryTest::HeightPreference { prefer_high, weight } => {
+            QueryTest::HeightPreference {
+                prefer_high,
+                weight,
+            } => {
                 let h = position.y;
                 let score = if *prefer_high { h } else { -h };
                 Some(weight * score)
             }
-            QueryTest::RangeFilter { center, min_dist, max_dist } => {
+            QueryTest::RangeFilter {
+                center,
+                min_dist,
+                max_dist,
+            } => {
                 let dist = position.distance(*center);
                 if dist >= *min_dist && dist <= *max_dist {
                     Some(0.0) // pass filter, contributes no score
@@ -139,11 +174,18 @@ impl EQSQuery {
                 }
             }
             if !filtered {
-                results.push(QueryResult { position: pos, score: total_score });
+                results.push(QueryResult {
+                    position: pos,
+                    score: total_score,
+                });
             }
         }
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results
     }
 }
@@ -196,10 +238,16 @@ mod tests {
     #[test]
     fn distance_to_scores_closer_higher() {
         let target = Vec3::new(5.0, 0.0, 0.0);
-        let test = QueryTest::DistanceTo { point: target, weight: 1.0 };
+        let test = QueryTest::DistanceTo {
+            point: target,
+            weight: 1.0,
+        };
         let close_score = test.score(Vec3::new(4.0, 0.0, 0.0)).unwrap();
         let far_score = test.score(Vec3::new(0.0, 0.0, 0.0)).unwrap();
-        assert!(close_score > far_score, "closer should score higher: {close_score} vs {far_score}");
+        assert!(
+            close_score > far_score,
+            "closer should score higher: {close_score} vs {far_score}"
+        );
     }
 
     #[test]
@@ -210,13 +258,11 @@ mod tests {
                 radius: 10.0,
                 count: 16,
             },
-            tests: vec![
-                QueryTest::RangeFilter {
-                    center: Vec3::ZERO,
-                    min_dist: 5.0,
-                    max_dist: 15.0,
-                },
-            ],
+            tests: vec![QueryTest::RangeFilter {
+                center: Vec3::ZERO,
+                min_dist: 5.0,
+                max_dist: 15.0,
+            }],
         };
         let results = query.run();
         // All circle points are at radius 10, within [5, 15], so all pass
@@ -229,13 +275,11 @@ mod tests {
                 radius: 10.0,
                 count: 16,
             },
-            tests: vec![
-                QueryTest::RangeFilter {
-                    center: Vec3::ZERO,
-                    min_dist: 20.0,
-                    max_dist: 30.0,
-                },
-            ],
+            tests: vec![QueryTest::RangeFilter {
+                center: Vec3::ZERO,
+                min_dist: 20.0,
+                max_dist: 30.0,
+            }],
         };
         let results2 = query2.run();
         assert_eq!(results2.len(), 0);
@@ -250,9 +294,10 @@ mod tests {
                 radius: 5.0,
                 count: 32,
             },
-            tests: vec![
-                QueryTest::DistanceTo { point: target, weight: 1.0 },
-            ],
+            tests: vec![QueryTest::DistanceTo {
+                point: target,
+                weight: 1.0,
+            }],
         };
         let results = query.run();
         assert!(!results.is_empty());

@@ -37,9 +37,14 @@ fn engine_loop_runs_coherent_multiframe_simulation() {
     let mut lp = EngineLoop::new(EngineConfig::default(), SystemMask::all());
 
     // --- Physics: a box dropped from y=20 must fall and SETTLE on the ground plane. ---
-    let (body, _) = lp.physics.add_dynamic_box([0.0, 20.0, 0.0], [0.5, 0.5, 0.5], 1.0);
+    let (body, _) = lp
+        .physics
+        .add_dynamic_box([0.0, 20.0, 0.0], [0.5, 0.5, 0.5], 1.0);
     let y_start = lp.physics.body_position(body).expect("body exists")[1];
-    assert!((y_start - 20.0).abs() < 1e-3, "body should start at y=20, got {y_start}");
+    assert!(
+        (y_start - 20.0).abs() < 1e-3,
+        "body should start at y=20, got {y_start}"
+    );
 
     // --- Scripts: a stateful counter that must advance once per fixed step. ---
     lp.runtime
@@ -136,13 +141,18 @@ fn gi_scene(n: usize) -> Vec<GaussianSplat> {
             )
         })
         .collect();
-    let put_emitter = |scene: &mut Vec<GaussianSplat>, idx: usize, pos: [f32; 3], band: usize, v: f32| {
-        let mut spectral = [f16::from_f32(0.0).to_bits(); 16];
-        spectral[band] = f16::from_f32(v).to_bits();
-        scene[idx] = GaussianSplat::volume(pos, [0.1, 0.1, 0.1], glam::Quat::IDENTITY, 255, spectral);
-    };
+    let put_emitter =
+        |scene: &mut Vec<GaussianSplat>, idx: usize, pos: [f32; 3], band: usize, v: f32| {
+            let mut spectral = [f16::from_f32(0.0).to_bits(); 16];
+            spectral[band] = f16::from_f32(v).to_bits();
+            scene[idx] =
+                GaussianSplat::volume(pos, [0.1, 0.1, 0.1], glam::Quat::IDENTITY, 255, spectral);
+        };
     // Two front emitters plus one adjacent to a mid-scene probe receiver.
-    assert!(n > 201, "gi_scene needs at least 202 splats for its emitter layout");
+    assert!(
+        n > 201,
+        "gi_scene needs at least 202 splats for its emitter layout"
+    );
     put_emitter(&mut scene, 0, [0.0, 0.0, 0.0], 8, 0.5);
     put_emitter(&mut scene, 7, [3.5, 0.0, 0.0], 8, 0.4);
     put_emitter(&mut scene, 201, [100.0 * 0.5 + 0.2, 0.0, 0.0], 8, 0.5); // 0.2m off receiver 100
@@ -162,7 +172,11 @@ fn step_gi_gpu_backend_matches_cpu_backend_per_band() {
 
     // CPU backend (the proven default).
     let mut cpu_lp = EngineLoop::new(EngineConfig::default(), SystemMask::all());
-    assert_eq!(cpu_lp.gi_backend(), "cpu", "fresh loop must default to CPU GI");
+    assert_eq!(
+        cpu_lp.gi_backend(),
+        "cpu",
+        "fresh loop must default to CPU GI"
+    );
     // Stateless single step: fresh cache, alpha defaults to 0.9, but a single
     // call from a zeroed cache is what both paths compare against — drive ONE
     // step on each so the temporal-EMA state matches (one blend from zero).
@@ -178,10 +192,18 @@ fn step_gi_gpu_backend_matches_cpu_backend_per_band() {
             return;
         }
     }
-    assert_eq!(gpu_lp.gi_backend(), "gpu", "use_gpu_gi() must activate the GPU backend");
+    assert_eq!(
+        gpu_lp.gi_backend(),
+        "gpu",
+        "use_gpu_gi() must activate the GPU backend"
+    );
     let gpu_out = gpu_lp.step_gi(&scene, hour);
     let gpu_us = gpu_lp.last_gi_us().expect("GPU step_gi must record timing");
-    assert_eq!(gpu_out.len(), cpu_out.len(), "both backends return all splats");
+    assert_eq!(
+        gpu_out.len(),
+        cpu_out.len(),
+        "both backends return all splats"
+    );
 
     // Per-band per-splat agreement. The CPU `step_gi` blends from a zeroed cache
     // with alpha=0.9 (10% of the new value); the GPU path is a full replace
@@ -227,7 +249,10 @@ fn step_gi_gpu_backend_matches_cpu_backend_per_band() {
     // Sanity that the single-step CPU output is also non-trivially lit (the
     // default behavior shells get) so this isn't comparing against a dead path.
     let single_probe = f16::from_bits(cpu_out[100].spectral()[8]).to_f32();
-    assert!(single_probe > 0.0, "single CPU step must already start lifting the probe: {single_probe}");
+    assert!(
+        single_probe > 0.0,
+        "single CPU step must already start lifting the probe: {single_probe}"
+    );
 
     eprintln!(
         "[step_gi gpu equivalence] n={n} sample={} max|Δ|={max_delta:.2e} probe gpu={probe_g:.4} cpu={probe_c:.4} | last_gi_us cpu={cpu_us} gpu={gpu_us}",
@@ -248,7 +273,10 @@ fn gpu_gi_init_failure_falls_back_to_cpu_without_panicking() {
     // Construct a GpuGi with impossible limits to PROVE device creation fails
     // gracefully (Err, not panic) — the same failure use_gpu_gi() would surface.
     let forced = GpuGi::new_failing_for_test();
-    assert!(forced.is_err(), "impossible limits must not yield a working GPU device");
+    assert!(
+        forced.is_err(),
+        "impossible limits must not yield a working GPU device"
+    );
 
     // The loop is still on CPU and step_gi works and returns valid lit splats.
     assert_eq!(lp.gi_backend(), "cpu");
@@ -256,8 +284,14 @@ fn gpu_gi_init_failure_falls_back_to_cpu_without_panicking() {
     let out = lp.step_gi(&scene, 12.0);
     assert_eq!(out.len(), scene.len());
     let probe = f16::from_bits(out[1].spectral()[8]).to_f32();
-    assert!(probe.is_finite(), "CPU fallback must return finite spectral, got {probe}");
-    assert!(lp.last_gi_us().is_some(), "step_gi must record timing on the CPU path too");
+    assert!(
+        probe.is_finite(),
+        "CPU fallback must return finite spectral, got {probe}"
+    );
+    assert!(
+        lp.last_gi_us().is_some(),
+        "step_gi must record timing on the CPU path too"
+    );
 }
 
 /// A frame whose splat count exceeds the GPU device capacity must route to

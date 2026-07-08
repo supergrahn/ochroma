@@ -1,4 +1,4 @@
-use vox_core::lwc::{TileCoord, WorldCoord, TILE_SIZE};
+use vox_core::lwc::{TILE_SIZE, TileCoord, WorldCoord};
 
 #[test]
 fn test_from_absolute_and_to_absolute_round_trip() {
@@ -7,9 +7,24 @@ fn test_from_absolute_and_to_absolute_round_trip() {
     let z = -789.1;
     let wc = WorldCoord::from_absolute(x, y, z);
     let (rx, ry, rz) = wc.to_absolute();
-    assert!((rx - x).abs() < 1e-4, "x round-trip failed: {} vs {}", rx, x);
-    assert!((ry - y).abs() < 1e-4, "y round-trip failed: {} vs {}", ry, y);
-    assert!((rz - z).abs() < 1e-4, "z round-trip failed: {} vs {}", rz, z);
+    assert!(
+        (rx - x).abs() < 1e-4,
+        "x round-trip failed: {} vs {}",
+        rx,
+        x
+    );
+    assert!(
+        (ry - y).abs() < 1e-4,
+        "y round-trip failed: {} vs {}",
+        ry,
+        y
+    );
+    assert!(
+        (rz - z).abs() < 1e-4,
+        "z round-trip failed: {} vs {}",
+        rz,
+        z
+    );
 }
 
 #[test]
@@ -36,7 +51,19 @@ fn test_sub_mm_precision_at_50km() {
     let wc = WorldCoord::from_absolute(x, y, z);
     let (rx, ry, rz) = wc.to_absolute();
     // sub-mm precision = < 1e-3
-    assert!((rx - x).abs() < 1e-3, "x precision at 50km failed: diff={}", (rx - x).abs());
-    assert!((ry - y).abs() < 1e-3, "y precision at 50km failed: diff={}", (ry - y).abs());
-    assert!((rz - z).abs() < 1e-3, "z precision at 50km failed: diff={}", (rz - z).abs());
+    assert!(
+        (rx - x).abs() < 1e-3,
+        "x precision at 50km failed: diff={}",
+        (rx - x).abs()
+    );
+    assert!(
+        (ry - y).abs() < 1e-3,
+        "y precision at 50km failed: diff={}",
+        (ry - y).abs()
+    );
+    assert!(
+        (rz - z).abs() < 1e-3,
+        "z precision at 50km failed: diff={}",
+        (rz - z).abs()
+    );
 }

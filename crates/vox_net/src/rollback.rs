@@ -167,7 +167,10 @@ pub struct PlayerKinematics {
 
 impl Default for PlayerKinematics {
     fn default() -> Self {
-        Self { position: [0.0; 3], velocity: [0.0; 3] }
+        Self {
+            position: [0.0; 3],
+            velocity: [0.0; 3],
+        }
     }
 }
 
@@ -204,7 +207,10 @@ pub struct WorldSim {
 
 impl Default for WorldSim {
     fn default() -> Self {
-        Self { players: [PlayerKinematics::default(); NUM_PLAYERS], tick: 0 }
+        Self {
+            players: [PlayerKinematics::default(); NUM_PLAYERS],
+            tick: 0,
+        }
     }
 }
 
@@ -332,7 +338,11 @@ impl Predictor {
     fn set_local_input(&mut self, tick: u64, local_player: u8, local_input: u32) {
         let list = self.timeline.entry(tick).or_default();
         list.retain(|f| f.player_id != local_player);
-        list.push(InputFrame { frame: tick, player_id: local_player, input_bits: local_input });
+        list.push(InputFrame {
+            frame: tick,
+            player_id: local_player,
+            input_bits: local_input,
+        });
     }
 
     /// Advance exactly one tick. `local_input` is this client's input bits for
@@ -362,7 +372,10 @@ impl Predictor {
         }
 
         let list = self.timeline.entry(tick).or_default();
-        let previously = list.iter().find(|f| f.player_id == pid).map(|f| f.input_bits);
+        let previously = list
+            .iter()
+            .find(|f| f.player_id == pid)
+            .map(|f| f.input_bits);
         let changed = previously != Some(input.input_bits);
         list.retain(|f| f.player_id != pid);
         list.push(input);
@@ -438,7 +451,10 @@ mod tests {
     #[test]
     fn save_and_retrieve_snapshot() {
         let mut buf: RollbackBuffer<TestState> = RollbackBuffer::new();
-        let state = TestState { frame: 5, value: 42 };
+        let state = TestState {
+            frame: 5,
+            value: 42,
+        };
         buf.save_frame(state);
         let snapshot = buf.get_snapshot(5).expect("snapshot at frame 5");
         assert_eq!(snapshot.frame, 5);
@@ -450,11 +466,18 @@ mod tests {
         let mut buf: RollbackBuffer<TestState> = RollbackBuffer::new();
         // Save frames 1 through 5
         for f in 1u64..=5 {
-            buf.save_frame(TestState { frame: f, value: f as i32 });
+            buf.save_frame(TestState {
+                frame: f,
+                value: f as i32,
+            });
         }
         buf.advance_frame(5);
         // Input arriving for frame 3 is late
-        let result = buf.receive_input(InputFrame { frame: 3, player_id: 1, input_bits: INPUT_RIGHT });
+        let result = buf.receive_input(InputFrame {
+            frame: 3,
+            player_id: 1,
+            input_bits: INPUT_RIGHT,
+        });
         assert!(result, "expected rollback needed for late input at frame 3");
     }
 
@@ -463,7 +486,11 @@ mod tests {
         let mut buf: RollbackBuffer<TestState> = RollbackBuffer::new();
         buf.advance_frame(5);
         // Input for frame 5 (current frame) — not late
-        let result = buf.receive_input(InputFrame { frame: 5, player_id: 1, input_bits: INPUT_LEFT });
+        let result = buf.receive_input(InputFrame {
+            frame: 5,
+            player_id: 1,
+            input_bits: INPUT_LEFT,
+        });
         assert!(!result, "expected no rollback for input at current frame");
     }
 
@@ -493,7 +520,11 @@ mod tests {
             let mut inputs = Vec::new();
             for &(when, bits) in script {
                 if when == t {
-                    inputs.push(InputFrame { frame: t, player_id: 1, input_bits: bits });
+                    inputs.push(InputFrame {
+                        frame: t,
+                        player_id: 1,
+                        input_bits: bits,
+                    });
                 }
             }
             sim.apply_input(&inputs);
@@ -509,7 +540,11 @@ mod tests {
             let inputs: Vec<InputFrame> = script
                 .iter()
                 .filter(|&&(when, _)| when == t)
-                .map(|&(_, bits)| InputFrame { frame: t, player_id: 1, input_bits: bits })
+                .map(|&(_, bits)| InputFrame {
+                    frame: t,
+                    player_id: 1,
+                    input_bits: bits,
+                })
                 .collect();
             sim.apply_input(&inputs);
             track.push(sim.position_of(1));
@@ -546,7 +581,11 @@ mod tests {
             // Deliver any of B's inputs whose 3-tick delay has now elapsed.
             for &(when, bits) in &script {
                 if when + DELAY == t {
-                    a.receive_remote_input(InputFrame { frame: when, player_id: 1, input_bits: bits });
+                    a.receive_remote_input(InputFrame {
+                        frame: when,
+                        player_id: 1,
+                        input_bits: bits,
+                    });
                     // Reconcile immediately so the recorded view reflects the
                     // post-rollback truth at this tick.
                     a.resimulate_if_needed();
@@ -597,14 +636,18 @@ mod tests {
                 av[axis].to_bits(),
                 tv[axis].to_bits(),
                 "axis {axis}: reconciled {} must be bit-identical to truth {}",
-                av[axis], tv[axis]
+                av[axis],
+                tv[axis]
             );
         }
 
         // (c) The rollback ACTUALLY executed (not a coincidence): at least one
         // re-simulation ran. Both the tick-1 and tick-10 inputs arrive late.
         println!("[rollback] resim_count = {}", a.resim_count);
-        assert!(a.resim_count > 0, "rollback must have re-simulated at least once");
+        assert!(
+            a.resim_count > 0,
+            "rollback must have re-simulated at least once"
+        );
     }
 
     /// Determinism guard: identical input streams produce a bit-identical state
@@ -622,8 +665,16 @@ mod tests {
                     _ => INPUT_LEFT,
                 };
                 sim.apply_input(&[
-                    InputFrame { frame: t, player_id: 0, input_bits: bits },
-                    InputFrame { frame: t, player_id: 1, input_bits: bits ^ INPUT_UP },
+                    InputFrame {
+                        frame: t,
+                        player_id: 0,
+                        input_bits: bits,
+                    },
+                    InputFrame {
+                        frame: t,
+                        player_id: 1,
+                        input_bits: bits ^ INPUT_UP,
+                    },
                 ]);
             }
             sim.state_hash()
@@ -632,14 +683,25 @@ mod tests {
         let h2 = run();
         println!("[determinism] hash run 1 = {h1:#018x}");
         println!("[determinism] hash run 2 = {h2:#018x}");
-        assert_eq!(h1, h2, "identical inputs must yield a bit-identical state hash");
+        assert_eq!(
+            h1, h2,
+            "identical inputs must yield a bit-identical state hash"
+        );
 
         // A different input stream must yield a different hash (the guard has teeth).
         let mut other = WorldSim::new();
         for t in 1..=100u64 {
-            other.apply_input(&[InputFrame { frame: t, player_id: 0, input_bits: INPUT_UP }]);
+            other.apply_input(&[InputFrame {
+                frame: t,
+                player_id: 0,
+                input_bits: INPUT_UP,
+            }]);
         }
-        assert_ne!(other.state_hash(), h1, "different inputs must differ in hash");
+        assert_ne!(
+            other.state_hash(),
+            h1,
+            "different inputs must differ in hash"
+        );
     }
 
     fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -663,7 +725,11 @@ mod tests {
             // rollback is ever needed).
             for &(when, bits) in &script {
                 if when == t {
-                    a.receive_remote_input(InputFrame { frame: when, player_id: 1, input_bits: bits });
+                    a.receive_remote_input(InputFrame {
+                        frame: when,
+                        player_id: 1,
+                        input_bits: bits,
+                    });
                 }
             }
             a.tick(0, 0);
@@ -672,7 +738,11 @@ mod tests {
         let av = a.position_of(1);
         let tv = truth.position_of(1);
         for axis in 0..3 {
-            assert_eq!(av[axis].to_bits(), tv[axis].to_bits(), "axis {axis} must match truth");
+            assert_eq!(
+                av[axis].to_bits(),
+                tv[axis].to_bits(),
+                "axis {axis} must match truth"
+            );
         }
     }
 }

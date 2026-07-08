@@ -7,10 +7,10 @@
 //!   - Idempotent duplicate-edge guard in connect()
 //!   - Type-checked port connections via OchromaNode::descriptor()
 
-use std::collections::{BinaryHeap, HashSet};
-use std::cmp::Reverse;
-use std::time::{Duration, Instant};
 use hashbrown::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashSet};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 use vox_core::types::GaussianSplat;
@@ -44,7 +44,7 @@ pub enum PortData {
     LodMesh(Vec<EditorMesh>),
     Instances(Vec<[f32; 3]>),
     Scalar(f64),
-    BiomeMap(Vec<u8>),       // serialized BiomeKind per cell
+    BiomeMap(Vec<u8>), // serialized BiomeKind per cell
     SplatWeights(Vec<[f32; 4]>),
     ScalarVec(Vec<f32>),
 }
@@ -52,60 +52,111 @@ pub enum PortData {
 impl PortData {
     pub fn port_type(&self) -> PortType {
         match self {
-            PortData::Splats(_)        => PortType::Splats,
+            PortData::Splats(_) => PortType::Splats,
             PortData::SpectralField(_) => PortType::SpectralField,
-            PortData::Terrain(_)       => PortType::Terrain,
-            PortData::Mesh(_)          => PortType::Mesh,
-            PortData::LodMesh(_)       => PortType::LodMesh,
-            PortData::Instances(_)     => PortType::Instances,
-            PortData::Scalar(_)        => PortType::Scalar,
-            PortData::BiomeMap(_)      => PortType::BiomeMap,
-            PortData::SplatWeights(_)  => PortType::SplatWeights,
-            PortData::ScalarVec(_)     => PortType::ScalarVec,
+            PortData::Terrain(_) => PortType::Terrain,
+            PortData::Mesh(_) => PortType::Mesh,
+            PortData::LodMesh(_) => PortType::LodMesh,
+            PortData::Instances(_) => PortType::Instances,
+            PortData::Scalar(_) => PortType::Scalar,
+            PortData::BiomeMap(_) => PortType::BiomeMap,
+            PortData::SplatWeights(_) => PortType::SplatWeights,
+            PortData::ScalarVec(_) => PortType::ScalarVec,
         }
     }
-    pub fn as_terrain(&self)   -> Option<&HeightfieldSpatial> { match self { PortData::Terrain(t) => Some(t), _ => None } }
-    pub fn as_mesh(&self)      -> Option<&EditorMesh>         { match self { PortData::Mesh(m) => Some(m), _ => None } }
-    pub fn as_lod_mesh(&self)  -> Option<&Vec<EditorMesh>>    { match self { PortData::LodMesh(l) => Some(l), _ => None } }
-    pub fn as_splats(&self)    -> Option<&Vec<GaussianSplat>>  { match self { PortData::Splats(s) => Some(s), _ => None } }
-    pub fn as_scalar(&self)    -> Option<f64>                  { match self { PortData::Scalar(v) => Some(*v), _ => None } }
-    pub fn as_scalar_vec(&self) -> Option<&Vec<f32>>           { match self { PortData::ScalarVec(v) => Some(v), _ => None } }
-    pub fn as_biome_map(&self)  -> Option<&Vec<u8>>            { match self { PortData::BiomeMap(b) => Some(b), _ => None } }
-    pub fn as_splat_weights(&self) -> Option<&Vec<[f32; 4]>>   { match self { PortData::SplatWeights(w) => Some(w), _ => None } }
+    pub fn as_terrain(&self) -> Option<&HeightfieldSpatial> {
+        match self {
+            PortData::Terrain(t) => Some(t),
+            _ => None,
+        }
+    }
+    pub fn as_mesh(&self) -> Option<&EditorMesh> {
+        match self {
+            PortData::Mesh(m) => Some(m),
+            _ => None,
+        }
+    }
+    pub fn as_lod_mesh(&self) -> Option<&Vec<EditorMesh>> {
+        match self {
+            PortData::LodMesh(l) => Some(l),
+            _ => None,
+        }
+    }
+    pub fn as_splats(&self) -> Option<&Vec<GaussianSplat>> {
+        match self {
+            PortData::Splats(s) => Some(s),
+            _ => None,
+        }
+    }
+    pub fn as_scalar(&self) -> Option<f64> {
+        match self {
+            PortData::Scalar(v) => Some(*v),
+            _ => None,
+        }
+    }
+    pub fn as_scalar_vec(&self) -> Option<&Vec<f32>> {
+        match self {
+            PortData::ScalarVec(v) => Some(v),
+            _ => None,
+        }
+    }
+    pub fn as_biome_map(&self) -> Option<&Vec<u8>> {
+        match self {
+            PortData::BiomeMap(b) => Some(b),
+            _ => None,
+        }
+    }
+    pub fn as_splat_weights(&self) -> Option<&Vec<[f32; 4]>> {
+        match self {
+            PortData::SplatWeights(w) => Some(w),
+            _ => None,
+        }
+    }
 }
 
-pub type NodeInputs  = HashMap<String, PortData>;
+pub type NodeInputs = HashMap<String, PortData>;
 pub type NodeOutputs = HashMap<String, PortData>;
 
 #[derive(Clone, Debug)]
 pub struct HeightfieldSpatial {
-    pub heights:    Vec<f32>,
+    pub heights: Vec<f32>,
     pub resolution: u32,
     pub world_size: f32,
 }
 
 impl Default for HeightfieldSpatial {
     fn default() -> Self {
-        Self { heights: Vec::new(), resolution: 0, world_size: 1000.0 }
+        Self {
+            heights: Vec::new(),
+            resolution: 0,
+            world_size: 1000.0,
+        }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct EditorMesh {
-    pub positions:   Vec<[f32; 3]>,
-    pub normals:     Vec<[f32; 3]>,
-    pub indices:     Vec<[u32; 3]>,
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub indices: Vec<[u32; 3]>,
     pub material_id: u32,
 }
 
 impl EditorMesh {
     pub fn new() -> Self {
-        Self { positions: Vec::new(), normals: Vec::new(), indices: Vec::new(), material_id: 0 }
+        Self {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            indices: Vec::new(),
+            material_id: 0,
+        }
     }
 }
 
 impl Default for EditorMesh {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -121,23 +172,29 @@ pub enum NodeError {
 }
 
 pub struct PortSpec {
-    pub name:      &'static str,
+    pub name: &'static str,
     pub port_type: PortType,
-    pub optional:  bool,
+    pub optional: bool,
 }
 
 pub struct NodeDescriptor {
     pub type_name: &'static str,
-    pub inputs:    Vec<PortSpec>,
-    pub outputs:   Vec<PortSpec>,
+    pub inputs: Vec<PortSpec>,
+    pub outputs: Vec<PortSpec>,
 }
 
 impl NodeDescriptor {
     pub fn output_type(&self, port: &str) -> Option<PortType> {
-        self.outputs.iter().find(|p| p.name == port).map(|p| p.port_type)
+        self.outputs
+            .iter()
+            .find(|p| p.name == port)
+            .map(|p| p.port_type)
     }
     pub fn input_type(&self, port: &str) -> Option<PortType> {
-        self.inputs.iter().find(|p| p.name == port).map(|p| p.port_type)
+        self.inputs
+            .iter()
+            .find(|p| p.name == port)
+            .map(|p| p.port_type)
     }
 }
 
@@ -178,7 +235,11 @@ pub enum GraphError {
     #[error("cycle detected: {from} → {to}")]
     CycleDetected { from: u32, to: u32 },
     #[error("type mismatch on port {port}: expected {expected}, got {got}")]
-    TypeMismatch { port: String, expected: String, got: String },
+    TypeMismatch {
+        port: String,
+        expected: String,
+        got: String,
+    },
     #[error("unknown port {port} on node {node:?}")]
     UnknownPort { node: NodeId, port: String },
     #[error("cook failed at node {node}: {reason}")]
@@ -186,26 +247,26 @@ pub enum GraphError {
 }
 
 struct NodeEntry {
-    name:        String,
-    node:        Box<dyn OchromaNode>,
-    dirty:       bool,
+    name: String,
+    node: Box<dyn OchromaNode>,
+    dirty: bool,
     last_output: Option<NodeOutputs>,
     /// Monotonic count of how many times this node's `cook()` has actually
     /// executed. Probed by tests + the live loop to prove that clean upstream
     /// nodes are NOT re-executed and dirty downstream nodes ARE.
-    cook_count:  u64,
+    cook_count: u64,
 }
 
 struct Edge {
-    from:      NodeId,
+    from: NodeId,
     from_port: String,
-    to:        NodeId,
-    to_port:   String,
+    to: NodeId,
+    to_port: String,
 }
 
 pub struct OchromaNodeGraph {
-    nodes:   HashMap<NodeId, NodeEntry>,
-    edges:   Vec<Edge>,
+    nodes: HashMap<NodeId, NodeEntry>,
+    edges: Vec<Edge>,
     next_id: u32,
     /// PCG-style live re-cook throttle. A dirty node marked since the last live
     /// cook is held as a pending trailing-edge request, keyed by the node whose
@@ -223,7 +284,7 @@ pub struct OchromaNodeGraph {
 /// `ceil(window / budget)` cooks, and the LAST requested value is always the one
 /// that finally cooks (trailing edge guaranteed).
 struct ThrottleState {
-    budget:        Duration,
+    budget: Duration,
     /// Roots of dirty subgraphs awaiting a cook, in request order with the
     /// most recent request last (a re-request moves its root to the back).
     /// Multiple edited nodes are ALL remembered — a second node's edit must
@@ -231,7 +292,7 @@ struct ThrottleState {
     pending_roots: Vec<NodeId>,
     /// When each root's subgraph last actually cooked. The throttle is
     /// PER SUBGRAPH: a recent cook of A does not gap an unrelated B.
-    last_cook_at:  HashMap<NodeId, Instant>,
+    last_cook_at: HashMap<NodeId, Instant>,
 }
 
 impl Default for ThrottleState {
@@ -245,18 +306,34 @@ impl Default for ThrottleState {
 }
 
 impl Default for OchromaNodeGraph {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl OchromaNodeGraph {
     pub fn new() -> Self {
-        Self { nodes: HashMap::new(), edges: Vec::new(), next_id: 0, throttle: ThrottleState::default() }
+        Self {
+            nodes: HashMap::new(),
+            edges: Vec::new(),
+            next_id: 0,
+            throttle: ThrottleState::default(),
+        }
     }
 
     pub fn add_node(&mut self, name: &str, node: Box<dyn OchromaNode>) -> NodeId {
         let id = NodeId(self.next_id);
         self.next_id += 1;
-        self.nodes.insert(id, NodeEntry { name: name.to_string(), node, dirty: true, last_output: None, cook_count: 0 });
+        self.nodes.insert(
+            id,
+            NodeEntry {
+                name: name.to_string(),
+                node,
+                dirty: true,
+                last_output: None,
+                cook_count: 0,
+            },
+        );
         id
     }
 
@@ -274,25 +351,35 @@ impl OchromaNodeGraph {
     }
 
     /// The configured live re-cook budget.
-    pub fn recook_budget(&self) -> Duration { self.throttle.budget }
+    pub fn recook_budget(&self) -> Duration {
+        self.throttle.budget
+    }
 
-    pub fn node_count(&self) -> usize { self.nodes.len() }
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
 
     pub fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.nodes.keys().copied()
     }
 
     /// Number of edges currently in the graph.
-    pub fn edge_count(&self) -> usize { self.edges.len() }
+    pub fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
 
     /// Iterate the graph's edges as `(from, from_port, to, to_port)` tuples.
     /// Used by the editor panel to draw wires and by tests to assert connectivity.
     pub fn edges(&self) -> impl Iterator<Item = (NodeId, &str, NodeId, &str)> + '_ {
-        self.edges.iter().map(|e| (e.from, e.from_port.as_str(), e.to, e.to_port.as_str()))
+        self.edges
+            .iter()
+            .map(|e| (e.from, e.from_port.as_str(), e.to, e.to_port.as_str()))
     }
 
     pub fn remove_node(&mut self, id: NodeId) -> Result<(), GraphError> {
-        if !self.nodes.contains_key(&id) { return Err(GraphError::NodeNotFound(id)); }
+        if !self.nodes.contains_key(&id) {
+            return Err(GraphError::NodeNotFound(id));
+        }
         self.nodes.remove(&id);
         self.edges.retain(|e| e.from != id && e.to != id);
         // Throttle bookkeeping: a removed node must not linger as a pending
@@ -307,14 +394,29 @@ impl OchromaNodeGraph {
         self.nodes.get(&id).map(|e| e.dirty).unwrap_or(false)
     }
 
-    pub fn connect(&mut self, from: NodeId, from_port: &str, to: NodeId, to_port: &str) -> Result<(), GraphError> {
-        if !self.nodes.contains_key(&from) { return Err(GraphError::NodeNotFound(from)); }
-        if !self.nodes.contains_key(&to)   { return Err(GraphError::NodeNotFound(to));   }
+    pub fn connect(
+        &mut self,
+        from: NodeId,
+        from_port: &str,
+        to: NodeId,
+        to_port: &str,
+    ) -> Result<(), GraphError> {
+        if !self.nodes.contains_key(&from) {
+            return Err(GraphError::NodeNotFound(from));
+        }
+        if !self.nodes.contains_key(&to) {
+            return Err(GraphError::NodeNotFound(to));
+        }
         let from_type = {
             let desc = self.nodes[&from].node.descriptor();
             match desc.output_type(from_port) {
                 Some(t) => t,
-                None    => return Err(GraphError::UnknownPort { node: from, port: from_port.to_string() }),
+                None => {
+                    return Err(GraphError::UnknownPort {
+                        node: from,
+                        port: from_port.to_string(),
+                    })
+                }
             }
         };
         {
@@ -330,18 +432,28 @@ impl OchromaNodeGraph {
             }
         }
         if self.can_reach(to, from) {
-            return Err(GraphError::CycleDetected { from: from.0, to: to.0 });
+            return Err(GraphError::CycleDetected {
+                from: from.0,
+                to: to.0,
+            });
         }
-        if self.edges.iter().any(|e| e.from == from && e.from_port == from_port && e.to == to && e.to_port == to_port) {
+        if self.edges.iter().any(|e| {
+            e.from == from && e.from_port == from_port && e.to == to && e.to_port == to_port
+        }) {
             return Ok(());
         }
-        self.edges.push(Edge { from, from_port: from_port.to_string(), to, to_port: to_port.to_string() });
+        self.edges.push(Edge {
+            from,
+            from_port: from_port.to_string(),
+            to,
+            to_port: to_port.to_string(),
+        });
         Ok(())
     }
 
     pub fn topo_sort(&self) -> Result<Vec<NodeId>, GraphError> {
         let mut in_degree: HashMap<NodeId, usize> = HashMap::new();
-        let mut adj:       HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        let mut adj: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for &id in self.nodes.keys() {
             in_degree.entry(id).or_insert(0);
             adj.entry(id).or_default();
@@ -350,7 +462,8 @@ impl OchromaNodeGraph {
             *in_degree.entry(e.to).or_insert(0) += 1;
             adj.entry(e.from).or_default().push(e.to);
         }
-        let mut queue: BinaryHeap<Reverse<NodeId>> = in_degree.iter()
+        let mut queue: BinaryHeap<Reverse<NodeId>> = in_degree
+            .iter()
             .filter(|&(_, &d)| d == 0)
             .map(|(&id, _)| Reverse(id))
             .collect();
@@ -361,12 +474,17 @@ impl OchromaNodeGraph {
                 for &s in succs {
                     let d = in_degree.entry(s).or_insert(0);
                     *d = d.saturating_sub(1);
-                    if *d == 0 { queue.push(Reverse(s)); }
+                    if *d == 0 {
+                        queue.push(Reverse(s));
+                    }
                 }
             }
         }
         if order.len() != self.nodes.len() {
-            return Err(GraphError::CookFailed { node: "topo_sort".into(), reason: "cycle detected".into() });
+            return Err(GraphError::CookFailed {
+                node: "topo_sort".into(),
+                reason: "cycle detected".into(),
+            });
         }
         Ok(order)
     }
@@ -375,21 +493,43 @@ impl OchromaNodeGraph {
         let mut stack = vec![id];
         let mut visited: HashSet<NodeId> = HashSet::new();
         while let Some(cur) = stack.pop() {
-            if !visited.insert(cur) { continue; }
-            if let Some(e) = self.nodes.get_mut(&cur) { e.dirty = true; }
+            if !visited.insert(cur) {
+                continue;
+            }
+            if let Some(e) = self.nodes.get_mut(&cur) {
+                e.dirty = true;
+            }
             for edge in &self.edges {
-                if edge.from == cur { stack.push(edge.to); }
+                if edge.from == cur {
+                    stack.push(edge.to);
+                }
             }
         }
     }
 
     pub fn mark_clean_all(&mut self) {
-        for e in self.nodes.values_mut() { e.dirty = false; }
+        for e in self.nodes.values_mut() {
+            e.dirty = false;
+        }
     }
 
-    pub fn set_param(&mut self, id: NodeId, key: &str, value: ParamValue) -> Result<(), GraphError> {
-        let entry = self.nodes.get_mut(&id).ok_or(GraphError::NodeNotFound(id))?;
-        entry.node.set_param(key, value).map_err(|e| GraphError::CookFailed { node: entry.name.clone(), reason: e.to_string() })?;
+    pub fn set_param(
+        &mut self,
+        id: NodeId,
+        key: &str,
+        value: ParamValue,
+    ) -> Result<(), GraphError> {
+        let entry = self
+            .nodes
+            .get_mut(&id)
+            .ok_or(GraphError::NodeNotFound(id))?;
+        entry
+            .node
+            .set_param(key, value)
+            .map_err(|e| GraphError::CookFailed {
+                node: entry.name.clone(),
+                reason: e.to_string(),
+            })?;
         self.mark_dirty(id);
         Ok(())
     }
@@ -402,9 +542,13 @@ impl OchromaNodeGraph {
         let mut visited: HashSet<NodeId> = HashSet::new();
         let mut stack = vec![id];
         while let Some(cur) = stack.pop() {
-            if !visited.insert(cur) { continue; }
+            if !visited.insert(cur) {
+                continue;
+            }
             for edge in &self.edges {
-                if edge.from == cur { stack.push(edge.to); }
+                if edge.from == cur {
+                    stack.push(edge.to);
+                }
             }
         }
         let mut out: Vec<NodeId> = visited
@@ -421,7 +565,12 @@ impl OchromaNodeGraph {
     /// [`live_cook`] whose injected time has advanced past the throttle budget,
     /// so a parameter scrubbed every frame collapses into few actual cooks while
     /// the LAST value set is always the one that finally cooks.
-    pub fn request_recook(&mut self, id: NodeId, key: &str, value: ParamValue) -> Result<(), GraphError> {
+    pub fn request_recook(
+        &mut self,
+        id: NodeId,
+        key: &str,
+        value: ParamValue,
+    ) -> Result<(), GraphError> {
         self.set_param(id, key, value)?;
         // Remember EVERY edited root (a second node's edit must not abandon
         // the first's pending recook); a re-request moves its root to the back
@@ -477,11 +626,18 @@ impl OchromaNodeGraph {
         let order = self.topo_sort()?;
         let mut cooked = Vec::new();
         for id in order {
-            if !dirty_set.contains(&id) { continue; }
+            if !dirty_set.contains(&id) {
+                continue;
+            }
             let inputs = self.assemble_inputs(id)?;
             let name = self.nodes[&id].name.clone();
-            let output = self.nodes[&id].node.cook(inputs)
-                .map_err(|e| GraphError::CookFailed { node: name.clone(), reason: e.to_string() })?;
+            let output = self.nodes[&id]
+                .node
+                .cook(inputs)
+                .map_err(|e| GraphError::CookFailed {
+                    node: name.clone(),
+                    reason: e.to_string(),
+                })?;
             let entry = self.nodes.get_mut(&id).unwrap();
             entry.last_output = Some(output);
             entry.dirty = false;
@@ -492,13 +648,21 @@ impl OchromaNodeGraph {
         // The reported root is the most recently requested due root; pending
         // roots that were not yet due remain queued for a later pass.
         let root = *due.last().expect("due is non-empty");
-        let root_name = self.nodes.get(&root).map(|e| e.name.clone()).unwrap_or_default();
+        let root_name = self
+            .nodes
+            .get(&root)
+            .map(|e| e.name.clone())
+            .unwrap_or_default();
         self.throttle.pending_roots.retain(|r| !due.contains(r));
         for r in &due {
             self.throttle.last_cook_at.insert(*r, now);
         }
 
-        Ok(Some(LiveCook { root, root_name, cooked }))
+        Ok(Some(LiveCook {
+            root,
+            root_name,
+            cooked,
+        }))
     }
 
     /// Is a trailing-edge recook currently pending (a param changed since the
@@ -510,10 +674,18 @@ impl OchromaNodeGraph {
     pub fn cook(&mut self) -> Result<(), GraphError> {
         let order = self.topo_sort()?;
         for id in order {
-            if !self.nodes.get(&id).map(|e| e.dirty).unwrap_or(false) { continue; }
+            if !self.nodes.get(&id).map(|e| e.dirty).unwrap_or(false) {
+                continue;
+            }
             let inputs = self.assemble_inputs(id)?;
-            let name   = self.nodes[&id].name.clone();
-            let output = self.nodes[&id].node.cook(inputs).map_err(|e| GraphError::CookFailed { node: name.clone(), reason: e.to_string() })?;
+            let name = self.nodes[&id].name.clone();
+            let output = self.nodes[&id]
+                .node
+                .cook(inputs)
+                .map_err(|e| GraphError::CookFailed {
+                    node: name.clone(),
+                    reason: e.to_string(),
+                })?;
             let entry = self.nodes.get_mut(&id).unwrap();
             entry.last_output = Some(output);
             entry.dirty = false;
@@ -537,9 +709,14 @@ impl OchromaNodeGraph {
         // sees the freshest upstream outputs.
         for &id in &order {
             let inputs = self.assemble_inputs(id)?;
-            let name   = self.nodes[&id].name.clone();
-            let output = self.nodes[&id].node.cook(inputs)
-                .map_err(|e| GraphError::CookFailed { node: name.clone(), reason: e.to_string() })?;
+            let name = self.nodes[&id].name.clone();
+            let output = self.nodes[&id]
+                .node
+                .cook(inputs)
+                .map_err(|e| GraphError::CookFailed {
+                    node: name.clone(),
+                    reason: e.to_string(),
+                })?;
             let entry = self.nodes.get_mut(&id).unwrap();
             entry.last_output = Some(output);
             entry.dirty = false;
@@ -551,7 +728,9 @@ impl OchromaNodeGraph {
         for e in &self.edges {
             has_outgoing.insert(e.from);
         }
-        let mut sinks: Vec<NodeId> = order.iter().copied()
+        let mut sinks: Vec<NodeId> = order
+            .iter()
+            .copied()
             .filter(|id| !has_outgoing.contains(id))
             .collect();
         sinks.sort_unstable();
@@ -565,7 +744,11 @@ impl OchromaNodeGraph {
             }
         }
 
-        Ok(EvalResult { order, sinks, outputs })
+        Ok(EvalResult {
+            order,
+            sinks,
+            outputs,
+        })
     }
 
     pub fn get_output(&self, id: NodeId, port: &str) -> Option<&PortData> {
@@ -646,8 +829,12 @@ impl OchromaNodeGraph {
     fn assemble_inputs(&self, id: NodeId) -> Result<NodeInputs, GraphError> {
         let mut inputs = NodeInputs::new();
         for e in &self.edges {
-            if e.to != id { continue; }
-            let data = self.nodes.get(&e.from)
+            if e.to != id {
+                continue;
+            }
+            let data = self
+                .nodes
+                .get(&e.from)
                 .and_then(|entry| entry.last_output.as_ref())
                 .and_then(|out| out.get(&e.from_port))
                 .cloned();
@@ -655,7 +842,7 @@ impl OchromaNodeGraph {
                 inputs.insert(e.to_port.clone(), d);
             } else {
                 return Err(GraphError::CookFailed {
-                    node:   format!("{:?}", id),
+                    node: format!("{:?}", id),
                     reason: format!("upstream {:?} has no output for '{}'", e.from, e.from_port),
                 });
             }
@@ -667,10 +854,16 @@ impl OchromaNodeGraph {
         let mut visited = std::collections::HashSet::new();
         let mut stack = vec![from];
         while let Some(cur) = stack.pop() {
-            if cur == target { return true; }
-            if !visited.insert(cur) { continue; }
+            if cur == target {
+                return true;
+            }
+            if !visited.insert(cur) {
+                continue;
+            }
             for e in &self.edges {
-                if e.from == cur { stack.push(e.to); }
+                if e.from == cur {
+                    stack.push(e.to);
+                }
             }
         }
         false
@@ -683,22 +876,41 @@ impl OchromaNodeGraph {
     /// (`nodes` / `edges`, suitable for `to_json`) and the live cloned node boxes
     /// (`node_states`) needed for a faithful in-process round-trip via [`restore`].
     pub fn snapshot(&self) -> GraphSnapshot {
-        let nodes = self.nodes.iter().map(|(id, entry)| NodeSnapshot {
-            id: id.0,
-            name: entry.name.clone(),
-            type_name: entry.node.descriptor().type_name.to_string(),
-            params: serde_json::Value::Null,
-        }).collect();
-        let edges = self.edges.iter().map(|e| EdgeSnapshot {
-            from: e.from.0, from_port: e.from_port.clone(),
-            to: e.to.0, to_port: e.to_port.clone(),
-        }).collect();
-        let node_states = self.nodes.iter().map(|(id, entry)| NodeState {
-            id:   id.0,
-            name: entry.name.clone(),
-            node: entry.node.clone_box(),
-        }).collect();
-        GraphSnapshot { nodes, edges, node_states, next_id: self.next_id }
+        let nodes = self
+            .nodes
+            .iter()
+            .map(|(id, entry)| NodeSnapshot {
+                id: id.0,
+                name: entry.name.clone(),
+                type_name: entry.node.descriptor().type_name.to_string(),
+                params: serde_json::Value::Null,
+            })
+            .collect();
+        let edges = self
+            .edges
+            .iter()
+            .map(|e| EdgeSnapshot {
+                from: e.from.0,
+                from_port: e.from_port.clone(),
+                to: e.to.0,
+                to_port: e.to_port.clone(),
+            })
+            .collect();
+        let node_states = self
+            .nodes
+            .iter()
+            .map(|(id, entry)| NodeState {
+                id: id.0,
+                name: entry.name.clone(),
+                node: entry.node.clone_box(),
+            })
+            .collect();
+        GraphSnapshot {
+            nodes,
+            edges,
+            node_states,
+            next_id: self.next_id,
+        }
     }
 
     /// Restore the graph to exactly the state captured by [`snapshot`]: the same
@@ -711,13 +923,16 @@ impl OchromaNodeGraph {
         self.nodes.clear();
         self.edges.clear();
         for state in snap.node_states {
-            self.nodes.insert(NodeId(state.id), NodeEntry {
-                name:        state.name,
-                node:        state.node,
-                dirty:       true,
-                last_output: None,
-                cook_count:  0,
-            });
+            self.nodes.insert(
+                NodeId(state.id),
+                NodeEntry {
+                    name: state.name,
+                    node: state.node,
+                    dirty: true,
+                    last_output: None,
+                    cook_count: 0,
+                },
+            );
         }
         self.throttle = ThrottleState {
             budget: self.throttle.budget,
@@ -726,15 +941,15 @@ impl OchromaNodeGraph {
         };
         for e in &snap.edges {
             self.edges.push(Edge {
-                from:      NodeId(e.from),
+                from: NodeId(e.from),
                 from_port: e.from_port.clone(),
-                to:        NodeId(e.to),
-                to_port:   e.to_port.clone(),
+                to: NodeId(e.to),
+                to_port: e.to_port.clone(),
             });
         }
-        self.next_id = snap.next_id.max(
-            self.nodes.keys().map(|id| id.0 + 1).max().unwrap_or(0),
-        );
+        self.next_id = snap
+            .next_id
+            .max(self.nodes.keys().map(|id| id.0 + 1).max().unwrap_or(0));
         Ok(())
     }
 }
@@ -756,7 +971,7 @@ pub struct WireValue {
 /// number), so the UI chip conveys what actually flowed through the wire.
 pub fn format_port_data(data: &PortData) -> String {
     match data {
-        PortData::Splats(s)        => format!("Splats {}", s.len()),
+        PortData::Splats(s) => format!("Splats {}", s.len()),
         PortData::SpectralField(f) => {
             // Range notation means the actual min..max over all 16 bands —
             // not the first/last samples, which lie for any non-monotonic field.
@@ -767,14 +982,14 @@ pub fn format_port_data(data: &PortData) -> String {
                 });
             format!("Spectral [{mn:.2}..{mx:.2}]")
         }
-        PortData::Terrain(t)       => format!("Terrain {} cells", t.heights.len()),
-        PortData::Mesh(m)          => format!("Mesh {} tris", m.indices.len()),
-        PortData::LodMesh(l)       => format!("LodMesh {} levels", l.len()),
-        PortData::Instances(i)     => format!("Instances {}", i.len()),
-        PortData::Scalar(v)        => format!("Scalar {:.2}", v),
-        PortData::BiomeMap(b)      => format!("BiomeMap {} cells", b.len()),
-        PortData::SplatWeights(w)  => format!("SplatWeights {}", w.len()),
-        PortData::ScalarVec(v)     => format!("ScalarVec {}", v.len()),
+        PortData::Terrain(t) => format!("Terrain {} cells", t.heights.len()),
+        PortData::Mesh(m) => format!("Mesh {} tris", m.indices.len()),
+        PortData::LodMesh(l) => format!("LodMesh {} levels", l.len()),
+        PortData::Instances(i) => format!("Instances {}", i.len()),
+        PortData::Scalar(v) => format!("Scalar {:.2}", v),
+        PortData::BiomeMap(b) => format!("BiomeMap {} cells", b.len()),
+        PortData::SplatWeights(w) => format!("SplatWeights {}", w.len()),
+        PortData::ScalarVec(v) => format!("ScalarVec {}", v.len()),
     }
 }
 
@@ -786,14 +1001,16 @@ pub fn format_port_data(data: &PortData) -> String {
 /// upstream nodes are NOT in `cooked` — their cached outputs were reused.
 #[derive(Clone, Debug)]
 pub struct LiveCook {
-    pub root:      NodeId,
+    pub root: NodeId,
     pub root_name: String,
-    pub cooked:    Vec<NodeId>,
+    pub cooked: Vec<NodeId>,
 }
 
 impl LiveCook {
     /// Number of nodes that actually re-cooked (the dirty subgraph size).
-    pub fn dirty_subgraph_size(&self) -> usize { self.cooked.len() }
+    pub fn dirty_subgraph_size(&self) -> usize {
+        self.cooked.len()
+    }
 }
 
 /// Result of a full graph [`OchromaNodeGraph::evaluate`] pass.
@@ -803,8 +1020,8 @@ impl LiveCook {
 /// `outputs` keyed by [`NodeId`].
 #[derive(Clone, Debug)]
 pub struct EvalResult {
-    pub order:   Vec<NodeId>,
-    pub sinks:   Vec<NodeId>,
+    pub order: Vec<NodeId>,
+    pub sinks: Vec<NodeId>,
     pub outputs: HashMap<NodeId, NodeOutputs>,
 }
 
@@ -822,30 +1039,36 @@ impl EvalResult {
     /// The single terminal sink node, if the graph has exactly one. Useful when a
     /// linear pipeline produces one final result.
     pub fn sole_sink(&self) -> Option<NodeId> {
-        if self.sinks.len() == 1 { Some(self.sinks[0]) } else { None }
+        if self.sinks.len() == 1 {
+            Some(self.sinks[0])
+        } else {
+            None
+        }
     }
 }
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub struct NodeSnapshot {
-    pub id:        u32,
-    pub name:      String,
+    pub id: u32,
+    pub name: String,
     pub type_name: String,
-    pub params:    serde_json::Value,
+    pub params: serde_json::Value,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct EdgeSnapshot {
-    pub from: u32, pub from_port: String,
-    pub to: u32,   pub to_port:   String,
+    pub from: u32,
+    pub from_port: String,
+    pub to: u32,
+    pub to_port: String,
 }
 
 /// Live node state captured by [`OchromaNodeGraph::snapshot`] for in-process
 /// round-tripping. Not serializable — it carries an actual cloned trait object.
 pub struct NodeState {
-    pub id:   u32,
+    pub id: u32,
     pub name: String,
     pub node: Box<dyn OchromaNode>,
 }
@@ -865,8 +1088,12 @@ pub struct GraphSnapshot {
 }
 
 impl GraphSnapshot {
-    pub fn to_json(&self) -> Result<String, serde_json::Error> { serde_json::to_string_pretty(self) }
-    pub fn from_json(s: &str) -> Result<Self, serde_json::Error> { serde_json::from_str(s) }
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+    pub fn from_json(s: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(s)
+    }
 }
 
 /// Test helpers exposed so other modules (editor_panel) can use pass_node
@@ -878,8 +1105,16 @@ pub mod tests_helpers {
         fn descriptor(&self) -> NodeDescriptor {
             NodeDescriptor {
                 type_name: "pass",
-                inputs:  vec![PortSpec { name: "in",  port_type: PortType::Scalar, optional: true  }],
-                outputs: vec![PortSpec { name: "out", port_type: PortType::Scalar, optional: false }],
+                inputs: vec![PortSpec {
+                    name: "in",
+                    port_type: PortType::Scalar,
+                    optional: true,
+                }],
+                outputs: vec![PortSpec {
+                    name: "out",
+                    port_type: PortType::Scalar,
+                    optional: false,
+                }],
             }
         }
         fn set_param(&mut self, key: &str, _: ParamValue) -> Result<(), NodeError> {
@@ -890,10 +1125,14 @@ pub mod tests_helpers {
             out.insert("out".into(), PortData::Scalar(1.0));
             Ok(out)
         }
-        fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(PassNode) }
+        fn clone_box(&self) -> Box<dyn OchromaNode> {
+            Box::new(PassNode)
+        }
     }
 
-    pub fn pass_node() -> Box<dyn OchromaNode> { Box::new(PassNode) }
+    pub fn pass_node() -> Box<dyn OchromaNode> {
+        Box::new(PassNode)
+    }
 }
 
 #[cfg(test)]
@@ -901,7 +1140,9 @@ mod tests {
     use super::*;
     use tests_helpers::*;
 
-    fn pass() -> Box<dyn OchromaNode> { pass_node() }
+    fn pass() -> Box<dyn OchromaNode> {
+        pass_node()
+    }
 
     /// Pins the `vox_ui::tokens::PortType` mirror against the canonical
     /// `node_graph::PortType`. The exhaustive `match` means adding or renaming a
@@ -929,14 +1170,29 @@ mod tests {
         // `ScalarVec` port (used by real moisture/inhabitation/splat-weight nodes)
         // has its own mirror — the variant whose absence was the original drift.
         let all = [
-            PortType::Splats, PortType::SpectralField, PortType::Terrain, PortType::Mesh,
-            PortType::LodMesh, PortType::Instances, PortType::Scalar, PortType::BiomeMap,
-            PortType::SplatWeights, PortType::ScalarVec,
+            PortType::Splats,
+            PortType::SpectralField,
+            PortType::Terrain,
+            PortType::Mesh,
+            PortType::LodMesh,
+            PortType::Instances,
+            PortType::Scalar,
+            PortType::BiomeMap,
+            PortType::SplatWeights,
+            PortType::ScalarVec,
         ];
         let mapped: Vec<Ui> = all.iter().map(|&p| mirror(p)).collect();
         let unique: std::collections::HashSet<Ui> = mapped.iter().copied().collect();
-        assert_eq!(unique.len(), all.len(), "mirror must be injective (no two editor variants share a UI variant)");
-        assert_eq!(mirror(PortType::ScalarVec), Ui::ScalarVec, "ScalarVec port must mirror to ScalarVec");
+        assert_eq!(
+            unique.len(),
+            all.len(),
+            "mirror must be injective (no two editor variants share a UI variant)"
+        );
+        assert_eq!(
+            mirror(PortType::ScalarVec),
+            Ui::ScalarVec,
+            "ScalarVec port must mirror to ScalarVec"
+        );
     }
 
     #[test]
@@ -955,7 +1211,11 @@ mod tests {
         let b = g.add_node("b", pass());
         g.connect(a, "out", b, "in").unwrap();
         let err = g.connect(b, "out", a, "in").unwrap_err();
-        assert!(matches!(err, GraphError::CycleDetected { .. }), "got: {:?}", err);
+        assert!(
+            matches!(err, GraphError::CycleDetected { .. }),
+            "got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -1007,7 +1267,11 @@ mod tests {
                 NodeDescriptor {
                     type_name: "count",
                     inputs: vec![],
-                    outputs: vec![PortSpec { name: "out", port_type: PortType::Scalar, optional: false }],
+                    outputs: vec![PortSpec {
+                        name: "out",
+                        port_type: PortType::Scalar,
+                        optional: false,
+                    }],
                 }
             }
             fn set_param(&mut self, k: &str, _: ParamValue) -> Result<(), NodeError> {
@@ -1019,7 +1283,9 @@ mod tests {
                 out.insert("out".into(), PortData::Scalar(1.0));
                 Ok(out)
             }
-            fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(CountNode(self.0.clone())) }
+            fn clone_box(&self) -> Box<dyn OchromaNode> {
+                Box::new(CountNode(self.0.clone()))
+            }
         }
         let mut g = OchromaNodeGraph::new();
         g.add_node("n", Box::new(CountNode(count.clone())));
@@ -1036,18 +1302,32 @@ mod tests {
                 NodeDescriptor {
                     type_name: "terrain_out",
                     inputs: vec![],
-                    outputs: vec![PortSpec { name: "terrain", port_type: PortType::Terrain, optional: false }],
+                    outputs: vec![PortSpec {
+                        name: "terrain",
+                        port_type: PortType::Terrain,
+                        optional: false,
+                    }],
                 }
             }
-            fn set_param(&mut self, k: &str, _: ParamValue) -> Result<(), NodeError> { Err(NodeError::UnknownParam(k.into())) }
-            fn cook(&self, _: NodeInputs) -> Result<NodeOutputs, NodeError> { Ok(NodeOutputs::new()) }
-            fn clone_box(&self) -> Box<dyn OchromaNode> { Box::new(TerrainOutNode) }
+            fn set_param(&mut self, k: &str, _: ParamValue) -> Result<(), NodeError> {
+                Err(NodeError::UnknownParam(k.into()))
+            }
+            fn cook(&self, _: NodeInputs) -> Result<NodeOutputs, NodeError> {
+                Ok(NodeOutputs::new())
+            }
+            fn clone_box(&self) -> Box<dyn OchromaNode> {
+                Box::new(TerrainOutNode)
+            }
         }
         let mut g = OchromaNodeGraph::new();
         let a = g.add_node("a", Box::new(TerrainOutNode));
         let b = g.add_node("b", pass());
         let err = g.connect(a, "terrain", b, "in").unwrap_err();
-        assert!(matches!(err, GraphError::TypeMismatch { .. }), "got: {:?}", err);
+        assert!(
+            matches!(err, GraphError::TypeMismatch { .. }),
+            "got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -1068,38 +1348,82 @@ mod tests {
         use crate::nodes::terrain_node::TerrainNode;
         let mut graph = OchromaNodeGraph::new();
         // Start at resolution 32 (1024 heights), no erosion for determinism.
-        let id = graph.add_node("terrain", Box::new(TerrainNode { resolution: 32, droplet_count: 0, ..Default::default() }));
+        let id = graph.add_node(
+            "terrain",
+            Box::new(TerrainNode {
+                resolution: 32,
+                droplet_count: 0,
+                ..Default::default()
+            }),
+        );
         let snap_before = graph.snapshot();
 
         // Mutate the param to a different value and confirm it took effect.
-        graph.set_param(id, "resolution", ParamValue::Int(64)).unwrap();
+        graph
+            .set_param(id, "resolution", ParamValue::Int(64))
+            .unwrap();
         graph.cook().unwrap();
-        let mutated = graph.get_output(id, "terrain").unwrap().as_terrain().unwrap();
-        assert_eq!(mutated.heights.len(), 64 * 64, "mutation must change resolution");
+        let mutated = graph
+            .get_output(id, "terrain")
+            .unwrap()
+            .as_terrain()
+            .unwrap();
+        assert_eq!(
+            mutated.heights.len(),
+            64 * 64,
+            "mutation must change resolution"
+        );
 
         // Undo: restore the pre-mutation snapshot. The restored node must carry
         // the ORIGINAL resolution (32), not the mutated 64.
         graph.restore(snap_before).unwrap();
         graph.cook().unwrap();
-        let restored = graph.get_output(id, "terrain").unwrap().as_terrain().unwrap();
-        assert_eq!(restored.heights.len(), 32 * 32, "restore must roll resolution back to 32");
+        let restored = graph
+            .get_output(id, "terrain")
+            .unwrap()
+            .as_terrain()
+            .unwrap();
+        assert_eq!(
+            restored.heights.len(),
+            32 * 32,
+            "restore must roll resolution back to 32"
+        );
         assert_eq!(restored.resolution, 32);
     }
 
     #[test]
     fn restore_round_trips_nodes_edges_and_params() {
-        use crate::nodes::terrain_node::TerrainNode;
         use crate::nodes::biome_node::BiomeNode;
+        use crate::nodes::terrain_node::TerrainNode;
 
         // Build a graph with >=2 nodes and a real edge: terrain -> biome.
         let mut graph = OchromaNodeGraph::new();
-        let terrain = graph.add_node("terrain", Box::new(TerrainNode { resolution: 48, seed: 7, droplet_count: 0, ..Default::default() }));
-        let biome   = graph.add_node("biome",   Box::new(BiomeNode { world_height: 123.0, moisture: 0.25 }));
+        let terrain = graph.add_node(
+            "terrain",
+            Box::new(TerrainNode {
+                resolution: 48,
+                seed: 7,
+                droplet_count: 0,
+                ..Default::default()
+            }),
+        );
+        let biome = graph.add_node(
+            "biome",
+            Box::new(BiomeNode {
+                world_height: 123.0,
+                moisture: 0.25,
+            }),
+        );
         graph.connect(terrain, "terrain", biome, "terrain").unwrap();
 
         // Sanity: original graph cooks and produces a biome map sized by resolution.
         graph.cook().unwrap();
-        let orig_biome = graph.get_output(biome, "biome_map").unwrap().as_biome_map().unwrap().clone();
+        let orig_biome = graph
+            .get_output(biome, "biome_map")
+            .unwrap()
+            .as_biome_map()
+            .unwrap()
+            .clone();
         assert_eq!(orig_biome.len(), 48 * 48);
 
         let snap = graph.snapshot();
@@ -1126,9 +1450,16 @@ mod tests {
         assert_eq!(restored_ids, vec![terrain.0, biome.0], "node ids preserved");
 
         graph.cook().unwrap();
-        let restored_biome = graph.get_output(biome, "biome_map").unwrap().as_biome_map().unwrap();
+        let restored_biome = graph
+            .get_output(biome, "biome_map")
+            .unwrap()
+            .as_biome_map()
+            .unwrap();
         // Same terrain seed/resolution AND same biome params => byte-identical map.
-        assert_eq!(restored_biome, &orig_biome, "edge + params must survive restore identically");
+        assert_eq!(
+            restored_biome, &orig_biome,
+            "edge + params must survive restore identically"
+        );
 
         // The edge truly reconnects: with the edge present, biome has its terrain
         // input. Remove it and biome cooks would fail on missing input.
@@ -1140,16 +1471,29 @@ mod tests {
     /// biome byte per terrain height cell, classified from the height value).
     #[test]
     fn evaluate_threads_terrain_into_biome_classification() {
+        use crate::nodes::biome_node::{BiomeKind, BiomeNode};
         use crate::nodes::terrain_node::TerrainNode;
-        use crate::nodes::biome_node::{BiomeNode, BiomeKind};
 
         let mut graph = OchromaNodeGraph::new();
         // amplitude 200 -> heights in [0, 200]; with world_height 400 no cell can
         // reach the Alpine band (norm_h >= 0.90 i.e. height >= 360).
-        let terrain = graph.add_node("terrain", Box::new(TerrainNode {
-            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 7, ..Default::default()
-        }));
-        let biome = graph.add_node("biome", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        let terrain = graph.add_node(
+            "terrain",
+            Box::new(TerrainNode {
+                resolution: 32,
+                amplitude: 200.0,
+                droplet_count: 0,
+                seed: 7,
+                ..Default::default()
+            }),
+        );
+        let biome = graph.add_node(
+            "biome",
+            Box::new(BiomeNode {
+                world_height: 400.0,
+                moisture: 0.5,
+            }),
+        );
         // terrain output port "terrain" -> biome input port "terrain"
         graph.connect(terrain, "terrain", biome, "terrain").unwrap();
 
@@ -1161,55 +1505,117 @@ mod tests {
         assert!(pt < pb, "terrain must be evaluated before biome");
 
         // biome is the sole sink (terminal result) of this pipeline.
-        assert_eq!(result.sole_sink(), Some(biome), "biome is the terminal node");
+        assert_eq!(
+            result.sole_sink(),
+            Some(biome),
+            "biome is the terminal node"
+        );
 
         // Downstream output exists and has exactly one biome byte per terrain cell.
-        let heights = result.get(terrain, "terrain").unwrap().as_terrain().unwrap();
-        let biome_map_low = result.get(biome, "biome_map").unwrap().as_biome_map().unwrap();
-        assert_eq!(biome_map_low.len(), heights.heights.len(), "one biome cell per height cell");
+        let heights = result
+            .get(terrain, "terrain")
+            .unwrap()
+            .as_terrain()
+            .unwrap();
+        let biome_map_low = result
+            .get(biome, "biome_map")
+            .unwrap()
+            .as_biome_map()
+            .unwrap();
+        assert_eq!(
+            biome_map_low.len(),
+            heights.heights.len(),
+            "one biome cell per height cell"
+        );
         assert_eq!(heights.heights.len(), 32 * 32);
 
         // At amplitude 200 no cell reaches the Alpine band.
-        let alpine_low = biome_map_low.iter().filter(|&&b| b == BiomeKind::Alpine as u8).count();
-        assert_eq!(alpine_low, 0, "amplitude 200 cannot produce Alpine cells, got {}", alpine_low);
+        let alpine_low = biome_map_low
+            .iter()
+            .filter(|&&b| b == BiomeKind::Alpine as u8)
+            .count();
+        assert_eq!(
+            alpine_low, 0,
+            "amplitude 200 cannot produce Alpine cells, got {}",
+            alpine_low
+        );
 
         // Now change the UPSTREAM param: raise amplitude so peaks reach the Alpine
         // band. fBm normalizes so the tallest cell equals `amplitude` exactly, and
         // 800 >= 360, guaranteeing at least one Alpine cell downstream.
-        graph.set_param(terrain, "amplitude", ParamValue::Float(800.0)).unwrap();
+        graph
+            .set_param(terrain, "amplitude", ParamValue::Float(800.0))
+            .unwrap();
         let result_hi = graph.evaluate().unwrap();
 
-        let heights_hi = result_hi.get(terrain, "terrain").unwrap().as_terrain().unwrap();
-        let biome_map_hi = result_hi.get(biome, "biome_map").unwrap().as_biome_map().unwrap();
+        let heights_hi = result_hi
+            .get(terrain, "terrain")
+            .unwrap()
+            .as_terrain()
+            .unwrap();
+        let biome_map_hi = result_hi
+            .get(biome, "biome_map")
+            .unwrap()
+            .as_biome_map()
+            .unwrap();
 
-        let max_height_hi = heights_hi.heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        assert!(max_height_hi >= 360.0, "raised amplitude should push a peak into Alpine band, max={}", max_height_hi);
+        let max_height_hi = heights_hi
+            .heights
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            max_height_hi >= 360.0,
+            "raised amplitude should push a peak into Alpine band, max={}",
+            max_height_hi
+        );
 
-        let alpine_hi = biome_map_hi.iter().filter(|&&b| b == BiomeKind::Alpine as u8).count();
-        println!("alpine cells: low-amplitude={} high-amplitude={}", alpine_low, alpine_hi);
-        assert!(alpine_hi > 0, "raising upstream amplitude must change downstream biome to include Alpine, got {}", alpine_hi);
+        let alpine_hi = biome_map_hi
+            .iter()
+            .filter(|&&b| b == BiomeKind::Alpine as u8)
+            .count();
+        println!(
+            "alpine cells: low-amplitude={} high-amplitude={}",
+            alpine_low, alpine_hi
+        );
+        assert!(
+            alpine_hi > 0,
+            "raising upstream amplitude must change downstream biome to include Alpine, got {}",
+            alpine_hi
+        );
 
         // The downstream result is genuinely a different computed value after the
         // upstream change — not merely a re-run of the same bytes.
-        assert_ne!(biome_map_low, biome_map_hi, "downstream biome map must change when upstream param changes");
+        assert_ne!(
+            biome_map_low, biome_map_hi,
+            "downstream biome map must change when upstream param changes"
+        );
     }
 
     /// Wire data inspection (#9b): after evaluate(), the terrain->biome wire must
     /// carry a formatted snapshot of the Terrain value that flowed through it.
     #[test]
     fn wire_values_populate_terrain_into_biome_edge() {
-        use crate::nodes::terrain_node::TerrainNode;
         use crate::nodes::biome_node::BiomeNode;
+        use crate::nodes::terrain_node::TerrainNode;
 
         let mut graph = OchromaNodeGraph::new();
-        let terrain = graph.add_node("terrain", Box::new(TerrainNode {
-            resolution: 32, droplet_count: 0, ..Default::default()
-        }));
+        let terrain = graph.add_node(
+            "terrain",
+            Box::new(TerrainNode {
+                resolution: 32,
+                droplet_count: 0,
+                ..Default::default()
+            }),
+        );
         let biome = graph.add_node("biome", Box::new(BiomeNode::default()));
         graph.connect(terrain, "terrain", biome, "terrain").unwrap();
 
         // Before evaluate, nothing has flowed.
-        assert!(graph.wire_values().is_empty(), "no wire values before evaluate");
+        assert!(
+            graph.wire_values().is_empty(),
+            "no wire values before evaluate"
+        );
 
         graph.evaluate().unwrap();
         let wires = graph.wire_values();
@@ -1222,7 +1628,10 @@ mod tests {
         // The Terrain value that flowed is 32*32 = 1024 cells; assert the real
         // formatted content, not just presence.
         assert_eq!(w.value, "Terrain 1024 cells");
-        assert!(w.value.contains("1024"), "wire value must report the real cell count");
+        assert!(
+            w.value.contains("1024"),
+            "wire value must report the real cell count"
+        );
     }
 
     /// PCG-style incremental live re-cook: changing a Terrain param re-cooks the
@@ -1230,58 +1639,120 @@ mod tests {
     /// parallel Terrain->Biome branch does NOT re-cook (cook_count unchanged).
     #[test]
     fn live_cook_recooks_only_dirty_subgraph() {
-        use crate::nodes::terrain_node::TerrainNode;
         use crate::nodes::biome_node::BiomeNode;
+        use crate::nodes::terrain_node::TerrainNode;
 
         let mut g = OchromaNodeGraph::new();
         // Branch A: terrain_a -> biome_a (the one we'll edit).
-        let terrain_a = g.add_node("terrain_a", Box::new(TerrainNode {
-            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 7, ..Default::default()
-        }));
-        let biome_a = g.add_node("biome_a", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        let terrain_a = g.add_node(
+            "terrain_a",
+            Box::new(TerrainNode {
+                resolution: 32,
+                amplitude: 200.0,
+                droplet_count: 0,
+                seed: 7,
+                ..Default::default()
+            }),
+        );
+        let biome_a = g.add_node(
+            "biome_a",
+            Box::new(BiomeNode {
+                world_height: 400.0,
+                moisture: 0.5,
+            }),
+        );
         g.connect(terrain_a, "terrain", biome_a, "terrain").unwrap();
 
         // Branch B: an independent terrain_b -> biome_b that must stay untouched.
-        let terrain_b = g.add_node("terrain_b", Box::new(TerrainNode {
-            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 99, ..Default::default()
-        }));
-        let biome_b = g.add_node("biome_b", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        let terrain_b = g.add_node(
+            "terrain_b",
+            Box::new(TerrainNode {
+                resolution: 32,
+                amplitude: 200.0,
+                droplet_count: 0,
+                seed: 99,
+                ..Default::default()
+            }),
+        );
+        let biome_b = g.add_node(
+            "biome_b",
+            Box::new(BiomeNode {
+                world_height: 400.0,
+                moisture: 0.5,
+            }),
+        );
         g.connect(terrain_b, "terrain", biome_b, "terrain").unwrap();
 
         // Initial full cook establishes baselines for every node.
         g.cook().unwrap();
-        let biome_a_before = g.get_output(biome_a, "biome_map").unwrap().as_biome_map().unwrap().clone();
+        let biome_a_before = g
+            .get_output(biome_a, "biome_map")
+            .unwrap()
+            .as_biome_map()
+            .unwrap()
+            .clone();
         let cc_terrain_b_before = g.cook_count(terrain_b).unwrap();
-        let cc_biome_b_before   = g.cook_count(biome_b).unwrap();
+        let cc_biome_b_before = g.cook_count(biome_b).unwrap();
         let cc_terrain_a_before = g.cook_count(terrain_a).unwrap();
-        let cc_biome_a_before   = g.cook_count(biome_a).unwrap();
+        let cc_biome_a_before = g.cook_count(biome_a).unwrap();
 
         // Change terrain_a amplitude so the downstream biome classification changes.
         // Use a fresh clock far past the budget so the throttle fires immediately.
         let t0 = Instant::now();
         g.set_recook_budget(Duration::from_millis(100));
-        g.request_recook(terrain_a, "amplitude", ParamValue::Float(800.0)).unwrap();
+        g.request_recook(terrain_a, "amplitude", ParamValue::Float(800.0))
+            .unwrap();
 
         // Dirty subgraph is exactly {terrain_a, biome_a}.
         let sub = g.dirty_subgraph(terrain_a);
-        assert_eq!(sub, vec![terrain_a, biome_a], "dirty subgraph must be branch A only");
+        assert_eq!(
+            sub,
+            vec![terrain_a, biome_a],
+            "dirty subgraph must be branch A only"
+        );
 
-        let report = g.live_cook(t0 + Duration::from_millis(200)).unwrap().expect("a recook was due");
+        let report = g
+            .live_cook(t0 + Duration::from_millis(200))
+            .unwrap()
+            .expect("a recook was due");
         assert_eq!(report.root, terrain_a);
-        assert_eq!(report.dirty_subgraph_size(), 2, "only terrain_a + biome_a re-cook");
+        assert_eq!(
+            report.dirty_subgraph_size(),
+            2,
+            "only terrain_a + biome_a re-cook"
+        );
 
         // Branch A re-cooked: counts went up by exactly 1 and output changed.
         assert_eq!(g.cook_count(terrain_a).unwrap(), cc_terrain_a_before + 1);
-        assert_eq!(g.cook_count(biome_a).unwrap(),   cc_biome_a_before + 1);
-        let biome_a_after = g.get_output(biome_a, "biome_map").unwrap().as_biome_map().unwrap();
-        assert_ne!(&biome_a_before, biome_a_after, "downstream biome_a output must change after upstream edit");
+        assert_eq!(g.cook_count(biome_a).unwrap(), cc_biome_a_before + 1);
+        let biome_a_after = g
+            .get_output(biome_a, "biome_map")
+            .unwrap()
+            .as_biome_map()
+            .unwrap();
+        assert_ne!(
+            &biome_a_before, biome_a_after,
+            "downstream biome_a output must change after upstream edit"
+        );
         let alpine_byte = crate::nodes::biome_node::BiomeKind::Alpine as u8;
         let alpine_after = biome_a_after.iter().filter(|&&b| b == alpine_byte).count();
-        assert!(alpine_after > 0, "raised amplitude must push cells into Alpine, got {}", alpine_after);
+        assert!(
+            alpine_after > 0,
+            "raised amplitude must push cells into Alpine, got {}",
+            alpine_after
+        );
 
         // Branch B never re-cooked: counts are byte-for-byte unchanged.
-        assert_eq!(g.cook_count(terrain_b).unwrap(), cc_terrain_b_before, "unrelated terrain_b must NOT re-cook");
-        assert_eq!(g.cook_count(biome_b).unwrap(),   cc_biome_b_before,   "unrelated biome_b must NOT re-cook");
+        assert_eq!(
+            g.cook_count(terrain_b).unwrap(),
+            cc_terrain_b_before,
+            "unrelated terrain_b must NOT re-cook"
+        );
+        assert_eq!(
+            g.cook_count(biome_b).unwrap(),
+            cc_biome_b_before,
+            "unrelated biome_b must NOT re-cook"
+        );
     }
 
     /// Throttle (#3): scrub a param 10 times inside the window with a FAKE clock.
@@ -1289,14 +1760,27 @@ mod tests {
     /// reflects the LAST scrubbed value (trailing edge).
     #[test]
     fn live_cook_throttles_scrub_and_keeps_last_value() {
-        use crate::nodes::terrain_node::TerrainNode;
         use crate::nodes::biome_node::BiomeNode;
+        use crate::nodes::terrain_node::TerrainNode;
 
         let mut g = OchromaNodeGraph::new();
-        let terrain = g.add_node("terrain", Box::new(TerrainNode {
-            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 7, ..Default::default()
-        }));
-        let biome = g.add_node("biome", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        let terrain = g.add_node(
+            "terrain",
+            Box::new(TerrainNode {
+                resolution: 32,
+                amplitude: 200.0,
+                droplet_count: 0,
+                seed: 7,
+                ..Default::default()
+            }),
+        );
+        let biome = g.add_node(
+            "biome",
+            Box::new(BiomeNode {
+                world_height: 400.0,
+                moisture: 0.5,
+            }),
+        );
         g.connect(terrain, "terrain", biome, "terrain").unwrap();
         g.cook().unwrap();
 
@@ -1312,7 +1796,8 @@ mod tests {
         for i in 0..10u32 {
             let amp = 100.0 + (i as f64) * 100.0; // 100,200,...,1000
             let t = base + Duration::from_millis(25 * i as u64);
-            g.request_recook(terrain, "amplitude", ParamValue::Float(amp)).unwrap();
+            g.request_recook(terrain, "amplitude", ParamValue::Float(amp))
+                .unwrap();
             if g.live_cook(t).unwrap().is_some() {
                 cooks += 1;
             }
@@ -1328,26 +1813,59 @@ mod tests {
 
         let ceil_window = (window.as_millis() as f64 / budget.as_millis() as f64).ceil() as u64;
         // +1 for the explicit trailing flush past the window.
-        assert!(cooks <= ceil_window + 1, "cooked {} times, expected <= {}", cooks, ceil_window + 1);
+        assert!(
+            cooks <= ceil_window + 1,
+            "cooked {} times, expected <= {}",
+            cooks,
+            ceil_window + 1
+        );
         assert!(cooks >= 1, "at least one cook must happen");
-        assert!(g.cook_count(biome).unwrap() > cc_before, "biome must have re-cooked at least once");
-        assert!(!g.has_pending_recook(), "no recook should remain pending after the flush");
+        assert!(
+            g.cook_count(biome).unwrap() > cc_before,
+            "biome must have re-cooked at least once"
+        );
+        assert!(
+            !g.has_pending_recook(),
+            "no recook should remain pending after the flush"
+        );
 
         // Trailing edge: the final cooked terrain reflects the LAST amplitude (1000),
         // proven by the tallest height equalling 1000 (fBm normalizes peak==amplitude).
-        let final_terrain = g.get_output(terrain, "terrain").unwrap().as_terrain().unwrap();
-        let max_h = final_terrain.heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        assert!((max_h - last_amplitude as f32).abs() < 1.0,
-            "final cook must reflect LAST scrubbed amplitude {}, got peak {}", last_amplitude, max_h);
+        let final_terrain = g
+            .get_output(terrain, "terrain")
+            .unwrap()
+            .as_terrain()
+            .unwrap();
+        let max_h = final_terrain
+            .heights
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (max_h - last_amplitude as f32).abs() < 1.0,
+            "final cook must reflect LAST scrubbed amplitude {}, got peak {}",
+            last_amplitude,
+            max_h
+        );
     }
 
     #[test]
     fn live_cook_returns_none_when_nothing_pending() {
         use crate::nodes::terrain_node::TerrainNode;
         let mut g = OchromaNodeGraph::new();
-        g.add_node("terrain", Box::new(TerrainNode { resolution: 32, droplet_count: 0, ..Default::default() }));
+        g.add_node(
+            "terrain",
+            Box::new(TerrainNode {
+                resolution: 32,
+                droplet_count: 0,
+                ..Default::default()
+            }),
+        );
         g.cook().unwrap();
-        assert!(g.live_cook(Instant::now()).unwrap().is_none(), "no pending request => no cook");
+        assert!(
+            g.live_cook(Instant::now()).unwrap().is_none(),
+            "no pending request => no cook"
+        );
     }
 
     /// Editing TWO different nodes before a flush must cook BOTH dirty
@@ -1355,19 +1873,45 @@ mod tests {
     /// review's pending_root-overwrite defect).
     #[test]
     fn live_cook_unions_multiple_pending_edits() {
-        use crate::nodes::terrain_node::TerrainNode;
         use crate::nodes::biome_node::BiomeNode;
+        use crate::nodes::terrain_node::TerrainNode;
 
         let mut g = OchromaNodeGraph::new();
-        let terrain_a = g.add_node("terrain_a", Box::new(TerrainNode {
-            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 7, ..Default::default()
-        }));
-        let biome_a = g.add_node("biome_a", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        let terrain_a = g.add_node(
+            "terrain_a",
+            Box::new(TerrainNode {
+                resolution: 32,
+                amplitude: 200.0,
+                droplet_count: 0,
+                seed: 7,
+                ..Default::default()
+            }),
+        );
+        let biome_a = g.add_node(
+            "biome_a",
+            Box::new(BiomeNode {
+                world_height: 400.0,
+                moisture: 0.5,
+            }),
+        );
         g.connect(terrain_a, "terrain", biome_a, "terrain").unwrap();
-        let terrain_b = g.add_node("terrain_b", Box::new(TerrainNode {
-            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 99, ..Default::default()
-        }));
-        let biome_b = g.add_node("biome_b", Box::new(BiomeNode { world_height: 400.0, moisture: 0.5 }));
+        let terrain_b = g.add_node(
+            "terrain_b",
+            Box::new(TerrainNode {
+                resolution: 32,
+                amplitude: 200.0,
+                droplet_count: 0,
+                seed: 99,
+                ..Default::default()
+            }),
+        );
+        let biome_b = g.add_node(
+            "biome_b",
+            Box::new(BiomeNode {
+                world_height: 400.0,
+                moisture: 0.5,
+            }),
+        );
         g.connect(terrain_b, "terrain", biome_b, "terrain").unwrap();
         g.cook().unwrap();
 
@@ -1376,22 +1920,39 @@ mod tests {
 
         // Two edits on DIFFERENT roots before any flush.
         let t0 = Instant::now();
-        g.request_recook(terrain_a, "amplitude", ParamValue::Float(800.0)).unwrap();
-        g.request_recook(terrain_b, "amplitude", ParamValue::Float(900.0)).unwrap();
+        g.request_recook(terrain_a, "amplitude", ParamValue::Float(800.0))
+            .unwrap();
+        g.request_recook(terrain_b, "amplitude", ParamValue::Float(900.0))
+            .unwrap();
 
         let report = g
             .live_cook(t0 + Duration::from_millis(200))
             .unwrap()
             .expect("a recook was due");
         // BOTH subgraphs cooked in the one pass: 4 nodes, both biomes +1.
-        assert_eq!(report.dirty_subgraph_size(), 4, "both edited subgraphs must cook");
-        assert_eq!(g.cook_count(biome_a).unwrap(), cc_a + 1, "branch A must not be abandoned");
-        assert_eq!(g.cook_count(biome_b).unwrap(), cc_b + 1, "branch B must cook too");
+        assert_eq!(
+            report.dirty_subgraph_size(),
+            4,
+            "both edited subgraphs must cook"
+        );
+        assert_eq!(
+            g.cook_count(biome_a).unwrap(),
+            cc_a + 1,
+            "branch A must not be abandoned"
+        );
+        assert_eq!(
+            g.cook_count(biome_b).unwrap(),
+            cc_b + 1,
+            "branch B must cook too"
+        );
         // Nothing left dangling: no pending roots, no dirty nodes.
         assert!(!g.has_pending_recook(), "no orphaned pending roots");
         for id in [terrain_a, biome_a, terrain_b, biome_b] {
             let sub = g.dirty_subgraph(id);
-            assert!(sub.is_empty(), "no node may stay dirty after the union cook: {id:?} -> {sub:?}");
+            assert!(
+                sub.is_empty(),
+                "no node may stay dirty after the union cook: {id:?} -> {sub:?}"
+            );
         }
     }
 
@@ -1403,24 +1964,43 @@ mod tests {
         use crate::nodes::terrain_node::TerrainNode;
 
         let mut g = OchromaNodeGraph::new();
-        let a = g.add_node("a", Box::new(TerrainNode {
-            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 1, ..Default::default()
-        }));
-        let b = g.add_node("b", Box::new(TerrainNode {
-            resolution: 32, amplitude: 200.0, droplet_count: 0, seed: 2, ..Default::default()
-        }));
+        let a = g.add_node(
+            "a",
+            Box::new(TerrainNode {
+                resolution: 32,
+                amplitude: 200.0,
+                droplet_count: 0,
+                seed: 1,
+                ..Default::default()
+            }),
+        );
+        let b = g.add_node(
+            "b",
+            Box::new(TerrainNode {
+                resolution: 32,
+                amplitude: 200.0,
+                droplet_count: 0,
+                seed: 2,
+                ..Default::default()
+            }),
+        );
         g.cook().unwrap();
         g.set_recook_budget(Duration::from_millis(100));
 
         // Cook A at t=200ms.
         let t0 = Instant::now();
-        g.request_recook(a, "amplitude", ParamValue::Float(500.0)).unwrap();
-        let r1 = g.live_cook(t0 + Duration::from_millis(200)).unwrap().expect("A due");
+        g.request_recook(a, "amplitude", ParamValue::Float(500.0))
+            .unwrap();
+        let r1 = g
+            .live_cook(t0 + Duration::from_millis(200))
+            .unwrap()
+            .expect("A due");
         assert_eq!(r1.root, a);
 
         // 10ms later (well inside A's window) edit B: B must cook NOW — A's
         // recent cook is not B's problem.
-        g.request_recook(b, "amplitude", ParamValue::Float(700.0)).unwrap();
+        g.request_recook(b, "amplitude", ParamValue::Float(700.0))
+            .unwrap();
         let cc_b = g.cook_count(b).unwrap();
         let r2 = g
             .live_cook(t0 + Duration::from_millis(210))
@@ -1431,9 +2011,12 @@ mod tests {
 
         // But A itself IS still throttled: another A edit inside A's window
         // stays pending (trailing edge), then fires once the window passes.
-        g.request_recook(a, "amplitude", ParamValue::Float(650.0)).unwrap();
+        g.request_recook(a, "amplitude", ParamValue::Float(650.0))
+            .unwrap();
         assert!(
-            g.live_cook(t0 + Duration::from_millis(250)).unwrap().is_none(),
+            g.live_cook(t0 + Duration::from_millis(250))
+                .unwrap()
+                .is_none(),
             "A inside its own budget window must wait"
         );
         let r3 = g
@@ -1446,8 +2029,15 @@ mod tests {
     #[test]
     fn format_port_data_is_descriptive() {
         assert_eq!(format_port_data(&PortData::Scalar(3.5)), "Scalar 3.50");
-        assert_eq!(format_port_data(&PortData::BiomeMap(vec![0u8; 9])), "BiomeMap 9 cells");
-        let hf = HeightfieldSpatial { heights: vec![0.0; 16], resolution: 4, world_size: 1.0 };
+        assert_eq!(
+            format_port_data(&PortData::BiomeMap(vec![0u8; 9])),
+            "BiomeMap 9 cells"
+        );
+        let hf = HeightfieldSpatial {
+            heights: vec![0.0; 16],
+            resolution: 4,
+            world_size: 1.0,
+        };
         assert_eq!(format_port_data(&PortData::Terrain(hf)), "Terrain 16 cells");
     }
 }

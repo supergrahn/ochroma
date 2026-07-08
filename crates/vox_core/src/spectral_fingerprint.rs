@@ -122,11 +122,7 @@ impl SpectralFingerprintDb {
         db.add(MaterialClass::Water, WATER_SPECTRAL, "Water".to_string());
         db.add(MaterialClass::Fire, FIRE_SPECTRAL, "Fire".to_string());
         db.add(MaterialClass::Skin, SKIN_SPECTRAL, "Skin".to_string());
-        db.add(
-            MaterialClass::Fabric,
-            FABRIC_SPECTRAL,
-            "Fabric".to_string(),
-        );
+        db.add(MaterialClass::Fabric, FABRIC_SPECTRAL, "Fabric".to_string());
         db
     }
 
@@ -201,8 +197,16 @@ mod tests {
         for (spectral, expected_class) in samples {
             let classify_result = classify(spectral);
             let (db_class, _dist) = db.nearest(spectral).expect("db should not be empty");
-            assert_eq!(classify_result, *expected_class, "classify mismatch for {:?}", expected_class);
-            assert_eq!(db_class, *expected_class, "db.nearest mismatch for {:?}", expected_class);
+            assert_eq!(
+                classify_result, *expected_class,
+                "classify mismatch for {:?}",
+                expected_class
+            );
+            assert_eq!(
+                db_class, *expected_class,
+                "db.nearest mismatch for {:?}",
+                expected_class
+            );
         }
     }
 }

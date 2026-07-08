@@ -117,7 +117,7 @@
 
         // -- glass bounce floor (the #1 perf knob; tier-derived) --
         glass_bounces_override: -1,      // resident_renderer.rs:213 [env+hardcoded] env: SPECTRA_GLASS_BOUNCES; -1 = use tier floor, 0 = disable bump
-        glass_floor_performance: 4,      // resident_renderer.rs:1129 [hardcoded] (glass_floor_for_tier) — base bounces 0..=2
+        glass_floor_performance: 2,      // resident_renderer.rs:1129 [hardcoded] (glass_floor_for_tier) — base bounces 0..=2; 2026-07-08 Urban Horizon 3440x1440 witness: 4->2 drops sample_loop ~24ms->18.7ms and clears 25 FPS with no visible aerial loss. Higher tiers keep deeper glass.
         glass_floor_balanced:    4,      // resident_renderer.rs:1130 — base bounces 3..=5. MEASURED 2026-06-29: 5->4 = 49.4->42.7ms (6.7ms/14%) at 1440p; water puddles + both-face refraction intact. 4->3 saves ~4ms more but risks deep-water coves; 4 is the Balanced default.
         glass_floor_beauty:      8,      // resident_renderer.rs:1140 [hardcoded] (GLASS_MIN_BOUNCES) — base bounces >=6, full geometric glass
 
@@ -141,7 +141,7 @@
         shot_spp_override:   0,          // resident_renderer.rs:349 [env] env: SPECTRA_SHOT_SPP; 0 = use tier spp (equal-time A/B lever)
 
         // -- dispatch banding (Windows WDDM 2s TDR guard) --
-        max_pixels_per_dispatch: 1048576,  // resident_renderer.rs:385 env: SPECTRA_MAX_PIXELS_PER_DISPATCH; 0 = no banding. MEASURED 2026-06-29 (RTX 4070 Ti, 1440p): 65536 split 852x480 into 7 BANDS = 7x the CUDA dispatches/API-calls = the dominant per-frame CPU tax. 1048576 = 1 band up to 4K-internal (1280x720=921K px); a single megakernel dispatch ~20-30ms << 2s TDR. RESULT: 41.2->26.9ms (24->37fps), frame byte-clean, no rebuild. CAVEAT: the AMD 780M Performance tier is ~5-10x slower -> a 1-band dispatch may approach the WDDM 2s TDR; that tier needs a LOWER per-capability value (TODO: make this tier-aware, e.g. 262144 on the 780M).
+        max_pixels_per_dispatch: 2000000,  // resident_renderer.rs:385 env: SPECTRA_MAX_PIXELS_PER_DISPATCH; 0 = no banding. MEASURED 2026-06-29 (RTX 4070 Ti, 1440p): 65536 split 852x480 into 7 BANDS = 7x the CUDA dispatches/API-calls = the dominant per-frame CPU tax. 2,000,000 = 1 band for current ultrawide Performance internal (1720x720=1.24M px) and 4K Performance internal (1280x720=921K px); a single megakernel dispatch ~20-30ms << 2s TDR. CAVEAT: the AMD 780M Performance tier is ~5-10x slower -> a 1-band dispatch may approach the WDDM 2s TDR; that tier needs a LOWER per-capability value (TODO: make this tier-aware, e.g. 262144 on the 780M).
 
         // -- CUDA graphs + Shader Execution Reordering (throughput, image-identical) --
         use_cuda_graphs:     false,      // resident_renderer.rs:415 [env+config] live resident gameplay must not pay first-frame graph capture; offline graph benches set this explicitly

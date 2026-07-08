@@ -43,8 +43,14 @@ fn brick_absorbs_high_frequencies() {
     ray.absorb(&material);
 
     // High frequency should be most absorbed.
-    assert!(ray.energy[2] < ray.energy[0], "brick should absorb high more than low");
-    assert!(ray.energy[2] < ray.energy[1], "brick should absorb high more than mid");
+    assert!(
+        ray.energy[2] < ray.energy[0],
+        "brick should absorb high more than low"
+    );
+    assert!(
+        ray.energy[2] < ray.energy[1],
+        "brick should absorb high more than mid"
+    );
     // Specifically: low should retain 95%, high should retain 40%.
     assert!((ray.energy[0] - 0.95).abs() < 0.01);
     assert!((ray.energy[2] - 0.40).abs() < 0.01);
@@ -57,7 +63,10 @@ fn glass_transmits_high_frequencies() {
     ray.absorb(&material);
 
     // High frequency should be least absorbed (most transmitted).
-    assert!(ray.energy[2] > ray.energy[0], "glass should transmit high more than low");
+    assert!(
+        ray.energy[2] > ray.energy[0],
+        "glass should transmit high more than low"
+    );
     assert!((ray.energy[2] - 0.95).abs() < 0.01);
     assert!((ray.energy[0] - 0.70).abs() < 0.01);
 }
@@ -82,7 +91,10 @@ fn obstruction_reduces_volume() {
     assert!(attenuation[2] > 0.0, "high freq should be attenuated");
 
     // High frequencies should be attenuated more.
-    assert!(attenuation[2] > attenuation[0], "high freq blocked more than low");
+    assert!(
+        attenuation[2] > attenuation[0],
+        "high freq blocked more than low"
+    );
 }
 
 #[test]
@@ -94,12 +106,26 @@ fn doppler_shift_approaching_source() {
     let source_vel = Vec3::new(0.0, 0.0, 30.0); // 30 m/s toward listener
     let listener_vel = Vec3::ZERO;
 
-    let shift = doppler_shift(source_vel, listener_vel, source_pos, listener_pos, SPEED_OF_SOUND);
+    let shift = doppler_shift(
+        source_vel,
+        listener_vel,
+        source_pos,
+        listener_pos,
+        SPEED_OF_SOUND,
+    );
 
     // Approaching source = higher pitch = multiplier > 1.0.
-    assert!(shift > 1.0, "approaching source should increase frequency, got {}", shift);
+    assert!(
+        shift > 1.0,
+        "approaching source should increase frequency, got {}",
+        shift
+    );
     // Expected: 343 / (343 - 30) = ~1.096
-    assert!((shift - 1.096).abs() < 0.01, "shift should be ~1.096, got {}", shift);
+    assert!(
+        (shift - 1.096).abs() < 0.01,
+        "shift should be ~1.096, got {}",
+        shift
+    );
 }
 
 #[test]
@@ -111,10 +137,20 @@ fn doppler_shift_receding_source() {
     let source_vel = Vec3::new(0.0, 0.0, -30.0); // 30 m/s away
     let listener_vel = Vec3::ZERO;
 
-    let shift = doppler_shift(source_vel, listener_vel, source_pos, listener_pos, SPEED_OF_SOUND);
+    let shift = doppler_shift(
+        source_vel,
+        listener_vel,
+        source_pos,
+        listener_pos,
+        SPEED_OF_SOUND,
+    );
 
     // Receding source = lower pitch = multiplier < 1.0.
-    assert!(shift < 1.0, "receding source should decrease frequency, got {}", shift);
+    assert!(
+        shift < 1.0,
+        "receding source should decrease frequency, got {}",
+        shift
+    );
 }
 
 #[test]
@@ -157,7 +193,10 @@ fn procedural_rain_scales_with_intensity() {
     // Rain should have most energy in high frequencies.
     let heavy_high = heavy_spec[2];
     let heavy_low = heavy_spec[0];
-    assert!(heavy_high > heavy_low, "rain should have more high freq than low");
+    assert!(
+        heavy_high > heavy_low,
+        "rain should have more high freq than low"
+    );
 }
 
 #[test]
@@ -213,14 +252,23 @@ fn wood_absorbs_low_frequencies() {
     let mut ray = AcousticRay::new(Vec3::ZERO, Vec3::Z, 3);
     ray.absorb(&material);
 
-    assert!(ray.energy[0] < ray.energy[2], "wood should absorb low more than high");
+    assert!(
+        ray.energy[0] < ray.energy[2],
+        "wood should absorb low more than high"
+    );
     assert!((ray.energy[0] - 0.45).abs() < 0.01);
 }
 
 #[test]
 fn procedural_traffic_scales_with_vehicles() {
-    let few = ProceduralSound::Traffic { vehicle_count: 4, avg_speed: 40.0 };
-    let many = ProceduralSound::Traffic { vehicle_count: 100, avg_speed: 40.0 };
+    let few = ProceduralSound::Traffic {
+        vehicle_count: 4,
+        avg_speed: 40.0,
+    };
+    let many = ProceduralSound::Traffic {
+        vehicle_count: 100,
+        avg_speed: 40.0,
+    };
 
     let few_spec = few.generate_frequency_spectrum();
     let many_spec = many.generate_frequency_spectrum();

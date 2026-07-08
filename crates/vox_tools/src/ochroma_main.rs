@@ -36,7 +36,12 @@ enum Commands {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Import { images, gltf, out, work_dir } => {
+        Commands::Import {
+            images,
+            gltf,
+            out,
+            work_dir,
+        } => {
             if let Some(img_dir) = images {
                 println!("Running COLMAP photogrammetry pipeline...");
                 println!("  Image directory : {}", img_dir.display());
@@ -53,14 +58,18 @@ fn main() -> anyhow::Result<()> {
                 let result = vox_data::import_asset(&gltf_path, &settings)
                     .map_err(|e| anyhow::anyhow!("GLTF import failed: {}", e))?;
                 // Auto-classify spectral material IDs from existing spectral data
-                let material_ids: Vec<u16> = result.splats.iter().map(|s| {
-                    let spectral: [f32; 16] = std::array::from_fn(|b| s.spectral_f32(b));
-                    let mat = vox_data::SpectralMaterialDb::classify(&spectral);
-                    vox_data::SpectralMaterialDb::MATERIALS
-                        .iter()
-                        .position(|m| m.name == mat.name)
-                        .map_or(0u16, |i| (i + 1) as u16)
-                }).collect();
+                let material_ids: Vec<u16> = result
+                    .splats
+                    .iter()
+                    .map(|s| {
+                        let spectral: [f32; 16] = std::array::from_fn(|b| s.spectral_f32(b));
+                        let mat = vox_data::SpectralMaterialDb::classify(&spectral);
+                        vox_data::SpectralMaterialDb::MATERIALS
+                            .iter()
+                            .position(|m| m.name == mat.name)
+                            .map_or(0u16, |i| (i + 1) as u16)
+                    })
+                    .collect();
                 let splat_count = result.splats.len();
                 let vxm = vox_data::VxmFileV3 {
                     splats: result.splats,

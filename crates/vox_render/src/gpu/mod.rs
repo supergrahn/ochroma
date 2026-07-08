@@ -12,12 +12,12 @@
 // ---------------------------------------------------------------------------
 pub mod adapter;
 pub mod atom_budget_gpu;
-pub mod eikonal;
 pub mod blend_skinning_compute;
 pub mod bloom_pass;
 pub mod depth_prepass;
 pub mod distance_field_2d;
 pub mod dof_pass;
+pub mod eikonal;
 pub mod entity_buffer;
 pub mod gaussian_camera;
 pub mod gi_probe;

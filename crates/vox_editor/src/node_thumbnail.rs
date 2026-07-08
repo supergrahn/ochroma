@@ -177,7 +177,12 @@ fn band_hue(band: usize) -> [f32; 3] {
 /// Splats: top-down (XZ) orthographic scatter. Each sampled splat is binned to a
 /// thumbnail pixel; color is its spectral-dominant band hue; overlapping splats
 /// accumulate density (brighten). Sampling capped at [`SPLAT_SAMPLE_CAP`].
-fn render_splats(buf: &mut [[u8; 4]], w: usize, h: usize, splats: &[vox_core::types::GaussianSplat]) {
+fn render_splats(
+    buf: &mut [[u8; 4]],
+    w: usize,
+    h: usize,
+    splats: &[vox_core::types::GaussianSplat],
+) {
     if splats.is_empty() {
         return;
     }
@@ -290,7 +295,14 @@ fn render_mesh_positions(
 
 /// Scanline-fill a triangle given (x, y, shade) vertices. Shade (0..1) drives a
 /// cool→warm fill so the silhouette is visible against the background.
-fn fill_triangle(buf: &mut [[u8; 4]], w: usize, h: usize, a: (f32, f32, f32), b: (f32, f32, f32), c: (f32, f32, f32)) {
+fn fill_triangle(
+    buf: &mut [[u8; 4]],
+    w: usize,
+    h: usize,
+    a: (f32, f32, f32),
+    b: (f32, f32, f32),
+    c: (f32, f32, f32),
+) {
     let min_x = a.0.min(b.0).min(c.0).floor().max(0.0) as usize;
     let max_x = (a.0.max(b.0).max(c.0).ceil() as usize).min(w.saturating_sub(1));
     let min_y = a.1.min(b.1).min(c.1).floor().max(0.0) as usize;
@@ -307,8 +319,8 @@ fn fill_triangle(buf: &mut [[u8; 4]], w: usize, h: usize, a: (f32, f32, f32), b:
             let w1 = edge(c, a, p);
             let w2 = edge(a, b, p);
             // Inside if all the same sign as area.
-            let inside = (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0)
-                || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0);
+            let inside =
+                (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0);
             if !inside {
                 continue;
             }
@@ -336,7 +348,11 @@ fn render_bars(buf: &mut [[u8; 4]], w: usize, h: usize, vals: &[f32]) {
     if vals.is_empty() {
         return;
     }
-    let mx = vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max).max(1e-6);
+    let mx = vals
+        .iter()
+        .cloned()
+        .fold(f32::NEG_INFINITY, f32::max)
+        .max(1e-6);
     let n = vals.len();
     for tx in 0..w {
         let band = (tx * n) / w;
@@ -470,17 +486,27 @@ mod tests {
                 heights[r * res + c] = r as f32; // ramp along rows
             }
         }
-        let hf = HeightfieldSpatial { heights, resolution: res as u32, world_size: 100.0 };
+        let hf = HeightfieldSpatial {
+            heights,
+            resolution: res as u32,
+            world_size: 100.0,
+        };
         let (w, h) = (64usize, 40usize);
         let buf = node_thumbnail(&PortData::Terrain(hf), w, h);
 
         let top = row_lum(&buf, w, 2);
         let bottom = row_lum(&buf, w, h - 3);
-        assert!(bottom > top, "ramp must brighten downward: top={top:.1} bottom={bottom:.1}");
+        assert!(
+            bottom > top,
+            "ramp must brighten downward: top={top:.1} bottom={bottom:.1}"
+        );
         // Monotonic: each sampled row no dimmer than several rows above it.
         let q1 = row_lum(&buf, w, h / 4);
         let q3 = row_lum(&buf, w, 3 * h / 4);
-        assert!(q3 > q1, "lower quartile row must be brighter: q1={q1:.1} q3={q3:.1}");
+        assert!(
+            q3 > q1,
+            "lower quartile row must be brighter: q1={q1:.1} q3={q3:.1}"
+        );
         // min < max sanity.
         assert!(top < bottom);
     }
@@ -503,7 +529,13 @@ mod tests {
         }
         // Bounds anchors at the other three corners + far corner.
         for c in [[10.0, 0.0, 0.0], [0.0, 0.0, 10.0], [10.0, 0.0, 10.0]] {
-            splats.push(GaussianSplat::volume(c, [1.0, 1.0, 1.0], q, 255, [0u16; 16]));
+            splats.push(GaussianSplat::volume(
+                c,
+                [1.0, 1.0, 1.0],
+                q,
+                255,
+                [0u16; 16],
+            ));
         }
         let (w, h) = (64usize, 40usize);
         let buf = node_thumbnail(&PortData::Splats(splats), w, h);
@@ -554,8 +586,14 @@ mod tests {
         };
         let (lf, ll) = col_stats(2);
         let (rf, rl) = col_stats(w - 3);
-        assert!(rf > lf, "right bar must be taller: left_filled={lf} right_filled={rf}");
-        assert!(rl > ll, "right bar must be brighter: left_lum={ll} right_lum={rl}");
+        assert!(
+            rf > lf,
+            "right bar must be taller: left_filled={lf} right_filled={rf}"
+        );
+        assert!(
+            rl > ll,
+            "right bar must be brighter: left_lum={ll} right_lum={rl}"
+        );
     }
 
     #[test]
@@ -567,7 +605,11 @@ mod tests {
         for p in &buf {
             colors.insert((p[0], p[1], p[2]));
         }
-        assert!(colors.len() >= 4, "distinct biome bytes must yield distinct colors, got {}", colors.len());
+        assert!(
+            colors.len() >= 4,
+            "distinct biome bytes must yield distinct colors, got {}",
+            colors.len()
+        );
         assert!(non_bg(&buf) > 0);
     }
 
@@ -584,15 +626,25 @@ mod tests {
         let buf = node_thumbnail(&PortData::Mesh(m), w, h);
         let filled = non_bg(&buf);
         // A triangle covering ~half the unit square should fill a meaningful chunk.
-        assert!(filled > (w * h) / 8, "mesh silhouette too sparse: {filled} / {}", w * h);
+        assert!(
+            filled > (w * h) / 8,
+            "mesh silhouette too sparse: {filled} / {}",
+            w * h
+        );
     }
 
     #[test]
     fn scalar_bar_fill_scales_with_value() {
         let small = node_thumbnail(&PortData::Scalar(0.1), 64, 40);
         let large = node_thumbnail(&PortData::Scalar(100.0), 64, 40);
-        assert!(non_bg(&large) > non_bg(&small), "larger scalar must fill more pixels");
-        assert!(non_bg(&small) > 0, "even a small scalar must draw something");
+        assert!(
+            non_bg(&large) > non_bg(&small),
+            "larger scalar must fill more pixels"
+        );
+        assert!(
+            non_bg(&small) > 0,
+            "even a small scalar must draw something"
+        );
     }
 
     #[test]

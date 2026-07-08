@@ -6,16 +6,19 @@
 //!
 //! Requires `colmap` to be installed and on PATH. Returns Err if not found.
 
+use half::f16;
 use std::path::Path;
 use std::process::Command;
-use half::f16;
 use thiserror::Error;
 use vox_core::types::GaussianSplat;
 
 fn path_str(p: &Path) -> Result<&str, ColmapError> {
-    p.to_str().ok_or_else(|| ColmapError::Io(
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "non-UTF8 path")
-    ))
+    p.to_str().ok_or_else(|| {
+        ColmapError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "non-UTF8 path",
+        ))
+    })
 }
 
 use crate::spectral_upsampler::{SpectralMaterialDb, SpectralUpsampler};
@@ -65,31 +68,40 @@ impl ColmapPipeline {
 
         Self::run_colmap(&[
             "feature_extractor",
-            "--database_path", path_str(&db_path)?,
-            "--image_path", path_str(image_dir)?,
+            "--database_path",
+            path_str(&db_path)?,
+            "--image_path",
+            path_str(image_dir)?,
         ])?;
-        Self::run_colmap(&[
-            "exhaustive_matcher",
-            "--database_path", path_str(&db_path)?,
-        ])?;
+        Self::run_colmap(&["exhaustive_matcher", "--database_path", path_str(&db_path)?])?;
         Self::run_colmap(&[
             "mapper",
-            "--database_path", path_str(&db_path)?,
-            "--image_path", path_str(image_dir)?,
-            "--output_path", path_str(&sparse_dir)?,
+            "--database_path",
+            path_str(&db_path)?,
+            "--image_path",
+            path_str(image_dir)?,
+            "--output_path",
+            path_str(&sparse_dir)?,
         ])?;
         let model_dir = sparse_dir.join("0");
         Self::run_colmap(&[
             "model_converter",
-            "--input_path", path_str(&model_dir)?,
-            "--output_path", path_str(&txt_dir)?,
-            "--output_type", "TXT",
+            "--input_path",
+            path_str(&model_dir)?,
+            "--output_path",
+            path_str(&txt_dir)?,
+            "--output_type",
+            "TXT",
         ])?;
 
         let points3d_path = txt_dir.join("points3D.txt");
         let points = Self::parse_points3d(&points3d_path)?;
         let (splats, material_ids) = Self::points_to_splats(&points);
-        let vxm = crate::vxm::VxmFileV3 { splats, material_ids, spectral_level: 1 };
+        let vxm = crate::vxm::VxmFileV3 {
+            splats,
+            material_ids,
+            spectral_level: 1,
+        };
         let file = std::fs::File::create(output_vxm)?;
         vxm.write(std::io::BufWriter::new(file))?;
 
@@ -162,7 +174,8 @@ impl ColmapPipeline {
                 [p.x, p.y, p.z],
                 [1.0, 0.0, 0.0],
                 [0.0, 0.0, -1.0],
-                0.01, 0.01,
+                0.01,
+                0.01,
                 200,
                 spectral,
             );
@@ -211,7 +224,11 @@ mod tests {
         let points = ColmapPipeline::parse_points3d(&path).unwrap();
         assert_eq!(points.len(), 3);
         println!("points[0].x = {}, r = {}", points[0].x, points[0].r);
-        assert!((points[0].x - 0.5).abs() < 1e-5, "points[0].x = {}, expected 0.5", points[0].x);
+        assert!(
+            (points[0].x - 0.5).abs() < 1e-5,
+            "points[0].x = {}, expected 0.5",
+            points[0].x
+        );
         assert!((points[1].y - 0.5).abs() < 1e-5);
         std::fs::remove_file(&path).ok();
     }
@@ -234,26 +251,51 @@ mod tests {
         let path = dir.join("test_points3D_comments.txt");
         std::fs::write(&path, SAMPLE_POINTS3D).unwrap();
         let points = ColmapPipeline::parse_points3d(&path).unwrap();
-        assert_eq!(points.len(), 3, "comment lines should be skipped, got {} points", points.len());
+        assert_eq!(
+            points.len(),
+            3,
+            "comment lines should be skipped, got {} points",
+            points.len()
+        );
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn points_to_splats_assigns_spectral() {
-        let pts = vec![ColmapPoint { x: 0.0, y: 0.0, z: 0.0, r: 200, g: 80, b: 40 }];
+        let pts = vec![ColmapPoint {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            r: 200,
+            g: 80,
+            b: 40,
+        }];
         let (splats, mat_ids) = ColmapPipeline::points_to_splats(&pts);
         assert_eq!(splats.len(), 1);
         assert_eq!(mat_ids.len(), 1);
         // All 16 spectral bands should be set (stored as f16 bits — nonzero means != 0u16)
         let any_nonzero = splats[0].spectral().iter().any(|&v| v != 0);
-        assert!(any_nonzero, "spectral bands must be populated from Smits upsampling");
+        assert!(
+            any_nonzero,
+            "spectral bands must be populated from Smits upsampling"
+        );
     }
 
     #[test]
     fn points_to_splats_assigns_valid_material_id() {
-        let pts = vec![ColmapPoint { x: 0.0, y: 0.0, z: 0.0, r: 30, g: 140, b: 30 }];
+        let pts = vec![ColmapPoint {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            r: 30,
+            g: 140,
+            b: 30,
+        }];
         let (_, mat_ids) = ColmapPipeline::points_to_splats(&pts);
-        assert!(mat_ids[0] > 0, "material ID should be nonzero — unclassified means wrong");
+        assert!(
+            mat_ids[0] > 0,
+            "material ID should be nonzero — unclassified means wrong"
+        );
         assert!(
             mat_ids[0] <= SpectralMaterialDb::MATERIALS.len() as u16,
             "material ID {} out of database range",
@@ -263,7 +305,14 @@ mod tests {
 
     #[test]
     fn points_to_splats_white_point_classifies_as_snow_or_concrete() {
-        let pts = vec![ColmapPoint { x: 0.0, y: 0.0, z: 0.0, r: 230, g: 230, b: 235 }];
+        let pts = vec![ColmapPoint {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            r: 230,
+            g: 230,
+            b: 235,
+        }];
         let (_, mat_ids) = ColmapPipeline::points_to_splats(&pts);
         let name = SpectralMaterialDb::find_by_id(mat_ids[0]).unwrap().name;
         assert!(

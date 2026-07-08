@@ -4,13 +4,16 @@
 
 use std::path::Path;
 use vox_core::spectral::rgb_to_spectral;
-use vox_data::gltf_import::{import_gltf, ImportError};
+use vox_data::gltf_import::{ImportError, import_gltf};
 
 #[test]
 fn test_rgb_to_spectral_coloured_input_nonzero() {
     let spectral = rgb_to_spectral(0.8, 0.5, 0.3);
     let any_nonzero = spectral.iter().any(|&v| v != 0);
-    assert!(any_nonzero, "spectral bands should be non-zero for coloured input");
+    assert!(
+        any_nonzero,
+        "spectral bands should be non-zero for coloured input"
+    );
 }
 
 #[test]
@@ -71,6 +74,9 @@ fn test_import_real_glb_boombox() {
 
     println!(
         "boombox.glb: {} meshes, {} tris, {} verts -> {} splats",
-        result.mesh_count, result.triangle_count, result.vertex_count, result.splats.len()
+        result.mesh_count,
+        result.triangle_count,
+        result.vertex_count,
+        result.splats.len()
     );
 }

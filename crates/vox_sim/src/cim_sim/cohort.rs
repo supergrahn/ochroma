@@ -235,7 +235,11 @@ fn matrix_of(
                 if (district as u64 + tier as u64) % 2 == 1 {
                     (AgeBand::Adult, Occupation::Caregiver, tier)
                 } else {
-                    (AgeBand::Teenager, Occupation::Secondary, SkillTier::Unskilled)
+                    (
+                        AgeBand::Teenager,
+                        Occupation::Secondary,
+                        SkillTier::Unskilled,
+                    )
                 }
             }
             _ => (AgeBand::Senior, Occupation::Retired, tier),
@@ -299,7 +303,8 @@ impl CohortRow {
     /// Call after any mutation of `age_band`/`is_worker` so the matrix overlay never
     /// drifts from the four-band lifecycle that still drives the conserved mass.
     fn reclassify(&mut self) {
-        let (band, occ, edu_tier) = matrix_of(self.is_worker, self.age_band, self.district, self.tier);
+        let (band, occ, edu_tier) =
+            matrix_of(self.is_worker, self.age_band, self.district, self.tier);
         self.band = band;
         self.occ = occ;
         self.edu_tier = edu_tier;
@@ -336,7 +341,12 @@ pub struct CohortTable {
 impl CohortTable {
     /// An empty table (no cohorts, nothing hydrated, never aged).
     pub fn new() -> Self {
-        Self { rows: Vec::new(), hydrated: 0, pop: 0, years_aged: 0 }
+        Self {
+            rows: Vec::new(),
+            hydrated: 0,
+            pop: 0,
+            years_aged: 0,
+        }
     }
 
     /// Deterministically seed `pop` cims as cohort mass spread across
@@ -389,13 +399,9 @@ impl CohortTable {
         let d3_non_educated = district3_workers_total.saturating_sub(educated_worker_d3);
         let d3_skilled_workers: u64 = d3_non_educated * 40 / 120;
         let d3_expert_workers: u64 = d3_non_educated * 30 / 120;
-        let d3_unskilled_workers: u64 =
-            d3_non_educated - d3_skilled_workers - d3_expert_workers;
+        let d3_unskilled_workers: u64 = d3_non_educated - d3_skilled_workers - d3_expert_workers;
         debug_assert_eq!(
-            educated_worker_d3
-                + d3_unskilled_workers
-                + d3_skilled_workers
-                + d3_expert_workers,
+            educated_worker_d3 + d3_unskilled_workers + d3_skilled_workers + d3_expert_workers,
             educated_worker_d3 + d3_non_educated
         );
 
@@ -442,7 +448,8 @@ impl CohortTable {
                     }
                 };
                 if head > 0 && placed + head <= pop {
-                    self.rows.push(Self::make_row(next_id, head as f32, d, tier, true));
+                    self.rows
+                        .push(Self::make_row(next_id, head as f32, d, tier, true));
                     next_id += 1;
                     placed += head;
                 }
@@ -552,7 +559,13 @@ impl CohortTable {
             return;
         }
 
-        let mut next_id = self.rows.iter().map(|r| r.id).max().map(|m| m + 1).unwrap_or(0);
+        let mut next_id = self
+            .rows
+            .iter()
+            .map(|r| r.id)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
         for (district, tier, retire) in transfers {
             // Debit the Worker cohort(s) of this (district, tier) in id order.
             let mut remaining = retire;
@@ -560,7 +573,11 @@ impl CohortTable {
                 if remaining == 0 {
                     break;
                 }
-                if r.is_worker && r.age_band == BAND_WORKER && r.district == district && r.tier == tier {
+                if r.is_worker
+                    && r.age_band == BAND_WORKER
+                    && r.district == district
+                    && r.tier == tier
+                {
                     let take = remaining.min(r.head_count.max(0.0) as u64);
                     r.head_count -= take as f32;
                     remaining -= take;
@@ -573,7 +590,10 @@ impl CohortTable {
             // Credit the Retired cohort of this (district, tier) — find the existing
             // non-worker, band-3 row, else append a new one (kept id-sorted).
             if let Some(r) = self.rows.iter_mut().find(|r| {
-                !r.is_worker && r.age_band == BAND_RETIRED && r.district == district && r.tier == tier
+                !r.is_worker
+                    && r.age_band == BAND_RETIRED
+                    && r.district == district
+                    && r.tier == tier
             }) {
                 r.head_count += moved as f32;
             } else {
@@ -599,11 +619,7 @@ impl CohortTable {
             wsum += r.age_band as f64 * h;
             total += h;
         }
-        if total <= 0.0 {
-            0.0
-        } else {
-            wsum / total
-        }
+        if total <= 0.0 { 0.0 } else { wsum / total }
     }
 
     /// Σ head_count of all Retired-band (≥65) cohorts, conservation-disciplined
@@ -644,12 +660,26 @@ impl CohortTable {
     }
 
     /// Build one cohort row with deterministic, tier-derived need mean/variance.
-    fn make_row(id: u32, head_count: f32, district: DistrictId, tier: SkillTier, is_worker: bool) -> CohortRow {
+    fn make_row(
+        id: u32,
+        head_count: f32,
+        district: DistrictId,
+        tier: SkillTier,
+        is_worker: bool,
+    ) -> CohortRow {
         // Need means slide with tier (more-educated cohorts skew higher on the
         // education need); variance is a small fixed band. Pure function of inputs.
         let t = tier as usize as f32;
         let edu_mean = 0.15 + t * 0.25; // Unskilled 0.15 .. Expert 0.90
-        let need_mean = [0.6, 0.6, 0.7, 0.7, edu_mean, if is_worker { 0.8 } else { 0.0 }, 0.5];
+        let need_mean = [
+            0.6,
+            0.6,
+            0.7,
+            0.7,
+            edu_mean,
+            if is_worker { 0.8 } else { 0.0 },
+            0.5,
+        ];
         let need_var = [0.02; 7];
         // Workers are working-age (band 2) by construction; non-workers default to
         // band 0 here and are re-banded by the seed's non-worker loop into the
@@ -925,7 +955,10 @@ mod lifecycle_tests {
         // Retirees leave the labor force: workers drop by EXACTLY the retired gain.
         let retired_delta = retired_after - retired_before;
         let workers_delta = workers_before - workers_after;
-        assert!(retired_delta > 0, "a real chunk must retire: {retired_delta}");
+        assert!(
+            retired_delta > 0,
+            "a real chunk must retire: {retired_delta}"
+        );
         assert_eq!(
             workers_delta, retired_delta,
             "the employed pool must drop by exactly the retirees: \
@@ -987,7 +1020,10 @@ mod matrix_tests {
         let caregivers = m.occupation_mass(Occupation::Caregiver);
         assert_eq!(row_sum, 100_000, "matrix must conserve pop");
         assert_eq!(legal_pairs, 17, "exactly 17 legal (band,occ) pairs");
-        assert!(caregivers > 0, "a seeded city binds some caregivers, got {caregivers}");
+        assert!(
+            caregivers > 0,
+            "a seeded city binds some caregivers, got {caregivers}"
+        );
         // Educated-worker economy contract preserved (the economy reads this back).
         assert_eq!(
             m.cohort_supply_by_tier()[SkillTier::Educated as usize].round() as u64,
@@ -1020,13 +1056,19 @@ mod matrix_tests {
 
         // Every schema row is a legal pair; the tier-expanded ones appear 4× and the
         // 7 single-tier ones once → 10×4 + 7.
-        let expanded = LEGAL_PAIRS.iter().filter(|&&(b, o)| is_tier_expanded(b, o)).count();
+        let expanded = LEGAL_PAIRS
+            .iter()
+            .filter(|&&(b, o)| is_tier_expanded(b, o))
+            .count();
         let single = LEGAL_PAIRS.len() - expanded;
         assert_eq!(expanded, 10, "exactly 10 tier-expanded adult-labor pairs");
         assert_eq!(single, 7);
         assert_eq!(expanded * 4 + single, 47);
         for &(b, o, _) in &rows {
-            assert!(is_legal_pair(b, o), "schema row ({b:?},{o:?}) must be legal");
+            assert!(
+                is_legal_pair(b, o),
+                "schema row ({b:?},{o:?}) must be legal"
+            );
         }
 
         // A structurally illegal pair is absent from the mask (Newborn×Employed is a
@@ -1073,9 +1115,16 @@ mod matrix_tests {
         // Conservation survives a civic year (Employed→Retired transfer stays inside
         // the matrix; nothing leaks).
         m.advance_year();
-        assert_eq!(m.row_sum(), 100_000, "advance_year must conserve on the matrix");
+        assert_eq!(
+            m.row_sum(),
+            100_000,
+            "advance_year must conserve on the matrix"
+        );
         let by_occ_after: u64 = OCCUPATIONS.iter().map(|&o| m.occupation_mass(o)).sum();
-        assert_eq!(by_occ_after, 100_000, "columns still partition after a year");
+        assert_eq!(
+            by_occ_after, 100_000,
+            "columns still partition after a year"
+        );
     }
 
     /// The matrix overlay is a PURE function of the seed → two independent seeds
@@ -1088,10 +1137,18 @@ mod matrix_tests {
         a.seed(250_000);
         b.seed(250_000);
         for &o in OCCUPATIONS.iter() {
-            assert_eq!(a.occupation_mass(o), b.occupation_mass(o), "occ {o:?} diverged");
+            assert_eq!(
+                a.occupation_mass(o),
+                b.occupation_mass(o),
+                "occ {o:?} diverged"
+            );
         }
         for &band in AGE_BANDS.iter() {
-            assert_eq!(a.band_mass(band), b.band_mass(band), "band {band:?} diverged");
+            assert_eq!(
+                a.band_mass(band),
+                b.band_mass(band),
+                "band {band:?} diverged"
+            );
         }
 
         // Age two years, then reseed the same pop: the overlay re-derives identically
@@ -1102,8 +1159,16 @@ mod matrix_tests {
         let ret = a.retired();
         let emp = a.occupation_mass(Occupation::Employed);
         a.seed(250_000); // reseed replays years_aged internally
-        assert_eq!(a.caregivers_bound(), care, "reseed changed Caregiver column");
+        assert_eq!(
+            a.caregivers_bound(),
+            care,
+            "reseed changed Caregiver column"
+        );
         assert_eq!(a.retired(), ret, "reseed changed Retired column");
-        assert_eq!(a.occupation_mass(Occupation::Employed), emp, "reseed changed Employed column");
+        assert_eq!(
+            a.occupation_mass(Occupation::Employed),
+            emp,
+            "reseed changed Employed column"
+        );
     }
 }

@@ -80,8 +80,5 @@ fn top_rated() {
 #[test]
 fn price_display() {
     assert_eq!(AssetPrice::Free.usd_display(), "Free");
-    assert_eq!(
-        AssetPrice::Paid { usd_cents: 499 }.usd_display(),
-        "$4.99"
-    );
+    assert_eq!(AssetPrice::Paid { usd_cents: 499 }.usd_display(), "$4.99");
 }

@@ -4,13 +4,15 @@ use vox_data::neural_compress::*;
 
 fn make_splats(count: usize) -> Vec<GaussianSplat> {
     (0..count)
-        .map(|i| GaussianSplat::volume(
-            [i as f32, 0.0, 0.0],
-            [0.1, 0.1, 0.1],
-            Quat::IDENTITY,
-            200,
-            [15360; 16],
-        ))
+        .map(|i| {
+            GaussianSplat::volume(
+                [i as f32, 0.0, 0.0],
+                [0.1, 0.1, 0.1],
+                Quat::IDENTITY,
+                200,
+                [15360; 16],
+            )
+        })
         .collect()
 }
 
@@ -43,7 +45,5 @@ fn estimate_matches_actual() {
     let estimated = compressor.estimate_compressed_size(1000);
     let actual = compressor.compress(&splats).size_bytes();
     // Estimate should be in the right ballpark (within 5x)
-    assert!(
-        (estimated as f32 / actual as f32) > 0.2 && (estimated as f32 / actual as f32) < 5.0
-    );
+    assert!((estimated as f32 / actual as f32) > 0.2 && (estimated as f32 / actual as f32) < 5.0);
 }

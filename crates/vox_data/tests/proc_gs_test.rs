@@ -1,4 +1,4 @@
-use vox_data::proc_gs::{emit_splats, GeometryStrategy, SplatRule};
+use vox_data::proc_gs::{GeometryStrategy, SplatRule, emit_splats};
 
 const VICTORIAN_RULE_TOML: &str = r#"
 [header]
@@ -41,7 +41,10 @@ fn parse_victorian_house_rule() {
     let rule: SplatRule = toml::from_str(VICTORIAN_RULE_TOML).expect("failed to parse TOML");
     assert_eq!(rule.header.asset_type, "building");
     assert_eq!(rule.header.style, "victorian");
-    assert_eq!(rule.geometry.strategy, GeometryStrategy::StructuredPlacement);
+    assert_eq!(
+        rule.geometry.strategy,
+        GeometryStrategy::StructuredPlacement
+    );
     assert_eq!(rule.geometry.floor_count_min, 2);
     assert_eq!(rule.geometry.floor_count_max, 4);
     assert_eq!(rule.material_zones.len(), 2);
@@ -73,6 +76,8 @@ fn emit_splats_different_seeds_produce_different_output() {
     let b = emit_splats(&rule, 2);
     // At minimum the counts or positions should differ
     let same = a.len() == b.len()
-        && a.iter().zip(b.iter()).all(|(sa, sb)| sa.position() == sb.position());
+        && a.iter()
+            .zip(b.iter())
+            .all(|(sa, sb)| sa.position() == sb.position());
     assert!(!same, "expected different output for different seeds");
 }

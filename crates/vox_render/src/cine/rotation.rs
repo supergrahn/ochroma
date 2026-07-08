@@ -156,11 +156,7 @@ fn nlerp_or_slerp(a: Quat, b: Quat, t: f32) -> Quat {
 /// Align `q` to the same hemisphere as `ref_q` (negate if their dot is negative),
 /// so the logarithm picks the short rotation.
 fn hemisphere(q: Quat, ref_q: Quat) -> Quat {
-    if q.dot(ref_q) < 0.0 {
-        -q
-    } else {
-        q
-    }
+    if q.dot(ref_q) < 0.0 { -q } else { q }
 }
 
 /// Quaternion logarithm of a (assumed unit) quaternion: `log(q) = [θ·v̂, 0]`

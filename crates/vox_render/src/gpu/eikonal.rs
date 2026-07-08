@@ -267,32 +267,61 @@ pub fn eikonal_integer_gpu(ctx: &GpuContext, cost: &[u32], w: u32, h: u32, iters
         label: Some("eikonal-bg-a-to-b"),
         layout: &bgl,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: cost_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: dims_buf.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buf_a.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buf_b.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: cost_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: dims_buf.as_entire_binding(),
+            },
         ],
     });
     let bind_b_to_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("eikonal-bg-b-to-a"),
         layout: &bgl,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: buf_b.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: cost_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: dims_buf.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buf_b.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buf_a.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: cost_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: dims_buf.as_entire_binding(),
+            },
         ],
     });
 
     let groups_x = w.div_ceil(8);
     let groups_y = h.div_ceil(8);
 
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("eikonal-enc") });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("eikonal-enc"),
+    });
     // After `iters` sweeps, the result lives in A when `iters` is even (we end on
     // a B→A pass), and in B when `iters` is odd (we end on an A→B pass).
     for i in 0..iters {
-        let bg = if i % 2 == 0 { &bind_a_to_b } else { &bind_b_to_a };
+        let bg = if i % 2 == 0 {
+            &bind_a_to_b
+        } else {
+            &bind_b_to_a
+        };
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("eikonal-pass"),
             timestamp_writes: None,

@@ -27,10 +27,7 @@ impl Localization {
     /// Load translations from a CSV string. Format: `key,text` per line.
     /// Returns number of entries loaded.
     pub fn load_from_string(&mut self, locale: &str, csv: &str) -> usize {
-        let table = self
-            .tables
-            .entry(locale.to_string())
-            .or_default();
+        let table = self.tables.entry(locale.to_string()).or_default();
         let mut count = 0;
         for line in csv.lines() {
             let line = line.trim();
@@ -54,15 +51,17 @@ impl Localization {
     pub fn get<'a>(&'a self, key: &'a str) -> &'a str {
         // Try current locale
         if let Some(table) = self.tables.get(&self.current_locale)
-            && let Some(val) = table.get(key) {
-                return val.as_str();
-            }
+            && let Some(val) = table.get(key)
+        {
+            return val.as_str();
+        }
         // Try fallback
         if self.current_locale != self.fallback_locale
             && let Some(table) = self.tables.get(&self.fallback_locale)
-                && let Some(val) = table.get(key) {
-                    return val.as_str();
-                }
+            && let Some(val) = table.get(key)
+        {
+            return val.as_str();
+        }
         // Return key itself
         key
     }
@@ -86,10 +85,7 @@ impl Localization {
 
     /// Number of keys in a specific locale.
     pub fn key_count(&self, locale: &str) -> usize {
-        self.tables
-            .get(locale)
-            .map(|t| t.len())
-            .unwrap_or(0)
+        self.tables.get(locale).map(|t| t.len()).unwrap_or(0)
     }
 }
 

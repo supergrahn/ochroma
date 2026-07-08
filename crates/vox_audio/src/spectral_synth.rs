@@ -21,17 +21,23 @@
 //!   Band 15 (755nm, near-IR)      →   50 Hz  (deep, rumbling)
 
 pub const FREQ_MAP: [f32; 16] = [
-    16000.0, 8000.0, 6000.0, 4000.0, 3000.0, 2000.0, 1500.0, 1000.0,
-    700.0,   500.0,  350.0,  250.0,  180.0,  125.0,   80.0,   50.0,
+    16000.0, 8000.0, 6000.0, 4000.0, 3000.0, 2000.0, 1500.0, 1000.0, 700.0, 500.0, 350.0, 250.0,
+    180.0, 125.0, 80.0, 50.0,
 ];
 
-pub fn synthesize_impact(spectral_weights: &[f32; 16], duration_secs: f32, sample_rate: u32) -> Vec<f32> {
+pub fn synthesize_impact(
+    spectral_weights: &[f32; 16],
+    duration_secs: f32,
+    sample_rate: u32,
+) -> Vec<f32> {
     let n_samples = (sample_rate as f32 * duration_secs) as usize;
     let mut output = vec![0.0f32; n_samples];
 
     for (band, &freq) in FREQ_MAP.iter().enumerate() {
         let weight = spectral_weights[band];
-        if weight < 0.01 { continue; }
+        if weight < 0.01 {
+            continue;
+        }
         let decay_rate = -8.0 - (band as f32 * 1.0); // -8 to -23
         for (i, sample) in output.iter_mut().enumerate() {
             let t = i as f32 / sample_rate as f32;
@@ -42,7 +48,9 @@ pub fn synthesize_impact(spectral_weights: &[f32; 16], duration_secs: f32, sampl
 
     let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
     if peak > 0.001 {
-        for s in &mut output { *s /= peak; }
+        for s in &mut output {
+            *s /= peak;
+        }
     }
     output
 }
@@ -60,7 +68,9 @@ pub fn synthesize_impact_from_splat_spectral(
     sample_rate: u32,
 ) -> Vec<f32> {
     let weights: [f32; 16] = std::array::from_fn(|i| {
-        half::f16::from_bits(splat_spectral[i]).to_f32().clamp(0.0, 1.0)
+        half::f16::from_bits(splat_spectral[i])
+            .to_f32()
+            .clamp(0.0, 1.0)
     });
     synthesize_impact(&weights, duration_secs, sample_rate)
 }
@@ -88,7 +98,10 @@ mod tests {
     fn synthesize_impact_all_zero_returns_silence() {
         let weights = [0.0f32; 16];
         let samples = synthesize_impact(&weights, 0.1, 44100);
-        assert!(samples.iter().all(|&s| s == 0.0), "all-zero weights should produce silence");
+        assert!(
+            samples.iter().all(|&s| s == 0.0),
+            "all-zero weights should produce silence"
+        );
     }
 
     #[test]
@@ -99,8 +112,16 @@ mod tests {
         red_weights[15] = 1.0;
         let blue = synthesize_impact(&blue_weights, 0.1, 44100);
         let red = synthesize_impact(&red_weights, 0.1, 44100);
-        let diff: f32 = blue.iter().zip(red.iter()).map(|(a, b)| (a - b).abs()).sum();
-        assert!(diff > 1.0, "different spectral weights should produce different audio, diff={}", diff);
+        let diff: f32 = blue
+            .iter()
+            .zip(red.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            diff > 1.0,
+            "different spectral weights should produce different audio, diff={}",
+            diff
+        );
     }
 
     #[test]

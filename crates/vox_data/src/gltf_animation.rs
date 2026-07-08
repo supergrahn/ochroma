@@ -146,7 +146,10 @@ pub fn extract_skeleton(path: &Path) -> Result<(GltfSkeleton, Vec<GltfAnimation>
         .map(|j| j.index)
         .collect();
 
-    let skeleton = GltfSkeleton { joints, root_joints };
+    let skeleton = GltfSkeleton {
+        joints,
+        root_joints,
+    };
 
     // --- animations ---------------------------------------------------------
     let animations: Vec<GltfAnimation> = document
@@ -226,9 +229,9 @@ fn extract_one_animation(
             AnimationProperty::Translation => reader
                 .read_outputs()
                 .map(|out| match out {
-                    gltf::animation::util::ReadOutputs::Translations(iter) => iter
-                        .map(|t| [t[0], t[1], t[2], 0.0])
-                        .collect::<Vec<_>>(),
+                    gltf::animation::util::ReadOutputs::Translations(iter) => {
+                        iter.map(|t| [t[0], t[1], t[2], 0.0]).collect::<Vec<_>>()
+                    }
                     _ => Vec::new(),
                 })
                 .unwrap_or_default(),
@@ -244,9 +247,9 @@ fn extract_one_animation(
             AnimationProperty::Scale => reader
                 .read_outputs()
                 .map(|out| match out {
-                    gltf::animation::util::ReadOutputs::Scales(iter) => iter
-                        .map(|s| [s[0], s[1], s[2], 0.0])
-                        .collect::<Vec<_>>(),
+                    gltf::animation::util::ReadOutputs::Scales(iter) => {
+                        iter.map(|s| [s[0], s[1], s[2], 0.0]).collect::<Vec<_>>()
+                    }
                     _ => Vec::new(),
                 })
                 .unwrap_or_default(),
@@ -293,11 +296,8 @@ pub fn evaluate_animation(
     let joint_count = skeleton.joints.len();
 
     // Start with bind-pose local transforms
-    let mut local_transforms: Vec<Mat4> = skeleton
-        .joints
-        .iter()
-        .map(|j| j.local_transform)
-        .collect();
+    let mut local_transforms: Vec<Mat4> =
+        skeleton.joints.iter().map(|j| j.local_transform).collect();
 
     // Per-joint animated TRS, seeded from the bind pose decomposition
     let mut translations: Vec<Option<Vec3>> = vec![None; joint_count];
@@ -326,8 +326,7 @@ pub fn evaluate_animation(
     // Compose local transforms from animated components where available
     for ji in 0..joint_count {
         if translations[ji].is_some() || rotations[ji].is_some() || scales[ji].is_some() {
-            let (bind_s, bind_r, bind_t) =
-                local_transforms[ji].to_scale_rotation_translation();
+            let (bind_s, bind_r, bind_t) = local_transforms[ji].to_scale_rotation_translation();
             let t = translations[ji].unwrap_or(bind_t);
             let r = rotations[ji].unwrap_or(bind_r);
             let s = scales[ji].unwrap_or(bind_s);
@@ -338,7 +337,13 @@ pub fn evaluate_animation(
     // Walk hierarchy to compute world transforms
     let mut world_transforms = vec![Mat4::IDENTITY; joint_count];
     for &root in &skeleton.root_joints {
-        compute_world_recursive(root, Mat4::IDENTITY, &local_transforms, &skeleton.joints, &mut world_transforms);
+        compute_world_recursive(
+            root,
+            Mat4::IDENTITY,
+            &local_transforms,
+            &skeleton.joints,
+            &mut world_transforms,
+        );
     }
 
     world_transforms
@@ -434,10 +439,7 @@ pub fn skin_splats(
                 .get(ji)
                 .copied()
                 .unwrap_or(Mat4::IDENTITY);
-            let world = joint_transforms
-                .get(ji)
-                .copied()
-                .unwrap_or(Mat4::IDENTITY);
+            let world = joint_transforms.get(ji).copied().unwrap_or(Mat4::IDENTITY);
             let skin_mat = world * ibm;
 
             let pos = Vec3::from(splat.position());
@@ -452,7 +454,8 @@ pub fn skin_splats(
                 orig_rot[1] as f32 / 32767.0,
                 orig_rot[2] as f32 / 32767.0,
                 orig_rot[3] as f32 / 32767.0,
-            ).normalize();
+            )
+            .normalize();
 
             let new_q = (skin_quat * orig_q).normalize();
 
@@ -460,7 +463,8 @@ pub fn skin_splats(
             out.set_position([new_pos.x, new_pos.y, new_pos.z]);
             // Re-encode quaternion as i16 XYZW
             {
-                let r = out.position_mut(); let _ = r; // borrow ends
+                let r = out.position_mut();
+                let _ = r; // borrow ends
             }
             // Use volume constructor with same spectral/opacity but new pos+rot
             GaussianSplat::volume(
@@ -477,10 +481,7 @@ pub fn skin_splats(
 /// Assign each splat to the nearest joint (by world-space distance).
 ///
 /// Returns a `Vec<usize>` of length `splats.len()`, where each entry is a joint index.
-pub fn assign_joint_bindings(
-    splats: &[GaussianSplat],
-    skeleton: &GltfSkeleton,
-) -> Vec<usize> {
+pub fn assign_joint_bindings(splats: &[GaussianSplat], skeleton: &GltfSkeleton) -> Vec<usize> {
     let joint_world_positions: Vec<Vec3> = {
         let mut positions = vec![Vec3::ZERO; skeleton.joints.len()];
         for ji in 0..skeleton.joints.len() {
@@ -494,17 +495,23 @@ pub fn assign_joint_bindings(
         positions
     };
 
-    splats.iter().map(|splat| {
-        let pos = Vec3::from(splat.position());
-        skeleton.joints.iter().enumerate()
-            .min_by(|(ai, _), (bi, _)| {
-                let da = joint_world_positions[*ai].distance_squared(pos);
-                let db = joint_world_positions[*bi].distance_squared(pos);
-                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i)
-            .unwrap_or(0)
-    }).collect()
+    splats
+        .iter()
+        .map(|splat| {
+            let pos = Vec3::from(splat.position());
+            skeleton
+                .joints
+                .iter()
+                .enumerate()
+                .min_by(|(ai, _), (bi, _)| {
+                    let da = joint_world_positions[*ai].distance_squared(pos);
+                    let db = joint_world_positions[*bi].distance_squared(pos);
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(i, _)| i)
+                .unwrap_or(0)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -525,8 +532,7 @@ pub fn build_synthetic_skeleton(joint_names: &[&str]) -> GltfSkeleton {
         } else {
             Vec3::new(0.0, 1.0, 0.0) // each child 1 unit above parent
         };
-        let local_transform =
-            Mat4::from_translation(local_translation);
+        let local_transform = Mat4::from_translation(local_translation);
 
         // Inverse bind matrix: inverse of the world-space bind pose
         let world_y = y_offset;
@@ -547,7 +553,10 @@ pub fn build_synthetic_skeleton(joint_names: &[&str]) -> GltfSkeleton {
 
     let root_joints = if count > 0 { vec![0] } else { vec![] };
 
-    GltfSkeleton { joints, root_joints }
+    GltfSkeleton {
+        joints,
+        root_joints,
+    }
 }
 
 /// Build a simple rotation animation on a single joint.
@@ -732,9 +741,7 @@ mod tests {
         // world_transform[hand] puts it at (-1,1,0)
         let p = skinned[0].position();
         assert!(
-            approx_eq(p[0], -1.0, 0.05)
-                && approx_eq(p[1], 1.0, 0.05)
-                && approx_eq(p[2], 0.0, 0.01),
+            approx_eq(p[0], -1.0, 0.05) && approx_eq(p[1], 1.0, 0.05) && approx_eq(p[2], 0.0, 0.01),
             "skinned splat should be at (-1,1,0), got ({}, {}, {})",
             p[0],
             p[1],
@@ -760,8 +767,7 @@ mod tests {
         // Arm local offset (0,1,0) rotated => (-1,0,0), arm world = (-1,0,0)
         let arm_pos = transforms[1].transform_point3(Vec3::ZERO);
         assert!(
-            approx_eq(arm_pos.x, -1.0, 0.01)
-                && approx_eq(arm_pos.y, 0.0, 0.01),
+            approx_eq(arm_pos.x, -1.0, 0.01) && approx_eq(arm_pos.y, 0.0, 0.01),
             "arm world pos should be (-1,0,0) when root rotates 90 Z, got ({}, {}, {})",
             arm_pos.x,
             arm_pos.y,
@@ -771,8 +777,7 @@ mod tests {
         // Hand local offset another (0,1,0) => after root rotation, (-2,0,0)
         let hand_pos = transforms[2].transform_point3(Vec3::ZERO);
         assert!(
-            approx_eq(hand_pos.x, -2.0, 0.01)
-                && approx_eq(hand_pos.y, 0.0, 0.01),
+            approx_eq(hand_pos.x, -2.0, 0.01) && approx_eq(hand_pos.y, 0.0, 0.01),
             "hand world pos should be (-2,0,0), got ({}, {}, {})",
             hand_pos.x,
             hand_pos.y,
@@ -805,13 +810,17 @@ mod tests {
     #[test]
     fn assign_joint_bindings_returns_one_per_splat() {
         let skeleton = build_synthetic_skeleton(&["root", "hip", "chest"]);
-        let splats: Vec<GaussianSplat> = (0..5).map(|i| GaussianSplat::volume(
-            [0.0, i as f32 * 0.5, 0.0],
-            [0.1; 3],
-            glam::Quat::IDENTITY,
-            200,
-            [0; 16],
-        )).collect();
+        let splats: Vec<GaussianSplat> = (0..5)
+            .map(|i| {
+                GaussianSplat::volume(
+                    [0.0, i as f32 * 0.5, 0.0],
+                    [0.1; 3],
+                    glam::Quat::IDENTITY,
+                    200,
+                    [0; 16],
+                )
+            })
+            .collect();
         let bindings = assign_joint_bindings(&splats, &skeleton);
         assert_eq!(bindings.len(), 5);
         for b in &bindings {
@@ -830,7 +839,9 @@ mod tests {
             [0u16; 16],
         );
         let anim = build_synthetic_animation(
-            "rotate", 1, 1.0,
+            "rotate",
+            1,
+            1.0,
             glam::Quat::IDENTITY,
             glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
         );
@@ -840,14 +851,24 @@ mod tests {
         assert_eq!(skinned.len(), 1);
         let r = skinned[0].rotation_raw();
         let is_identity = r[0].abs() < 100 && r[1].abs() < 100 && r[2].abs() < 100;
-        assert!(!is_identity, "rotation should change after skinning, got {:?}", r);
+        assert!(
+            !is_identity,
+            "rotation should change after skinning, got {:?}",
+            r
+        );
     }
 
     #[test]
     fn test_interpolate_keyframes_clamping() {
         let kf = vec![
-            Keyframe { time: 1.0, value: [0.0, 0.0, 0.0, 0.0] },
-            Keyframe { time: 2.0, value: [10.0, 10.0, 10.0, 0.0] },
+            Keyframe {
+                time: 1.0,
+                value: [0.0, 0.0, 0.0, 0.0],
+            },
+            Keyframe {
+                time: 2.0,
+                value: [10.0, 10.0, 10.0, 0.0],
+            },
         ];
         // Before first keyframe
         let r = interpolate_keyframes(&kf, 0.0, AnimationProperty::Translation);

@@ -31,7 +31,12 @@ pub struct ScriptContext {
 #[derive(Debug, Clone)]
 pub enum ScriptCommand {
     /// Spawn a new entity with the given asset.
-    Spawn { asset_path: String, position: [f32; 3], rotation: [f32; 4], scale: [f32; 3] },
+    Spawn {
+        asset_path: String,
+        position: [f32; 3],
+        rotation: [f32; 4],
+        scale: [f32; 3],
+    },
     /// Destroy an entity.
     Destroy { entity_id: u32 },
     /// Move this entity.
@@ -39,7 +44,11 @@ pub enum ScriptCommand {
     /// Set rotation.
     SetRotation { rotation: [f32; 4] },
     /// Play a sound.
-    PlaySound { clip: String, volume: f32, spatial: bool },
+    PlaySound {
+        clip: String,
+        volume: f32,
+        spatial: bool,
+    },
     /// Apply a force to a rigid body.
     ApplyForce { force: [f32; 3] },
     /// Send a custom event.
@@ -56,7 +65,10 @@ pub enum ScriptCommand {
 
 impl ScriptContext {
     pub fn new(entity_id: u32) -> Self {
-        Self { entity_id, commands: Vec::new() }
+        Self {
+            entity_id,
+            commands: Vec::new(),
+        }
     }
 
     pub fn spawn(&mut self, asset: &str, position: [f32; 3]) {
@@ -78,29 +90,42 @@ impl ScriptContext {
     }
 
     pub fn set_position(&mut self, pos: [f32; 3]) {
-        self.commands.push(ScriptCommand::SetPosition { position: pos });
+        self.commands
+            .push(ScriptCommand::SetPosition { position: pos });
     }
 
     pub fn play_sound(&mut self, clip: &str, volume: f32) {
         self.commands.push(ScriptCommand::PlaySound {
-            clip: clip.to_string(), volume, spatial: true,
+            clip: clip.to_string(),
+            volume,
+            spatial: true,
         });
     }
 
     pub fn log(&mut self, msg: &str) {
-        self.commands.push(ScriptCommand::Log { message: msg.to_string() });
+        self.commands.push(ScriptCommand::Log {
+            message: msg.to_string(),
+        });
     }
 
     pub fn set_ui_text(&mut self, id: &str, text: &str) {
-        self.commands.push(ScriptCommand::UISetText { id: id.to_string(), text: text.to_string() });
+        self.commands.push(ScriptCommand::UISetText {
+            id: id.to_string(),
+            text: text.to_string(),
+        });
     }
 
     pub fn set_ui_progress(&mut self, id: &str, value: f32) {
-        self.commands.push(ScriptCommand::UISetProgress { id: id.to_string(), value });
+        self.commands.push(ScriptCommand::UISetProgress {
+            id: id.to_string(),
+            value,
+        });
     }
 
     pub fn show_notification(&mut self, message: &str) {
-        self.commands.push(ScriptCommand::UINotification { message: message.to_string() });
+        self.commands.push(ScriptCommand::UINotification {
+            message: message.to_string(),
+        });
     }
 
     /// Take all pending commands (called by engine after update).
@@ -111,7 +136,8 @@ impl ScriptContext {
 
 /// Registry of available script types.
 pub struct ScriptRegistry {
-    factories: std::collections::HashMap<String, Box<dyn Fn() -> Box<dyn GameScript> + Send + Sync>>,
+    factories:
+        std::collections::HashMap<String, Box<dyn Fn() -> Box<dyn GameScript> + Send + Sync>>,
 }
 
 // Safety: All factory closures are Send + Sync (enforced by register signature).
@@ -126,11 +152,17 @@ impl Default for ScriptRegistry {
 
 impl ScriptRegistry {
     pub fn new() -> Self {
-        Self { factories: std::collections::HashMap::new() }
+        Self {
+            factories: std::collections::HashMap::new(),
+        }
     }
 
     /// Register a script type so it can be attached to entities by name.
-    pub fn register<F: Fn() -> Box<dyn GameScript> + Send + Sync + 'static>(&mut self, name: &str, factory: F) {
+    pub fn register<F: Fn() -> Box<dyn GameScript> + Send + Sync + 'static>(
+        &mut self,
+        name: &str,
+        factory: F,
+    ) {
         self.factories.insert(name.to_string(), Box::new(factory));
     }
 

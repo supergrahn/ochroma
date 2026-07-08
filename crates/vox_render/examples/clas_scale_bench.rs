@@ -166,7 +166,11 @@ fn run_one(n: usize, frames: u32, width: u32, height: u32) -> Result<String, Str
     let refit_ms_avg = refit_total / f;
     let render_ms_avg = render_total / f;
     let frame_ms = refit_ms_avg + render_ms_avg;
-    let fps = if frame_ms > 0.0 { 1000.0 / frame_ms } else { 0.0 };
+    let fps = if frame_ms > 0.0 {
+        1000.0 / frame_ms
+    } else {
+        0.0
+    };
 
     // CLAS stats (the Mega-Geometry witness) or TLAS fallback.
     let (instances_built, clusters) = r.clas_stats().unwrap_or((r.tlas_instance_count(), 0));
@@ -295,11 +299,7 @@ fn perturb_all(dirty: &mut Vec<(usize, [[f32; 4]; 3])>, n: usize, frame: u32) {
         // [f32;4] whose 4th element is the translation component.
         dirty.push((
             i,
-            [
-                [1.0, 0.0, 0.0, x],
-                [0.0, 1.0, 0.0, bob],
-                [0.0, 0.0, 1.0, z],
-            ],
+            [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, bob], [0.0, 0.0, 1.0, z]],
         ));
     }
 }

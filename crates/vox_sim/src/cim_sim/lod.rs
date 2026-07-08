@@ -23,10 +23,10 @@
 //! reconstruct incorrectly on promote: both paths run the exact same closed-form
 //! from the exact same hash-seeded start.
 
+use crate::cim_sim::TICKS_PER_DAY;
 use crate::cim_sim::cohort::CohortTable;
 use crate::cim_sim::hash::hash;
 use crate::cim_sim::store::{NEED_FOOD, NEED_HEALTH};
-use crate::cim_sim::TICKS_PER_DAY;
 
 /// The crystallized per-cim state the LOD layer reconstructs. Field-by-field
 /// comparable (`PartialEq`) so the bit-identity test can assert
@@ -80,7 +80,10 @@ fn seed_need(cohorts: &CohortTable, cim_id: u32, day: u64, need: usize) -> Seede
     let drift_frac = (h & 0xFFFF) as f32 / 65535.0; // 0..1
     let rate_per_day = -0.02 * drift_frac;
 
-    SeededNeed { value_at_day_start, rate_per_day }
+    SeededNeed {
+        value_at_day_start,
+        rate_per_day,
+    }
 }
 
 /// Reconstruct a need's closed-form value at `up_to_tick` for a cim hydrated on

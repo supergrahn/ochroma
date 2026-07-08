@@ -3,11 +3,16 @@ use vox_script::rhai_runtime::RhaiRuntime;
 #[test]
 fn load_and_run_script() {
     let mut rt = RhaiRuntime::new();
-    let idx = rt.load_script("test", r#"
+    let idx = rt
+        .load_script(
+            "test",
+            r#"
         log("Hello from Rhai!");
         let x = 40 + 2;
         x
-    "#).unwrap();
+    "#,
+        )
+        .unwrap();
     assert_eq!(rt.script_count(), 1);
     rt.run(idx).unwrap();
 }
@@ -15,7 +20,9 @@ fn load_and_run_script() {
 #[test]
 fn call_engine_functions() {
     let mut rt = RhaiRuntime::new();
-    rt.load_script("test", r#"
+    rt.load_script(
+        "test",
+        r#"
         fn on_start() {
             log("Script started");
             play_sound("click.wav", 0.8);
@@ -25,7 +32,9 @@ fn call_engine_functions() {
             let speed = 5.0;
             set_position(speed * dt, 0.0, 0.0);
         }
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
     // Scripts compile without error
     assert_eq!(rt.script_count(), 1);
 }

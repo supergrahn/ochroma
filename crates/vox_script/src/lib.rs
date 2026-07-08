@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 pub mod lua_runtime;
-pub use lua_runtime::{LuaRuntime, LuaError};
+pub use lua_runtime::{LuaError, LuaRuntime};
 
 pub mod spectral_bindings;
 pub use spectral_bindings::{SpectralState, register_spectral_bindings, tick_thresholds};
@@ -14,10 +14,10 @@ pub mod hot_reload;
 pub use hot_reload::{ScriptWatcher, WatchError};
 
 pub mod mod_manager;
-pub mod visual_script;
-pub mod visual_graph;
 pub mod plugin_system;
 pub mod rhai_runtime;
+pub mod visual_graph;
+pub mod visual_script;
 
 #[cfg(feature = "wasm-runtime")]
 mod wasm;
@@ -59,12 +59,18 @@ pub struct ScriptEvent {
 
 impl ScriptEvent {
     pub fn new(name: impl Into<String>, data: Vec<u8>) -> Self {
-        Self { name: name.into(), data }
+        Self {
+            name: name.into(),
+            data,
+        }
     }
 
     /// Convenience: create an event with no payload.
     pub fn named(name: impl Into<String>) -> Self {
-        Self { name: name.into(), data: Vec::new() }
+        Self {
+            name: name.into(),
+            data: Vec::new(),
+        }
     }
 }
 

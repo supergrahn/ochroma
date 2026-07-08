@@ -1,7 +1,7 @@
 //! AssetDirector — stage machine: TextPrompt → ColmapProcess → LoadVxm → PlaceInScene.
 //! Pattern adapted from AetherSpectra Director: resumable, crash-safe, JSON artifacts.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,10 +16,21 @@ pub enum AssetStageName {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AssetStageArtifact {
-    ExpandedPrompt { text: String },
-    ColmapOutput { sparse_path: PathBuf, image_count: usize },
-    VxmLoaded { vxm_path: PathBuf, splat_count: usize },
-    Placed { scene_id: u64, position: [f32; 3] },
+    ExpandedPrompt {
+        text: String,
+    },
+    ColmapOutput {
+        sparse_path: PathBuf,
+        image_count: usize,
+    },
+    VxmLoaded {
+        vxm_path: PathBuf,
+        splat_count: usize,
+    },
+    Placed {
+        scene_id: u64,
+        position: [f32; 3],
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,8 +62,7 @@ impl AssetPipelineState {
     }
 
     pub fn load(output_dir: &Path) -> Option<Self> {
-        let text =
-            std::fs::read_to_string(output_dir.join("asset_pipeline_state.json")).ok()?;
+        let text = std::fs::read_to_string(output_dir.join("asset_pipeline_state.json")).ok()?;
         serde_json::from_str(&text).ok()
     }
 
@@ -60,8 +70,13 @@ impl AssetPipelineState {
         self.completed.contains(&AssetStageName::PlaceInScene)
     }
 
-    pub fn mark_complete(&mut self, stage: AssetStageName, artifact: &AssetStageArtifact) -> Result<()> {
-        self.artifacts.insert(format!("{:?}", stage), serde_json::to_string(artifact)?);
+    pub fn mark_complete(
+        &mut self,
+        stage: AssetStageName,
+        artifact: &AssetStageArtifact,
+    ) -> Result<()> {
+        self.artifacts
+            .insert(format!("{:?}", stage), serde_json::to_string(artifact)?);
         self.completed.push(stage);
         self.failed_at = None;
         Ok(())
@@ -105,19 +120,25 @@ impl AssetDirector {
         resume: bool,
     ) -> Result<AssetStageArtifact> {
         std::fs::create_dir_all(&self.config.output_dir)?;
-        let mut state =
-            if self.config.output_dir.join("asset_pipeline_state.json").exists() {
-                if !resume {
-                    bail!("Pipeline state exists. Use resume=true to continue.");
-                }
-                AssetPipelineState::load(&self.config.output_dir)
-                    .ok_or_else(|| anyhow::anyhow!("Failed to load pipeline state"))?
-            } else {
-                AssetPipelineState::new(prompt)
-            };
+        let mut state = if self
+            .config
+            .output_dir
+            .join("asset_pipeline_state.json")
+            .exists()
+        {
+            if !resume {
+                bail!("Pipeline state exists. Use resume=true to continue.");
+            }
+            AssetPipelineState::load(&self.config.output_dir)
+                .ok_or_else(|| anyhow::anyhow!("Failed to load pipeline state"))?
+        } else {
+            AssetPipelineState::new(prompt)
+        };
 
         if !state.completed.contains(&AssetStageName::TextPrompt) {
-            let a = AssetStageArtifact::ExpandedPrompt { text: format!("[expanded] {}", prompt) };
+            let a = AssetStageArtifact::ExpandedPrompt {
+                text: format!("[expanded] {}", prompt),
+            };
             state.mark_complete(AssetStageName::TextPrompt, &a)?;
             state.save(&self.config.output_dir)?;
         }
@@ -175,14 +196,23 @@ mod tests {
     #[tokio::test]
     async fn pipeline_completes_successfully() {
         let dir = TempDir::new().unwrap();
-        let result = make_director(&dir).run("a stone forge", &[], false).await.unwrap();
-        assert!(matches!(result, AssetStageArtifact::Placed { .. }), "final artifact must be Placed");
+        let result = make_director(&dir)
+            .run("a stone forge", &[], false)
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, AssetStageArtifact::Placed { .. }),
+            "final artifact must be Placed"
+        );
     }
 
     #[tokio::test]
     async fn pipeline_state_persists_to_disk() {
         let dir = TempDir::new().unwrap();
-        make_director(&dir).run("a wooden barrel", &[], false).await.unwrap();
+        make_director(&dir)
+            .run("a wooden barrel", &[], false)
+            .await
+            .unwrap();
         assert!(
             dir.path().join("asset_pipeline_state.json").exists(),
             "pipeline_state.json must be written to output_dir"
@@ -192,7 +222,10 @@ mod tests {
     #[tokio::test]
     async fn pipeline_refuses_rerun_without_resume() {
         let dir = TempDir::new().unwrap();
-        make_director(&dir).run("a sword", &[], false).await.unwrap();
+        make_director(&dir)
+            .run("a sword", &[], false)
+            .await
+            .unwrap();
         let result = make_director(&dir).run("a sword", &[], false).await;
         assert!(result.is_err(), "re-running without resume must fail");
     }
@@ -200,17 +233,28 @@ mod tests {
     #[tokio::test]
     async fn resume_skips_completed_stages() {
         let dir = TempDir::new().unwrap();
-        make_director(&dir).run("a lantern", &[], false).await.unwrap();
+        make_director(&dir)
+            .run("a lantern", &[], false)
+            .await
+            .unwrap();
         let result = make_director(&dir).run("a lantern", &[], true).await;
-        assert!(result.is_ok(), "resume on completed pipeline must succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "resume on completed pipeline must succeed: {:?}",
+            result
+        );
     }
 
     #[test]
     fn pipeline_state_round_trips_json() {
         let dir = TempDir::new().unwrap();
         let mut state = AssetPipelineState::new("test prompt");
-        let artifact = AssetStageArtifact::ExpandedPrompt { text: "expanded".into() };
-        state.mark_complete(AssetStageName::TextPrompt, &artifact).unwrap();
+        let artifact = AssetStageArtifact::ExpandedPrompt {
+            text: "expanded".into(),
+        };
+        state
+            .mark_complete(AssetStageName::TextPrompt, &artifact)
+            .unwrap();
         state.save(dir.path()).unwrap();
         let loaded = AssetPipelineState::load(dir.path()).unwrap();
         assert_eq!(loaded.prompt, "test prompt");

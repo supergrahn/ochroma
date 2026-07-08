@@ -22,7 +22,12 @@ pub struct ReplicationPacket {
 }
 
 impl ReplicationPacket {
-    pub fn from_delta(entity_id: u32, before: &[u16; 16], after: &[u16; 16], min_delta: u16) -> Self {
+    pub fn from_delta(
+        entity_id: u32,
+        before: &[u16; 16],
+        after: &[u16; 16],
+        min_delta: u16,
+    ) -> Self {
         let mut changed_bands: u32 = 0;
         let mut values = Vec::with_capacity(16);
         for b in 0..16 {
@@ -32,17 +37,28 @@ impl ReplicationPacket {
                 values.push(after[b]);
             }
         }
-        Self { entity_id, changed_bands, values }
+        Self {
+            entity_id,
+            changed_bands,
+            values,
+        }
     }
 
     pub fn full(entity_id: u32, spectral: &[u16; 16]) -> Self {
-        Self { entity_id, changed_bands: 0xFFFF, values: spectral.to_vec() }
+        Self {
+            entity_id,
+            changed_bands: 0xFFFF,
+            values: spectral.to_vec(),
+        }
     }
 
     pub fn apply_to(&self, spectral: &mut [u16; 16]) -> Result<(), PacketError> {
         let expected = self.changed_bands.count_ones() as usize;
         if self.values.len() != expected {
-            return Err(PacketError::BandCountMismatch { values: self.values.len(), expected });
+            return Err(PacketError::BandCountMismatch {
+                values: self.values.len(),
+                expected,
+            });
         }
         let mut value_idx = 0;
         for (b, band) in spectral.iter_mut().enumerate() {
@@ -66,7 +82,10 @@ impl ReplicationPacket {
 
     pub fn decode(buf: &[u8]) -> Result<Self, PacketError> {
         if buf.len() < 8 {
-            return Err(PacketError::BufferTooShort { needed: 8, have: buf.len() });
+            return Err(PacketError::BufferTooShort {
+                needed: 8,
+                have: buf.len(),
+            });
         }
         let entity_id = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
         let changed_bands = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
@@ -74,14 +93,21 @@ impl ReplicationPacket {
         let band_count = (changed_bands & 0xFFFF).count_ones() as usize;
         let needed = 8 + band_count * 2;
         if buf.len() < needed {
-            return Err(PacketError::BufferTooShort { needed, have: buf.len() });
+            return Err(PacketError::BufferTooShort {
+                needed,
+                have: buf.len(),
+            });
         }
         let mut values = Vec::with_capacity(band_count);
         for i in 0..band_count {
             let offset = 8 + i * 2;
             values.push(u16::from_le_bytes([buf[offset], buf[offset + 1]]));
         }
-        Ok(Self { entity_id, changed_bands, values })
+        Ok(Self {
+            entity_id,
+            changed_bands,
+            values,
+        })
     }
 
     pub fn wire_size(&self) -> usize {
@@ -115,7 +141,11 @@ impl PlayerStatePacket {
     pub const WIRE_SIZE: usize = 4 + 12 + 32;
 
     pub fn new(entity_id: u32, position: [f32; 3], spectral: [u16; 16]) -> Self {
-        Self { entity_id, position, spectral }
+        Self {
+            entity_id,
+            position,
+            spectral,
+        }
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -132,7 +162,10 @@ impl PlayerStatePacket {
 
     pub fn decode(buf: &[u8]) -> Result<Self, PacketError> {
         if buf.len() < Self::WIRE_SIZE {
-            return Err(PacketError::BufferTooShort { needed: Self::WIRE_SIZE, have: buf.len() });
+            return Err(PacketError::BufferTooShort {
+                needed: Self::WIRE_SIZE,
+                have: buf.len(),
+            });
         }
         let entity_id = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
         let mut position = [0.0f32; 3];
@@ -145,7 +178,11 @@ impl PlayerStatePacket {
             let o = 16 + i * 2;
             *v = u16::from_le_bytes([buf[o], buf[o + 1]]);
         }
-        Ok(Self { entity_id, position, spectral })
+        Ok(Self {
+            entity_id,
+            position,
+            spectral,
+        })
     }
 }
 
@@ -164,7 +201,11 @@ mod tests {
         after[2] = 2000;
         after[5] = 3000;
         let packet = ReplicationPacket::from_delta(42, &before, &after, 0);
-        assert_eq!(packet.changed_bands, (1 << 2) | (1 << 5), "only bands 2 and 5 should be marked changed");
+        assert_eq!(
+            packet.changed_bands,
+            (1 << 2) | (1 << 5),
+            "only bands 2 and 5 should be marked changed"
+        );
         assert_eq!(packet.values.len(), 2);
         assert_eq!(packet.values[0], 2000, "first value should be band 2");
         assert_eq!(packet.values[1], 3000, "second value should be band 5");
@@ -177,17 +218,33 @@ mod tests {
         after[0] = 1010;
         after[3] = 2000;
         let packet = ReplicationPacket::from_delta(1, &before, &after, 50);
-        assert_eq!(packet.changed_bands, 1 << 3, "only band 3 should pass min_delta=50 filter");
+        assert_eq!(
+            packet.changed_bands,
+            1 << 3,
+            "only band 3 should pass min_delta=50 filter"
+        );
         assert_eq!(packet.values.len(), 1);
     }
 
     #[test]
     fn encode_decode_roundtrip() {
         let after: [u16; 16] = [
-            make_f16_bits(0.1), make_f16_bits(0.2), make_f16_bits(0.3), make_f16_bits(0.4),
-            make_f16_bits(0.5), make_f16_bits(0.6), make_f16_bits(0.7), make_f16_bits(0.8),
-            make_f16_bits(0.1), make_f16_bits(0.2), make_f16_bits(0.3), make_f16_bits(0.4),
-            make_f16_bits(0.5), make_f16_bits(0.6), make_f16_bits(0.7), make_f16_bits(0.8),
+            make_f16_bits(0.1),
+            make_f16_bits(0.2),
+            make_f16_bits(0.3),
+            make_f16_bits(0.4),
+            make_f16_bits(0.5),
+            make_f16_bits(0.6),
+            make_f16_bits(0.7),
+            make_f16_bits(0.8),
+            make_f16_bits(0.1),
+            make_f16_bits(0.2),
+            make_f16_bits(0.3),
+            make_f16_bits(0.4),
+            make_f16_bits(0.5),
+            make_f16_bits(0.6),
+            make_f16_bits(0.7),
+            make_f16_bits(0.8),
         ];
         let packet = ReplicationPacket::full(99, &after);
         let encoded = packet.encode();
@@ -200,19 +257,33 @@ mod tests {
     #[test]
     fn apply_to_only_modifies_changed_bands() {
         let mut spectral = [1000u16; 16];
-        let packet = ReplicationPacket { entity_id: 7, changed_bands: 0b00001010, values: vec![2222, 4444] };
+        let packet = ReplicationPacket {
+            entity_id: 7,
+            changed_bands: 0b00001010,
+            values: vec![2222, 4444],
+        };
         packet.apply_to(&mut spectral).unwrap();
         assert_eq!(spectral[0], 1000);
         assert_eq!(spectral[1], 2222);
         assert_eq!(spectral[2], 1000);
         assert_eq!(spectral[3], 4444);
-        for b in 4..16 { assert_eq!(spectral[b], 1000, "band {} should be unchanged", b); }
+        for b in 4..16 {
+            assert_eq!(spectral[b], 1000, "band {} should be unchanged", b);
+        }
     }
 
     #[test]
     fn wire_size_scales_with_band_count() {
-        let zero = ReplicationPacket { entity_id: 0, changed_bands: 0, values: vec![] };
-        let one_band = ReplicationPacket { entity_id: 0, changed_bands: 1, values: vec![0] };
+        let zero = ReplicationPacket {
+            entity_id: 0,
+            changed_bands: 0,
+            values: vec![],
+        };
+        let one_band = ReplicationPacket {
+            entity_id: 0,
+            changed_bands: 1,
+            values: vec![0],
+        };
         let all_bands = ReplicationPacket::full(0, &[0u16; 16]);
         assert_eq!(zero.wire_size(), 8);
         assert_eq!(one_band.wire_size(), 10);
@@ -222,7 +293,10 @@ mod tests {
     #[test]
     fn bandwidth_ratio_full_packet_is_one() {
         let packet = ReplicationPacket::full(0, &[0u16; 16]);
-        assert!((packet.bandwidth_ratio() - 1.0).abs() < 1e-5, "full packet bandwidth ratio should be 1.0");
+        assert!(
+            (packet.bandwidth_ratio() - 1.0).abs() < 1e-5,
+            "full packet bandwidth ratio should be 1.0"
+        );
     }
 
     #[test]
@@ -232,20 +306,34 @@ mod tests {
         after[2] = 1000;
         after[6] = 2000;
         let packet = ReplicationPacket::from_delta(0, &before, &after, 0);
-        assert!(packet.bandwidth_ratio() < 0.5, "2-band packet should use <50% bandwidth, got {:.2}", packet.bandwidth_ratio());
+        assert!(
+            packet.bandwidth_ratio() < 0.5,
+            "2-band packet should use <50% bandwidth, got {:.2}",
+            packet.bandwidth_ratio()
+        );
     }
 
     #[test]
     fn decode_truncated_buffer_returns_error() {
         let buf = [0u8; 3];
-        assert!(matches!(ReplicationPacket::decode(&buf), Err(PacketError::BufferTooShort { .. })));
+        assert!(matches!(
+            ReplicationPacket::decode(&buf),
+            Err(PacketError::BufferTooShort { .. })
+        ));
     }
 
     #[test]
     fn apply_to_band_count_mismatch_returns_error() {
         let mut spectral = [0u16; 16];
-        let packet = ReplicationPacket { entity_id: 0, changed_bands: 0xFFFF, values: vec![1, 2] };
-        assert!(matches!(packet.apply_to(&mut spectral), Err(PacketError::BandCountMismatch { .. })));
+        let packet = ReplicationPacket {
+            entity_id: 0,
+            changed_bands: 0xFFFF,
+            values: vec![1, 2],
+        };
+        assert!(matches!(
+            packet.apply_to(&mut spectral),
+            Err(PacketError::BandCountMismatch { .. })
+        ));
     }
 
     #[test]
@@ -255,15 +343,25 @@ mod tests {
         ];
         let sent = PlayerStatePacket::new(0xBEEF, [1.92, -3.5, 2.88], spectral);
         let bytes = sent.encode();
-        assert_eq!(bytes.len(), PlayerStatePacket::WIRE_SIZE, "fixed 48-byte wire format");
+        assert_eq!(
+            bytes.len(),
+            PlayerStatePacket::WIRE_SIZE,
+            "fixed 48-byte wire format"
+        );
 
         let got = PlayerStatePacket::decode(&bytes).unwrap();
         assert_eq!(got.entity_id, 0xBEEF, "entity_id must round-trip exactly");
         assert_eq!(got.position[0], 1.92f32, "pos.x must round-trip bit-exact");
         assert_eq!(got.position[1], -3.5f32, "pos.y must round-trip bit-exact");
         assert_eq!(got.position[2], 2.88f32, "pos.z must round-trip bit-exact");
-        assert_eq!(got.spectral, spectral, "all 16 bands must round-trip exactly");
-        assert_eq!(got, sent, "decoded packet must equal the sent packet field-for-field");
+        assert_eq!(
+            got.spectral, spectral,
+            "all 16 bands must round-trip exactly"
+        );
+        assert_eq!(
+            got, sent,
+            "decoded packet must equal the sent packet field-for-field"
+        );
     }
 
     #[test]
@@ -271,7 +369,10 @@ mod tests {
         let buf = [0u8; PlayerStatePacket::WIRE_SIZE - 1];
         assert!(matches!(
             PlayerStatePacket::decode(&buf),
-            Err(PacketError::BufferTooShort { needed: PlayerStatePacket::WIRE_SIZE, .. })
+            Err(PacketError::BufferTooShort {
+                needed: PlayerStatePacket::WIRE_SIZE,
+                ..
+            })
         ));
     }
 }

@@ -173,7 +173,7 @@ pub fn compute_moon_position(
 
     // ── Step 6: geocentric ecliptic coordinates ───────────────────────────────
     let lambda = (l0 + sigma_l / 1_000_000.0).rem_euclid(360.0); // longitude (°)
-    let beta = sigma_b / 1_000_000.0;                              // latitude (°)
+    let beta = sigma_b / 1_000_000.0; // latitude (°)
 
     // ── Step 7: mean obliquity of the ecliptic ────────────────────────────────
     let epsilon = 23.439_291_1 - 0.013_004_167 * t; // degrees
@@ -193,8 +193,7 @@ pub fn compute_moon_position(
 
     // ── Step 9: local hour angle ──────────────────────────────────────────────
     // Greenwich Mean Sidereal Time (°), then local.
-    let gmst_deg = (280.460_618_37 + 360.985_647_366_29 * (jd - 2_451_545.0))
-        .rem_euclid(360.0);
+    let gmst_deg = (280.460_618_37 + 360.985_647_366_29 * (jd - 2_451_545.0)).rem_euclid(360.0);
     let lst_deg = (gmst_deg + longitude_deg).rem_euclid(360.0);
     let lha = (lst_deg * r - ra).rem_euclid(TAU);
     // Shift to (−π, π] so morning/afternoon sign is correct.
@@ -228,9 +227,8 @@ pub fn compute_moon_position(
     let (ra_sun, dec_sun) = sun_equatorial(jd);
     let dra = ra_sun - ra; // Sun RA − Moon RA
     // Elongation ψ (Sun–Earth–Moon as seen geocentrically), 0..π.
-    let cos_psi = (dec_sun.sin() * dec.sin()
-        + dec_sun.cos() * dec.cos() * dra.cos())
-    .clamp(-1.0, 1.0);
+    let cos_psi =
+        (dec_sun.sin() * dec.sin() + dec_sun.cos() * dec.cos() * dra.cos()).clamp(-1.0, 1.0);
     let psi = cos_psi.acos();
     // Phase angle i: the Sun is effectively at infinity, so i ≈ π − ψ. Illuminated
     // fraction k = (1 + cos i)/2 = (1 − cos ψ)/2 (0 = new, 1 = full).
@@ -295,7 +293,9 @@ fn sun_equatorial(jd: f64) -> (f64, f64) {
     let lambda = (l + 1.915 * g.sin() + 0.020 * (2.0 * g).sin()) * r;
     // Obliquity of the ecliptic (degrees → radians).
     let eps = (23.439 - 0.000_000_4 * n) * r;
-    let ra = (eps.cos() * lambda.sin()).atan2(lambda.cos()).rem_euclid(TAU);
+    let ra = (eps.cos() * lambda.sin())
+        .atan2(lambda.cos())
+        .rem_euclid(TAU);
     let dec = (eps.sin() * lambda.sin()).clamp(-1.0, 1.0).asin();
     (ra, dec)
 }
@@ -329,7 +329,16 @@ fn day_of_year_to_month_day(year: i32, day_of_year: u32) -> (u32, u32) {
     let days_in_month = [
         31u32,
         if is_leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     let mut remaining = day_of_year.max(1).min(if is_leap { 366 } else { 365 });
     for (i, &dim) in days_in_month.iter().enumerate() {
@@ -408,7 +417,10 @@ mod tests {
         // We test this by checking the logic holds: altitude <= 0 → radiance = 0.
         let moon = compute_moon_position(2000, 21, 12.0, 40.71, -74.0, &DEFAULT_CONFIG, 0.0);
         if moon.altitude_rad <= 0.0 {
-            assert_eq!(moon.radiance, 0.0, "below-horizon moon must have 0 radiance");
+            assert_eq!(
+                moon.radiance, 0.0,
+                "below-horizon moon must have 0 radiance"
+            );
         }
     }
 

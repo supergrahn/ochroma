@@ -27,7 +27,10 @@ pub enum AIBehavior {
     /// Stay still.
     Stationary,
     /// Walk between waypoints.
-    Patrol { waypoints: Vec<Vec3>, current: usize },
+    Patrol {
+        waypoints: Vec<Vec3>,
+        current: usize,
+    },
     /// Chase target when in range, return home when lost.
     GuardArea { guard_radius: f32 },
     /// Always flee from target.
@@ -44,7 +47,10 @@ impl AIAgent {
             path_index: 0,
             target_entity: None,
             home_position: waypoints.first().copied().unwrap_or(Vec3::ZERO),
-            behavior: AIBehavior::Patrol { waypoints, current: 0 },
+            behavior: AIBehavior::Patrol {
+                waypoints,
+                current: 0,
+            },
         }
     }
 
@@ -57,17 +63,14 @@ impl AIAgent {
             path_index: 0,
             target_entity: None,
             home_position: position,
-            behavior: AIBehavior::GuardArea { guard_radius: radius },
+            behavior: AIBehavior::GuardArea {
+                guard_radius: radius,
+            },
         }
     }
 
     /// Tick the AI agent. Returns the desired movement delta for this frame.
-    pub fn tick(
-        &mut self,
-        my_position: Vec3,
-        target_position: Option<Vec3>,
-        dt: f32,
-    ) -> Vec3 {
+    pub fn tick(&mut self, my_position: Vec3, target_position: Option<Vec3>, dt: f32) -> Vec3 {
         let mut move_dir = Vec3::ZERO;
 
         // Check if target is in detection range
@@ -265,7 +268,10 @@ mod tests {
         // Target at 10 units away, detection radius is 5
         let target = Some(Vec3::new(10.0, 0.0, 0.0));
         agent.tick(pos, target, DT);
-        assert!(!agent.is_chasing(), "should not chase target outside detection radius");
+        assert!(
+            !agent.is_chasing(),
+            "should not chase target outside detection radius"
+        );
         assert_eq!(agent.state, AIState::Patrolling);
     }
 

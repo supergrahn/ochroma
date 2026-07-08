@@ -1,13 +1,13 @@
 //! Ochroma node editor egui panel.
 //! Nodes: rounded rect + port circles. Wires: bezier curves. Param sidebar: cook button.
 
+use crate::node_graph::{NodeId, OchromaNodeGraph, PortType};
 use egui::{Color32, Pos2, Rect, Stroke, Ui, Vec2};
 use hashbrown::HashMap;
-use crate::node_graph::{NodeId, OchromaNodeGraph, PortType};
 
 #[derive(Clone, Debug)]
 pub struct NodeLayout {
-    pub pos:  Pos2,
+    pub pos: Pos2,
     pub size: Vec2,
 }
 
@@ -17,20 +17,26 @@ type PortPositions = HashMap<(u32, String), Pos2>;
 pub struct WireDrag {
     pub from_node: NodeId,
     pub from_port: String,
-    pub current:   Pos2,
+    pub current: Pos2,
 }
 
 pub struct NodeEditorPanel {
-    pub layouts:   HashMap<NodeId, NodeLayout>,
-    pub selected:  Option<NodeId>,
+    pub layouts: HashMap<NodeId, NodeLayout>,
+    pub selected: Option<NodeId>,
     pub wire_drag: Option<WireDrag>,
-    pub pan:       Vec2,
-    pub zoom:      f32,
+    pub pan: Vec2,
+    pub zoom: f32,
 }
 
 impl Default for NodeEditorPanel {
     fn default() -> Self {
-        Self { layouts: HashMap::new(), selected: None, wire_drag: None, pan: Vec2::ZERO, zoom: 1.0 }
+        Self {
+            layouts: HashMap::new(),
+            selected: None,
+            wire_drag: None,
+            pan: Vec2::ZERO,
+            zoom: 1.0,
+        }
     }
 }
 
@@ -39,7 +45,9 @@ impl Default for NodeEditorPanel {
 pub const PORT_HIT_RADIUS: f32 = 9.0;
 
 impl NodeEditorPanel {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// World-space screen position of a node's single input ("in") port,
     /// accounting for the current pan. Returns `None` if the node has no layout.
@@ -60,14 +68,16 @@ impl NodeEditorPanel {
     /// Find the node whose output port is within [`PORT_HIT_RADIUS`] of `pos`.
     pub fn output_port_at(&self, pos: Pos2) -> Option<NodeId> {
         self.layouts.keys().copied().find(|&id| {
-            self.output_port_pos(id).is_some_and(|p| p.distance(pos) <= PORT_HIT_RADIUS)
+            self.output_port_pos(id)
+                .is_some_and(|p| p.distance(pos) <= PORT_HIT_RADIUS)
         })
     }
 
     /// Find the node whose input port is within [`PORT_HIT_RADIUS`] of `pos`.
     pub fn input_port_at(&self, pos: Pos2) -> Option<NodeId> {
         self.layouts.keys().copied().find(|&id| {
-            self.input_port_pos(id).is_some_and(|p| p.distance(pos) <= PORT_HIT_RADIUS)
+            self.input_port_pos(id)
+                .is_some_and(|p| p.distance(pos) <= PORT_HIT_RADIUS)
         })
     }
 
@@ -76,7 +86,7 @@ impl NodeEditorPanel {
         self.wire_drag = Some(WireDrag {
             from_node: from,
             from_port: "out".into(),
-            current:   start,
+            current: start,
         });
     }
 
@@ -93,11 +103,19 @@ impl NodeEditorPanel {
     ///
     /// Returns `true` iff a new edge was successfully created.
     pub fn complete_wire_drag(&mut self, graph: &mut OchromaNodeGraph, release_pos: Pos2) -> bool {
-        let Some(drag) = self.wire_drag.take() else { return false };
-        let Some(target) = self.input_port_at(release_pos) else { return false };
+        let Some(drag) = self.wire_drag.take() else {
+            return false;
+        };
+        let Some(target) = self.input_port_at(release_pos) else {
+            return false;
+        };
         // No self-loops: dragging a port back onto its own node does nothing.
-        if target == drag.from_node { return false; }
-        graph.connect(drag.from_node, &drag.from_port, target, "in").is_ok()
+        if target == drag.from_node {
+            return false;
+        }
+        graph
+            .connect(drag.from_node, &drag.from_port, target, "in")
+            .is_ok()
     }
 
     pub fn ensure_layouts(&mut self, graph: &OchromaNodeGraph) {
@@ -106,32 +124,36 @@ impl NodeEditorPanel {
         self.layouts.retain(|id, _| live_ids.contains(id));
         // Assign grid positions to newly added nodes.
         let start_idx = self.layouts.len();
-        let mut ids: Vec<NodeId> = graph.node_ids()
+        let mut ids: Vec<NodeId> = graph
+            .node_ids()
             .filter(|id| !self.layouts.contains_key(id))
             .collect();
         ids.sort();
         for (idx, id) in (start_idx..).zip(ids) {
             let col = idx % 4;
             let row = idx / 4;
-            self.layouts.insert(id, NodeLayout {
-                pos:  Pos2::new(20.0 + col as f32 * 220.0, 20.0 + row as f32 * 160.0),
-                size: Vec2::new(180.0, 120.0),
-            });
+            self.layouts.insert(
+                id,
+                NodeLayout {
+                    pos: Pos2::new(20.0 + col as f32 * 220.0, 20.0 + row as f32 * 160.0),
+                    size: Vec2::new(180.0, 120.0),
+                },
+            );
         }
     }
 
     pub fn port_color(pt: PortType) -> Color32 {
         match pt {
-            PortType::Terrain       => Color32::from_rgb(140, 100, 60),
-            PortType::Mesh          => Color32::from_rgb(90, 180, 90),
-            PortType::LodMesh       => Color32::from_rgb(60, 160, 60),
-            PortType::Splats        => Color32::from_rgb(80, 140, 220),
+            PortType::Terrain => Color32::from_rgb(140, 100, 60),
+            PortType::Mesh => Color32::from_rgb(90, 180, 90),
+            PortType::LodMesh => Color32::from_rgb(60, 160, 60),
+            PortType::Splats => Color32::from_rgb(80, 140, 220),
             PortType::SpectralField => Color32::from_rgb(200, 80, 200),
-            PortType::Instances     => Color32::from_rgb(220, 180, 60),
-            PortType::Scalar        => Color32::from_rgb(180, 180, 180),
-            PortType::BiomeMap      => Color32::from_rgb(100, 160, 80),
-            PortType::SplatWeights  => Color32::from_rgb(160, 120, 60),
-            PortType::ScalarVec     => Color32::from_rgb(160, 180, 200),
+            PortType::Instances => Color32::from_rgb(220, 180, 60),
+            PortType::Scalar => Color32::from_rgb(180, 180, 180),
+            PortType::BiomeMap => Color32::from_rgb(100, 160, 80),
+            PortType::SplatWeights => Color32::from_rgb(160, 120, 60),
+            PortType::ScalarVec => Color32::from_rgb(160, 180, 200),
         }
     }
 
@@ -156,7 +178,10 @@ impl NodeEditorPanel {
             }
             if response.drag_stopped() {
                 let release = pointer_pos.unwrap_or_else(|| {
-                    self.wire_drag.as_ref().map(|d| d.current).unwrap_or(canvas_rect.center())
+                    self.wire_drag
+                        .as_ref()
+                        .map(|d| d.current)
+                        .unwrap_or(canvas_rect.center())
                 });
                 self.complete_wire_drag(graph, release);
             }
@@ -168,33 +193,58 @@ impl NodeEditorPanel {
 
         // --- Draw existing edges as wires ----------------------------------
         for (from, _fp, to, _tp) in graph.edges() {
-            let (Some(a), Some(b)) = (self.output_port_pos(from), self.input_port_pos(to)) else { continue };
+            let (Some(a), Some(b)) = (self.output_port_pos(from), self.input_port_pos(to)) else {
+                continue;
+            };
             painter.line_segment([a, b], Stroke::new(2.0, Color32::from_rgb(180, 180, 200)));
         }
         // --- Draw the in-progress wire -------------------------------------
         if let Some(drag) = &self.wire_drag {
             if let Some(a) = self.output_port_pos(drag.from_node) {
-                painter.line_segment([a, drag.current], Stroke::new(2.0, Color32::from_rgb(120, 220, 160)));
+                painter.line_segment(
+                    [a, drag.current],
+                    Stroke::new(2.0, Color32::from_rgb(120, 220, 160)),
+                );
             }
         }
 
         let node_ids: Vec<NodeId> = self.layouts.keys().copied().collect();
         let mut port_positions = PortPositions::new();
         for id in &node_ids {
-            let Some(layout) = self.layouts.get_mut(id) else { continue };
+            let Some(layout) = self.layouts.get_mut(id) else {
+                continue;
+            };
             let top_left = layout.pos + self.pan;
             let rect = Rect::from_min_size(top_left, layout.size);
-            let bg = if self.selected == Some(*id) { Color32::from_rgb(60, 70, 100) } else { Color32::from_rgb(45, 45, 55) };
+            let bg = if self.selected == Some(*id) {
+                Color32::from_rgb(60, 70, 100)
+            } else {
+                Color32::from_rgb(45, 45, 55)
+            };
             painter.rect_filled(rect, 6.0, bg);
-            painter.rect_stroke(rect, 6.0, Stroke::new(1.0, Color32::from_rgb(100, 100, 120)), egui::StrokeKind::Middle);
+            painter.rect_stroke(
+                rect,
+                6.0,
+                Stroke::new(1.0, Color32::from_rgb(100, 100, 120)),
+                egui::StrokeKind::Middle,
+            );
             let header_rect = Rect::from_min_size(top_left, Vec2::new(layout.size.x, 24.0));
-            painter.rect_filled(header_rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, Color32::from_rgb(60, 80, 120));
+            painter.rect_filled(
+                header_rect,
+                egui::CornerRadius {
+                    nw: 6,
+                    ne: 6,
+                    sw: 0,
+                    se: 0,
+                },
+                Color32::from_rgb(60, 80, 120),
+            );
             let out_pos = top_left + Vec2::new(layout.size.x, layout.size.y * 0.5);
-            let in_pos  = top_left + Vec2::new(0.0, layout.size.y * 0.5);
+            let in_pos = top_left + Vec2::new(0.0, layout.size.y * 0.5);
             port_positions.insert((id.0, "out".into()), out_pos);
-            port_positions.insert((id.0, "in".into()),  in_pos);
+            port_positions.insert((id.0, "in".into()), in_pos);
             painter.circle_filled(out_pos, 5.0, Color32::from_rgb(80, 200, 120));
-            painter.circle_filled(in_pos,  5.0, Color32::from_rgb(200, 120, 80));
+            painter.circle_filled(in_pos, 5.0, Color32::from_rgb(200, 120, 80));
         }
         // Handle click selections (separate pass to avoid borrow conflict).
         // Skip while a wire is being dragged so wiring doesn't also re-select.
@@ -204,7 +254,10 @@ impl NodeEditorPanel {
                     if let Some(layout) = self.layouts.get(id) {
                         let top_left = layout.pos + self.pan;
                         let rect = Rect::from_min_size(top_left, layout.size);
-                        if rect.contains(click_pos) { self.selected = Some(*id); break; }
+                        if rect.contains(click_pos) {
+                            self.selected = Some(*id);
+                            break;
+                        }
                     }
                 }
             }
@@ -239,8 +292,11 @@ mod tests {
     #[test]
     fn port_colors_are_distinct() {
         let terrain_color = NodeEditorPanel::port_color(PortType::Terrain);
-        let splat_color   = NodeEditorPanel::port_color(PortType::Splats);
-        assert_ne!(terrain_color, splat_color, "port types should have distinct colors");
+        let splat_color = NodeEditorPanel::port_color(PortType::Splats);
+        assert_ne!(
+            terrain_color, splat_color,
+            "port types should have distinct colors"
+        );
     }
 
     #[test]
@@ -248,7 +304,13 @@ mod tests {
         let mut panel = NodeEditorPanel::new();
         let mut graph = OchromaNodeGraph::new();
         let id = graph.add_node("a", crate::node_graph::tests_helpers::pass_node());
-        panel.layouts.insert(id, NodeLayout { pos: Pos2::new(0.0, 0.0), size: Vec2::new(180.0, 120.0) });
+        panel.layouts.insert(
+            id,
+            NodeLayout {
+                pos: Pos2::new(0.0, 0.0),
+                size: Vec2::new(180.0, 120.0),
+            },
+        );
         panel.ensure_layouts(&graph);
         assert_eq!(panel.layouts.len(), 1);
     }
@@ -274,14 +336,26 @@ mod tests {
         let b = graph.add_node("b", crate::node_graph::tests_helpers::pass_node());
 
         // Place the two nodes at known positions so port coordinates are deterministic.
-        panel.layouts.insert(a, NodeLayout { pos: Pos2::new(0.0,   0.0), size: Vec2::new(180.0, 120.0) });
-        panel.layouts.insert(b, NodeLayout { pos: Pos2::new(400.0, 0.0), size: Vec2::new(180.0, 120.0) });
+        panel.layouts.insert(
+            a,
+            NodeLayout {
+                pos: Pos2::new(0.0, 0.0),
+                size: Vec2::new(180.0, 120.0),
+            },
+        );
+        panel.layouts.insert(
+            b,
+            NodeLayout {
+                pos: Pos2::new(400.0, 0.0),
+                size: Vec2::new(180.0, 120.0),
+            },
+        );
 
         let a_out = panel.output_port_pos(a).unwrap();
-        let b_in  = panel.input_port_pos(b).unwrap();
+        let b_in = panel.input_port_pos(b).unwrap();
         // A's output is on its right edge; B's input on its left edge — they differ.
         assert_eq!(a_out, Pos2::new(180.0, 60.0));
-        assert_eq!(b_in,  Pos2::new(400.0, 60.0));
+        assert_eq!(b_in, Pos2::new(400.0, 60.0));
 
         assert_eq!(graph.edge_count(), 0, "no edges before drag");
 
@@ -291,13 +365,21 @@ mod tests {
         let created = panel.complete_wire_drag(&mut graph, b_in);
 
         assert!(created, "releasing on B's input port must create an edge");
-        assert!(panel.wire_drag.is_none(), "drag must be cleared after completion");
+        assert!(
+            panel.wire_drag.is_none(),
+            "drag must be cleared after completion"
+        );
         assert_eq!(graph.edge_count(), 1, "exactly one edge must exist");
 
-        let edges: Vec<(u32, &str, u32, &str)> = graph.edges()
+        let edges: Vec<(u32, &str, u32, &str)> = graph
+            .edges()
             .map(|(f, fp, t, tp)| (f.0, fp, t.0, tp))
             .collect();
-        assert_eq!(edges, vec![(a.0, "out", b.0, "in")], "edge must be A.out -> B.in");
+        assert_eq!(
+            edges,
+            vec![(a.0, "out", b.0, "in")],
+            "edge must be A.out -> B.in"
+        );
     }
 
     #[test]
@@ -306,7 +388,13 @@ mod tests {
         let mut graph = OchromaNodeGraph::new();
         let a = graph.add_node("a", crate::node_graph::tests_helpers::pass_node());
         graph.add_node("b", crate::node_graph::tests_helpers::pass_node());
-        panel.layouts.insert(a, NodeLayout { pos: Pos2::new(0.0, 0.0), size: Vec2::new(180.0, 120.0) });
+        panel.layouts.insert(
+            a,
+            NodeLayout {
+                pos: Pos2::new(0.0, 0.0),
+                size: Vec2::new(180.0, 120.0),
+            },
+        );
 
         let a_out = panel.output_port_pos(a).unwrap();
         panel.begin_wire_drag(a, a_out);

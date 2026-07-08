@@ -51,6 +51,10 @@ spectra-present = { path = "../../../spectra/rust/spectra-present", optional = t
 # PNG encode for deterministic cinematic frame export (cine::export::write_png).
 # Optional + pulled by `spectra-native` so non-spectra builds stay lean.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"], optional = true }
+# DDS/BCn container support for cooked native material textures. Runtime uploads
+# the compressed mip bytes directly through Spectra texture objects; no runtime
+# BC encoder is pulled into gameplay.
+image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile"], optional = true }
 
 [features]
 default = []
@@ -85,6 +89,7 @@ spectra-native = [
     "dep:spectra-tonemap",
     "dep:spectra-present",
     "dep:image",
+    "dep:image_dds",
     "spectra-gpu/vulkan-backend",
     "spectra-renderer/ocio",
 ]

@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 pub const TILE_SIZE: f64 = 1000.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TileCoord { pub x: i32, pub z: i32 }
+pub struct TileCoord {
+    pub x: i32,
+    pub z: i32,
+}
 
 impl TileCoord {
     pub fn anchor(&self) -> (f64, f64) {
@@ -23,7 +26,10 @@ impl WorldCoord {
         let tile_x = (x / TILE_SIZE).floor() as i32;
         let tile_z = (z / TILE_SIZE).floor() as i32;
         Self {
-            tile: TileCoord { x: tile_x, z: tile_z },
+            tile: TileCoord {
+                x: tile_x,
+                z: tile_z,
+            },
             local: Vec3::new(
                 (x - tile_x as f64 * TILE_SIZE) as f32,
                 y as f32,
@@ -34,7 +40,11 @@ impl WorldCoord {
 
     pub fn to_absolute(&self) -> (f64, f64, f64) {
         let (ax, az) = self.tile.anchor();
-        (ax + self.local.x as f64, self.local.y as f64, az + self.local.z as f64)
+        (
+            ax + self.local.x as f64,
+            self.local.y as f64,
+            az + self.local.z as f64,
+        )
     }
 
     pub fn local_relative_to(&self, camera_tile: TileCoord) -> Vec3 {
@@ -45,4 +55,10 @@ impl WorldCoord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TileState { Cold, Warming, Warm, Active, Evicting }
+pub enum TileState {
+    Cold,
+    Warming,
+    Warm,
+    Active,
+    Evicting,
+}

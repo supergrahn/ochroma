@@ -27,7 +27,13 @@ fn test_extract_synthetic_skeleton() {
 #[test]
 fn test_evaluate_bind_pose_at_t0() {
     let skel = build_synthetic_skeleton(&["root", "arm", "hand"]);
-    let anim = build_synthetic_animation("wave", 1, 1.0, Quat::IDENTITY, Quat::from_rotation_z(FRAC_PI_2));
+    let anim = build_synthetic_animation(
+        "wave",
+        1,
+        1.0,
+        Quat::IDENTITY,
+        Quat::from_rotation_z(FRAC_PI_2),
+    );
 
     let transforms = evaluate_animation(&skel, &anim, 0.0);
     assert_eq!(transforms.len(), 3);
@@ -48,7 +54,13 @@ fn test_evaluate_bind_pose_at_t0() {
 #[test]
 fn test_evaluate_interpolated_at_half() {
     let skel = build_synthetic_skeleton(&["root", "arm", "hand"]);
-    let anim = build_synthetic_animation("wave", 1, 1.0, Quat::IDENTITY, Quat::from_rotation_z(FRAC_PI_2));
+    let anim = build_synthetic_animation(
+        "wave",
+        1,
+        1.0,
+        Quat::IDENTITY,
+        Quat::from_rotation_z(FRAC_PI_2),
+    );
 
     let transforms = evaluate_animation(&skel, &anim, 0.5);
 
@@ -59,16 +71,31 @@ fn test_evaluate_interpolated_at_half() {
     assert!(
         approx_eq(hand_pos.x, expected_x, 0.05) && approx_eq(hand_pos.y, expected_y, 0.05),
         "hand at t=0.5: expected ({}, {}), got ({}, {})",
-        expected_x, expected_y, hand_pos.x, hand_pos.y,
+        expected_x,
+        expected_y,
+        hand_pos.x,
+        hand_pos.y,
     );
 }
 
 #[test]
 fn test_skin_splats_transforms_positions() {
     let skel = build_synthetic_skeleton(&["root", "arm", "hand"]);
-    let anim = build_synthetic_animation("wave", 1, 1.0, Quat::IDENTITY, Quat::from_rotation_z(FRAC_PI_2));
+    let anim = build_synthetic_animation(
+        "wave",
+        1,
+        1.0,
+        Quat::IDENTITY,
+        Quat::from_rotation_z(FRAC_PI_2),
+    );
 
-    let splat = GaussianSplat::volume([0.0, 2.0, 0.0], [0.05, 0.05, 0.05], Quat::IDENTITY, 200, [0u16; 16]);
+    let splat = GaussianSplat::volume(
+        [0.0, 2.0, 0.0],
+        [0.05, 0.05, 0.05],
+        Quat::IDENTITY,
+        200,
+        [0u16; 16],
+    );
 
     let joint_transforms = evaluate_animation(&skel, &anim, 1.0);
     let ibms: Vec<Mat4> = skel.joints.iter().map(|j| j.inverse_bind_matrix).collect();
@@ -79,7 +106,10 @@ fn test_skin_splats_transforms_positions() {
     let p = skinned[0].position();
     assert!(
         approx_eq(p[0], -1.0, 0.05) && approx_eq(p[1], 1.0, 0.05) && approx_eq(p[2], 0.0, 0.01),
-        "skinned position: expected (-1, 1, 0), got ({}, {}, {})", p[0], p[1], p[2],
+        "skinned position: expected (-1, 1, 0), got ({}, {}, {})",
+        p[0],
+        p[1],
+        p[2],
     );
 
     // Non-position fields should be preserved
@@ -90,7 +120,13 @@ fn test_skin_splats_transforms_positions() {
 #[test]
 fn test_hierarchy_propagation_root_rotation() {
     let skel = build_synthetic_skeleton(&["root", "arm", "hand"]);
-    let anim = build_synthetic_animation("spin", 0, 1.0, Quat::IDENTITY, Quat::from_rotation_z(FRAC_PI_2));
+    let anim = build_synthetic_animation(
+        "spin",
+        0,
+        1.0,
+        Quat::IDENTITY,
+        Quat::from_rotation_z(FRAC_PI_2),
+    );
 
     let transforms = evaluate_animation(&skel, &anim, 1.0);
 
@@ -107,9 +143,23 @@ fn test_hierarchy_propagation_root_rotation() {
 #[test]
 fn test_multi_splat_different_joints() {
     let skel = build_synthetic_skeleton(&["root", "arm", "hand"]);
-    let anim = build_synthetic_animation("wave", 1, 1.0, Quat::IDENTITY, Quat::from_rotation_z(FRAC_PI_2));
+    let anim = build_synthetic_animation(
+        "wave",
+        1,
+        1.0,
+        Quat::IDENTITY,
+        Quat::from_rotation_z(FRAC_PI_2),
+    );
 
-    let make_splat = |y: f32| GaussianSplat::volume([0.0, y, 0.0], [0.1, 0.1, 0.1], Quat::IDENTITY, 255, [0u16; 16]);
+    let make_splat = |y: f32| {
+        GaussianSplat::volume(
+            [0.0, y, 0.0],
+            [0.1, 0.1, 0.1],
+            Quat::IDENTITY,
+            255,
+            [0u16; 16],
+        )
+    };
 
     let splats = vec![make_splat(0.0), make_splat(1.0), make_splat(2.0)];
     let bindings = vec![0, 1, 2]; // each splat bound to corresponding joint

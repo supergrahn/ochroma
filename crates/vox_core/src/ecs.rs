@@ -1,6 +1,6 @@
 use bevy_ecs::prelude::*;
 use glam::{Quat, Vec3};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

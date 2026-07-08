@@ -43,7 +43,9 @@ pub struct AssetLibrary {
 
 impl AssetLibrary {
     pub fn new() -> Self {
-        Self { entries: HashMap::new() }
+        Self {
+            entries: HashMap::new(),
+        }
     }
 
     pub fn register(&mut self, entry: AssetEntry) {
@@ -80,15 +82,13 @@ impl AssetLibrary {
         let mut entries: Vec<AssetEntry> = self.entries.values().cloned().collect();
         entries.sort_by_key(|e| e.uuid);
         let wrapper = IndexWrapper { assets: entries };
-        let toml_str = toml::to_string_pretty(&wrapper)
-            .map_err(std::io::Error::other)?;
+        let toml_str = toml::to_string_pretty(&wrapper).map_err(std::io::Error::other)?;
         std::fs::write(path, toml_str)
     }
 
     pub fn load_index(path: &std::path::Path) -> Result<Self, std::io::Error> {
         let content = std::fs::read_to_string(path)?;
-        let wrapper: IndexWrapper = toml::from_str(&content)
-            .map_err(std::io::Error::other)?;
+        let wrapper: IndexWrapper = toml::from_str(&content).map_err(std::io::Error::other)?;
         let mut lib = Self::new();
         for entry in wrapper.assets {
             lib.register(entry);

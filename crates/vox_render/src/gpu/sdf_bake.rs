@@ -31,8 +31,7 @@ use crate::gpu::GpuContext;
 use glam::Vec3;
 use std::fmt;
 use vox_core::sdf::{
-    eikonal_p95, generalized_winding_number, SdfDesc, SdfField, SdfPayload, SdfSign,
-    SdfValidation,
+    SdfDesc, SdfField, SdfPayload, SdfSign, SdfValidation, eikonal_p95, generalized_winding_number,
 };
 use wgpu::util::DeviceExt;
 
@@ -413,20 +412,19 @@ impl SdfBaker {
         let groups_voxels = voxel_count.div_ceil(256) as u32;
         let groups_tris = indices.len().div_ceil(256) as u32;
         let groups_words = snorm_words.div_ceil(256) as u32;
-        let run_pass =
-            |encoder: &mut wgpu::CommandEncoder,
-             pipeline: &wgpu::ComputePipeline,
-             seed: &wgpu::BindGroup,
-             groups: u32| {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("sdf_bake"),
-                    timestamp_writes: None,
-                });
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, &grid_bind, &[]);
-                pass.set_bind_group(1, seed, &[]);
-                pass.dispatch_workgroups(groups, 1, 1);
-            };
+        let run_pass = |encoder: &mut wgpu::CommandEncoder,
+                        pipeline: &wgpu::ComputePipeline,
+                        seed: &wgpu::BindGroup,
+                        groups: u32| {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("sdf_bake"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &grid_bind, &[]);
+            pass.set_bind_group(1, seed, &[]);
+            pass.dispatch_workgroups(groups, 1, 1);
+        };
 
         // ── Submit: init + scatter-min seed + payload (dst = seed_a) ───────
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -761,9 +759,7 @@ mod tests {
                         continue; // saturation region — encoding clamps here
                     }
                     in_band += 1;
-                    let gpu = field
-                        .sample_local(p)
-                        .expect("voxel centre on-grid");
+                    let gpu = field.sample_local(p).expect("voxel centre on-grid");
                     max_dev = max_dev.max((gpu - d.clamp(-band, band)).abs());
                 }
             }

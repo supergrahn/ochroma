@@ -91,7 +91,13 @@ impl TerrainPatch {
                 }
             }
         }
-        Self { res, origin, voxel, band, dist }
+        Self {
+            res,
+            origin,
+            voxel,
+            band,
+            dist,
+        }
     }
 
     #[inline]
@@ -221,7 +227,7 @@ fn luma(px: &[u8]) -> f32 {
 #[cfg(feature = "spectra-native")]
 #[test]
 fn terrain_carve_cave_renders_enclosed_void() {
-    use super::super::{pathtrace_sdf_to_rgba, LightRig};
+    use super::super::{LightRig, pathtrace_sdf_to_rgba};
 
     // A solid rock block 8 m on a side at 0.25 m voxels (33³, +1 apron).
     let res = 33usize;
@@ -256,7 +262,11 @@ fn terrain_carve_cave_renders_enclosed_void() {
     let cap_b = [axis_x, axis_y, mouth_z];
     patch.stamp(op_subtract, |p| {
         // capsule distance (sdf_eval.slang:50 / BrushShape::Capsule), world a..b.
-        let ab = [cap_b[0] - cap_a[0], cap_b[1] - cap_a[1], cap_b[2] - cap_a[2]];
+        let ab = [
+            cap_b[0] - cap_a[0],
+            cap_b[1] - cap_a[1],
+            cap_b[2] - cap_a[2],
+        ];
         let ap = [p[0] - cap_a[0], p[1] - cap_a[1], p[2] - cap_a[2]];
         let abab = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
         let t = if abab > 1e-12 {
@@ -432,7 +442,7 @@ fn terrain_carve_cave_renders_enclosed_void() {
 #[cfg(feature = "spectra-native")]
 #[test]
 fn terrain_carve_cliff_overhang_renders_above_void() {
-    use super::super::{pathtrace_sdf_to_rgba, LightRig};
+    use super::super::{LightRig, pathtrace_sdf_to_rgba};
 
     let res = 33usize;
     let voxel = 0.25f32;

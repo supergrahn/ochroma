@@ -311,9 +311,16 @@ mod tests {
         let normal = Vec3::new(0.0, 0.342, 0.94).normalize();
         let slide = super::compute_slope_slide(normal, 20.0, 1.0 / 60.0);
         // Slide should have a downward Y component (player slides down)
-        assert!(slide.y < 0.0, "slope slide should push downward, got y={}", slide.y);
+        assert!(
+            slide.y < 0.0,
+            "slope slide should push downward, got y={}",
+            slide.y
+        );
         // Slide should have a horizontal component along the slope
-        assert!(slide.length() > 0.0, "slope slide should have nonzero magnitude");
+        assert!(
+            slide.length() > 0.0,
+            "slope slide should have nonzero magnitude"
+        );
     }
 
     // --- Stair stepping tests ---
@@ -325,7 +332,10 @@ mod tests {
         let y_before = t.position.y;
         let result = super::try_step_up(&cc, &mut t, Vec3::X, 0.2);
         assert!(result, "should step over 0.2m obstacle");
-        assert!(t.position.y > y_before, "position should move up after step");
+        assert!(
+            t.position.y > y_before,
+            "position should move up after step"
+        );
     }
 
     #[test]
@@ -334,8 +344,14 @@ mod tests {
         let mut t = make_transform_on_ground(&cc);
         let y_before = t.position.y;
         let result = super::try_step_up(&cc, &mut t, Vec3::X, 0.5);
-        assert!(!result, "should not step over 0.5m obstacle with 0.3m step_height");
-        assert!((t.position.y - y_before).abs() < 1e-6, "position should not change");
+        assert!(
+            !result,
+            "should not step over 0.5m obstacle with 0.3m step_height"
+        );
+        assert!(
+            (t.position.y - y_before).abs() < 1e-6,
+            "position should not change"
+        );
     }
 
     #[test]
@@ -354,7 +370,10 @@ mod tests {
         let wall_normal = Vec3::X; // wall facing +X
         let slid = super::slide_along_wall(velocity, wall_normal);
         // X component should be removed, Z preserved
-        assert!((slid.x).abs() < 1e-6, "x should be zero after sliding along X wall");
+        assert!(
+            (slid.x).abs() < 1e-6,
+            "x should be zero after sliding along X wall"
+        );
         assert!((slid.z - 1.0).abs() < 1e-6, "z should be preserved");
     }
 
@@ -363,7 +382,10 @@ mod tests {
         let velocity = Vec3::new(0.0, 0.0, 5.0);
         let wall_normal = Vec3::X;
         let slid = super::slide_along_wall(velocity, wall_normal);
-        assert!((slid - velocity).length() < 1e-6, "parallel velocity should be unchanged");
+        assert!(
+            (slid - velocity).length() < 1e-6,
+            "parallel velocity should be unchanged"
+        );
     }
 
     #[test]
@@ -371,6 +393,9 @@ mod tests {
         let velocity = Vec3::new(3.0, 0.0, 0.0);
         let wall_normal = Vec3::X;
         let slid = super::slide_along_wall(velocity, wall_normal);
-        assert!(slid.length() < 1e-6, "head-on into wall should produce zero velocity");
+        assert!(
+            slid.length() < 1e-6,
+            "head-on into wall should produce zero velocity"
+        );
     }
 }

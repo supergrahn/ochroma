@@ -13,11 +13,11 @@
 //! without touching any binary.
 
 use crate::deform;
-use crate::foliage::{scatter_foliage, FoliageInstance, FoliageRule};
+use crate::foliage::{FoliageInstance, FoliageRule, scatter_foliage};
 use crate::heightmap::Heightmap;
 use crate::texture_paint::SplatMap;
 use crate::volume::{
-    default_volume_materials, sculpt, volume_to_splats, TerrainVolume, VolumeMaterial,
+    TerrainVolume, VolumeMaterial, default_volume_materials, sculpt, volume_to_splats,
 };
 use vox_core::types::GaussianSplat;
 
@@ -40,7 +40,13 @@ impl TerrainScene {
     /// Create an empty scene: an all-air SDF volume plus the default material
     /// palette. Nothing is solid yet — call [`TerrainScene::add_ground_plane`]
     /// or one of the sculpt/deform helpers to introduce surface.
-    pub fn new(size_x: usize, size_y: usize, size_z: usize, voxel_size: f32, splat_seed: u64) -> Self {
+    pub fn new(
+        size_x: usize,
+        size_y: usize,
+        size_z: usize,
+        voxel_size: f32,
+        splat_seed: u64,
+    ) -> Self {
         Self {
             volume: TerrainVolume::new(size_x, size_y, size_z, voxel_size),
             materials: default_volume_materials(),
@@ -283,12 +289,15 @@ mod tests {
     fn fill_sculpt_changes_sdf_and_splats() {
         // 32^3 volume, 1 m voxels, ground plane just below the world origin so
         // the sphere we add pokes up above it and creates fresh surface.
-        let mut scene = TerrainScene::with_ground(32, 32, 32, 1.0, -4.0, /*grass*/ 1, /*seed*/ 7);
+        let mut scene =
+            TerrainScene::with_ground(32, 32, 32, 1.0, -4.0, /*grass*/ 1, /*seed*/ 7);
 
         // --- BEFORE: snapshot SDF + splats ---
         let center = [3.0f32, 1.0, -2.0];
         let radius = 4.0f32;
-        let (vx, vy, vz) = scene.volume().world_to_voxel(center[0], center[1], center[2]);
+        let (vx, vy, vz) = scene
+            .volume()
+            .world_to_voxel(center[0], center[1], center[2]);
         let sdf_before = scene.volume().get(vx, vy, vz);
         let splats_before = scene.build_splats();
         let count_before = splats_before.len();
@@ -382,10 +391,13 @@ mod tests {
     #[test]
     fn carve_sculpt_raises_sdf_and_changes_splats() {
         // Solid block of ground filling the lower half of the volume.
-        let mut scene = TerrainScene::with_ground(24, 24, 24, 1.0, 6.0, /*dirt*/ 2, /*seed*/ 11);
+        let mut scene =
+            TerrainScene::with_ground(24, 24, 24, 1.0, 6.0, /*dirt*/ 2, /*seed*/ 11);
 
         let center = [0.0f32, 0.0, 0.0]; // well inside the solid ground
-        let (vx, vy, vz) = scene.volume().world_to_voxel(center[0], center[1], center[2]);
+        let (vx, vy, vz) = scene
+            .volume()
+            .world_to_voxel(center[0], center[1], center[2]);
         let sdf_before = scene.volume().get(vx, vy, vz);
         assert!(
             sdf_before < 0.0,
@@ -395,7 +407,10 @@ mod tests {
         let splats_before = scene.build_splats().len();
 
         let changed = scene.sculpt_carve_sphere(center, 3.0);
-        assert!(changed > 50, "carve should change >50 voxels, only {changed}");
+        assert!(
+            changed > 50,
+            "carve should change >50 voxels, only {changed}"
+        );
 
         let sdf_after = scene.volume().get(vx, vy, vz);
         assert!(

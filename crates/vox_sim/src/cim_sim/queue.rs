@@ -73,7 +73,11 @@ impl WakeQueue {
             while let Some(&Reverse((wt, id, kind))) = self.spill.peek() {
                 if wt < new_end {
                     self.spill.pop();
-                    self.ring[(wt % RING as u64) as usize].push(EventRef { wake_tick: wt, id, kind });
+                    self.ring[(wt % RING as u64) as usize].push(EventRef {
+                        wake_tick: wt,
+                        id,
+                        kind,
+                    });
                 } else {
                     break;
                 }

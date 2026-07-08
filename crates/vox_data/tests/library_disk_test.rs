@@ -1,5 +1,5 @@
 use uuid::Uuid;
-use vox_data::library::{AssetLibrary, AssetEntry, AssetType, AssetPipeline};
+use vox_data::library::{AssetEntry, AssetLibrary, AssetPipeline, AssetType};
 
 #[test]
 fn save_and_load_index_toml() {

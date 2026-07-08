@@ -79,12 +79,7 @@ pub struct NodeView {
 
 impl NodeView {
     /// A standard node with the default body size.
-    pub fn new(
-        id: u64,
-        title: impl Into<String>,
-        category: NodeCategory,
-        pos: Pos2,
-    ) -> Self {
+    pub fn new(id: u64, title: impl Into<String>, category: NodeCategory, pos: Pos2) -> Self {
         NodeView {
             id,
             title: title.into(),
@@ -100,11 +95,17 @@ impl NodeView {
     }
 
     pub fn with_input(mut self, name: impl Into<String>, ty: PortType) -> Self {
-        self.inputs.push(PortView { name: name.into(), ty });
+        self.inputs.push(PortView {
+            name: name.into(),
+            ty,
+        });
         self
     }
     pub fn with_output(mut self, name: impl Into<String>, ty: PortType) -> Self {
-        self.outputs.push(PortView { name: name.into(), ty });
+        self.outputs.push(PortView {
+            name: name.into(),
+            ty,
+        });
         self
     }
 
@@ -297,7 +298,8 @@ impl NodeCanvas {
 
         // --- Comment frames (behind nodes) ---
         for cm in &graph.comments {
-            let r = Rect::from_min_max(self.w2s(origin, cm.rect.min), self.w2s(origin, cm.rect.max));
+            let r =
+                Rect::from_min_max(self.w2s(origin, cm.rect.min), self.w2s(origin, cm.rect.max));
             let mut tint = col(t, &cm.tint);
             tint = Color32::from_rgba_unmultiplied(tint.r(), tint.g(), tint.b(), 40);
             painter.rect_filled(r, t.radius[1], tint);
@@ -479,7 +481,9 @@ impl NodeCanvas {
         } else {
             // Typed data wire: gradient between the two endpoint socket colors.
             let (cs, cd) = self.wire_endpoint_colors(from_n, to_n, w, t);
-            self.stroke_bezier(painter, p0, p1, p2, p3, thickness, |frac| lerp_col(cs, cd, frac));
+            self.stroke_bezier(painter, p0, p1, p2, p3, thickness, |frac| {
+                lerp_col(cs, cd, frac)
+            });
         }
 
         // Value chip at midpoint.
@@ -528,7 +532,11 @@ impl NodeCanvas {
         let base = tip - dir * s;
         let a = base + perp * (s * 0.5);
         let b = base - perp * (s * 0.5);
-        painter.add(egui::Shape::convex_polygon(vec![tip, a, b], col, Stroke::NONE));
+        painter.add(egui::Shape::convex_polygon(
+            vec![tip, a, b],
+            col,
+            Stroke::NONE,
+        ));
     }
 
     fn draw_node(
@@ -543,7 +551,12 @@ impl NodeCanvas {
             // A reroute knot: a single small filled circle in its first port's
             // color (or scalar grey).
             let p = self.w2s(origin, n.pos);
-            let ty = n.inputs.first().or(n.outputs.first()).map(|p| p.ty).unwrap_or(PortType::Scalar);
+            let ty = n
+                .inputs
+                .first()
+                .or(n.outputs.first())
+                .map(|p| p.ty)
+                .unwrap_or(PortType::Scalar);
             painter.circle_filled(p, (PORT_R + 1.0) * self.zoom, self.socket_color(t, ty));
             return;
         }
@@ -719,8 +732,17 @@ impl NodeCanvas {
         let mm = self.minimap_rect(canvas);
         let [r, g, b, _] = t.color("surface.bg.1");
         let alpha = (MINIMAP_OPACITY * 255.0) as u8;
-        painter.rect_filled(mm, t.radius[1], Color32::from_rgba_unmultiplied(r, g, b, alpha));
-        painter.rect_stroke(mm, t.radius[1], Stroke::new(1.0, col(t, "border.strong")), egui::StrokeKind::Inside);
+        painter.rect_filled(
+            mm,
+            t.radius[1],
+            Color32::from_rgba_unmultiplied(r, g, b, alpha),
+        );
+        painter.rect_stroke(
+            mm,
+            t.radius[1],
+            Stroke::new(1.0, col(t, "border.strong")),
+            egui::StrokeKind::Inside,
+        );
 
         // Scaled node rects.
         for n in &graph.nodes {
@@ -732,12 +754,22 @@ impl NodeCanvas {
 
         // Viewport-rect indicator: the world region currently visible.
         let vr = self.minimap_viewport_rect(canvas).intersect(mm);
-        painter.rect_stroke(vr, 1.0, Stroke::new(1.5, col(t, "accent.base")), egui::StrokeKind::Inside);
+        painter.rect_stroke(
+            vr,
+            1.0,
+            Stroke::new(1.5, col(t, "accent.base")),
+            egui::StrokeKind::Inside,
+        );
     }
 
     /// Click-to-jump: clicking inside the minimap re-centres the canvas on the
     /// corresponding world point.
-    fn handle_minimap_click(&mut self, canvas: Rect, response: &egui::Response, pointer: Option<Pos2>) {
+    fn handle_minimap_click(
+        &mut self,
+        canvas: Rect,
+        response: &egui::Response,
+        pointer: Option<Pos2>,
+    ) {
         let mm = self.minimap_rect(canvas);
         if !response.clicked() {
             return;
@@ -759,7 +791,12 @@ impl NodeCanvas {
     // === Test/inspection helpers (so tests assert real geometry) ===
 
     /// The on-screen rect of node `id`, after pan/zoom (for tests).
-    pub fn node_rect_screen(&self, canvas_origin: Pos2, graph: &CanvasGraph, id: u64) -> Option<Rect> {
+    pub fn node_rect_screen(
+        &self,
+        canvas_origin: Pos2,
+        graph: &CanvasGraph,
+        id: u64,
+    ) -> Option<Rect> {
         let n = graph.node(id)?;
         Some(self.node_screen_rect(canvas_origin, n))
     }
@@ -862,7 +899,12 @@ fn header_col(t: &Tokens, cat: NodeCategory) -> Color32 {
 fn lerp_col(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-    Color32::from_rgba_unmultiplied(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), l(a.a(), b.a()))
+    Color32::from_rgba_unmultiplied(
+        l(a.r(), b.r()),
+        l(a.g(), b.g()),
+        l(a.b(), b.b()),
+        l(a.a(), b.a()),
+    )
 }
 
 #[cfg(test)]
@@ -878,19 +920,34 @@ mod tests {
                 .with_output("out", PortType::Terrain),
         );
         g.nodes.push(
-            NodeView::new(2, "Biome Classify", NodeCategory::Field, Pos2::new(260.0, 60.0))
-                .with_input("terrain", PortType::Terrain)
-                .with_output("biome", PortType::BiomeMap),
+            NodeView::new(
+                2,
+                "Biome Classify",
+                NodeCategory::Field,
+                Pos2::new(260.0, 60.0),
+            )
+            .with_input("terrain", PortType::Terrain)
+            .with_output("biome", PortType::BiomeMap),
         );
         g.nodes.push(
-            NodeView::new(3, "FloraPrime", NodeCategory::Generator, Pos2::new(260.0, 200.0))
-                .with_input("biome", PortType::BiomeMap)
-                .with_output("instances", PortType::Instances),
+            NodeView::new(
+                3,
+                "FloraPrime",
+                NodeCategory::Generator,
+                Pos2::new(260.0, 200.0),
+            )
+            .with_input("biome", PortType::BiomeMap)
+            .with_output("instances", PortType::Instances),
         );
         g.nodes.push(
-            NodeView::new(4, "SplatWeight", NodeCategory::Math, Pos2::new(480.0, 120.0))
-                .with_input("biome", PortType::BiomeMap)
-                .with_output("weights", PortType::SplatWeights),
+            NodeView::new(
+                4,
+                "SplatWeight",
+                NodeCategory::Math,
+                Pos2::new(480.0, 120.0),
+            )
+            .with_input("biome", PortType::BiomeMap)
+            .with_output("weights", PortType::SplatWeights),
         );
         g.nodes.push(
             NodeView::new(5, "Splatize", NodeCategory::Sink, Pos2::new(700.0, 120.0))
@@ -898,19 +955,28 @@ mod tests {
                 .with_output("splats", PortType::Splats),
         );
         g.wires.push(WireView {
-            from_node: 1, from_port: "out".into(),
-            to_node: 2, to_port: "terrain".into(),
-            exec: false, label: None,
+            from_node: 1,
+            from_port: "out".into(),
+            to_node: 2,
+            to_port: "terrain".into(),
+            exec: false,
+            label: None,
         });
         g.wires.push(WireView {
-            from_node: 2, from_port: "biome".into(),
-            to_node: 4, to_port: "biome".into(),
-            exec: false, label: None,
+            from_node: 2,
+            from_port: "biome".into(),
+            to_node: 4,
+            to_port: "biome".into(),
+            exec: false,
+            label: None,
         });
         g.wires.push(WireView {
-            from_node: 4, from_port: "weights".into(),
-            to_node: 5, to_port: "weights".into(),
-            exec: false, label: None,
+            from_node: 4,
+            from_port: "weights".into(),
+            to_node: 5,
+            to_port: "weights".into(),
+            exec: false,
+            label: None,
         });
         for n in &mut g.nodes {
             n.size.x = 150.0;
@@ -975,13 +1041,19 @@ mod tests {
         // Frame 0: establish pointer position + allocate the canvas rect so the
         // following press lands on an interactable widget.
         run_canvas_frame(
-            &mut canvas, &mut graph, &t, &ctx,
+            &mut canvas,
+            &mut graph,
+            &t,
+            &ctx,
             vec![egui::Event::PointerMoved(grab)],
             grab,
         );
         // Frame 1: primary button DOWN at the grab point.
         run_canvas_frame(
-            &mut canvas, &mut graph, &t, &ctx,
+            &mut canvas,
+            &mut graph,
+            &t,
+            &ctx,
             vec![egui::Event::PointerButton {
                 pos: grab,
                 button: egui::PointerButton::Primary,
@@ -996,7 +1068,10 @@ mod tests {
         // and the canvas grabs it (drag_node set). Grab offset becomes (1,1).
         let nudge = Pos2::new(51.0, 51.0);
         run_canvas_frame(
-            &mut canvas, &mut graph, &t, &ctx,
+            &mut canvas,
+            &mut graph,
+            &t,
+            &ctx,
             vec![egui::Event::PointerMoved(nudge)],
             nudge,
         );
@@ -1008,7 +1083,10 @@ mod tests {
         let drag_to = Pos2::new(115.0, 108.0);
         for _ in 0..3 {
             run_canvas_frame(
-                &mut canvas, &mut graph, &t, &ctx,
+                &mut canvas,
+                &mut graph,
+                &t,
+                &ctx,
                 vec![egui::Event::PointerMoved(drag_to)],
                 drag_to,
             );
@@ -1033,9 +1111,19 @@ mod tests {
         start: Pos2,
         delta: Vec2,
     ) {
-        run_canvas_frame(canvas, graph, t, ctx, vec![egui::Event::PointerMoved(start)], start);
         run_canvas_frame(
-            canvas, graph, t, ctx,
+            canvas,
+            graph,
+            t,
+            ctx,
+            vec![egui::Event::PointerMoved(start)],
+            start,
+        );
+        run_canvas_frame(
+            canvas,
+            graph,
+            t,
+            ctx,
             vec![egui::Event::PointerButton {
                 pos: start,
                 button: egui::PointerButton::Primary,
@@ -1046,11 +1134,28 @@ mod tests {
         );
         // Past the click threshold to commit the drag, then to the final point.
         let nudge = start + Vec2::new(10.0, 0.0);
-        run_canvas_frame(canvas, graph, t, ctx, vec![egui::Event::PointerMoved(nudge)], nudge);
-        let end = start + delta;
-        run_canvas_frame(canvas, graph, t, ctx, vec![egui::Event::PointerMoved(end)], end);
         run_canvas_frame(
-            canvas, graph, t, ctx,
+            canvas,
+            graph,
+            t,
+            ctx,
+            vec![egui::Event::PointerMoved(nudge)],
+            nudge,
+        );
+        let end = start + delta;
+        run_canvas_frame(
+            canvas,
+            graph,
+            t,
+            ctx,
+            vec![egui::Event::PointerMoved(end)],
+            end,
+        );
+        run_canvas_frame(
+            canvas,
+            graph,
+            t,
+            ctx,
             vec![egui::Event::PointerButton {
                 pos: end,
                 button: egui::PointerButton::Primary,
@@ -1076,10 +1181,20 @@ mod tests {
         let mut c_inside = NodeCanvas::new();
         let mm = c_inside.minimap_rect_for(canvas_rect);
         let inside_start = mm.center();
-        assert!(mm.contains(inside_start), "test start must be in the minimap");
+        assert!(
+            mm.contains(inside_start),
+            "test start must be in the minimap"
+        );
         let mut g1 = empty.clone();
         let pan_before_inside = c_inside.pan;
-        drag_gesture(&mut c_inside, &mut g1, &t, &ctx1, inside_start, Vec2::new(120.0, 80.0));
+        drag_gesture(
+            &mut c_inside,
+            &mut g1,
+            &t,
+            &ctx1,
+            inside_start,
+            Vec2::new(120.0, 80.0),
+        );
         assert_eq!(
             c_inside.pan, pan_before_inside,
             "a drag starting inside the minimap must not pan the world (pan {:?} -> {:?})",
@@ -1091,12 +1206,21 @@ mod tests {
         let mut c_outside = NodeCanvas::new();
         let outside_start = Pos2::new(120.0, 200.0); // clear of minimap + any node
         assert!(
-            !c_outside.minimap_rect_for(canvas_rect).contains(outside_start),
+            !c_outside
+                .minimap_rect_for(canvas_rect)
+                .contains(outside_start),
             "control start must be outside the minimap"
         );
         let mut g2 = empty.clone();
         let pan_before_outside = c_outside.pan;
-        drag_gesture(&mut c_outside, &mut g2, &t, &ctx2, outside_start, Vec2::new(120.0, 80.0));
+        drag_gesture(
+            &mut c_outside,
+            &mut g2,
+            &t,
+            &ctx2,
+            outside_start,
+            Vec2::new(120.0, 80.0),
+        );
         assert_ne!(
             c_outside.pan, pan_before_outside,
             "a drag on empty canvas must pan the world, but pan stayed {:?}",
@@ -1112,17 +1236,31 @@ mod tests {
         let jump_at = c_click.minimap_rect_for(canvas_rect).center() + Vec2::new(40.0, 20.0);
         let pan_before_click = c_click.pan;
         // First frame establishes content_bounds; click on the second.
-        run_canvas_frame(&mut c_click, &mut g3, &t, &ctx3, vec![egui::Event::PointerMoved(jump_at)], jump_at);
         run_canvas_frame(
-            &mut c_click, &mut g3, &t, &ctx3,
+            &mut c_click,
+            &mut g3,
+            &t,
+            &ctx3,
+            vec![egui::Event::PointerMoved(jump_at)],
+            jump_at,
+        );
+        run_canvas_frame(
+            &mut c_click,
+            &mut g3,
+            &t,
+            &ctx3,
             vec![
                 egui::Event::PointerButton {
-                    pos: jump_at, button: egui::PointerButton::Primary,
-                    pressed: true, modifiers: egui::Modifiers::default(),
+                    pos: jump_at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
                 },
                 egui::Event::PointerButton {
-                    pos: jump_at, button: egui::PointerButton::Primary,
-                    pressed: false, modifiers: egui::Modifiers::default(),
+                    pos: jump_at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
                 },
             ],
             jump_at,
@@ -1152,7 +1290,10 @@ mod tests {
         // Grid step scales with zoom.
         let step1 = GRID_STEP * c1.zoom;
         let step05 = GRID_STEP * c05.zoom;
-        assert!((step1 - 2.0 * step05).abs() < 0.01, "grid dot spacing must scale with zoom");
+        assert!(
+            (step1 - 2.0 * step05).abs() < 0.01,
+            "grid dot spacing must scale with zoom"
+        );
     }
 
     #[test]
@@ -1166,9 +1307,12 @@ mod tests {
         // A vertically-offset pair makes the bezier bow unmistakable: route
         // Terrain(out) into FloraPrime(biome) — y 80 vs 200.
         g.wires.push(WireView {
-            from_node: 1, from_port: "out".into(),
-            to_node: 3, to_port: "biome".into(),
-            exec: false, label: None,
+            from_node: 1,
+            from_port: "out".into(),
+            to_node: 3,
+            to_port: "biome".into(),
+            exec: false,
+            label: None,
         });
         let wire = g.wires.last().unwrap();
         let pts = c.wire_screen_points(origin, &g, wire, 21).unwrap();
@@ -1200,7 +1344,10 @@ mod tests {
             let mut b: Option<Rect> = None;
             for n in &g.nodes {
                 let r = Rect::from_min_size(n.pos, Vec2::new(n.size.x, n.world_height()));
-                b = Some(match b { Some(x) => x.union(r), None => r });
+                b = Some(match b {
+                    Some(x) => x.union(r),
+                    None => r,
+                });
             }
             b.unwrap()
         };
@@ -1212,7 +1359,8 @@ mod tests {
         assert!(
             after.min.x < before.min.x - 0.5,
             "minimap viewport rect did not move left on rightward pan (before {:?} after {:?})",
-            before.min, after.min
+            before.min,
+            after.min
         );
     }
 
@@ -1238,9 +1386,12 @@ mod tests {
             n.size.x = 150.0;
         }
         g.wires.push(WireView {
-            from_node: 1, from_port: "out".into(),
-            to_node: 2, to_port: "in".into(),
-            exec: false, label: None,
+            from_node: 1,
+            from_port: "out".into(),
+            to_node: 2,
+            to_port: "in".into(),
+            exec: false,
+            label: None,
         });
         let canvas = NodeCanvas::new();
         let wire = &g.wires[0];
@@ -1248,13 +1399,18 @@ mod tests {
         // Tokens the renderer should land on at each endpoint.
         let src_tok = t.wire_color(PortType::Terrain);
         let dst_tok = t.wire_color(PortType::Splats);
-        assert_ne!(src_tok, dst_tok, "Terrain and Splats socket colors must differ");
+        assert_ne!(
+            src_tok, dst_tok,
+            "Terrain and Splats socket colors must differ"
+        );
 
         // The first/last drawn segment midpoints are at frac 0.5/SEGS and
         // (SEGS-0.5)/SEGS (see `stroke_bezier`); sample slightly in from the
         // ends so we read the gradient the canvas actually emits there.
         let near_src = canvas.wire_segment_color(&g, wire, &t, 1.0 / 64.0).unwrap();
-        let near_dst = canvas.wire_segment_color(&g, wire, &t, 63.0 / 64.0).unwrap();
+        let near_dst = canvas
+            .wire_segment_color(&g, wire, &t, 63.0 / 64.0)
+            .unwrap();
 
         // Near the source, the emitted color is within a couple of LSBs of the
         // source token (the gradient has barely departed it); same near the dst.

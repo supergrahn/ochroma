@@ -17,23 +17,35 @@ pub struct NpcContext {
 impl NpcContext {
     pub fn spectral_description(&self) -> String {
         let band_names = [
-            "violet (380nm)", "near-UV (405nm)", "blue (430nm)", "blue (455nm)",
-            "cyan (480nm)", "cyan (505nm)", "green (530nm)", "green (555nm)",
-            "yellow (580nm)", "yellow (605nm)", "orange (630nm)", "orange-red (655nm)",
-            "red (680nm)", "red (705nm)", "NIR (730nm)", "NIR (755nm)",
+            "violet (380nm)",
+            "near-UV (405nm)",
+            "blue (430nm)",
+            "blue (455nm)",
+            "cyan (480nm)",
+            "cyan (505nm)",
+            "green (530nm)",
+            "green (555nm)",
+            "yellow (580nm)",
+            "yellow (605nm)",
+            "orange (630nm)",
+            "orange-red (655nm)",
+            "red (680nm)",
+            "red (705nm)",
+            "NIR (730nm)",
+            "NIR (755nm)",
         ];
         let dominant_name = band_names[self.dominant_band.min(15)];
         let red_energy: f32 = self.ambient[9..13].iter().sum();
         let total: f32 = self.ambient.iter().sum();
-        let mut parts =
-            vec![format!("Dominant light: {} (band {})", dominant_name, self.dominant_band)];
+        let mut parts = vec![format!(
+            "Dominant light: {} (band {})",
+            dominant_name, self.dominant_band
+        )];
         if red_energy > 0.8 {
             parts.push("High red-band energy detected — fire or thermal emission nearby.".into());
         }
         if self.ambient[0] > 0.3 {
-            parts.push(
-                "Unusual violet/UV energy — magical or electrical source possible.".into(),
-            );
+            parts.push("Unusual violet/UV energy — magical or electrical source possible.".into());
         }
         if total < 0.2 {
             parts.push("Very low ambient light — darkness or deep shadow.".into());
@@ -62,13 +74,22 @@ pub struct NpcDialogue {
 
 impl NpcDialogue {
     pub fn new(llm: LlmInference) -> Self {
-        Self { llm, config: SamplingConfig { temperature: 0.8, top_p: 0.9, max_tokens: 128 } }
+        Self {
+            llm,
+            config: SamplingConfig {
+                temperature: 0.8,
+                top_p: 0.9,
+                max_tokens: 128,
+            },
+        }
     }
 
     pub fn generate(&self, context: &NpcContext, player_input: &str) -> Result<String> {
         let system = context.system_prompt();
-        let prompt =
-            format!("{}\n\nPlayer: {}\n{}: ", system, player_input, context.npc_name);
+        let prompt = format!(
+            "{}\n\nPlayer: {}\n{}: ",
+            system, player_input, context.npc_name
+        );
         self.llm.generate(&prompt, &self.config)
     }
 }
@@ -84,8 +105,7 @@ mod tests {
             npc_role: "blacksmith".into(),
             dominant_band: 11,
             ambient: [
-                0.0, 0.0, 0.0, 0.0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 0.9, 0.7, 0.5, 0.3,
-                0.2,
+                0.0, 0.0, 0.0, 0.0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 0.9, 0.7, 0.5, 0.3, 0.2,
             ],
             emotional_state: EmotionalState::Anxious,
             scene_notes: vec![
@@ -100,8 +120,7 @@ mod tests {
             npc_role: "scout".into(),
             dominant_band: 1,
             ambient: [
-                0.05, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                0.0,
+                0.05, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
             emotional_state: EmotionalState::Neutral,
             scene_notes: vec![],
@@ -155,14 +174,19 @@ mod tests {
         let dialogue = NpcDialogue::new(llm);
         let ctx = forge_context();
         let result = dialogue.generate(&ctx, "How hot is that sword?").unwrap();
-        assert!(!result.is_empty(), "generate must return non-empty response");
+        assert!(
+            !result.is_empty(),
+            "generate must return non-empty response"
+        );
     }
 
     #[test]
     fn generate_with_dark_context_returns_response() {
         let llm = LlmInference::stub();
         let dialogue = NpcDialogue::new(llm);
-        let result = dialogue.generate(&dark_context(), "Can you see anything?").unwrap();
+        let result = dialogue
+            .generate(&dark_context(), "Can you see anything?")
+            .unwrap();
         assert!(!result.is_empty());
     }
 }

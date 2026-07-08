@@ -313,9 +313,9 @@ fn validate_accessor_raw(
             .get("bufferViews")
             .and_then(|v| v.as_array())
             .ok_or_else(|| Splats2GltfError::Malformed("missing bufferViews array".into()))?;
-        let view = views.get(bvi).ok_or_else(|| {
-            Splats2GltfError::Malformed(format!("bufferView {bvi} out of range"))
-        })?;
+        let view = views
+            .get(bvi)
+            .ok_or_else(|| Splats2GltfError::Malformed(format!("bufferView {bvi} out of range")))?;
         let bi = view.get("buffer").and_then(|v| v.as_u64()).ok_or_else(|| {
             Splats2GltfError::Malformed(format!("bufferView {bvi} missing buffer index"))
         })? as usize;
@@ -418,8 +418,7 @@ fn read_splat_primitive(
             .unwrap_or([0.5, 0.5, 0.5]);
 
         let spectral_f32 = SpectralUpsampler::from_rgb(rgb[0], rgb[1], rgb[2]);
-        let spectral: [u16; 16] =
-            std::array::from_fn(|b| f16::from_f32(spectral_f32[b]).to_bits());
+        let spectral: [u16; 16] = std::array::from_fn(|b| f16::from_f32(spectral_f32[b]).to_bits());
 
         splats.push(GaussianSplat::volume(p, s, q, opacity, spectral));
     }
@@ -468,8 +467,7 @@ fn accessor_data<'a>(
     // Untrusted count/offset/stride: unchecked arithmetic here could wrap in
     // release, slip past the bounds check, and panic in the readers. Every
     // step is checked; any overflow is a Malformed file by definition.
-    let overflow =
-        || Splats2GltfError::Malformed("accessor extent overflows usize".into());
+    let overflow = || Splats2GltfError::Malformed("accessor extent overflows usize".into());
     let start = view
         .offset()
         .checked_add(acc.offset())
@@ -502,7 +500,11 @@ fn read_vec3(
     Ok((0..acc.count())
         .map(|i| {
             let b = i * stride;
-            [read_f32_at(data, b), read_f32_at(data, b + 4), read_f32_at(data, b + 8)]
+            [
+                read_f32_at(data, b),
+                read_f32_at(data, b + 4),
+                read_f32_at(data, b + 8),
+            ]
         })
         .collect())
 }
@@ -530,14 +532,15 @@ fn read_scalar(
     buffers: &[gltf::buffer::Data],
 ) -> Result<Vec<f32>, Splats2GltfError> {
     let (data, stride) = accessor_data(acc, buffers, gltf::accessor::Dimensions::Scalar, 4)?;
-    Ok((0..acc.count()).map(|i| read_f32_at(data, i * stride)).collect())
+    Ok((0..acc.count())
+        .map(|i| read_f32_at(data, i * stride))
+        .collect())
 }
 
 // --- minimal base64 (standard alphabet, padded) -----------------------------
 
 fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -653,13 +656,23 @@ mod tests {
 
     #[test]
     fn json_declares_extension_and_attributes() {
-        let splats = vec![splat_rgb([1.0, 2.0, 3.0], [0.1, 0.2, 0.3], 0.9, 0.1, 0.1, 230)];
+        let splats = vec![splat_rgb(
+            [1.0, 2.0, 3.0],
+            [0.1, 0.2, 0.3],
+            0.9,
+            0.1,
+            0.1,
+            230,
+        )];
         let json = splats_to_gltf_json(&splats);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         // extensionsUsed contains the extension
         let used = v["extensionsUsed"].as_array().unwrap();
-        assert!(used.iter().any(|e| e == EXT_NAME), "extensionsUsed must list {EXT_NAME}");
+        assert!(
+            used.iter().any(|e| e == EXT_NAME),
+            "extensionsUsed must list {EXT_NAME}"
+        );
 
         // primitive mode is POINTS (0) and declares the extension + attributes
         let prim = &v["meshes"][0]["primitives"][0];
@@ -688,8 +701,7 @@ mod tests {
             .expect("emitted gltf must parse");
         let buffers = gltf::import_buffers(&gltf.document, None, gltf.blob.clone())
             .expect("buffers must decode");
-        let raw_json: serde_json::Value =
-            serde_json::from_str(&json).expect("raw json must parse");
+        let raw_json: serde_json::Value = serde_json::from_str(&json).expect("raw json must parse");
 
         assert!(document_has_splat_extension(&gltf.document));
         let loaded = import_splat_gltf(&gltf.document, &raw_json, &buffers).expect("import");
@@ -700,13 +712,23 @@ mod tests {
             let op = o.position();
             let lp = l.position();
             for k in 0..3 {
-                assert!((op[k] - lp[k]).abs() < 1e-5, "pos[{k}] {} vs {}", op[k], lp[k]);
+                assert!(
+                    (op[k] - lp[k]).abs() < 1e-5,
+                    "pos[{k}] {} vs {}",
+                    op[k],
+                    lp[k]
+                );
             }
             // scales float — exact
             let os = o.scales();
             let ls = l.scales();
             for k in 0..3 {
-                assert!((os[k] - ls[k]).abs() < 1e-5, "scale[{k}] {} vs {}", os[k], ls[k]);
+                assert!(
+                    (os[k] - ls[k]).abs() < 1e-5,
+                    "scale[{k}] {} vs {}",
+                    os[k],
+                    ls[k]
+                );
             }
             // opacity through /255*255 round-trips exactly
             assert_eq!(o.opacity(), l.opacity(), "opacity must round-trip");
@@ -716,7 +738,10 @@ mod tests {
         let s = &loaded[0];
         let blue: f32 = (0..5).map(|b| s.spectral_f32(b)).sum();
         let red: f32 = (11..16).map(|b| s.spectral_f32(b)).sum();
-        assert!(red > blue, "red splat stays red-dominant: red {red} vs blue {blue}");
+        assert!(
+            red > blue,
+            "red splat stays red-dominant: red {red} vs blue {blue}"
+        );
     }
 
     #[test]
@@ -733,7 +758,14 @@ mod tests {
     fn import_with_accessor_patch(
         patch: impl Fn(&mut serde_json::Value),
     ) -> Result<Vec<GaussianSplat>, Splats2GltfError> {
-        let original = vec![splat_rgb([1.0, 2.0, 3.0], [0.1, 0.1, 0.1], 0.5, 0.5, 0.5, 200)];
+        let original = vec![splat_rgb(
+            [1.0, 2.0, 3.0],
+            [0.1, 0.1, 0.1],
+            0.5,
+            0.5,
+            0.5,
+            200,
+        )];
         let json = splats_to_gltf_json(&original);
         let mut raw: serde_json::Value = serde_json::from_str(&json).unwrap();
         patch(&mut raw);

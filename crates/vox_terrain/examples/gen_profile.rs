@@ -71,7 +71,9 @@ fn main() {
     println!("\n[scatter_foliage] 300x300 @3.3m, default rules, seed 42");
     let hm_fol = generate_test_heightmap(300, 300, 3.3, 11);
     let rules = default_foliage_rules();
-    let inst = bench("scatter_foliage", 5, || scatter_foliage(&hm_fol, &rules, 42));
+    let inst = bench("scatter_foliage", 5, || {
+        scatter_foliage(&hm_fol, &rules, 42)
+    });
     println!(
         "  -> n={}  WITNESS scatter_foliage = {:#018x}",
         inst.len(),

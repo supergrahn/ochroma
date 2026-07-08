@@ -31,7 +31,10 @@ pub enum SdfError {
     ResolutionOutOfRange([u32; 3]),
     InvalidVoxelSize,
     InvalidNarrowBand,
-    PayloadCountMismatch { expected: usize, actual: usize },
+    PayloadCountMismatch {
+        expected: usize,
+        actual: usize,
+    },
 }
 
 impl fmt::Display for SdfError {
@@ -338,11 +341,7 @@ fn triangle_solid_angle(a: DVec3, b: DVec3, c: DVec3) -> f64 {
 /// inward-wound closed mesh sums to −1).
 ///
 /// Out-of-range indices are skipped (the producer validates separately).
-pub fn generalized_winding_number(
-    positions: &[[f32; 3]],
-    indices: &[[u32; 3]],
-    q: Vec3,
-) -> f64 {
+pub fn generalized_winding_number(positions: &[[f32; 3]], indices: &[[u32; 3]], q: Vec3) -> f64 {
     let qd = DVec3::new(q.x as f64, q.y as f64, q.z as f64);
     let vert = |i: u32| -> Option<DVec3> {
         let p = positions.get(i as usize)?;
@@ -502,7 +501,10 @@ mod tests {
             (w_inside - 1.0).abs() < 1e-4,
             "interior winding must be ≈1, got {w_inside}"
         );
-        assert!(w_outside < 1e-4, "exterior winding must be ≈0, got {w_outside}");
+        assert!(
+            w_outside < 1e-4,
+            "exterior winding must be ≈0, got {w_outside}"
+        );
         assert!(
             w_holed > 0.05 && w_holed < 0.95,
             "holed-mesh winding must be fractional, got {w_holed}"
@@ -564,8 +566,7 @@ mod tests {
         }
         let odesc = SdfDesc::new([ores, ores, ores], oorigin, ovoxel, oband, SdfSign::Closed)
             .expect("valid desc");
-        let ofield =
-            SdfField::new(odesc, SdfPayload::Snorm16(occ)).expect("payload count matches");
+        let ofield = SdfField::new(odesc, SdfPayload::Snorm16(occ)).expect("payload count matches");
         let occ_p95 = eikonal_p95(&ofield, 10_000, 42);
 
         println!("[eikonal] box p95={box_p95:.4} occupancy p95={occ_p95:.4}");

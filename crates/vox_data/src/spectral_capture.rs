@@ -7,7 +7,7 @@
 //! The result is a SpectralMaterialProfile with per-band mean and variance.
 
 use crate::spectral_upsampler::SpectralUpsampler;
-use vox_core::spectral::{spectral_to_xyz, xyz_to_srgb, Illuminant, SpectralBands};
+use vox_core::spectral::{Illuminant, SpectralBands, spectral_to_xyz, xyz_to_srgb};
 
 /// Spectral power distribution of a light source — energy in each of 16 bands.
 #[derive(Debug, Clone, Copy)]
@@ -21,17 +21,26 @@ impl LightSpd {
 
     /// Daylight D65 approximation (normalised).
     pub fn daylight() -> Self {
-        Self([0.82, 0.84, 0.86, 0.88, 0.91, 0.94, 0.97, 0.98, 1.00, 0.99, 0.99, 0.98, 0.97, 0.96, 0.95, 0.95])
+        Self([
+            0.82, 0.84, 0.86, 0.88, 0.91, 0.94, 0.97, 0.98, 1.00, 0.99, 0.99, 0.98, 0.97, 0.96,
+            0.95, 0.95,
+        ])
     }
 
     /// Tungsten / incandescent approximation (red-heavy).
     pub fn tungsten() -> Self {
-        Self([0.15, 0.17, 0.20, 0.24, 0.28, 0.34, 0.40, 0.50, 0.60, 0.70, 0.80, 0.87, 0.93, 0.97, 1.00, 1.00])
+        Self([
+            0.15, 0.17, 0.20, 0.24, 0.28, 0.34, 0.40, 0.50, 0.60, 0.70, 0.80, 0.87, 0.93, 0.97,
+            1.00, 1.00,
+        ])
     }
 
     /// Cool LED approximation (blue-heavy).
     pub fn cool_led() -> Self {
-        Self([0.55, 0.65, 0.80, 0.95, 1.00, 0.95, 0.90, 0.80, 0.70, 0.65, 0.55, 0.47, 0.40, 0.35, 0.30, 0.28])
+        Self([
+            0.55, 0.65, 0.80, 0.95, 1.00, 0.95, 0.90, 0.80, 0.70, 0.65, 0.55, 0.47, 0.40, 0.35,
+            0.30, 0.28,
+        ])
     }
 }
 
@@ -71,7 +80,10 @@ impl SpectralMaterialProfile {
             reflectance[b] = read_f32(b)?;
             variance[b] = read_f32(b + 16)?;
         }
-        Some(Self { reflectance, variance })
+        Some(Self {
+            reflectance,
+            variance,
+        })
     }
 
     /// Estimate spectral reflectance from three RGB photographs under known lights.
@@ -102,7 +114,10 @@ impl SpectralMaterialProfile {
             variance[b] = var;
         }
 
-        Self { reflectance, variance }
+        Self {
+            reflectance,
+            variance,
+        }
     }
 }
 
@@ -134,7 +149,10 @@ impl SpectralCaptureProcessor {
         for b in 0..16 {
             reflectance[b] = (pixel_spectral[b] / light.0[b].max(1e-4)).clamp(0.0, 1.0);
         }
-        SpectralMaterialProfile { reflectance, variance: [0.0; 16] }
+        SpectralMaterialProfile {
+            reflectance,
+            variance: [0.0; 16],
+        }
     }
 
     /// Estimate reflectance from three RGB captures under different illuminants.
@@ -152,7 +170,10 @@ impl SpectralCaptureProcessor {
             reflectance[b] = mean;
             variance[b] = var;
         }
-        SpectralMaterialProfile { reflectance, variance }
+        SpectralMaterialProfile {
+            reflectance,
+            variance,
+        }
     }
 }
 
@@ -246,7 +267,10 @@ fn objective(r: &[f32; 16], obs: &[Observation]) -> f32 {
 /// Panics never; with zero observations returns a flat mid-grey guess.
 pub fn capture_material(observations: &[Observation]) -> SpectralMaterialProfile {
     if observations.is_empty() {
-        return SpectralMaterialProfile { reflectance: [0.5; 16], variance: [1.0; 16] };
+        return SpectralMaterialProfile {
+            reflectance: [0.5; 16],
+            variance: [1.0; 16],
+        };
     }
 
     // Warm start: average of the cheap single-image inversions. Gives the solver
@@ -298,7 +322,10 @@ pub fn capture_material(observations: &[Observation]) -> SpectralMaterialProfile
         variance[b] = acc / observations.len() as f32;
     }
 
-    SpectralMaterialProfile { reflectance: r, variance }
+    SpectralMaterialProfile {
+        reflectance: r,
+        variance,
+    }
 }
 
 #[cfg(test)]
@@ -308,34 +335,71 @@ mod tests {
     #[test]
     fn daylight_spd_peaks_at_green() {
         let d = LightSpd::daylight();
-        let peak = d.0.iter().copied().enumerate().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap().0;
+        let peak =
+            d.0.iter()
+                .copied()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .unwrap()
+                .0;
         println!("D65 peak band index = {}", peak);
-        assert_eq!(peak, 8, "D65 peak should be band 8 (580nm), got band {}", peak);
+        assert_eq!(
+            peak, 8,
+            "D65 peak should be band 8 (580nm), got band {}",
+            peak
+        );
     }
 
     #[test]
     fn tungsten_spd_peaks_at_red() {
         let t = LightSpd::tungsten();
-        let peak = t.0.iter().copied().enumerate().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap().0;
-        assert!(peak >= 14, "tungsten peak should be in the red/NIR bands (14-15), got band {}", peak);
+        let peak =
+            t.0.iter()
+                .copied()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .unwrap()
+                .0;
+        assert!(
+            peak >= 14,
+            "tungsten peak should be in the red/NIR bands (14-15), got band {}",
+            peak
+        );
     }
 
     #[test]
     fn three_photo_profile_in_unit_range() {
-        let lights = [LightSpd::daylight(), LightSpd::tungsten(), LightSpd::cool_led()];
-        let photos = [[0.5f32, 0.5, 0.5], [0.5f32, 0.45, 0.4], [0.45f32, 0.5, 0.55]];
+        let lights = [
+            LightSpd::daylight(),
+            LightSpd::tungsten(),
+            LightSpd::cool_led(),
+        ];
+        let photos = [
+            [0.5f32, 0.5, 0.5],
+            [0.5f32, 0.45, 0.4],
+            [0.45f32, 0.5, 0.55],
+        ];
         let profile = SpectralMaterialProfile::from_three_photos(
             [&photos[0], &photos[1], &photos[2]],
             lights,
         );
         for (i, &v) in profile.reflectance.iter().enumerate() {
-            assert!((0.0..=1.0).contains(&v), "reflectance[{}] = {} must be in [0,1]", i, v);
+            assert!(
+                (0.0..=1.0).contains(&v),
+                "reflectance[{}] = {} must be in [0,1]",
+                i,
+                v
+            );
         }
     }
 
     #[test]
     fn three_photo_variance_is_nonneg() {
-        let lights = [LightSpd::daylight(), LightSpd::tungsten(), LightSpd::cool_led()];
+        let lights = [
+            LightSpd::daylight(),
+            LightSpd::tungsten(),
+            LightSpd::cool_led(),
+        ];
         let photos = [[1.0f32, 0.0, 0.0], [0.8f32, 0.1, 0.05], [0.7f32, 0.05, 0.1]];
         let profile = SpectralMaterialProfile::from_three_photos(
             [&photos[0], &photos[1], &photos[2]],
@@ -348,7 +412,11 @@ mod tests {
 
     #[test]
     fn gray_surface_has_flat_reflectance() {
-        let lights = [LightSpd::daylight(), LightSpd::tungsten(), LightSpd::cool_led()];
+        let lights = [
+            LightSpd::daylight(),
+            LightSpd::tungsten(),
+            LightSpd::cool_led(),
+        ];
         let gray = [0.5f32, 0.5, 0.5];
         let profile = SpectralMaterialProfile::from_three_photos([&gray, &gray, &gray], lights);
         let min = profile.reflectance.iter().copied().fold(f32::MAX, f32::min);
@@ -402,7 +470,9 @@ mod tests {
     /// Deterministic LCG → small zero-mean noise in [-amp, amp]. Seeded so test
     /// numbers are reproducible run-to-run.
     fn seeded_noise(seed: &mut u64, amp: f32) -> f32 {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let u = ((*seed >> 33) as f32) / ((1u64 << 31) as f32); // [0,1)
         (u * 2.0 - 1.0) * amp
     }
@@ -419,7 +489,11 @@ mod tests {
     }
 
     fn l2(a: &[f32; 16], b: &[f32; 16]) -> f32 {
-        a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f32>().sqrt()
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).powi(2))
+            .sum::<f32>()
+            .sqrt()
     }
 
     /// Render a ground-truth reflectance to an RGB observation under `light`,
@@ -453,7 +527,9 @@ mod tests {
         let err_multi = l2(&rec_multi, &truth);
         let err_single = l2(&rec_single, &truth);
 
-        println!("L2 reconstruction error: single-illuminant = {err_single:.4}, three-illuminant = {err_multi:.4}");
+        println!(
+            "L2 reconstruction error: single-illuminant = {err_single:.4}, three-illuminant = {err_multi:.4}"
+        );
 
         // CLAIM 1: more illuminants → strictly better reconstruction.
         assert!(
@@ -501,8 +577,14 @@ mod tests {
             let observable = (2..=12).contains(&b);
             println!(
                 "band {b:2}: truth {:.3}  rec {:.3}  |Δ| {:.3}  {}",
-                truth[b], rec[b], (rec[b] - truth[b]).abs(),
-                if observable { "(observable)" } else { "(CIE null space — not recoverable)" }
+                truth[b],
+                rec[b],
+                (rec[b] - truth[b]).abs(),
+                if observable {
+                    "(observable)"
+                } else {
+                    "(CIE null space — not recoverable)"
+                }
             );
         }
         // Tight recovery on every strongly-observable band. Measured worst-case
@@ -511,7 +593,8 @@ mod tests {
             assert!(
                 (rec[b] - truth[b]).abs() < 0.07,
                 "observable band {b}: noiseless recovery {:.3} vs truth {:.3} exceeds 0.07",
-                rec[b], truth[b]
+                rec[b],
+                truth[b]
             );
         }
     }
@@ -556,7 +639,10 @@ mod tests {
                     *a = (*a + amp * (lobe(12.0, b) - ratio * lobe(3.0, b))).clamp(0.0, 1.0);
                 }
                 let rgb_alt = forward_rgb(&alt, &neutral);
-                let rgb_dist: f32 = (0..3).map(|c| (rgb_alt[c] - rgb_base[c]).powi(2)).sum::<f32>().sqrt();
+                let rgb_dist: f32 = (0..3)
+                    .map(|c| (rgb_alt[c] - rgb_base[c]).powi(2))
+                    .sum::<f32>()
+                    .sqrt();
                 if rgb_dist < 0.01 {
                     let sd = l2(&alt, &base);
                     if best.map(|(_, b)| sd > b).unwrap_or(true) {
@@ -565,15 +651,25 @@ mod tests {
                 }
             }
         }
-        let (alt, spec_dist) = best.expect("should find a neutral-light metamer in the lobe family");
+        let (alt, spec_dist) =
+            best.expect("should find a neutral-light metamer in the lobe family");
         let rgb_alt = forward_rgb(&alt, &neutral);
-        let neutral_rgb_dist: f32 = (0..3).map(|c| (rgb_alt[c] - rgb_base[c]).powi(2)).sum::<f32>().sqrt();
+        let neutral_rgb_dist: f32 = (0..3)
+            .map(|c| (rgb_alt[c] - rgb_base[c]).powi(2))
+            .sum::<f32>()
+            .sqrt();
         println!(
             "metamer pair: neutral-light RGB distance = {neutral_rgb_dist:.4} (≈0 → invisible to one camera), spectral distance = {spec_dist:.4}"
         );
         // It IS a metamer (same RGB under neutral light) yet a DIFFERENT spectrum.
-        assert!(neutral_rgb_dist < 0.012, "pair must be metameric under neutral light, got {neutral_rgb_dist:.4}");
-        assert!(spec_dist > 0.015, "pair must be spectrally distinct, got {spec_dist:.4}");
+        assert!(
+            neutral_rgb_dist < 0.012,
+            "pair must be metameric under neutral light, got {neutral_rgb_dist:.4}"
+        );
+        assert!(
+            spec_dist > 0.015,
+            "pair must be spectrally distinct, got {spec_dist:.4}"
+        );
 
         // Capture BOTH with the 3 spectrally-distinct illuminants.
         let mut s1 = 7u64;
@@ -641,7 +737,8 @@ mod tests {
         let profile = capture_material(&obs);
 
         // Bake reflectance → splat spectral bands (f16 stored as u16 bits).
-        let bits: [u16; 16] = std::array::from_fn(|b| f16::from_f32(profile.reflectance[b]).to_bits());
+        let bits: [u16; 16] =
+            std::array::from_fn(|b| f16::from_f32(profile.reflectance[b]).to_bits());
         let splat = GaussianSplat::surface(
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -657,7 +754,10 @@ mod tests {
         let rendered_rgb = forward_rgb(&splat_reflectance, &LightSpd::daylight());
 
         let (_, captured_rgb) = daylight_obs;
-        let rgb_err: f32 = (0..3).map(|c| (rendered_rgb[c] - captured_rgb[c]).powi(2)).sum::<f32>().sqrt();
+        let rgb_err: f32 = (0..3)
+            .map(|c| (rendered_rgb[c] - captured_rgb[c]).powi(2))
+            .sum::<f32>()
+            .sqrt();
         println!(
             "render-consistency: splat-under-daylight RGB {rendered_rgb:?} vs original daylight observation {captured_rgb:?}, L2 = {rgb_err:.4}"
         );

@@ -27,18 +27,18 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct GaussianSplat {
-    position:  [f32; 3],   // 12  world-space centroid
-    kind:      u32,        //  4  0=surface(2DGS)  1=volume(3DGS)
-    tangent_u: [f32; 3],   // 12  2DGS disk u-axis | 3DGS: zero
-    scale_u:   f32,        //  4  2DGS u-radius    | 3DGS: x-scale
-    tangent_v: [f32; 3],   // 12  2DGS disk v-axis | 3DGS: zero
-    scale_v:   f32,        //  4  2DGS v-radius    | 3DGS: y-scale
-    rotation:  [i16; 4],   //  8  2DGS: identity   | 3DGS: quat XYZW /32767
-    scale_w:   f32,        //  4  2DGS: 0          | 3DGS: z-scale
-    opacity:   u8,         //  1
-    _pad:      [u8; 3],    //  3
-    spectral:  [u16; 16],  // 32  f16 per band, 380–755 nm
-}                          // = 96 bytes total
+    position: [f32; 3],  // 12  world-space centroid
+    kind: u32,           //  4  0=surface(2DGS)  1=volume(3DGS)
+    tangent_u: [f32; 3], // 12  2DGS disk u-axis | 3DGS: zero
+    scale_u: f32,        //  4  2DGS u-radius    | 3DGS: x-scale
+    tangent_v: [f32; 3], // 12  2DGS disk v-axis | 3DGS: zero
+    scale_v: f32,        //  4  2DGS v-radius    | 3DGS: y-scale
+    rotation: [i16; 4],  //  8  2DGS: identity   | 3DGS: quat XYZW /32767
+    scale_w: f32,        //  4  2DGS: 0          | 3DGS: z-scale
+    opacity: u8,         //  1
+    _pad: [u8; 3],       //  3
+    spectral: [u16; 16], // 32  f16 per band, 380–755 nm
+} // = 96 bytes total
 
 const _: () = assert!(std::mem::size_of::<GaussianSplat>() == 96);
 
@@ -66,13 +66,13 @@ impl GaussianSplat {
     /// `tangent_u` and `tangent_v` must be unit vectors spanning the disk plane.
     /// Normal = `cross(tangent_u, tangent_v)`.
     pub fn surface(
-        position:  [f32; 3],
+        position: [f32; 3],
         tangent_u: [f32; 3],
         tangent_v: [f32; 3],
-        scale_u:   f32,
-        scale_v:   f32,
-        opacity:   u8,
-        spectral:  [u16; 16],
+        scale_u: f32,
+        scale_v: f32,
+        opacity: u8,
+        spectral: [u16; 16],
     ) -> Self {
         Self {
             position,
@@ -95,9 +95,9 @@ impl GaussianSplat {
     /// `rotation` is quaternion XYZW.
     pub fn volume(
         position: [f32; 3],
-        scale:    [f32; 3],
+        scale: [f32; 3],
         rotation: Quat,
-        opacity:  u8,
+        opacity: u8,
         spectral: [u16; 16],
     ) -> Self {
         Self {
@@ -126,20 +126,46 @@ impl GaussianSplat {
 // ---------------------------------------------------------------------------
 
 impl GaussianSplat {
-    pub fn position(&self) -> [f32; 3] { self.position }
-    pub fn kind(&self) -> u32 { self.kind }
-    pub fn is_surface(&self) -> bool { self.kind == 0 }
-    pub fn is_volume(&self) -> bool { self.kind == 1 }
-    pub fn tangent_u(&self) -> [f32; 3] { self.tangent_u }
-    pub fn tangent_v(&self) -> [f32; 3] { self.tangent_v }
-    pub fn scale_u(&self) -> f32 { self.scale_u }
-    pub fn scale_v(&self) -> f32 { self.scale_v }
-    pub fn scale_w(&self) -> f32 { self.scale_w }
+    pub fn position(&self) -> [f32; 3] {
+        self.position
+    }
+    pub fn kind(&self) -> u32 {
+        self.kind
+    }
+    pub fn is_surface(&self) -> bool {
+        self.kind == 0
+    }
+    pub fn is_volume(&self) -> bool {
+        self.kind == 1
+    }
+    pub fn tangent_u(&self) -> [f32; 3] {
+        self.tangent_u
+    }
+    pub fn tangent_v(&self) -> [f32; 3] {
+        self.tangent_v
+    }
+    pub fn scale_u(&self) -> f32 {
+        self.scale_u
+    }
+    pub fn scale_v(&self) -> f32 {
+        self.scale_v
+    }
+    pub fn scale_w(&self) -> f32 {
+        self.scale_w
+    }
     /// Half-axes as `[scale_u, scale_v, scale_w]`.
-    pub fn scales(&self) -> [f32; 3] { [self.scale_u, self.scale_v, self.scale_w] }
-    pub fn rotation_raw(&self) -> [i16; 4] { self.rotation }
-    pub fn opacity(&self) -> u8 { self.opacity }
-    pub fn spectral(&self) -> &[u16; 16] { &self.spectral }
+    pub fn scales(&self) -> [f32; 3] {
+        [self.scale_u, self.scale_v, self.scale_w]
+    }
+    pub fn rotation_raw(&self) -> [i16; 4] {
+        self.rotation
+    }
+    pub fn opacity(&self) -> u8 {
+        self.opacity
+    }
+    pub fn spectral(&self) -> &[u16; 16] {
+        &self.spectral
+    }
 
     /// Decode one spectral band to f32.
     pub fn spectral_f32(&self, band: usize) -> f32 {
@@ -163,7 +189,11 @@ impl GaussianSplat {
             let v = Vec3::from(self.tangent_v);
             let n = u.cross(v);
             let len = n.length();
-            if len > 1e-8 { (n / len).into() } else { [0.0, 1.0, 0.0] }
+            if len > 1e-8 {
+                (n / len).into()
+            } else {
+                [0.0, 1.0, 0.0]
+            }
         } else {
             self.decoded_rotation().mul_vec3(Vec3::Z).into()
         }
@@ -175,11 +205,19 @@ impl GaussianSplat {
 // ---------------------------------------------------------------------------
 
 impl GaussianSplat {
-    pub fn position_mut(&mut self) -> &mut [f32; 3] { &mut self.position }
-    pub fn spectral_mut(&mut self) -> &mut [u16; 16] { &mut self.spectral }
+    pub fn position_mut(&mut self) -> &mut [f32; 3] {
+        &mut self.position
+    }
+    pub fn spectral_mut(&mut self) -> &mut [u16; 16] {
+        &mut self.spectral
+    }
 
-    pub fn set_position(&mut self, pos: [f32; 3]) { self.position = pos; }
-    pub fn set_opacity(&mut self, opacity: u8) { self.opacity = opacity; }
+    pub fn set_position(&mut self, pos: [f32; 3]) {
+        self.position = pos;
+    }
+    pub fn set_opacity(&mut self, opacity: u8) {
+        self.opacity = opacity;
+    }
 
     pub fn set_scales(&mut self, u: f32, v: f32, w: f32) {
         self.scale_u = u;

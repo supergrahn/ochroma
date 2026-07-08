@@ -16,7 +16,9 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "spectra-native")]
 use spectra_gpu::{CudarcSlangBackend, GpuBackend, VulkanSlangBackend};
 #[cfg(feature = "spectra-native")]
-use spectra_renderer::{RenderConfig, RenderTarget, Renderer};
+use spectra_renderer::{
+    RenderConfig, RenderTarget, Renderer, RendererTexture2D, RendererTextureMip,
+};
 #[cfg(feature = "spectra-native")]
 use spectra_scene_state::{CameraLayer, SceneState};
 
@@ -137,9 +139,10 @@ pub fn pathtrace_splats_to_rgba(
 ///
 /// The `*_tex` fields index into the `textures` slice passed to
 /// [`pathtrace_mesh_textured_to_rgba`] (-1 = no texture). When `albedo_tex`
-/// is set, the sampled texel REPLACES `base_color`; `roughness_tex` takes its
-/// R channel; `normal_tex` is a tangent-space normal map. `uv_scale`
-/// multiplies mesh UVs before sampling (textures wrap).
+/// is set, the sampled texel is the material albedo source and `base_color`
+/// is the untextured fallback; `roughness_tex` takes its R channel;
+/// `normal_tex` is a tangent-space normal map. `uv_scale` multiplies mesh UVs
+/// before sampling (textures wrap).
 ///
 /// `transmission > 0.0` switches the material from opaque Lambert to REAL
 /// transmissive glass (`MAT_GLASS`): the megakernel's `dispatch_sample`
@@ -173,6 +176,10 @@ pub struct PbrMaterial {
     /// A separate single-channel opacity map sets a DISTINCT slot (read `.x`).
     /// Default -1 keeps opaque facades byte-identical (cutout never fires).
     pub opacity_tex: i32,
+    /// Route this material through the thin-walled vegetation BSDF. This stays
+    /// explicit so a separate non-foliage opacity mask does not become a leaf by
+    /// accident.
+    pub vegetation_bsdf: bool,
     /// Single-channel height/displacement map id (-1 = off). Drives POM
     /// (parallax occlusion mapping) in the megakernel — see
     /// `pack_vulkan_mesh_material` a[31]/a[32]/a[33].
@@ -226,6 +233,7 @@ impl Default for PbrMaterial {
             roughness_tex: -1,
             normal_tex: -1,
             opacity_tex: -1,
+            vegetation_bsdf: false,
             displacement_tex: -1,
             displacement_scale: 0.0,
             displacement_midlevel: 0.5,
@@ -303,12 +311,12 @@ pub struct InstanceRecordGpu {
     /// ground) shade purely with their BLAS per-triangle materials. CIM agents
     /// set `base = palette_base + clothing_offset` (uniform BLAS, tri id 0);
     /// scatter sets `base = proto material slot`. Carried to the TLAS as the
-    /// instance custom index. REPLACES the old per-instance material override
-    /// (and its `u32::MAX` "no override" sentinel).
+    /// instance custom index, superseding the old per-instance material override
+    /// and its `u32::MAX` "no override" sentinel.
     pub material_base: u32,
 }
 
-/// A texture image for the path tracer's flat atlas.
+/// A linear source image for resident material texture upload.
 ///
 /// Row-major, channels interleaved (`data[(y*width + x)*channels + c]`),
 /// values LINEAR in [0,1] — sRGB decoding (e.g. PolyHaven diffuse JPEGs) is
@@ -323,6 +331,194 @@ pub struct TextureImage {
     pub height: u32,
     pub channels: u32,
     pub data: Vec<f32>,
+    /// Optional cooked GPU-native payload (RGBA8/BCn mip chain). When present,
+    /// this is the renderer upload source; `data` remains a host mirror for
+    /// legacy CPU-side tools such as OMM opacity baking until those consume
+    /// cooked opacity masks directly.
+    pub native: Option<RendererTexture2D>,
+}
+
+#[cfg(feature = "spectra-native")]
+fn f32_to_unorm8(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+}
+
+#[cfg(feature = "spectra-native")]
+fn validate_texture_image(i: usize, t: &TextureImage) -> Result<(), String> {
+    if t.width == 0 || t.height == 0 {
+        return Err(format!("texture {i}: dimensions must be non-zero"));
+    }
+    if t.channels < 1 || t.channels > 4 {
+        return Err(format!(
+            "texture {i}: channels must be 1..=4, got {}",
+            t.channels
+        ));
+    }
+    let expected = (t.width as usize) * (t.height as usize) * (t.channels as usize);
+    if t.data.len() != expected {
+        return Err(format!(
+            "texture {i}: data.len()={} but width*height*channels={expected}",
+            t.data.len()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "spectra-native")]
+fn texture_mip_parts(texture: &TextureImage, preserve_cutout: bool) -> Vec<(u32, u32, Vec<f32>)> {
+    let c = texture.channels as usize;
+    let (mut w, mut h) = (texture.width as usize, texture.height as usize);
+    let mut parts = Vec::new();
+    let mut level = texture.data.clone();
+    parts.push((texture.width, texture.height, level.clone()));
+    while w > 1 || h > 1 {
+        let nw = (w / 2).max(1);
+        let nh = (h / 2).max(1);
+        let mut dst = vec![0.0f32; nw * nh * c];
+        for y in 0..nh {
+            for x in 0..nw {
+                for ch in 0..c {
+                    if preserve_cutout && (c == 1 || (c == 4 && ch == 3)) {
+                        dst[(y * nw + x) * c + ch] =
+                            coverage_preserving_alpha_mip(&level, w, h, c, ch, x, y);
+                        continue;
+                    }
+                    let mut sum = 0.0f32;
+                    for dy in 0..2 {
+                        let sy = (y * 2 + dy).min(h - 1);
+                        for dx in 0..2 {
+                            let sx = (x * 2 + dx).min(w - 1);
+                            sum += level[(sy * w + sx) * c + ch];
+                        }
+                    }
+                    dst[(y * nw + x) * c + ch] = sum * 0.25;
+                }
+            }
+        }
+        parts.push((nw as u32, nh as u32, dst.clone()));
+        level = dst;
+        w = nw;
+        h = nh;
+    }
+    parts
+}
+
+#[cfg(feature = "spectra-native")]
+fn native_texture_from_image(
+    i: usize,
+    texture: &TextureImage,
+    preserve_cutout: bool,
+) -> Result<RendererTexture2D, String> {
+    validate_texture_image(i, texture)?;
+    if let Some(native) = texture.native.as_ref() {
+        if native.width != texture.width
+            || native.height != texture.height
+            || native.channels != texture.channels
+        {
+            return Err(format!(
+                "texture {i}: native payload {}x{} ch{} does not match host mirror {}x{} ch{}",
+                native.width,
+                native.height,
+                native.channels,
+                texture.width,
+                texture.height,
+                texture.channels
+            ));
+        }
+        if native.mips.is_empty() {
+            return Err(format!("texture {i}: native payload has no mips"));
+        }
+        return Ok(native.clone());
+    }
+    let channels = texture.channels as usize;
+    let parts = texture_mip_parts(texture, preserve_cutout);
+    let mut mips = Vec::with_capacity(parts.len());
+    for (width, height, data) in parts {
+        let texels = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or_else(|| format!("texture {i}: mip dimensions overflow"))?;
+        let expected = texels
+            .checked_mul(channels)
+            .ok_or_else(|| format!("texture {i}: mip channel count overflow"))?;
+        if data.len() != expected {
+            return Err(format!(
+                "texture {i}: mip data len {} != expected {expected}",
+                data.len()
+            ));
+        }
+        let mut rgba = vec![0u8; texels * 4];
+        for texel in 0..texels {
+            let src = texel * channels;
+            let dst = texel * 4;
+            rgba[dst] = f32_to_unorm8(data[src]);
+            rgba[dst + 1] = if channels > 1 {
+                f32_to_unorm8(data[src + 1])
+            } else {
+                0
+            };
+            rgba[dst + 2] = if channels > 2 {
+                f32_to_unorm8(data[src + 2])
+            } else {
+                0
+            };
+            rgba[dst + 3] = if channels > 3 {
+                f32_to_unorm8(data[src + 3])
+            } else {
+                255
+            };
+        }
+        mips.push(RendererTextureMip {
+            width,
+            height,
+            row_pitch_bytes: width as usize * 4,
+            data: rgba,
+        });
+    }
+    Ok(RendererTexture2D::new(
+        spectra_gpu::GpuTextureFormat::Rgba8Unorm,
+        texture.width,
+        texture.height,
+        texture.channels,
+        mips,
+    ))
+}
+
+#[cfg(feature = "spectra-native")]
+pub fn build_native_textures_from_refs(
+    textures: &[&TextureImage],
+    cutout_slots: &[usize],
+) -> Result<Vec<RendererTexture2D>, String> {
+    let mut preserve_cutout = vec![false; textures.len()];
+    for &slot in cutout_slots {
+        if let Some(flag) = preserve_cutout.get_mut(slot) {
+            *flag = true;
+        }
+    }
+    textures
+        .iter()
+        .enumerate()
+        .map(|(i, texture)| native_texture_from_image(i, texture, preserve_cutout[i]))
+        .collect()
+}
+
+#[cfg(feature = "spectra-native")]
+pub fn build_native_textures(textures: &[TextureImage]) -> Result<Vec<RendererTexture2D>, String> {
+    let refs: Vec<&TextureImage> = textures.iter().collect();
+    build_native_textures_from_refs(&refs, &[])
+}
+
+#[cfg(feature = "spectra-native")]
+fn upload_native_material_textures<G: GpuBackend>(
+    renderer: &mut Renderer<G>,
+    textures: &[TextureImage],
+) -> Result<(), String> {
+    if textures.is_empty() {
+        return Ok(());
+    }
+    let native_textures = build_native_textures(textures)?;
+    renderer
+        .set_native_textures(&native_textures)
+        .map_err(|e| format!("set_native_textures: {e:?}"))
 }
 
 /// The light rig the mesh path tracer uses: four directional lights (sun +
@@ -539,7 +735,11 @@ impl LookPreset {
 /// override still flows through `apply_settings`. `max_bounces` likewise lives
 /// in `settings.render` so deeper-bounce scenes route through settings too.
 #[cfg(feature = "spectra-native")]
-pub(crate) fn rig_to_settings(rig: &LightRig, spp: u32, max_bounces: u32) -> spectra_renderer::RenderSettings {
+pub(crate) fn rig_to_settings(
+    rig: &LightRig,
+    spp: u32,
+    max_bounces: u32,
+) -> spectra_renderer::RenderSettings {
     let mut s = spectra_renderer::RenderSettings::default();
     s.render.spp = spp;
     s.render.max_bounces = max_bounces;
@@ -589,7 +789,8 @@ pub(crate) fn seed_features_from_config(
     s.features.spectral.enabled =
         matches!(config.spectral_mode, spectra_renderer::SpectralMode::Hero4);
     // Denoiser: the preset's mode is non-None → enabled.
-    s.render.denoiser.enabled = !matches!(config.denoiser_mode, spectra_renderer::DenoiserMode::None);
+    s.render.denoiser.enabled =
+        !matches!(config.denoiser_mode, spectra_renderer::DenoiserMode::None);
 }
 
 #[cfg(feature = "spectra-native")]
@@ -762,9 +963,8 @@ pub fn pathtrace_mesh_to_rgba(
 /// One-shot still: **path-trace a textured triangle mesh**. Same as
 /// [`pathtrace_mesh_to_rgba`] plus `textures`: the images materials reference
 /// via `albedo_tex` / `roughness_tex` / `normal_tex` (indices into this
-/// slice). Uploads them as the Spectra legacy flat atlas
-/// (`Renderer::set_texture_atlas`), which the megakernel samples with EWA
-/// filtering. Texture data must be LINEAR (see [`TextureImage`]). Returns
+/// slice). Uploads them as Spectra native texture objects, which the megakernel
+/// samples through Slang `Texture2D`. Texture data must be LINEAR (see [`TextureImage`]). Returns
 /// RGBA8 (`w*h*4`). Additive.
 #[cfg(feature = "spectra-native")]
 #[allow(clippy::too_many_arguments)]
@@ -836,8 +1036,21 @@ pub fn pathtrace_mesh_lit_to_rgba(
     rig: &LightRig,
 ) -> Result<Vec<u8>, String> {
     pathtrace_mesh_lit_weathered_to_rgba(
-        positions, normals, uvs, indices, material_ids, materials, textures, eye, target, fov_y,
-        width, height, spp, rig, &[],
+        positions,
+        normals,
+        uvs,
+        indices,
+        material_ids,
+        materials,
+        textures,
+        eye,
+        target,
+        fov_y,
+        width,
+        height,
+        spp,
+        rig,
+        &[],
     )
 }
 
@@ -905,8 +1118,6 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
         ));
     }
 
-    let (tex_descs, tex_data) = build_texture_atlas(textures)?;
-
     let mut scene = SceneState::new(width, height);
     scene.geometry.vertex_count = positions.len();
     scene.geometry.triangle_count = indices.len();
@@ -938,7 +1149,11 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
     for (dir, color, intensity) in [
         (sun.to_array(), rig.sun_color, rig.sun_intensity),
         // Sky, from straight above; legacy fixed color.
-        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (
+            glam::Vec3::Y.to_array(),
+            [0.58, 0.62, 0.72],
+            rig.sky_intensity,
+        ),
         (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
         (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
     ] {
@@ -1030,9 +1245,9 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
         }
     } else {
         let any_disp = materials.iter().any(|m| m.displacement_tex >= 0);
-        let all_cone = materials.iter().all(|m| {
-            m.displacement_tex < 0 || textures[m.displacement_tex as usize].channels >= 2
-        });
+        let all_cone = materials
+            .iter()
+            .all(|m| m.displacement_tex < 0 || textures[m.displacement_tex as usize].channels >= 2);
         config.relief_mode = if any_disp && all_cone { 1 } else { 0 };
     }
     // R14 "realize spectral": the headline differentiator is now ON by default
@@ -1125,13 +1340,9 @@ pub fn pathtrace_mesh_lit_weathered_to_rgba(
         rig.fog_height_falloff,
         rig.fog_anisotropy,
     );
-    // ORDER MATTERS: set_texture_atlas silently no-ops before scene state
-    // exists, so it must come after load_scene_state.
-    if !textures.is_empty() {
-        renderer
-            .set_texture_atlas(&tex_descs, &tex_data, textures.len() as u32)
-            .map_err(|e| format!("set_texture_atlas: {e:?}"))?;
-    }
+    // ORDER MATTERS: material textures need scene state for descriptor binding,
+    // so upload them after load_scene_state.
+    upload_native_material_textures(&mut renderer, textures)?;
     renderer.set_camera_view_matrix(cam.view_matrix);
     renderer.set_view_proj(cam.view_matrix);
     let frame = renderer.render().map_err(|e| format!("render: {e:?}"))?;
@@ -1188,8 +1399,6 @@ pub fn spectra_resident_bench(
     use crate::splat_convert::camera_layer;
     use spectra_scene_state::{LightLayer, MaterialLayer, SceneState};
 
-    let (tex_descs, tex_data) = build_texture_atlas(textures)?;
-
     let mut scene = SceneState::new(width, height);
     scene.geometry.vertex_count = positions.len();
     scene.geometry.triangle_count = indices.len();
@@ -1216,13 +1425,20 @@ pub fn spectra_resident_bench(
     let mut light_data: Vec<f32> = Vec::new();
     for (dir, color, intensity) in [
         (sun.to_array(), rig.sun_color, rig.sun_intensity),
-        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (
+            glam::Vec3::Y.to_array(),
+            [0.58, 0.62, 0.72],
+            rig.sky_intensity,
+        ),
         (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
         (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
     ] {
         light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
     }
-    scene.lights = LightLayer { light_data, light_count: 4 };
+    scene.lights = LightLayer {
+        light_data,
+        light_count: 4,
+    };
 
     let view = glam::Mat4::look_at_rh(
         glam::Vec3::from(eye),
@@ -1255,7 +1471,11 @@ pub fn spectra_resident_bench(
     renderer
         .load_scene_state(scene)
         .map_err(|e| format!("load_scene_state: {e:?}"))?;
-    renderer.set_sky_gradient(rig.sky_dome_zenith, rig.sky_dome_horizon, rig.sky_dome_intensity);
+    renderer.set_sky_gradient(
+        rig.sky_dome_zenith,
+        rig.sky_dome_horizon,
+        rig.sky_dome_intensity,
+    );
     if rig.atmosphere_enabled {
         renderer.set_sun(sun.to_array(), rig.sun_radiance);
         renderer.set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
@@ -1267,11 +1487,7 @@ pub fn spectra_resident_bench(
         rig.fog_height_falloff,
         rig.fog_anisotropy,
     );
-    if !textures.is_empty() {
-        renderer
-            .set_texture_atlas(&tex_descs, &tex_data, textures.len() as u32)
-            .map_err(|e| format!("set_texture_atlas: {e:?}"))?;
-    }
+    upload_native_material_textures(&mut renderer, textures)?;
     renderer.set_camera_view_matrix(cam.view_matrix);
     renderer.set_view_proj(cam.view_matrix);
 
@@ -1281,7 +1497,9 @@ pub fn spectra_resident_bench(
     let mut last_beauty = Vec::new();
     for f in 0..frames {
         let t0 = std::time::Instant::now();
-        let frame = renderer.render().map_err(|e| format!("render frame {f}: {e:?}"))?;
+        let frame = renderer
+            .render()
+            .map_err(|e| format!("render frame {f}: {e:?}"))?;
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         if f == 0 {
             cold_ms = ms;
@@ -1293,12 +1511,19 @@ pub fn spectra_resident_bench(
             last_beauty = Vec::with_capacity(n * 4);
             for i in 0..n {
                 for ch in 0..4 {
-                    last_beauty.push((frame.beauty[i * 4 + ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+                    last_beauty
+                        .push((frame.beauty[i * 4 + ch].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
                 }
             }
         }
     }
-    Ok(ResidentBenchReport { cold_ms, steady_ms, beauty: last_beauty, width, height })
+    Ok(ResidentBenchReport {
+        cold_ms,
+        steady_ms,
+        beauty: last_beauty,
+        width,
+        height,
+    })
 }
 
 /// One cooked signed-distance volume to hand to the native SDF-volume primitive.
@@ -1457,7 +1682,11 @@ pub fn pathtrace_sdf_to_rgba(
     let mut light_data: Vec<f32> = Vec::new();
     for (dir, color, intensity) in [
         (sun.to_array(), rig.sun_color, rig.sun_intensity),
-        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (
+            glam::Vec3::Y.to_array(),
+            [0.58, 0.62, 0.72],
+            rig.sky_intensity,
+        ),
         (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
         (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
     ] {
@@ -1825,8 +2054,7 @@ pub fn pathtrace_sdf_scene_perf(
     let mut volume_headers: Vec<SdfVolumeHeader> = Vec::with_capacity(volumes.len());
     let mut local_bounds: Vec<([f32; 3], [f32; 3])> = Vec::with_capacity(volumes.len());
     for (vi, v) in volumes.iter().enumerate() {
-        let expected =
-            (v.resolution[0] * v.resolution[1] * v.resolution[2]) as usize;
+        let expected = (v.resolution[0] * v.resolution[1] * v.resolution[2]) as usize;
         if v.distances.len() != expected {
             return Err(format!(
                 "volume {vi}: distances len {} != nx*ny*nz {}",
@@ -1974,7 +2202,11 @@ pub fn pathtrace_sdf_scene_perf(
     let mut light_data: Vec<f32> = Vec::new();
     for (dir, color, intensity) in [
         (sun.to_array(), rig.sun_color, rig.sun_intensity),
-        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (
+            glam::Vec3::Y.to_array(),
+            [0.58, 0.62, 0.72],
+            rig.sky_intensity,
+        ),
         (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
         (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
     ] {
@@ -2051,7 +2283,9 @@ pub fn pathtrace_sdf_scene_perf(
             renderer.timing_sink = Some(Vec::new());
         }
         let t0 = std::time::Instant::now();
-        let f = renderer.render().map_err(|e| format!("render (frame {fi}): {e:?}"))?;
+        let f = renderer
+            .render()
+            .map_err(|e| format!("render (frame {fi}): {e:?}"))?;
         frame_times_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
         frame = Some(f);
     }
@@ -2313,7 +2547,11 @@ pub fn pathtrace_sdf_scene_with_atoms_to_rgba(
     let mut light_data: Vec<f32> = Vec::new();
     for (dir, color, intensity) in [
         (sun.to_array(), rig.sun_color, rig.sun_intensity),
-        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (
+            glam::Vec3::Y.to_array(),
+            [0.58, 0.62, 0.72],
+            rig.sky_intensity,
+        ),
         (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
         (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
     ] {
@@ -2455,6 +2693,7 @@ impl SdfAtomCellGrid {
 
     /// Number of atoms the kernel's gather visits at world-space point `p`:
     /// the sum of the 3×3×3 cell-neighbourhood counts (clamped to grid dims).
+    #[cfg(test)]
     fn neighbourhood_atom_count(&self, p: [f32; 3]) -> u32 {
         let c = self.cell_coord(p);
         let mut total = 0u32;
@@ -2591,9 +2830,9 @@ fn build_sdf_atom_cell_grid(
 ///     (the parity gate `sdf_gather_grid_matches_linear` proves it);
 ///   - per-channel PBR dispatch: `channel_materials[i]` maps each instance's
 ///     gather channel (0..=8) to an index into `materials` (-1 = keep the M2
-///     flat atom colour). `materials`/`textures` ride the SAME packing as
-///     [`pathtrace_mesh_textured_to_rgba`] (`set_texture_atlas` AFTER
-///     `load_scene_state` — order matters);
+///     flat atom colour). `materials`/`textures` ride the SAME resident texture
+///     slot order as [`pathtrace_mesh_textured_to_rgba`] and upload after
+///     `load_scene_state` — order matters;
 ///   - `uv_params[v]` carries the cook's `forge_box_uv` constants per volume
 ///     so the kernel box-projects texture UVs exactly where the cooked atom
 ///     colours were sampled (`g_sdf_volume_uv_params`).
@@ -2707,7 +2946,6 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
 
     // Texture atlas packing through the SAME helper the mesh path uses
     // (build first so a malformed TextureImage errors before any GPU work).
-    let (tex_descs, tex_data) = build_texture_atlas(textures)?;
 
     // --- Multi-volume atlas (identical to the M2 entry point). ---------------
     let mut all_distances: Vec<f32> = Vec::new();
@@ -2916,7 +3154,11 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
     let mut light_data: Vec<f32> = Vec::new();
     for (dir, color, intensity) in [
         (sun.to_array(), rig.sun_color, rig.sun_intensity),
-        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (
+            glam::Vec3::Y.to_array(),
+            [0.58, 0.62, 0.72],
+            rig.sky_intensity,
+        ),
         (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
         (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
     ] {
@@ -2958,14 +3200,10 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
         rig.sky_dome_horizon,
         rig.sky_dome_intensity,
     );
-    // ORDER MATTERS: set_texture_atlas silently no-ops before scene state
-    // exists, so it must come AFTER load_scene_state (the verified-order
+    // ORDER MATTERS: material textures need scene state for descriptor binding,
+    // so upload them AFTER load_scene_state (the verified-order
     // landmine — same wiring as pathtrace_mesh_lit_to_rgba).
-    if !textures.is_empty() {
-        renderer
-            .set_texture_atlas(&tex_descs, &tex_data, textures.len() as u32)
-            .map_err(|e| format!("set_texture_atlas: {e:?}"))?;
-    }
+    upload_native_material_textures(&mut renderer, textures)?;
     renderer.set_camera_view_matrix(cam.view_matrix);
     renderer.set_view_proj(cam.view_matrix);
 
@@ -3004,37 +3242,25 @@ pub fn pathtrace_sdf_scene_textured_to_rgba(
     Ok(out)
 }
 
-/// Build the flat texture atlas arrays for `Renderer::set_texture_atlas`.
+/// Build the host-side descriptor/f32 mirror used by tests and OMM diagnostics.
 ///
 /// Spectra's `slang/texture_atlas.slang` `TextureDesc` is
 /// `[offset, width, height, channels]` per texture, where `offset` is an
-/// index in FLOATS (f32 elements, not bytes or texels) into the flat
-/// `g_tex_data` buffer; texels are row-major with interleaved channels
-/// (`base = offset + (y*width + x)*channels`). `channels` 3 = RGB / 4 = RGBA;
-/// `fetch_texel` pads missing channels (alpha defaults to 1). UVs wrap,
-/// texel coordinates clamp at tile edges.
-#[cfg(feature = "spectra-native")]
+/// index in FLOATS (f32 elements, not bytes or texels) into the host mirror;
+/// texels are row-major with interleaved channels
+/// (`base = offset + (y*width + x)*channels`). `channels` 3 = RGB / 4 = RGBA.
+#[cfg(all(test, feature = "spectra-native"))]
 fn build_texture_atlas(textures: &[TextureImage]) -> Result<(Vec<u32>, Vec<f32>), String> {
     let mut descs = Vec::with_capacity(textures.len() * 4);
     let mut data: Vec<f32> = Vec::with_capacity(textures.iter().map(|t| t.data.len()).sum());
     for (i, t) in textures.iter().enumerate() {
-        if t.channels < 1 || t.channels > 4 {
-            return Err(format!(
-                "texture {i}: channels must be 1..=4, got {}",
-                t.channels
-            ));
-        }
-        let expected = (t.width as usize) * (t.height as usize) * (t.channels as usize);
-        if t.data.len() != expected {
-            return Err(format!(
-                "texture {i}: data.len()={} but width*height*channels={expected}",
-                t.data.len()
-            ));
-        }
+        validate_texture_image(i, t)?;
         descs.extend_from_slice(&[data.len() as u32, t.width, t.height, t.channels]);
         data.extend_from_slice(&t.data);
-        // Box-filtered MIP PYRAMID appended contiguously after level 0 (level 0 stays
-        // at `offset`; level k+1 = floor(dim/2) min 1). The 4-int TextureDesc is
+        // MIP PYRAMID appended contiguously after level 0 (level 0 stays
+        // at `offset`; level k+1 = floor(dim/2) min 1). RGB/linear data is box-
+        // filtered; RGBA alpha is coverage-preserved for cutout foliage so sparse
+        // leaf cards do not vanish when minified. The 4-int TextureDesc is
         // unchanged — the Slang sampler reconstructs each level's offset from this
         // exact layout and LOD-selects from the ray footprint, so tiled ground filters
         // smoothly (no aliasing "patches") at distance with full detail up close. Mips
@@ -3050,6 +3276,11 @@ fn build_texture_atlas(textures: &[TextureImage]) -> Result<(Vec<u32>, Vec<f32>)
             for y in 0..nh {
                 for x in 0..nw {
                     for ch in 0..c {
+                        if c == 4 && ch == 3 {
+                            dst[(y * nw + x) * c + ch] =
+                                coverage_preserving_alpha_mip(&src, lw, lh, c, ch, x, y);
+                            continue;
+                        }
                         let mut sum = 0.0f32;
                         for dy in 0..2 {
                             let sy = (y * 2 + dy).min(lh - 1);
@@ -3084,6 +3315,43 @@ fn pack_u32(x: u32) -> f32 {
 #[cfg(feature = "spectra-native")]
 fn pack_i32(x: i32) -> f32 {
     f32::from_bits(x as u32)
+}
+
+#[cfg(feature = "spectra-native")]
+const ALPHA_CUTOUT_THRESHOLD: f32 = 0.5;
+
+#[cfg(feature = "spectra-native")]
+fn coverage_preserving_alpha_mip(
+    src: &[f32],
+    lw: usize,
+    lh: usize,
+    c: usize,
+    ch: usize,
+    x: usize,
+    y: usize,
+) -> f32 {
+    let mut sum = 0.0f32;
+    let mut covered = 0usize;
+    for dy in 0..2 {
+        let sy = (y * 2 + dy).min(lh - 1);
+        for dx in 0..2 {
+            let sx = (x * 2 + dx).min(lw - 1);
+            let alpha = src[(sy * lw + sx) * c + ch].clamp(0.0, 1.0);
+            sum += alpha;
+            if alpha >= ALPHA_CUTOUT_THRESHOLD {
+                covered += 1;
+            }
+        }
+    }
+    let box_avg = sum * 0.25;
+    if covered == 0 {
+        return box_avg.min(ALPHA_CUTOUT_THRESHOLD - 1.0e-4);
+    }
+    let coverage = covered as f32 * 0.25;
+    let lifted = ALPHA_CUTOUT_THRESHOLD + coverage * (1.0 - ALPHA_CUTOUT_THRESHOLD);
+    box_avg
+        .max(lifted)
+        .clamp(ALPHA_CUTOUT_THRESHOLD + 1.0e-4, 1.0)
 }
 
 /// Pack `LightData` using the SPIR-V reflection layout for
@@ -3224,6 +3492,7 @@ pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS
     // eye colors 44/52, opacity_tex 72, uv_scale 94-95, substrate 144-147).
     // Material-type selection by CONTENT (was: hard MAT_LAMBERT for everything).
     //   transmission > 0      -> MAT_GLASS (3)    : Fresnel reflect/refract dielectric
+    //   opacity == albedo    -> MAT_VEGETATION(20): leaf cutout + vegetation BSDF
     //   metallic   > 0.5      -> MAT_METAL (2)    : Cook-Torrance GGX conductor
     //   otherwise             -> MAT_OPENPBR (16) : Lambert/Oren diffuse base + a
     //                                               dielectric GGX specular lobe with
@@ -3237,7 +3506,8 @@ pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS
     // dielectric Fresnel sheen — it does NOT desaturate the albedo.
     let glass = m.transmission > 0.0;
     let water = glass && m.is_water;
-    let metal = !glass && m.metallic > 0.5;
+    let vegetation = !glass && m.vegetation_bsdf;
+    let metal = !glass && !vegetation && m.metallic > 0.5;
     // MAT_WATER (21) is a transmissive glass variant: it still satisfies `glass`
     // (transmission > 0) so the absorption block below packs its blue-green Beer-
     // Lambert tint exactly like glass; the kernel adds wave normals + foam on top.
@@ -3245,6 +3515,8 @@ pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS
         21 // MAT_WATER
     } else if glass {
         3 // MAT_GLASS
+    } else if vegetation {
+        20 // MAT_VEGETATION
     } else if metal {
         2 // MAT_METAL
     } else {
@@ -3369,7 +3641,8 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     use spectra_scene_data::MaterialData;
     let glass = m.transmission > 0.0;
     let water = glass && m.is_water;
-    let metal = !glass && m.metallic > 0.5;
+    let vegetation = !glass && m.vegetation_bsdf;
+    let metal = !glass && !vegetation && m.metallic > 0.5;
 
     let mut md = MaterialData::default();
     md.base_color = [m.base_color[0], m.base_color[1], m.base_color[2], 1.0];
@@ -3390,7 +3663,8 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     let mut v = md.to_f32_array();
     // [0] int type — to_f32_array writes MAT_LAMBERT(1); honour water/glass/metal.
     // MAT_WATER (21) keeps the glass absorption packing below (it is still `glass`).
-    // Opaque → MAT_OPENPBR (16), MIRRORING the Vulkan packer's content-based
+    // Base-color-alpha foliage → MAT_VEGETATION (20). Other opaque surfaces →
+    // MAT_OPENPBR (16), MIRRORING the Vulkan packer's content-based
     // selection (`pack_vulkan_mesh_material`): MAT_LAMBERT ignored roughness +
     // metallic entirely, so the shipped CUDA/box path flattened every opaque
     // facade/roof/ground to a pure diffuse. OpenPBR here reads the SAME already-
@@ -3405,6 +3679,8 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
         21u32 // MAT_WATER
     } else if glass {
         3u32 // MAT_GLASS
+    } else if vegetation {
+        20u32 // MAT_VEGETATION
     } else if metal {
         2u32 // MAT_METAL
     } else {
@@ -3446,6 +3722,73 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     // asserted in spectra-scene-data/src/material.rs ("opacity_tex", 60).
     v[60] = f32::from_bits(m.opacity_tex as u32);
     v
+}
+
+#[cfg(all(test, feature = "spectra-native"))]
+mod leaf_alpha_tests {
+    use super::*;
+
+    #[test]
+    fn rgba_alpha_mips_preserve_sparse_cutout_coverage() {
+        let mut data = vec![0.0f32; 4 * 4 * 4];
+        for by in 0..2 {
+            for bx in 0..2 {
+                let i = ((by * 2 * 4) + (bx * 2)) * 4;
+                data[i] = 0.1;
+                data[i + 1] = 0.5;
+                data[i + 2] = 0.1;
+                data[i + 3] = 1.0;
+            }
+        }
+        let tex = TextureImage {
+            width: 4,
+            height: 4,
+            channels: 4,
+            data,
+            native: None,
+        };
+        let (_descs, atlas) = build_texture_atlas(&[tex]).expect("atlas builds");
+        let mip1 = 4 * 4 * 4;
+        for texel in 0..4 {
+            let alpha = atlas[mip1 + texel * 4 + 3];
+            assert!(
+                alpha > ALPHA_CUTOUT_THRESHOLD,
+                "mip texel {texel} alpha {alpha} must survive 0.5 cutout"
+            );
+        }
+    }
+
+    #[test]
+    fn base_color_alpha_cutout_packs_as_vegetation() {
+        let foliage = PbrMaterial {
+            albedo_tex: 7,
+            opacity_tex: 7,
+            vegetation_bsdf: true,
+            ..PbrMaterial::default()
+        };
+        assert_eq!(pack_vulkan_mesh_material(foliage)[0].to_bits(), 20);
+        assert_eq!(pack_cuda_mesh_material(foliage)[0].to_bits(), 20);
+
+        let separate_opacity = PbrMaterial {
+            albedo_tex: 7,
+            opacity_tex: 8,
+            vegetation_bsdf: true,
+            ..PbrMaterial::default()
+        };
+        assert_eq!(pack_vulkan_mesh_material(separate_opacity)[0].to_bits(), 20);
+        assert_eq!(pack_cuda_mesh_material(separate_opacity)[0].to_bits(), 20);
+
+        let non_foliage_cutout = PbrMaterial {
+            albedo_tex: 7,
+            opacity_tex: 8,
+            ..PbrMaterial::default()
+        };
+        assert_eq!(
+            pack_vulkan_mesh_material(non_foliage_cutout)[0].to_bits(),
+            16
+        );
+        assert_eq!(pack_cuda_mesh_material(non_foliage_cutout)[0].to_bits(), 16);
+    }
 }
 
 #[cfg(feature = "spectra-native")]
@@ -3781,8 +4124,6 @@ pub fn spectra_resident_bench_fsr(
     let (render_w, render_h) =
         spectra_upscale::fsr_render_resolution_for_test((out_w, out_h), quality);
 
-    let (tex_descs, tex_data) = build_texture_atlas(textures)?;
-
     let mut scene = SceneState::new(render_w, render_h);
     scene.geometry.vertex_count = positions.len();
     scene.geometry.triangle_count = indices.len();
@@ -3809,13 +4150,20 @@ pub fn spectra_resident_bench_fsr(
     let mut light_data: Vec<f32> = Vec::new();
     for (dir, color, intensity) in [
         (sun.to_array(), rig.sun_color, rig.sun_intensity),
-        (glam::Vec3::Y.to_array(), [0.58, 0.62, 0.72], rig.sky_intensity),
+        (
+            glam::Vec3::Y.to_array(),
+            [0.58, 0.62, 0.72],
+            rig.sky_intensity,
+        ),
         (camera_fill.to_array(), [0.72, 0.74, 0.78], rig.camera_fill),
         (rim_fill.to_array(), [0.45, 0.47, 0.52], rig.rim_fill),
     ] {
         light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
     }
-    scene.lights = LightLayer { light_data, light_count: 4 };
+    scene.lights = LightLayer {
+        light_data,
+        light_count: 4,
+    };
 
     let view = glam::Mat4::look_at_rh(
         glam::Vec3::from(eye),
@@ -3862,9 +4210,9 @@ pub fn spectra_resident_bench_fsr(
     // cone channel; cooked 1-ch -> POM). Mirrors the still path's auto branch.
     {
         let any_disp = materials.iter().any(|m| m.displacement_tex >= 0);
-        let all_cone = materials.iter().all(|m| {
-            m.displacement_tex < 0 || textures[m.displacement_tex as usize].channels >= 2
-        });
+        let all_cone = materials
+            .iter()
+            .all(|m| m.displacement_tex < 0 || textures[m.displacement_tex as usize].channels >= 2);
         config.relief_mode = if any_disp && all_cone { 1 } else { 0 };
     }
     // DEN-02/03/04 A/B knobs (config-first denoiser). OCHROMA_DENOISE_LEGACY=1
@@ -3881,7 +4229,11 @@ pub fn spectra_resident_bench_fsr(
     if let Some(n) = std::env::var("OCHROMA_DENOISE_ITERS")
         .ok()
         .and_then(|it| it.parse::<u32>().ok())
-        .or(if dcfg.iterations > 0 { Some(dcfg.iterations) } else { None })
+        .or(if dcfg.iterations > 0 {
+            Some(dcfg.iterations)
+        } else {
+            None
+        })
     {
         config.denoiser.iterations = n.max(1);
     }
@@ -3889,7 +4241,11 @@ pub fn spectra_resident_bench_fsr(
     if let Some(v) = std::env::var("OCHROMA_DENOISE_SIGMA_LUM")
         .ok()
         .and_then(|sl| sl.parse::<f32>().ok())
-        .or(if dcfg.sigma_lum >= 0.0 { Some(dcfg.sigma_lum) } else { None })
+        .or(if dcfg.sigma_lum >= 0.0 {
+            Some(dcfg.sigma_lum)
+        } else {
+            None
+        })
     {
         config.denoiser.sigma_lum = v;
     }
@@ -3908,7 +4264,11 @@ pub fn spectra_resident_bench_fsr(
     renderer
         .load_scene_state(scene)
         .map_err(|e| format!("load_scene_state: {e:?}"))?;
-    renderer.set_sky_gradient(rig.sky_dome_zenith, rig.sky_dome_horizon, rig.sky_dome_intensity);
+    renderer.set_sky_gradient(
+        rig.sky_dome_zenith,
+        rig.sky_dome_horizon,
+        rig.sky_dome_intensity,
+    );
     if rig.atmosphere_enabled {
         renderer.set_sun(sun.to_array(), rig.sun_radiance);
         renderer.set_atmosphere(true, rig.atmosphere_mie, rig.atmosphere_turbidity);
@@ -3920,11 +4280,7 @@ pub fn spectra_resident_bench_fsr(
         rig.fog_height_falloff,
         rig.fog_anisotropy,
     );
-    if !textures.is_empty() {
-        renderer
-            .set_texture_atlas(&tex_descs, &tex_data, textures.len() as u32)
-            .map_err(|e| format!("set_texture_atlas: {e:?}"))?;
-    }
+    upload_native_material_textures(&mut renderer, textures)?;
     renderer.set_camera_view_matrix(cam.view_matrix);
     renderer.set_view_proj(cam.view_matrix);
 
@@ -4043,12 +4399,9 @@ pub fn spectra_resident_bench_fsr(
         if cam_motion {
             let off = pan_per_frame * (f as f32);
             let new_eye = glam::Vec3::from(eye) + off;
-            let new_view = glam::Mat4::look_at_rh(
-                new_eye,
-                glam::Vec3::from(target) + off,
-                glam::Vec3::Y,
-            )
-            .to_cols_array();
+            let new_view =
+                glam::Mat4::look_at_rh(new_eye, glam::Vec3::from(target) + off, glam::Vec3::Y)
+                    .to_cols_array();
             renderer.set_camera_view_matrix(new_view);
             renderer.set_view_proj(new_view);
             prev_view_proj = Some(new_view);
@@ -4056,7 +4409,9 @@ pub fn spectra_resident_bench_fsr(
 
         // 1. render (low-res) + GPU denoise.
         let t_r = std::time::Instant::now();
-        renderer.render().map_err(|e| format!("render frame {f}: {e:?}"))?;
+        renderer
+            .render()
+            .map_err(|e| format!("render frame {f}: {e:?}"))?;
         let r_ms = t_r.elapsed().as_secs_f64() * 1000.0;
 
         // FSR-03: bridge the real velocity AOV → pixel-space MV → FSR. Skip
@@ -4092,7 +4447,10 @@ pub fn spectra_resident_bench_fsr(
         let t_f = std::time::Instant::now();
         let pack_id = renderer
             .kernels
-            .get(spectra_renderer::kernel_set::names::PACK_RGBA, &mut renderer.gpu)
+            .get(
+                spectra_renderer::kernel_set::names::PACK_RGBA,
+                &mut renderer.gpu,
+            )
             .ok_or("PACK_RGBA kernel compile failed")?;
         {
             let st = renderer.state.as_ref().ok_or("no render state")?;
@@ -4124,7 +4482,10 @@ pub fn spectra_resident_bench_fsr(
             profile_pack_ms = t_f.elapsed().as_secs_f64() * 1000.0;
         }
         let t_fsr = std::time::Instant::now();
-        let cbuf = renderer.gpu.vk_buffer(&color_buf).ok_or("color vk::Buffer")?;
+        let cbuf = renderer
+            .gpu
+            .vk_buffer(&color_buf)
+            .ok_or("color vk::Buffer")?;
         let obuf = renderer.gpu.vk_buffer(&out_buf).ok_or("out vk::Buffer")?;
         fsr.upscale_from_buffers(cbuf, render_w, render_h, obuf, f == 0)
             .map_err(|e| format!("FSR upscale_from_buffers: {e:?}"))?;
@@ -4180,14 +4541,20 @@ pub fn spectra_resident_bench_fsr(
         eprintln!(
             "\n[pass-profile] {render_w}x{render_h} spp={spp} bounces={max_bounces} — per-pass ms (last frame), sorted"
         );
-        eprintln!("[pass-profile] {:<34} {:>9} {:>5} {:>6}", "pass", "ms", "n", "%");
+        eprintln!(
+            "[pass-profile] {:<34} {:>9} {:>5} {:>6}",
+            "pass", "ms", "n", "%"
+        );
         eprintln!("[pass-profile] {:-<58}", "");
         for (label, ms, n) in &rows {
             let pct = if total > 0.0 { ms / total * 100.0 } else { 0.0 };
             eprintln!("[pass-profile] {label:<34} {ms:>8.3} {n:>5} {pct:>5.1}%");
         }
         eprintln!("[pass-profile] {:-<58}", "");
-        eprintln!("[pass-profile] {:<34} {total:>8.3}       100.0%\n", "TOTAL(gpu-passes)");
+        eprintln!(
+            "[pass-profile] {:<34} {total:>8.3}       100.0%\n",
+            "TOTAL(gpu-passes)"
+        );
     }
 
     // Download + tonemap the final upscaled frame for a viewable PNG.
@@ -4255,7 +4622,11 @@ pub fn measure_hw_tlas_build_ms(
     scene.geometry.indices = indices.iter().flat_map(|t| *t).collect();
     scene.geometry.material_ids = material_ids.iter().map(|&m| m as u32).collect();
     // One trivial Lambert material so the upload validates.
-    let mat = PbrMaterial { base_color: [0.6, 0.6, 0.6], roughness: 0.9, ..Default::default() };
+    let mat = PbrMaterial {
+        base_color: [0.6, 0.6, 0.6],
+        roughness: 0.9,
+        ..Default::default()
+    };
     scene.materials = MaterialLayer {
         params: pack_vulkan_mesh_material(mat).to_vec(),
         spectral_spd: Default::default(),
@@ -4282,4 +4653,3 @@ pub fn measure_hw_tlas_build_ms(
 #[cfg(all(test, feature = "spectra-native"))]
 #[path = "splat_backend_tests/mod.rs"]
 mod tests;
-

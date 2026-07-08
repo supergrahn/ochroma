@@ -30,7 +30,9 @@ impl FnvHasher {
     const PRIME: u64 = 0x0000_0100_0000_01b3;
 
     pub fn new() -> Self {
-        Self { state: Self::OFFSET }
+        Self {
+            state: Self::OFFSET,
+        }
     }
 
     #[inline]

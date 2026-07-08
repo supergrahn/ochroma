@@ -15,7 +15,7 @@
 //! The pixel layout matches the rest of the CPU UI path: row-major `[u8; 4]`
 //! straight-alpha RGBA, `pixels.len() >= w*h`.
 
-use vox_core::game_ui::{burn_text, CHAR_H};
+use vox_core::game_ui::{CHAR_H, burn_text};
 
 /// Native pixel height of the 5x7 bitmap font (one scale unit). Callers use it
 /// to pick a `font_px` that roughly fills the same row height as the fallback.
@@ -91,13 +91,13 @@ fn count_color_pixels(pixels: &[[u8; 4]], buf_w: u32, buf_h: u32, color: [u8; 3]
 
 #[cfg(feature = "game-ui")]
 mod real_text {
+    use parley::style::StyleProperty;
     use parley::{Alignment, AlignmentOptions, FontContext, GlyphRun, Layout, LayoutContext};
-    use parley::style::{StyleProperty};
     use std::cell::RefCell;
+    use swash::FontRef;
     use swash::scale::image::Content;
     use swash::scale::{Render, ScaleContext, Source, StrikeWith};
     use swash::zeno::{Format, Vector};
-    use swash::FontRef;
 
     // parley font/scratch contexts are not cheap to build (fontique scans the
     // system font db). Keep them thread-local and reuse across draws.
@@ -132,9 +132,8 @@ mod real_text {
             for line in layout.lines() {
                 for item in line.items() {
                     if let parley::PositionedLayoutItem::GlyphRun(run) = item {
-                        lit += render_glyph_run(
-                            &mut scale_cx, &run, pixels, buf_w, buf_h, pos, color,
-                        );
+                        lit +=
+                            render_glyph_run(&mut scale_cx, &run, pixels, buf_w, buf_h, pos, color);
                     }
                 }
             }
@@ -279,9 +278,20 @@ mod tests {
         let text = "ORBS 5/10";
         // Native 5x7 bitmap (scale 1 -> 7px tall glyphs).
         let mut bmp = vec![[0u8, 0, 0, 255]; (w * h) as usize];
-        let bmp_lit = bitmap_draw(&mut bmp, w, h, [4.0, 8.0], text, color, BITMAP_CHAR_H as f32);
+        let bmp_lit = bitmap_draw(
+            &mut bmp,
+            w,
+            h,
+            [4.0, 8.0],
+            text,
+            color,
+            BITMAP_CHAR_H as f32,
+        );
         println!("bitmap(7px) lit px = {bmp_lit}");
-        assert!(bmp_lit > 30, "bitmap text should light real px, got {bmp_lit}");
+        assert!(
+            bmp_lit > 30,
+            "bitmap text should light real px, got {bmp_lit}"
+        );
 
         #[cfg(feature = "game-ui")]
         {

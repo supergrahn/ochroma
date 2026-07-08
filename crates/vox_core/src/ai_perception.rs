@@ -171,7 +171,10 @@ mod tests {
         let observer = Vec3::ZERO;
         let forward = Vec3::Z;
         let target = Vec3::new(0.0, 0.0, 10.0);
-        let cfg = SightConfig { range: 15.0, ..Default::default() };
+        let cfg = SightConfig {
+            range: 15.0,
+            ..Default::default()
+        };
         assert!(check_sight(observer, forward, target, &cfg));
     }
 
@@ -189,7 +192,10 @@ mod tests {
         let observer = Vec3::ZERO;
         let forward = Vec3::Z;
         let target = Vec3::new(0.0, 0.0, 20.0);
-        let cfg = SightConfig { range: 15.0, ..Default::default() };
+        let cfg = SightConfig {
+            range: 15.0,
+            ..Default::default()
+        };
         assert!(!check_sight(observer, forward, target, &cfg));
     }
 
@@ -215,16 +221,28 @@ mod tests {
         let target = Vec3::new(5.0, 0.0, 0.0);
         let mut spectral = [0.0f32; 8];
         spectral[6] = 0.8;
-        let cfg = SpectralPerceptionConfig { band: 6, threshold: 0.5, range: 20.0 };
+        let cfg = SpectralPerceptionConfig {
+            band: 6,
+            threshold: 0.5,
+            range: 20.0,
+        };
         assert!(check_spectral(observer, target, &spectral, &cfg));
     }
 
     #[test]
     fn perception_system_tick_populates_stimuli() {
         let mut perception = PerceptionComponent {
-            sight: SightConfig { range: 15.0, half_angle_rad: 0.6, height_offset: 1.7 },
+            sight: SightConfig {
+                range: 15.0,
+                half_angle_rad: 0.6,
+                height_offset: 1.7,
+            },
             hearing: HearingConfig { range: 8.0 },
-            spectral: SpectralPerceptionConfig { band: 6, threshold: 0.5, range: 20.0 },
+            spectral: SpectralPerceptionConfig {
+                band: 6,
+                threshold: 0.5,
+                range: 20.0,
+            },
             stimuli: Vec::new(),
         };
 
@@ -235,9 +253,8 @@ mod tests {
         spectral[6] = 0.8;
 
         // Target directly ahead at 10m
-        let targets: Vec<(u32, Vec3, Vec3, [f32; 8])> = vec![
-            (42, Vec3::new(0.0, 0.0, 10.0), Vec3::NEG_Z, spectral),
-        ];
+        let targets: Vec<(u32, Vec3, Vec3, [f32; 8])> =
+            vec![(42, Vec3::new(0.0, 0.0, 10.0), Vec3::NEG_Z, spectral)];
 
         let mut agents: Vec<(&mut PerceptionComponent, Vec3, Vec3)> =
             vec![(&mut perception, agent_pos, agent_fwd)];
@@ -246,7 +263,11 @@ mod tests {
 
         // At least a sight stimulus should be present
         assert!(
-            agents[0].0.stimuli.iter().any(|s| s.kind == StimulusKind::Sight && s.source_entity == 42),
+            agents[0]
+                .0
+                .stimuli
+                .iter()
+                .any(|s| s.kind == StimulusKind::Sight && s.source_entity == 42),
             "Expected a Sight stimulus for entity 42"
         );
     }

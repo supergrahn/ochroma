@@ -137,8 +137,14 @@ impl ShardManager {
         // Serialise a placeholder state (in a real engine this would be the entity component data)
         let serialised_state = entity_id.to_le_bytes().to_vec();
 
-        self.shards.get_mut(&from_shard).unwrap().remove_entity(entity_id);
-        self.shards.get_mut(&to_shard).unwrap().add_entity(entity_id);
+        self.shards
+            .get_mut(&from_shard)
+            .unwrap()
+            .remove_entity(entity_id);
+        self.shards
+            .get_mut(&to_shard)
+            .unwrap()
+            .add_entity(entity_id);
 
         let record = MigrationRecord {
             entity_id,

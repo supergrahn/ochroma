@@ -172,7 +172,10 @@ impl PerfInspector {
                     ui.label(format!("Total: {}", snap.entities.total));
                     ui.label(format!("  Static meshes:  {}", snap.entities.static_meshes));
                     ui.label(format!("  Agents:         {}", snap.entities.agents));
-                    ui.label(format!("  Dynamic meshes: {}", snap.entities.dynamic_meshes));
+                    ui.label(format!(
+                        "  Dynamic meshes: {}",
+                        snap.entities.dynamic_meshes
+                    ));
                     ui.label(format!("  Foliage:        {}", snap.entities.foliage));
                     ui.label(format!("  Props:          {}", snap.entities.props));
                 }

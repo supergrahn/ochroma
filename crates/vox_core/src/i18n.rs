@@ -96,16 +96,18 @@ impl I18nManager {
     pub fn t<'a>(&'a self, key: &'a str) -> &'a str {
         // Try current locale first.
         if let Some(bundle) = self.bundles.get(&self.current_locale)
-            && let Some(msg) = bundle.get(key) {
-                return msg;
-            }
+            && let Some(msg) = bundle.get(key)
+        {
+            return msg;
+        }
 
         // Fallback to English.
         if self.current_locale != Locale::En
             && let Some(bundle) = self.bundles.get(&Locale::En)
-                && let Some(msg) = bundle.get(key) {
-                    return msg;
-                }
+            && let Some(msg) = bundle.get(key)
+        {
+            return msg;
+        }
 
         // Return the key itself.
         key

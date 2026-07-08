@@ -50,8 +50,8 @@ pub fn available_templates() -> Vec<ProjectTemplate> {
         },
         ProjectTemplate {
             name: "Horror Atmosphere".into(),
-            description:
-                "Atmospheric horror game. Dark environments, spectral lighting effects.".into(),
+            description: "Atmospheric horror game. Dark environments, spectral lighting effects."
+                .into(),
             genre: GameGenre::Horror,
             features: vec![
                 "Spectral lighting".into(),

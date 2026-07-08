@@ -1,4 +1,6 @@
-use vox_audio::{generate_click, generate_collect_sound, generate_place_sound, generate_tone, save_wav};
+use vox_audio::{
+    generate_click, generate_collect_sound, generate_place_sound, generate_tone, save_wav,
+};
 
 #[test]
 fn generate_tone_correct_length() {
@@ -10,11 +12,7 @@ fn generate_tone_correct_length() {
 fn tone_values_in_range() {
     let samples = generate_tone(440.0, 0.1, 44100);
     for s in &samples {
-        assert!(
-            *s >= -1.0 && *s <= 1.0,
-            "Sample out of range: {}",
-            s
-        );
+        assert!(*s >= -1.0 && *s <= 1.0, "Sample out of range: {}", s);
     }
 }
 
@@ -36,7 +34,11 @@ fn save_wav_creates_file() {
 #[test]
 fn click_sound_is_short() {
     let samples = generate_click();
-    assert!(samples.len() < 5000, "Click should be short, got {} samples", samples.len());
+    assert!(
+        samples.len() < 5000,
+        "Click should be short, got {} samples",
+        samples.len()
+    );
     assert!(!samples.is_empty());
 }
 

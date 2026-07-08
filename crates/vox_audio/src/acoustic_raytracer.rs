@@ -171,8 +171,8 @@ pub fn trace_sound(
         let mirror_to_listener = listener_pos - mirror_source;
         if let Some(t) = intersect_surface(mirror_source, mirror_to_listener.normalize(), surface) {
             let reflection_point = mirror_source + mirror_to_listener.normalize() * t;
-            let total_dist = source_pos.distance(reflection_point)
-                + reflection_point.distance(listener_pos);
+            let total_dist =
+                source_pos.distance(reflection_point) + reflection_point.distance(listener_pos);
             let atten = inverse_square_attenuation(total_dist);
 
             let mut freq_response = [atten, atten, atten];
@@ -277,9 +277,10 @@ fn estimate_rt60(scene: &AcousticScene) -> f32 {
             .iter()
             .map(|s| {
                 let area = std::f32::consts::PI * s.radius * s.radius;
-                let avg_abs =
-                    (s.material.absorption[0] + s.material.absorption[1] + s.material.absorption[2])
-                        / 3.0;
+                let avg_abs = (s.material.absorption[0]
+                    + s.material.absorption[1]
+                    + s.material.absorption[2])
+                    / 3.0;
                 area * avg_abs
             })
             .sum::<f32>()

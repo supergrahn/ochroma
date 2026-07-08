@@ -99,12 +99,15 @@ impl CrowdSimulation {
         let mut avoidance = Vec3::ZERO;
         hash.neighbours_into(agent.position, separation_distance, neighbour_scratch);
         for &j in neighbour_scratch.iter() {
-            if j == i { continue; }
+            if j == i {
+                continue;
+            }
             let other = &agents[j];
             let diff = agent.position - other.position;
             let dist = diff.length();
             if dist < separation_distance && dist > 1e-4 {
-                let strength = avoidance_weight * (separation_distance - dist) / separation_distance;
+                let strength =
+                    avoidance_weight * (separation_distance - dist) / separation_distance;
                 avoidance += (diff / dist) * strength;
             }
         }
@@ -135,7 +138,9 @@ impl CrowdSimulation {
     /// (`Some(true)` = parallel, `Some(false)` = serial, `None` = by threshold).
     fn tick_impl(&mut self, dt: f32, force: Option<bool>) {
         let n = self.agents.len();
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
 
         // Reuse the spatial hash across ticks: clear keeps the allocated bucket
         // Vecs, and reinsertion is in agent-index order, so each bucket's
@@ -212,7 +217,7 @@ impl CrowdAgent {
         self.path.clear();
         self.path_index = 0;
         let start_pos = [self.position.x, self.position.y, self.position.z];
-        let goal_pos  = [dest.x, dest.y, dest.z];
+        let goal_pos = [dest.x, dest.y, dest.z];
         let Some(start_id) = navmesh.nearest_node(start_pos) else {
             self.target = dest;
             return;
@@ -251,7 +256,10 @@ mod tests {
             sim.tick(0.1);
         }
         let end = sim.agents[0].position;
-        assert!(end.x > start.x, "agent should move toward target: {start} -> {end}");
+        assert!(
+            end.x > start.x,
+            "agent should move toward target: {start} -> {end}"
+        );
     }
 
     #[test]
@@ -279,11 +287,7 @@ mod tests {
         for i in 0..100 {
             let x = (i % 10) as f32 * 2.0;
             let z = (i / 10) as f32 * 2.0;
-            sim.add_agent(
-                Vec3::new(x, 0.0, z),
-                Vec3::new(50.0, 0.0, 50.0),
-                1.5,
-            );
+            sim.add_agent(Vec3::new(x, 0.0, z), Vec3::new(50.0, 0.0, 50.0), 1.5);
         }
         assert_eq!(sim.agent_count(), 100);
         for _ in 0..50 {

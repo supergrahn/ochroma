@@ -44,10 +44,9 @@ fn save_load_round_trip() {
     prefab.add_entity(root);
 
     let mut child = make_entity("Roof", [0.0, 5.0, 0.0]);
-    child.components.insert(
-        "material".to_string(),
-        serde_json::json!({"color": "red"}),
-    );
+    child
+        .components
+        .insert("material".to_string(), serde_json::json!({"color": "red"}));
     prefab.add_entity(child);
 
     prefab.save(&path).unwrap();
@@ -56,7 +55,10 @@ fn save_load_round_trip() {
     assert_eq!(loaded.name, "House");
     assert_eq!(loaded.entity_count(), 2);
     assert_eq!(loaded.entities[0].name, "Foundation");
-    assert_eq!(loaded.entities[0].asset_path.as_deref(), Some("meshes/foundation.vxm"));
+    assert_eq!(
+        loaded.entities[0].asset_path.as_deref(),
+        Some("meshes/foundation.vxm")
+    );
     assert_eq!(loaded.entities[0].children_indices, vec![1]);
     assert_eq!(loaded.entities[1].name, "Roof");
     assert_eq!(

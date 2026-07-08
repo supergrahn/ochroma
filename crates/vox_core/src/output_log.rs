@@ -68,12 +68,19 @@ impl OutputLog {
             .iter()
             .filter(|e| {
                 if let Some(sev) = self.filter_severity
-                    && e.severity != sev {
-                        return false;
-                    }
+                    && e.severity != sev
+                {
+                    return false;
+                }
                 if !self.filter_text.is_empty()
-                    && !e.message.to_lowercase().contains(&self.filter_text.to_lowercase())
-                    && !e.source.to_lowercase().contains(&self.filter_text.to_lowercase())
+                    && !e
+                        .message
+                        .to_lowercase()
+                        .contains(&self.filter_text.to_lowercase())
+                    && !e
+                        .source
+                        .to_lowercase()
+                        .contains(&self.filter_text.to_lowercase())
                 {
                     return false;
                 }

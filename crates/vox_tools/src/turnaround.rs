@@ -1,9 +1,9 @@
+use glam;
 use std::path::Path;
 use thiserror::Error;
 use uuid::Uuid;
-use glam;
 use vox_core::types::GaussianSplat;
-use vox_data::vxm::{VxmFile, VxmHeader, MaterialType};
+use vox_data::vxm::{MaterialType, VxmFile, VxmHeader};
 
 #[derive(Debug, Error)]
 pub enum TurnaroundError {

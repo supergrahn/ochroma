@@ -44,6 +44,7 @@
 //! textures.
 
 use half::f16;
+use serde::{Deserialize, Serialize};
 use vox_core::spectral::{Illuminant, SpectralBands};
 use vox_core::types::GaussianSplat;
 
@@ -58,7 +59,7 @@ use crate::spectral_framebuffer::SpectralFramebuffer;
 /// A triangle mesh with engine-agnostic geometry and per-mesh spectral
 /// reflectance. Positions are world-space; indices are triangle list (groups of
 /// three indices into `positions`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HybridMesh {
     /// World-space vertex positions.
     pub positions: Vec<[f32; 3]>,
@@ -98,6 +99,10 @@ pub struct HybridMesh {
     /// an untextured (flat `reflectance`) surface. Scene assembly collects the
     /// unique paths into the texture atlas and rewrites `albedo_tex` to the slot.
     pub albedo_tex_path: Option<String>,
+    /// Optional single-channel opacity/cutout texture path. Used by foliage/card
+    /// meshes whose alpha ships as a separate official mask instead of base-color
+    /// alpha.
+    pub opacity_tex_path: Option<String>,
     /// Tangent-space normal-map path (LINEAR data — never sRGB-decoded).
     /// Resolved to an atlas slot during scene assembly, parallel to
     /// `albedo_tex_path`; `None` = no normal map (geometric normals only).
@@ -152,6 +157,10 @@ pub struct HybridMesh {
     /// `world_planar_uv_scale`: scene assembly gives the world-planar sentinel
     /// priority so a (hypothetical) mesh carrying both never double-encodes.
     pub uv_scale: Option<[f32; 2]>,
+    /// Leaf/needle/card foliage submesh flag. Scene assembly uses this to route
+    /// the material through the vegetation BSDF and alpha-cutout path without
+    /// tagging bark/trunks that share the same scatter proto.
+    pub vegetation_bsdf: bool,
     /// Per-TRIANGLE material id (parallel to `indices.len()/3`). Indexes into
     /// [`submesh_materials`] when that is non-empty; otherwise it is a raw Forge
     /// material-channel byte (the same space as [`material_channel`]). **EMPTY =
@@ -168,6 +177,15 @@ pub struct HybridMesh {
     /// proto+instance instead of ~38. Plain id data — no map/RNG ordering, so it
     /// stays replay-exact. Terrain/scatter/water leave this `None` (untouched).
     pub merge_group: Option<u32>,
+    /// Optional shared-prototype key. When present, scene assembly may build one
+    /// object-space BLAS for all meshes with the same key and emit each mesh as a
+    /// cheap instance transform instead of baking world-space vertices repeatedly.
+    /// Empty by default so legacy producers keep one mesh -> one BLAS behavior.
+    pub proto_share_key: Option<String>,
+    /// Row-major 4x4 object->world transform for [`proto_share_key`] meshes,
+    /// translation at indices 12/13/14 (same layout as `InstanceRecordGpu`).
+    /// Ignored unless `proto_share_key` is present.
+    pub proto_instance_transform: Option<[f32; 16]>,
     /// Per-submesh material descriptors, indexed by the values in
     /// [`material_ids`]. **EMPTY = use the existing single-material fields**
     /// ([`material_channel`] + [`albedo_tex_path`]/[`normal_tex_path`]/
@@ -195,7 +213,7 @@ pub struct HybridMesh {
 /// exactly the same surface information per submesh that a single-material mesh
 /// carries for the whole mesh — scene assembly resolves the paths to atlas slots
 /// the same way. Kept deliberately small + `Clone` so it is cheap to fan out.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HybridSubmesh {
     /// Forge material-channel selector for this submesh (same space as
     /// [`HybridMesh::material_channel`]: `0=Facade, 1=Roof, 2=Glass, …`).
@@ -232,6 +250,7 @@ impl HybridMesh {
             uvs: Vec::new(),
             albedo_tex: -1,
             albedo_tex_path: None,
+            opacity_tex_path: None,
             normal_tex_path: None,
             roughness_tex_path: None,
             displacement_tex_path: None,
@@ -246,8 +265,11 @@ impl HybridMesh {
             ior_override: None,
             world_planar_uv_scale: None,
             uv_scale: None,
+            vegetation_bsdf: false,
             material_ids: Vec::new(),
             merge_group: None,
+            proto_share_key: None,
+            proto_instance_transform: None,
             submesh_materials: Vec::new(),
             weathering_masks: Vec::new(),
         }
@@ -269,6 +291,16 @@ impl HybridMesh {
     /// sharing `group` into ONE multi-material BLAS (see [`HybridMesh::merge_group`]).
     pub fn with_merge_group(mut self, group: u32) -> Self {
         self.merge_group = Some(group);
+        self
+    }
+
+    /// Mark this mesh as an instance of a shared object-space prototype. Scene
+    /// assembly groups equal keys into one BLAS and uses `transform` per instance.
+    pub fn with_proto_instance(mut self, key: String, transform: [f32; 16]) -> Self {
+        if !key.is_empty() {
+            self.proto_share_key = Some(key);
+            self.proto_instance_transform = Some(transform);
+        }
         self
     }
 
@@ -323,6 +355,13 @@ impl HybridMesh {
         self
     }
 
+    /// Route this mesh through the vegetation material model. Intended for
+    /// foliage submeshes only; trunks/bark stay OpenPBR.
+    pub fn with_vegetation_bsdf(mut self) -> Self {
+        self.vegetation_bsdf = true;
+        self
+    }
+
     /// Set the Forge material-channel selector (raw per-mesh material-id byte;
     /// see [`HybridMesh::material_channel`]). Builder style. Replaces the old
     /// trick of packing the channel into `object_id`'s top byte.
@@ -354,6 +393,16 @@ impl HybridMesh {
         if uvs.len() == self.positions.len() {
             self.uvs = uvs;
             self.albedo_tex_path = Some(path);
+        }
+        self
+    }
+
+    /// Attach a separate opacity/cutout texture path. Scene assembly resolves it
+    /// into `PbrMaterial.opacity_tex`; the shader reads `.x` when this differs
+    /// from the albedo texture.
+    pub fn with_opacity_texture(mut self, path: String) -> Self {
+        if !path.is_empty() {
+            self.opacity_tex_path = Some(path);
         }
         self
     }
@@ -1704,12 +1753,20 @@ mod tests {
             .with_submesh_materials(ids.clone(), submeshes.clone());
 
         // Per-triangle ids round-trip exactly, parallel to indices/3.
-        assert_eq!(mesh.material_ids, ids, "per-triangle material_ids must round-trip");
+        assert_eq!(
+            mesh.material_ids, ids,
+            "per-triangle material_ids must round-trip"
+        );
         assert_eq!(mesh.material_ids.len(), mesh.indices.len() / 3);
         // Submesh descriptors round-trip exactly (paths + channels preserved).
-        assert_eq!(mesh.submesh_materials, submeshes, "submesh_materials must round-trip");
         assert_eq!(
-            mesh.submesh_materials[ids[0] as usize].albedo_tex_path.as_deref(),
+            mesh.submesh_materials, submeshes,
+            "submesh_materials must round-trip"
+        );
+        assert_eq!(
+            mesh.submesh_materials[ids[0] as usize]
+                .albedo_tex_path
+                .as_deref(),
             Some("/assets/bark_albedo.png")
         );
         assert_eq!(mesh.submesh_materials[ids[1] as usize].material_channel, 7);
@@ -1721,7 +1778,10 @@ mod tests {
             [0.5, 0.5, 0.5],
             1,
         );
-        assert!(plain.material_ids.is_empty(), "legacy mesh must have empty material_ids");
+        assert!(
+            plain.material_ids.is_empty(),
+            "legacy mesh must have empty material_ids"
+        );
         assert!(
             plain.submesh_materials.is_empty(),
             "legacy mesh must have empty submesh_materials"

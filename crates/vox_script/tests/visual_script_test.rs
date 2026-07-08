@@ -24,10 +24,7 @@ fn test_building_placed_celebration_script() {
     let result = execute_script(&script, "BuildingPlaced", &vars);
     assert_eq!(result.triggered_actions.len(), 1);
     assert_eq!(result.triggered_actions[0].0, "spawn_celebration");
-    assert_eq!(
-        result.triggered_actions[0].1,
-        Some("fireworks".to_string())
-    );
+    assert_eq!(result.triggered_actions[0].1, Some("fireworks".to_string()));
 
     // With population <= 100, no celebration
     vars.insert("population".into(), 50.0);
@@ -65,11 +62,7 @@ fn test_variable_set_and_math_op() {
     let mut script = VisualScript::new("math_test");
     let event = script.add_node(ScriptNode::Event("Start".into()));
     let set_var = script.add_node(ScriptNode::Variable(VarAccess::Set("score".into(), 10.0)));
-    let math = script.add_node(ScriptNode::MathOp(
-        "score".into(),
-        MathOperation::Mul,
-        5.0,
-    ));
+    let math = script.add_node(ScriptNode::MathOp("score".into(), MathOperation::Mul, 5.0));
     script.connect(event, set_var);
     script.connect(set_var, math);
 

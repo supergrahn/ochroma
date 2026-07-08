@@ -86,29 +86,6 @@ impl Spline3 {
         }
     }
 
-    /// Phantom-padded frame, extrapolated by the spacing at the matching end.
-    fn padded_frame(&self, i: isize) -> f32 {
-        let n = self.frames.len() as isize;
-        if i < 0 {
-            let span = if n >= 2 {
-                self.frames[1] - self.frames[0]
-            } else {
-                1.0
-            };
-            self.frames[0] - span
-        } else if i >= n {
-            let last = (n - 1) as usize;
-            let span = if n >= 2 {
-                self.frames[last] - self.frames[last - 1]
-            } else {
-                1.0
-            };
-            self.frames[last] + span
-        } else {
-            self.frames[i as usize]
-        }
-    }
-
     /// Evaluate the spline at a (clamped) frame value.
     ///
     /// Interpolates the control point exactly at each keyframe.

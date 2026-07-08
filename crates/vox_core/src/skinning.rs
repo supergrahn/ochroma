@@ -1,6 +1,6 @@
 //! Skeletal skinning data — parallel array to GaussianSplat for multi-joint blend weights.
 
-use glam::{Vec2, Vec3, Quat};
+use glam::{Quat, Vec2, Vec3};
 use std::collections::HashMap;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,7 +18,10 @@ pub struct SplatSkinData {
 impl SplatSkinData {
     /// Single-joint binding (1.0 weight on joint_index, rest 0).
     pub fn single(joint_index: u8) -> Self {
-        Self { joint_indices: [joint_index, 0, 0, 0], joint_weights: [1.0, 0.0, 0.0, 0.0] }
+        Self {
+            joint_indices: [joint_index, 0, 0, 0],
+            joint_weights: [1.0, 0.0, 0.0, 0.0],
+        }
     }
 
     /// Two-joint blend. Weights normalized to sum to 1.0.
@@ -34,7 +37,9 @@ impl SplatSkinData {
     pub fn normalize(&mut self) {
         let sum: f32 = self.joint_weights.iter().sum();
         if sum > 1e-6 {
-            for w in &mut self.joint_weights { *w /= sum; }
+            for w in &mut self.joint_weights {
+                *w /= sum;
+            }
         }
     }
 
@@ -54,23 +59,39 @@ pub trait BSplineValue: Clone {
 }
 
 impl BSplineValue for Vec3 {
-    fn lerp(a: &Self, b: &Self, t: f32) -> Self { a.lerp(*b, t) }
-    fn zero() -> Self { Vec3::ZERO }
+    fn lerp(a: &Self, b: &Self, t: f32) -> Self {
+        a.lerp(*b, t)
+    }
+    fn zero() -> Self {
+        Vec3::ZERO
+    }
 }
 
 impl BSplineValue for Quat {
-    fn lerp(a: &Self, b: &Self, t: f32) -> Self { a.slerp(*b, t).normalize() }
-    fn zero() -> Self { Quat::IDENTITY }
+    fn lerp(a: &Self, b: &Self, t: f32) -> Self {
+        a.slerp(*b, t).normalize()
+    }
+    fn zero() -> Self {
+        Quat::IDENTITY
+    }
 }
 
 impl BSplineValue for f32 {
-    fn lerp(a: &Self, b: &Self, t: f32) -> Self { a + (b - a) * t }
-    fn zero() -> Self { 0.0 }
+    fn lerp(a: &Self, b: &Self, t: f32) -> Self {
+        a + (b - a) * t
+    }
+    fn zero() -> Self {
+        0.0
+    }
 }
 
 impl BSplineValue for Vec2 {
-    fn lerp(a: &Self, b: &Self, t: f32) -> Self { a.lerp(*b, t) }
-    fn zero() -> Self { Vec2::ZERO }
+    fn lerp(a: &Self, b: &Self, t: f32) -> Self {
+        a.lerp(*b, t)
+    }
+    fn zero() -> Self {
+        Vec2::ZERO
+    }
 }
 
 /// Cubic B-spline curve for animation compression.
@@ -89,12 +110,17 @@ impl<T: BSplineValue> BSpline<T> {
         let knot_count = n + degree as usize + 1;
         let knot_vector: Vec<f32> = (0..knot_count)
             .map(|i| {
-                let clamped = (i as f32 - degree as f32).max(0.0)
+                let clamped = (i as f32 - degree as f32)
+                    .max(0.0)
                     .min((n - degree as usize) as f32);
                 clamped / (n - degree as usize) as f32
             })
             .collect();
-        Self { control_points, knot_vector, degree }
+        Self {
+            control_points,
+            knot_vector,
+            degree,
+        }
     }
 
     /// Evaluate the curve at parameter t ∈ [0.0, 1.0].
@@ -103,15 +129,23 @@ impl<T: BSplineValue> BSpline<T> {
     pub fn sample(&self, t: f32) -> T {
         let t = t.clamp(0.0, 1.0);
         let n = self.control_points.len();
-        if n == 0 { return T::zero(); }
-        if n == 1 { return self.control_points[0].clone(); }
+        if n == 0 {
+            return T::zero();
+        }
+        if n == 1 {
+            return self.control_points[0].clone();
+        }
 
         // Find which segment [i, i+1] the parameter falls in
         let seg = (t * (n - 1) as f32).floor() as usize;
         let seg = seg.min(n - 2);
         let local_t = t * (n - 1) as f32 - seg as f32;
 
-        T::lerp(&self.control_points[seg], &self.control_points[seg + 1], local_t)
+        T::lerp(
+            &self.control_points[seg],
+            &self.control_points[seg + 1],
+            local_t,
+        )
     }
 }
 
@@ -128,7 +162,11 @@ pub struct JointTransform {
 
 impl Default for JointTransform {
     fn default() -> Self {
-        Self { translation: Vec3::ZERO, rotation: Quat::IDENTITY, scale: Vec3::ONE }
+        Self {
+            translation: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        }
     }
 }
 
@@ -172,7 +210,12 @@ pub struct AnimationClip {
 
 impl AnimationClip {
     pub fn new(name: impl Into<String>, duration_secs: f32) -> Self {
-        Self { name: name.into(), duration_secs, joint_curves: Vec::new(), root_motion: None }
+        Self {
+            name: name.into(),
+            duration_secs,
+            joint_curves: Vec::new(),
+            root_motion: None,
+        }
     }
 
     /// Sample all joint transforms at time t (in seconds).
@@ -180,8 +223,13 @@ impl AnimationClip {
     pub fn sample(&self, t: f32) -> Vec<(u16, JointTransform)> {
         let t_norm = if self.duration_secs > 0.0 {
             (t / self.duration_secs).clamp(0.0, 1.0)
-        } else { 0.0 };
-        self.joint_curves.iter().map(|c| (c.joint_index, c.sample(t_norm))).collect()
+        } else {
+            0.0
+        };
+        self.joint_curves
+            .iter()
+            .map(|c| (c.joint_index, c.sample(t_norm)))
+            .collect()
     }
 
     /// Extract root motion from the root joint curve (joint_index 0), removing XZ translation and Y rotation.
@@ -190,7 +238,10 @@ impl AnimationClip {
         let root_curve = self.joint_curves.iter_mut().find(|c| c.joint_index == 0)?;
 
         // Extract XZ from translation control points
-        let xz_points: Vec<Vec2> = root_curve.translation_spline.control_points.iter()
+        let xz_points: Vec<Vec2> = root_curve
+            .translation_spline
+            .control_points
+            .iter()
             .map(|v| Vec2::new(v.x, v.z))
             .collect();
         let xz_spline = BSpline::uniform(xz_points, root_curve.translation_spline.degree);
@@ -202,16 +253,26 @@ impl AnimationClip {
         }
 
         // Extract Y rotation from rotation control points
-        let ry_points: Vec<f32> = root_curve.rotation_spline.control_points.iter()
+        let ry_points: Vec<f32> = root_curve
+            .rotation_spline
+            .control_points
+            .iter()
             .map(|q| {
                 // Extract Y-axis rotation angle from quaternion
                 let (axis, angle) = q.to_axis_angle();
-                if axis.y.abs() > 0.5 { angle * axis.y.signum() } else { 0.0 }
+                if axis.y.abs() > 0.5 {
+                    angle * axis.y.signum()
+                } else {
+                    0.0
+                }
             })
             .collect();
         let ry_spline = BSpline::uniform(ry_points, root_curve.rotation_spline.degree);
 
-        let rmc = RootMotionCurve { translation_xz: xz_spline, rotation_y: ry_spline };
+        let rmc = RootMotionCurve {
+            translation_xz: xz_spline,
+            rotation_y: ry_spline,
+        };
         self.root_motion = Some(rmc.clone());
         Some(rmc)
     }
@@ -231,7 +292,9 @@ pub struct SkeletonPose {
 
 impl SkeletonPose {
     pub fn new(count: usize) -> Self {
-        Self { joint_transforms: vec![JointTransform::default(); count] }
+        Self {
+            joint_transforms: vec![JointTransform::default(); count],
+        }
     }
 }
 
@@ -243,11 +306,12 @@ pub struct SkeletonRetargeter {
 }
 
 impl SkeletonRetargeter {
-    pub fn new(
-        source_joint_names: Vec<JointName>,
-        target_joint_names: Vec<JointName>,
-    ) -> Self {
-        Self { source_joint_names, target_joint_names, joint_map: HashMap::new() }
+    pub fn new(source_joint_names: Vec<JointName>, target_joint_names: Vec<JointName>) -> Self {
+        Self {
+            source_joint_names,
+            target_joint_names,
+            joint_map: HashMap::new(),
+        }
     }
 
     /// Add a joint mapping: source_name drives target_name.
@@ -281,7 +345,7 @@ impl SkeletonRetargeter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::{Vec3, Quat};
+    use glam::{Quat, Vec3};
 
     #[test]
     fn splat_skin_data_single_weight_sums_to_one() {
@@ -304,8 +368,16 @@ mod tests {
         let spline = BSpline::uniform(vec![Vec3::ZERO, Vec3::ONE * 5.0], 1);
         let start = spline.sample(0.0);
         let end = spline.sample(1.0);
-        assert!(start.length() < 1e-5, "start should be near ZERO, got {:?}", start);
-        assert!((end - Vec3::ONE * 5.0).length() < 1e-5, "end should be near ONE*5, got {:?}", end);
+        assert!(
+            start.length() < 1e-5,
+            "start should be near ZERO, got {:?}",
+            start
+        );
+        assert!(
+            (end - Vec3::ONE * 5.0).length() < 1e-5,
+            "end should be near ONE*5, got {:?}",
+            end
+        );
     }
 
     #[test]
@@ -313,7 +385,12 @@ mod tests {
         let spline = BSpline::uniform(vec![Vec3::ZERO, Vec3::ONE * 5.0], 1);
         let mid = spline.sample(0.5);
         let expected = Vec3::ONE * 2.5;
-        assert!((mid - expected).length() < 1e-5, "midpoint should be {:?}, got {:?}", expected, mid);
+        assert!(
+            (mid - expected).length() < 1e-5,
+            "midpoint should be {:?}, got {:?}",
+            expected,
+            mid
+        );
     }
 
     #[test]
@@ -351,8 +428,16 @@ mod tests {
 
         let target_pose = retargeter.retarget_pose(&source_pose);
 
-        let pelvis_idx = retargeter.target_joint_names.iter().position(|n| n == "pelvis").unwrap();
-        assert!((target_pose.joint_transforms[pelvis_idx].translation - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6);
+        let pelvis_idx = retargeter
+            .target_joint_names
+            .iter()
+            .position(|n| n == "pelvis")
+            .unwrap();
+        assert!(
+            (target_pose.joint_transforms[pelvis_idx].translation - Vec3::new(1.0, 2.0, 3.0))
+                .length()
+                < 1e-6
+        );
     }
 
     #[test]

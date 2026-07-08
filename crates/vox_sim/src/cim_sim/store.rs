@@ -37,7 +37,11 @@ pub struct NeedCol {
 
 impl Default for NeedCol {
     fn default() -> Self {
-        Self { value_at_event: 0.0, last_event_tick: 0, rate_per_day: 0.0 }
+        Self {
+            value_at_event: 0.0,
+            last_event_tick: 0,
+            rate_per_day: 0.0,
+        }
     }
 }
 
@@ -111,7 +115,14 @@ impl CimStore {
     /// Stamp a need channel: its value, the tick it was set, and the per-day
     /// linear drift used to reconstruct it later. This is the ONLY way a need
     /// changes — every event that touches a need re-stamps `(value, now, rate)`.
-    pub fn set_need(&mut self, row: usize, need: usize, value: f32, last_tick: u64, rate_per_day: f32) {
+    pub fn set_need(
+        &mut self,
+        row: usize,
+        need: usize,
+        value: f32,
+        last_tick: u64,
+        rate_per_day: f32,
+    ) {
         self.need[need][row] = NeedCol {
             value_at_event: value,
             last_event_tick: last_tick,

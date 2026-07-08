@@ -98,8 +98,7 @@ mod tests {
     fn encode_decode_preserves_spectral_within_tolerance() {
         let codec = SpectralCodec::with_hardcoded_weights();
         let original = [
-            0.1f32, 0.5, 0.9, 0.3, 0.7, 0.2, 0.8, 0.4,
-            0.3, 0.6, 0.2, 0.7, 0.4, 0.5, 0.1, 0.8,
+            0.1f32, 0.5, 0.9, 0.3, 0.7, 0.2, 0.8, 0.4, 0.3, 0.6, 0.2, 0.7, 0.4, 0.5, 0.1, 0.8,
         ];
         let latent = codec.encode(&original);
         let decoded = codec.decode(&latent);
@@ -120,6 +119,10 @@ mod tests {
         let latent = codec.encode(&[0.0f32; 16]);
         let decoded = codec.decode(&latent);
         let max_val = decoded.iter().cloned().fold(0.0f32, f32::max);
-        assert!(max_val < 0.2, "near-zero input should decode near zero, max={}", max_val);
+        assert!(
+            max_val < 0.2,
+            "near-zero input should decode near zero, max={}",
+            max_val
+        );
     }
 }

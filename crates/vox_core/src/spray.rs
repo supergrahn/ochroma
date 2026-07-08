@@ -369,8 +369,14 @@ impl Default for ChannelSlots {
     fn default() -> Self {
         // -1 everywhere (0 is a VALID atlas slot, so it can't be the "absent" sentinel).
         Self {
-            base_albedo: -1, base_normal: -1, base_rough: -1, base_disp: -1,
-            ov_albedo: -1, ov_alpha: -1, ov_normal: -1, ov_disp: -1,
+            base_albedo: -1,
+            base_normal: -1,
+            base_rough: -1,
+            base_disp: -1,
+            ov_albedo: -1,
+            ov_alpha: -1,
+            ov_normal: -1,
+            ov_disp: -1,
         }
     }
 }
@@ -379,8 +385,14 @@ impl ChannelSlots {
     /// Flatten to the raw `i32` stride the megakernel reads (`g_spray_channels[c*8 + k]`).
     pub const fn to_ints(&self) -> [i32; CHANNEL_SLOT_INTS] {
         [
-            self.base_albedo, self.base_normal, self.base_rough, self.base_disp,
-            self.ov_albedo, self.ov_alpha, self.ov_normal, self.ov_disp,
+            self.base_albedo,
+            self.base_normal,
+            self.base_rough,
+            self.base_disp,
+            self.ov_albedo,
+            self.ov_alpha,
+            self.ov_normal,
+            self.ov_disp,
         ]
     }
 }
@@ -531,19 +543,28 @@ mod tests {
             w
         });
         let changed = f.paint_texture(3, [32.0, 32.0], 8.0, 1.0, 1.0);
-        assert!(changed > 0, "a stroke at the field centre must change cells");
+        assert!(
+            changed > 0,
+            "a stroke at the field centre must change cells"
+        );
         // Every cell still sums to exactly 255.
         for cell in f.weights() {
             assert_eq!(sum(cell), 255, "renormalize must hold Σ=255: {cell:?}");
         }
         // The painted centre is now dominated by channel 3.
         let (dom, w) = f.dominant_at(32.0, 32.0);
-        assert_eq!(dom, 3, "centre must be channel 3 after a full-strength stroke");
+        assert_eq!(
+            dom, 3,
+            "centre must be channel 3 after a full-strength stroke"
+        );
         assert!(w > 0.6, "centre weight must be strong, got {w}");
         // A cell far outside the radius is untouched (still the 0.5/0.5 baseline).
         let (_d, _w) = f.dominant_at(2.0, 2.0);
         let far = f.sample_bilinear(2.0, 2.0);
-        assert!(far[3] < 0.05, "outside the brush channel 3 stays ~0: {far:?}");
+        assert!(
+            far[3] < 0.05,
+            "outside the brush channel 3 stays ~0: {far:?}"
+        );
     }
 
     #[test]
@@ -610,7 +631,10 @@ mod tests {
             w
         });
         let (dom_after, _) = f.dominant_at(24.0, 24.0);
-        assert_eq!(dom_after, 5, "stroke survives a re-seed (delta-over-baseline)");
+        assert_eq!(
+            dom_after, 5,
+            "stroke survives a re-seed (delta-over-baseline)"
+        );
         // And a cell with no stroke shows the new baseline (channel 1).
         let (dom_edge, _) = f.dominant_at(2.0, 2.0);
         assert_eq!(dom_edge, 1);
@@ -627,7 +651,11 @@ mod tests {
             w
         });
         let packed = f.pack_u32();
-        assert_eq!(packed.len(), 4 * 4 * SPRAY_WORDS_PER_CELL, "SPRAY_WORDS_PER_CELL u32 per cell");
+        assert_eq!(
+            packed.len(),
+            4 * 4 * SPRAY_WORDS_PER_CELL,
+            "SPRAY_WORDS_PER_CELL u32 per cell"
+        );
         // Unpack cell 0 and confirm it matches the stored bytes.
         let cell0 = f.weights()[0];
         let w0 = packed[0];
@@ -643,7 +671,9 @@ mod tests {
         let raw = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let q = quantize_to_sum(&raw);
         assert_eq!(sum(&q), 255);
-        let raw2 = [0.1, 0.2, 0.3, 0.05, 0.15, 0.07, 0.08, 0.05, 0.03, 0.04, 0.02, 0.01];
+        let raw2 = [
+            0.1, 0.2, 0.3, 0.05, 0.15, 0.07, 0.08, 0.05, 0.03, 0.04, 0.02, 0.01,
+        ];
         assert_eq!(sum(&quantize_to_sum(&raw2)), 255);
     }
 }
