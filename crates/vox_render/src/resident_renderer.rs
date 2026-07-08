@@ -40,7 +40,7 @@ use spectra_scene_state::{GpuSceneCmd, LightLayer, SceneDeltaRing, SceneState};
 /// without depending on `spectra-renderer` or `spectra-types` directly.
 pub use spectra_renderer::FidelityTier;
 pub use spectra_renderer::RenderTarget;
-pub use spectra_renderer::{TierEntry, TierTable};
+pub use spectra_renderer::{TierEntry, TierTable, UpscalerMode, UpscalerQuality};
 
 use crate::scene_delta_adapter::{RetainedDeltaError, RetainedDeltaPlan, RetainedRenderMirror};
 use crate::splat_backend::{

@@ -190,8 +190,8 @@
         gi_backend:           "cpu",     // crates/ochroma_engine/src/engine_loop.rs:226 [env+hardcoded] env: OCHROMA_GI (gpu|cpu); default cpu (proven path)
         allow_software_gpu:   false,     // crates/vox_render/src/gpu/adapter.rs:69 + crates/vox_ui/src/vello_ctx.rs:34 [env] env: OCHROMA_ALLOW_SOFTWARE_GPU (1/true/yes/on) — permit llvmpipe fallback
         spectra_backend:      "auto",    // splat_backend.rs:3412 + crates/vox_render/src/splat_convert.rs:468 [env] env: SPECTRA_BACKEND (vulkan|vk|cuda); auto = Vulkan-first fallback (also picks the material pack layout)
-        slang_kernel_dir:     "",        // splat_backend.rs:61 [env] env: SPECTRA_SLANG_DIR; "" = derive ../../../spectra/slang beside the repo
-        spectra_path:         "",        // crates/vox_render/src/spectra_bridge.rs:198 [env] env: SPECTRA_PATH; "" = auto-detect spectra root
+        slang_kernel_dir:     "",        // splat_backend.rs:61 [env] env: OCHROMA_SLANG_KERNEL_DIR / OCHROMA_RUNTIME_DIR; "" = runtime bundle, then dev fallback
+        spectra_path:         "",        // crates/vox_render/src/spectra_bridge.rs:198 [env] env: SPECTRA_PATH; renderer-internal dev fallback only
     ),
 
     // ------------------------------------------------------------------------
@@ -265,9 +265,10 @@
             "SPECTRA_GROUND_ANTITILE_CELL_M", "SPECTRA_GROUND_SMOOTH_NORMAL",
             "SPECTRA_SHOT_SPP", "SPECTRA_MAX_PIXELS_PER_DISPATCH",
             "SPECTRA_CUDA_GRAPHS", "SPECTRA_SER", "SPECTRA_DISPATCH_TIMING",
-            "SPECTRA_FILM_DIAG", "SPECTRA_SLANG_DIR", "SPECTRA_BACKEND",
+            "SPECTRA_FILM_DIAG", "OCHROMA_RUNTIME_DIR", "OCHROMA_SLANG_KERNEL_DIR",
+            "SPECTRA_SLANG_DIR", "SPECTRA_BACKEND",
             "SPECTRA_PATH",
-        ], // 13
+        ], // 15
         // SET (write) by the engine, never read — derived from keep_beauty:
         spectra_set_only: ["SPECTRA_SKIP_BEAUTY"], // splat_backend.rs:3934/3936
         // Test/bench/infra ONLY — not runtime-tunable, intentionally not fields:

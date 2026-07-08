@@ -10,7 +10,10 @@ pub mod geometry;
 pub mod hash;
 pub mod illuminant;
 #[cfg(feature = "spectra-native")]
+pub mod present;
+#[cfg(feature = "spectra-native")]
 pub mod runtime;
+pub mod settings;
 pub mod terrain;
 
 pub use terrain::TerrainUpload;

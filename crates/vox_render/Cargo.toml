@@ -39,6 +39,7 @@ spectra-gaussian-render = { path = "../../../spectra/rust/spectra-gaussian-rende
 # explicitly; the Vulkan-only `spectra-native-vulkan` feature adds only `ocio`.
 spectra-renderer = { path = "../../../spectra/rust/spectra-renderer", optional = true, default-features = false }
 spectra-gpu = { path = "../../../spectra/rust/spectra-gpu", optional = true }
+spectra-types = { path = "../../../spectra/rust/spectra-types" }
 spectra-scene-state = { path = "../../../spectra/rust/spectra-scene-state", optional = true }
 spectra-scene-data = { path = "../../../spectra/rust/spectra-scene-data", optional = true }
 spectra-tonemap = { path = "../../../spectra/rust/spectra-tonemap", optional = true }
@@ -100,6 +101,7 @@ spectra-native = [
 # on top of spectra-native: `--features spectra-native,spectra-native-optix`.
 spectra-native-optix = [
     "spectra-native",
+    "spectra-present/dlss",
     "spectra-renderer/cuda",
     "spectra-renderer/dlss",
     "spectra-renderer/optix-rt",
@@ -125,6 +127,7 @@ legacy-raster = []
 fsr = [
     "spectra-native",
     "dep:spectra-upscale",
+    "spectra-present/fsr",
     "spectra-upscale/fsr",
 ]
 

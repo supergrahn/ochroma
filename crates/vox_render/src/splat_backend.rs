@@ -53,19 +53,53 @@ pub struct SpectraRenderBackend {
     render_target: RenderTarget,
 }
 
-/// Locate the Spectra `.slang` kernel directory: `SPECTRA_SLANG_DIR` if set and
-/// valid, else the `spectra/slang` dir beside the engine repo (matching the
-/// `../../../spectra/...` path deps in Cargo.toml). Returns `None` if neither
-/// exists (the renderer then falls back to temp_dir and produces blank frames).
+/// Locate the runtime `.slang` kernel directory owned by Ochroma.
+///
+/// Shipping/game launchers should point at an Ochroma runtime bundle via
+/// `OCHROMA_RUNTIME_DIR` (with kernels under `kernels/`, `spectra/slang/`, or
+/// `spectra/kernels/`). `OCHROMA_SLANG_KERNEL_DIR` is the explicit engine-level
+/// override. The old Spectra env vars remain as dev fallbacks for working inside
+/// the Spectra repo.
 #[cfg(feature = "spectra-native")]
 pub(crate) fn resolve_slang_kernel_dir() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
+
+    if let Ok(d) = std::env::var("OCHROMA_SLANG_KERNEL_DIR") {
+        let p = PathBuf::from(d);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+
+    if let Ok(root) = std::env::var("OCHROMA_RUNTIME_DIR") {
+        let root = PathBuf::from(root);
+        for rel in [
+            "kernels",
+            "spectra/slang",
+            "spectra/kernels",
+            "runtime/kernels",
+            "runtime/spectra/slang",
+        ] {
+            let p = root.join(rel);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+    }
+
     if let Ok(d) = std::env::var("SPECTRA_SLANG_DIR") {
         let p = PathBuf::from(d);
         if p.is_dir() {
             return Some(p);
         }
     }
+    if let Ok(d) = std::env::var("SLANG_KERNEL_DIR") {
+        let p = PathBuf::from(d);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../spectra/slang");
     p.is_dir().then_some(p)
 }
@@ -3810,7 +3844,7 @@ impl SpectraRenderBackend {
     fn spawn(mut config: RenderConfig, width: u32, height: u32) -> Result<Self, String> {
         // Without a Slang kernel dir, the renderer falls back to temp_dir() and
         // finds no `.slang` files -> every dispatch is a no-op -> blank frames.
-        // Resolve it: SPECTRA_SLANG_DIR override, else the spectra repo's slang/.
+        // Resolve it through the Ochroma runtime bundle first, then dev fallbacks.
         if config.slang_kernel_dir.is_none() {
             config.slang_kernel_dir = resolve_slang_kernel_dir();
         }

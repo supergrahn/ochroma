@@ -130,11 +130,23 @@ Write-Step "Backend:  cuda (NVIDIA)"
 # --- AOT kernel precompilation -------------------------------------------
 # spectra-renderer's build.rs precompiles every .slang kernel to PTX at build
 # time (-> get_ptx()), so the SHIPPED game loads compiled kernels and never runs
-# nvrtc/Slang at runtime. Prefer explicit env from launch wrappers, then support
-# both Windows layouts used on the box:
+# nvrtc/Slang at runtime. Prefer the Ochroma runtime bundle, then explicit
+# engine overrides, then support the dev Spectra source layouts used on the box:
+#   %OCHROMA_RUNTIME_DIR%\kernels
+#   %OCHROMA_RUNTIME_DIR%\spectra\slang
 #   C:\Users\<you>\src\spectra\slang
 #   C:\Users\<you>\spectra\slang
 $kernelCandidates = @()
+if ($env:OCHROMA_RUNTIME_DIR) {
+    $kernelCandidates += @(
+        (Join-Path $env:OCHROMA_RUNTIME_DIR "kernels"),
+        (Join-Path $env:OCHROMA_RUNTIME_DIR "spectra\slang"),
+        (Join-Path $env:OCHROMA_RUNTIME_DIR "spectra\kernels"),
+        (Join-Path $env:OCHROMA_RUNTIME_DIR "runtime\kernels"),
+        (Join-Path $env:OCHROMA_RUNTIME_DIR "runtime\spectra\slang")
+    )
+}
+if ($env:OCHROMA_SLANG_KERNEL_DIR) { $kernelCandidates += $env:OCHROMA_SLANG_KERNEL_DIR }
 if ($env:SLANG_KERNEL_DIR) { $kernelCandidates += $env:SLANG_KERNEL_DIR }
 if ($env:SPECTRA_SLANG_DIR) { $kernelCandidates += $env:SPECTRA_SLANG_DIR }
 $kernelCandidates += @(
@@ -151,6 +163,7 @@ foreach ($candidate in $kernelCandidates) {
 if ($spectraKernels) {
     $env:SLANG_KERNEL_DIR = $spectraKernels.Path
     $env:SPECTRA_SLANG_DIR = $spectraKernels.Path
+    $env:OCHROMA_SLANG_KERNEL_DIR = $spectraKernels.Path
     Write-Step "Kernels:  $($spectraKernels.Path)  (AOT PTX precompile)"
 } else {
     Write-Host "[build-gpu] WARN: spectra/slang kernel dir not found; PTX precompile will be empty." -ForegroundColor Yellow

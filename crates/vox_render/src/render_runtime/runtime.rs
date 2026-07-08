@@ -229,11 +229,11 @@ impl RenderRuntime {
         self.renderer.set_present_temporal_upscale(on);
     }
 
-    pub fn rr_guides(&mut self) -> spectra_present::RrGuides {
+    pub fn rr_guides(&mut self) -> crate::render_runtime::present::RrGuides {
         let g = self.renderer.rr_guide_ptrs();
         let (jx, jy) = self.renderer.rr_jitter();
         let ready_event = self.renderer.rr_payload_ready_event();
-        let guides = spectra_present::RrGuides {
+        let guides = crate::render_runtime::present::RrGuides {
             diffuse_albedo: g[0],
             specular_albedo: g[1],
             normals: g[2],
