@@ -44,9 +44,9 @@ pub use spectra_renderer::{TierEntry, TierTable, UpscalerMode, UpscalerQuality};
 
 use crate::scene_delta_adapter::{RetainedDeltaError, RetainedDeltaPlan, RetainedRenderMirror};
 use crate::splat_backend::{
-    LightRig, VULKAN_LIGHT_FLOATS, pack_vulkan_directional_light, pack_vulkan_point_light,
-    pack_vulkan_sun_disk_light, resolve_slang_kernel_dir, rig_to_settings,
-    seed_features_from_config, sun_solid_angle,
+    pack_vulkan_directional_light, pack_vulkan_point_light, pack_vulkan_sun_disk_light,
+    resolve_slang_kernel_dir, rig_to_settings, seed_features_from_config, sun_solid_angle,
+    LightRig, VULKAN_LIGHT_FLOATS,
 };
 
 /// Result of a scene-delta upload — the reuse-vs-rebuild proof.
@@ -298,7 +298,11 @@ impl ResidentSceneRenderer {
                     .and_then(|v| v.parse::<u32>().ok())
                     .or_else(|| {
                         let ov = rcfg.glass_bounces_override;
-                        if ov >= 0 { Some(ov as u32) } else { None }
+                        if ov >= 0 {
+                            Some(ov as u32)
+                        } else {
+                            None
+                        }
                     })
                     .unwrap_or_else(|| glass_floor_for_tier(config.max_bounces));
                 floor = floor.max(g);
@@ -309,7 +313,11 @@ impl ResidentSceneRenderer {
                     .and_then(|v| v.parse::<u32>().ok())
                     .or_else(|| {
                         let ov = rcfg.water_bounces_override;
-                        if ov >= 0 { Some(ov as u32) } else { None }
+                        if ov >= 0 {
+                            Some(ov as u32)
+                        } else {
+                            None
+                        }
                     })
                     .unwrap_or_else(|| water_floor_for_tier(config.max_bounces));
                 floor = floor.max(wf);
@@ -1429,6 +1437,34 @@ impl ResidentSceneRenderer {
         self.renderer.set_water_params(params);
     }
 
+    /// WATER (MAT_WATER) non-animated optical look, forwarded to the spectra
+    /// `Renderer`. Channel order:
+    /// `[clarity, roughness_floor, inscatter_r, inscatter_g, inscatter_b,
+    /// scatter_sigma, foam_depth_m]`.
+    ///
+    /// This is resident state, not process env, so render.ron/dev hot reload can
+    /// update water colour/depth response without reconstructing the renderer.
+    pub fn set_water_look_params(&mut self, params: [f32; 7]) {
+        self.renderer.set_water_look_params(params);
+    }
+
+    /// World-planar terrain-ground look, forwarded live to spectra state.config.
+    /// Channel order:
+    /// `[smooth_normal, antitile_strength, antitile_cell_m, normal_strength,
+    /// normal_graze, ao_strength, macro_scale, macro_strength, heightblend_k,
+    /// curv_albedo, blend_sharpen]`.
+    pub fn set_ground_look_params(&mut self, params: [f32; 11]) {
+        self.renderer.set_ground_look_params(params);
+    }
+
+    /// Underwater-bed blend look, forwarded live to spectra state.config.
+    /// Channel order:
+    /// `[shallow_m, deep_m, wetband_m, wetband_darken, wetband_rough_drop,
+    /// silt_rough_boost]`.
+    pub fn set_underwater_params(&mut self, params: [f32; 6]) {
+        self.renderer.set_underwater_params(params);
+    }
+
     /// Live authored-emission multiplier. This is a uniform on direct emissive
     /// hits and also regenerates the resident light layer so emissive NEE lights
     /// match the same scale without a material or geometry rebuild.
@@ -1928,7 +1964,7 @@ fn camera_forward(view: [f32; 16]) -> glam::Vec3 {
 
 #[cfg(test)]
 mod glass_floor_tests {
-    use super::{GLASS_MIN_BOUNCES, glass_floor_for_tier, water_floor_for_tier};
+    use super::{glass_floor_for_tier, water_floor_for_tier, GLASS_MIN_BOUNCES};
 
     /// Locks the per-tier glass bounce caps to the exact values witnessed on the
     /// box. Performance stays at its own base depth for the 3440x1440 DLSS-RR
