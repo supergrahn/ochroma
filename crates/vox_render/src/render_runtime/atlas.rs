@@ -121,6 +121,10 @@ fn dds_format_is_srgb(format: image_dds::ImageFormat) -> bool {
     )
 }
 
+fn dds_format_is_bc5(format: image_dds::ImageFormat) -> bool {
+    matches!(format, image_dds::ImageFormat::BC5RgUnorm)
+}
+
 fn dds_native_mips(
     surface: &image_dds::Surface<&[u8]>,
     block_extent: u32,
@@ -164,7 +168,12 @@ fn load_dds_texture(
     let (gpu_format, logical_channels, block_extent, block_bytes) =
         dds_format_to_gpu(surface.image_format)?;
     if requested_channels > logical_channels {
-        return None;
+        let bc5_normal_as_rgb = requested_channels == 3
+            && matches!(mirror_mode, DdsMirrorMode::LinearData)
+            && dds_format_is_bc5(surface.image_format);
+        if !bc5_normal_as_rgb {
+            return None;
+        }
     }
     if block_extent > 1 && (surface.width % block_extent != 0 || surface.height % block_extent != 0)
     {
@@ -190,6 +199,9 @@ fn load_dds_texture(
     );
     let apply_srgb =
         matches!(mirror_mode, DdsMirrorMode::SrgbColor) && dds_format_is_srgb(surface.image_format);
+    let reconstruct_bc5_normal = requested_channels == 3
+        && matches!(mirror_mode, DdsMirrorMode::LinearData)
+        && dds_format_is_bc5(surface.image_format);
     for rgba in decoded.data.chunks_exact(4) {
         let mut px = [rgba[0], rgba[1], rgba[2], rgba[3]];
         if apply_srgb {
@@ -197,7 +209,14 @@ fn load_dds_texture(
             px[1] = srgb_to_linear(px[1]);
             px[2] = srgb_to_linear(px[2]);
         }
-        data.extend_from_slice(&px[..requested_channels as usize]);
+        if reconstruct_bc5_normal {
+            let x = px[0] * 2.0 - 1.0;
+            let y = px[1] * 2.0 - 1.0;
+            let z = (1.0 - x * x - y * y).max(0.0).sqrt();
+            data.extend_from_slice(&[px[0], px[1], z * 0.5 + 0.5]);
+        } else {
+            data.extend_from_slice(&px[..requested_channels as usize]);
+        }
     }
 
     eprintln!(

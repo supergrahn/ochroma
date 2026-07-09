@@ -551,30 +551,42 @@ fn coerce_len(v: &mut Vec<f32>, fallback: &[f32], len: usize) {
     }
 }
 
-/// Resolve the default config path: `$OCHROMA_CONFIG`, else the nearest
-/// `config/ochroma.ron` walking up from the current directory / executable,
-/// else the sibling engine checkout layout used by Urban Horizon dev builds:
-/// `<user>/src/ochroma/config/ochroma.ron`.
+/// Resolve the default config path: `$OCHROMA_CONFIG`, else the Ochroma runtime
+/// bundle (`runtime/engine/config/ochroma.ron`) beside the executable/cwd, else
+/// the nearest `config/ochroma.ron` walking up from the current directory /
+/// executable, else the sibling engine checkout layout used by Urban Horizon dev
+/// builds: `<user>/src/ochroma/config/ochroma.ron`.
 fn resolve_default_path() -> Option<PathBuf> {
     if let Ok(env_path) = std::env::var("OCHROMA_CONFIG") {
         if !env_path.is_empty() {
             return Some(PathBuf::from(env_path));
         }
     }
-    // 1) Walk up from the current directory (covers running from the repo root or
+    // 1) Runtime bundle first. A shipped game owns a sibling `runtime/` tree; the
+    //    engine config belongs under `runtime/engine/config`, not in the game.
+    if let Ok(start) = std::env::current_dir() {
+        if let Some(path) = find_runtime_config_around(&start) {
+            return Some(path);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(start) = exe.parent() {
+            if let Some(path) = find_runtime_config_around(start) {
+                return Some(path);
+            }
+        }
+    }
+
+    // 2) Walk up from the current directory (covers running from the repo root or
     //    any crate subdir during dev/test).
     if let Ok(start) = std::env::current_dir() {
         if let Some(path) = find_config_around(&start, false, false) {
             return Some(path);
         }
     }
-    // 2) SHIP path: the game runs from `urban_horizon/` (no `config/ochroma.ron` in
-    //    its tree) so the cwd walk above fails and the live game silently fell back
-    //    to the compiled defaults — i.e. NONE of ochroma.ron's ~372 settings applied
-    //    (the "config doesn't override everything" bug). Also search relative to the
-    //    EXECUTABLE: `<exe_dir>/ochroma.ron` and `<exe_dir>/config/ochroma.ron`,
-    //    walking up from the exe dir. The Windows packager copies ochroma.ron next to
-    //    play.exe so a shipped build is config-first without any env var.
+    // 3) Legacy ship path: the game may still run with ochroma.ron beside the exe
+    //    or under exe_dir/config. Prefer `runtime/engine/config` above for
+    //    current bundles.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(start) = exe.parent() {
             if let Some(path) = find_config_around(start, true, false) {
@@ -582,7 +594,7 @@ fn resolve_default_path() -> Option<PathBuf> {
             }
         }
     }
-    // 3) DEV GAME path: Urban Horizon is usually checked out as
+    // 4) DEV GAME path: Urban Horizon is usually checked out as
     //    `<user>/ochroma/projects/urban_horizon`, while the engine config lives in
     //    the sibling checkout `<user>/src/ochroma/config/ochroma.ron`. Launching
     //    `play.exe` from the game tree must still load the engine source of truth.
@@ -596,6 +608,28 @@ fn resolve_default_path() -> Option<PathBuf> {
             if let Some(path) = find_config_around(start, false, true) {
                 return Some(path);
             }
+        }
+    }
+    None
+}
+
+fn find_runtime_config_around(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        for parts in [
+            &["runtime", "engine", "config", "ochroma.ron"][..],
+            &["runtime", "config", "ochroma.ron"][..],
+        ] {
+            let mut candidate = dir.clone();
+            for part in parts {
+                candidate.push(part);
+            }
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        if !dir.pop() {
+            break;
         }
     }
     None

@@ -72,6 +72,9 @@ parts of `CLAUDE.md`; when in doubt, read `CLAUDE.md` and the game
   decimated LOD OMM needs UV/material-preserving decimation first.
 - Local Linux lacks CUDA toolkit headers; OptiX/OMM FFI checks are box-gated even
   when non-OptiX `spectra-native` checks pass.
+- Shipped games use an Ochroma runtime bundle: `runtime/engine` for engine
+  runtime data/config and `runtime/renderer` for Spectra/Slang/CUDA/DLSS assets.
+  Do not require game launchers to point at source-tree Spectra or Slang paths.
 - Local `spectra-native` tests can fail before compiling code if `libslang.so`
   is not on the loader path; report that as an environment gap, not a code result.
 - Avoid broad `rustfmt` over large dirty files; it can create noisy unrelated

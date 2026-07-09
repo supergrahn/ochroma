@@ -55,11 +55,9 @@ pub struct SpectraRenderBackend {
 
 /// Locate the runtime `.slang` kernel directory owned by Ochroma.
 ///
-/// Shipping/game launchers should point at an Ochroma runtime bundle via
-/// `OCHROMA_RUNTIME_DIR` (with kernels under `kernels/`, `spectra/slang/`, or
-/// `spectra/kernels/`). `OCHROMA_SLANG_KERNEL_DIR` is the explicit engine-level
-/// override. The old Spectra env vars remain as dev fallbacks for working inside
-/// the Spectra repo.
+/// Shipping/game launchers should use the Ochroma runtime bundle beside the
+/// executable. Canonical layout is `runtime/renderer/kernels`; the older flat
+/// `runtime/kernels` and Spectra source env vars remain as dev fallbacks only.
 #[cfg(feature = "spectra-native")]
 pub(crate) fn resolve_slang_kernel_dir() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
@@ -74,15 +72,40 @@ pub(crate) fn resolve_slang_kernel_dir() -> Option<std::path::PathBuf> {
     if let Ok(root) = std::env::var("OCHROMA_RUNTIME_DIR") {
         let root = PathBuf::from(root);
         for rel in [
+            "renderer/kernels",
+            "renderer/spectra/slang",
+            "renderer/spectra/kernels",
             "kernels",
             "spectra/slang",
             "spectra/kernels",
+            "runtime/renderer/kernels",
+            "runtime/renderer/spectra/slang",
             "runtime/kernels",
             "runtime/spectra/slang",
         ] {
             let p = root.join(rel);
             if p.is_dir() {
                 return Some(p);
+            }
+        }
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            for root in [exe_dir.to_path_buf(), exe_dir.join("runtime")] {
+                for rel in [
+                    "renderer/kernels",
+                    "renderer/spectra/slang",
+                    "renderer/spectra/kernels",
+                    "kernels",
+                    "spectra/slang",
+                    "spectra/kernels",
+                ] {
+                    let p = root.join(rel);
+                    if p.is_dir() {
+                        return Some(p);
+                    }
+                }
             }
         }
     }

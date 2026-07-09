@@ -82,6 +82,10 @@ pub struct ResidentSceneRenderer {
     height: u32,
     /// Light rig — drives the four-light scene rig + sky/atmosphere setters.
     rig: LightRig,
+    /// Live multiplier for authored emissive materials. Mirrored into Spectra as
+    /// `u_emissive_scale` and used while deriving emissive point lights so
+    /// direct-hit emission and NEE lights stay in lockstep.
+    emissive_scale: f32,
     /// Aurora Step 1: the id-sorted, coalesced (latest-wins-per-slot) command
     /// ring for resident transform deltas. Backed by a `BTreeMap<slot, …>` so
     /// the drained stream is ALWAYS ascending-slot with one command per slot —
@@ -611,6 +615,7 @@ impl ResidentSceneRenderer {
             width,
             height,
             rig,
+            emissive_scale: 1.0,
             delta_ring: SceneDeltaRing::new(),
             retained_mirror: RetainedRenderMirror::new(),
             last_view_proj: None,
@@ -631,14 +636,44 @@ impl ResidentSceneRenderer {
         self.upload_scene(scene)
     }
 
-    /// Update the render-only light rig without rebuilding geometry. Returns
-    /// true when the day/night state changed, because lit-window promotion and
-    /// emissive point-light extraction are baked into the uploaded scene.
+    /// Update the render-only light rig without rebuilding geometry. Directional
+    /// sky/sun/moon/fog values are uniforms; the NEE light list is a light-layer
+    /// upload. Returns `false` because day/night changes no longer require a
+    /// resident scene rebuild.
     pub fn set_light_rig(&mut self, rig: LightRig) -> bool {
-        let day_night_changed = self.rig.is_night != rig.is_night;
+        self.set_lighting_state(rig, self.emissive_scale)
+    }
+
+    /// Combined light-rig + emissive scale update. Use this when the game clock
+    /// changes both sun/moon state and lit-window strength; it refreshes the
+    /// resident light layer once.
+    pub fn set_lighting_state(&mut self, rig: LightRig, emissive_scale: f32) -> bool {
         self.rig = rig;
+        self.emissive_scale = emissive_scale.max(0.0);
         self.apply_rig_uniforms();
-        day_night_changed
+        self.renderer.set_emissive_scale(self.emissive_scale);
+        if let Err(e) = self.refresh_light_layer() {
+            eprintln!("[light-rig] light-layer refresh skipped: {e}");
+        }
+        false
+    }
+
+    fn refresh_light_layer(&mut self) -> Result<(), String> {
+        let lights = {
+            let state = self
+                .renderer
+                .state
+                .as_ref()
+                .ok_or_else(|| "renderer state is not initialized".to_string())?;
+            let scene = state
+                .scene_state
+                .as_ref()
+                .ok_or_else(|| "scene state is not resident yet".to_string())?;
+            build_light_layer_for_scene(scene, &self.rig, self.emissive_scale)
+        };
+        self.renderer
+            .replace_light_layer(lights)
+            .map_err(|e| format!("replace_light_layer: {e}"))
     }
 
     /// Bind an equirectangular HDRI environment map (linear RGB, `channels`
@@ -1018,121 +1053,7 @@ impl ResidentSceneRenderer {
             }
         }
 
-        // NIGHT LIT WINDOWS: when the sun is below the horizon (night), promote
-        // glass (curtain-wall window) materials to EMISSIVE so the city lights up
-        // from within. Glass surfaces otherwise read as dark holes at night (no
-        // sun/sky to reflect or transmit). Promotion sets the material's emission
-        // slot (a[23]) + a warm interior color; `emissive_point_lights` (below)
-        // then turns each lit-window instance into an NEE point light so the glow
-        // also lights neighboring facades/streets — the MegaLights night effect.
-        // Gated on sun elevation so daytime renders are byte-identical.
-        let is_night = self.rig.is_night;
-        // Config-first: night lit windows default ON (config.lit_windows_enabled);
-        // env OCHROMA_LIT_WINDOWS=0|off force-disables for an A/B witness.
-        let lit_window_disabled = !vox_config::config().resident_renderer.lit_windows_enabled
-            || matches!(
-                std::env::var("OCHROMA_LIT_WINDOWS").as_deref(),
-                Ok("0") | Ok("off")
-            );
-        if is_night && !lit_window_disabled {
-            promote_glass_to_lit_windows(&mut scene);
-        }
-
-        // Inject the rig's four-light directional rig (sun/sky/camera-fill/rim),
-        // mirroring spectra_resident_bench's light setup so lighting is identical
-        // to the proven bench path.
-        let rig = &self.rig;
-        let sun = glam::Vec3::from(rig.sun_dir).normalize_or_zero();
-        // Camera-relative fill: derive from the scene camera's forward axis.
-        let cam_fwd = scene_camera_forward(&scene);
-        let camera_fill = (-cam_fwd + glam::Vec3::Y * 0.35).normalize_or_zero();
-        let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
-        let mut light_data: Vec<f32> = Vec::with_capacity(4 * VULKAN_LIGHT_FLOATS);
-        // P1 — ONE PHYSICAL SUN. light[0] is now a DISK light shaded through the
-        // full OpenPBR BSDF via NEE (diffuse + GGX dielectric spec + Fresnel) so
-        // glass/metal/wet pick up a real sun glint. There is ONE sun magnitude:
-        // the irradiance E_sun (= rig.sun_radiance, the same scalar the old inline
-        // Lambert sun_term used as irradiance, and the same value fed to
-        // `set_sun` for the visible disk below). The disk RADIANCE the NEE light
-        // and the atmosphere disk both emit is L_sun = E_sun / Ω. The separate
-        // `sun_intensity` (5.0) and the megakernel's SUN_DIRECT_SCALE (1/π) are
-        // GONE — disk + surface + NEE are now derived from this one E_sun and the
-        // sun_ramp color, so they are physically coupled.
-        let e_sun = rig.sun_radiance; // irradiance
-        let l_sun = e_sun / sun_solid_angle(); // disk radiance = E_sun / Ω
-
-        // DAY NEE LIGHTS ARE OPT-IN (`resident_renderer.nee_day_lights`,
-        // default OFF): in the ReSTIR present path the deferred NEE sun lands
-        // in a buffer that never reaches the film (audited 2026-07-02 — the
-        // inline Lambert sun in the megakernel is the ONE effective sun), yet
-        // merely REGISTERING these lights makes `u_num_lights > 0`, which
-        // blocks the megakernel's `defer_sun` path — so CAST SUN SHADOWS could
-        // never engage on the live path. With the day lights skipped, the
-        // inline sun rides the per-pixel shadow ray (u_sun_shadow, host
-        // default on) → real terrain/tree cast shadows + the shadow-depth
-        // ambient couple. Night emissive point lights register regardless.
-        let day_light_count = if vox_config::config().resident_renderer.nee_day_lights {
-            light_data.extend_from_slice(&pack_vulkan_sun_disk_light(
-                sun.to_array(),
-                rig.sun_color,
-                l_sun,
-            ));
-            // Fill COLORS / intensities ride the rig (config-driven via render.ron
-            // `lighting_rig.analytic_fills`). These stay hard-delta directional fills
-            // (angular_radius=0): cheap analytic key fill, NOT physical sun.
-            for (dir, color, intensity) in [
-                (
-                    glam::Vec3::Y.to_array(),
-                    rig.analytic_sky_fill_color,
-                    rig.sky_intensity,
-                ),
-                (
-                    camera_fill.to_array(),
-                    rig.analytic_camera_fill_color,
-                    rig.camera_fill,
-                ),
-                (
-                    rim_fill.to_array(),
-                    rig.analytic_rim_fill_color,
-                    rig.rim_fill,
-                ),
-            ] {
-                light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
-            }
-            4
-        } else {
-            0
-        };
-        // MegaLights night path: append a POINT light for every emissive instance
-        // (lit windows / street lights). At night the sun is below the horizon so
-        // the 4 directional lights are ~black; these emitters carry the frame. The
-        // megakernel NEE samples them directly; ReSTIR-DI resamples them when on.
-        // GATED on night (like the glass promotion) so the DAYTIME render stays
-        // byte-identical — by day, content-authored emissive surfaces still glow on
-        // direct hits exactly as before; we do NOT add NEE lights that would change
-        // the established daylit look.
-        let (emissive_lights, emissive_count) = if is_night && !lit_window_disabled {
-            let emissive_scale = std::env::var("OCHROMA_EMISSIVE_LIGHT_SCALE")
-                .ok()
-                .and_then(|v| v.parse::<f32>().ok())
-                .filter(|v| *v > 0.0)
-                .unwrap_or(vox_config::config().resident_renderer.emissive_light_scale);
-            emissive_point_lights(&scene, emissive_scale)
-        } else {
-            (Vec::new(), 0)
-        };
-        light_data.extend_from_slice(&emissive_lights);
-        let light_count = day_light_count + emissive_count;
-        if emissive_count > 0 {
-            eprintln!(
-                "[night-lights] derived {emissive_count} emissive point lights \
-                 -> {light_count} total lights"
-            );
-        }
-        scene.lights = LightLayer {
-            light_data,
-            light_count,
-        };
+        scene.lights = build_light_layer_for_scene(&scene, &self.rig, self.emissive_scale);
         scene.mark_lights_changed();
 
         // WEATHERING: the per-vertex pattern travels on the scene
@@ -1484,10 +1405,17 @@ impl ResidentSceneRenderer {
         self.renderer.set_render_target(target);
     }
 
-    /// Enable present-side DLSS-RR temporal reconstruction (jitter + motion
-    /// vectors) on the Interop path. Set to `want_rr` each frame; default off.
+    /// Enable present-side temporal guidance (jitter + motion vectors) on the
+    /// Interop path when a temporal present backend is actually active.
     pub fn set_present_temporal_upscale(&mut self, on: bool) {
         self.renderer.set_present_temporal_upscale(on);
+    }
+
+    /// Tell Spectra whether the active present backend is actually doing external
+    /// ray reconstruction denoise+upscale. This is separate from temporal
+    /// upscaler guide production so SR fallback does not disable internal denoise.
+    pub fn set_present_ray_reconstruction(&mut self, on: bool) {
+        self.renderer.set_present_ray_reconstruction(on);
     }
 
     /// WATER (MAT_WATER) procedural-wave + shoreline-foam controls, forwarded to
@@ -1499,6 +1427,17 @@ impl ResidentSceneRenderer {
     /// is loaded.
     pub fn set_water_params(&mut self, params: [f32; 6]) {
         self.renderer.set_water_params(params);
+    }
+
+    /// Live authored-emission multiplier. This is a uniform on direct emissive
+    /// hits and also regenerates the resident light layer so emissive NEE lights
+    /// match the same scale without a material or geometry rebuild.
+    pub fn set_emissive_scale(&mut self, scale: f32) {
+        self.emissive_scale = scale.max(0.0);
+        self.renderer.set_emissive_scale(self.emissive_scale);
+        if let Err(e) = self.refresh_light_layer() {
+            eprintln!("[light-rig] emissive light-layer refresh skipped: {e}");
+        }
     }
 
     /// LIVE COLOR-GRADE — forward the game's Look-panel grade to the spectra
@@ -1564,6 +1503,12 @@ impl ResidentSceneRenderer {
     /// un-jitter the temporal reprojection. See `Renderer::rr_jitter`.
     pub fn rr_jitter(&self) -> (f32, f32) {
         self.renderer.rr_jitter()
+    }
+
+    /// Internal resolution of the RR/DLSS guide buffers produced by the last
+    /// frame. Present uses this to scale pixel-space motion vectors.
+    pub fn rr_render_size(&self) -> (u32, u32) {
+        self.renderer.rr_render_size()
     }
 }
 
@@ -1684,7 +1629,115 @@ const MAT_EMISSION_COLOR_SLOT: usize = 20;
 /// Deterministic: instances scanned in id (index) order, capped slice, no
 /// HashMap/RNG iteration. Returns packed Vulkan `LightData` floats appended to the
 /// directional rig.
-fn emissive_point_lights(scene: &SceneState, scale: f32) -> (Vec<f32>, usize) {
+fn build_light_layer_for_scene(
+    scene: &SceneState,
+    rig: &LightRig,
+    emissive_surface_scale: f32,
+) -> LightLayer {
+    // Inject the rig's four-light directional rig (sun/sky/camera-fill/rim),
+    // mirroring spectra_resident_bench's light setup so lighting is identical
+    // to the proven bench path.
+    let sun = glam::Vec3::from(rig.sun_dir).normalize_or_zero();
+    let cam_fwd = scene_camera_forward(scene);
+    let camera_fill = (-cam_fwd + glam::Vec3::Y * 0.35).normalize_or_zero();
+    let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
+    let mut light_data: Vec<f32> = Vec::with_capacity(4 * VULKAN_LIGHT_FLOATS);
+
+    // P1 — ONE PHYSICAL SUN. E_sun drives both the visible disk and NEE disk.
+    let l_sun = rig.sun_radiance / sun_solid_angle();
+    let day_light_count = if vox_config::config().resident_renderer.nee_day_lights {
+        light_data.extend_from_slice(&pack_vulkan_sun_disk_light(
+            sun.to_array(),
+            rig.sun_color,
+            l_sun,
+        ));
+        for (dir, color, intensity) in [
+            (
+                glam::Vec3::Y.to_array(),
+                rig.analytic_sky_fill_color,
+                rig.sky_intensity,
+            ),
+            (
+                camera_fill.to_array(),
+                rig.analytic_camera_fill_color,
+                rig.camera_fill,
+            ),
+            (
+                rim_fill.to_array(),
+                rig.analytic_rim_fill_color,
+                rig.rim_fill,
+            ),
+        ] {
+            light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
+        }
+        4
+    } else {
+        0
+    };
+
+    // Config-first: night lit windows default ON (config.lit_windows_enabled);
+    // env OCHROMA_LIT_WINDOWS=0|off force-disables for an A/B witness.
+    let lit_window_disabled = !vox_config::config().resident_renderer.lit_windows_enabled
+        || matches!(
+            std::env::var("OCHROMA_LIT_WINDOWS").as_deref(),
+            Ok("0") | Ok("off")
+        );
+    let (emissive_lights, emissive_count) = if rig.is_night && !lit_window_disabled {
+        let point_scale = std::env::var("OCHROMA_EMISSIVE_LIGHT_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| *v > 0.0)
+            .unwrap_or(vox_config::config().resident_renderer.emissive_light_scale);
+        emissive_point_lights(scene, point_scale * emissive_surface_scale.max(0.0), true)
+    } else {
+        (Vec::new(), 0)
+    };
+    light_data.extend_from_slice(&emissive_lights);
+    let light_count = day_light_count + emissive_count;
+    if emissive_count > 0 {
+        eprintln!(
+            "[night-lights] derived {emissive_count} emissive point lights \
+             -> {light_count} total lights"
+        );
+    }
+    LightLayer {
+        light_data,
+        light_count,
+    }
+}
+
+fn synthetic_lit_glass_material(material_index: usize) -> Option<(f32, [f32; 3])> {
+    let rcfg = &vox_config::config().resident_renderer;
+    let glow = std::env::var("OCHROMA_LIT_WINDOW_GLOW")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(rcfg.lit_window_glow);
+    let lit_frac = std::env::var("OCHROMA_LIT_WINDOW_FRACTION")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map(|v| v.clamp(0.0, 1.0))
+        .unwrap_or(rcfg.lit_window_fraction);
+    let h = {
+        let mut x = (material_index as u32)
+            .wrapping_mul(747796405)
+            .wrapping_add(2891336453);
+        x = ((x >> ((x >> 28).wrapping_add(4))) ^ x).wrapping_mul(277803737);
+        (x >> 22) ^ x
+    };
+    let r = (h as f32) / (u32::MAX as f32);
+    if r > lit_frac {
+        return None;
+    }
+    let warm = 0.85 + 0.15 * ((h >> 8) & 0xFF) as f32 / 255.0;
+    Some((glow, [1.0, warm, 0.55 + 0.25 * warm]))
+}
+
+fn emissive_point_lights(
+    scene: &SceneState,
+    scale: f32,
+    synthesize_lit_glass: bool,
+) -> (Vec<f32>, usize) {
     let geo = &scene.geometry;
     let mats = &scene.materials;
     let inst_count = geo.instance_count;
@@ -1705,12 +1758,12 @@ fn emissive_point_lights(scene: &SceneState, scale: f32) -> (Vec<f32>, usize) {
     let mat_emission: Vec<(f32, [f32; 3])> = (0..mats.material_count)
         .map(|mi| {
             let b = mi * mstride;
-            let em = mats
+            let mut em = mats
                 .params
                 .get(b + MAT_EMISSION_SLOT)
                 .copied()
                 .unwrap_or(0.0);
-            let col = [
+            let mut col = [
                 mats.params
                     .get(b + MAT_EMISSION_COLOR_SLOT)
                     .copied()
@@ -1724,6 +1777,17 @@ fn emissive_point_lights(scene: &SceneState, scale: f32) -> (Vec<f32>, usize) {
                     .copied()
                     .unwrap_or(1.0),
             ];
+            let is_glass = mats
+                .params
+                .get(b)
+                .map(|t| t.to_bits() == MAT_GLASS_TYPE)
+                .unwrap_or(false);
+            if em <= 0.0 && synthesize_lit_glass && is_glass {
+                if let Some((synthetic_em, synthetic_col)) = synthetic_lit_glass_material(mi) {
+                    em = synthetic_em;
+                    col = synthetic_col;
+                }
+            }
             (em, col)
         })
         .collect();
@@ -1812,82 +1876,6 @@ fn emissive_point_lights(scene: &SceneState, scale: f32) -> (Vec<f32>, usize) {
         count += 1;
     }
     (out, count)
-}
-
-/// Promote a deterministic fraction of MAT_GLASS materials to emissive
-/// "lit windows" for night rendering. Mutates the packed material table in place
-/// (emission strength @ slot 23, warm emission color @ slots 20..22). Lights ~60%
-/// of glass materials (deterministic per-id hash) so the night skyline reads as a
-/// believable mix of lit and dark windows rather than a uniform glow. No-op if the
-/// material is already emissive (content authored a lit channel).
-fn promote_glass_to_lit_windows(scene: &mut SceneState) {
-    let mats = &mut scene.materials;
-    if mats.material_count == 0 || mats.params.is_empty() {
-        return;
-    }
-    let stride = mats.params.len() / mats.material_count;
-    if stride <= MAT_EMISSION_SLOT {
-        return;
-    }
-    // Authorable via config (`config/ochroma.ron` resident_renderer.lit_window_*);
-    // env still overrides for an A/B sweep. Defaults 8.0 / 0.6 equal the old literals.
-    let rcfg = &vox_config::config().resident_renderer;
-    let glow = std::env::var("OCHROMA_LIT_WINDOW_GLOW")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .filter(|v| *v > 0.0)
-        .unwrap_or(rcfg.lit_window_glow);
-    let lit_frac = std::env::var("OCHROMA_LIT_WINDOW_FRACTION")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .map(|v| v.clamp(0.0, 1.0))
-        .unwrap_or(rcfg.lit_window_fraction);
-    let mut promoted = 0usize;
-    for i in 0..mats.material_count {
-        let base = i * stride;
-        let is_glass = mats
-            .params
-            .get(base)
-            .map(|t| t.to_bits() == MAT_GLASS_TYPE)
-            .unwrap_or(false);
-        if !is_glass {
-            continue;
-        }
-        // Already emissive (content-authored lit channel): leave as-is.
-        let cur_em = mats
-            .params
-            .get(base + MAT_EMISSION_SLOT)
-            .copied()
-            .unwrap_or(0.0);
-        if cur_em > 0.0 {
-            continue;
-        }
-        // Deterministic per-id selection (no RNG/HashMap order). PCG-style hash.
-        let h = {
-            let mut x = (i as u32).wrapping_mul(747796405).wrapping_add(2891336453);
-            x = ((x >> ((x >> 28).wrapping_add(4))) ^ x).wrapping_mul(277803737);
-            (x >> 22) ^ x
-        };
-        let r = (h as f32) / (u32::MAX as f32);
-        if r > lit_frac {
-            continue;
-        }
-        // Warm interior glow (slightly varied hue per id so windows aren't a flat
-        // single color). Emission color rides slots 20..22; strength slot 23.
-        let warm = 0.85 + 0.15 * ((h >> 8) & 0xFF) as f32 / 255.0;
-        mats.params[base + MAT_EMISSION_COLOR_SLOT] = 1.0;
-        mats.params[base + MAT_EMISSION_COLOR_SLOT + 1] = warm;
-        mats.params[base + MAT_EMISSION_COLOR_SLOT + 2] = 0.55 + 0.25 * warm;
-        mats.params[base + MAT_EMISSION_SLOT] = glow;
-        promoted += 1;
-    }
-    if promoted > 0 {
-        scene.mark_materials_changed();
-        eprintln!(
-            "[night-lights] promoted {promoted} glass materials to lit windows \
-             (glow {glow}, frac {lit_frac})"
-        );
-    }
 }
 
 fn scene_camera_forward(scene: &SceneState) -> glam::Vec3 {

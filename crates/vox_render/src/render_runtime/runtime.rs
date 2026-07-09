@@ -224,15 +224,28 @@ impl RenderRuntime {
     /// Body of the game's `LiveFrameSource::rr_guides` ported verbatim
     /// (`self.runtime.renderer_mut().` → `self.renderer.`). `&mut self` because
     /// `rr_guide_ptrs` takes `&mut self` on the inner renderer.
-    /// Enable present-side DLSS-RR temporal reconstruction (jitter + MV).
+    /// Enable present-side temporal guidance (jitter + MV) for an active
+    /// temporal present backend.
     pub fn set_present_temporal_upscale(&mut self, on: bool) {
         self.renderer.set_present_temporal_upscale(on);
+    }
+
+    /// True only when the active present backend is actually doing external RR
+    /// denoise+upscale. SR fallback still gets temporal guidance, but internal
+    /// denoise/temporal must remain available.
+    pub fn set_present_ray_reconstruction(&mut self, on: bool) {
+        self.renderer.set_present_ray_reconstruction(on);
     }
 
     pub fn rr_guides(&mut self) -> crate::render_runtime::present::RrGuides {
         let g = self.renderer.rr_guide_ptrs();
         let (jx, jy) = self.renderer.rr_jitter();
         let ready_event = self.renderer.rr_payload_ready_event();
+        // PACK_MOTION_VECTORS already converts NDC reprojection into pixel-space
+        // current->previous motion. NGX MV.Scale is only for inputs that still
+        // need scaling into pixels, so the correct scale here is identity.
+        let mv_scale_x = 1.0;
+        let mv_scale_y = 1.0;
         let guides = crate::render_runtime::present::RrGuides {
             diffuse_albedo: g[0],
             specular_albedo: g[1],
@@ -243,8 +256,8 @@ impl RenderRuntime {
             ready_event,
             jitter_x: jx,
             jitter_y: jy,
-            mv_scale_x: 1.0,
-            mv_scale_y: 1.0,
+            mv_scale_x,
+            mv_scale_y,
         };
         if std::env::var("SPECTRA_RR_GUIDE_DIAG").as_deref() == Ok("1") {
             use std::sync::atomic::{AtomicU32, Ordering};
