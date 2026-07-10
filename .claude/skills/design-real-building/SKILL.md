@@ -72,6 +72,21 @@ depth; painting it on is task failure:
 | Weathering masks aligned to Step-1 wear map | per-vertex, from cook | everything |
 | AABB honesty | mesh XZ = declared footprint ±10% | everything (the D1 law) |
 
+**GROUND-DATUM CONTRACT (how buildings meet streets — never per-building sockets):**
+the LOT owns the datum, the building owns the plinth. Rules:
+1. A lot fronting a curbed road has datum = the walk top of its primary frontage
+   (road_lift + authored curb.height_m); the lot surface/pad is graded TO that datum,
+   so the ground floor arrives at back-of-sidewalk level automatically.
+2. A lot with NO curb/sidewalk (rural lane, mountable-curb industrial yard) has
+   datum = terrain (or road_lift for paved yards) — the same building works there
+   unchanged because of rule 3.
+3. Every building carries its modeled plinth/foundation (already a Step-2 floor item)
+   sized ≥0.3m with the entrance detailed for BOTH arrivals: flush threshold at datum
+   (urban) and 1-3 steps down to grade (unpaved). The plinth is the tolerance band —
+   it absorbs datum differences and slope, so ONE asset serves every street type.
+4. Buildings never compensate with per-asset height offsets/sockets; if a facade
+   meets the ground wrong, fix the lot datum or the plinth, never nudge the instance.
+
 **Variation law:** every archetype ships ≥3 variants (mirror, material palette swap,
 roofscape/porch permutation) so a street never repeats a silhouette within 5 lots.
 
