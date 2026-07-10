@@ -192,6 +192,22 @@ every material must be physically true, not plausible-ish:
   the window rhythm other programs get. Night state: sparse sodium/LED work
   lights, not office windows.
 
+## FULL-POWER LAW (mandatory — violating it fails the task)
+
+Every catalog building is authored with Forge's COMPLETE toolbox, never a reduced gear:
+- `hero_level: hero` for every asset that players see up close (all zonables/services);
+  `supporting` is permitted ONLY for distant-filler explicitly marked as such in the
+  prompt. `background` never ships in the catalog.
+- ALL assembly channels on: STRUCTURE + ORNAMENT + DETAIL (the DETAIL atom channel is
+  where sills, surrounds, brackets, downpipes live — omitting it is building blind).
+- The blueprint node-DAG is the DEFAULT authoring surface for anything beyond a simple
+  box (multi-volume massing, place_volume, sweep_profile, crown_kit, place_part for
+  entrance columns/canopies/balconies as REAL parts). The flat directive alone is
+  acceptable only when the photograph prompt genuinely describes a single-volume
+  punched-window box — and even then DETAIL channel + place_part entrance are required.
+- If an emitter can't reach the floor (the GAP list), the asset still uses every tool
+  that exists, and the gap is recorded — never silently accepted.
+
 ## Step 4 — Decompose to Forge (the recreate)
 
 Translate each Step-1/2/3 answer to ops (see `forge-assets` for signatures; gaps table in
