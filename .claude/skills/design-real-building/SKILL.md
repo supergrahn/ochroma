@@ -116,6 +116,29 @@ relief; never demote a geometry-scale detail to a map.
   landing) with portico/colonnade or cantilevered canopy; taller ground floor;
   material budget one notch above neighbors (stone/fine brick + metal); plaza
   interface (steps, planters) at the base; clock/emblem/inscription zone.
+- **Church / religious:** the silhouette IS the program — tower/spire/dome as a
+  real volume with its own crown detail (cross/finial socket, louvred belfry
+  openings); nave massing with true roof pitch and gable-end window (rose/
+  lancet as geometry-framed glass zones); entrance porch/narthex volume;
+  material: stone or brick with dressed trim courses. (Forge `ReligiousSpec`
+  exists — drive it.)
+- **Crematorium / cemetery chapel:** quiet dignity — low horizontal massing,
+  one vertical accent (the flue/tower, honestly expressed, not hidden), covered
+  approach walk (pergola/canopy), garden-facing glazed wall; muted material
+  palette; the flue terminates in a designed cap, never a bare pipe.
+- **UTILITY & INDUSTRIAL LAW (garbage, power, water/sewage, depots): the
+  EQUIPMENT is the architecture — model it.** These read fake when they're
+  boxes with industrial textures; they read real when the process is legible
+  as geometry: waste = tipping hall (tall portal doors) + bunker + stack +
+  weighbridge; power = turbine/reactor hall + stacks/cooling towers (real
+  hyperboloid or fin-fan banks) + transformer yard (transformers, bus
+  structures, insulators as place_part props) + perimeter fence; water/sewage
+  = circular clarifier basins (open tanks with rail bridges), digester eggs/
+  tanks, blower building, pipe racks between volumes. Every tank/stack/rack is
+  a volume or place_part — never a decal. Safety dressing (railings, ladders,
+  bollards, hazard-yellow zone accents) is the detail budget here, replacing
+  the window rhythm other programs get. Night state: sparse sodium/LED work
+  lights, not office windows.
 
 ## Step 4 — Decompose to Forge (the recreate)
 
