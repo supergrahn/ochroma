@@ -8,6 +8,13 @@ description: Design a photoreal-quality building and author it as a Forge direct
 Every building starts as an imagined photograph and ends as a Forge asset that would
 survive being placed next to that photograph. One quality floor for all typologies:
 **a garden shed and a supertall get the same rules, only different budgets.**
+**BINDING SPEC: `urban_horizon/docs/reference/realistic-buildings-forge-spec.md`** — the
+adversarially-verified 6-layer realism study with the 10 ordered priorities and exact
+Forge file:line changes. Read it BEFORE authoring or touching emitters; its priority
+list IS the emitter backlog order, and its REFUTED list is binding (no GreekRevival,
+subtract unimplemented, soot/efflorescence need new fields). A building that ignores a
+spec layer the emitters already support (reveals, sills, cornices, string courses,
+tripartite fields) fails the task.
 Companion skill: `forge-assets` (ops, CLI, signatures). Reference bar:
 `urban_horizon/docs/reference/buildings/skyscraper-detail-bar-analysis.md`.
 
