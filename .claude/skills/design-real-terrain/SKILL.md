@@ -66,6 +66,10 @@ displacement) with an AUTHORED displacement scale — never a shared default:
 | Mulch/needle litter | 10-25mm | 0.85-0.95 |
 | Sand | 10-30mm (ripples) | 0.7-0.85 dry / 0.45 wet band |
 
+- The **MATERIAL REALISM LAW** from `design-real-building` applies verbatim to every
+  layer: measured scanned sources only, albedo in physical range, metallic 0.0
+  (ground is never metal), roughness tells the moisture story, wear is caused,
+  every value auditable.
 - Tint discipline: dry = tan/straw, dirt = brown, mud = grey-brown — NEVER
   olive-wash everything green (the green-terrain root cause; retints live in
   `biome_record.rs`/`config` `TerrainMaterial`, not in shared textures).

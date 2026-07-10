@@ -88,6 +88,31 @@ that angle fails the task. Macro relief ≥0.15m (reveals, bands, courses that b
 stays GEOMETRY per the table above — displacement covers only sub-0.15m texture
 relief; never demote a geometry-scale detail to a map.
 
+**MATERIAL REALISM LAW (every zone, no exceptions — shared with design-real-terrain):**
+every material must be physically true, not plausible-ish:
+1. **Measured sources only** for physical surfaces: real scanned PBR sets (PolyHaven/
+   ambientCG class) at 2k+, full map set (albedo/normal/roughness/displacement + AO
+   where the set ships it). Hand-invented flat RGB is permitted ONLY for painted/
+   coated zones (trim, doors, renders) — and then within measured paint ranges.
+2. **Albedo stays in the measured range** (linear): charcoal/asphalt ≥0.04, fresh
+   snow ≤0.9; common walls — brick 0.25-0.45, concrete 0.35-0.55, limestone
+   0.55-0.75, wood 0.3-0.5. Nothing pure black, nothing pure white, no neon.
+3. **Metallic is binary physics**: 1.0 for real bare metal (steel, copper, aluminium,
+   zinc), 0.0 for EVERYTHING else — painted metal is a dielectric (metallic 0). The
+   0.1-0.4 "sort of metallic" middle is a lie the law forbids.
+4. **Roughness carries the material's story**: glass 0.03-0.08, polished stone
+   0.15-0.3, painted wood 0.4-0.6, brick/concrete 0.7-0.9, weathered wood 0.8-0.95;
+   wet/worn states MOVE roughness (rain-wet -0.3, hand-polished edges -0.2 via masks),
+   never a uniform slider.
+5. **Glass is real glass**: transmission 0.9, IOR 1.5, thin_walled for panes; tinted/
+   low-e via slight color, never opacity hacks. Emissive only for actual light
+   sources (signage, lit panes) at plausible luminance — nothing else glows.
+6. **Wear is caused, not decorated**: weathering masks follow the Step-1 age map
+   (splash zones, sills, drip paths, hand-touch polish); a pristine 1930s building
+   or a rusted 5-year-old one needs a stated reason.
+7. **Every value is auditable**: the directive records source URI + authored scales;
+   the cook witness asserts maps exist and values sit in the class ranges above.
+
 ## Step 3 — Per-typology detail schedules (the same floor, scaled budgets)
 
 - **Single-family house:** foundation plinth; siding/brick coursing direction; porch with
