@@ -3629,7 +3629,7 @@ pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS
     // rescale reflectance by 1/luminance — a global brightness corruption.
     // The spectra uploader stamps the real row index for materials that carry
     // a cooked SPD (spectra-scene-upload stamp_spd_slots).
-    a[43] = pack_i32(-1);
+    a[43] = pack_i32(0); // 1-biased: 0 = no cooked SPD
 
     a[44] = 0.3;
     a[45] = 0.2;
