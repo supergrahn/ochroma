@@ -63,6 +63,19 @@ depth; painting it on is task failure:
 **Variation law:** every archetype ships ≥3 variants (mirror, material palette swap,
 roofscape/porch permutation) so a street never repeats a silhouette within 5 lots.
 
+**Surface relief law (every material zone, every building):** walls must read as
+physical surfaces under raking light, not printed color. Every non-glass zone ships
+the FULL map set at 2k — albedo + normal + roughness + **displacement** — with an
+AUTHORED `displacement_scale` per material (never a shared default): brick/stone
+mortar joints 8-15mm, stucco/render 2-4mm, clapboard/siding lap 10-20mm, concrete
+board-form 3-6mm, roof tiles/slates 10-25mm. `normal_scale` 1.0 unless the source map
+is authored hot. The renderer's POM/cone-step relief does the work — the authoring
+duty is real displacement maps + true scales. Witness: a street-level raking-light
+crop (sun ≤25° to the facade) must show mortar/lap shadows; a flat-reading wall at
+that angle fails the task. Macro relief ≥0.15m (reveals, bands, courses that big)
+stays GEOMETRY per the table above — displacement covers only sub-0.15m texture
+relief; never demote a geometry-scale detail to a map.
+
 ## Step 3 — Per-typology detail schedules (the same floor, scaled budgets)
 
 - **Single-family house:** foundation plinth; siding/brick coursing direction; porch with
