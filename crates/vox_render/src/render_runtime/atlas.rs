@@ -8,9 +8,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
-use vox_core::srgb_to_linear;
+use vox_core::{linear_to_srgb, srgb_to_linear};
 
 const TEX_CACHE_MAGIC: &[u8; 8] = b"UHTEX01\0";
+/// v2 adds an optional GPU-native BCn payload after the f32 mirror so the
+/// load-time BC7/BC5/BC4 compression cost is paid once, not per run.
+const TEX_CACHE_MAGIC_V2: &[u8; 8] = b"UHTEX02\0";
 
 type TextureCache = HashMap<String, Arc<crate::splat_backend::TextureImage>>;
 
@@ -125,8 +128,155 @@ fn dds_format_is_bc5(format: image_dds::ImageFormat) -> bool {
     matches!(format, image_dds::ImageFormat::BC5RgUnorm)
 }
 
-fn dds_native_mips(
-    surface: &image_dds::Surface<&[u8]>,
+/// Semantic class of a texture for load-time BCn compression when no cooked
+/// DDS exists. Mirrors the cook contract (`material_texture_cook`): color →
+/// BC7 sRGB, tangent-space normal XY → BC5, single-channel scalar → BC4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeCompressKind {
+    /// sRGB-encoded colour (albedo). Skipped when the image carries a real
+    /// alpha cutout so the coverage-preserving RGBA8 mip path keeps distant
+    /// foliage dense.
+    SrgbColor,
+    /// Tangent-space normal; X/Y survive, Z is reconstructed at sample time.
+    NormalXy,
+    /// Roughness / displacement / AO — single channel.
+    Scalar,
+}
+
+/// Whether runtime BCn compression of JPEG/PNG sources is enabled
+/// (`OCHROMA_TEXTURE_BCN=0` disables; default on).
+fn runtime_bcn_enabled() -> bool {
+    std::env::var("OCHROMA_TEXTURE_BCN")
+        .map(|v| !matches!(v.trim(), "0" | "false" | "off" | "no"))
+        .unwrap_or(true)
+}
+
+/// Format-selection helper: which BCn target (image_dds encode format + GPU
+/// upload format) a decoded texture compresses to, or `None` when it must stay
+/// on the uncompressed RGBA8 fallback (cutout alpha, non-block-aligned size).
+pub(crate) fn select_native_compress_format(
+    kind: NativeCompressKind,
+    width: u32,
+    height: u32,
+    has_cutout_alpha: bool,
+) -> Option<(image_dds::ImageFormat, spectra_gpu::GpuTextureFormat)> {
+    if width == 0 || height == 0 || width % 4 != 0 || height % 4 != 0 {
+        return None;
+    }
+    match kind {
+        NativeCompressKind::SrgbColor if has_cutout_alpha => None,
+        NativeCompressKind::SrgbColor => Some((
+            image_dds::ImageFormat::BC7RgbaUnormSrgb,
+            spectra_gpu::GpuTextureFormat::Bc7UnormSrgb,
+        )),
+        NativeCompressKind::NormalXy => Some((
+            image_dds::ImageFormat::BC5RgUnorm,
+            spectra_gpu::GpuTextureFormat::Bc5Unorm,
+        )),
+        NativeCompressKind::Scalar => Some((
+            image_dds::ImageFormat::BC4RUnorm,
+            spectra_gpu::GpuTextureFormat::Bc4Unorm,
+        )),
+    }
+}
+
+/// True when a colour mirror carries a real alpha cutout (foliage leaf cards):
+/// those must keep the coverage-preserving RGBA8 mip path.
+pub(crate) fn texture_has_cutout_alpha(tex: &crate::splat_backend::TextureImage) -> bool {
+    tex.channels == 4
+        && tex
+            .data
+            .chunks_exact(4)
+            .any(|px| px[3] < 254.5 / 255.0)
+}
+
+/// Probe for a precompressed DDS sibling next to a JPEG/PNG source
+/// (`foo.jpg` → `foo.dds`). Cook outputs that land next to the source win over
+/// runtime compression.
+pub(crate) fn sibling_dds_path(path: &Path) -> Option<PathBuf> {
+    if is_dds_path(path) {
+        return None;
+    }
+    let candidate = path.with_extension("dds");
+    (candidate != path && candidate.is_file()).then_some(candidate)
+}
+
+/// Compress a decoded f32 mirror into a GPU-native BCn payload with a full
+/// generated mip chain (`Quality::Fast` intel_tex ISPC encode). Returns `None`
+/// when the texture must stay on the RGBA8 fallback.
+fn compress_native_bcn(
+    tex: &crate::splat_backend::TextureImage,
+    kind: NativeCompressKind,
+) -> Option<crate::RendererTexture2D> {
+    let has_cutout =
+        kind == NativeCompressKind::SrgbColor && texture_has_cutout_alpha(tex);
+    let (image_format, gpu_format) =
+        select_native_compress_format(kind, tex.width, tex.height, has_cutout)?;
+    let texels = tex.width as usize * tex.height as usize;
+    let channels = tex.channels as usize;
+    if tex.data.len() != texels * channels {
+        return None;
+    }
+    let mut rgba = vec![0u8; texels * 4];
+    for (i, px) in tex.data.chunks_exact(channels).enumerate() {
+        let dst = i * 4;
+        match kind {
+            NativeCompressKind::SrgbColor => {
+                // Mirror is linear; the BCn payload stores sRGB bytes and the
+                // GPU sRGB sampler decodes back to linear (same contract as
+                // cooked BC7 sRGB DDS).
+                rgba[dst] = f32_to_unorm8(linear_to_srgb(px[0]));
+                rgba[dst + 1] = f32_to_unorm8(linear_to_srgb(*px.get(1).unwrap_or(&0.0)));
+                rgba[dst + 2] = f32_to_unorm8(linear_to_srgb(*px.get(2).unwrap_or(&0.0)));
+                rgba[dst + 3] = px.get(3).map_or(255, |a| f32_to_unorm8(*a));
+            }
+            NativeCompressKind::NormalXy => {
+                rgba[dst] = f32_to_unorm8(px[0]);
+                rgba[dst + 1] = f32_to_unorm8(*px.get(1).unwrap_or(&0.5));
+                rgba[dst + 2] = 0;
+                rgba[dst + 3] = 255;
+            }
+            NativeCompressKind::Scalar => {
+                let v = f32_to_unorm8(px[0]);
+                rgba[dst] = v;
+                rgba[dst + 1] = v;
+                rgba[dst + 2] = v;
+                rgba[dst + 3] = 255;
+            }
+        }
+    }
+    let surface = image_dds::SurfaceRgba8 {
+        width: tex.width,
+        height: tex.height,
+        depth: 1,
+        layers: 1,
+        mipmaps: 1,
+        data: rgba.as_slice(),
+    };
+    let encoded = surface
+        .encode(
+            image_format,
+            image_dds::Quality::Fast,
+            image_dds::Mipmaps::GeneratedAutomatic,
+        )
+        .ok()?;
+    let (_, _, block_extent, block_bytes) = dds_format_to_gpu(encoded.image_format)?;
+    let mips = dds_native_mips(&encoded, block_extent, block_bytes)?;
+    Some(crate::RendererTexture2D::new(
+        gpu_format,
+        tex.width,
+        tex.height,
+        tex.channels,
+        mips,
+    ))
+}
+
+fn f32_to_unorm8(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+}
+
+fn dds_native_mips<T: AsRef<[u8]>>(
+    surface: &image_dds::Surface<T>,
     block_extent: u32,
     block_bytes: usize,
 ) -> Option<Vec<crate::RendererTextureMip>> {
@@ -270,13 +420,88 @@ fn read_u64<R: Read>(r: &mut R) -> Option<u64> {
     Some(u64::from_le_bytes(b))
 }
 
-fn read_texture_cache_file(path: &Path) -> Option<crate::splat_backend::TextureImage> {
-    let mut f = std::fs::File::open(path).ok()?;
-    let mut magic = [0u8; 8];
-    f.read_exact(&mut magic).ok()?;
-    if &magic != TEX_CACHE_MAGIC {
+/// Stable on-disk tag for a `GpuTextureFormat` in the v2 texture cache.
+fn gpu_format_cache_tag(format: spectra_gpu::GpuTextureFormat) -> Option<u32> {
+    use spectra_gpu::GpuTextureFormat as G;
+    Some(match format {
+        G::Rgba8Unorm => 1,
+        G::Rgba8UnormSrgb => 2,
+        G::Bc1Unorm => 3,
+        G::Bc1UnormSrgb => 4,
+        G::Bc3Unorm => 5,
+        G::Bc3UnormSrgb => 6,
+        G::Bc4Unorm => 7,
+        G::Bc5Unorm => 8,
+        G::Bc7Unorm => 9,
+        G::Bc7UnormSrgb => 10,
+    })
+}
+
+fn gpu_format_from_cache_tag(tag: u32) -> Option<spectra_gpu::GpuTextureFormat> {
+    use spectra_gpu::GpuTextureFormat as G;
+    Some(match tag {
+        1 => G::Rgba8Unorm,
+        2 => G::Rgba8UnormSrgb,
+        3 => G::Bc1Unorm,
+        4 => G::Bc1UnormSrgb,
+        5 => G::Bc3Unorm,
+        6 => G::Bc3UnormSrgb,
+        7 => G::Bc4Unorm,
+        8 => G::Bc5Unorm,
+        9 => G::Bc7Unorm,
+        10 => G::Bc7UnormSrgb,
+        _ => return None,
+    })
+}
+
+fn read_native_cache_section<R: Read>(r: &mut R) -> Option<Option<crate::RendererTexture2D>> {
+    let mut flag = [0u8; 1];
+    r.read_exact(&mut flag).ok()?;
+    if flag[0] == 0 {
+        return Some(None);
+    }
+    let format = gpu_format_from_cache_tag(read_u32(r)?)?;
+    let width = read_u32(r)?;
+    let height = read_u32(r)?;
+    let channels = read_u32(r)?;
+    let mip_count = read_u32(r)? as usize;
+    if width == 0 || height == 0 || !(1..=4).contains(&channels) || !(1..=20).contains(&mip_count) {
         return None;
     }
+    let mut mips = Vec::with_capacity(mip_count);
+    for _ in 0..mip_count {
+        let mw = read_u32(r)?;
+        let mh = read_u32(r)?;
+        let pitch = read_u32(r)? as usize;
+        let len = read_u64(r)? as usize;
+        if mw == 0 || mh == 0 || len == 0 || len > (1usize << 30) {
+            return None;
+        }
+        let mut data = vec![0u8; len];
+        r.read_exact(&mut data).ok()?;
+        mips.push(crate::RendererTextureMip {
+            width: mw,
+            height: mh,
+            row_pitch_bytes: pitch,
+            data,
+        });
+    }
+    Some(Some(crate::RendererTexture2D::new(
+        format, width, height, channels, mips,
+    )))
+}
+
+fn read_texture_cache_file(path: &Path) -> Option<crate::splat_backend::TextureImage> {
+    let mut f = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut magic = [0u8; 8];
+    f.read_exact(&mut magic).ok()?;
+    let has_native_section = if &magic == TEX_CACHE_MAGIC_V2 {
+        true
+    } else if &magic == TEX_CACHE_MAGIC {
+        false
+    } else {
+        return None;
+    };
     let width = read_u32(&mut f)?;
     let height = read_u32(&mut f)?;
     let channels = read_u32(&mut f)?;
@@ -291,13 +516,44 @@ fn read_texture_cache_file(path: &Path) -> Option<crate::splat_backend::TextureI
         .chunks_exact(4)
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
+    let native = if has_native_section {
+        read_native_cache_section(&mut f)?
+    } else {
+        None
+    };
     Some(crate::splat_backend::TextureImage {
         width,
         height,
         channels,
         data,
-        native: None,
+        native,
     })
+}
+
+fn write_native_cache_section<W: Write>(
+    w: &mut W,
+    native: Option<&crate::RendererTexture2D>,
+) -> std::io::Result<()> {
+    let Some(native) = native else {
+        return w.write_all(&[0u8]);
+    };
+    let Some(tag) = gpu_format_cache_tag(native.format) else {
+        return w.write_all(&[0u8]);
+    };
+    w.write_all(&[1u8])?;
+    w.write_all(&tag.to_le_bytes())?;
+    w.write_all(&native.width.to_le_bytes())?;
+    w.write_all(&native.height.to_le_bytes())?;
+    w.write_all(&native.channels.to_le_bytes())?;
+    w.write_all(&(native.mips.len() as u32).to_le_bytes())?;
+    for mip in &native.mips {
+        w.write_all(&mip.width.to_le_bytes())?;
+        w.write_all(&mip.height.to_le_bytes())?;
+        w.write_all(&(mip.row_pitch_bytes as u32).to_le_bytes())?;
+        w.write_all(&(mip.data.len() as u64).to_le_bytes())?;
+        w.write_all(&mip.data)?;
+    }
+    Ok(())
 }
 
 fn write_texture_cache_file(key: &str, tex: &crate::splat_backend::TextureImage) {
@@ -307,10 +563,11 @@ fn write_texture_cache_file(key: &str, tex: &crate::splat_backend::TextureImage)
     }
     let final_path = dir.join(format!("{key}.uhtx"));
     let tmp_path = dir.join(format!("{key}.tmp"));
-    let Ok(mut f) = std::fs::File::create(&tmp_path) else {
+    let Ok(file) = std::fs::File::create(&tmp_path) else {
         return;
     };
-    if f.write_all(TEX_CACHE_MAGIC).is_err()
+    let mut f = std::io::BufWriter::new(file);
+    if f.write_all(TEX_CACHE_MAGIC_V2).is_err()
         || f.write_all(&tex.width.to_le_bytes()).is_err()
         || f.write_all(&tex.height.to_le_bytes()).is_err()
         || f.write_all(&tex.channels.to_le_bytes()).is_err()
@@ -325,6 +582,10 @@ fn write_texture_cache_file(key: &str, tex: &crate::splat_backend::TextureImage)
             return;
         }
     }
+    if write_native_cache_section(&mut f, tex.native.as_ref()).is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return;
+    }
     if f.flush().is_ok() {
         match std::fs::rename(&tmp_path, &final_path) {
             Ok(()) => {}
@@ -336,14 +597,39 @@ fn write_texture_cache_file(key: &str, tex: &crate::splat_backend::TextureImage)
     }
 }
 
+/// Attach a load-time-compressed BCn native payload when the decoded texture
+/// has none and runtime compression is enabled. Returns whether a payload was
+/// added (so callers know to refresh the disk cache).
+fn ensure_native_bcn(
+    tex: &mut crate::splat_backend::TextureImage,
+    compress: Option<NativeCompressKind>,
+) -> bool {
+    let Some(kind) = compress else {
+        return false;
+    };
+    if tex.native.is_some() || !runtime_bcn_enabled() {
+        return false;
+    }
+    match compress_native_bcn(tex, kind) {
+        Some(native) => {
+            tex.native = Some(native);
+            true
+        }
+        None => false,
+    }
+}
+
 fn load_cached_texture_arc(
     path: &str,
     mode: &str,
+    compress: Option<NativeCompressKind>,
     decode: impl FnOnce(&Path) -> Option<crate::splat_backend::TextureImage>,
 ) -> Option<Arc<crate::splat_backend::TextureImage>> {
     let path_ref = Path::new(path);
     if !texture_cache_enabled() {
-        return decode(path_ref).map(Arc::new);
+        let mut tex = decode(path_ref)?;
+        ensure_native_bcn(&mut tex, compress);
+        return Some(Arc::new(tex));
     }
     let key = texture_cache_key(path_ref, mode)?;
     if let Some(hit) = texture_memory_cache()
@@ -356,7 +642,12 @@ fn load_cached_texture_arc(
     }
     if texture_disk_cache_enabled() {
         let disk_path = texture_cache_dir().join(format!("{key}.uhtx"));
-        if let Some(tex) = read_texture_cache_file(&disk_path) {
+        if let Some(mut tex) = read_texture_cache_file(&disk_path) {
+            // A v1 (or pre-BCn) cache entry lacks the native payload: compress
+            // once and upgrade the file in place.
+            if ensure_native_bcn(&mut tex, compress) {
+                write_texture_cache_file(&key, &tex);
+            }
             let tex = Arc::new(tex);
             texture_memory_cache()
                 .lock()
@@ -365,7 +656,8 @@ fn load_cached_texture_arc(
             return Some(tex);
         }
     }
-    let tex = decode(path_ref)?;
+    let mut tex = decode(path_ref)?;
+    ensure_native_bcn(&mut tex, compress);
     if texture_disk_cache_enabled() {
         write_texture_cache_file(&key, &tex);
     }
@@ -413,27 +705,40 @@ pub fn load_linear_texture_arc(path: &str) -> Option<Arc<crate::splat_backend::T
     if is_dds_path(path_ref) {
         return load_dds_texture_arc(path_ref, "linear_rgba_dds_v1", 4, DdsMirrorMode::SrgbColor);
     }
-    load_cached_texture_arc(path, "linear_rgba_v1", |path| {
-        let img = image::open(path).ok()?.to_rgba8();
-        let (w, h) = (img.width(), img.height());
-        if w == 0 || h == 0 {
-            return None;
-        }
-        let mut data = Vec::with_capacity((w * h * 4) as usize);
-        for px in img.pixels() {
-            data.push(srgb_to_linear(px[0] as f32 / 255.0));
-            data.push(srgb_to_linear(px[1] as f32 / 255.0));
-            data.push(srgb_to_linear(px[2] as f32 / 255.0));
-            data.push(px[3] as f32 / 255.0); // alpha = linear coverage (leaf cutout)
-        }
-        Some(crate::splat_backend::TextureImage {
-            width: w,
-            height: h,
-            channels: 4,
-            data,
-            native: None,
-        })
-    })
+    // A precompressed DDS sibling (cook output copied next to the source) wins
+    // over runtime compression.
+    if let Some(dds) = sibling_dds_path(path_ref)
+        && let Some(tex) =
+            load_dds_texture_arc(&dds, "linear_rgba_dds_v1", 4, DdsMirrorMode::SrgbColor)
+    {
+        return Some(tex);
+    }
+    load_cached_texture_arc(
+        path,
+        "linear_rgba_v1",
+        Some(NativeCompressKind::SrgbColor),
+        |path| {
+            let img = image::open(path).ok()?.to_rgba8();
+            let (w, h) = (img.width(), img.height());
+            if w == 0 || h == 0 {
+                return None;
+            }
+            let mut data = Vec::with_capacity((w * h * 4) as usize);
+            for px in img.pixels() {
+                data.push(srgb_to_linear(px[0] as f32 / 255.0));
+                data.push(srgb_to_linear(px[1] as f32 / 255.0));
+                data.push(srgb_to_linear(px[2] as f32 / 255.0));
+                data.push(px[3] as f32 / 255.0); // alpha = linear coverage (leaf cutout)
+            }
+            Some(crate::splat_backend::TextureImage {
+                width: w,
+                height: h,
+                channels: 4,
+                data,
+                native: None,
+            })
+        },
+    )
 }
 
 /// Load a DATA texture (normal / roughness / displacement) into a LINEAR atlas
@@ -457,8 +762,23 @@ pub fn load_data_texture_arc(
         let mode = format!("data_ch{channels}_dds_v1");
         return load_dds_texture_arc(path_ref, &mode, channels, DdsMirrorMode::LinearData);
     }
+    // A precompressed DDS sibling (cook output copied next to the source) wins
+    // over runtime compression.
+    if let Some(dds) = sibling_dds_path(path_ref) {
+        let mode = format!("data_ch{channels}_dds_v1");
+        if let Some(tex) = load_dds_texture_arc(&dds, &mode, channels, DdsMirrorMode::LinearData) {
+            return Some(tex);
+        }
+    }
     let mode = format!("data_ch{channels}_v1");
-    load_cached_texture_arc(path, &mode, |path| {
+    // `channels == 3` is the tangent-space-normal layout (see doc comment);
+    // single-channel data compresses to BC4. Other channel counts stay RGBA8.
+    let compress = match channels {
+        3 => Some(NativeCompressKind::NormalXy),
+        1 => Some(NativeCompressKind::Scalar),
+        _ => None,
+    };
+    load_cached_texture_arc(path, &mode, compress, |path| {
         let img = image::open(path).ok()?;
         let (w, h) = (img.width(), img.height());
         if w == 0 || h == 0 {
@@ -489,4 +809,190 @@ pub fn load_data_texture_arc(
             native: None,
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spectra_gpu::GpuTextureFormat as G;
+
+    fn solid_texture(
+        width: u32,
+        height: u32,
+        channels: u32,
+        px: &[f32],
+    ) -> crate::splat_backend::TextureImage {
+        assert_eq!(px.len(), channels as usize);
+        let mut data = Vec::with_capacity((width * height * channels) as usize);
+        for _ in 0..width * height {
+            data.extend_from_slice(px);
+        }
+        crate::splat_backend::TextureImage {
+            width,
+            height,
+            channels,
+            data,
+            native: None,
+        }
+    }
+
+    #[test]
+    fn format_selection_matches_cook_contract() {
+        assert_eq!(
+            select_native_compress_format(NativeCompressKind::SrgbColor, 1024, 1024, false),
+            Some((image_dds::ImageFormat::BC7RgbaUnormSrgb, G::Bc7UnormSrgb))
+        );
+        assert_eq!(
+            select_native_compress_format(NativeCompressKind::NormalXy, 1024, 1024, false),
+            Some((image_dds::ImageFormat::BC5RgUnorm, G::Bc5Unorm))
+        );
+        assert_eq!(
+            select_native_compress_format(NativeCompressKind::Scalar, 1024, 1024, false),
+            Some((image_dds::ImageFormat::BC4RUnorm, G::Bc4Unorm))
+        );
+        // Cutout colour stays on the coverage-preserving RGBA8 path.
+        assert_eq!(
+            select_native_compress_format(NativeCompressKind::SrgbColor, 1024, 1024, true),
+            None
+        );
+        // Non-block-aligned sizes cannot upload as BCn.
+        assert_eq!(
+            select_native_compress_format(NativeCompressKind::SrgbColor, 1022, 1024, false),
+            None
+        );
+    }
+
+    #[test]
+    fn cutout_alpha_detection_reads_alpha_channel() {
+        let opaque = solid_texture(4, 4, 4, &[0.2, 0.4, 0.6, 1.0]);
+        assert!(!texture_has_cutout_alpha(&opaque));
+        let mut cutout = opaque.clone();
+        cutout.data[7] = 0.3; // one texel's alpha
+        assert!(texture_has_cutout_alpha(&cutout));
+        // 3-channel data textures never count as cutout.
+        let data3 = solid_texture(4, 4, 3, &[0.5, 0.5, 1.0]);
+        assert!(!texture_has_cutout_alpha(&data3));
+    }
+
+    #[test]
+    fn compress_native_bcn_produces_bc7_mip_chain_that_decodes_back() {
+        let tex = solid_texture(8, 8, 4, &[0.5, 0.25, 0.125, 1.0]);
+        let native = compress_native_bcn(&tex, NativeCompressKind::SrgbColor)
+            .expect("opaque block-aligned colour must compress");
+        assert_eq!(native.format, G::Bc7UnormSrgb);
+        // 8x8 -> 4 mips (8,4,2,1); every level present for ray-cone LOD.
+        assert_eq!(native.mips.len(), 4);
+        assert_eq!(
+            (native.mips[0].width, native.mips[0].height),
+            (8, 8)
+        );
+        // 8x8 = 2x2 BC7 blocks of 16 bytes.
+        assert_eq!(native.mips[0].data.len(), 4 * 16);
+        assert_eq!(native.mips[0].row_pitch_bytes, 2 * 16);
+
+        // Decode the top mip and check the sRGB-encoded payload reproduces the
+        // linear mirror colour after sRGB decode.
+        let surface = image_dds::Surface {
+            width: 8,
+            height: 8,
+            depth: 1,
+            layers: 1,
+            mipmaps: 1,
+            image_format: image_dds::ImageFormat::BC7RgbaUnormSrgb,
+            data: native.mips[0].data.as_slice(),
+        };
+        let decoded = surface.decode_layers_mipmaps_rgbaf32(0..1, 0..1).unwrap();
+        let px = &decoded.data[..4];
+        // Decoded texels are raw sRGB-encoded values in [0,1].
+        assert!((srgb_to_linear(px[0]) - 0.5).abs() < 0.03, "r={}", px[0]);
+        assert!((srgb_to_linear(px[1]) - 0.25).abs() < 0.03, "g={}", px[1]);
+        assert!((srgb_to_linear(px[2]) - 0.125).abs() < 0.03, "b={}", px[2]);
+    }
+
+    #[test]
+    fn compress_native_bcn_normal_and_scalar_formats() {
+        let normal = solid_texture(8, 8, 3, &[0.5, 0.5, 1.0]);
+        let native = compress_native_bcn(&normal, NativeCompressKind::NormalXy).unwrap();
+        assert_eq!(native.format, G::Bc5Unorm);
+        // BC5: 16 bytes per 4x4 block.
+        assert_eq!(native.mips[0].data.len(), 4 * 16);
+
+        let rough = solid_texture(8, 8, 1, &[0.7]);
+        let native = compress_native_bcn(&rough, NativeCompressKind::Scalar).unwrap();
+        assert_eq!(native.format, G::Bc4Unorm);
+        // BC4: 8 bytes per 4x4 block.
+        assert_eq!(native.mips[0].data.len(), 4 * 8);
+        let surface = image_dds::Surface {
+            width: 8,
+            height: 8,
+            depth: 1,
+            layers: 1,
+            mipmaps: 1,
+            image_format: image_dds::ImageFormat::BC4RUnorm,
+            data: native.mips[0].data.as_slice(),
+        };
+        let decoded = surface.decode_layers_mipmaps_rgbaf32(0..1, 0..1).unwrap();
+        assert!((decoded.data[0] - 0.7).abs() < 0.01, "r={}", decoded.data[0]);
+    }
+
+    #[test]
+    fn cutout_colour_falls_back_to_uncompressed() {
+        let mut tex = solid_texture(8, 8, 4, &[0.5, 0.25, 0.125, 1.0]);
+        tex.data[3] = 0.4; // real cutout alpha
+        assert!(compress_native_bcn(&tex, NativeCompressKind::SrgbColor).is_none());
+    }
+
+    #[test]
+    fn sibling_dds_probe_finds_cook_output_next_to_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let jpg = dir.path().join("diffuse.jpg");
+        std::fs::write(&jpg, b"not a real jpeg").unwrap();
+        assert_eq!(sibling_dds_path(&jpg), None);
+        let dds = dir.path().join("diffuse.dds");
+        std::fs::write(&dds, b"not a real dds").unwrap();
+        assert_eq!(sibling_dds_path(&jpg), Some(dds.clone()));
+        // A DDS source never probes for a sibling of itself.
+        assert_eq!(sibling_dds_path(&dds), None);
+    }
+
+    #[test]
+    fn disk_cache_v2_roundtrips_native_payload_and_reads_v1() {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test-local env override for the cache directory.
+        unsafe { std::env::set_var("OCHROMA_TEXTURE_CACHE_DIR", dir.path()) };
+
+        let mut tex = solid_texture(8, 8, 4, &[0.5, 0.25, 0.125, 1.0]);
+        tex.native = compress_native_bcn(&tex, NativeCompressKind::SrgbColor);
+        assert!(tex.native.is_some());
+
+        write_texture_cache_file("roundtrip", &tex);
+        let path = texture_cache_dir().join("roundtrip.uhtx");
+        let read = read_texture_cache_file(&path).expect("v2 cache entry must parse");
+        assert_eq!(read.width, 8);
+        assert_eq!(read.data, tex.data);
+        let native = read.native.expect("native payload survives the cache");
+        let orig = tex.native.as_ref().unwrap();
+        assert_eq!(native.format, orig.format);
+        assert_eq!(native.mips.len(), orig.mips.len());
+        assert_eq!(native.mips[0].data, orig.mips[0].data);
+
+        // Legacy v1 entries (no native section) still read as native: None.
+        let mut v1 = Vec::new();
+        v1.extend_from_slice(TEX_CACHE_MAGIC);
+        v1.extend_from_slice(&2u32.to_le_bytes());
+        v1.extend_from_slice(&2u32.to_le_bytes());
+        v1.extend_from_slice(&1u32.to_le_bytes());
+        v1.extend_from_slice(&4u64.to_le_bytes());
+        for v in [0.1f32, 0.2, 0.3, 0.4] {
+            v1.extend_from_slice(&v.to_le_bytes());
+        }
+        let v1_path = dir.path().join("legacy.uhtx");
+        std::fs::write(&v1_path, v1).unwrap();
+        let legacy = read_texture_cache_file(&v1_path).expect("v1 cache entry must parse");
+        assert_eq!(legacy.channels, 1);
+        assert!((legacy.data[3] - 0.4).abs() < 1e-6);
+        assert!(legacy.native.is_none());
+
+        unsafe { std::env::remove_var("OCHROMA_TEXTURE_CACHE_DIR") };
+    }
 }

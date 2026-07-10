@@ -53,9 +53,11 @@ spectra-present = { path = "../../../spectra/rust/spectra-present", optional = t
 # Optional + pulled by `spectra-native` so non-spectra builds stay lean.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"], optional = true }
 # DDS/BCn container support for cooked native material textures. Runtime uploads
-# the compressed mip bytes directly through Spectra texture objects; no runtime
-# BC encoder is pulled into gameplay.
-image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile"], optional = true }
+# the compressed mip bytes directly through Spectra texture objects. The
+# `encode` feature adds the intel_tex ISPC BCn encoder so JPEG/PNG sources
+# without a cooked DDS sibling still upload as BC7/BC5/BC4 (compressed once at
+# load, then persisted in the texture disk cache).
+image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile", "encode"], optional = true }
 
 [features]
 default = []
