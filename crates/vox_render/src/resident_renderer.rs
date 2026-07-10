@@ -656,12 +656,31 @@ impl ResidentSceneRenderer {
     /// changes both sun/moon state and lit-window strength; it refreshes the
     /// resident light layer once.
     pub fn set_lighting_state(&mut self, rig: LightRig, emissive_scale: f32) -> bool {
+        let emissive_scale = emissive_scale.max(0.0);
+        // LIGHTING-ONLY history cut (gap-dossier D2, 2026-07-10): the film
+        // buffers progressively accumulate under a static camera, so after N
+        // accumulated samples a sun/hour change contributes only ~1/N per
+        // frame — the live image visually NEVER follows the clock (dev.ron
+        // `time_of_day` 22.0 rendered pixel-identical daylight to 16.5 while
+        // the fresh-start offline path honored it). A lighting change makes
+        // the accumulated radiance semantically STALE, exactly like a scene
+        // rebuild — hard-cut the film + temporal history. This is a film
+        // clear only: NO scene/BLAS/TLAS rebuild, allocations and residency
+        // preserved (`reset_camera_accumulation`).
+        let lighting_changed = self.rig != rig || self.emissive_scale != emissive_scale;
         self.rig = rig;
-        self.emissive_scale = emissive_scale.max(0.0);
+        self.emissive_scale = emissive_scale;
         self.apply_rig_uniforms();
         self.renderer.set_emissive_scale(self.emissive_scale);
         if let Err(e) = self.refresh_light_layer() {
             eprintln!("[light-rig] light-layer refresh skipped: {e}");
+        }
+        if lighting_changed {
+            self.renderer.reset_camera_accumulation();
+            eprintln!(
+                "[light-rig] lighting changed (sun_dir={:?} radiance={} night={}) -> film/temporal history reset (lighting-only, no scene rebuild)",
+                self.rig.sun_dir, self.rig.sun_radiance, self.rig.is_night
+            );
         }
         false
     }

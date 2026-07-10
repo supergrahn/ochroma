@@ -593,7 +593,7 @@ fn upload_native_material_textures<G: GpuBackend>(
 /// `[0.58, 0.62, 0.72]`, camera fill at `[0.72, 0.74, 0.78]`, rim at
 /// `[0.45, 0.47, 0.52]`.
 #[cfg(feature = "spectra-native")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LightRig {
     /// Direction TOWARD the sun (normalized at render time).
     pub sun_dir: [f32; 3],
