@@ -65,6 +65,30 @@ fn hybrid_pbr_seam_carries_relief_and_transmission() {
     );
 }
 
+/// Vehicle PBR seam: a `HybridMesh` must CARRY per-mesh metallic / emission
+/// overrides (metallic-clearcoat car paint, chrome trim, emissive lamps) so the
+/// game-side `mesh_to_blas_material` / `mesh_to_material` consumers can force
+/// `PbrMaterial::metallic` / `emission_strength` (metallic > 0.5 routes to
+/// MAT_METAL in both packers — asserted by `splat_backend`'s packer tests).
+#[test]
+fn hybrid_pbr_seam_carries_metallic_and_emission_overrides() {
+    let (positions, indices) = unit_tri();
+    let mut mesh = HybridMesh::from_rgb(positions, indices, [0.7, 0.1, 0.1], 3);
+    mesh.metallic_override = Some(0.9);
+    mesh.emission_override = Some(2.5);
+    mesh.roughness_override = Some(0.12);
+
+    // Real carried values — the exact floats, not is_some().
+    assert_eq!(mesh.metallic_override, Some(0.9));
+    assert_eq!(mesh.emission_override, Some(2.5));
+    assert_eq!(mesh.roughness_override, Some(0.12));
+
+    println!(
+        "carried: metallic={:?} emission={:?} roughness={:?}",
+        mesh.metallic_override, mesh.emission_override, mesh.roughness_override
+    );
+}
+
 #[test]
 fn hybrid_defaults_leave_pbr_unset() {
     // An untextured mesh must NOT accidentally claim relief/transmission, or it
@@ -78,6 +102,9 @@ fn hybrid_defaults_leave_pbr_unset() {
     assert_eq!(mesh.displacement_scale, 0.0);
     assert!(mesh.transmission_override.is_none());
     assert!(mesh.ior_override.is_none());
+    assert!(mesh.metallic_override.is_none());
+    assert!(mesh.emission_override.is_none());
+    assert!(mesh.roughness_override.is_none());
     assert!(!mesh.vegetation_bsdf);
 }
 

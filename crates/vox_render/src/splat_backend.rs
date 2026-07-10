@@ -3623,6 +3623,13 @@ pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS
     }; // displacement_scale (UV-height units; ~0.02–0.05 m brick relief)
     a[33] = m.displacement_midlevel; // displacement_midlevel (0.5 = surface plane)
     a[41] = 1.0; // hair_tangent.y
+    // spd_slot (std430 slot 43, the former _hair_tangent_pad): -1 = no cooked
+    // 16-band SPD → the kernel keeps the rgb_to_spectral uplift. Leaving this
+    // 0 would make EVERY material sample SPD row 0 (all-1.0 default) and
+    // rescale reflectance by 1/luminance — a global brightness corruption.
+    // The spectra uploader stamps the real row index for materials that carry
+    // a cooked SPD (spectra-scene-upload stamp_spd_slots).
+    a[43] = pack_i32(-1);
 
     a[44] = 0.3;
     a[45] = 0.2;
