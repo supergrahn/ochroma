@@ -124,5 +124,29 @@ the detail-bar analysis):
    density at that distance? (gate-camera crop is the witness)
 6. Do the 3 variants differ in silhouette or palette, not just hue?
 
+## Directing Forge — verified wire facts (live-run proof 2026-07-10)
+
+A skill-authored directive was run through `forge run building` and MEASURED (hero brick
+walk-up, seed 7101, 8ms): 16k verts, 363 material zones, 9 distinct (color/rough/disp)
+materials, real transmissive glass (alpha 0.15/rough 0.05), per-zone
+albedo+normal+rough+displacement maps with per-material scales, per-vertex weathering
+masks (edge_wear/moss/paint_peel/rust/water_stain), modeled window reveals (~0.10m
+front-facade plane offset). The machinery is REAL. Wire gotchas (serde casing is MIXED —
+budget one failed parse, read the error, it names the expected variants):
+- `program`/`setting`/`condition`: PascalCase ("Residential", "Urban", "Aged")
+- `hero_level`: lowercase ("background"|"supporting"|"hero")
+- `channels`: SCREAMING_SNAKE (["STRUCTURE","ORNAMENT","DETAIL"])
+- `spec`: tagged union — `{"type": "Residential", ...fields}`
+- required: program, setting, style, condition, seed, footprint{shape,width,depth},
+  floors, floor_height, channels, hero_level. Output: `payload.asset` (zones/sockets/
+  weathering/bounds) + `payload.spatial` (positions/indices/uvs/tangents).
+
+Known Forge deltas vs this skill's floor (author around them; queued as node requests):
+- Window reveal measured ~0.10m vs the 0.15m floor — no exposed reveal-depth param yet.
+- `displacement_scale` is CONDITION-derived (Aged→5-6mm), not material-class-derived —
+  brick cannot yet author 8-15mm mortar depth; needs a MaterialSpec-level override.
+- Bay windows/porch project OUTSIDE the declared footprint (measured +2m X / +4m Z on a
+  16x14 body): the AABB±10% gate applies to the BODY; document projections per asset.
+
 Cook via `game_asset_cook`, witness through the present path at the gate camera
 (day + 22:00 once live time-of-day works), and record the verdict in the uplift plan.
