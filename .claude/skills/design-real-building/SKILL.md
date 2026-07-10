@@ -96,6 +96,26 @@ relief; never demote a geometry-scale detail to a map.
   from curtain-wall band ratio; crown is a designed volume (sail/setbacks/lattice/
   penthouse + mast), never a lid; base opens up (double-height lobby, colonnade);
   aviation light socket at the crown.
+- **Mall / shopping center / big-box:** the box is honest but DRESSED: entrance
+  pavilion as its own volume (double-height glazed, canopy, signage tower);
+  facade rhythm from structural bays with material banding (never one flat
+  field); loading docks + service yard on the rear face (doors, bumpers, ramp);
+  rooftop is a FIFTH FACADE — RTU units, ducts, screens (it's what the player
+  sees most); parking-field furniture (cart corrals, lamps) via plot props.
+- **Hospital / large civic:** campus massing (podium + ward slabs/wings, not one
+  box); double-height glazed entrance hall + canopy (drop-off event); regular
+  ward window rhythm; rooftop plant + (hospitals) helipad socket; wayfinding
+  scale signage zone; ambulance bay with its own canopy (hospitals).
+- **Fire / police station:** the PROGRAM is the facade: apparatus bay doors
+  (fire) / secure entry + sally port (police) dominate the street face at true
+  door scale (4.5-5m bays); tower element per era (hose tower / comms mast);
+  civic material palette (brick/stone base, restrained upper); flagpole socket;
+  the entrance must read as public-facing even on a working building.
+- **Government / town hall / library:** civic gravity through symmetry OR a
+  deliberate modern asymmetry — never accidental; entrance elevated (steps +
+  landing) with portico/colonnade or cantilevered canopy; taller ground floor;
+  material budget one notch above neighbors (stone/fine brick + metal); plaza
+  interface (steps, planters) at the base; clock/emblem/inscription zone.
 
 ## Step 4 — Decompose to Forge (the recreate)
 
