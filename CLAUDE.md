@@ -59,13 +59,14 @@ Plans go in `docs/superpowers/plans/`. Design docs go in `docs/superpowers/specs
 
 ## Render/material capabilities (engine side) — built, most one wire from the world
 
-The Spectra path tracer + `vox_render` already implement far more than the live game shows. Full Forge geometry/material inventory: `../forge/CLAUDE.md`. Engine-side, verified 2026-06-17:
+The Spectra path tracer + `vox_render` already implement far more than the live game shows. Full Forge geometry/material inventory: `../forge/CLAUDE.md`. Engine-side, re-verified 2026-07-10 (visual audit): **the three historical choke points in earlier versions of this section are ALL FIXED — do not re-fix them**:
 
 - **Glass/transmission** — `PbrMaterial.transmission/ior` (`vox_render/src/splat_backend.rs:180`); the Glass material channel → `transmission 0.9, ior 1.5, roughness 0.05` (`spectra_frame.rs:267`), packed to `MAT_GLASS` → `brdf_glass.slang` (auto bounce-bump to 8). Real semi-transparent glass.
-- **Normal + roughness + POM/cone-step relief** — fully in the megakernel (`spectra/slang/megakernel.slang:2172-2295`) + packer (`splat_backend.rs:2974-2989`); proven by the still-path binary. **Structural choke point: `HybridMesh` (`vox_render/src/hybrid_compose.rs:62`) carries ONLY `albedo_tex_path`** — no normal/roughness/displacement, so 46 on-disk PolyHaven normal/rough maps are unreachable live. Fix = add 3 `Option<String>` fields + collect them.
-- **7-channel weathering** (`apply_weathering_full`, `megakernel.slang:2332`) — cooked per-vertex into `ReadyAssetMesh.weathering_masks`; **no setter on `ResidentCityRenderer`** so the live path drops them.
-- **Hero-wavelength spectral** (16-band) — plumbed but `resident_renderer.rs:208` forces `SpectralMode::Single` (dodges a black-buildings CUDA bug).
-- **Emission / lit windows** (`MAT_GLASS_LIT` id 7), advanced BSDF lobes (clearcoat/sheen/leaf-translucency, MaterialX), À-Trous denoise, Bruneton atmosphere + celestial key light, DaylitCity tonemap — all real; mostly unrequested by the game.
+- **Normal + roughness + POM/cone-step relief** — fully in the megakernel + packer, and the `HybridMesh` seam is WIDE (`vox_render/src/hybrid_compose.rs:109-120` carries normal/roughness/displacement paths). The old "albedo-only choke point" is gone.
+- **7-channel weathering** — cooked masks now have live setters on `ResidentCityRenderer` (`resident_renderer.rs:782-786, 1096-1107`).
+- **Hero-wavelength spectral** — the force-to-`SpectralMode::Single` is GONE; Hero4 is the default (`resident_renderer.rs:531-554`).
+- **Clouds are LIVE** in the sky-miss path (`megakernel.slang:2661`) — a bare-looking sky is an art-direction gap, not missing tech. Emission / lit windows (`MAT_GLASS_LIT`), advanced BSDF lobes, denoise stack, Bruneton atmosphere + celestial, DaylitCity tonemap — all real.
+- Still genuinely unwired (2026-07-10): SVT setter has zero callers; vox_aether weather beyond sky_model; sim-driven weathering intensity; vehicles; vox_audio.
 
 **Rule:** a SOTA render needs ZERO new render tech — only wiring (drive Forge's directive path → real geometry+zones; widen the `HybridMesh` texture seam; route cooked `material_zones` to the renderer). Don't validate render/content on box-stub scenes — the witness is a hero-camera frame.
 
