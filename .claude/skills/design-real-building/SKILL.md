@@ -11,6 +11,18 @@ survive being placed next to that photograph. One quality floor for all typologi
 Companion skill: `forge-assets` (ops, CLI, signatures). Reference bar:
 `urban_horizon/docs/reference/buildings/skyscraper-detail-bar-analysis.md`.
 
+## Step 0 — Instruction intake (any "create/make/add building(s)" request)
+
+When the user asks for a building or a building set — however briefly ("add a fire
+station", "we need malls") — the request is ALWAYS expanded to the full detail
+inventory before any authoring: identify the governing typology schedule (Step 3),
+write the complete photograph prompt (Step 1), and enumerate every Step-2 floor item
+plus the schedule's program-specific details for THIS building. The user naming a
+building type is a request for the WHOLE building — entrance, roofscape, materials,
+relief, variants, night state — never just a massed shape with the right label. If
+the request is a SET, each member gets its own prompt and the set gets a shared
+palette/era logic so it reads as one commission, not clones.
+
 ## Step 1 — Write the photograph prompt (before ANY geometry)
 
 Write, in prose, the image-generation prompt for the building as if commissioning a photo
