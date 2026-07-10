@@ -385,6 +385,33 @@ pub fn meshes_to_instanced_scene(
 ) -> SceneState {
     use spectra_scene_state::MaterialLayer;
 
+    // SLOT-0 OPAQUE CONTRACT: the megakernel clamps every out-of-range resolved
+    // material id (instance base + per-triangle relative id) to slot 0. A
+    // cutout/vegetation/glass slot 0 turns any id-resolution bug into INVISIBLE
+    // geometry (alpha-cutout passes the ray through). The game's MaterialTable
+    // reserves an opaque slot 0; enforce the contract here for every producer.
+    if let Some(m0) = materials.first() {
+        let cutout_armed = m0.opacity_tex >= 0 || m0.vegetation_bsdf;
+        let transmissive = m0.transmission > 0.0;
+        debug_assert!(
+            !cutout_armed && !transmissive,
+            "material slot 0 must be guaranteed-opaque (it is the kernel's OOB clamp target); \
+             got opacity_tex={} vegetation_bsdf={} transmission={}",
+            m0.opacity_tex,
+            m0.vegetation_bsdf,
+            m0.transmission
+        );
+        if cutout_armed || transmissive {
+            eprintln!(
+                "[splat_convert] WARNING: material slot 0 is cutout/glass \
+                 (opacity_tex={} vegetation_bsdf={} transmission={}); the kernel's OOB \
+                 clamp target must be opaque — reserve an opaque slot 0 \
+                 (MaterialTable::reserve_opaque_fallback_slot)",
+                m0.opacity_tex, m0.vegetation_bsdf, m0.transmission
+            );
+        }
+    }
+
     // --- Geometry soup: prototypes laid out contiguously ---
     // Track each prototype's vertex base so a future per-archetype-BLAS uploader
     // can recover sub-ranges; today the HW soup proto shares the buffer and the

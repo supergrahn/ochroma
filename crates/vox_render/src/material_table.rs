@@ -95,6 +95,30 @@ impl MaterialTable {
         }
     }
 
+    /// Reserve slot 0 as a GUARANTEED-OPAQUE fallback material (neutral gray,
+    /// `opacity_tex = -1`, no transmission, no vegetation BSDF). Call ONCE right
+    /// after construction, BEFORE any intern/push.
+    ///
+    /// Why: the megakernel clamps every out-of-range resolved material id
+    /// (`instance base + per-triangle relative id`) to slot 0 as its OOB safety
+    /// net. If slot 0 happened to be a cutout/vegetation/glass material, that
+    /// clamp turned a material-id bug into INVISIBLE geometry (alpha-cutout
+    /// re-launches the ray through the surface — the thin-slab-buildings class).
+    /// Reserving an opaque slot 0 makes the clamp target safe by construction:
+    /// a resolution bug now shows as flat gray (or magenta under isolation mode
+    /// 11), never as vanished geometry.
+    ///
+    /// Panics if the table is non-empty (the reservation MUST be slot 0).
+    pub fn reserve_opaque_fallback_slot(&mut self) -> u32 {
+        assert!(
+            self.materials.is_empty(),
+            "reserve_opaque_fallback_slot must run before any intern/push (table has {} slots)",
+            self.materials.len()
+        );
+        // Neutral opaque gray; flat white SPD (spectrally neutral).
+        self.push_undeduped(PbrMaterial::default(), [1.0; 16])
+    }
+
     /// Dedup + intern; returns the `u32` slot. On a key hit returns the existing
     /// slot; on a miss pushes `mat`/`spd` and returns the new slot
     /// (`= self.len()` pre-push). NO 256/254 clamp — the table grows freely.

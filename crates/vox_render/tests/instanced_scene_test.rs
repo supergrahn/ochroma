@@ -179,11 +179,13 @@ fn per_instance_material() {
         metallic: 0.95,
         ..Default::default()
     };
-    let instances = vec![inst(0, 0, [-1.6, 0.0, 0.0]), inst(0, 1, [1.6, 0.0, 0.0])];
+    // Slot 0 must be the OPAQUE material (slot 0 is the kernel's OOB clamp
+    // target and is contract-enforced opaque at upload) — metal at 0, glass at 1.
+    let instances = vec![inst(0, 1, [-1.6, 0.0, 0.0]), inst(0, 0, [1.6, 0.0, 0.0])];
     let scene = meshes_to_instanced_scene(
         std::slice::from_ref(&cube),
         &instances,
-        &[glass, metal],
+        &[metal, glass],
         &[],
         W,
         H,
@@ -200,7 +202,7 @@ fn per_instance_material() {
     assert_eq!(scene.geometry.instance_count, 2, "two instances");
     assert_eq!(
         scene.geometry.instance_material_base,
-        vec![0u32, 1u32],
+        vec![1u32, 0u32],
         "per-instance material BASE carried for the TLAS custom index"
     );
 
@@ -265,5 +267,168 @@ fn spectral_spd_populated() {
     assert!(
         !scene.materials.spectral_spd.contains_key(&0),
         "material 0 must have no SPD entry (white)"
+    );
+}
+
+/// A cube BLAS with EMPTY `material_ids` — the shared-building-prototype shape
+/// (`scene_build.rs` zeroes proto material ids; every triangle's RELATIVE id is
+/// 0 and the instance's `material_base` supplies the whole material).
+fn shared_proto_blas() -> BlasDesc {
+    let mut b = cube_blas_desc();
+    b.material_ids = Vec::new();
+    b
+}
+
+/// Host-side reproduction of the megakernel's material resolution
+/// (`final = instance_base + g_triangles[prim].material_id`) over the EXACT
+/// tables `meshes_to_instanced_scene` uploads — the base-table contract that,
+/// when broken, renders instanced buildings as thin transparent slabs (wrong
+/// materials → alpha-cutout/vegetation/glass slots swallow the rays).
+///
+/// Scene shape mirrors the live city build:
+///   * proto 0: SHARED building prototype (empty material_ids → relative id 0),
+///     3 instances with bases on the wall/roof/glass slots;
+///   * proto 1: MERGE-GROUP building (explicit ABSOLUTE per-tri slots, base 0);
+///   * proto 2: scatter FOLIAGE prototype (empty material_ids), instances based
+///     on the cutout-armed vegetation slot.
+///
+/// Asserts, for EVERY instance × EVERY triangle of its prototype range:
+///   1. the resolved id is in-bounds (no OOB → no silent clamp/kill),
+///   2. building instances NEVER resolve onto a cutout/vegetation slot,
+///   3. foliage instances DO resolve onto their cutout slot (the gate is armed
+///      where it should be, and only there),
+///   4. slot 0 (the kernel's OOB clamp target) is guaranteed-opaque,
+///   5. the base table fully covers the instances (no index-fallback territory).
+#[test]
+fn material_base_resolution_contract() {
+    // Material table (slot = index): 0 reserved opaque, 1 wall, 2 roof,
+    // 3 glass, 4 vegetation (cutout-armed).
+    let opaque0 = PbrMaterial::default();
+    let wall = PbrMaterial {
+        base_color: [0.6, 0.5, 0.4],
+        ..Default::default()
+    };
+    let roof = PbrMaterial {
+        base_color: [0.3, 0.1, 0.1],
+        ..Default::default()
+    };
+    let glass = PbrMaterial {
+        base_color: [0.1, 0.2, 0.3],
+        transmission: 0.9,
+        ..Default::default()
+    };
+    let veg = PbrMaterial {
+        base_color: [0.1, 0.5, 0.1],
+        albedo_tex: 2,
+        opacity_tex: 2,
+        vegetation_bsdf: true,
+        ..Default::default()
+    };
+    let materials = vec![opaque0, wall, roof, glass, veg];
+
+    // proto 0: shared building proto (relative ids all 0).
+    // proto 1: merge-group building — explicit ABSOLUTE slots per tri (wall on
+    //          the sides, roof on top, glass on two window tris).
+    let mut merged = cube_blas_desc();
+    merged.material_ids = vec![1, 1, 1, 1, 2, 2, 3, 3, 1, 1, 1, 1];
+    // proto 2: foliage card proto (relative ids all 0).
+    let blas = vec![shared_proto_blas(), merged, shared_proto_blas()];
+
+    let instances = vec![
+        // 3 shared-proto building instances: wall / roof / glass bases.
+        inst(0, 1, [-3.0, 0.0, 0.0]),
+        inst(0, 2, [0.0, 0.0, 0.0]),
+        inst(0, 3, [3.0, 0.0, 0.0]),
+        // merge-group building: identity instance, base 0, absolute per-tri ids.
+        inst(1, 0, [0.0, 0.0, -3.0]),
+        // 2 foliage instances on the vegetation slot.
+        inst(2, 4, [-2.0, 0.0, 3.0]),
+        inst(2, 4, [2.0, 0.0, 3.0]),
+    ];
+
+    let scene = meshes_to_instanced_scene(&blas, &instances, &materials, &[], W, H);
+    let geo = &scene.geometry;
+    let mat_count = scene.materials.material_count;
+
+    // (5) full base-table coverage — the renderer's index-fallback must be dead.
+    assert_eq!(
+        geo.instance_material_base.len(),
+        geo.instance_count,
+        "instance_material_base must cover every instance (short table = fallback territory)"
+    );
+    assert_eq!(geo.instance_proto_index.len(), geo.instance_count);
+    assert_eq!(geo.proto_ranges.len(), blas.len());
+
+    // (4) slot 0 opaque.
+    let m0 = &materials[0];
+    assert!(
+        m0.opacity_tex < 0 && !m0.vegetation_bsdf && m0.transmission <= 0.0,
+        "slot 0 must be guaranteed-opaque (kernel OOB clamp target)"
+    );
+
+    let cutout_armed = |slot: usize| -> bool {
+        let m = &materials[slot];
+        m.opacity_tex >= 0 || m.vegetation_bsdf
+    };
+
+    // Kernel resolution replay: every instance × every triangle of its proto.
+    for i in 0..geo.instance_count {
+        let base = geo.instance_material_base[i] as usize;
+        let proto = geo.instance_proto_index[i] as usize;
+        let (_, _, t_off, t_cnt) = geo.proto_ranges[proto];
+        let is_foliage_instance = proto == 2;
+        for t in t_off as usize..(t_off + t_cnt) as usize {
+            let rel = geo.material_ids[t] as usize;
+            let resolved = base + rel;
+            // (1) in-bounds — the kernel clamp/kill must never engage.
+            assert!(
+                resolved < mat_count,
+                "instance {i} (proto {proto}, base {base}) tri {t} resolves to {resolved} \
+                 >= material_count {mat_count} — base+rel double-offset or garbage base"
+            );
+            if is_foliage_instance {
+                // (3) foliage resolves onto its armed cutout slot.
+                assert!(
+                    cutout_armed(resolved),
+                    "foliage instance {i} tri {t} resolved to non-cutout slot {resolved}"
+                );
+            } else {
+                // (2) building faces must NEVER land on a cutout slot — that is
+                // exactly the invisible-walls / thin-slab-buildings bug.
+                assert!(
+                    !cutout_armed(resolved),
+                    "building instance {i} (proto {proto}, base {base}) tri {t} resolved to \
+                     cutout-armed slot {resolved} — this face would render transparent"
+                );
+            }
+        }
+    }
+
+    // Shared-proto instances must resolve EXACTLY to their base (relative id 0).
+    for (i, expected) in [(0usize, 1usize), (1, 2), (2, 3)] {
+        let base = geo.instance_material_base[i] as usize;
+        let proto = geo.instance_proto_index[i] as usize;
+        let (_, _, t_off, t_cnt) = geo.proto_ranges[proto];
+        for t in t_off as usize..(t_off + t_cnt) as usize {
+            let resolved = base + geo.material_ids[t] as usize;
+            assert_eq!(
+                resolved, expected,
+                "shared-proto instance {i} must shade with slot {expected} on every face"
+            );
+        }
+    }
+
+    // Merge-group building keeps its absolute multi-material ids under base 0.
+    let (_, _, t_off, t_cnt) = geo.proto_ranges[1];
+    let got: Vec<u32> = geo.material_ids[t_off as usize..(t_off + t_cnt) as usize].to_vec();
+    assert_eq!(
+        got,
+        vec![1, 1, 1, 1, 2, 2, 3, 3, 1, 1, 1, 1],
+        "merge-group per-tri absolute slots must survive the soup merge"
+    );
+    println!(
+        "material_base_resolution_contract: {} instances × proto tris all in-bounds, \
+         channel-correct (materials={})",
+        geo.instance_count, mat_count
     );
 }
