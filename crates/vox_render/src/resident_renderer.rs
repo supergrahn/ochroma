@@ -18,20 +18,23 @@
 
 #![cfg(feature = "spectra-native")]
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "spectra-native-optix"))]
 use spectra_gpu::CudarcSlangBackend;
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
 use spectra_gpu::VulkanSlangBackend;
 pub use spectra_renderer::FrameOutput;
 use spectra_renderer::{RenderConfig, RenderSettings, Renderer, RendererTexture2D};
 
 /// The LIVE path-tracer compute backend. The standing rule: use CUDA on NVIDIA
-/// when available. On Windows (NVIDIA/CUDA box) this is the cudarc CUDA backend;
-/// elsewhere (e.g. the Linux/AMD dev box) it falls back to Vulkan. The window
-/// present is a separate, thin swapchain (display only), independent of this.
-#[cfg(target_os = "windows")]
+/// when available. On the Windows CUDA box built WITH `spectra-native-optix`
+/// this is the cudarc CUDA backend (RT cores + DLSS + OptiX); elsewhere — the
+/// Linux/AMD dev box, OR a Windows build WITHOUT the optix feature (the
+/// KHR-water witness build) — it is the Vulkan backend. Gating on the feature
+/// (not just the OS) lets the box exercise the VK_KHR animated-water path. The
+/// window present is a separate, thin swapchain (display only), independent of this.
+#[cfg(all(target_os = "windows", feature = "spectra-native-optix"))]
 type ResidentBackend = CudarcSlangBackend;
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
 type ResidentBackend = VulkanSlangBackend;
 use spectra_scene_state::{GpuSceneCmd, LightLayer, SceneDeltaRing, SceneState};
 
