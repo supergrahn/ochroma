@@ -861,6 +861,54 @@ impl ResidentSceneRenderer {
             .map_err(|e| format!("set_depth_field: {e:?}"))
     }
 
+    /// WATER FLOW FIELD: per-cell `(vel_x, vel_z)` m/s interleaved (2 f32/cell) on
+    /// the SAME grid as the depth field. Drives flow-aligned wave scroll +
+    /// white-water on MAT_WATER. Empty/`enabled=false` → flow OFF.
+    pub fn set_water_flow_field(
+        &mut self,
+        values: &[f32],
+        enabled: bool,
+    ) -> Result<(), String> {
+        self.renderer
+            .set_water_flow_field(values, enabled)
+            .map_err(|e| format!("set_water_flow_field: {e:?}"))
+    }
+
+    /// K5 (animated water): per-frame refit of the water surface's vertices. `node`
+    /// is the retained water HybridMesh's scene node; `verts` are its new displaced
+    /// positions (proto-local order, exactly the water proto's vertex count). Resolves
+    /// node → resident instance → prototype, then rebuilds ONLY that proto's GAS +
+    /// the IAS (no scene rebuild). Returns `Ok(false)` when the CLAS IAS path is not
+    /// active (AMD/Vulkan) or nothing was refit; `Err` on a bad node / count mismatch.
+    /// Call BEFORE `render_camera`.
+    pub fn refit_water_geometry(
+        &mut self,
+        node: vox_scene::NodeId,
+        verts: &[[f32; 3]],
+    ) -> Result<bool, String> {
+        let inst = self.retained_instance_index(node).ok_or_else(|| {
+            format!("refit_water_geometry: no resident instance for node {node:?}")
+        })?;
+        let proto = {
+            let st = self
+                .renderer
+                .state
+                .as_ref()
+                .ok_or("refit_water_geometry: renderer state uninitialized")?;
+            let ss = st
+                .scene_state
+                .as_ref()
+                .ok_or("refit_water_geometry: no resident scene")?;
+            *ss.geometry
+                .instance_proto_index
+                .get(inst)
+                .ok_or_else(|| format!("refit_water_geometry: no proto for instance {inst}"))?
+        };
+        self.renderer
+            .refit_water_geometry(proto, verts)
+            .map_err(|e| format!("refit_water_geometry: {e:?}"))
+    }
+
     /// UNDERWATER BED atlas slots (P3). Bind the submerged bed materials the
     /// megakernel blends by water depth: `wet_*` (~0 m), `mud_*` (~2 m), `silt_*`
     /// (~8 m+), and `bed_*` (riverbed, flow-driven follow-up). Each is an

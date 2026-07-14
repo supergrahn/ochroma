@@ -430,6 +430,16 @@ impl RenderRuntime {
                 upload.uw_silt_albedo
             );
         }
+        if !upload.flow_values.is_empty() {
+            self.renderer
+                .set_water_flow_field(&upload.flow_values, true)?;
+            eprintln!(
+                "[water-flow] per-cell flow field uploaded: {} cells (vx,vz) on the {}x{} depth grid",
+                upload.flow_values.len() / 2,
+                upload.depth_res[0],
+                upload.depth_res[1]
+            );
+        }
         self.renderer.set_slope_snow(
             upload.slope_snow_albedo,
             upload.slope_snow_normal,
@@ -460,5 +470,16 @@ impl RenderRuntime {
     /// Number of retained nodes currently mapped to renderer instances.
     pub fn retained_node_count(&self) -> usize {
         self.renderer.retained_node_count()
+    }
+
+    /// K5 (animated water): per-frame refit of the water surface node's vertices
+    /// (see [`ResidentSceneRenderer::refit_water_geometry`]). No-op `Ok(false)` off
+    /// the CLAS IAS path (AMD/Vulkan) or when the node isn't resident.
+    pub fn refit_water_geometry(
+        &mut self,
+        node: NodeId,
+        verts: &[[f32; 3]],
+    ) -> Result<bool, String> {
+        self.renderer.refit_water_geometry(node, verts)
     }
 }

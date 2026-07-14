@@ -72,6 +72,14 @@ pub struct TerrainUpload {
     /// World-Y of the static sea plane (drives the intertidal WET BAND above the
     /// waterline). Only consulted when `depth_values` is non-empty.
     pub depth_sea_level: f32,
+    /// WATER FLOW FIELD: live `WaterField` per-cell velocity `(vel_x, vel_z)` in
+    /// m/s, interleaved 2 f32/cell (`[vx0,vz0, vx1,vz1, ...]`), row-major
+    /// `iz*res_x+ix` on the SAME grid as `depth_values` (origin/cell_size/res reuse
+    /// the depth-field uniforms — no separate grid). Drives flow-aligned wave scroll
+    /// + white-water on the MAT_WATER surface, so rivers actually flow. Empty = flow
+    /// OFF (byte-identical to still procedural ripples). Length must be
+    /// `2 * depth_res[0] * depth_res[1]` when non-empty.
+    pub flow_values: Vec<f32>,
     /// UNDERWATER BED atlas slots (P3): the submerged bed materials the megakernel
     /// blends by `depth_values` — `wet_sand` (~0 m) → `shallow_mud` (~2 m) →
     /// `deep_silt` (~8 m+), plus `riverbed` (driven by flow, follow-up). Each is an
@@ -137,6 +145,9 @@ impl Default for TerrainUpload {
             depth_origin: [0.0, 0.0],
             depth_cell_size: 0.0,
             depth_sea_level: 0.0,
+            // Flow field OFF by default (empty → still procedural ripples,
+            // byte-identical to a map that does not fill it).
+            flow_values: Vec::new(),
             // Underwater bed slots default to -1 (absent) — NOT 0, which is a valid
             // atlas slot that would wrongly fire the bed blend on a field-less ground.
             uw_wet_albedo: -1,

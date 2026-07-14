@@ -7,10 +7,12 @@
 pub use spectra_gpu::GpuTextureFormat;
 pub use spectra_gpu::VulkanSlangBackend;
 pub use spectra_present::{
-    GpuUiAtlas, GpuUiLayer, GpuUiVertex, Present, PresentBackend, PresentChoice, PresentError,
-    PresentFrame, PresentGradeParams, PresentKind, RrGuides, UpscalerKind, select_present,
-    select_present_rr,
+    clear_frame_generation_request_override, frame_generation_request, select_present,
+    select_present_rr, set_frame_generation_request, FrameGenerationKind, FrameGenerationRequest,
+    FrameGenerationStatus, GpuUiAtlas, GpuUiLayer, GpuUiVertex, Present, PresentBackend,
+    PresentChoice, PresentError, PresentFrame, PresentGradeParams, PresentKind, RrGuides,
+    UpscalerKind,
 };
 
 #[cfg(feature = "spectra-native-optix")]
-pub use spectra_present::{HeadlessRrOutput, headless_rr_eval};
+pub use spectra_present::{headless_rr_eval, HeadlessRrOutput};

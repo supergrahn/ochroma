@@ -226,6 +226,23 @@ impl WaterField {
         }
     }
 
+    /// SOURCE seam: add `amount` (m) of water to EVERY cell in one pass — a
+    /// uniform rainfall over the whole field. Deterministic (single ascending
+    /// sweep, no RNG/HashMap order); wakes the settled gate only when `amount`
+    /// actually moves water, so a dry call is a cheap no-op. The next
+    /// [`step`](WaterField::step) then carries the runoff downhill and drains the
+    /// sea back to `sea_level`. Used by the game's precipitation → flood loop.
+    pub fn add_uniform_water(&mut self, amount: f64) {
+        if amount <= 0.0 || self.depth.is_empty() {
+            return;
+        }
+        for d in self.depth.iter_mut() {
+            *d = (*d + amount).max(0.0);
+        }
+        self.rev += 1;
+        self.settled = false; // fresh rain must flow → re-run the relaxation
+    }
+
     /// SOURCE seam: inject `amount` of dissolved CONTAMINANT MASS into a cell
     /// (untreated sewage / an industrial outfall / a spill). Clamped non-negative;
     /// ignores out-of-range cells. The next [`step`](WaterField::step) advects it
@@ -757,6 +774,32 @@ mod tests {
             }
         }
         bed
+    }
+
+    /// Rainfall source: `add_uniform_water` raises EVERY cell by exactly the
+    /// amount (a real computed delta, checked cell-by-cell), wakes the settled
+    /// gate, and a dry (`<= 0`) call is an exact no-op.
+    #[test]
+    fn uniform_rain_raises_every_cell() {
+        let size = 6u32;
+        let mut w = WaterField::new(size, size);
+        w.add_water(2, 2, 0.5); // one pre-existing puddle
+        let before: Vec<f64> = w.depths().to_vec();
+
+        w.add_uniform_water(0.03);
+        for (i, (&a, &b)) in w.depths().iter().zip(before.iter()).enumerate() {
+            assert!(
+                (a - (b + 0.03)).abs() < 1e-12,
+                "cell {i}: rain must add exactly 0.03 m ({b} -> {a})"
+            );
+        }
+
+        // A dry call changes nothing (byte-identical): no-op guard holds.
+        let held: Vec<u64> = w.depths().iter().map(|d| d.to_bits()).collect();
+        w.add_uniform_water(0.0);
+        w.add_uniform_water(-1.0);
+        let after: Vec<u64> = w.depths().iter().map(|d| d.to_bits()).collect();
+        assert_eq!(held, after, "a dry rain call must be a no-op");
     }
 
     /// The deterministic step + fold reproduce bit-for-bit across two
