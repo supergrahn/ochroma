@@ -365,6 +365,25 @@ pub struct ChannelSlots {
 /// kernel-coupled break — do NOT bump it for a wider palette (that's `SPRAY_CHANNELS`).
 pub const CHANNEL_SLOT_INTS: usize = 8;
 
+/// World-planar UV rates for one spray material channel. The base and optional
+/// detail overlay are independent materials and therefore keep independent
+/// real-world scales instead of inheriting one mesh-wide terrain value.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChannelUvScales {
+    pub base: f32,
+    pub overlay: f32,
+}
+
+/// f32 values per channel in the `g_spray_channel_uv` buffer. Kernel-coupled.
+pub const CHANNEL_UV_FLOATS: usize = 2;
+
+impl ChannelUvScales {
+    pub const fn to_floats(&self) -> [f32; CHANNEL_UV_FLOATS] {
+        [self.base, self.overlay]
+    }
+}
+
 impl Default for ChannelSlots {
     fn default() -> Self {
         // -1 everywhere (0 is a VALID atlas slot, so it can't be the "absent" sentinel).
@@ -398,6 +417,7 @@ impl ChannelSlots {
 }
 
 const _: () = assert!(std::mem::size_of::<ChannelSlots>() == CHANNEL_SLOT_INTS * 4);
+const _: () = assert!(std::mem::size_of::<ChannelUvScales>() == CHANNEL_UV_FLOATS * 4);
 
 /// Raise `cell[ch]` by `add` (clamped into the budget) and renormalize the cell
 /// to Σ=255 by proportionally scaling the OTHER channels down. Returns true if

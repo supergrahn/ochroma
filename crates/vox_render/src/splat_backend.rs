@@ -3360,19 +3360,12 @@ fn build_texture_atlas(textures: &[TextureImage]) -> Result<(Vec<u32>, Vec<f32>)
 }
 
 #[cfg(feature = "spectra-native")]
-pub(crate) const VULKAN_MATERIAL_FLOATS: usize = 156;
+pub(crate) const MATERIAL_FLOATS: usize = spectra_types::constants::MATERIAL_FLOATS;
 #[cfg(feature = "spectra-native")]
-pub(crate) const VULKAN_LIGHT_FLOATS: usize = 36;
+pub(crate) const LIGHT_FLOATS: usize = spectra_types::constants::LIGHT_FLOATS;
 
 #[cfg(feature = "spectra-native")]
-fn pack_u32(x: u32) -> f32 {
-    f32::from_bits(x)
-}
-
-#[cfg(feature = "spectra-native")]
-fn pack_i32(x: i32) -> f32 {
-    f32::from_bits(x as u32)
-}
+pub(crate) const VULKAN_MATERIAL_FLOATS: usize = MATERIAL_FLOATS;
 
 #[cfg(feature = "spectra-native")]
 const ALPHA_CUTOUT_THRESHOLD: f32 = 0.5;
@@ -3411,40 +3404,20 @@ fn coverage_preserving_alpha_mip(
         .clamp(ALPHA_CUTOUT_THRESHOLD + 1.0e-4, 1.0)
 }
 
-/// Pack `LightData` using the SPIR-V reflection layout for
-/// `slang/light_types.slang`.
-///
-/// The shared Spectra constants describe the CUDA/tight layout (28 floats).
-/// Vulkan pads `float3` fields, so `StructuredBuffer<LightData>` reads
-/// 36 floats / 144 bytes per light. The tight layout shifts direction, color,
-/// and intensity into the wrong fields.
+/// Pack a directional light using Spectra's canonical 28-float scalar layout.
 #[cfg(feature = "spectra-native")]
-pub(crate) fn pack_vulkan_directional_light(
+pub(crate) fn pack_directional_light(
     direction: [f32; 3],
     color: [f32; 3],
     intensity: f32,
-) -> [f32; VULKAN_LIGHT_FLOATS] {
-    let mut a = [0.0f32; VULKAN_LIGHT_FLOATS];
-
-    a[0] = pack_u32(3); // LIGHT_DIRECTIONAL
-    a[4] = direction[0];
-    a[5] = direction[1];
-    a[6] = direction[2];
-    a[8] = color[0];
-    a[9] = color[1];
-    a[10] = color[2];
-    a[11] = intensity;
-    a[31] = pack_u32(0xFFFF_FFFF); // group_mask
-    a[32] = pack_i32(0); // num_filters
-    a[33] = pack_i32(0); // filter_offset
-
-    a
+) -> [f32; LIGHT_FLOATS] {
+    spectra_scene_data::LightData::directional(direction, color, intensity).to_f32_array()
 }
 
 /// Sun's angular RADIUS in radians (≈ 0.265° → 4.6e-3 rad). The matching solid
 /// angle is `Ω = 2π(1 − cos α) ≈ 6.794e-5 sr`. Used to convert the single sun
 /// IRRADIANCE `E_sun` into the disk RADIANCE `L_sun = E_sun / Ω` that both the
-/// NEE disk light (`pack_vulkan_sun_disk_light`) and the visible atmosphere disk
+/// NEE disk light (`pack_sun_disk_light`) and the visible atmosphere disk
 /// (`Renderer::set_sun`) emit — so the two are physically the SAME magnitude.
 // CONFIG-FIRST: the physical sun angular radius is `config/ochroma.ron`
 // `spectral.sun_angular_radius_rad` (default 4.6e-3 == this constant). The
@@ -3461,9 +3434,8 @@ pub fn sun_solid_angle() -> f32 {
 }
 
 /// Pack the PHYSICAL SUN as a `LightData` DISK light (LIGHT_DIRECTIONAL=3 with a
-/// non-zero `angular_radius`). Unlike [`pack_vulkan_directional_light`] (which
-/// leaves `angular_radius=0` → a hard delta, used for the FILL lights), this
-/// writes the sun's angular radius into slot `a[30]` so the megakernel's
+/// non-zero `angular_radius`). Unlike [`pack_directional_light`] (which leaves
+/// `angular_radius=0` for fill lights), this writes the sun's angular radius so the megakernel's
 /// `sample_directional_light` cone-samples the disk and returns the solid-angle
 /// pdf `1/Ω`. The NEE estimator then integrates `f · E_sun · cosθ` through the
 /// FULL OpenPBR BSDF (diffuse + GGX dielectric specular + Fresnel) — lighting
@@ -3472,32 +3444,19 @@ pub fn sun_solid_angle() -> f32 {
 /// `disk_radiance` is `L_sun = E_sun / Ω` — the SAME value fed to
 /// `Renderer::set_sun` for the visible disk.
 #[cfg(feature = "spectra-native")]
-pub(crate) fn pack_vulkan_sun_disk_light(
+pub(crate) fn pack_sun_disk_light(
     direction: [f32; 3],
     color: [f32; 3],
     disk_radiance: f32,
-) -> [f32; VULKAN_LIGHT_FLOATS] {
-    let mut a = [0.0f32; VULKAN_LIGHT_FLOATS];
-
-    a[0] = pack_u32(3); // LIGHT_DIRECTIONAL
-    a[4] = direction[0];
-    a[5] = direction[1];
-    a[6] = direction[2];
-    a[8] = color[0];
-    a[9] = color[1];
-    a[10] = color[2];
-    a[11] = disk_radiance; // intensity slot carries L_sun = E_sun / Ω
-    a[30] = vox_config::config().spectral.sun_angular_radius_rad; // angular_radius → cone sampling + 1/Ω pdf
-    a[31] = pack_u32(0xFFFF_FFFF); // group_mask
-    a[32] = pack_i32(0); // num_filters
-    a[33] = pack_i32(0); // filter_offset
-
-    a
+) -> [f32; LIGHT_FLOATS] {
+    let mut light = spectra_scene_data::LightData::directional(direction, color, disk_radiance);
+    light.angular_radius = vox_config::config().spectral.sun_angular_radius_rad;
+    light.to_f32_array()
 }
 
-/// Pack a `LightData` POINT light (LIGHT_POINT = 1) in the same SPIR-V reflection
-/// layout as [`pack_vulkan_directional_light`]. The `LightData.position` field
-/// (Vulkan slots 4-6) holds the WORLD-space emitter position; the megakernel's
+/// Pack a `LightData` point light using the same canonical layout as
+/// [`pack_directional_light`]. The `LightData.position` field holds the
+/// world-space emitter position; the megakernel's
 /// `sample_point_light` applies inverse-square falloff. This is the MegaLights
 /// night-light path: hundreds of lit-window / street-light emitters become NEE
 /// point lights that ReSTIR-DI resamples. `radius` (slot ~28) is the soft-shadow
@@ -3505,203 +3464,30 @@ pub(crate) fn pack_vulkan_sun_disk_light(
 /// (the megakernel only reads `radius` for tube/linear lights), so it is left
 /// unset here.
 #[cfg(feature = "spectra-native")]
-pub(crate) fn pack_vulkan_point_light(
+pub(crate) fn pack_point_light(
     position: [f32; 3],
     color: [f32; 3],
     intensity: f32,
-) -> [f32; VULKAN_LIGHT_FLOATS] {
-    let mut a = [0.0f32; VULKAN_LIGHT_FLOATS];
-
-    a[0] = pack_u32(1); // LIGHT_POINT
-    a[4] = position[0];
-    a[5] = position[1];
-    a[6] = position[2];
-    a[8] = color[0];
-    a[9] = color[1];
-    a[10] = color[2];
-    a[11] = intensity;
-    a[31] = pack_u32(0xFFFF_FFFF); // group_mask
-    a[32] = pack_i32(0); // num_filters
-    a[33] = pack_i32(0); // filter_offset
-
-    a
+) -> [f32; LIGHT_FLOATS] {
+    let mut light = spectra_scene_data::LightData::directional(position, color, intensity);
+    light.kind = 1;
+    light.to_f32_array()
 }
 
-/// Pack `MaterialData` using the SPIR-V reflection layout for
-/// `slang/material_types.slang`.
-///
-/// The old CPU packer is the CUDA/tight layout: 132 floats / 528 bytes.
-/// Vulkan reflection pads several `float3` fields and arrays, so
-/// `StructuredBuffer<MaterialData>` uses a 156-float / 624-byte array stride.
-/// Using the tight layout puts albedo/emission in padding slots and renders
-/// later material IDs as black silhouettes.
 #[cfg(feature = "spectra-native")]
-pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; VULKAN_MATERIAL_FLOATS] {
-    let mut a = [0.0f32; VULKAN_MATERIAL_FLOATS];
-
-    // `transmission > 0` selects MAT_GLASS (3): dispatch_sample's existing
-    // `case MAT_GLASS` (material_dispatch.slang) refracts/transmits via the
-    // same `sample_glass` BSDF the proven SDF window path calls — no shader
-    // change. Opaque materials keep the historical MAT_LAMBERT (1) packing
-    // byte-for-byte. Slot indices are the Vulkan SPIR-V reflection layout of
-    // `MaterialData` (std430: float3 aligned to 16 bytes), cross-checked
-    // against the slots this packer already proves out on screen (albedo 4-6,
-    // eye colors 44/52, opacity_tex 72, uv_scale 94-95, substrate 144-147).
-    // Material-type selection by CONTENT (was: hard MAT_LAMBERT for everything).
-    //   transmission > 0      -> MAT_GLASS (3)    : Fresnel reflect/refract dielectric
-    //   opacity == albedo    -> MAT_VEGETATION(20): leaf cutout + vegetation BSDF
-    //   metallic   > 0.5      -> MAT_METAL (2)    : Cook-Torrance GGX conductor
-    //   otherwise             -> MAT_OPENPBR (16) : Lambert/Oren diffuse base + a
-    //                                               dielectric GGX specular lobe with
-    //                                               4% (IOR 1.5) Fresnel F0.
-    // OpenPBR (eval_openpbr/sample_openpbr, openpbr.slang) reads ONLY: albedo (4-6),
-    // roughness (7), metallic (9), ior (10), clearcoat_strength (11), sheen_weight (13),
-    // sss_radius (14), thin_film_thickness (56), glass_weight (79), absorption_color
-    // (24-26). The "naive flip washed the brick" regression came from leaving the wrong
-    // slots populated; here every extra OpenPBR lobe weight (clearcoat/sheen/sss/glass/
-    // thin-film) is left at 0 so OpenPBR contributes ONLY diffuse + the subtle 4%
-    // dielectric Fresnel sheen — it does NOT desaturate the albedo.
-    let glass = m.transmission > 0.0;
-    let water = glass && m.is_water;
-    let vegetation = !glass && m.vegetation_bsdf;
-    let metal = !glass && !vegetation && m.metallic > 0.5;
-    // MAT_WATER (21) is a transmissive glass variant: it still satisfies `glass`
-    // (transmission > 0) so the absorption block below packs its blue-green Beer-
-    // Lambert tint exactly like glass; the kernel adds wave normals + foam on top.
-    let mat_type = if water {
-        21 // MAT_WATER
-    } else if glass {
-        3 // MAT_GLASS
-    } else if vegetation {
-        20 // MAT_VEGETATION
-    } else if metal {
-        2 // MAT_METAL
-    } else {
-        16 // MAT_OPENPBR
-    };
-    a[0] = pack_u32(mat_type);
-    a[4] = m.base_color[0];
-    a[5] = m.base_color[1];
-    a[6] = m.base_color[2];
-    a[7] = m.roughness;
-    a[9] = m.metallic;
-    a[10] = m.ior; // 1.5 default -> dielectric F0 = 0.04 (OpenPBR specular IOR)
-
-    a[20] = m.base_color[0];
-    a[21] = m.base_color[1];
-    a[22] = m.base_color[2];
-    a[23] = m.emission_strength;
-
-    if glass {
-        // absorption_color (24-26) + absorption_depth (27). Clear glass
-        // (absorption_color == 0) is byte-identical to the old SDF-parity
-        // behaviour. Building curtain-wall glass sets a small cool tint so the
-        // TRANSMITTED ray darkens/colours through the pane (Beer-Lambert, fired
-        // by the non-zero distance the MAT_GLASS dispatch now passes) instead of
-        // travelling clear into an unlit interior and reading as a black/matte
-        // hole. The Fresnel sky reflection rides on top → a real glass read.
-        a[24] = m.absorption_color[0];
-        a[25] = m.absorption_color[1];
-        a[26] = m.absorption_color[2];
-        a[27] = m.absorption_depth;
-    }
-
-    a[28] = pack_i32(m.albedo_tex);
-    a[29] = pack_i32(m.roughness_tex);
-    a[30] = pack_i32(m.normal_tex);
-    // POM (parallax occlusion mapping) inputs. a[31]/a[32]/a[33] map to the
-    // MaterialData std430 slots displacement_tex / displacement_scale /
-    // displacement_midlevel (material_types.slang:69-71). Was hard-wired OFF
-    // (a[31] = -1, scale implicitly 0) so the megakernel's POM gate
-    // (`mat.displacement_tex >= 0`) never fired. Now routes the cooked
-    // single-channel height map id + a sensible relief depth.
-    a[31] = pack_i32(m.displacement_tex); // displacement_tex (-1 = off)
-    a[32] = if m.displacement_tex >= 0 {
-        m.displacement_scale
-    } else {
-        0.0
-    }; // displacement_scale (UV-height units; ~0.02–0.05 m brick relief)
-    a[33] = m.displacement_midlevel; // displacement_midlevel (0.5 = surface plane)
-    a[41] = 1.0; // hair_tangent.y
-    // spd_slot (std430 slot 43, the former _hair_tangent_pad): -1 = no cooked
-    // 16-band SPD → the kernel keeps the rgb_to_spectral uplift. Leaving this
-    // 0 would make EVERY material sample SPD row 0 (all-1.0 default) and
-    // rescale reflectance by 1/luminance — a global brightness corruption.
-    // The spectra uploader stamps the real row index for materials that carry
-    // a cooked SPD (spectra-scene-upload stamp_spd_slots).
-    a[43] = pack_i32(0); // 1-biased: 0 = no cooked SPD
-
-    a[44] = 0.3;
-    a[45] = 0.2;
-    a[46] = 0.1;
-    a[47] = 0.005;
-    a[48] = 1.376;
-    a[52] = 0.9;
-    a[53] = 0.88;
-    a[54] = 0.85;
-    a[55] = 0.35;
-    a[57] = 1.0; // thin_film_ior
-
-    a[58] = pack_u32(0); // is_holdout
-    a[59] = pack_u32(0xFFFF_FFFF); // light_inclusion_mask
-    a[60] = pack_u32(0); // light_exclusion_mask
-    a[61] = pack_u32(0xFF); // visibility_mask
-    a[72] = pack_i32(m.opacity_tex); // opacity_tex (-1 = opaque; == albedo_tex => foliage alpha-cutout on base-color .w)
-    a[73] = pack_i32(if glass && m.thin_walled { 1 } else { 0 }); // thin_walled
-
-    a[74] = 1.0; // diffuse_weight
-    a[76] = 0.3; // specular_weight
-    a[84] = 0.5;
-    a[85] = 0.5;
-    a[86] = 0.5;
-    a[88] = 1.0;
-    a[89] = 1.0;
-    a[90] = 1.0;
-    a[91] = 0.3;
-    a[92] = 1.0; // energy_conservation
-    a[94] = m.uv_scale[0];
-    a[95] = m.uv_scale[1];
-    a[99] = pack_u32(0); // layer_count
-
-    for layer in 0..6 {
-        let color = 100 + layer * 4;
-        a[color] = 0.5;
-        a[color + 1] = 0.5;
-        a[color + 2] = 0.5;
-        a[124 + layer] = 0.5;
-        a[130 + layer] = 1.0;
-        a[136 + layer] = pack_u32(0);
-    }
-
-    a[144] = 0.5;
-    a[145] = 0.5;
-    a[146] = 0.5;
-    a[147] = 0.5;
-    a[148] = pack_i32(0);
-    a[149] = pack_i32(0);
-    a[150] = pack_i32(-1);
-    a[151] = 0.5;
-
-    a
+pub(crate) fn pack_vulkan_directional_light(
+    direction: [f32; 3],
+    color: [f32; 3],
+    intensity: f32,
+) -> [f32; LIGHT_FLOATS] {
+    pack_directional_light(direction, color, intensity)
 }
 
-/// Pack `PbrMaterial` into the CUDA `MaterialData` tight layout: 132 floats /
-/// 528 bytes, field-for-field with `slang/material_types.slang` as the
-/// NVRTC-compiled kernel sees it. This is the COUNTERPART to
-/// [`pack_vulkan_mesh_material`] (156-float SPIR-V std430 stride).
-///
-/// Why both exist: the same Slang `MaterialData` struct compiles to DIFFERENT
-/// strides on the two backends — Vulkan std430 pads every `float3` to 16 bytes
-/// (156 floats), CUDA packs tight (132 floats). Feeding the Vulkan-packed buffer
-/// to the CUDA kernel put `visibility_mask` / `albedo` / texture ids in the wrong
-/// slots, so every mesh hit read a garbage `visibility_mask`, failed the
-/// `(visibility_mask & u_ray_type) != 0` test, and was culled as invisible — the
-/// whole city rendered black. We delegate the exact 132-float layout to the
-/// canonical packer in `spectra_scene_data::MaterialData::to_f32_array()` (the
-/// single source of truth that mirrors the Slang struct), then override the
-/// material `type` slot for glass/metal (to_f32_array hardcodes MAT_LAMBERT).
+/// Pack `PbrMaterial` into Spectra's canonical 132-float `MaterialData` ABI.
+/// Vulkan compiles with scalar block layout, so CUDA and Vulkan consume the
+/// same bytes and no backend-specific material conversion is allowed here.
 #[cfg(feature = "spectra-native")]
-pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
+pub fn pack_mesh_material(m: PbrMaterial) -> [f32; MATERIAL_FLOATS] {
     use spectra_scene_data::MaterialData;
     let glass = m.transmission > 0.0;
     let water = glass && m.is_water;
@@ -3713,8 +3499,7 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     md.roughness = m.roughness;
     md.metallic = m.metallic;
     md.ior = m.ior;
-    // Emission colour = base colour, scaled by strength (matches the Vulkan
-    // packer's emission slots). Zero strength ⇒ no glow, so this is harmless for
+    // Emission colour = base colour, scaled by strength. Zero strength is harmless for
     // opaque facades and lights emissive materials (street lamps) correctly.
     md.emission = m.base_color;
     md.emission_strength = m.emission_strength;
@@ -3728,8 +3513,7 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     // [0] int type — to_f32_array writes MAT_LAMBERT(1); honour water/glass/metal.
     // MAT_WATER (21) keeps the glass absorption packing below (it is still `glass`).
     // Base-color-alpha foliage → MAT_VEGETATION (20). Other opaque surfaces →
-    // MAT_OPENPBR (16), MIRRORING the Vulkan packer's content-based
-    // selection (`pack_vulkan_mesh_material`): MAT_LAMBERT ignored roughness +
+    // MAT_OPENPBR (16): MAT_LAMBERT ignored roughness +
     // metallic entirely, so the shipped CUDA/box path flattened every opaque
     // facade/roof/ground to a pure diffuse. OpenPBR here reads the SAME already-
     // packed canonical slots — albedo [1-3], roughness [4], metallic [6], ior [7]
@@ -3750,16 +3534,12 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     } else {
         16u32 // MAT_OPENPBR (was MAT_LAMBERT — dropped roughness/metallic)
     });
-    // POM / cone-step RELIEF + glass ABSORPTION + UV scale on the CUDA (box)
-    // path. `MaterialData::to_f32_array()` HARDCODES slots [19-22] (absorption),
+    // POM / cone-step relief + glass absorption + UV scale. The canonical
+    // `MaterialData::to_f32_array()` hardcodes slots [19-22] (absorption),
     // [23-28] (texture ids + displacement) and [80-81] (uv_scale) to clear/off
     // — it has no struct fields for displacement/absorption/uv_scale — so the
-    // shipped box render never enabled POM (displacement_tex stayed -1, the
-    // megakernel POM gate `mat.displacement_tex >= 0` never fired) and glass was
-    // always perfectly clear (→ black interior). The Vulkan packer
-    // (`pack_vulkan_mesh_material` a[24-33]/a[94-95]) already routes these; mirror
-    // it field-for-field here so the box path gets relief-mapped facades + tinted
-    // reflective glass. Slot indices are the canonical f32-array layout asserted
+    // renderer would otherwise never enable POM or glass absorption. Slot indices
+    // are the canonical f32-array layout asserted
     // by `spectra-scene-data/src/material.rs` (the single source of truth).
     if glass {
         v[19] = m.absorption_color[0]; // absorption_color.r
@@ -3785,7 +3565,18 @@ pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
     // opaque facades byte-identical. Slot 60 is the canonical f32-array index
     // asserted in spectra-scene-data/src/material.rs ("opacity_tex", 60).
     v[60] = f32::from_bits(m.opacity_tex as u32);
-    v
+    v.try_into()
+        .expect("spectra_scene_data material packer must keep the 132-float ABI")
+}
+
+#[cfg(feature = "spectra-native")]
+pub fn pack_cuda_mesh_material(m: PbrMaterial) -> Vec<f32> {
+    pack_mesh_material(m).to_vec()
+}
+
+#[cfg(feature = "spectra-native")]
+pub fn pack_vulkan_mesh_material(m: PbrMaterial) -> [f32; MATERIAL_FLOATS] {
+    pack_mesh_material(m)
 }
 
 #[cfg(all(test, feature = "spectra-native"))]

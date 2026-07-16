@@ -29,8 +29,7 @@ use vox_core::types::GaussianSplat;
 
 #[cfg(feature = "spectra-native")]
 use crate::splat_backend::{
-    BlasDesc, InstanceRecordGpu, PbrMaterial, VULKAN_MATERIAL_FLOATS, pack_cuda_mesh_material,
-    pack_vulkan_mesh_material,
+    BlasDesc, InstanceRecordGpu, MATERIAL_FLOATS, PbrMaterial, pack_mesh_material,
 };
 
 /// One quad = 4 vertices, 2 triangles (6 indices).
@@ -298,10 +297,8 @@ pub fn splats_to_lit_scene(
 /// relative material id, so two instances of the SAME BLAS shade with DIFFERENT
 /// materials WHILE per-triangle multi-material is preserved (design §4.1).
 ///
-/// Materials are packed with [`pack_vulkan_mesh_material`] — the proven
-/// **156-float Vulkan stride** (`materials.params.len() == materials.len() *
-/// 156`), NEVER the 132-float CUDA `MaterialData` (the "black silhouettes"
-/// landmine). `spectral_spd` populates `MaterialLayer::spectral_spd[material_id]`
+/// Materials use Spectra's canonical 132-float scalar-layout ABI on every
+/// backend. `spectral_spd` populates `MaterialLayer::spectral_spd[material_id]`
 /// with the real 16-band reflectance (empty ⇒ no entry ⇒ white, spectral off).
 ///
 /// Geometry: prototype meshes are laid out contiguously into one SceneState
@@ -484,33 +481,11 @@ pub fn meshes_to_instanced_scene(
         instance_proto_index.push(inst.proto_index);
     }
 
-    // --- Materials: per-backend stride ---
-    // The Slang `MaterialData` struct compiles to DIFFERENT memory layouts on the
-    // two backends: CUDA (NVRTC) packs tight (132 floats / 528 bytes); Vulkan
-    // (SPIR-V std430) pads every float3 to 16 bytes (156 floats / 624 bytes).
-    // Pack the layout that matches the backend the renderer will actually select.
-    // Resident rendering selects CUDA on Windows at the type level
-    // (`resident_renderer::ResidentBackend = CudarcSlangBackend`). Do not depend
-    // on launcher env for this ABI: a missing `SPECTRA_BACKEND=cuda` would pack
-    // Vulkan/std430 material rows for CUDA kernels and shift every field after
-    // the first float3. Keep an explicit env override for diagnostic runs.
-    let cuda_layout = std::env::var("SPECTRA_BACKEND")
-        .ok()
-        .map(|s| s.eq_ignore_ascii_case("cuda"))
-        .unwrap_or(cfg!(target_os = "windows"));
-    let params: Vec<f32> = if cuda_layout {
-        let mut p = Vec::with_capacity(materials.len() * 132);
-        for m in materials {
-            p.extend_from_slice(&pack_cuda_mesh_material(*m));
-        }
-        p
-    } else {
-        let mut p = Vec::with_capacity(materials.len() * VULKAN_MATERIAL_FLOATS);
-        for m in materials {
-            p.extend_from_slice(&pack_vulkan_mesh_material(*m));
-        }
-        p
-    };
+    // --- Materials: one backend-independent scalar-layout ABI ---
+    let mut params = Vec::with_capacity(materials.len() * MATERIAL_FLOATS);
+    for material in materials {
+        params.extend_from_slice(&pack_mesh_material(*material));
+    }
 
     // --- Spectral SPD keyed by stable material_id (empty ⇒ white) ---
     let mut spd_map = std::collections::HashMap::with_capacity(spectral_spd.len());

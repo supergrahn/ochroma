@@ -16,6 +16,10 @@ use crate::render_runtime::frame::{beauty_to_rgba8, interop_dims};
 use crate::render_runtime::terrain::TerrainUpload;
 use crate::resident_renderer::FidelityTier;
 use crate::resident_renderer::{ResidentSceneRenderer, SceneSyncReport};
+#[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
+use crate::render_runtime::present::{
+    DeviceFrame, DevicePixelOrder, DeviceTemporalFrame, VulkanPixelOrder,
+};
 use crate::scene_delta_adapter::RetainedDeltaPlan;
 use crate::spectral::RenderCamera;
 use vox_scene::NodeId;
@@ -70,6 +74,18 @@ pub struct GpuPresentResult {
     /// True when this present applied at least one TLAS refit.
     pub refit: bool,
 }
+
+#[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
+pub struct DevicePresentResult {
+    pub frame: DeviceFrame,
+    pub sync: SceneSyncReport,
+    pub plan: RetainedDeltaPlan,
+    pub delta_apply_ms: f64,
+    pub render_ms: f64,
+    pub refit: bool,
+}
+
+pub type VulkanPresentResult = DevicePresentResult;
 
 /// Construct-once render service wrapping a resident renderer.
 pub struct RenderRuntime {
@@ -218,6 +234,87 @@ impl RenderRuntime {
         })
     }
 
+    /// Same-device Vulkan/Metal present path. Spectra resolves the frame into a
+    /// renderer-owned RGBA8/BGRA8 GPU buffer; the presenter consumes that handle
+    /// directly without host beauty conversion or staging upload.
+    #[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
+    pub fn render_and_present_device(
+        &mut self,
+        deltas: &mut Vec<vox_scene::SceneDelta>,
+        camera: &RenderCamera,
+        pixel_order: DevicePixelOrder,
+        display: (u32, u32),
+        reset_history: bool,
+    ) -> Result<DevicePresentResult, String> {
+        use crate::resident_renderer::RenderTarget;
+        let target = RenderTarget::DeviceBuffer {
+            bgra: pixel_order.is_bgra(),
+        };
+        if self.renderer.render_target() != target {
+            self.renderer.set_render_target(target);
+        }
+
+        let delta_t = std::time::Instant::now();
+        let plan = self.renderer.drain_scene_deltas(deltas)?;
+        let delta_apply_ms = elapsed_ms(delta_t);
+        let sync = self.renderer.reused_delta();
+        let refit = plan.stats.refits > 0;
+        let render_t = std::time::Instant::now();
+        let rendered = self
+            .renderer
+            .render_camera(camera.view.to_cols_array(), camera.proj.to_cols_array())?;
+        let render_ms = elapsed_ms(render_t);
+        let buffer = self
+            .renderer
+            .last_device_ldr_buffer()
+            .ok_or_else(|| "renderer produced no device frame".to_string())?;
+        let (render_width, render_height) = interop_dims(&rendered, self.iw, self.ih);
+        #[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
+        let backend_identity = self.renderer.metal_backend_identity();
+        #[cfg(not(all(target_os = "macos", feature = "spectra-native-metal")))]
+        let backend_identity = self.renderer.vulkan_backend_identity();
+        let mut frame = DeviceFrame::new(
+            buffer,
+            backend_identity,
+            pixel_order,
+            (render_width, render_height),
+            display,
+            reset_history,
+        );
+        if let Some(temporal) = self.renderer.last_vulkan_reconstruction() {
+            frame = frame.with_temporal(
+                DeviceTemporalFrame::new(
+                    temporal.color,
+                    temporal.depth,
+                    temporal.motion,
+                    temporal.jitter,
+                    temporal.projection,
+                )
+                .with_reactive(temporal.reactive),
+            );
+        }
+        Ok(DevicePresentResult {
+            frame,
+            sync,
+            plan,
+            delta_apply_ms,
+            render_ms,
+            refit,
+        })
+    }
+
+    #[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
+    pub fn render_and_present_vulkan(
+        &mut self,
+        deltas: &mut Vec<vox_scene::SceneDelta>,
+        camera: &RenderCamera,
+        pixel_order: VulkanPixelOrder,
+        display: (u32, u32),
+        reset_history: bool,
+    ) -> Result<VulkanPresentResult, String> {
+        self.render_and_present_device(deltas, camera, pixel_order, display, reset_history)
+    }
+
     /// RR (DLSS Ray Reconstruction) guide device pointers for the frame the last
     /// GPU present produced, packed into the present's `RrGuides`.
     ///
@@ -350,19 +447,33 @@ impl RenderRuntime {
     /// `spray_upload.` → `upload.`).
     pub fn set_terrain(&mut self, upload: &TerrainUpload) -> Result<(), String> {
         if !upload.packed.is_empty() {
+            let channel_count =
+                upload.channel_slots.len() / vox_core::spray::CHANNEL_SLOT_INTS;
+            if !upload.channel_uv_scales.is_empty()
+                && upload.channel_uv_scales.len()
+                    != channel_count * vox_core::spray::CHANNEL_UV_FLOATS
+            {
+                return Err(format!(
+                    "terrain channel UV contract mismatch: {} floats for {channel_count} channels (expected {})",
+                    upload.channel_uv_scales.len(),
+                    channel_count * vox_core::spray::CHANNEL_UV_FLOATS
+                ));
+            }
             self.renderer.set_spray_field(
                 &upload.packed,
                 upload.res,
                 upload.origin,
                 upload.cell_size,
                 &upload.channel_slots,
+                &upload.channel_uv_scales,
             )?;
             eprintln!(
-                "[spray] field uploaded: {}x{} cells @ {:.2}m, {} channels",
+                "[spray] field uploaded: {}x{} cells @ {:.2}m, {} channels, {} UV-scale pairs",
                 upload.res[0],
                 upload.res[1],
                 upload.cell_size,
-                upload.channel_slots.len() / 8
+                channel_count,
+                upload.channel_uv_scales.len() / vox_core::spray::CHANNEL_UV_FLOATS
             );
         }
         self.renderer.set_slope_layers(

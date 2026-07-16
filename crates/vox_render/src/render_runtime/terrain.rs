@@ -24,6 +24,10 @@ pub struct TerrainUpload {
     /// (-1 = none). The game fills [1..3]/[4..7] only when its ground-detail
     /// toggles are on; otherwise they are -1 and the kernel skips that path.
     pub channel_slots: Vec<i32>,
+    /// 2 f32 per spray channel: `[base_uv_per_m, overlay_uv_per_m]`. Keeping this
+    /// beside the slots preserves each map-owned material's real-world scale;
+    /// empty means the shader falls back to the terrain mesh scale.
+    pub channel_uv_scales: Vec<f32>,
     /// GROUND MACRO VARIATION: atlas slot of ONE global aerial-scale albedo the
     /// ground lerps toward with distance (keeps meso-scale patchiness resolving
     /// at aerial range where the ~1 m detail tile mips to a flat average). `-1`
@@ -116,6 +120,7 @@ impl Default for TerrainUpload {
             origin: [0.0, 0.0],
             cell_size: 0.0,
             channel_slots: Vec::new(),
+            channel_uv_scales: Vec::new(),
             // Macro layer OFF by default (-1 slot / 0 blend) — byte-identical for
             // any game that does not fill it.
             ground_macro_slot: -1,

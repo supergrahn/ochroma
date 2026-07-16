@@ -406,37 +406,25 @@ fn forge_facade_zoning_closeup() {
 /// VEHICLE PBR SEAM (packer side): a material carrying `metallic = 0.9` (a
 /// per-mesh `HybridMesh::metallic_override` forced by the game's
 /// `mesh_to_blas_material`/`mesh_to_material`) must pack as MAT_METAL (2) with
-/// the exact metallic value in BOTH backend layouts, and the emission strength
+/// the exact metallic value in the shared backend layout, and the emission strength
 /// must land in its slot — real packed slot values, not is_some().
 #[test]
-fn metallic_override_packs_mat_metal_in_both_backends() {
+fn metallic_override_packs_mat_metal_in_canonical_layout() {
     let m = PbrMaterial {
         metallic: 0.9,
         emission_strength: 2.5,
         ..PbrMaterial::default()
     };
 
-    // Vulkan SPIR-V std430 layout: type a[0] (bit-packed u32), metallic a[9],
-    // emission_strength a[23].
-    let a = pack_vulkan_mesh_material(m);
+    let a = pack_mesh_material(m);
     assert_eq!(
         a[0].to_bits(),
         2,
-        "vulkan: metallic 0.9 must select MAT_METAL (2), got type {}",
+        "metallic 0.9 must select MAT_METAL (2), got type {}",
         a[0].to_bits()
     );
-    assert_eq!(a[9], 0.9, "vulkan metallic slot");
-    assert_eq!(a[23], 2.5, "vulkan emission_strength slot");
-
-    // CUDA tight layout (canonical to_f32_array): type v[0], metallic v[6].
-    let v = pack_cuda_mesh_material(m);
-    assert_eq!(
-        v[0].to_bits(),
-        2,
-        "cuda: metallic 0.9 must select MAT_METAL (2), got type {}",
-        v[0].to_bits()
-    );
-    assert_eq!(v[6], 0.9, "cuda metallic slot");
+    assert_eq!(a[6], 0.9, "metallic slot");
+    assert_eq!(a[18], 2.5, "emission_strength slot");
 
     // Below the conductor threshold the same material stays MAT_OPENPBR (16)
     // but still carries its metallic for the OpenPBR lobe.
@@ -444,7 +432,7 @@ fn metallic_override_packs_mat_metal_in_both_backends() {
         metallic: 0.3,
         ..PbrMaterial::default()
     };
-    let d = pack_vulkan_mesh_material(dielectric);
+    let d = pack_mesh_material(dielectric);
     assert_eq!(d[0].to_bits(), 16, "metallic 0.3 stays MAT_OPENPBR");
-    assert_eq!(d[9], 0.3, "sub-threshold metallic still packed");
+    assert_eq!(d[6], 0.3, "sub-threshold metallic still packed");
 }

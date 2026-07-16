@@ -191,12 +191,12 @@ fn per_instance_material() {
         H,
     );
 
-    // 156-float Vulkan stride (NEVER 132-float CUDA) + counts.
+    // One 132-float material ABI on CUDA and Vulkan.
     assert_eq!(scene.materials.material_count, 2, "two materials");
     assert_eq!(
         scene.materials.params.len(),
-        2 * 156,
-        "must use the 156-float Vulkan material stride, got {}",
+        2 * 132,
+        "must use the canonical 132-float material stride, got {}",
         scene.materials.params.len()
     );
     assert_eq!(scene.geometry.instance_count, 2, "two instances");

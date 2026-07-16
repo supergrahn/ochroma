@@ -38,7 +38,7 @@ spectra-gaussian-render = { path = "../../../spectra/rust/spectra-gaussian-rende
 # dev box). The CUDA-box `spectra-native` feature re-adds cuda/ocio/dlss/optix-rt
 # explicitly; the Vulkan-only `spectra-native-vulkan` feature adds only `ocio`.
 spectra-renderer = { path = "../../../spectra/rust/spectra-renderer", optional = true, default-features = false }
-spectra-gpu = { path = "../../../spectra/rust/spectra-gpu", optional = true }
+spectra-gpu = { path = "../../../spectra/rust/spectra-gpu", optional = true, default-features = false }
 spectra-types = { path = "../../../spectra/rust/spectra-types" }
 spectra-scene-state = { path = "../../../spectra/rust/spectra-scene-state", optional = true }
 spectra-scene-data = { path = "../../../spectra/rust/spectra-scene-data", optional = true }
@@ -107,6 +107,12 @@ spectra-native-optix = [
     "spectra-renderer/cuda",
     "spectra-renderer/dlss",
     "spectra-renderer/optix-rt",
+]
+spectra-native-metal = [
+    "spectra-native",
+    "spectra-gpu/metal-backend",
+    "spectra-renderer/metal",
+    "spectra-present/metal",
 ]
 # THE LAW (no-rasterizer, WC7): the banned non-Spectra rendering stacks were
 # EXCISED from the source tree — the GPU splat RASTERIZER (gpu::tiled_splat_

@@ -490,9 +490,9 @@ fn mesh_craftsman_textured_lit() {
 /// pixels show is, by construction, content from BEHIND the glass.
 ///
 /// Gates (each render 256x256 @ 32 spp — SECONDS, printed):
-///   (packing) the glass material packs a[0]=MAT_GLASS(3), a[10]=ior,
-///       a[24..27]=absorption_color (0,0,0), a[27]=absorption_depth 1.0,
-///       a[73]=thin_walled — the Vulkan MaterialData reflection slots,
+///   (packing) the glass material packs a[0]=MAT_GLASS(3), a[7]=ior,
+///       a[19..22]=absorption_color (0,0,0), a[22]=absorption_depth 1.0,
+///       a[61]=thin_walled — the canonical MaterialData slots,
 ///       carrying the EXACT parameter set the proven SDF window path
 ///       passes to sample_glass in megakernel.slang
 ///       (`sample_glass(wo, n, 1.5, rough, float3(0.0f), 1.0f, ...)`);
@@ -532,30 +532,30 @@ fn mesh_glass_transmits_checkerboard() {
         thin_walled: false,
         ..Default::default()
     };
-    let packed = super::pack_vulkan_mesh_material(glass_mat);
+    let packed = super::pack_mesh_material(glass_mat);
     assert_eq!(packed[0].to_bits(), 3, "a[0] must pack MAT_GLASS (3)");
-    assert_eq!(packed[10], 1.5, "a[10] must carry the glass ior");
+    assert_eq!(packed[7], 1.5, "a[7] must carry the glass ior");
     assert_eq!(
-        &packed[24..28],
+        &packed[19..23],
         &[0.0, 0.0, 0.0, 1.0],
-        "a[24..28] must carry absorption_color (0,0,0) + absorption_depth \
+        "a[19..23] must carry absorption_color (0,0,0) + absorption_depth \
              1.0 — the SDF window reference's sample_glass arguments"
     );
     assert_eq!(
-        packed[73].to_bits(),
+        packed[61].to_bits(),
         0,
-        "a[73] thin_walled = 0 (refractive)"
+        "a[61] thin_walled = 0 (refractive)"
     );
-    let packed_thin = super::pack_vulkan_mesh_material(PbrMaterial {
+    let packed_thin = super::pack_mesh_material(PbrMaterial {
         thin_walled: true,
         ..glass_mat
     });
     assert_eq!(
-        packed_thin[73].to_bits(),
+        packed_thin[61].to_bits(),
         1,
-        "thin_walled = true must land in a[73] (the MaterialData thin_walled slot)"
+        "thin_walled = true must land in a[61] (the MaterialData thin_walled slot)"
     );
-    let packed_opaque = super::pack_vulkan_mesh_material(PbrMaterial::default());
+    let packed_opaque = super::pack_mesh_material(PbrMaterial::default());
     assert_eq!(
         packed_opaque[0].to_bits(),
         16,
@@ -563,24 +563,24 @@ fn mesh_glass_transmits_checkerboard() {
              opaque selection (roughness/metallic honoured; was MAT_LAMBERT)"
     );
     assert_eq!(
-        packed_opaque[10], 1.5,
+        packed_opaque[7], 1.5,
         "default ior must reproduce the old hardcoded 1.5 byte-for-byte"
     );
     assert_eq!(
-        &packed_opaque[24..28],
+        &packed_opaque[19..23],
         &[0.0; 4],
         "opaque materials must leave the absorption slots zeroed (historical)"
     );
     eprintln!(
-        "[glass] packer: type {} in a[0], ior {} in a[10], absorption \
-             [{},{},{}]/{} in a[24..28], thin_walled {} in a[73]",
+        "[glass] packer: type {} in a[0], ior {} in a[7], absorption \
+             [{},{},{}]/{} in a[19..23], thin_walled {} in a[61]",
         packed[0].to_bits(),
-        packed[10],
-        packed[24],
-        packed[25],
-        packed[26],
-        packed[27],
-        packed[73].to_bits()
+        packed[7],
+        packed[19],
+        packed[20],
+        packed[21],
+        packed[22],
+        packed[61].to_bits()
     );
 
     // --- The trivial scene: emissive checker wall + glass slab. ---------
@@ -892,9 +892,9 @@ fn mesh_glass_transmits_checkerboard() {
         pass,
         "checkerboard behind the glass does not show through (transmissive \
              r {rt:.3}, opaque control r {ro:.3}; need rt > 0.5 and rt >= 3x ro) \
-             — check the MAT_GLASS slot layout in pack_vulkan_mesh_material \
-             (type a[0], ior a[10], absorption a[24..28], thin_walled a[73]) \
-             against material_types.slang's Vulkan reflection layout"
+             — check the MAT_GLASS slot layout in pack_mesh_material \
+             (type a[0], ior a[7], absorption a[19..23], thin_walled a[61]) \
+             against material_types.slang's canonical scalar layout"
     );
 
     // --- ONE craftsman demo render (eyeball-only, no gate): the cooked

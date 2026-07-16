@@ -20,8 +20,14 @@
 
 #[cfg(all(target_os = "windows", feature = "spectra-native-optix"))]
 use spectra_gpu::CudarcSlangBackend;
-#[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
-use spectra_gpu::VulkanSlangBackend;
+use spectra_gpu::GpuBufferHandle;
+#[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
+use spectra_gpu::SharedMetalBackend;
+#[cfg(not(any(
+    all(target_os = "windows", feature = "spectra-native-optix"),
+    all(target_os = "macos", feature = "spectra-native-metal")
+)))]
+use spectra_gpu::SharedVulkanBackend;
 pub use spectra_renderer::FrameOutput;
 use spectra_renderer::{RenderConfig, RenderSettings, Renderer, RendererTexture2D};
 
@@ -34,8 +40,13 @@ use spectra_renderer::{RenderConfig, RenderSettings, Renderer, RendererTexture2D
 /// window present is a separate, thin swapchain (display only), independent of this.
 #[cfg(all(target_os = "windows", feature = "spectra-native-optix"))]
 type ResidentBackend = CudarcSlangBackend;
-#[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
-type ResidentBackend = VulkanSlangBackend;
+#[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
+type ResidentBackend = SharedMetalBackend;
+#[cfg(not(any(
+    all(target_os = "windows", feature = "spectra-native-optix"),
+    all(target_os = "macos", feature = "spectra-native-metal")
+)))]
+type ResidentBackend = SharedVulkanBackend;
 use spectra_scene_state::{GpuSceneCmd, LightLayer, SceneDeltaRing, SceneState};
 
 /// Re-export the R31 fidelity tier and tier-table types so the game layer can
@@ -47,9 +58,8 @@ pub use spectra_renderer::{TierEntry, TierTable, UpscalerMode, UpscalerQuality};
 
 use crate::scene_delta_adapter::{RetainedDeltaError, RetainedDeltaPlan, RetainedRenderMirror};
 use crate::splat_backend::{
-    pack_vulkan_directional_light, pack_vulkan_point_light, pack_vulkan_sun_disk_light,
-    resolve_slang_kernel_dir, rig_to_settings, seed_features_from_config, sun_solid_angle,
-    LightRig, VULKAN_LIGHT_FLOATS,
+    pack_directional_light, pack_point_light, pack_sun_disk_light, resolve_slang_kernel_dir,
+    rig_to_settings, seed_features_from_config, sun_solid_angle, LightRig, LIGHT_FLOATS,
 };
 
 /// Result of a scene-delta upload — the reuse-vs-rebuild proof.
@@ -240,6 +250,7 @@ impl ResidentSceneRenderer {
         settings.features.spectral = tier_settings.features.spectral.clone();
         settings.features.restir = tier_settings.features.restir.clone();
         config.apply_settings(&settings);
+        config.spectral_mode = spectra_renderer::SpectralMode::Hero4;
         config.max_bounces = max_bounces;
 
         // NRC world-space radiance cache (online-trained; the inline shade hook
@@ -531,31 +542,6 @@ impl ResidentSceneRenderer {
             config.target_spp = spp_sel;
             eprintln!("[spp-override] SPECTRA_SHOT_SPP={spp_sel} -> target_spp={spp_sel}");
         }
-        // SPECTRAL MODE (16-band Hero4 by default). The old dodge here forced
-        // SpectralMode::Single to avoid "black buildings" under Hero4. That
-        // premise is now STALE: the original black-buildings cause was the
-        // CORE-SUN RGB-lighting fix (spectra feabf3a), which routes building
-        // light unconditionally into the RGB film in BOTH spectral modes. The
-        // remaining issue was that the spectral XYZ film was WRITE-ONLY on every
-        // shipping path (never resolved), so Hero4 was plumbed-but-inert. That is
-        // now fixed in spectra: the present + host-beauty resolves drive
-        // u_spectral_blend from spectral_mode and fold the spectral CHROMA over
-        // the RGB MAGNITUDE (luminance-preserving — see film.slang), so Hero4 can
-        // never collapse a lit surface to black. Default to Hero4 (richer
-        // metameric chroma); keep Single reachable for A/B via OCHROMA_SPECTRAL.
-        //   OCHROMA_SPECTRAL=single|0|off  -> scalar single-wavelength path
-        //   OCHROMA_SPECTRAL=multi|hero4|1 -> 16-band Hero4 (default)
-        // env OCHROMA_SPECTRAL > config spectral_mode (default "hero4"). Any value
-        // other than single/0/off selects the 16-band Hero4 path.
-        let spectral_sel = std::env::var("OCHROMA_SPECTRAL")
-            .ok()
-            .unwrap_or_else(|| rcfg.spectral_mode.clone());
-        config.spectral_mode = match spectral_sel.as_str() {
-            "single" | "0" | "off" => spectra_renderer::SpectralMode::Single,
-            // multi / hero4 / 1 all select the spectral path
-            _ => spectra_renderer::SpectralMode::Hero4,
-        };
-
         // TDR GUARD (Windows WDDM 2s GPU watchdog): bound every path-trace
         // dispatch so no single launch trips the watchdog and kills the first
         // heavy city frame with DXGI_ERROR_DEVICE_HUNG (0x887A0007). The renderer
@@ -617,7 +603,7 @@ impl ResidentSceneRenderer {
             }
             _ => {}
         }
-        eprintln!("[ser] ser_enabled={}", config.ser_enabled);
+        eprintln!("[ser] requested={}", config.ser_enabled);
 
         let renderer = Renderer::new(gpu, config);
 
@@ -680,6 +666,7 @@ impl ResidentSceneRenderer {
         }
         if lighting_changed {
             self.renderer.reset_camera_accumulation();
+            self.renderer.reset_sharc_cache();
             eprintln!(
                 "[light-rig] lighting changed (sun_dir={:?} radiance={} night={}) -> film/temporal history reset (lighting-only, no scene rebuild)",
                 self.rig.sun_dir, self.rig.sun_radiance, self.rig.is_night
@@ -802,6 +789,8 @@ impl ResidentSceneRenderer {
     ///   `SPRAY_CH_STRIDE`. Layout `[base_albedo, base_normal, base_rough,
     ///   base_disp, overlay_albedo, overlay_alpha, overlay_normal, overlay_disp]`
     ///   (-1 = none). Uploaded verbatim; the shader interprets the stride.
+    /// - `channel_uv_scales`: 2 f32/channel `[base_uv_per_m, overlay_uv_per_m]`.
+    ///   Empty keeps compatibility by falling back to the mesh-wide ground UV.
     pub fn set_spray_field(
         &mut self,
         packed: &[u32],
@@ -809,9 +798,17 @@ impl ResidentSceneRenderer {
         origin: [f32; 2],
         cell_size: f32,
         channel_slots: &[i32],
+        channel_uv_scales: &[f32],
     ) -> Result<(), String> {
         self.renderer
-            .set_spray_field(packed, res, origin, cell_size, channel_slots)
+            .set_spray_field(
+                packed,
+                res,
+                origin,
+                cell_size,
+                channel_slots,
+                channel_uv_scales,
+            )
             .map_err(|e| format!("set_spray_field: {e:?}"))
     }
 
@@ -1157,6 +1154,7 @@ impl ResidentSceneRenderer {
         self.renderer
             .set_weathering_masks(&weathering_masks)
             .map_err(|e| format!("set_weathering_masks: {e:?}"))?;
+        self.renderer.reset_sharc_cache();
         self.renderer.reset_camera_accumulation();
         self.last_view_proj = None;
         self.last_projection = None;
@@ -1365,6 +1363,7 @@ impl ResidentSceneRenderer {
         // COMBINED view-projection as u_view_proj.
         self.renderer.set_camera_view_matrix(view);
         self.renderer.set_view_proj(view_proj);
+        self.renderer.set_projection_matrix(proj);
         self.renderer.render().map_err(|e| format!("render: {e:?}"))
     }
 
@@ -1436,6 +1435,7 @@ impl ResidentSceneRenderer {
     pub fn render_only(&mut self, view: [f32; 16], proj: [f32; 16]) -> Result<FrameOutput, String> {
         self.renderer.set_camera_view_matrix(view);
         self.renderer.set_view_proj(proj);
+        self.renderer.set_projection_matrix(proj);
         self.renderer.render().map_err(|e| format!("render: {e:?}"))
     }
 
@@ -1590,6 +1590,47 @@ impl ResidentSceneRenderer {
         self.renderer.last_pack_output_ptr()
     }
 
+    #[cfg(not(any(
+        all(target_os = "windows", feature = "spectra-native-optix"),
+        all(target_os = "macos", feature = "spectra-native-metal")
+    )))]
+    pub fn shared_vulkan_backend(&self) -> SharedVulkanBackend {
+        self.renderer.gpu.clone()
+    }
+
+    #[cfg(not(any(
+        all(target_os = "windows", feature = "spectra-native-optix"),
+        all(target_os = "macos", feature = "spectra-native-metal")
+    )))]
+    pub fn vulkan_backend_identity(&self) -> usize {
+        self.renderer.gpu.identity()
+    }
+
+    #[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
+    pub fn shared_metal_backend(&self) -> SharedMetalBackend {
+        self.renderer.gpu.clone()
+    }
+
+    #[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
+    pub fn metal_backend_identity(&self) -> usize {
+        self.renderer.gpu.identity()
+    }
+
+    #[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
+    pub fn last_device_ldr_buffer(&self) -> Option<GpuBufferHandle> {
+        self.renderer.last_device_ldr_buffer()
+    }
+
+    pub fn last_vulkan_reconstruction(
+        &self,
+    ) -> Option<spectra_renderer::renderer::VulkanReconstructionBuffers> {
+        self.renderer.last_vulkan_reconstruction()
+    }
+
+    pub fn last_denoise_execution(&self) -> spectra_renderer::DenoiseExecution {
+        self.renderer.last_denoise_execution()
+    }
+
     /// RR (DLSS Ray Reconstruction) guide device ptrs for the last frame, in the
     /// order `(diffuse_albedo, specular_albedo, normals, roughness, depth,
     /// motion)`. See `Renderer::rr_guide_ptrs`.
@@ -1689,8 +1730,7 @@ const MAT_WATER_TYPE: u32 = 21;
 /// floor the glass and water bounce budgets INDEPENDENTLY.
 ///
 /// Element 0 of every packed material is the material-type tag (a `u32` stored
-/// in an `f32` via `from_bits`/`pack_u32`) in BOTH the 132-float CUDA layout and
-/// the 156-float Vulkan layout, so the per-material stride is derived from
+/// in an `f32` via `from_bits`/`pack_u32`) in the canonical 132-float layout, so the per-material stride is derived from
 /// `params.len() / material_count` and element 0 of each material is decoded with
 /// `to_bits()`. Pure scan — no HashMap/RNG iteration, so it is deterministic.
 fn scene_has_mat_type(scene: &SceneState, want_ty: u32) -> bool {
@@ -1710,11 +1750,8 @@ fn scene_has_mat_type(scene: &SceneState, want_ty: u32) -> bool {
     })
 }
 
-/// Slot, in the 156-float Vulkan `MaterialData` layout, holding emission strength
-/// (`pack_vulkan_mesh_material` writes `a[23] = emission_strength`). The emission
-/// COLOR is the base color at slots 20..22 (also written by the packer).
-const MAT_EMISSION_SLOT: usize = 23;
-const MAT_EMISSION_COLOR_SLOT: usize = 20;
+const MAT_EMISSION_SLOT: usize = 18;
+const MAT_EMISSION_COLOR_SLOT: usize = 15;
 
 // CONFIG-FIRST: the night-NEE emitter cap (`instancing.max_emissive_point_lights`,
 // default 4096) and the per-emitter radiant-power scale (`resident_renderer.
@@ -1747,12 +1784,12 @@ fn build_light_layer_for_scene(
     let cam_fwd = scene_camera_forward(scene);
     let camera_fill = (-cam_fwd + glam::Vec3::Y * 0.35).normalize_or_zero();
     let rim_fill = glam::Vec3::new(-camera_fill.x, 0.55, -camera_fill.z).normalize_or_zero();
-    let mut light_data: Vec<f32> = Vec::with_capacity(4 * VULKAN_LIGHT_FLOATS);
+    let mut light_data: Vec<f32> = Vec::with_capacity(4 * LIGHT_FLOATS);
 
     // P1 — ONE PHYSICAL SUN. E_sun drives both the visible disk and NEE disk.
     let l_sun = rig.sun_radiance / sun_solid_angle();
     let day_light_count = if vox_config::config().resident_renderer.nee_day_lights {
-        light_data.extend_from_slice(&pack_vulkan_sun_disk_light(
+        light_data.extend_from_slice(&pack_sun_disk_light(
             sun.to_array(),
             rig.sun_color,
             l_sun,
@@ -1774,7 +1811,7 @@ fn build_light_layer_for_scene(
                 rig.rim_fill,
             ),
         ] {
-            light_data.extend_from_slice(&pack_vulkan_directional_light(dir, color, intensity));
+            light_data.extend_from_slice(&pack_directional_light(dir, color, intensity));
         }
         4
     } else {
@@ -1974,7 +2011,7 @@ fn emissive_point_lights(
         let wx = m[0] * local_center[0] + m[1] * local_center[1] + m[2] * local_center[2] + m[3];
         let wy = m[4] * local_center[0] + m[5] * local_center[1] + m[6] * local_center[2] + m[7];
         let wz = m[8] * local_center[0] + m[9] * local_center[1] + m[10] * local_center[2] + m[11];
-        out.extend_from_slice(&pack_vulkan_point_light(
+        out.extend_from_slice(&pack_point_light(
             [wx, wy, wz],
             color,
             best_em * scale,
