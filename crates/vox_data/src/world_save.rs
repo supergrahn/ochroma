@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorldSave {
     pub version: u32,
     pub engine_version: String,
@@ -10,6 +10,22 @@ pub struct WorldSave {
     pub scene_name: String,
     pub entities: Vec<SavedEntity>,
     pub resources: SavedResources,
+}
+
+// `PartialEq` is hand-written (not derived) so `timestamp` — wall-clock metadata —
+// is EXCLUDED from equality. Two saves of byte-identical world state must compare
+// equal regardless of when they were written; otherwise a save can never be used as
+// a state fingerprint (determinism moat: replay dedup / round-trip identity). The
+// timestamp still round-trips through Serialize/Deserialize; it just isn't semantic
+// state. NOTE: add any new *semantic* field here when the struct grows.
+impl PartialEq for WorldSave {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+            && self.engine_version == other.engine_version
+            && self.scene_name == other.scene_name
+            && self.entities == other.entities
+            && self.resources == other.resources
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

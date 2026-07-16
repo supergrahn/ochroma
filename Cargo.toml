@@ -22,8 +22,8 @@ members = [
     "crates/vox_nodes",
     "crates/vox_editor",
     "crates/ochroma_engine",
-    "crates/vox_web",
-    "crates/vox_ai",
+    # vox_web retired 2026-07-16 (audit): placeholder WebGPU canvas-clear, zero callers.
+    # vox_ai retired 2026-07-16 (audit): stub LLM/denoiser returning fake strings, zero callers.
     "crates/vox_aether",
 ]
 # vendor/shader-slang is a patched copy of the crates.io `shader-slang 0.1.0`
