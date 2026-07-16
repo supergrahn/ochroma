@@ -385,6 +385,21 @@ impl WaterField {
         }
     }
 
+    /// True once the last committed step reached equilibrium (no cell moved more
+    /// than `SETTLE_EPS`). While false the field is still filling/draining/advecting
+    /// and must be stepped every tick to reach equilibrium at the correct game-time
+    /// rate (the fill front spreads only ONE ring per step).
+    pub fn is_settled(&self) -> bool {
+        self.settled
+    }
+
+    /// True while a terraform edit is pending (the dirty set is non-empty), so the
+    /// caller must step the field on the next tick to couple the carve/raise even
+    /// off the coarse sampling cadence.
+    pub fn has_pending_terraform(&self) -> bool {
+        !self.dirty.is_empty()
+    }
+
     /// Advance the water field ONE tick. Deterministic, id-ordered, fixed-ε f64,
     /// no HashMap / RNG / wall-clock.
     ///
