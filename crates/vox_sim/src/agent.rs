@@ -1,11 +1,10 @@
 use glam::Vec3;
-use std::collections::HashMap;
-use uuid::Uuid;
+use std::collections::BTreeMap;
 use vox_core::lwc::WorldCoord;
 
 #[derive(Debug, Clone)]
 pub struct Agent {
-    pub id: Uuid,
+    pub id: u32,
     pub position: WorldCoord,
     pub velocity: Vec3,
     pub destination: Option<WorldCoord>,
@@ -13,9 +12,9 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(position: WorldCoord, speed: f32) -> Self {
+    pub fn new(id: u32, position: WorldCoord, speed: f32) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id,
             position,
             velocity: Vec3::ZERO,
             destination: None,
@@ -24,29 +23,39 @@ impl Agent {
     }
 }
 
+/// Spatial agents keyed by a monotonic `u32` id in a `BTreeMap`, so both storage
+/// and iteration order are DETERMINISTIC (id-ordered). This is a prerequisite for
+/// folding agent state into the replay hash: previously the keys were `Uuid::new_v4()`
+/// (OS entropy) in a `HashMap`, so iteration order was non-reproducible across
+/// processes — tolerated only because movement is order-independent and the key was
+/// never hashed. Keying by a monotonic id removes that latent determinism hazard.
 pub struct AgentManager {
-    agents: HashMap<Uuid, Agent>,
+    agents: BTreeMap<u32, Agent>,
+    next_id: u32,
 }
 
 impl AgentManager {
     pub fn new() -> Self {
         Self {
-            agents: HashMap::new(),
+            agents: BTreeMap::new(),
+            next_id: 0,
         }
     }
 
-    pub fn spawn(&mut self, position: WorldCoord, speed: f32) -> Uuid {
-        let agent = Agent::new(position, speed);
-        let id = agent.id;
-        self.agents.insert(id, agent);
+    /// Spawn an agent and return its stable monotonic id. Ids are never reused, so a
+    /// spawn/despawn churn cannot collide with a live agent.
+    pub fn spawn(&mut self, position: WorldCoord, speed: f32) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.agents.insert(id, Agent::new(id, position, speed));
         id
     }
 
-    pub fn get(&self, id: Uuid) -> Option<&Agent> {
+    pub fn get(&self, id: u32) -> Option<&Agent> {
         self.agents.get(&id)
     }
 
-    pub fn get_mut(&mut self, id: Uuid) -> Option<&mut Agent> {
+    pub fn get_mut(&mut self, id: u32) -> Option<&mut Agent> {
         self.agents.get_mut(&id)
     }
 
@@ -55,11 +64,11 @@ impl AgentManager {
     }
 
     /// Remove an agent by id. Returns the removed agent if it existed.
-    pub fn remove(&mut self, id: Uuid) -> Option<Agent> {
+    pub fn remove(&mut self, id: u32) -> Option<Agent> {
         self.agents.remove(&id)
     }
 
-    /// Iterate over all agents.
+    /// Iterate over all agents in deterministic id order.
     pub fn iter(&self) -> impl Iterator<Item = &Agent> {
         self.agents.values()
     }
