@@ -62,69 +62,93 @@ pub struct SpectraRenderBackend {
 pub(crate) fn resolve_slang_kernel_dir() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
 
-    if let Ok(d) = std::env::var("OCHROMA_SLANG_KERNEL_DIR") {
-        let p = PathBuf::from(d);
-        if p.is_dir() {
-            return Some(p);
+    #[cfg(feature = "aot-shaders")]
+    {
+        // A shipping binary accepts only the explicit/canonical runtime bundle.
+        // An invalid explicit path is terminal: never search a source checkout.
+        if let Ok(d) = std::env::var("OCHROMA_SLANG_KERNEL_DIR") {
+            let p = PathBuf::from(d);
+            return p.is_dir().then_some(p);
         }
+        if let Ok(root) = std::env::var("OCHROMA_RUNTIME_DIR") {
+            let p = PathBuf::from(root).join("renderer/kernels");
+            return p.is_dir().then_some(p);
+        }
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(exe_dir) = exe.parent()
+        {
+            let p = exe_dir.join("runtime/renderer/kernels");
+            return p.is_dir().then_some(p);
+        }
+        return None;
     }
 
-    if let Ok(root) = std::env::var("OCHROMA_RUNTIME_DIR") {
-        let root = PathBuf::from(root);
-        for rel in [
-            "renderer/kernels",
-            "renderer/spectra/slang",
-            "renderer/spectra/kernels",
-            "kernels",
-            "spectra/slang",
-            "spectra/kernels",
-            "runtime/renderer/kernels",
-            "runtime/renderer/spectra/slang",
-            "runtime/kernels",
-            "runtime/spectra/slang",
-        ] {
-            let p = root.join(rel);
+    #[cfg(not(feature = "aot-shaders"))]
+    {
+        if let Ok(d) = std::env::var("OCHROMA_SLANG_KERNEL_DIR") {
+            let p = PathBuf::from(d);
             if p.is_dir() {
                 return Some(p);
             }
         }
-    }
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            for root in [exe_dir.to_path_buf(), exe_dir.join("runtime")] {
-                for rel in [
-                    "renderer/kernels",
-                    "renderer/spectra/slang",
-                    "renderer/spectra/kernels",
-                    "kernels",
-                    "spectra/slang",
-                    "spectra/kernels",
-                ] {
-                    let p = root.join(rel);
-                    if p.is_dir() {
-                        return Some(p);
+        if let Ok(root) = std::env::var("OCHROMA_RUNTIME_DIR") {
+            let root = PathBuf::from(root);
+            for rel in [
+                "renderer/kernels",
+                "renderer/spectra/slang",
+                "renderer/spectra/kernels",
+                "kernels",
+                "spectra/slang",
+                "spectra/kernels",
+                "runtime/renderer/kernels",
+                "runtime/renderer/spectra/slang",
+                "runtime/kernels",
+                "runtime/spectra/slang",
+            ] {
+                let p = root.join(rel);
+                if p.is_dir() {
+                    return Some(p);
+                }
+            }
+        }
+
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                for root in [exe_dir.to_path_buf(), exe_dir.join("runtime")] {
+                    for rel in [
+                        "renderer/kernels",
+                        "renderer/spectra/slang",
+                        "renderer/spectra/kernels",
+                        "kernels",
+                        "spectra/slang",
+                        "spectra/kernels",
+                    ] {
+                        let p = root.join(rel);
+                        if p.is_dir() {
+                            return Some(p);
+                        }
                     }
                 }
             }
         }
-    }
 
-    if let Ok(d) = std::env::var("SPECTRA_SLANG_DIR") {
-        let p = PathBuf::from(d);
-        if p.is_dir() {
-            return Some(p);
+        if let Ok(d) = std::env::var("SPECTRA_SLANG_DIR") {
+            let p = PathBuf::from(d);
+            if p.is_dir() {
+                return Some(p);
+            }
         }
-    }
-    if let Ok(d) = std::env::var("SLANG_KERNEL_DIR") {
-        let p = PathBuf::from(d);
-        if p.is_dir() {
-            return Some(p);
+        if let Ok(d) = std::env::var("SLANG_KERNEL_DIR") {
+            let p = PathBuf::from(d);
+            if p.is_dir() {
+                return Some(p);
+            }
         }
-    }
 
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../spectra/slang");
-    p.is_dir().then_some(p)
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../spectra/slang");
+        p.is_dir().then_some(p)
+    }
 }
 
 /// One-shot still: **path-trace** `splats` from a camera at `eye` looking at
@@ -223,7 +247,16 @@ pub struct PbrMaterial {
     pub metallic: f32,
     pub emission_strength: f32,
     pub albedo_tex: i32,
+    /// Multiply the sampled base-color texture by `base_color` instead of
+    /// replacing it. This is the glTF-style factor x texture contract used by
+    /// authored vehicle micro-surface families whose neutral texture preserves
+    /// the exact per-vehicle paint/lens/glass colour.
+    pub modulate_base_color_texture: bool,
     pub roughness_tex: i32,
+    /// Multiply the sampled roughness map by `roughness`. Legacy atlas object
+    /// materials historically replaced the factor; authored vehicle/glTF PBR
+    /// uses factor x texture consistently across atlas and SVT paths.
+    pub modulate_roughness_texture: bool,
     pub normal_tex: i32,
     /// Opacity / alpha-cutout texture id (-1 = off / opaque). For foliage leaf
     /// cards (PolyHaven glTF), the leaf alpha is carried in the BASE-COLOR
@@ -287,7 +320,9 @@ impl Default for PbrMaterial {
             metallic: 0.0,
             emission_strength: 0.0,
             albedo_tex: -1,
+            modulate_base_color_texture: false,
             roughness_tex: -1,
+            modulate_roughness_texture: false,
             normal_tex: -1,
             opacity_tex: -1,
             vegetation_bsdf: false,
@@ -340,10 +375,10 @@ pub struct BlasDesc {
     /// COOKED per-vertex weathering masks — 7 floats per vertex, parallel to
     /// `positions` (`len == positions.len() * 7`), megakernel channel order
     /// `[moss, water_stain, paint_chip, rust, soot, efflorescence, edge_wear]`.
-    /// EMPTY (or mismatched — validated at merge) = scene assembly synthesizes
-    /// its geometry-anchored pattern for this proto's vertex range instead
-    /// (`build_weathering_pattern` in `splat_convert`). Carries the cook's
-    /// authored masks through the HybridMesh→BlasDesc seam.
+    /// Product/AOT conversion requires the exact stream, including explicit zero
+    /// masks for an intentionally clean proto, and hard-fails missing or malformed
+    /// data. Non-AOT diagnostics may retain deterministic legacy synthesis.
+    /// Carries the cook's authored masks through the HybridMesh→BlasDesc seam.
     pub weathering_masks: Vec<f32>,
 }
 
@@ -3565,6 +3600,13 @@ pub fn pack_mesh_material(m: PbrMaterial) -> [f32; MATERIAL_FLOATS] {
     // opaque facades byte-identical. Slot 60 is the canonical f32-array index
     // asserted in spectra-scene-data/src/material.rs ("opacity_tex", 60).
     v[60] = f32::from_bits(m.opacity_tex as u32);
+    // [49] is_holdout is an ABI-preserving material flag word. Bit 0 remains
+    // shadow-catcher holdout; bit 1 selects factor x base-color texture; bit 2
+    // selects factor x roughness texture on the legacy atlas object path.
+    let mut material_flags = 0u32;
+    material_flags |= u32::from(m.modulate_base_color_texture) << 1;
+    material_flags |= u32::from(m.modulate_roughness_texture) << 2;
+    v[49] = f32::from_bits(material_flags);
     v.try_into()
         .expect("spectra_scene_data material packer must keep the 132-float ABI")
 }
@@ -3646,6 +3688,24 @@ mod leaf_alpha_tests {
     }
 }
 
+#[cfg(all(test, feature = "spectra-native"))]
+mod base_color_modulation_tests {
+    use super::*;
+
+    #[test]
+    fn factor_times_texture_flag_uses_holdout_bit_one_without_changing_abi() {
+        let material = PbrMaterial {
+            albedo_tex: 7,
+            modulate_base_color_texture: true,
+            modulate_roughness_texture: true,
+            ..PbrMaterial::default()
+        };
+        let packed = pack_mesh_material(material);
+        assert_eq!(packed.len(), MATERIAL_FLOATS);
+        assert_eq!(packed[49].to_bits(), (1 << 1) | (1 << 2));
+    }
+}
+
 #[cfg(feature = "spectra-native")]
 impl SpectraRenderBackend {
     /// Spawn render thread with near-realtime config (4 spp, DLSS, NRC, ReSTIR PT).
@@ -3686,11 +3746,17 @@ impl SpectraRenderBackend {
                 // Each backend is a distinct `Renderer<G>` instantiation, so the
                 // generic `run_render_loop` is monomorphised once per backend and we
                 // dispatch into it after selection.
+                #[cfg(not(feature = "aot-shaders"))]
                 let forced = std::env::var("SPECTRA_BACKEND").ok();
+                #[cfg(not(feature = "aot-shaders"))]
                 let prefer = forced.as_deref().map(str::to_ascii_lowercase);
 
+                #[cfg(not(feature = "aot-shaders"))]
                 let try_vulkan = !matches!(prefer.as_deref(), Some("cuda"));
+                #[cfg(not(feature = "aot-shaders"))]
                 let try_cuda = !matches!(prefer.as_deref(), Some("vulkan") | Some("vk"));
+                #[cfg(feature = "aot-shaders")]
+                let (try_vulkan, try_cuda) = (true, false);
 
                 if try_vulkan {
                     match VulkanSlangBackend::new(0) {

@@ -71,7 +71,8 @@ pub struct SprayStroke {
 }
 
 /// A world-space ground-cover weight grid. Row-major, `idx = iz*res_x + ix`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SprayField {
     /// Grid resolution (cells) in X and Z. Independent of the heightmap.
     res_x: u32,
@@ -131,6 +132,12 @@ impl SprayField {
     /// Raw row-major weights (`len == res_x*res_z`), for upload / debug.
     pub fn weights(&self) -> &[[u8; SPRAY_CHANNELS]] {
         &self.weights
+    }
+    /// Exact authored baseline bytes. Product cooks persist these beside the
+    /// live weights so runtime stroke edits remain deltas over the original,
+    /// validated field instead of recreating it from a recipe.
+    pub fn baseline_weights(&self) -> &[[u8; SPRAY_CHANNELS]] {
+        &self.baseline
     }
     /// The recorded stroke log (replay-exact authoring history).
     pub fn strokes(&self) -> &[SprayStroke] {

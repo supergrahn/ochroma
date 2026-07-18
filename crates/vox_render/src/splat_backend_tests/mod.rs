@@ -846,9 +846,11 @@ fn load_craftsman_pbr(
             metallic: cm.metallic_factor,
             emission_strength: 0.0,
             albedo_tex,
+            modulate_base_color_texture: false,
             opacity_tex: -1,
             vegetation_bsdf: false,
             roughness_tex,
+            modulate_roughness_texture: false,
             normal_tex,
             displacement_tex,
             // ~3 cm relief reads as real brick/mortar depth at street
@@ -1123,9 +1125,11 @@ fn load_cooked_pbr_materials(
             metallic: cm.metallic_factor,
             emission_strength: 0.0,
             albedo_tex,
+            modulate_base_color_texture: false,
             opacity_tex: -1,
             vegetation_bsdf: false,
             roughness_tex,
+            modulate_roughness_texture: false,
             normal_tex,
             displacement_tex,
             // ~3 cm relief; midlevel 0.5 = surface plane (POM gate is the id).

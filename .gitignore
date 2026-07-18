@@ -5,3 +5,6 @@
 .worktrees/
 .claude/worktrees/
 /scene.vxgi
+
+# Transient render/debug captures — not tracked in git
+.codex-captures/

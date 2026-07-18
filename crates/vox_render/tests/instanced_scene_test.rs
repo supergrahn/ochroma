@@ -60,6 +60,9 @@ fn cube_blas_desc() -> BlasDesc {
         material_ids.push(0);
     }
 
+    // Intentionally clean is still authored data in the product/AOT contract.
+    let weathering_masks = vec![0.0; positions.len() * 7];
+
     BlasDesc {
         proto_id: 1,
         positions,
@@ -69,7 +72,7 @@ fn cube_blas_desc() -> BlasDesc {
         material_ids,
         aabb_min: [-h, -h, -h],
         aabb_max: [h, h, h],
-        weathering_masks: Vec::new(),
+        weathering_masks,
     }
 }
 

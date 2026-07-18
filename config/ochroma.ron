@@ -117,7 +117,7 @@
 
         // -- glass bounce floor (the #1 perf knob; tier-derived) --
         glass_bounces_override: -1,      // resident_renderer.rs:213 [env+hardcoded] env: SPECTRA_GLASS_BOUNCES; -1 = use tier floor, 0 = disable bump
-        glass_floor_performance: 2,      // resident_renderer.rs:1129 [hardcoded] (glass_floor_for_tier) — base bounces 0..=2; 2026-07-08 Urban Horizon 3440x1440 witness: 4->2 drops sample_loop ~24ms->18.7ms and clears 25 FPS with no visible aerial loss. Higher tiers keep deeper glass.
+        glass_floor_performance: 1,      // resident_renderer.rs:1129 [hardcoded] (glass_floor_for_tier) — Performance is the emergency real-time tier; 2026-07-17 AMD 780M FSR 1440p witness: 2->1 cuts steady frame time ~40ms->34ms with acceptable aerial loss. Higher tiers keep deeper glass.
         glass_floor_balanced:    4,      // resident_renderer.rs:1130 — base bounces 3..=5. MEASURED 2026-06-29: 5->4 = 49.4->42.7ms (6.7ms/14%) at 1440p; water puddles + both-face refraction intact. 4->3 saves ~4ms more but risks deep-water coves; 4 is the Balanced default.
         glass_floor_beauty:      8,      // resident_renderer.rs:1140 [hardcoded] (GLASS_MIN_BOUNCES) — base bounces >=6, full geometric glass
 
@@ -125,7 +125,7 @@
         // reads right with a surface refraction + one lit hop, so it no longer rides
         // the glass floor. #1 trace-fps lever on water-heavy / near-empty maps.
         water_bounces_override:  -1,     // env: SPECTRA_WATER_BOUNCES; -1 = use tier floor, 0 = disable the water bump
-        water_floor_performance: 2,      // base bounces 0..=2; legal 1280x720->4K RR clears 25 FPS only when water does not raise Performance depth
+        water_floor_performance: 1,      // base bounces 0..=2; keep Performance at its own one-bounce budget instead of raising water back to 2
         water_floor_balanced:    4,      // base bounces 3..=5
         water_floor_beauty:      4,      // base bounces >=6 (water needs no more than glass here; keep the sea cheap)
 
@@ -147,11 +147,9 @@
         use_cuda_graphs:     false,      // resident_renderer.rs:415 [env+config] live resident gameplay must not pay first-frame graph capture; offline graph benches set this explicitly
         ser_enabled:         true,       // resident_renderer.rs:433-445 [env+hardcoded+cfg] env: SPECTRA_SER (0|1); default ON on Windows/CUDA only (#[cfg(target_os="windows")]) — see build_features note
 
-        // -- night lit windows / emissive promotion --
+        // -- exact authored night emissives --
         lit_windows_enabled:    true,    // resident_renderer.rs:629 [env+hardcoded] env: OCHROMA_LIT_WINDOWS (0|off disables); default ON at night
         emissive_light_scale:   2000.0,  // resident_renderer.rs:681,1193 [env+hardcoded] env: OCHROMA_EMISSIVE_LIGHT_SCALE; EMISSIVE_LIGHT_SCALE_DEFAULT — radiant power at 1 m
-        lit_window_glow:        8.0,     // resident_renderer.rs:1334 [env+hardcoded] env: OCHROMA_LIT_WINDOW_GLOW — promoted-glass emission strength
-        lit_window_fraction:    0.6,     // resident_renderer.rs:1339 [env+hardcoded] env: OCHROMA_LIT_WINDOW_FRACTION — fraction of windows lit (0..=1)
 
         // -- diagnostics / A-B traces (off in production) --
         aurora_trace:        false,      // resident_renderer.rs:928 [env] env: OCHROMA_AURORA_TRACE=1 — retained delta-witness trace
@@ -254,12 +252,11 @@
             "OCHROMA_TEMPORAL_ALPHA_MOVING", "OCHROMA_TEMPORAL_DEPTH_THRESHOLD",
             "OCHROMA_TEMPORAL_NORMAL_THRESHOLD", "OCHROMA_RESTIR", "OCHROMA_SPECTRAL",
             "OCHROMA_LIT_WINDOWS", "OCHROMA_EMISSIVE_LIGHT_SCALE",
-            "OCHROMA_LIT_WINDOW_GLOW", "OCHROMA_LIT_WINDOW_FRACTION",
             "OCHROMA_AURORA_TRACE", "OCHROMA_LEAN", "OCHROMA_RELIEF_MODE",
             "OCHROMA_DENOISE_OFF", "OCHROMA_DENOISE_LEGACY", "OCHROMA_DENOISE_ITERS",
             "OCHROMA_DENOISE_SIGMA_LUM", "OCHROMA_FSR_LEGACY_JITTER",
             "OCHROMA_BENCH_CAM_MOTION", "OCHROMA_PASS_PROFILE", "OCHROMA_KEEP_BEAUTY",
-        ], // 25
+        ], // 23
         spectra_runtime: [
             "SPECTRA_GLASS_BOUNCES", "SPECTRA_GROUND_ANTITILE_STRENGTH",
             "SPECTRA_GROUND_ANTITILE_CELL_M", "SPECTRA_GROUND_SMOOTH_NORMAL",

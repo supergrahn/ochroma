@@ -250,7 +250,6 @@ impl ResidentSceneRenderer {
         settings.features.spectral = tier_settings.features.spectral.clone();
         settings.features.restir = tier_settings.features.restir.clone();
         config.apply_settings(&settings);
-        config.spectral_mode = spectra_renderer::SpectralMode::Hero4;
         config.max_bounces = max_bounces;
 
         // NRC world-space radiance cache (online-trained; the inline shade hook
@@ -817,9 +816,15 @@ impl ResidentSceneRenderer {
     /// patchiness resolving at aerial range where the ~1 m detail tile mips to a
     /// flat average ("textures are just colors"). `slot < 0` or `blend <= 0`
     /// disables (byte-identical).
-    pub fn set_ground_macro(&mut self, slot: i32, tile_m: f32, blend: f32) -> Result<(), String> {
+    pub fn set_ground_macro(
+        &mut self,
+        slot: i32,
+        tile_m: f32,
+        luma_reference: f32,
+        blend: f32,
+    ) -> Result<(), String> {
         self.renderer
-            .set_ground_macro(slot, tile_m, blend)
+            .set_ground_macro(slot, tile_m, luma_reference, blend)
             .map_err(|e| format!("set_ground_macro: {e:?}"))
     }
 
@@ -1670,10 +1675,10 @@ impl ResidentSceneRenderer {
 ///
 /// The quality caveat: geometric glass needs ~4-5 bounces (enter front face ->
 /// through interior -> exit back face -> reach a lit surface -> back), so a
-/// pane at 2 bounces can read BLACK in close shots. The floor is therefore
-/// keyed off the tier's OWN base bounce count (the tier identity: Performance 2,
-/// Balanced 3, Beauty 6) so each tier gets its configured target:
-///   - Performance (base <=2): floor 2  — wide-city RR path stays above 25 FPS
+/// pane at 1-2 bounces can read BLACK in close shots. The floor is therefore
+/// keyed off the tier's OWN base bounce count (Performance <=2, Balanced 3-5,
+/// Beauty >=6) so each tier gets its configured target:
+///   - Performance (base <=2): floor 1  — emergency 780M path stays close to 30 FPS
 ///   - Balanced    (base 3..=5): floor 4
 ///   - Beauty      (base >=6): floor 8  — unchanged, full geometric glass
 /// `SPECTRA_GLASS_BOUNCES` still overrides this (config-first); 0 disables.
@@ -1831,7 +1836,7 @@ fn build_light_layer_for_scene(
             .and_then(|v| v.parse::<f32>().ok())
             .filter(|v| *v > 0.0)
             .unwrap_or(vox_config::config().resident_renderer.emissive_light_scale);
-        emissive_point_lights(scene, point_scale * emissive_surface_scale.max(0.0), true)
+        emissive_point_lights(scene, point_scale * emissive_surface_scale.max(0.0))
     } else {
         (Vec::new(), 0)
     };
@@ -1849,37 +1854,9 @@ fn build_light_layer_for_scene(
     }
 }
 
-fn synthetic_lit_glass_material(material_index: usize) -> Option<(f32, [f32; 3])> {
-    let rcfg = &vox_config::config().resident_renderer;
-    let glow = std::env::var("OCHROMA_LIT_WINDOW_GLOW")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .filter(|v| *v > 0.0)
-        .unwrap_or(rcfg.lit_window_glow);
-    let lit_frac = std::env::var("OCHROMA_LIT_WINDOW_FRACTION")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .map(|v| v.clamp(0.0, 1.0))
-        .unwrap_or(rcfg.lit_window_fraction);
-    let h = {
-        let mut x = (material_index as u32)
-            .wrapping_mul(747796405)
-            .wrapping_add(2891336453);
-        x = ((x >> ((x >> 28).wrapping_add(4))) ^ x).wrapping_mul(277803737);
-        (x >> 22) ^ x
-    };
-    let r = (h as f32) / (u32::MAX as f32);
-    if r > lit_frac {
-        return None;
-    }
-    let warm = 0.85 + 0.15 * ((h >> 8) & 0xFF) as f32 / 255.0;
-    Some((glow, [1.0, warm, 0.55 + 0.25 * warm]))
-}
-
 fn emissive_point_lights(
     scene: &SceneState,
     scale: f32,
-    synthesize_lit_glass: bool,
 ) -> (Vec<f32>, usize) {
     let geo = &scene.geometry;
     let mats = &scene.materials;
@@ -1901,12 +1878,12 @@ fn emissive_point_lights(
     let mat_emission: Vec<(f32, [f32; 3])> = (0..mats.material_count)
         .map(|mi| {
             let b = mi * mstride;
-            let mut em = mats
+            let em = mats
                 .params
                 .get(b + MAT_EMISSION_SLOT)
                 .copied()
                 .unwrap_or(0.0);
-            let mut col = [
+            let col = [
                 mats.params
                     .get(b + MAT_EMISSION_COLOR_SLOT)
                     .copied()
@@ -1920,17 +1897,6 @@ fn emissive_point_lights(
                     .copied()
                     .unwrap_or(1.0),
             ];
-            let is_glass = mats
-                .params
-                .get(b)
-                .map(|t| t.to_bits() == MAT_GLASS_TYPE)
-                .unwrap_or(false);
-            if em <= 0.0 && synthesize_lit_glass && is_glass {
-                if let Some((synthetic_em, synthetic_col)) = synthetic_lit_glass_material(mi) {
-                    em = synthetic_em;
-                    col = synthetic_col;
-                }
-            }
             (em, col)
         })
         .collect();
@@ -1960,7 +1926,7 @@ fn emissive_point_lights(
         // Resolve whether this instance's proto has any emissive triangle and
         // capture the (strongest) emissive material's color/strength.
         let mut best_em = 0.0f32;
-        let mut best_col = [1.0f32, 0.85, 0.6];
+        let mut best_col = [0.0f32; 3];
         if let Some(&(_, _, t_off, t_cnt)) = ranges.get(proto) {
             let t0 = t_off as usize;
             let t1 = t0 + t_cnt as usize;
@@ -1986,12 +1952,10 @@ fn emissive_point_lights(
         if !(best_em > 0.0) {
             continue;
         }
-        // Warm interior/sodium tint fallback if the emission color is ~black.
-        let color = if best_col[0] + best_col[1] + best_col[2] <= 1e-4 {
-            [1.0, 0.85, 0.6]
-        } else {
-            best_col
-        };
+        // Preserve the exact authored emission color. In particular, black is
+        // black: the runtime must not invent a warm/sodium tint for incomplete
+        // or intentionally dark material data.
+        let color = best_col;
 
         // World centroid: instance transform applied to the proto's object-space
         // AABB center when available, else the transform translation.
@@ -2071,17 +2035,80 @@ fn camera_forward(view: [f32; 16]) -> glam::Vec3 {
 
 #[cfg(test)]
 mod glass_floor_tests {
-    use super::{glass_floor_for_tier, water_floor_for_tier, GLASS_MIN_BOUNCES};
+    use super::{
+        emissive_point_lights, glass_floor_for_tier, water_floor_for_tier, GLASS_MIN_BOUNCES,
+    };
+    use crate::splat_backend::{pack_mesh_material, PbrMaterial};
+    use spectra_scene_state::{MaterialLayer, SceneState};
+
+    fn one_instance_scene(material: PbrMaterial) -> SceneState {
+        let mut scene = SceneState::new(1, 1);
+        scene.geometry.instance_count = 1;
+        scene.geometry.instance_transforms = vec![
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+            1.0,
+        ];
+        scene.geometry.instance_material_base = vec![0];
+        scene.geometry.instance_proto_index = vec![0];
+        scene.geometry.proto_ranges = vec![(0, 3, 0, 1)];
+        scene.geometry.proto_aabbs = vec![([-0.5, 0.0, -0.5], [0.5, 1.0, 0.5])];
+        scene.geometry.material_ids = vec![0];
+        scene.materials = MaterialLayer {
+            params: pack_mesh_material(material).to_vec(),
+            spectral_spd: Default::default(),
+            material_count: 1,
+        };
+        scene
+    }
+
+    #[test]
+    fn night_nee_requires_authored_emission_and_never_invents_lit_glass() {
+        let plain_glass = PbrMaterial {
+            transmission: 1.0,
+            ..PbrMaterial::default()
+        };
+        let (_, plain_count) = emissive_point_lights(&one_instance_scene(plain_glass), 1.0);
+        assert_eq!(
+            plain_count, 0,
+            "plain Glass must not become a hashed/material-index night emitter"
+        );
+
+        let authored_lit_glass = PbrMaterial {
+            transmission: 1.0,
+            emission_strength: 5.0,
+            ..PbrMaterial::default()
+        };
+        let (_, authored_count) =
+            emissive_point_lights(&one_instance_scene(authored_lit_glass), 1.0);
+        assert_eq!(
+            authored_count, 1,
+            "an exact authored emissive material must remain eligible for night NEE"
+        );
+
+        let authored_black_emitter = PbrMaterial {
+            base_color: [0.0; 3],
+            emission_strength: 5.0,
+            ..PbrMaterial::default()
+        };
+        let (black_light, black_count) =
+            emissive_point_lights(&one_instance_scene(authored_black_emitter), 1.0);
+        assert_eq!(black_count, 1);
+        assert_eq!(
+            &black_light[4..7],
+            &[0.0, 0.0, 0.0],
+            "runtime must preserve authored black emission rather than inventing a warm tint"
+        );
+    }
 
     /// Locks the per-tier glass bounce caps to the exact values witnessed on the
-    /// box. Performance stays at its own base depth for the 3440x1440 DLSS-RR
+    /// box. Performance stays at its own base depth for the AMD 780M FSR
     /// wide-city path; Balanced/Beauty keep deeper geometric glass.
     #[test]
     fn per_tier_caps_are_the_witnessed_values() {
-        // Performance tier (base bounces 2).
-        assert_eq!(glass_floor_for_tier(2), 2, "Performance glass floor");
-        assert_eq!(glass_floor_for_tier(1), 2, "sub-Performance floors to 2");
-        assert_eq!(glass_floor_for_tier(0), 2, "zero-bounce floors to 2");
+        // Performance tier (base bounces 1-2).
+        assert_eq!(glass_floor_for_tier(2), 1, "Performance glass floor");
+        assert_eq!(glass_floor_for_tier(1), 1, "sub-Performance floors to 1");
+        assert_eq!(glass_floor_for_tier(0), 1, "zero-bounce floors to 1");
         // Balanced tier (base bounces 3).
         assert_eq!(glass_floor_for_tier(3), 4, "Balanced glass floor");
         assert_eq!(
@@ -2103,13 +2130,13 @@ mod glass_floor_tests {
         assert_eq!(GLASS_MIN_BOUNCES, 8, "Beauty constant is the still-path 8");
     }
 
-    /// Locks the water-only Performance path to the witnessed 1280x720 -> 4K
-    /// DLSS-RR result: water must not raise Performance above its base depth.
+    /// Locks the water-only Performance path to the witnessed 1280x720 -> 1440p
+    /// FSR result: water must not raise Performance above its base depth.
     #[test]
-    fn water_performance_floor_keeps_legal_rr_at_two_bounces() {
-        assert_eq!(water_floor_for_tier(2), 2, "Performance water floor");
-        assert_eq!(water_floor_for_tier(1), 2, "sub-Performance water floor");
-        assert_eq!(water_floor_for_tier(0), 2, "zero-bounce water floor");
+    fn water_performance_floor_keeps_legal_rr_at_one_bounce() {
+        assert_eq!(water_floor_for_tier(2), 1, "Performance water floor");
+        assert_eq!(water_floor_for_tier(1), 1, "sub-Performance water floor");
+        assert_eq!(water_floor_for_tier(0), 1, "zero-bounce water floor");
         assert_eq!(water_floor_for_tier(3), 4, "Balanced water floor");
         assert_eq!(water_floor_for_tier(6), 4, "Beauty water floor");
     }

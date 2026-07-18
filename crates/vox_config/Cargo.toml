@@ -4,6 +4,12 @@ edition.workspace = true
 version.workspace = true
 description = "Runtime-loaded single-source-of-truth engine config (ochroma.ron)."
 
+[features]
+default = []
+# Shipping bundles must provide the exact runtime/engine config. Missing,
+# unreadable, or malformed files are fatal; source-tree/default fallback is off.
+strict-runtime = []
+
 # Deliberately a LEAF crate: serde + ron ONLY. Every other crate (vox_core,
 # vox_terrain, vox_render, ochroma_engine, vox_ui) can depend on it with zero
 # risk of a dependency cycle, and it compiles in well under a second.

@@ -96,6 +96,13 @@ spectra-native = [
     "spectra-gpu/vulkan-backend",
     "spectra-renderer/ocio",
 ]
+# Shipping runtime: consume only exact offline-cooked Vulkan SPIR-V/reflection
+# artifacts. Cache misses are fatal and cannot invoke Slang or write a cache.
+aot-shaders = [
+    "spectra-native",
+    "spectra-gpu/aot-shaders",
+    "vox_config/strict-runtime",
+]
 # spectra-native-optix: the CUDA-box-only layer. Re-adds spectra-renderer's
 # CUDA/DLSS + OptiX HW-RT (RT cores). Pulls spectra-optix/rt-cores so build.rs
 # compiles the OptiX device PTX and OptiXTraversal::available() can return true.

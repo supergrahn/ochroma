@@ -225,8 +225,6 @@ pub struct ResidentRendererConfig {
     pub ser_enabled: bool,
     pub lit_windows_enabled: bool,
     pub emissive_light_scale: f32,
-    pub lit_window_glow: f32,
-    pub lit_window_fraction: f32,
     /// Register the DAY analytic NEE lights (sun disk + 3 directional fills)
     /// on the live path. In the ReSTIR present path the deferred NEE sun lands
     /// in a buffer that never reaches the film (audited 2026-07-02) — while
@@ -248,11 +246,11 @@ impl Default for ResidentRendererConfig {
             spectral_mode: "hero4".to_string(),
             use_optix_rt: true,
             glass_bounces_override: -1,
-            glass_floor_performance: 2,
+            glass_floor_performance: 1,
             glass_floor_balanced: 5,
             glass_floor_beauty: 8,
             water_bounces_override: -1,
-            water_floor_performance: 2,
+            water_floor_performance: 1,
             water_floor_balanced: 4,
             water_floor_beauty: 4,
             temporal_enabled: true,
@@ -267,8 +265,6 @@ impl Default for ResidentRendererConfig {
             ser_enabled: true,
             lit_windows_enabled: true,
             emissive_light_scale: 2000.0,
-            lit_window_glow: 8.0,
-            lit_window_fraction: 0.6,
             nee_day_lights: false,
             aurora_trace: false,
             dispatch_timing: false,
@@ -494,21 +490,22 @@ impl OchromaConfig {
     /// default config — load can never break the build or run. A partial file
     /// fills only the fields it names; everything else stays default.
     pub fn load(path: Option<&Path>) -> OchromaConfig {
+        let fail_or_default = |message: String| -> OchromaConfig {
+            if cfg!(feature = "strict-runtime") {
+                panic!("[vox_config] strict runtime config failure: {message}");
+            }
+            eprintln!("[vox_config] {message}; using COMPILED DEFAULTS");
+            OchromaConfig::default()
+        };
         let resolved = match path {
             Some(p) => Some(p.to_path_buf()),
             None => resolve_default_path(),
         };
         let Some(p) = resolved else {
-            // No file resolved ANYWHERE. The live game falling through to here is
-            // the silent config-first bug: engine settings stay at compiled defaults.
-            // Warn loudly so a missing-config ship/run is caught, not hidden.
-            eprintln!(
-                "[vox_config] WARNING: no ochroma.ron found ($OCHROMA_CONFIG unset, none \
-                 in config/ up from cwd/exe, none beside the exe, no sibling \
-                 src/ochroma/config) — using COMPILED DEFAULTS. Engine config \
-                 (sky/lighting/glass/perf) will NOT reflect ochroma.ron."
+            return fail_or_default(
+                "no exact ochroma.ron resolved from OCHROMA_CONFIG or runtime/engine/config"
+                    .to_string(),
             );
-            return OchromaConfig::default();
         };
         match std::fs::read_to_string(&p) {
             Ok(text) => match ron::from_str::<OchromaConfig>(&text) {
@@ -517,25 +514,9 @@ impl OchromaConfig {
                     eprintln!("[vox_config] loaded engine config from {}", p.display());
                     cfg
                 }
-                Err(e) => {
-                    eprintln!(
-                        "[vox_config] parse error in {} ({e}); using defaults",
-                        p.display()
-                    );
-                    OchromaConfig::default()
-                }
+                Err(e) => fail_or_default(format!("parse error in {} ({e})", p.display())),
             },
-            Err(e) => {
-                // A missing default file is normal (defaults == old hardcoded
-                // values); only note an explicit path that failed to read.
-                if path.is_some() {
-                    eprintln!(
-                        "[vox_config] could not read {} ({e}); using defaults",
-                        p.display()
-                    );
-                }
-                OchromaConfig::default()
-            }
+            Err(e) => fail_or_default(format!("could not read {} ({e})", p.display())),
         }
     }
 }
@@ -561,6 +542,9 @@ fn resolve_default_path() -> Option<PathBuf> {
         if !env_path.is_empty() {
             return Some(PathBuf::from(env_path));
         }
+        if cfg!(feature = "strict-runtime") {
+            return None;
+        }
     }
     // 1) Runtime bundle first. A shipped game owns a sibling `runtime/` tree; the
     //    engine config belongs under `runtime/engine/config`, not in the game.
@@ -577,6 +561,11 @@ fn resolve_default_path() -> Option<PathBuf> {
         }
     }
 
+    #[cfg(feature = "strict-runtime")]
+    return None;
+
+    #[cfg(not(feature = "strict-runtime"))]
+    {
     // 2) Walk up from the current directory (covers running from the repo root or
     //    any crate subdir during dev/test).
     if let Ok(start) = std::env::current_dir() {
@@ -610,16 +599,21 @@ fn resolve_default_path() -> Option<PathBuf> {
             }
         }
     }
-    None
+        None
+    }
 }
 
 fn find_runtime_config_around(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
     loop {
-        for parts in [
+        #[cfg(feature = "strict-runtime")]
+        let candidates = [&["runtime", "engine", "config", "ochroma.ron"][..]];
+        #[cfg(not(feature = "strict-runtime"))]
+        let candidates = [
             &["runtime", "engine", "config", "ochroma.ron"][..],
             &["runtime", "config", "ochroma.ron"][..],
-        ] {
+        ];
+        for parts in candidates {
             let mut candidate = dir.clone();
             for part in parts {
                 candidate.push(part);
@@ -635,6 +629,7 @@ fn find_runtime_config_around(start: &Path) -> Option<PathBuf> {
     None
 }
 
+#[cfg(any(not(feature = "strict-runtime"), test))]
 fn find_config_around(
     start: &Path,
     include_beside: bool,

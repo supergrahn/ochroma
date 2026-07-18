@@ -6189,6 +6189,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2",
  "shader-slang",
  "slang-sys",
  "spectra-types",

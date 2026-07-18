@@ -290,7 +290,8 @@ impl SdfValidation {
         }
     }
 
-    /// Every GWN-interior probe sampled ≤ one quantization step below zero.
+    /// Every crisp GWN-interior lattice point sampled no more than one
+    /// quantization step above zero in the encoded GPU field.
     pub fn inside_negative(&self) -> bool {
         self.inside_negative
     }

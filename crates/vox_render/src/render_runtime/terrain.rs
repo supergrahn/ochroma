@@ -35,6 +35,9 @@ pub struct TerrainUpload {
     /// max lerp weight at full distance fade [0,1].
     pub ground_macro_slot: i32,
     pub ground_macro_tile_m: f32,
+    /// Linear-light average luma of the authored macro albedo. The shader divides
+    /// by this reference so the layer adds variation without changing exposure.
+    pub ground_macro_luma_reference: f32,
     pub ground_macro_blend: f32,
     /// SLOPE-LAYER atlas slots (#33): steep-face ROCK + transition DIRT
     /// albedo/normal, resolved from the map's `TerrainSurfaceSet.cliff/transition`.
@@ -125,6 +128,7 @@ impl Default for TerrainUpload {
             // any game that does not fill it.
             ground_macro_slot: -1,
             ground_macro_tile_m: 30.0,
+            ground_macro_luma_reference: 0.18,
             ground_macro_blend: 0.0,
             slope_rock_albedo: cfg.slope_layers.rock_albedo_slot,
             slope_rock_normal: cfg.slope_layers.rock_normal_slot,

@@ -476,6 +476,19 @@ impl RenderRuntime {
                 upload.channel_uv_scales.len() / vox_core::spray::CHANNEL_UV_FLOATS
             );
         }
+        self.renderer.set_ground_macro(
+            upload.ground_macro_slot,
+            upload.ground_macro_tile_m,
+            upload.ground_macro_luma_reference,
+            upload.ground_macro_blend,
+        )?;
+        eprintln!(
+            "[ground-macro] slot={} tile_m={:.1} luma_ref={:.4} blend={:.2}",
+            upload.ground_macro_slot,
+            upload.ground_macro_tile_m,
+            upload.ground_macro_luma_reference,
+            upload.ground_macro_blend
+        );
         self.renderer.set_slope_layers(
             upload.slope_rock_albedo,
             upload.slope_rock_normal,

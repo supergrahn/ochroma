@@ -29,6 +29,7 @@
 
 use crate::gpu::GpuContext;
 use glam::Vec3;
+use std::collections::BTreeSet;
 use std::fmt;
 use vox_core::sdf::{
     SdfDesc, SdfField, SdfPayload, SdfSign, SdfValidation, eikonal_p95, generalized_winding_number,
@@ -275,7 +276,9 @@ impl SdfBaker {
         // (the mesh AABB, not the padded grid — probes inside the body are
         // the informative ones; padding is air by construction).
         let mut rng = SplitMix(PROBE_JITTER_SEED);
-        let mut interior_probes: Vec<Vec3> = Vec::new();
+        let mut sign_validation_probes: Vec<Vec3> =
+            Vec::with_capacity((PROBE_CELLS * PROBE_CELLS * PROBE_CELLS) as usize);
+        let mut interior_probe_count = 0usize;
         let mut min_abs_winding = f32::INFINITY;
         let mut fractional = false;
         for cz in 0..PROBE_CELLS {
@@ -285,6 +288,7 @@ impl SdfBaker {
                     let v = (cy as f32 + rng.unit()) / PROBE_CELLS as f32;
                     let s = (cz as f32 + rng.unit()) / PROBE_CELLS as f32;
                     let p = aabb_min + Vec3::new(u, v, s) * extent;
+                    sign_validation_probes.push(p);
                     let w = generalized_winding_number(positions, indices, p).abs() as f32;
                     if w < PROBE_FRACTIONAL_MARGIN {
                         continue; // clean exterior
@@ -293,7 +297,7 @@ impl SdfBaker {
                     if w <= 1.0 - PROBE_FRACTIONAL_MARGIN {
                         fractional = true; // |w| in 0.5 ± 0.35 ⇒ open
                     } else {
-                        interior_probes.push(p);
+                        interior_probe_count += 1;
                     }
                 }
             }
@@ -301,7 +305,7 @@ impl SdfBaker {
         if fractional {
             return Err(SdfBakeError::OpenMesh { min_abs_winding });
         }
-        if interior_probes.is_empty() {
+        if interior_probe_count == 0 {
             // No probe landed inside at all — either a degenerate sliver or a
             // shell; with no interior evidence the Closed sign is unprovable.
             return Err(SdfBakeError::OpenMesh {
@@ -486,14 +490,96 @@ impl SdfBaker {
         let field = SdfField::new(desc, SdfPayload::Snorm8(payload))
             .map_err(|e| SdfBakeError::DeviceLimits(e.to_string()))?;
 
-        let quant_step = band / 127.0;
-        let inside_negative = interior_probes
-            .iter()
-            .all(|&p| field.sample_local(p).is_some_and(|d| d <= quant_step));
+        let inside_negative =
+            validate_interior_lattice_signs(&field, positions, indices, &sign_validation_probes);
         let p95 = eikonal_p95(&field, EIKONAL_SAMPLES, EIKONAL_SEED);
         let validation = SdfValidation::new(inside_negative, p95, min_abs_winding, false);
         Ok((field, validation))
     }
+}
+
+/// Validate the sign actually stored on the SDF lattice against CPU-f64 GWN
+/// at those exact lattice points. The closure gate's jittered probes are
+/// continuous positions, while the GPU signs discrete voxels; trilinear
+/// interpolation near a sharp edge can legitimately cross zero even when all
+/// eight stored corner signs are correct. Comparing exact points avoids that
+/// continuous-vs-discrete category error without relaxing the GWN threshold.
+fn validate_interior_lattice_signs(
+    field: &SdfField,
+    positions: &[[f32; 3]],
+    indices: &[[u32; 3]],
+    probes: &[Vec3],
+) -> bool {
+    let desc = field.desc();
+    let res = desc.resolution();
+    let origin = desc.origin();
+    let voxel = desc.voxel_size();
+    let mut corners = BTreeSet::new();
+    for &probe in probes {
+        let grid = (probe - origin) / voxel;
+        if !grid.is_finite() {
+            return false;
+        }
+        let axis = |coordinate: f32, resolution: u32| {
+            let max = (resolution - 1) as f32;
+            let coordinate = coordinate.clamp(0.0, max);
+            (coordinate.floor() as u32, coordinate.ceil() as u32)
+        };
+        let (x0, x1) = axis(grid.x, res[0]);
+        let (y0, y1) = axis(grid.y, res[1]);
+        let (z0, z1) = axis(grid.z, res[2]);
+        for z in [z0, z1] {
+            for y in [y0, y1] {
+                for x in [x0, x1] {
+                    corners.insert([x, y, z]);
+                }
+            }
+        }
+    }
+
+    let quant_step = match field.payload() {
+        SdfPayload::Snorm8(_) => desc.narrow_band() / i8::MAX as f32,
+        SdfPayload::Snorm16(_) => desc.narrow_band() / i16::MAX as f32,
+    };
+    let flat_index = |[x, y, z]: [u32; 3]| {
+        (z as usize * res[1] as usize + y as usize) * res[0] as usize + x as usize
+    };
+    let decode = |index: usize| {
+        let normalized = match field.payload() {
+            SdfPayload::Snorm8(values) => {
+                let raw = values[index];
+                if raw == i8::MIN {
+                    -1.0
+                } else {
+                    raw as f32 / i8::MAX as f32
+                }
+            }
+            SdfPayload::Snorm16(values) => {
+                let raw = values[index];
+                if raw == i16::MIN {
+                    -1.0
+                } else {
+                    raw as f32 / i16::MAX as f32
+                }
+            }
+        };
+        normalized.clamp(-1.0, 1.0) * desc.narrow_band()
+    };
+
+    let mut tested_interior = 0usize;
+    for corner in corners {
+        let point =
+            origin + Vec3::new(corner[0] as f32, corner[1] as f32, corner[2] as f32) * voxel;
+        let winding = generalized_winding_number(positions, indices, point).abs() as f32;
+        if winding <= 1.0 - PROBE_FRACTIONAL_MARGIN {
+            continue;
+        }
+        tested_interior += 1;
+        if decode(flat_index(corner)) > quant_step {
+            return false;
+        }
+    }
+    tested_interior > 0
 }
 
 /// splitmix64 — deterministic probe jitter.
@@ -587,6 +673,22 @@ mod tests {
             [1, 6, 5], // +X
         ];
         (positions, indices)
+    }
+
+    fn append_cube(
+        positions: &mut Vec<[f32; 3]>,
+        indices: &mut Vec<[u32; 3]>,
+        min: [f32; 3],
+        max: [f32; 3],
+    ) {
+        let (cube_positions, cube_indices) = cube_mesh(min, max);
+        let base = positions.len() as u32;
+        positions.extend(cube_positions);
+        indices.extend(
+            cube_indices
+                .into_iter()
+                .map(|triangle| [triangle[0] + base, triangle[1] + base, triangle[2] + base]),
+        );
     }
 
     /// Watertight UV sphere: `slices·2` pole fans + `(stacks−2)·slices·2`
@@ -702,6 +804,83 @@ mod tests {
             validation.winding_min_abs() > 0.85,
             "closed cube interior winding must be ≈1, got {}",
             validation.winding_min_abs()
+        );
+    }
+
+    /// A continuous point just inside a sharp convex corner can interpolate
+    /// positive from one negative and seven positive lattice corners. That is
+    /// a reconstruction-resolution effect, not an incorrect stored sign. The
+    /// validation must compare CPU GWN to the exact GPU lattice samples.
+    #[test]
+    fn sdf_bake_sharp_closed_component_corner_uses_lattice_aligned_sign_validation() {
+        let Some(ctx) = try_gpu_context("sdf_bake_sharp_corner") else {
+            return;
+        };
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        append_cube(
+            &mut positions,
+            &mut indices,
+            [-11.9, 0.0, -18.2],
+            [11.9, 18.5, 18.2],
+        );
+        // An independently closed upper component sits across a sub-voxel air
+        // gap. The fixed 4^3 probe stream places one point only centimetres
+        // inside all three planes of its sharp corner at the 64-voxel target.
+        append_cube(
+            &mut positions,
+            &mut indices,
+            [-6.87, 19.015, -5.0],
+            [-2.0, 22.8, 14.825],
+        );
+
+        let target = SdfBakeTarget {
+            max_axis_res: 64,
+            min_voxel: 0.15,
+            pad: 1.0,
+            band_voxels: 4.0,
+        };
+        let mut baker = SdfBaker::new_with_context(&ctx).expect("baker");
+        let (field, validation) = baker
+            .bake(&positions, &indices, target)
+            .expect("closed compound mesh must bake");
+        assert!(
+            validation.inside_negative(),
+            "every crisp CPU-interior lattice point must carry a negative GPU sign"
+        );
+
+        // Prove the fixture exercises the old category error: continuous CPU
+        // probes sampled through trilinear reconstruction do not all remain
+        // negative at this finite grid resolution.
+        let aabb_min = Vec3::new(-11.9, 0.0, -18.2);
+        let extent = Vec3::new(23.8, 22.8, 36.4);
+        let quant_step = field.desc().narrow_band() / i8::MAX as f32;
+        let mut rng = SplitMix(PROBE_JITTER_SEED);
+        let mut old_continuous_check = true;
+        for cz in 0..PROBE_CELLS {
+            for cy in 0..PROBE_CELLS {
+                for cx in 0..PROBE_CELLS {
+                    let point = aabb_min
+                        + Vec3::new(
+                            (cx as f32 + rng.unit()) / PROBE_CELLS as f32,
+                            (cy as f32 + rng.unit()) / PROBE_CELLS as f32,
+                            (cz as f32 + rng.unit()) / PROBE_CELLS as f32,
+                        ) * extent;
+                    let winding =
+                        generalized_winding_number(&positions, &indices, point).abs() as f32;
+                    if winding > 1.0 - PROBE_FRACTIONAL_MARGIN
+                        && !field
+                            .sample_local(point)
+                            .is_some_and(|distance| distance <= quant_step)
+                    {
+                        old_continuous_check = false;
+                    }
+                }
+            }
+        }
+        assert!(
+            !old_continuous_check,
+            "fixture must expose the continuous-vs-lattice false negative"
         );
     }
 

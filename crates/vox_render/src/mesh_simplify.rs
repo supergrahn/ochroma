@@ -12,29 +12,35 @@
 //!   (the instanced-UV gap the engine has been fighting). UVs are a vertex
 //!   attribute and are AVERAGED per weld cluster.
 //! - **Per-triangle material ids** — a multi-material mesh (bark + leaf) must keep
-//!   each triangle on its own material. We NEVER weld a vertex across a material
-//!   seam: a vertex is clustered together with another only if both share the same
-//!   grid cell *and* the same incident-material set bucket, so a collapse can never
-//!   merge two differently-materialled surfaces. Degenerate triangles (two or three
-//!   corners welded to the same output vertex) are dropped.
+//!   each triangle on its own material. We NEVER weld across a material seam:
+//!   every source vertex/material pair is clustered independently, so a source
+//!   vertex shared by two materials is explicitly duplicated in the output.
+//!   Degenerate triangles (two or three corners welded to the same output vertex)
+//!   are dropped.
 //!
 //! # Algorithm — vertex-GRID CLUSTERING
 //!
-//! 1. Compute the AABB of all positions.
-//! 2. Pick a uniform grid resolution from `target_ratio` (fewer cells → fewer
-//!    output vertices → fewer triangles). The resolution is derived purely from
-//!    the input vertex count and the target ratio, so it is a deterministic
-//!    function of the input.
-//! 3. Snap every vertex to its integer grid cell. The cluster key is
-//!    `(cell_x, cell_y, cell_z, material_bucket)` — see the material-seam note
-//!    above. All vertices sharing a key weld to one OUTPUT vertex whose position
-//!    and UV are the arithmetic mean of the members (a stable, order-independent
+//! 1. Compute an AABB for the vertices referenced by each material. A small
+//!    authored material island therefore gets its own spatial budget instead of
+//!    disappearing inside the full mesh's much larger bounds.
+//! 2. Pick a grid resolution per material from `target_ratio` (fewer cells →
+//!    fewer output vertices → fewer triangles). The resolution is derived
+//!    purely from that material's referenced vertex count, bounds, and the ratio,
+//!    so it is a deterministic function of the input. Every nontrivial material
+//!    receives at least a four-cell budget so a small textured quad can survive.
+//! 3. Snap every referenced source vertex/material pair to its integer grid cell.
+//!    The cluster key is `(cell_x, cell_y, cell_z, triangle_material)`. All pairs
+//!    sharing a key weld to one OUTPUT vertex whose position and UV are the
+//!    arithmetic mean of the distinct source vertices (a stable, fixed-order
 //!    reduction — we accumulate in a Vec indexed by first-seen cluster order, so
 //!    there is no HashMap iteration in the output ordering).
 //! 4. Rebuild the triangle list against the welded vertices; drop any triangle
 //!    whose three corners no longer reference three distinct output vertices
 //!    (degenerate after the collapse). Each surviving triangle keeps its ORIGINAL
 //!    `material_id`.
+//! 5. If clustering would erase an authored material or collapse a material's
+//!    varied UV stream to one texel, retain that material's exact source triangles
+//!    in the cooked output. Detail loss is never accepted as a valid LOD.
 //!
 //! # Determinism
 //!
@@ -45,7 +51,7 @@
 //! Vec, so two runs on identical input produce byte-identical output. Position/UV
 //! averaging is a fixed-order sum (input vertex order) divided by the count.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Input to [`simplify_mesh`]: parallel position / UV vertex streams, a triangle
 /// index list, and a per-triangle material id.
@@ -77,6 +83,10 @@ pub struct MeshOutput {
     /// Per-triangle material id of each surviving triangle (parallel to
     /// `indices`), carried verbatim from the input.
     pub material_ids: Vec<u32>,
+    /// Source triangle index for every surviving triangle, parallel to
+    /// `indices`. Offline cooks use this stable provenance to recover semantic
+    /// attributes that deliberately are not part of the simplifier's weld key.
+    pub source_triangle_indices: Vec<u32>,
 }
 
 /// Deterministically decimate `input` toward `target_ratio` of its triangles
@@ -115,85 +125,66 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
             },
             indices: input.indices.to_vec(),
             material_ids: (0..n_tris).map(mat_of).collect(),
+            source_triangle_indices: (0..n_tris as u32).collect(),
         };
     }
     let ratio = target_ratio.clamp(1e-4, 1.0);
 
-    // -- AABB over all positions (skip non-finite components). --------------
-    let mut lo = [f32::INFINITY; 3];
-    let mut hi = [f32::NEG_INFINITY; 3];
-    for p in input.positions {
-        for k in 0..3 {
-            if p[k].is_finite() {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
+    // -- Per-material AABBs and grid resolutions. ---------------------------
+    // Material ids may also encode a semantic surface in their upper bits. That
+    // is intentional: each authored surface then retains a local detail budget.
+    let mut referenced = BTreeMap::<u32, BTreeSet<usize>>::new();
+    for (ti, triangle) in input.indices.iter().enumerate() {
+        let vertices = referenced.entry(mat_of(ti)).or_default();
+        for &index in triangle {
+            let index = index as usize;
+            if index < n_verts {
+                vertices.insert(index);
             }
         }
     }
-    // A zero/degenerate extent on any axis collapses that axis to a single layer.
-    let mut extent = [0.0f32; 3];
-    for k in 0..3 {
-        extent[k] = (hi[k] - lo[k]).max(0.0);
-        if !extent[k].is_finite() {
-            extent[k] = 0.0;
-        }
-    }
-
-    // -- Grid resolution from the target ratio. -----------------------------
-    // We want roughly `n_verts * ratio` output vertices. Spread that budget over
-    // the three axes proportionally to extent (so a thin mesh gets a coarse grid
-    // on its thin axis). Deterministic function of (n_verts, ratio, extents).
-    let target_cells = ((n_verts as f64 * ratio as f64).round() as usize).max(1);
-    let res = grid_resolution(target_cells, extent);
-    let inv_cell = [
-        if extent[0] > 0.0 {
-            res[0] as f32 / extent[0]
-        } else {
-            0.0
-        },
-        if extent[1] > 0.0 {
-            res[1] as f32 / extent[1]
-        } else {
-            0.0
-        },
-        if extent[2] > 0.0 {
-            res[2] as f32 / extent[2]
-        } else {
-            0.0
-        },
-    ];
-    let cell_of = |p: [f32; 3]| -> [i32; 3] {
-        let mut c = [0i32; 3];
-        for k in 0..3 {
-            if inv_cell[k] > 0.0 && p[k].is_finite() {
-                // Clamp into [0, res-1] so a vertex exactly on `hi` lands in the
-                // last cell, not one past it.
-                let f = ((p[k] - lo[k]) * inv_cell[k]).floor();
-                c[k] = (f as i32).clamp(0, res[k].saturating_sub(1) as i32);
+    let mut material_grids = BTreeMap::<u32, ([f32; 3], [u32; 3], [f32; 3])>::new();
+    for (material, vertices) in referenced {
+        let mut lo = [f32::INFINITY; 3];
+        let mut hi = [f32::NEG_INFINITY; 3];
+        for index in &vertices {
+            let position = input.positions[*index];
+            for axis in 0..3 {
+                if position[axis].is_finite() {
+                    lo[axis] = lo[axis].min(position[axis]);
+                    hi[axis] = hi[axis].max(position[axis]);
+                }
             }
         }
-        c
-    };
-
-    // -- Per-vertex incident-material bucket (the material-seam guard). ------
-    // A vertex is welded with another ONLY if both share a grid cell AND the same
-    // incident-material bucket. We bucket a vertex by the SMALLEST material id of
-    // any triangle that touches it; this guarantees two vertices on opposite sides
-    // of a bark/leaf seam (different smallest incident material) never weld, so a
-    // collapse can never merge two differently-materialled surfaces. (A vertex with
-    // no incident triangle buckets to u32::MAX and clusters only with its own kind.)
-    let mut vert_mat_bucket = vec![u32::MAX; n_verts];
-    for (ti, tri) in input.indices.iter().enumerate() {
-        let m = mat_of(ti);
-        for &vi in tri {
-            let vi = vi as usize;
-            if vi < n_verts {
-                vert_mat_bucket[vi] = vert_mat_bucket[vi].min(m);
+        let mut extent = [0.0_f32; 3];
+        for axis in 0..3 {
+            extent[axis] = (hi[axis] - lo[axis]).max(0.0);
+            if !extent[axis].is_finite() {
+                lo[axis] = 0.0;
+                extent[axis] = 0.0;
             }
         }
+        let minimum_cells = vertices.len().min(4);
+        let target_cells = ((vertices.len() as f64 * ratio as f64).round() as usize)
+            .max(minimum_cells)
+            .max(1);
+        let resolution = grid_resolution(target_cells, extent);
+        let inverse_cell = std::array::from_fn(|axis| {
+            if extent[axis] > 0.0 {
+                resolution[axis] as f32 / extent[axis]
+            } else {
+                0.0
+            }
+        });
+        material_grids.insert(material, (lo, resolution, inverse_cell));
     }
 
-    // -- Cluster: (cell_x, cell_y, cell_z, material_bucket) -> cluster index. -
+    // -- Cluster: (cell_x, cell_y, cell_z, triangle_material) -> cluster id. --
+    // A source vertex may belong to several triangle materials. It therefore
+    // receives one output mapping per material; using one "incident material"
+    // bucket for the vertex would let another material reuse that output vertex
+    // and would cross the seam. Accumulate each distinct source-vertex/material
+    // pair exactly once so UV means are independent of triangle valence.
     // The HashMap is used ONLY to resolve a key to an already-seen cluster index;
     // the OUTPUT vertex order is the first-seen order recorded in `out_pos`, so the
     // result is byte-identical across runs (no HashMap iteration in output order).
@@ -202,36 +193,62 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
     let mut acc_pos: Vec<[f64; 3]> = Vec::new();
     let mut acc_uv: Vec<[f64; 2]> = Vec::new();
     let mut acc_count: Vec<u32> = Vec::new();
-    // Map every input vertex -> its output cluster id.
-    let mut vert_to_cluster = vec![u32::MAX; n_verts];
+    let mut vertex_material_cluster: HashMap<(usize, u32), u32> = HashMap::new();
+    let mut corner_clusters = vec![[u32::MAX; 3]; n_tris];
 
-    for vi in 0..n_verts {
-        let p = input.positions[vi];
-        let cell = cell_of(p);
-        let key = (cell[0], cell[1], cell[2], vert_mat_bucket[vi]);
-        let cid = match cluster_of.get(&key) {
-            Some(&c) => c,
-            None => {
-                let c = acc_pos.len() as u32;
-                cluster_of.insert(key, c);
-                acc_pos.push([0.0; 3]);
-                acc_uv.push([0.0; 2]);
-                acc_count.push(0);
-                c
+    for (ti, tri) in input.indices.iter().enumerate() {
+        let material = mat_of(ti);
+        for (corner, &source_index) in tri.iter().enumerate() {
+            let vi = source_index as usize;
+            if vi >= n_verts {
+                continue;
             }
-        };
-        vert_to_cluster[vi] = cid;
-        let a = &mut acc_pos[cid as usize];
-        a[0] += p[0] as f64;
-        a[1] += p[1] as f64;
-        a[2] += p[2] as f64;
-        if have_uvs {
-            let uv = input.uvs[vi];
-            let au = &mut acc_uv[cid as usize];
-            au[0] += uv[0] as f64;
-            au[1] += uv[1] as f64;
+            let pair = (vi, material);
+            let cid = if let Some(&cid) = vertex_material_cluster.get(&pair) {
+                cid
+            } else {
+                let p = input.positions[vi];
+                let (lo, resolution, inverse_cell) = material_grids
+                    .get(&material)
+                    .expect("referenced triangle material has a deterministic grid");
+                let mut cell = [0_i32; 3];
+                for axis in 0..3 {
+                    if inverse_cell[axis] > 0.0 && p[axis].is_finite() {
+                        // Clamp into [0, resolution-1] so a vertex exactly on the
+                        // upper bound lands in the last cell, not one past it.
+                        let value = ((p[axis] - lo[axis]) * inverse_cell[axis]).floor();
+                        cell[axis] =
+                            (value as i32).clamp(0, resolution[axis].saturating_sub(1) as i32);
+                    }
+                }
+                let key = (cell[0], cell[1], cell[2], material);
+                let cid = match cluster_of.get(&key) {
+                    Some(&cid) => cid,
+                    None => {
+                        let cid = acc_pos.len() as u32;
+                        cluster_of.insert(key, cid);
+                        acc_pos.push([0.0; 3]);
+                        acc_uv.push([0.0; 2]);
+                        acc_count.push(0);
+                        cid
+                    }
+                };
+                let position_sum = &mut acc_pos[cid as usize];
+                position_sum[0] += p[0] as f64;
+                position_sum[1] += p[1] as f64;
+                position_sum[2] += p[2] as f64;
+                if have_uvs {
+                    let uv = input.uvs[vi];
+                    let uv_sum = &mut acc_uv[cid as usize];
+                    uv_sum[0] += uv[0] as f64;
+                    uv_sum[1] += uv[1] as f64;
+                }
+                acc_count[cid as usize] += 1;
+                vertex_material_cluster.insert(pair, cid);
+                cid
+            };
+            corner_clusters[ti][corner] = cid;
         }
-        acc_count[cid as usize] += 1;
     }
 
     // -- Finalize welded vertices (cluster means). --------------------------
@@ -255,21 +272,133 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
     // -- Rebuild triangles against welded vertices; drop degenerates. -------
     let mut out_idx: Vec<[u32; 3]> = Vec::with_capacity(n_tris);
     let mut out_mat: Vec<u32> = Vec::with_capacity(n_tris);
-    for (ti, tri) in input.indices.iter().enumerate() {
-        let (a, b, c) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
-        // Out-of-range index → drop the triangle (defensive; never panic).
-        if a >= n_verts || b >= n_verts || c >= n_verts {
+    let mut out_source: Vec<u32> = Vec::with_capacity(n_tris);
+    for (ti, _) in input.indices.iter().enumerate() {
+        let [ca, cb, cc] = corner_clusters[ti];
+        // Out-of-range source index → an unmapped corner; drop defensively.
+        if ca == u32::MAX || cb == u32::MAX || cc == u32::MAX {
             continue;
         }
-        let ca = vert_to_cluster[a];
-        let cb = vert_to_cluster[b];
-        let cc = vert_to_cluster[c];
         // Degenerate after the collapse: two or three corners welded together.
         if ca == cb || cb == cc || ca == cc {
             continue;
         }
         out_idx.push([ca, cb, cc]);
         out_mat.push(mat_of(ti));
+        out_source.push(ti as u32);
+    }
+
+    // -- Exact material/UV contract preservation. --------------------------
+    // A tiny trim, leaf, decal, or reveal can still vanish if every one of its
+    // triangles degenerates in a coarse grid. Likewise, the only surviving UVs
+    // could all average to one value. Neither is an acceptable textured LOD: for
+    // those material groups, remove the partial simplified result and append the
+    // exact source triangles. This happens in the offline cook callers; runtime
+    // only consumes the resulting immutable mesh.
+    let mut source_materials = BTreeSet::new();
+    let mut source_uv_contract = BTreeMap::<u32, ([f32; 2], bool)>::new();
+    for (ti, triangle) in input.indices.iter().enumerate() {
+        let material = mat_of(ti);
+        source_materials.insert(material);
+        if !have_uvs {
+            continue;
+        }
+        for &index in triangle {
+            let Some(&uv) = input.uvs.get(index as usize) else {
+                continue;
+            };
+            source_uv_contract
+                .entry(material)
+                .and_modify(|(first, varied)| {
+                    *varied |=
+                        (uv[0] - first[0]).abs() > 1.0e-6 || (uv[1] - first[1]).abs() > 1.0e-6;
+                })
+                .or_insert((uv, false));
+        }
+    }
+    let mut output_materials = BTreeSet::new();
+    let mut output_uv_contract = BTreeMap::<u32, ([f32; 2], bool)>::new();
+    for (triangle, &material) in out_idx.iter().zip(&out_mat) {
+        output_materials.insert(material);
+        if !have_uvs {
+            continue;
+        }
+        for &index in triangle {
+            let Some(&uv) = out_uv.get(index as usize) else {
+                continue;
+            };
+            output_uv_contract
+                .entry(material)
+                .and_modify(|(first, varied)| {
+                    *varied |=
+                        (uv[0] - first[0]).abs() > 1.0e-6 || (uv[1] - first[1]).abs() > 1.0e-6;
+                })
+                .or_insert((uv, false));
+        }
+    }
+    let restore_materials: BTreeSet<u32> = source_materials
+        .into_iter()
+        .filter(|material| {
+            if !output_materials.contains(material) {
+                return true;
+            }
+            have_uvs
+                && source_uv_contract
+                    .get(material)
+                    .is_some_and(|(_, varied)| *varied)
+                && !output_uv_contract
+                    .get(material)
+                    .is_some_and(|(_, varied)| *varied)
+        })
+        .collect();
+    if !restore_materials.is_empty() {
+        let mut retained_indices = Vec::with_capacity(out_idx.len());
+        let mut retained_materials = Vec::with_capacity(out_mat.len());
+        let mut retained_sources = Vec::with_capacity(out_source.len());
+        for ((triangle, material), source) in out_idx.into_iter().zip(out_mat).zip(out_source) {
+            if !restore_materials.contains(&material) {
+                retained_indices.push(triangle);
+                retained_materials.push(material);
+                retained_sources.push(source);
+            }
+        }
+        out_idx = retained_indices;
+        out_mat = retained_materials;
+        out_source = retained_sources;
+
+        let mut exact_vertex = HashMap::<(usize, u32), u32>::new();
+        for (ti, triangle) in input.indices.iter().enumerate() {
+            let material = mat_of(ti);
+            if !restore_materials.contains(&material) {
+                continue;
+            }
+            let mut restored = [0_u32; 3];
+            let mut complete = true;
+            for (corner, &source_index) in triangle.iter().enumerate() {
+                let source_index = source_index as usize;
+                let Some(&position) = input.positions.get(source_index) else {
+                    complete = false;
+                    break;
+                };
+                let key = (source_index, material);
+                restored[corner] = if let Some(&index) = exact_vertex.get(&key) {
+                    index
+                } else {
+                    let index = out_pos.len() as u32;
+                    out_pos.push(position);
+                    if have_uvs {
+                        out_uv.push(input.uvs[source_index]);
+                    }
+                    exact_vertex.insert(key, index);
+                    index
+                };
+            }
+            if complete {
+                out_idx.push(restored);
+                out_mat.push(material);
+                out_source.push(ti as u32);
+            }
+        }
     }
 
     MeshOutput {
@@ -277,6 +406,7 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
         uvs: out_uv,
         indices: out_idx,
         material_ids: out_mat,
+        source_triangle_indices: out_source,
     }
 }
 
@@ -367,7 +497,14 @@ mod tests {
         }
         // material_ids parallel to surviving triangles, all material 0.
         assert_eq!(out.material_ids.len(), out.indices.len());
+        assert_eq!(out.source_triangle_indices.len(), out.indices.len());
         assert!(out.material_ids.iter().all(|&m| m == 0));
+        assert!(
+            out.source_triangle_indices
+                .iter()
+                .all(|&source| (source as usize) < idx.len()),
+            "every simplified triangle must retain valid source provenance"
+        );
         // Every index references a valid output vertex.
         for t in &out.indices {
             for &i in t {
@@ -382,33 +519,27 @@ mod tests {
 
     #[test]
     fn never_welds_across_material_seam() {
-        // Two spatially-separated, well-extended quads — one material 0, one
-        // material 5 — that nonetheless SHARE a coincident seam-vertex pair (one
-        // vertex per material at the SAME position). A material-BLIND grid clusterer
-        // would weld that pair, bridging the two materials onto one welded vertex;
-        // the seam guard (incident-material bucket in the cluster key) must keep
-        // them apart. The quads are large/separated enough that a moderate ratio
-        // keeps each quad's three distinct corners (so triangles survive) while the
-        // coincident seam pair still wants to weld.
+        // Two well-extended quads — one material 0, one material 5 — share the
+        // SAME source vertex at their seam. The material-aware corner mapping must
+        // explicitly duplicate it; assigning one incident-material bucket to the
+        // source vertex would bridge the two output material groups.
         let pos = vec![
-            // Quad A (material 0) — left, far from the right quad except the seam.
+            // Quad A (material 0).
             [0.0, 0.0, 0.0],
             [4.0, 0.0, 0.0],
             [0.0, 4.0, 0.0],
-            [4.0, 4.0, 0.0], // <- A's seam corner
-            // Quad B (material 5) — right, but its bottom-left corner is COINCIDENT
-            // with A's top-right corner [4,4,0] (the shared seam vertex pair).
-            [4.0, 4.0, 0.0], // <- B's seam corner (same position as pos[3])
+            [4.0, 4.0, 0.0], // shared source seam vertex
+            // Quad B (material 5).
             [8.0, 4.0, 0.0],
             [4.0, 8.0, 0.0],
             [8.0, 8.0, 0.0],
         ];
-        let uv = vec![[0.0, 0.0]; 8];
+        let uv = vec![[0.0, 0.0]; 7];
         let idx = vec![
             [0, 1, 2],
             [1, 3, 2], // material 0 (quad A)
-            [4, 5, 6],
-            [5, 7, 6], // material 5 (quad B)
+            [3, 4, 5],
+            [4, 6, 5], // material 5 (quad B)
         ];
         let mats = vec![0u32, 0, 5, 5];
         let input = MeshInput {
@@ -417,10 +548,9 @@ mod tests {
             indices: &idx,
             material_ids: &mats,
         };
-        // Moderate ratio: a material-blind clusterer WOULD weld the coincident seam
-        // pair (pos[3] and pos[4]) into one vertex, bridging the materials. The seam
-        // guard must prevent it while still keeping each quad's triangles.
-        let out = simplify_mesh(&input, 0.9);
+        // Moderate ratio keeps each quad's triangles while the shared source
+        // vertex would bridge the materials without per-material duplication.
+        let out = simplify_mesh(&input, 0.99);
 
         // Both materials survive with their own triangles.
         let m0 = out.material_ids.iter().filter(|&&m| m == 0).count();
@@ -477,6 +607,10 @@ mod tests {
         assert_eq!(out.indices, idx, "ratio>=1 returns indices unchanged");
         assert_eq!(out.uvs, uv);
         assert_eq!(out.material_ids, mats);
+        assert_eq!(
+            out.source_triangle_indices,
+            (0..idx.len() as u32).collect::<Vec<_>>()
+        );
 
         // Tiny mesh (1 triangle) also passes through.
         let tpos = vec![
@@ -496,7 +630,39 @@ mod tests {
         let tout = simplify_mesh(&tin, 0.01);
         assert_eq!(tout.indices, tidx, "single-triangle mesh passes through");
         assert_eq!(tout.material_ids, tmats);
+        assert_eq!(tout.source_triangle_indices, vec![0]);
         assert!(tout.uvs.is_empty(), "untextured input -> empty output UVs");
+    }
+
+    #[test]
+    fn source_triangle_provenance_survives_clustering_and_material_restore() {
+        let (mut positions, mut uvs, mut indices) = grid_plane(12);
+        let mut materials = vec![0_u32; indices.len()];
+        let restored_source = indices.len() as u32;
+        let base = positions.len() as u32;
+        positions.extend([[2.0, 0.0, 0.0], [2.1, 0.0, 0.0], [2.0, 0.1, 0.0]]);
+        uvs.extend([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+        indices.push([base, base + 1, base + 2]);
+        materials.push(7);
+
+        let input = MeshInput {
+            positions: &positions,
+            uvs: &uvs,
+            indices: &indices,
+            material_ids: &materials,
+        };
+        let out = simplify_mesh(&input, 0.02);
+
+        assert!(out.indices.len() < indices.len());
+        assert_eq!(out.source_triangle_indices.len(), out.indices.len());
+        assert!(
+            out.source_triangle_indices.contains(&restored_source),
+            "the tiny textured material must be restored with its original triangle identity"
+        );
+        for (&material, &source) in out.material_ids.iter().zip(&out.source_triangle_indices) {
+            assert_eq!(material, materials[source as usize]);
+        }
+        assert_eq!(out, simplify_mesh(&input, 0.02));
     }
 
     #[test]

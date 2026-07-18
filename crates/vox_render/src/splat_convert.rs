@@ -322,6 +322,7 @@ pub fn splats_to_lit_scene(
 /// - **edge_wear** on near-vertical wall faces (|normal.y| small) — arris/wall wear.
 /// Returns an empty vec when there is no geometry (weathering then stays off).
 #[cfg(feature = "spectra-native")]
+#[cfg(any(not(feature = "aot-shaders"), test))]
 fn build_weathering_pattern(positions: &[f32], normals: &[f32]) -> Vec<f32> {
     let vc = positions.len() / 3;
     if vc == 0 {
@@ -431,6 +432,15 @@ pub fn meshes_to_instanced_scene(
     for b in blas {
         let v_start = vbase;
         let t_start = tbase;
+        #[cfg(feature = "aot-shaders")]
+        assert_eq!(
+            b.positions.len(),
+            b.normals.len(),
+            "product BLAS {} has {} positions but {} normals; runtime geometry repair/substitution is forbidden",
+            b.proto_id,
+            b.positions.len(),
+            b.normals.len()
+        );
         debug_assert_eq!(
             b.positions.len(),
             b.normals.len(),
@@ -442,18 +452,56 @@ pub fn meshes_to_instanced_scene(
         for n in &b.normals {
             normals.extend_from_slice(n);
         }
+        #[cfg(feature = "aot-shaders")]
+        {
+            assert_eq!(
+                b.uvs.len(),
+                b.positions.len(),
+                "product BLAS {} has {} positions but {} UVs; runtime zero-fill/substitution is forbidden",
+                b.proto_id,
+                b.positions.len(),
+                b.uvs.len()
+            );
+            for t in &b.uvs {
+                uvs.extend_from_slice(t);
+            }
+        }
+        // Old developer diagnostics may still exercise geometry that predates
+        // authored UV streams. This compatibility branch is absent from the AOT
+        // product runtime.
+        #[cfg(not(feature = "aot-shaders"))]
         if b.uvs.len() == b.positions.len() {
             for t in &b.uvs {
                 uvs.extend_from_slice(t);
             }
         } else {
-            // Missing UVs → unit zeros (kept length-consistent with positions).
             uvs.extend(std::iter::repeat(0.0).take(b.positions.len() * 2));
         }
+        #[cfg(feature = "aot-shaders")]
+        assert_eq!(
+            b.material_ids.len(),
+            b.indices.len(),
+            "product BLAS {} has {} triangles but {} triangle material ids; runtime slot-0 substitution is forbidden",
+            b.proto_id,
+            b.indices.len(),
+            b.material_ids.len()
+        );
         for (ti, tri) in b.indices.iter().enumerate() {
+            #[cfg(feature = "aot-shaders")]
+            assert!(
+                tri.iter().all(|&index| index < b.positions.len() as u32),
+                "product BLAS {} triangle {} references {:?} but has only {} vertices; runtime geometry repair is forbidden",
+                b.proto_id,
+                ti,
+                tri,
+                b.positions.len()
+            );
             indices.extend_from_slice(&[vbase + tri[0], vbase + tri[1], vbase + tri[2]]);
-            // Per-triangle material id (forge channel id ordered); default 0.
-            // BlasDesc.material_ids is already u32 — no cast.
+            // Product reads the exact authored entry. The slot-0 compatibility
+            // fallback is compiled only for non-AOT developer diagnostics.
+            #[cfg(feature = "aot-shaders")]
+            let mid = b.material_ids[ti];
+            #[cfg(not(feature = "aot-shaders"))]
             let mid = b.material_ids.get(ti).copied().unwrap_or(0);
             tri_material_ids.push(mid);
         }
@@ -493,32 +541,60 @@ pub fn meshes_to_instanced_scene(
         spd_map.insert(*mat_id, *spd);
     }
 
-    // --- Geometry-anchored weathering PATTERN (7 floats / scene vertex) ---
-    // The cook bakes per-vertex masks, but they are not carried through the
-    // HybridMesh→BlasDesc seam yet, so synthesize the PATTERN here from the
-    // merged vertex geometry (position + normal). This is the cook-pattern layer
-    // of [[dynamic-weathering-directive]]: WHERE aging appears (soot rising from
-    // the street, water-stain weeping below sills/ledges, edge-wear on arrises,
-    // efflorescence wicking up from the base). It is a pure, deterministic
-    // function of the id-sorted merged geometry (no HashMap/RNG iteration) so it
-    // never perturbs the determinism artifact. The sim drives per-instance
-    // INTENSITY on top via `set_weathering_intensity` (future); at reference
-    // intensity 1.0 this is a SUBTLE pattern (amplitudes ≤ ~0.3) so a clean city
-    // still reads clean. Empty when there is no geometry.
-    //
-    // COOKED-MASK OVERLAY: a proto that carries its cook-baked per-vertex masks
-    // (`BlasDesc::weathering_masks`, 7 floats/vertex — the HybridMesh→BlasDesc
-    // seam is now carried) REPLACES the synthesized pattern over its own vertex
-    // range; every other proto keeps the synthesis (byte-identical to before).
-    // Iterates `blas` in the same fixed order as `proto_ranges` — deterministic.
+    // --- Weathering stream (7 floats / scene vertex) ---
+    // Product/AOT builds concatenate exact cook-authored proto streams directly.
+    // There is no zero prefill, synthesis, or substitution: even intentionally
+    // clean geometry must carry explicit zero masks from the cook. Iteration is in
+    // the same deterministic proto order used to assemble the geometry soup.
+    #[cfg(feature = "aot-shaders")]
+    let weathering_masks = {
+        let expected_total = positions.len() / 3 * 7;
+        let mut authored = Vec::with_capacity(expected_total);
+        for (b, &(v_start, vcount, _, _)) in blas.iter().zip(proto_ranges.iter()) {
+            assert_eq!(
+                authored.len(),
+                v_start as usize * 7,
+                "product weathering stream is not contiguous at BLAS {}; runtime gaps/substitution are forbidden",
+                b.proto_id
+            );
+            let expected = vcount as usize * 7;
+            assert_eq!(
+                b.weathering_masks.len(),
+                expected,
+                "product BLAS {} has {} weathering floats for {} vertices; expected exactly {} (7 per vertex); runtime synthesis/substitution is forbidden",
+                b.proto_id,
+                b.weathering_masks.len(),
+                vcount,
+                expected
+            );
+            authored.extend_from_slice(&b.weathering_masks);
+        }
+        assert_eq!(
+            authored.len(),
+            expected_total,
+            "product scene assembled {} authored weathering floats for {} vertices; expected exactly {}; runtime synthesis/substitution is forbidden",
+            authored.len(),
+            positions.len() / 3,
+            expected_total
+        );
+        authored
+    };
+
+    // Developer/test builds retain the legacy deterministic geometry pattern for
+    // old diagnostics. A proto with an exact authored stream overlays its own
+    // range; missing or malformed streams leave the deterministic legacy pattern
+    // intact. This branch is not compiled into an AOT product runtime.
+    #[cfg(not(feature = "aot-shaders"))]
     let mut weathering_masks = build_weathering_pattern(&positions, &normals);
+    #[cfg(not(feature = "aot-shaders"))]
     if !weathering_masks.is_empty() {
         for (b, &(v_start, vcount, _, _)) in blas.iter().zip(proto_ranges.iter()) {
-            if b.weathering_masks.len() == vcount as usize * 7 {
-                let dst = v_start as usize * 7;
-                weathering_masks[dst..dst + b.weathering_masks.len()]
-                    .copy_from_slice(&b.weathering_masks);
+            if b.weathering_masks.len() != vcount as usize * 7 {
+                continue;
             }
+            let dst = v_start as usize * 7;
+            weathering_masks[dst..dst + b.weathering_masks.len()]
+                .copy_from_slice(&b.weathering_masks);
         }
     }
 
@@ -554,6 +630,72 @@ mod tests {
 
     fn zero_spectral() -> [u16; 16] {
         [0u16; 16]
+    }
+
+    #[cfg(feature = "spectra-native")]
+    fn weathering_triangle_blas(proto_id: u64, weathering_masks: Vec<f32>) -> BlasDesc {
+        BlasDesc {
+            proto_id,
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            uvs: vec![[0.0, 0.0]; 3],
+            indices: vec![[0, 1, 2]],
+            material_ids: vec![0],
+            aabb_min: [0.0, 0.0, 0.0],
+            aabb_max: [1.0, 1.0, 0.0],
+            weathering_masks,
+        }
+    }
+
+    #[cfg(all(feature = "spectra-native", feature = "aot-shaders"))]
+    #[test]
+    fn weathering_masks_aot_scene_copies_exact_authored_stream() {
+        let authored: Vec<f32> = (0..21).map(|i| i as f32 / 20.0).collect();
+        let blas = [weathering_triangle_blas(101, authored.clone())];
+        let scene = meshes_to_instanced_scene(&blas, &[], &[PbrMaterial::default()], &[], 64, 48);
+        assert_eq!(scene.geometry.weathering_masks, authored);
+    }
+
+    #[cfg(all(feature = "spectra-native", feature = "aot-shaders"))]
+    #[test]
+    #[should_panic(expected = "runtime synthesis/substitution is forbidden")]
+    fn weathering_masks_aot_scene_rejects_missing_proto_stream() {
+        let blas = [weathering_triangle_blas(102, Vec::new())];
+        let _ = meshes_to_instanced_scene(&blas, &[], &[PbrMaterial::default()], &[], 64, 48);
+    }
+
+    #[cfg(all(feature = "spectra-native", feature = "aot-shaders"))]
+    #[test]
+    #[should_panic(expected = "runtime zero-fill/substitution is forbidden")]
+    fn aot_scene_rejects_missing_authored_uvs() {
+        let mut proto = weathering_triangle_blas(104, vec![0.0; 3 * 7]);
+        proto.uvs.clear();
+        let _ = meshes_to_instanced_scene(&[proto], &[], &[PbrMaterial::default()], &[], 64, 48);
+    }
+
+    #[cfg(all(feature = "spectra-native", feature = "aot-shaders"))]
+    #[test]
+    #[should_panic(expected = "runtime slot-0 substitution is forbidden")]
+    fn aot_scene_rejects_missing_triangle_material_ids() {
+        let mut proto = weathering_triangle_blas(105, vec![0.0; 3 * 7]);
+        proto.material_ids.clear();
+        let _ = meshes_to_instanced_scene(&[proto], &[], &[PbrMaterial::default()], &[], 64, 48);
+    }
+
+    #[cfg(all(feature = "spectra-native", not(feature = "aot-shaders")))]
+    #[test]
+    fn weathering_masks_non_aot_scene_retains_legacy_diagnostic_pattern() {
+        let blas = [weathering_triangle_blas(103, Vec::new())];
+        let scene = meshes_to_instanced_scene(&blas, &[], &[PbrMaterial::default()], &[], 64, 48);
+        assert_eq!(scene.geometry.weathering_masks.len(), 21);
+        assert!(
+            scene
+                .geometry
+                .weathering_masks
+                .iter()
+                .any(|&mask| mask > 0.0),
+            "legacy non-AOT diagnostic synthesis should remain observable"
+        );
     }
 
     #[test]
@@ -717,7 +859,7 @@ mod tests {
             material_ids: vec![0],
             aabb_min: [0.0, 0.0, 0.0],
             aabb_max: [1.0, 1.0, 0.0],
-            weathering_masks: Vec::new(),
+            weathering_masks: vec![0.0; 3 * 7],
         };
         // Proto 1: a quad (2 triangles), bound [10,0,0]..[12,2,0] — DISTINCT.
         let proto_b = BlasDesc {
@@ -734,7 +876,7 @@ mod tests {
             material_ids: vec![0, 0],
             aabb_min: [10.0, 0.0, 0.0],
             aabb_max: [12.0, 2.0, 0.0],
-            weathering_masks: Vec::new(),
+            weathering_masks: vec![0.0; 4 * 7],
         };
         let blas = [proto_a, proto_b];
         // 3 instances referencing protos 0, 1, 0.

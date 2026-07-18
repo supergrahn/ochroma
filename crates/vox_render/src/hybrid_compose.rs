@@ -59,7 +59,7 @@ use crate::spectral_framebuffer::SpectralFramebuffer;
 /// A triangle mesh with engine-agnostic geometry and per-mesh spectral
 /// reflectance. Positions are world-space; indices are triangle list (groups of
 /// three indices into `positions`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HybridMesh {
     /// World-space vertex positions.
     pub positions: Vec<[f32; 3]>,
@@ -124,6 +124,11 @@ pub struct HybridMesh {
     pub transmission_override: Option<f32>,
     /// IOR paired with `transmission_override` (e.g. 1.33 water, 1.5 glass).
     pub ior_override: Option<f32>,
+    /// Thin-surface override paired with transmissive materials. `None` keeps the
+    /// channel default; `Some(true)` selects straight-through thin-pane Fresnel
+    /// shading, while `Some(false)` preserves full solid-volume refraction.
+    #[serde(default)]
+    pub thin_walled_override: Option<bool>,
     /// Water optics: own Beer-Lambert absorption (blue-green, NOT the warm
     /// building-glass tint), absorption depth, and roughness — so the sea reads
     /// as tinted water with a Fresnel sky reflection, not a clear/warm mirror.
@@ -157,6 +162,14 @@ pub struct HybridMesh {
     /// `world_planar_uv_scale`: scene assembly gives the world-planar sentinel
     /// priority so a (hypothetical) mesh carrying both never double-encodes.
     pub uv_scale: Option<[f32; 2]>,
+    /// Opt this opaque vertex-UV surface into stochastic anti-tiling. The renderer
+    /// applies one coherent transform to base colour, roughness, and tangent-space
+    /// normal samples on the primary hit, while secondary rays keep the cheaper
+    /// authored tile. This is a generic material capability for broad repeating
+    /// surfaces such as roads; terrain uses [`world_planar_uv_scale`] instead.
+    /// Transmissive, cutout, and vegetation materials ignore this flag.
+    #[serde(default)]
+    pub uv_antitile: bool,
     /// Leaf/needle/card foliage submesh flag. Scene assembly uses this to route
     /// the material through the vegetation BSDF and alpha-cutout path without
     /// tagging bark/trunks that share the same scatter proto.
@@ -198,12 +211,11 @@ pub struct HybridMesh {
     /// COOKED per-vertex weathering masks — **7 floats per vertex**, parallel to
     /// [`positions`] (`len == positions.len() * 7`), channel order `[moss,
     /// water_stain, paint_chip, rust, soot, efflorescence, edge_wear]` (the
-    /// megakernel `apply_weathering_full` contract). **EMPTY = the legacy
-    /// behaviour**: scene assembly synthesizes its geometry-anchored pattern for
-    /// this mesh's vertices (`build_weathering_pattern`). Non-empty carries the
-    /// cook's authored masks through the HybridMesh→BlasDesc seam so they reach
-    /// `set_weathering_masks` instead of being dropped at load. Deterministic
-    /// plain per-vertex data — no map/RNG ordering.
+    /// megakernel `apply_weathering_full` contract). Product/AOT scene assembly
+    /// requires the exact stream for every non-empty mesh; an intentionally clean
+    /// surface carries explicit zero masks, while missing or malformed data is a
+    /// hard error. Non-AOT diagnostics retain the legacy synthesized pattern for
+    /// compatibility. Deterministic plain per-vertex data — no map/RNG ordering.
     pub weathering_masks: Vec<f32>,
 }
 
@@ -257,6 +269,7 @@ impl HybridMesh {
             displacement_scale: 0.0,
             displacement_midlevel: 0.5,
             transmission_override: None,
+            thin_walled_override: None,
             absorption_override: None,
             absorption_depth_override: None,
             roughness_override: None,
@@ -265,6 +278,7 @@ impl HybridMesh {
             ior_override: None,
             world_planar_uv_scale: None,
             uv_scale: None,
+            uv_antitile: false,
             vegetation_bsdf: false,
             material_ids: Vec::new(),
             merge_group: None,
@@ -276,14 +290,35 @@ impl HybridMesh {
     }
 
     /// Attach COOKED per-vertex weathering masks (7 floats/vertex, parallel to
-    /// `positions` — see [`HybridMesh::weathering_masks`]). Builder style. A
-    /// mismatched length is ignored (scene assembly then falls back to the
-    /// synthesized geometry-anchored pattern) so a bad cook can never desync the
-    /// per-vertex stream.
+    /// `positions` — see [`HybridMesh::weathering_masks`]). Builder style.
+    /// Product/AOT builds hard-fail unless the stream is exact, including when an
+    /// empty stream is supplied for non-empty geometry; runtime synthesis or
+    /// substitution is forbidden. Non-AOT diagnostic builds preserve the legacy
+    /// behavior of ignoring a malformed stream.
     pub fn with_weathering_masks(mut self, masks: Vec<f32>) -> Self {
-        if masks.len() == self.positions.len() * 7 {
-            self.weathering_masks = masks;
+        let expected = self
+            .positions
+            .len()
+            .checked_mul(7)
+            .expect("HybridMesh weathering stream length overflow");
+
+        #[cfg(feature = "aot-shaders")]
+        assert_eq!(
+            masks.len(),
+            expected,
+            "product HybridMesh object_id={} has {} weathering floats for {} vertices; expected exactly {} (7 per vertex); runtime synthesis/substitution is forbidden",
+            self.object_id,
+            masks.len(),
+            self.positions.len(),
+            expected
+        );
+
+        #[cfg(not(feature = "aot-shaders"))]
+        if masks.len() != expected {
+            return self;
         }
+
+        self.weathering_masks = masks;
         self
     }
 
@@ -352,6 +387,14 @@ impl HybridMesh {
     /// [`HybridMesh::uv_scale`].
     pub fn with_uv_scale(mut self, scale: [f32; 2]) -> Self {
         self.uv_scale = Some(scale);
+        self
+    }
+
+    /// Enable stochastic anti-tiling for an opaque vertex-UV surface. This is an
+    /// explicit opt-in because authored directional motifs, cutouts, glass, and
+    /// relief displacement cannot safely share the same sampling policy.
+    pub fn with_uv_antitile(mut self) -> Self {
+        self.uv_antitile = true;
         self
     }
 
@@ -1800,6 +1843,58 @@ mod tests {
             bad.material_ids.is_empty(),
             "mismatched material_ids length must be ignored (single-material)"
         );
+    }
+
+    #[test]
+    fn vertex_uv_antitile_is_explicit_and_composable() {
+        let plain = HybridMesh::from_rgb(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![0, 1, 2],
+            [0.5, 0.5, 0.5],
+            7,
+        );
+        assert!(!plain.uv_antitile, "legacy meshes stay byte-compatible");
+
+        let tiled = plain.with_uv_scale([2.0, 3.0]).with_uv_antitile();
+        assert!(tiled.uv_antitile);
+        assert_eq!(tiled.uv_scale, Some([2.0, 3.0]));
+    }
+
+    fn weathering_test_mesh() -> HybridMesh {
+        HybridMesh::from_rgb(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![0, 1, 2],
+            [0.5, 0.5, 0.5],
+            77,
+        )
+    }
+
+    #[test]
+    fn weathering_masks_accept_exact_authored_stream() {
+        let masks: Vec<f32> = (0..21).map(|i| i as f32 / 20.0).collect();
+        let mesh = weathering_test_mesh().with_weathering_masks(masks.clone());
+        assert_eq!(mesh.weathering_masks, masks);
+    }
+
+    #[cfg(feature = "aot-shaders")]
+    #[test]
+    #[should_panic(expected = "runtime synthesis/substitution is forbidden")]
+    fn weathering_masks_aot_reject_empty_stream_for_nonempty_geometry() {
+        let _ = weathering_test_mesh().with_weathering_masks(Vec::new());
+    }
+
+    #[cfg(feature = "aot-shaders")]
+    #[test]
+    #[should_panic(expected = "runtime synthesis/substitution is forbidden")]
+    fn weathering_masks_aot_reject_malformed_stream() {
+        let _ = weathering_test_mesh().with_weathering_masks(vec![0.0; 20]);
+    }
+
+    #[cfg(not(feature = "aot-shaders"))]
+    #[test]
+    fn weathering_masks_non_aot_ignores_malformed_stream_for_diagnostics() {
+        let mesh = weathering_test_mesh().with_weathering_masks(vec![0.0; 20]);
+        assert!(mesh.weathering_masks.is_empty());
     }
 
     /// Regression for the far-plane all-or-nothing drop. A polygon with one vertex

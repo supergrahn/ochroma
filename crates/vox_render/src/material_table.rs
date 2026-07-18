@@ -7,11 +7,10 @@
 //! palette append, and the scatter proto material push) into a single typed
 //! allocator so material-slot allocation happens in exactly one place.
 //!
-//! M1+M2 scope (behaviour-preserving): the dedup key, the colour bucket
-//! quantization, and the slot value (`= materials.len() as u32`) are identical to
-//! the prior inline code. The 256-material cap (the old `>= 255 ⇒ alias to 254`
-//! clamp) is DELETED — slots are `u32` and the table grows to whatever the scene
-//! needs. Nothing past slot 254 is aliased anymore.
+//! Slots are `u32` and the table grows to whatever the scene needs. The key uses
+//! exact authored shading identity rather than the former three-bit colour bucket,
+//! so visually distinct surfaces cannot collapse onto the first material that
+//! happened to enter the table.
 
 // The `spectra-native` feature gate mirrors the game's `#[cfg(feature = "spectra")]`
 // pattern — PbrMaterial is only compiled when Spectra is compiled in.
@@ -23,14 +22,11 @@ use crate::splat_backend::PbrMaterial;
 
 /// Dedup key for a shared material slot.
 ///
-/// Mirrors the historical inline tuple `(channel, albedo_tex, normal_tex,
-/// roughness_tex, displacement_tex, color_bucket)` for opaque materials, with
-/// opacity/vegetation added for cutout cards so masked foliage never aliases an
-/// opaque material. Textured
-/// materials share regardless of base colour (the texture IS the colour, so
-/// `color` is the zero bucket); untextured materials carry a coarse 2-level /
-/// channel colour bucket so flat buildings still read varied without exploding
-/// the table.
+/// Captures every authored value that changes GPU shading. Textured materials
+/// share regardless of fallback `base_color` only when the sampled albedo
+/// replaces it. Factor x texture materials retain exact authored colour. This prevents two surfaces
+/// using the same texture slots from aliasing when their roughness, relief, glass
+/// optics, or UV policy differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MaterialKey {
     pub channel: u8,
@@ -40,13 +36,21 @@ pub struct MaterialKey {
     pub displacement_tex: i32,
     pub opacity_tex: i32,
     pub vegetation_bsdf: bool,
-    pub color_bucket: u32,
+    pub modulate_base_color_texture: bool,
+    pub modulate_roughness_texture: bool,
+    pub base_color_bits: [u32; 3],
+    /// `[roughness, metallic, emission, displacement_scale,
+    /// displacement_midlevel, uv_scale.x, uv_scale.y, transmission, ior,
+    /// absorption.r, absorption.g, absorption.b, absorption_depth]`.
+    pub surface_param_bits: [u32; 13],
+    pub thin_walled: bool,
+    pub is_water: bool,
 }
 
 impl MaterialKey {
-    /// Build the dedup key for a resolved material exactly as the prior inline
-    /// code did: textured ⇒ `color_bucket = 0`; untextured ⇒ a 3-bit
-    /// 2-level/channel bucket of the base colour.
+    /// Build an exact deterministic GPU-shading identity. Values are keyed by
+    /// their IEEE-754 bits so no epsilon or hash iteration order can merge two
+    /// authored materials accidentally.
     pub fn from_material(
         channel: u8,
         mat: &PbrMaterial,
@@ -55,11 +59,10 @@ impl MaterialKey {
         roughness_tex: i32,
         displacement_tex: i32,
     ) -> Self {
-        let color_bucket = if albedo_tex >= 0 {
-            0u32
+        let base_color_bits = if albedo_tex >= 0 && !mat.modulate_base_color_texture {
+            [0; 3]
         } else {
-            let q = |c: f32| ((c.clamp(0.0, 1.0) * 2.0) as u32).min(1);
-            (q(mat.base_color[0]) << 2) | (q(mat.base_color[1]) << 1) | q(mat.base_color[2])
+            mat.base_color.map(f32::to_bits)
         };
         Self {
             channel,
@@ -69,7 +72,26 @@ impl MaterialKey {
             displacement_tex,
             opacity_tex: mat.opacity_tex,
             vegetation_bsdf: mat.vegetation_bsdf,
-            color_bucket,
+            modulate_base_color_texture: mat.modulate_base_color_texture,
+            modulate_roughness_texture: mat.modulate_roughness_texture,
+            base_color_bits,
+            surface_param_bits: [
+                mat.roughness.to_bits(),
+                mat.metallic.to_bits(),
+                mat.emission_strength.to_bits(),
+                mat.displacement_scale.to_bits(),
+                mat.displacement_midlevel.to_bits(),
+                mat.uv_scale[0].to_bits(),
+                mat.uv_scale[1].to_bits(),
+                mat.transmission.to_bits(),
+                mat.ior.to_bits(),
+                mat.absorption_color[0].to_bits(),
+                mat.absorption_color[1].to_bits(),
+                mat.absorption_color[2].to_bits(),
+                mat.absorption_depth.to_bits(),
+            ],
+            thin_walled: mat.thin_walled,
+            is_water: mat.is_water,
         }
     }
 }
@@ -169,5 +191,65 @@ impl MaterialTable {
 
     pub fn is_empty(&self) -> bool {
         self.materials.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(mat: &PbrMaterial) -> MaterialKey {
+        MaterialKey::from_material(
+            0,
+            mat,
+            mat.albedo_tex,
+            mat.normal_tex,
+            mat.roughness_tex,
+            mat.displacement_tex,
+        )
+    }
+
+    #[test]
+    fn uv_policy_and_surface_parameters_are_part_of_material_identity() {
+        let mut plain = PbrMaterial {
+            albedo_tex: 7,
+            normal_tex: 8,
+            roughness_tex: 9,
+            ..PbrMaterial::default()
+        };
+        let mut antitiled = plain;
+        antitiled.uv_scale = [1.0, -1.0];
+        assert_ne!(key(&plain), key(&antitiled));
+
+        plain.roughness = 0.42;
+        assert_ne!(key(&plain), key(&antitiled));
+    }
+
+    #[test]
+    fn untextured_authored_colours_do_not_collapse_to_three_bits() {
+        let a = PbrMaterial {
+            base_color: [0.20, 0.25, 0.30],
+            ..PbrMaterial::default()
+        };
+        let b = PbrMaterial {
+            base_color: [0.35, 0.40, 0.45],
+            ..PbrMaterial::default()
+        };
+        assert_ne!(key(&a), key(&b));
+    }
+
+    #[test]
+    fn factor_times_texture_keeps_authored_colour_in_material_identity() {
+        let a = PbrMaterial {
+            base_color: [0.20, 0.25, 0.30],
+            albedo_tex: 7,
+            modulate_base_color_texture: true,
+            ..PbrMaterial::default()
+        };
+        let b = PbrMaterial {
+            base_color: [0.35, 0.40, 0.45],
+            ..a
+        };
+        assert_ne!(key(&a), key(&b));
     }
 }

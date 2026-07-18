@@ -3,43 +3,76 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+#[cfg(any(test, not(feature = "aot-shaders")))]
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(test, not(feature = "aot-shaders")))]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 use vox_core::{linear_to_srgb, srgb_to_linear};
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 const TEX_CACHE_MAGIC: &[u8; 8] = b"UHTEX01\0";
 /// v2 adds an optional GPU-native BCn payload after the f32 mirror so the
 /// load-time BC7/BC5/BC4 compression cost is paid once, not per run.
+#[cfg(any(test, not(feature = "aot-shaders")))]
 const TEX_CACHE_MAGIC_V2: &[u8; 8] = b"UHTEX02\0";
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 type TextureCache = HashMap<String, Arc<crate::splat_backend::TextureImage>>;
 
+/// Immutable GPU-native material texture loaded from an offline-cooked DDS.
+///
+/// Unlike [`crate::splat_backend::TextureImage`], this carrier deliberately has
+/// no decoded f32 mirror. Product runtime code may parse and validate the DDS
+/// container, retain its authored mip bytes, and upload them; it must not
+/// recreate texture data or render mips.
+#[derive(Debug, Clone)]
+pub struct CookedNativeTexture {
+    pub width: u32,
+    pub height: u32,
+    pub channels: u32,
+    pub texture: crate::RendererTexture2D,
+}
+
+type CookedNativeTextureCache = HashMap<String, Arc<CookedNativeTexture>>;
+
+#[cfg(any(test, not(feature = "aot-shaders")))]
 #[derive(Clone, Copy)]
 enum DdsMirrorMode {
     SrgbColor,
     LinearData,
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn texture_memory_cache() -> &'static Mutex<TextureCache> {
     static CACHE: OnceLock<Mutex<TextureCache>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn cooked_native_texture_cache() -> &'static Mutex<CookedNativeTextureCache> {
+    static CACHE: OnceLock<Mutex<CookedNativeTextureCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn texture_cache_enabled() -> bool {
     std::env::var("OCHROMA_TEXTURE_CACHE")
         .map(|v| v.trim() != "0")
         .unwrap_or(true)
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn texture_disk_cache_enabled() -> bool {
     std::env::var("OCHROMA_TEXTURE_DISK_CACHE")
         .map(|v| !matches!(v.trim(), "0" | "false" | "off" | "no"))
         .unwrap_or(true)
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn texture_cache_dir() -> PathBuf {
     std::env::var_os("OCHROMA_TEXTURE_CACHE_DIR")
         .map(PathBuf::from)
@@ -114,6 +147,7 @@ fn dds_format_to_gpu(
     }
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn dds_format_is_srgb(format: image_dds::ImageFormat) -> bool {
     matches!(
         format,
@@ -131,6 +165,7 @@ fn dds_format_is_bc5(format: image_dds::ImageFormat) -> bool {
 /// Semantic class of a texture for load-time BCn compression when no cooked
 /// DDS exists. Mirrors the cook contract (`material_texture_cook`): color →
 /// BC7 sRGB, tangent-space normal XY → BC5, single-channel scalar → BC4.
+#[cfg(any(test, not(feature = "aot-shaders")))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeCompressKind {
     /// sRGB-encoded colour (albedo). Skipped when the image carries a real
@@ -145,6 +180,7 @@ pub enum NativeCompressKind {
 
 /// Whether runtime BCn compression of JPEG/PNG sources is enabled
 /// (`OCHROMA_TEXTURE_BCN=0` disables; default on).
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn runtime_bcn_enabled() -> bool {
     std::env::var("OCHROMA_TEXTURE_BCN")
         .map(|v| !matches!(v.trim(), "0" | "false" | "off" | "no"))
@@ -154,6 +190,7 @@ fn runtime_bcn_enabled() -> bool {
 /// Format-selection helper: which BCn target (image_dds encode format + GPU
 /// upload format) a decoded texture compresses to, or `None` when it must stay
 /// on the uncompressed RGBA8 fallback (cutout alpha, non-block-aligned size).
+#[cfg(any(test, not(feature = "aot-shaders")))]
 pub(crate) fn select_native_compress_format(
     kind: NativeCompressKind,
     width: u32,
@@ -182,6 +219,7 @@ pub(crate) fn select_native_compress_format(
 
 /// True when a colour mirror carries a real alpha cutout (foliage leaf cards):
 /// those must keep the coverage-preserving RGBA8 mip path.
+#[cfg(any(test, not(feature = "aot-shaders")))]
 pub(crate) fn texture_has_cutout_alpha(tex: &crate::splat_backend::TextureImage) -> bool {
     tex.channels == 4
         && tex
@@ -193,6 +231,7 @@ pub(crate) fn texture_has_cutout_alpha(tex: &crate::splat_backend::TextureImage)
 /// Probe for a precompressed DDS sibling next to a JPEG/PNG source
 /// (`foo.jpg` → `foo.dds`). Cook outputs that land next to the source win over
 /// runtime compression.
+#[cfg(any(test, not(feature = "aot-shaders")))]
 pub(crate) fn sibling_dds_path(path: &Path) -> Option<PathBuf> {
     if is_dds_path(path) {
         return None;
@@ -204,6 +243,7 @@ pub(crate) fn sibling_dds_path(path: &Path) -> Option<PathBuf> {
 /// Compress a decoded f32 mirror into a GPU-native BCn payload with a full
 /// generated mip chain (`Quality::Fast` intel_tex ISPC encode). Returns `None`
 /// when the texture must stay on the RGBA8 fallback.
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn compress_native_bcn(
     tex: &crate::splat_backend::TextureImage,
     kind: NativeCompressKind,
@@ -271,6 +311,7 @@ fn compress_native_bcn(
     ))
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn f32_to_unorm8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
 }
@@ -301,6 +342,7 @@ fn dds_native_mips<T: AsRef<[u8]>>(
     Some(mips)
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn load_dds_texture(
     path: &Path,
     requested_channels: u32,
@@ -385,6 +427,7 @@ fn load_dds_texture(
     })
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn load_dds_texture_arc(
     path: &Path,
     mode: &str,
@@ -408,12 +451,120 @@ fn load_dds_texture_arc(
     Some(tex)
 }
 
+/// Read one offline-cooked DDS without decoding it to pixels or generating
+/// mips. The complete authored mip chain is retained byte-for-byte for GPU
+/// upload. A non-DDS path, malformed container, unsupported format, mismatched
+/// logical channel contract, or incomplete/non-block-aligned payload fails
+/// closed with `None`.
+fn load_cooked_native_dds(path: &Path, requested_channels: u32) -> Option<CookedNativeTexture> {
+    if !is_dds_path(path) || !(1..=4).contains(&requested_channels) {
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    let dds = image_dds::ddsfile::Dds::read(&mut file).ok()?;
+    let surface = image_dds::Surface::from_dds(&dds).ok()?;
+    if surface.depth != 1
+        || surface.layers != 1
+        || surface.width == 0
+        || surface.height == 0
+        || surface.mipmaps == 0
+    {
+        return None;
+    }
+    let expected_mips = u32::BITS - surface.width.max(surface.height).leading_zeros();
+    if surface.mipmaps != expected_mips {
+        return None;
+    }
+    let (gpu_format, logical_channels, block_extent, block_bytes) =
+        dds_format_to_gpu(surface.image_format)?;
+    let bc5_normal_as_rgb = requested_channels == 3 && dds_format_is_bc5(surface.image_format);
+    if requested_channels > logical_channels && !bc5_normal_as_rgb {
+        return None;
+    }
+    if block_extent > 1 && (surface.width % block_extent != 0 || surface.height % block_extent != 0)
+    {
+        return None;
+    }
+    let mips = dds_native_mips(&surface, block_extent, block_bytes)?;
+    if mips.len() != surface.mipmaps as usize {
+        return None;
+    }
+    let texture = crate::RendererTexture2D::new(
+        gpu_format,
+        surface.width,
+        surface.height,
+        requested_channels,
+        mips,
+    );
+    eprintln!(
+        "[texture-dds] loaded cooked native {} format={:?} mips={} mirror=none",
+        path.display(),
+        gpu_format,
+        texture.mips.len()
+    );
+    Some(CookedNativeTexture {
+        width: surface.width,
+        height: surface.height,
+        channels: requested_channels,
+        texture,
+    })
+}
+
+fn load_cooked_native_dds_arc(
+    path: &Path,
+    mode: &str,
+    requested_channels: u32,
+) -> Option<Arc<CookedNativeTexture>> {
+    let key = format!("cooked-native:{}", texture_cache_key(path, mode)?);
+    if let Ok(cache) = cooked_native_texture_cache().lock()
+        && let Some(hit) = cache.get(&key)
+    {
+        return Some(Arc::clone(hit));
+    }
+    let texture = Arc::new(load_cooked_native_dds(path, requested_channels)?);
+    if let Ok(mut cache) = cooked_native_texture_cache().lock() {
+        cache.insert(key, Arc::clone(&texture));
+    }
+    Some(texture)
+}
+
+/// Load an exact offline-cooked sRGB colour DDS for direct GPU upload.
+/// Source JPEG/PNG files and sibling discovery are intentionally unsupported:
+/// the product resolver must provide the manifest-pinned cooked path.
+pub fn load_cooked_linear_texture_arc(path: &str) -> Option<Arc<CookedNativeTexture>> {
+    let texture = load_cooked_native_dds_arc(Path::new(path), "cooked_linear_dds_v1", 4)?;
+    matches!(
+        texture.texture.format,
+        spectra_gpu::GpuTextureFormat::Rgba8UnormSrgb
+            | spectra_gpu::GpuTextureFormat::Bc1UnormSrgb
+            | spectra_gpu::GpuTextureFormat::Bc3UnormSrgb
+            | spectra_gpu::GpuTextureFormat::Bc7UnormSrgb
+    )
+    .then_some(texture)
+}
+
+/// Load an exact offline-cooked linear-data DDS for direct GPU upload.
+pub fn load_cooked_data_texture_arc(path: &str, channels: u32) -> Option<Arc<CookedNativeTexture>> {
+    let texture = load_cooked_native_dds_arc(
+        Path::new(path),
+        &format!("cooked_data_ch{channels}_dds_v1"),
+        channels,
+    )?;
+    match channels {
+        1 if texture.texture.format == spectra_gpu::GpuTextureFormat::Bc4Unorm => Some(texture),
+        3 if texture.texture.format == spectra_gpu::GpuTextureFormat::Bc5Unorm => Some(texture),
+        _ => None,
+    }
+}
+
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn read_u32<R: Read>(r: &mut R) -> Option<u32> {
     let mut b = [0u8; 4];
     r.read_exact(&mut b).ok()?;
     Some(u32::from_le_bytes(b))
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn read_u64<R: Read>(r: &mut R) -> Option<u64> {
     let mut b = [0u8; 8];
     r.read_exact(&mut b).ok()?;
@@ -421,6 +572,7 @@ fn read_u64<R: Read>(r: &mut R) -> Option<u64> {
 }
 
 /// Stable on-disk tag for a `GpuTextureFormat` in the v2 texture cache.
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn gpu_format_cache_tag(format: spectra_gpu::GpuTextureFormat) -> Option<u32> {
     use spectra_gpu::GpuTextureFormat as G;
     Some(match format {
@@ -437,6 +589,7 @@ fn gpu_format_cache_tag(format: spectra_gpu::GpuTextureFormat) -> Option<u32> {
     })
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn gpu_format_from_cache_tag(tag: u32) -> Option<spectra_gpu::GpuTextureFormat> {
     use spectra_gpu::GpuTextureFormat as G;
     Some(match tag {
@@ -454,6 +607,7 @@ fn gpu_format_from_cache_tag(tag: u32) -> Option<spectra_gpu::GpuTextureFormat> 
     })
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn read_native_cache_section<R: Read>(r: &mut R) -> Option<Option<crate::RendererTexture2D>> {
     let mut flag = [0u8; 1];
     r.read_exact(&mut flag).ok()?;
@@ -491,6 +645,7 @@ fn read_native_cache_section<R: Read>(r: &mut R) -> Option<Option<crate::Rendere
     )))
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn read_texture_cache_file(path: &Path) -> Option<crate::splat_backend::TextureImage> {
     let mut f = std::io::BufReader::new(std::fs::File::open(path).ok()?);
     let mut magic = [0u8; 8];
@@ -530,6 +685,7 @@ fn read_texture_cache_file(path: &Path) -> Option<crate::splat_backend::TextureI
     })
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn write_native_cache_section<W: Write>(
     w: &mut W,
     native: Option<&crate::RendererTexture2D>,
@@ -556,6 +712,7 @@ fn write_native_cache_section<W: Write>(
     Ok(())
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn write_texture_cache_file(key: &str, tex: &crate::splat_backend::TextureImage) {
     let dir = texture_cache_dir();
     if std::fs::create_dir_all(&dir).is_err() {
@@ -600,6 +757,7 @@ fn write_texture_cache_file(key: &str, tex: &crate::splat_backend::TextureImage)
 /// Attach a load-time-compressed BCn native payload when the decoded texture
 /// has none and runtime compression is enabled. Returns whether a payload was
 /// added (so callers know to refresh the disk cache).
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn ensure_native_bcn(
     tex: &mut crate::splat_backend::TextureImage,
     compress: Option<NativeCompressKind>,
@@ -619,6 +777,7 @@ fn ensure_native_bcn(
     }
 }
 
+#[cfg(any(test, not(feature = "aot-shaders")))]
 fn load_cached_texture_arc(
     path: &str,
     mode: &str,
@@ -673,6 +832,7 @@ fn load_cached_texture_arc(
 /// (channels=3) + dimensions, ready for `ResidentSceneRenderer::set_hdri`. HDR is
 /// already linear (no sRGB decode). Returns `None` if the file is missing/bad so
 /// the renderer falls back to the procedural sky.
+#[cfg(any(test, not(feature = "aot-shaders")))]
 pub fn load_hdri_rgb_f32(path: &str) -> Option<(Vec<f32>, u32, u32)> {
     let img = image::open(path).ok()?;
     let rgb = img.to_rgb32f();
@@ -693,6 +853,7 @@ pub fn load_hdri_rgb_f32(path: &str) -> Option<(Vec<f32>, u32, u32)> {
 /// opaque facades keep `opacity_tex = -1` so their (typically opaque, alpha=1)
 /// channel is ignored — buildings render identically. sRGB is decoded on RGB;
 /// the alpha channel is a LINEAR coverage signal and is NOT gamma-decoded.
+#[cfg(any(test, not(feature = "aot-shaders")))]
 pub fn load_linear_texture(path: &str) -> Option<crate::splat_backend::TextureImage> {
     load_linear_texture_arc(path).map(|tex| (*tex).clone())
 }
@@ -700,6 +861,7 @@ pub fn load_linear_texture(path: &str) -> Option<crate::splat_backend::TextureIm
 /// Shared-handle variant of [`load_linear_texture`]. Live scene assembly uses
 /// this so RAM-cache hits do not clone the decoded f32 texture payload before
 /// atlas construction reads it.
+#[cfg(any(test, not(feature = "aot-shaders")))]
 pub fn load_linear_texture_arc(path: &str) -> Option<Arc<crate::splat_backend::TextureImage>> {
     let path_ref = Path::new(path);
     if is_dds_path(path_ref) {
@@ -747,12 +909,14 @@ pub fn load_linear_texture_arc(path: &str) -> Option<Arc<crate::splat_backend::T
 /// every normal). `channels` selects the layout: 3 = tangent-space normal (RGB),
 /// 1 = single-channel roughness/height (luma). Returns `None` on a bad file so a
 /// missing map falls back to flat (slot -1) and never corrupts sampling.
+#[cfg(any(test, not(feature = "aot-shaders")))]
 pub fn load_data_texture(path: &str, channels: u32) -> Option<crate::splat_backend::TextureImage> {
     load_data_texture_arc(path, channels).map(|tex| (*tex).clone())
 }
 
 /// Shared-handle variant of [`load_data_texture`]. Avoids cloning cached normal,
 /// roughness, and displacement payloads on structural scene rebuilds.
+#[cfg(any(test, not(feature = "aot-shaders")))]
 pub fn load_data_texture_arc(
     path: &str,
     channels: u32,
@@ -834,6 +998,30 @@ mod tests {
             data,
             native: None,
         }
+    }
+
+    fn write_encoded_dds(
+        path: &Path,
+        format: image_dds::ImageFormat,
+        mipmaps: image_dds::Mipmaps,
+    ) {
+        let rgba = vec![128_u8, 64, 32, 255].repeat(8 * 8);
+        let surface = image_dds::SurfaceRgba8 {
+            width: 8,
+            height: 8,
+            depth: 1,
+            layers: 1,
+            mipmaps: 1,
+            data: rgba.as_slice(),
+        };
+        let dds = surface
+            .encode(format, image_dds::Quality::Fast, mipmaps)
+            .unwrap()
+            .to_dds()
+            .unwrap();
+        let mut bytes = Vec::new();
+        dds.write(&mut bytes).unwrap();
+        std::fs::write(path, bytes).unwrap();
     }
 
     #[test]
@@ -953,6 +1141,42 @@ mod tests {
         assert_eq!(sibling_dds_path(&jpg), Some(dds.clone()));
         // A DDS source never probes for a sibling of itself.
         assert_eq!(sibling_dds_path(&dds), None);
+    }
+
+    #[test]
+    fn cooked_native_loader_keeps_authored_bc7_mips_without_float_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("albedo.dds");
+        write_encoded_dds(
+            &path,
+            image_dds::ImageFormat::BC7RgbaUnormSrgb,
+            image_dds::Mipmaps::GeneratedAutomatic,
+        );
+
+        let cooked = load_cooked_linear_texture_arc(path.to_str().unwrap()).unwrap();
+        assert_eq!(cooked.texture.format, G::Bc7UnormSrgb);
+        assert_eq!(cooked.texture.mips.len(), 4);
+        assert_eq!((cooked.width, cooked.height, cooked.channels), (8, 8, 4));
+    }
+
+    #[test]
+    fn cooked_native_loader_rejects_missing_mip_chain_and_wrong_semantic_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("incomplete.dds");
+        write_encoded_dds(
+            &path,
+            image_dds::ImageFormat::BC5RgUnorm,
+            image_dds::Mipmaps::Disabled,
+        );
+        assert!(load_cooked_data_texture_arc(path.to_str().unwrap(), 3).is_none());
+
+        let scalar_path = dir.path().join("scalar.dds");
+        write_encoded_dds(
+            &scalar_path,
+            image_dds::ImageFormat::BC4RUnorm,
+            image_dds::Mipmaps::GeneratedAutomatic,
+        );
+        assert!(load_cooked_data_texture_arc(scalar_path.to_str().unwrap(), 3).is_none());
     }
 
     #[test]
