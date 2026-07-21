@@ -36,6 +36,10 @@
 #[path = "support/mega_geometry_bench_logic.rs"]
 mod logic;
 
+#[cfg(feature = "spectra-native")]
+#[path = "support/mega_geometry_asset_loader.rs"]
+mod asset_loader;
+
 // ---------------------------------------------------------------------------
 // CLI (pure; parsed on every host)
 // ---------------------------------------------------------------------------
@@ -197,6 +201,7 @@ fn main() {
 
 #[cfg(feature = "spectra-native")]
 mod native {
+    use super::asset_loader;
     use super::logic;
     use super::BenchArgs;
     use std::time::Instant;
@@ -422,10 +427,13 @@ mod native {
             instances: spec.instances,
             seed: spec.seed,
             identity_hash: spec.identity_hash_hex(),
-            // No real asset loader is wired: the fixture is NOT authorized as the
-            // real corpus and this stays `None` (the cube below is a synthetic
-            // proxy for relative GPU timing only, never a content certification).
-            asset_content_hash: None,
+            // The REAL cooked asset's content hash (cache hit — the asset was
+            // loaded in measure_mode). `None` only for ids with no cooked file
+            // (e.g. the externally-authorized mixed_city), which keeps that
+            // fixture honestly uncertified by vox_render.
+            asset_content_hash: asset_loader::load_fixture_asset(&spec.asset_id, spec.seed)
+                .ok()
+                .map(|a| a.content_hash.clone()),
             outcome,
             hybrid,
             reference,
@@ -442,12 +450,32 @@ mod native {
     ) -> Result<(logic::ModeResult, ProvenanceFrame), String> {
         apply_mode_env(mode);
 
-        let (blas, materials) = fixture_prototype();
+        // Load the REAL Forge-cooked asset for this fixture (cached across modes).
+        // Fall back to the synthetic cube only for ids with no cooked file — e.g.
+        // the externally-authorized `mixed_city` (urban_horizon.live_city).
+        let asset = asset_loader::load_fixture_asset(&spec.asset_id, spec.seed).ok();
+        let cube_fallback = if asset.is_none() {
+            eprintln!(
+                "[mega_geometry_bench] {}: real asset '{}' unavailable; using synthetic cube proxy",
+                spec.name, spec.asset_id
+            );
+            Some(fixture_prototype())
+        } else {
+            None
+        };
+        let (blas, materials): (&BlasDesc, &[PbrMaterial]) = match (&asset, &cube_fallback) {
+            // Full-detail base mesh for every mode; per-mode LOD selection is a
+            // later increment (the LOD-cut consumer). The correctness oracle
+            // verifies all three modes still hit this same real geometry.
+            (Some(a), _) => (&a.base, a.materials.as_slice()),
+            (None, Some((b, m))) => (b, m.as_slice()),
+            _ => unreachable!(),
+        };
         let instances = grid_instances(spec.instances as usize);
         let scene = meshes_to_instanced_scene(
-            std::slice::from_ref(&blas),
+            std::slice::from_ref(blas),
             &instances,
-            &materials,
+            materials,
             &[],
             width,
             height,
