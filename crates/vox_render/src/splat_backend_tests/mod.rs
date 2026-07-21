@@ -845,6 +845,8 @@ fn load_craftsman_pbr(
             roughness: cm.roughness_factor,
             metallic: cm.metallic_factor,
             emission_strength: 0.0,
+            nee_emitter: true,
+            nee_downlight: false,
             albedo_tex,
             modulate_base_color_texture: false,
             opacity_tex: -1,
@@ -1124,6 +1126,8 @@ fn load_cooked_pbr_materials(
             roughness: cm.roughness_factor,
             metallic: cm.metallic_factor,
             emission_strength: 0.0,
+            nee_emitter: true,
+            nee_downlight: false,
             albedo_tex,
             modulate_base_color_texture: false,
             opacity_tex: -1,
@@ -1140,6 +1144,7 @@ fn load_cooked_pbr_materials(
             // vision glass arrives transmissive FROM THE COOK, everything
             // else keeps the historical opaque defaults.
             transmission: cm.transmission,
+            exterior_reflectance: 0.04,
             ior: cm.ior,
             thin_walled: cm.thin_walled,
             absorption_color: [0.0, 0.0, 0.0],

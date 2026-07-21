@@ -38,11 +38,14 @@ pub struct MaterialKey {
     pub vegetation_bsdf: bool,
     pub modulate_base_color_texture: bool,
     pub modulate_roughness_texture: bool,
+    pub nee_emitter: bool,
+    pub nee_downlight: bool,
     pub base_color_bits: [u32; 3],
     /// `[roughness, metallic, emission, displacement_scale,
     /// displacement_midlevel, uv_scale.x, uv_scale.y, transmission, ior,
-    /// absorption.r, absorption.g, absorption.b, absorption_depth]`.
-    pub surface_param_bits: [u32; 13],
+    /// exterior_reflectance, absorption.r, absorption.g, absorption.b,
+    /// absorption_depth]`.
+    pub surface_param_bits: [u32; 14],
     pub thin_walled: bool,
     pub is_water: bool,
 }
@@ -74,6 +77,8 @@ impl MaterialKey {
             vegetation_bsdf: mat.vegetation_bsdf,
             modulate_base_color_texture: mat.modulate_base_color_texture,
             modulate_roughness_texture: mat.modulate_roughness_texture,
+            nee_emitter: mat.nee_emitter,
+            nee_downlight: mat.nee_downlight,
             base_color_bits,
             surface_param_bits: [
                 mat.roughness.to_bits(),
@@ -85,6 +90,7 @@ impl MaterialKey {
                 mat.uv_scale[1].to_bits(),
                 mat.transmission.to_bits(),
                 mat.ior.to_bits(),
+                mat.exterior_reflectance.to_bits(),
                 mat.absorption_color[0].to_bits(),
                 mat.absorption_color[1].to_bits(),
                 mat.absorption_color[2].to_bits(),

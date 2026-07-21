@@ -246,6 +246,16 @@ pub struct PbrMaterial {
     pub roughness: f32,
     pub metallic: f32,
     pub emission_strength: f32,
+    /// Whether an emissive surface is also promoted to the resident renderer's
+    /// NEE light set. Indicator/display optics stay visibly emissive but set
+    /// this false because treating a directional signal lens as an
+    /// omnidirectional point light paints coloured pools onto nearby streets.
+    /// Luminaires and lit windows keep the default true.
+    pub nee_emitter: bool,
+    /// Promote this emissive surface as a downward-facing luminaire instead of
+    /// an omnidirectional point source. This is a generic material capability:
+    /// street lamps opt in, while windows retain the legacy point-light path.
+    pub nee_downlight: bool,
     pub albedo_tex: i32,
     /// Multiply the sampled base-color texture by `base_color` instead of
     /// replacing it. This is the glTF-style factor x texture contract used by
@@ -281,8 +291,15 @@ pub struct PbrMaterial {
     pub displacement_midlevel: f32,
     pub uv_scale: [f32; 2],
     /// 0.0 = opaque Lambert (the historical behavior); > 0.0 = transmissive
-    /// `MAT_GLASS`.
+    /// `MAT_GLASS`. The magnitude is the authored whole-pane solar
+    /// transmittance: Spectra attenuates the exterior-entry transmission and
+    /// visible interior radiance by this value while preserving Fresnel
+    /// reflection. It is not only a material-type switch.
     pub transmission: f32,
+    /// Normal-incidence reflectance of the exterior glass coating. The neutral
+    /// 0.04 matches uncoated architectural dielectric glass; solar-control
+    /// glazing authors a higher value without changing its IOR.
+    pub exterior_reflectance: f32,
     /// Glass index of refraction; only read when `transmission > 0.0`.
     pub ior: f32,
     /// Thin-pane glass vs refractive solid glass; only read when
@@ -319,6 +336,8 @@ impl Default for PbrMaterial {
             roughness: 0.85,
             metallic: 0.0,
             emission_strength: 0.0,
+            nee_emitter: true,
+            nee_downlight: false,
             albedo_tex: -1,
             modulate_base_color_texture: false,
             roughness_tex: -1,
@@ -331,6 +350,7 @@ impl Default for PbrMaterial {
             displacement_midlevel: 0.5,
             uv_scale: [1.0, 1.0],
             transmission: 0.0,
+            exterior_reflectance: 0.04,
             ior: 1.5,
             thin_walled: false,
             absorption_color: [0.0, 0.0, 0.0],
@@ -3509,6 +3529,40 @@ pub(crate) fn pack_point_light(
     light.to_f32_array()
 }
 
+/// Pack an authored luminaire as a downward spot light. The 60 degree full
+/// core plus a smooth 75 degree penumbra approximates a broad street-light
+/// photometric distribution without leaking energy upward and across terrain.
+#[cfg(feature = "spectra-native")]
+pub(crate) fn pack_downlight(
+    position: [f32; 3],
+    color: [f32; 3],
+    intensity: f32,
+) -> [f32; LIGHT_FLOATS] {
+    pack_spot_light(position, color, intensity, [0.0, -1.0, 0.0])
+}
+
+/// Pack an authored spot/downlight while preserving its world-space optical
+/// axis. The caller derives this from emitter geometry or an authored socket.
+#[cfg(feature = "spectra-native")]
+pub(crate) fn pack_spot_light(
+    position: [f32; 3],
+    color: [f32; 3],
+    intensity: f32,
+    direction: [f32; 3],
+) -> [f32; LIGHT_FLOATS] {
+    let mut light = spectra_scene_data::LightData::directional(position, color, intensity);
+    light.kind = 5; // LIGHT_SPOT; canonical spectra-scene-data/Slang discriminant.
+    let direction = glam::Vec3::from(direction).normalize_or_zero();
+    light.spot_direction = if direction.length_squared() > 0.5 {
+        direction.to_array()
+    } else {
+        [0.0, -1.0, 0.0]
+    };
+    light.cone_angle = 60.0_f32.to_radians();
+    light.penumbra_angle = 75.0_f32.to_radians();
+    light.to_f32_array()
+}
+
 #[cfg(feature = "spectra-native")]
 pub(crate) fn pack_vulkan_directional_light(
     direction: [f32; 3],
@@ -3545,6 +3599,13 @@ pub fn pack_mesh_material(m: PbrMaterial) -> [f32; MATERIAL_FLOATS] {
     md.is_thin = if glass && m.thin_walled { 1 } else { 0 };
 
     let mut v = md.to_f32_array();
+    // Canonical [64] is `specular_weight`. MAT_GLASS interprets it as the
+    // normal-incidence exterior coating reflectance; opaque OpenPBR keeps the
+    // scene-data default so this authored glass control cannot flatten other
+    // materials' dielectric response.
+    if glass {
+        v[64] = m.exterior_reflectance;
+    }
     // [0] int type — to_f32_array writes MAT_LAMBERT(1); honour water/glass/metal.
     // MAT_WATER (21) keeps the glass absorption packing below (it is still `glass`).
     // Base-color-alpha foliage → MAT_VEGETATION (20). Other opaque surfaces →
@@ -3606,6 +3667,11 @@ pub fn pack_mesh_material(m: PbrMaterial) -> [f32; MATERIAL_FLOATS] {
     let mut material_flags = 0u32;
     material_flags |= u32::from(m.modulate_base_color_texture) << 1;
     material_flags |= u32::from(m.modulate_roughness_texture) << 2;
+    // Bit 3 is the opt-out (not opt-in) so legacy packed scenes whose flag word
+    // is zero preserve their historical NEE eligibility.
+    material_flags |= u32::from(!m.nee_emitter) << 3;
+    // Bit 4 selects a downward spot approximation for authored luminaires.
+    material_flags |= u32::from(m.nee_downlight) << 4;
     v[49] = f32::from_bits(material_flags);
     v.try_into()
         .expect("spectra_scene_data material packer must keep the 132-float ABI")
@@ -3703,6 +3769,60 @@ mod base_color_modulation_tests {
         let packed = pack_mesh_material(material);
         assert_eq!(packed.len(), MATERIAL_FLOATS);
         assert_eq!(packed[49].to_bits(), (1 << 1) | (1 << 2));
+    }
+
+    #[test]
+    fn nee_emitter_opt_out_uses_material_flag_without_changing_abi() {
+        let visible_indicator = PbrMaterial {
+            emission_strength: 8.0,
+            nee_emitter: false,
+            ..PbrMaterial::default()
+        };
+        let packed = pack_mesh_material(visible_indicator);
+        assert_eq!(packed.len(), MATERIAL_FLOATS);
+        assert_ne!(packed[49].to_bits() & (1 << 3), 0);
+
+        let luminaire = PbrMaterial {
+            emission_strength: 5.0,
+            nee_downlight: true,
+            ..PbrMaterial::default()
+        };
+        let flags = pack_mesh_material(luminaire)[49].to_bits();
+        assert_eq!(flags & (1 << 3), 0);
+        assert_ne!(flags & (1 << 4), 0);
+    }
+
+    #[test]
+    fn authored_solar_transmittance_reaches_canonical_glass_weight() {
+        let material = PbrMaterial {
+            transmission: 0.42,
+            ..PbrMaterial::default()
+        };
+        let packed = pack_mesh_material(material);
+        assert_eq!(
+            packed[0].to_bits(),
+            3,
+            "positive transmission routes MAT_GLASS"
+        );
+        assert_eq!(
+            packed[67], 0.42,
+            "glass_weight must retain authored magnitude"
+        );
+    }
+
+    #[test]
+    fn authored_exterior_reflectance_reaches_canonical_specular_weight() {
+        let material = PbrMaterial {
+            transmission: 0.16,
+            exterior_reflectance: 0.22,
+            ..PbrMaterial::default()
+        };
+        let packed = pack_mesh_material(material);
+        assert_eq!(packed[0].to_bits(), 3, "coated glass must route MAT_GLASS");
+        assert_eq!(
+            packed[64], 0.22,
+            "specular_weight must retain authored exterior reflectance"
+        );
     }
 }
 

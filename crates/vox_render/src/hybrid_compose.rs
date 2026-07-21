@@ -122,6 +122,11 @@ pub struct HybridMesh {
     /// channel-derived value intact (e.g. the Glass channel already sets 0.9);
     /// `Some(t)` forces transmission to `t` (used for water surfaces).
     pub transmission_override: Option<f32>,
+    /// Normal-incidence exterior reflectance for coated architectural glass.
+    /// Independent from transmission so absorbed solar energy is represented
+    /// without forcing an unphysical mirror/clear-glass tradeoff.
+    #[serde(default)]
+    pub exterior_reflectance_override: Option<f32>,
     /// IOR paired with `transmission_override` (e.g. 1.33 water, 1.5 glass).
     pub ior_override: Option<f32>,
     /// Thin-surface override paired with transmissive materials. `None` keeps the
@@ -144,6 +149,14 @@ pub struct HybridMesh {
     /// GlassLit). `Some(e)` forces `PbrMaterial::emission_strength` — the hook for
     /// emissive vehicle head/tail lamps without a dedicated lit channel.
     pub emission_override: Option<f32>,
+    /// Override whether visible emission is promoted to an environmental NEE
+    /// light. `Some(false)` is for indicators/displays that glow but do not
+    /// illuminate the world; luminaires normally leave this `None`.
+    #[serde(skip)]
+    pub nee_emitter_override: Option<bool>,
+    /// Runtime-only NEE shape selection for authored luminaires.
+    #[serde(skip)]
+    pub nee_downlight_override: Option<bool>,
     /// When `Some(scale)`, the surface is textured with WORLD-PLANAR UV (UV =
     /// world_xz * scale) instead of interpolated vertex UVs. Used for terrain
     /// ground, whose UV is a pure function of world position — and which, on the
@@ -199,6 +212,16 @@ pub struct HybridMesh {
     /// translation at indices 12/13/14 (same layout as `InstanceRecordGpu`).
     /// Ignored unless `proto_share_key` is present.
     pub proto_instance_transform: Option<[f32; 16]>,
+    /// Immutable certified procedural prototype carried to Spectra scene
+    /// assembly. Runtime-only and shared across all instances of the same
+    /// prototype; never serialized through the legacy HybridMesh format.
+    #[serde(skip)]
+    pub mega_geometry: Option<std::sync::Arc<vox_data::mega_geometry::ReadyMegaGeometry>>,
+    /// Object-to-world transform for the unmodified procedural prototype. This
+    /// may differ from `proto_instance_transform` when the triangle cache baked
+    /// a mirror into its local vertices.
+    #[serde(skip)]
+    pub mega_instance_transform: Option<[f32; 16]>,
     /// Per-submesh material descriptors, indexed by the values in
     /// [`material_ids`]. **EMPTY = use the existing single-material fields**
     /// ([`material_channel`] + [`albedo_tex_path`]/[`normal_tex_path`]/
@@ -269,12 +292,15 @@ impl HybridMesh {
             displacement_scale: 0.0,
             displacement_midlevel: 0.5,
             transmission_override: None,
+            exterior_reflectance_override: None,
             thin_walled_override: None,
             absorption_override: None,
             absorption_depth_override: None,
             roughness_override: None,
             metallic_override: None,
             emission_override: None,
+            nee_emitter_override: None,
+            nee_downlight_override: None,
             ior_override: None,
             world_planar_uv_scale: None,
             uv_scale: None,
@@ -284,6 +310,8 @@ impl HybridMesh {
             merge_group: None,
             proto_share_key: None,
             proto_instance_transform: None,
+            mega_geometry: None,
+            mega_instance_transform: None,
             submesh_materials: Vec::new(),
             weathering_masks: Vec::new(),
         }

@@ -145,11 +145,18 @@
 
         // -- CUDA graphs + Shader Execution Reordering (throughput, image-identical) --
         use_cuda_graphs:     false,      // resident_renderer.rs:415 [env+config] live resident gameplay must not pay first-frame graph capture; offline graph benches set this explicitly
-        ser_enabled:         true,       // resident_renderer.rs:433-445 [env+hardcoded+cfg] env: SPECTRA_SER (0|1); default ON on Windows/CUDA only (#[cfg(target_os="windows")]) — see build_features note
+        // Live 3440x1440 OptiX A/B (Meridian, 1 spp, four bounces): the current
+        // four-pass software reorder raised sustained frame time from 50.76 ms
+        // to 66.49 ms. Keep the deterministic feature available for diagnostics,
+        // but do not pay it on the shipped resident path until a scene proves a win.
+        ser_enabled:         false,      // env SPECTRA_SER=1 remains the explicit A/B override
 
         // -- exact authored night emissives --
         lit_windows_enabled:    true,    // resident_renderer.rs:629 [env+hardcoded] env: OCHROMA_LIT_WINDOWS (0|off disables); default ON at night
-        emissive_light_scale:   2000.0,  // resident_renderer.rs:681,1193 [env+hardcoded] env: OCHROMA_EMISSIVE_LIGHT_SCALE; EMISSIVE_LIGHT_SCALE_DEFAULT — radiant power at 1 m
+        emissive_light_scale:   200.0,   // area-integrated luminaire radiant-power scale; downlight photometry prevents upward/terrain spill. env: OCHROMA_EMISSIVE_LIGHT_SCALE
+        downlight_power_scale:   500.0,   // shielded luminaire power relative to visible panel radiance; calibrated to 8-50 lux wet/dry road probes. env: OCHROMA_DOWNLIGHT_POWER_SCALE
+        downlight_min_intensity: 2300.0,  // after area integration: >=8.27 lux at conservative wet far-edge probe
+        downlight_max_intensity: 2800.0,  // <=49.78 lux directly below a 7.5m luminaire
 
         // -- diagnostics / A-B traces (off in production) --
         aurora_trace:        false,      // resident_renderer.rs:928 [env] env: OCHROMA_AURORA_TRACE=1 — retained delta-witness trace

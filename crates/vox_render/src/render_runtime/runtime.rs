@@ -13,13 +13,13 @@
 
 use crate::render_runtime::env::elapsed_ms;
 use crate::render_runtime::frame::{beauty_to_rgba8, interop_dims};
-use crate::render_runtime::terrain::TerrainUpload;
-use crate::resident_renderer::FidelityTier;
-use crate::resident_renderer::{ResidentSceneRenderer, SceneSyncReport};
 #[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
 use crate::render_runtime::present::{
     DeviceFrame, DevicePixelOrder, DeviceTemporalFrame, VulkanPixelOrder,
 };
+use crate::render_runtime::terrain::TerrainUpload;
+use crate::resident_renderer::FidelityTier;
+use crate::resident_renderer::{ResidentSceneRenderer, SceneSyncReport};
 use crate::scene_delta_adapter::RetainedDeltaPlan;
 use crate::spectral::RenderCamera;
 use vox_scene::NodeId;
@@ -85,6 +85,7 @@ pub struct DevicePresentResult {
     pub refit: bool,
 }
 
+#[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
 pub type VulkanPresentResult = DevicePresentResult;
 
 /// Construct-once render service wrapping a resident renderer.
@@ -254,6 +255,13 @@ impl RenderRuntime {
             self.renderer.set_render_target(target);
         }
 
+        // SNR: a camera cut / resize / teleport must discard reprojected history.
+        // The validity masks are generated inside `render_camera` below, so the
+        // reset must be requested BEFORE it runs.
+        if reset_history {
+            self.renderer.request_snr_history_reset();
+        }
+
         let delta_t = std::time::Instant::now();
         let plan = self.renderer.drain_scene_deltas(deltas)?;
         let delta_apply_ms = elapsed_ms(delta_t);
@@ -292,6 +300,45 @@ impl RenderRuntime {
                 )
                 .with_reactive(temporal.reactive),
             );
+            // SNR: attach the FULL validating `ReconstructionFrameV1` when the
+            // renderer produced the complete guide set this frame. The presenter
+            // runs SNR only when a Spectra mode is REQUESTED
+            // (`set_reconstruction_request`); when Off/DLSS it ignores this and
+            // uses the temporal/direct path above, so attaching is safe. The
+            // validity masks were generated GPU-side by the renderer (which owns
+            // the kernel + the persistent depth/normal history), so they are
+            // attached directly — no host readback, no cross-crate kernel compile.
+            if let Some(snr) = temporal.snr {
+                use crate::render_runtime::present::{
+                    ReconstructionCamera, ReconstructionFrameV1, ReconstructionGuides,
+                };
+                let guides = ReconstructionGuides {
+                    color: snr.color,
+                    albedo: snr.albedo,
+                    normal: snr.normal,
+                    depth: snr.depth,
+                    motion: snr.motion,
+                    roughness: snr.roughness,
+                    metallic: snr.metallic,
+                    transmission: snr.transmission,
+                    emission: snr.emission,
+                    reflection_distance: snr.reflection_distance,
+                    reflection_hit_class: snr.reflection_hit_class,
+                };
+                let camera = ReconstructionCamera {
+                    exposure_ev: snr.exposure_ev,
+                    camera_near: snr.camera_near,
+                    camera_far: snr.camera_far,
+                    camera_fov_y: snr.camera_fov_y,
+                    jitter: snr.jitter,
+                    frame_index: snr.frame_index,
+                    reset_history: reset_history || snr.reset_history,
+                };
+                let recon =
+                    ReconstructionFrameV1::new(backend_identity, snr.internal, guides, camera)
+                        .with_validity_masks(snr.reactive, snr.disocclusion, snr.history_valid);
+                frame = frame.with_reconstruction(recon);
+            }
         }
         Ok(DevicePresentResult {
             frame,
@@ -332,6 +379,14 @@ impl RenderRuntime {
     /// denoise/temporal must remain available.
     pub fn set_present_ray_reconstruction(&mut self, on: bool) {
         self.renderer.set_present_ray_reconstruction(on);
+    }
+
+    /// Enable/disable production of the full SNR `ReconstructionFrameV1` guide set
+    /// on the Vulkan device present path. Default on (so a settings-driven SNR
+    /// request activates without extra wiring); a game can gate this by
+    /// reconstruction mode to skip the guide cost on Off/DLSS tiers.
+    pub fn set_snr_guides_enabled(&mut self, on: bool) {
+        self.renderer.set_snr_guides_enabled(on);
     }
 
     pub fn rr_guides(&mut self) -> crate::render_runtime::present::RrGuides {
@@ -447,8 +502,7 @@ impl RenderRuntime {
     /// `spray_upload.` → `upload.`).
     pub fn set_terrain(&mut self, upload: &TerrainUpload) -> Result<(), String> {
         if !upload.packed.is_empty() {
-            let channel_count =
-                upload.channel_slots.len() / vox_core::spray::CHANNEL_SLOT_INTS;
+            let channel_count = upload.channel_slots.len() / vox_core::spray::CHANNEL_SLOT_INTS;
             if !upload.channel_uv_scales.is_empty()
                 && upload.channel_uv_scales.len()
                     != channel_count * vox_core::spray::CHANNEL_UV_FLOATS

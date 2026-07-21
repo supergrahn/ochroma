@@ -20,7 +20,8 @@
 //! ## Build (NVIDIA box, Windows, CUDA in PATH)
 //!
 //! ```powershell
-//! cargo build --release --example clas_scale_bench --features spectra-native
+//! cargo build --release --example clas_scale_bench \
+//!   --features spectra-native,spectra-native-optix
 //! ```
 //!
 //! ## Run
@@ -30,7 +31,8 @@
 //! $env:SPECTRA_CLAS_THRESHOLD = "1"    # force the CLAS path even for small N
 //! $env:SPIKE_INSTANCES = "100000,250000,500000,1000000"   # default
 //! $env:SPIKE_FRAMES = "60"             # frames per N (default 60)
-//! cargo run --release --example clas_scale_bench --features spectra-native
+//! cargo run --release --example clas_scale_bench \
+//!   --features spectra-native,spectra-native-optix
 //! ```
 //!
 //! `SPECTRA_CLAS_THRESHOLD` is also forced to `1` IN-PROCESS below (so the CLAS
@@ -45,10 +47,8 @@
 //! N=1000000 build_ms=... refit_ms_avg=... render_ms_avg=... fps=... instances=... clusters=... vram_mb=...
 //! ```
 //!
-//! `fps` is `1000 / (refit_ms_avg + render_ms_avg)` — the per-frame budget the
-//! mover loop must fit. `instances`/`clusters` come from the device CLAS stats
-//! (the witness the Mega-Geometry path actually engaged); they fall back to the
-//! TLAS instance count + `0` clusters when CLAS stats are unavailable.
+//! `fps` is `1000 / (refit_ms_avg + render_ms_avg)`. Acceleration stats are
+//! invariant checked and the benchmark fails closed unless hardware CLAS > 0.
 
 // Only compiles on the spectra-native (CUDA/OptiX) stack. Off-box this is a
 // no-op `main` so `cargo build` does not choke on the missing CUDA toolchain.
@@ -105,13 +105,23 @@ fn run_one(n: usize, frames: u32, width: u32, height: u32) -> Result<String, Str
     use vox_render::splat_backend::{LightRig, PbrMaterial};
     use vox_render::splat_convert::meshes_to_instanced_scene;
 
-    // ONE prototype cube, ONE material. Every instance references proto 0.
+    // One prototype with six authored material zones. This keeps the large
+    // instance sweep deterministic while exercising the same per-triangle
+    // material provenance contract used by cooked Forge building payloads.
     let cube = unit_cube_blas();
-    let material = PbrMaterial {
-        base_color: [0.6, 0.6, 0.62],
-        roughness: 0.7,
+    let materials = [
+        [0.42, 0.44, 0.45], // facade/stucco
+        [0.12, 0.13, 0.14], // roof/slate
+        [0.66, 0.63, 0.57], // trim/limestone
+        [0.82, 0.86, 0.90], // glass
+        [0.18, 0.11, 0.07], // door/wood
+        [0.23, 0.25, 0.28], // metal detail
+    ]
+    .map(|base_color| PbrMaterial {
+        base_color,
+        roughness: 0.55,
         ..Default::default()
-    };
+    });
 
     // --- deterministic instance grid (id-ordered, no RNG, no HashMap) ---
     let instances = grid_instances(n);
@@ -120,7 +130,7 @@ fn run_one(n: usize, frames: u32, width: u32, height: u32) -> Result<String, Str
     let scene = meshes_to_instanced_scene(
         std::slice::from_ref(&cube),
         &instances,
-        std::slice::from_ref(&material),
+        &materials,
         &[],
         width,
         height,
@@ -172,8 +182,17 @@ fn run_one(n: usize, frames: u32, width: u32, height: u32) -> Result<String, Str
         0.0
     };
 
-    // CLAS stats (the Mega-Geometry witness) or TLAS fallback.
-    let (instances_built, clusters) = r.clas_stats().unwrap_or((r.tlas_instance_count(), 0));
+    // Fail closed: a triangle/TLAS run is not evidence for a CLAS benchmark.
+    let stats = r
+        .geometry_accel_stats()
+        .map_err(|error| format!("CLAS benchmark has no valid acceleration report: {error}"))?;
+    let instances_built = r.tlas_instance_count();
+    let clusters = stats.cluster_count();
+    let hardware_clas = stats.hardware_clas_builds();
+    let triangle_gas = stats.triangle_gas_builds();
+    if hardware_clas == 0 {
+        return Err("CLAS benchmark produced zero hardware CLAS builds".into());
+    }
 
     let vram = vram_used_mb()
         .map(|mb| format!(" vram_mb={mb}"))
@@ -182,7 +201,8 @@ fn run_one(n: usize, frames: u32, width: u32, height: u32) -> Result<String, Str
     Ok(format!(
         "N={n} build_ms={build_ms:.1} refit_ms_avg={refit_ms_avg:.3} \
          render_ms_avg={render_ms_avg:.3} fps={fps:.1} \
-         instances={instances_built} clusters={clusters}{vram}"
+         instances={instances_built} clusters={clusters} hardware_clas={hardware_clas} \
+         triangle_gas_fallbacks={triangle_gas}{vram}"
     ))
 }
 
@@ -230,8 +250,9 @@ fn unit_cube_blas() -> vox_render::splat_backend::BlasDesc {
         }
         indices.push([base, base + 1, base + 2]);
         indices.push([base, base + 2, base + 3]);
-        material_ids.push(0);
-        material_ids.push(0);
+        let material = (material_ids.len() / 2) as u32;
+        material_ids.push(material);
+        material_ids.push(material);
     }
 
     BlasDesc {

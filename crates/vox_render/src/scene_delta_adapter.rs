@@ -16,13 +16,16 @@ use vox_scene::{NodeId, SceneDelta as GraphSceneDelta};
 pub struct RetainedDeltaStats {
     pub structural_deltas: usize,
     pub transform_deltas: usize,
+    pub material_deltas: usize,
     pub refits: usize,
+    pub materials_set: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetainedDeltaPlan {
     pub structural_rebuild: bool,
     pub refits: Vec<(usize, [[f32; 4]; 3])>,
+    pub material_updates: Vec<(usize, u32)>,
     pub stats: RetainedDeltaStats,
 }
 
@@ -32,7 +35,7 @@ impl RetainedDeltaPlan {
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.structural_rebuild && self.refits.is_empty()
+        !self.structural_rebuild && self.refits.is_empty() && self.material_updates.is_empty()
     }
 
     #[cfg(feature = "spectra-native")]
@@ -45,6 +48,9 @@ impl RetainedDeltaPlan {
         }
         for (instance_index, transform) in &self.refits {
             renderer.update_instance_transform(*instance_index, *transform);
+        }
+        for (instance_index, material_base) in &self.material_updates {
+            renderer.update_instance_material_base(*instance_index, *material_base);
         }
         Ok(())
     }
@@ -131,6 +137,8 @@ impl RetainedRenderMirror {
                 stats.structural_deltas += 1;
             } else if matches!(delta, GraphSceneDelta::SetTransform { .. }) {
                 stats.transform_deltas += 1;
+            } else if matches!(delta, GraphSceneDelta::SetMaterialBase { .. }) {
+                stats.material_deltas += 1;
             }
         }
 
@@ -138,24 +146,37 @@ impl RetainedRenderMirror {
             return Ok(RetainedDeltaPlan {
                 structural_rebuild: true,
                 refits: Vec::new(),
+                material_updates: Vec::new(),
                 stats,
             });
         }
 
         let mut refits = BTreeMap::new();
+        let mut material_updates = BTreeMap::new();
         for delta in deltas {
-            if let GraphSceneDelta::SetTransform { id, transform } = delta {
-                let instance_index = self
-                    .instance_index(*id)
-                    .ok_or(RetainedDeltaError::UnknownNode(*id))?;
-                refits.insert(instance_index, transform.rows);
+            match delta {
+                GraphSceneDelta::SetTransform { id, transform } => {
+                    let instance_index = self
+                        .instance_index(*id)
+                        .ok_or(RetainedDeltaError::UnknownNode(*id))?;
+                    refits.insert(instance_index, transform.rows);
+                }
+                GraphSceneDelta::SetMaterialBase { id, material_base } => {
+                    let instance_index = self
+                        .instance_index(*id)
+                        .ok_or(RetainedDeltaError::UnknownNode(*id))?;
+                    material_updates.insert(instance_index, *material_base);
+                }
+                _ => {}
             }
         }
 
         stats.refits = refits.len();
+        stats.materials_set = material_updates.len();
         Ok(RetainedDeltaPlan {
             structural_rebuild: false,
             refits: refits.into_iter().collect(),
+            material_updates: material_updates.into_iter().collect(),
             stats,
         })
     }
@@ -224,9 +245,38 @@ mod tests {
             RetainedDeltaStats {
                 structural_deltas: 0,
                 transform_deltas: 1,
+                material_deltas: 0,
                 refits: 1,
+                materials_set: 0,
             }
         );
+    }
+
+    #[test]
+    fn material_base_delta_is_retained_and_latest_wins() {
+        let mut mirror = RetainedRenderMirror::new();
+        mirror
+            .replace_instances_in_node_order([node(10), node(20)])
+            .unwrap();
+
+        let plan = mirror
+            .plan_deltas(&[
+                GraphSceneDelta::SetMaterialBase {
+                    id: node(20),
+                    material_base: 3,
+                },
+                GraphSceneDelta::SetMaterialBase {
+                    id: node(20),
+                    material_base: 9,
+                },
+            ])
+            .unwrap();
+
+        assert!(!plan.requires_scene_rebuild());
+        assert!(plan.refits.is_empty());
+        assert_eq!(plan.material_updates, vec![(1, 9)]);
+        assert_eq!(plan.stats.material_deltas, 2);
+        assert_eq!(plan.stats.materials_set, 1);
     }
 
     #[test]
@@ -290,6 +340,7 @@ mod tests {
             let plan = mirror.plan_deltas(&[delta]).unwrap();
             assert!(plan.requires_scene_rebuild());
             assert!(plan.refits.is_empty());
+            assert!(plan.material_updates.is_empty());
             assert_eq!(plan.stats.structural_deltas, 1);
         }
     }

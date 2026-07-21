@@ -209,6 +209,10 @@ pub enum SceneDelta {
         id: NodeId,
         transform: SceneTransform,
     },
+    SetMaterialBase {
+        id: NodeId,
+        material_base: u32,
+    },
     SetProto {
         id: NodeId,
         proto: ProtoId,
@@ -222,6 +226,7 @@ pub struct ApplyStats {
     pub nodes_added: usize,
     pub nodes_removed: usize,
     pub transforms_set: usize,
+    pub materials_set: usize,
     pub protos_set: usize,
 }
 
@@ -287,6 +292,10 @@ impl SceneGraph {
                 SceneDelta::SetTransform { id, transform } => {
                     self.set_transform(*id, *transform)?;
                     stats.transforms_set += 1;
+                }
+                SceneDelta::SetMaterialBase { id, material_base } => {
+                    self.set_material_base(*id, *material_base)?;
+                    stats.materials_set += 1;
                 }
                 SceneDelta::SetProto { id, proto } => {
                     self.set_proto(*id, *proto)?;
@@ -378,6 +387,20 @@ impl SceneGraph {
             .as_mut()
             .ok_or(SceneGraphError::MissingNode(id))?;
         render.proto = proto;
+        Ok(())
+    }
+
+    pub fn set_material_base(
+        &mut self,
+        id: NodeId,
+        material_base: u32,
+    ) -> Result<(), SceneGraphError> {
+        let node = self.node_mut(id)?;
+        let render = node
+            .render
+            .as_mut()
+            .ok_or(SceneGraphError::MissingNode(id))?;
+        render.material_base = material_base;
         Ok(())
     }
 
@@ -522,6 +545,35 @@ mod tests {
             graph.node(node(1)).unwrap().transform,
             SceneTransform::from_translation(3.0, 0.0, 9.0)
         );
+    }
+
+    #[test]
+    fn set_material_base_updates_only_render_binding() {
+        let mut graph = SceneGraph::new();
+        let transform = SceneTransform::from_translation(1.0, 2.0, 3.0);
+        let stats = graph
+            .apply(&[
+                SceneDelta::AddProto {
+                    proto: proto(1),
+                    mesh: mesh(1),
+                },
+                SceneDelta::AddNode {
+                    id: node(1),
+                    proto: proto(1),
+                    transform,
+                    material_base: 4,
+                },
+                SceneDelta::SetMaterialBase {
+                    id: node(1),
+                    material_base: 19,
+                },
+            ])
+            .unwrap();
+
+        let n = graph.node(node(1)).unwrap();
+        assert_eq!(n.transform, transform);
+        assert_eq!(n.render.unwrap().material_base, 19);
+        assert_eq!(stats.materials_set, 1);
     }
 
     #[test]

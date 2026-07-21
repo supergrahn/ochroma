@@ -100,6 +100,8 @@ pub use spectra_renderer::{RendererTexture2D, RendererTextureMip};
 // view matrix + FOV); the old `spectra_renderer::CameraParams` type was removed.
 #[cfg(feature = "spectra-native")]
 pub use spectra_scene_state::CameraLayer as SpectraCameraParams;
+#[cfg(feature = "spectra-native")]
+pub use spectra_scene_state::MegaGeometryLayer;
 /// Re-export the native scene-state type so downstream crates (the game's live
 /// frame seam) can name the type returned by the instanced-scene builder without
 /// taking a direct dependency on `spectra-scene-state`.

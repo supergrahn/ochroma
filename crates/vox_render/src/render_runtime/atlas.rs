@@ -221,11 +221,7 @@ pub(crate) fn select_native_compress_format(
 /// those must keep the coverage-preserving RGBA8 mip path.
 #[cfg(any(test, not(feature = "aot-shaders")))]
 pub(crate) fn texture_has_cutout_alpha(tex: &crate::splat_backend::TextureImage) -> bool {
-    tex.channels == 4
-        && tex
-            .data
-            .chunks_exact(4)
-            .any(|px| px[3] < 254.5 / 255.0)
+    tex.channels == 4 && tex.data.chunks_exact(4).any(|px| px[3] < 254.5 / 255.0)
 }
 
 /// Probe for a precompressed DDS sibling next to a JPEG/PNG source
@@ -248,8 +244,7 @@ fn compress_native_bcn(
     tex: &crate::splat_backend::TextureImage,
     kind: NativeCompressKind,
 ) -> Option<crate::RendererTexture2D> {
-    let has_cutout =
-        kind == NativeCompressKind::SrgbColor && texture_has_cutout_alpha(tex);
+    let has_cutout = kind == NativeCompressKind::SrgbColor && texture_has_cutout_alpha(tex);
     let (image_format, gpu_format) =
         select_native_compress_format(kind, tex.width, tex.height, has_cutout)?;
     let texels = tex.width as usize * tex.height as usize;
@@ -1000,11 +995,7 @@ mod tests {
         }
     }
 
-    fn write_encoded_dds(
-        path: &Path,
-        format: image_dds::ImageFormat,
-        mipmaps: image_dds::Mipmaps,
-    ) {
+    fn write_encoded_dds(path: &Path, format: image_dds::ImageFormat, mipmaps: image_dds::Mipmaps) {
         let rgba = vec![128_u8, 64, 32, 255].repeat(8 * 8);
         let surface = image_dds::SurfaceRgba8 {
             width: 8,
@@ -1070,10 +1061,7 @@ mod tests {
         assert_eq!(native.format, G::Bc7UnormSrgb);
         // 8x8 -> 4 mips (8,4,2,1); every level present for ray-cone LOD.
         assert_eq!(native.mips.len(), 4);
-        assert_eq!(
-            (native.mips[0].width, native.mips[0].height),
-            (8, 8)
-        );
+        assert_eq!((native.mips[0].width, native.mips[0].height), (8, 8));
         // 8x8 = 2x2 BC7 blocks of 16 bytes.
         assert_eq!(native.mips[0].data.len(), 4 * 16);
         assert_eq!(native.mips[0].row_pitch_bytes, 2 * 16);
@@ -1120,7 +1108,11 @@ mod tests {
             data: native.mips[0].data.as_slice(),
         };
         let decoded = surface.decode_layers_mipmaps_rgbaf32(0..1, 0..1).unwrap();
-        assert!((decoded.data[0] - 0.7).abs() < 0.01, "r={}", decoded.data[0]);
+        assert!(
+            (decoded.data[0] - 0.7).abs() < 0.01,
+            "r={}",
+            decoded.data[0]
+        );
     }
 
     #[test]

@@ -18,10 +18,10 @@ pub mod terrain;
 
 pub use terrain::TerrainUpload;
 
-#[cfg(feature = "spectra-native")]
-pub use runtime::{DevicePresentResult, GpuPresentResult, PresentResult, RenderRuntime};
 #[cfg(all(
     feature = "spectra-native",
     not(all(target_os = "windows", feature = "spectra-native-optix"))
 ))]
-pub use runtime::VulkanPresentResult;
+pub use runtime::{DevicePresentResult, VulkanPresentResult};
+#[cfg(feature = "spectra-native")]
+pub use runtime::{GpuPresentResult, PresentResult, RenderRuntime};

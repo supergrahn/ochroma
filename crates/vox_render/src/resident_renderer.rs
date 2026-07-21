@@ -47,7 +47,7 @@ type ResidentBackend = SharedMetalBackend;
     all(target_os = "macos", feature = "spectra-native-metal")
 )))]
 type ResidentBackend = SharedVulkanBackend;
-use spectra_scene_state::{GpuSceneCmd, LightLayer, SceneDeltaRing, SceneState};
+use spectra_scene_state::{GpuSceneCmd, LightLayer, OP_SET_TRANSFORM, SceneDeltaRing, SceneState};
 
 /// Re-export the R31 fidelity tier and tier-table types so the game layer can
 /// select a tier and load `render.ron` fidelity overrides through `vox_render`
@@ -56,10 +56,15 @@ pub use spectra_renderer::FidelityTier;
 pub use spectra_renderer::RenderTarget;
 pub use spectra_renderer::{TierEntry, TierTable, UpscalerMode, UpscalerQuality};
 
+use crate::mega_geometry::{
+    ForbiddenGeometryCpuActivity, GeometryCpuOwnershipCounters, GeometryCpuOwnershipSnapshot,
+    GeometryHostServiceKind,
+};
 use crate::scene_delta_adapter::{RetainedDeltaError, RetainedDeltaPlan, RetainedRenderMirror};
 use crate::splat_backend::{
-    pack_directional_light, pack_point_light, pack_sun_disk_light, resolve_slang_kernel_dir,
-    rig_to_settings, seed_features_from_config, sun_solid_angle, LightRig, LIGHT_FLOATS,
+    LIGHT_FLOATS, LightRig, pack_directional_light, pack_point_light, pack_spot_light,
+    pack_sun_disk_light, resolve_slang_kernel_dir, rig_to_settings, seed_features_from_config,
+    sun_solid_angle,
 };
 
 /// Result of a scene-delta upload — the reuse-vs-rebuild proof.
@@ -123,6 +128,29 @@ pub struct ResidentSceneRenderer {
     /// Last camera view matrix, used to distinguish a real cut/teleport from
     /// continuous orbit/pan motion.
     last_camera_view: Option<[f32; 16]>,
+    /// Fail-closed ownership evidence shared by every game using the resident
+    /// renderer. Allowed native submissions are measured separately from
+    /// forbidden CPU geometry decisions. Fed by [`Self::bridge_geometry_cpu_ownership`]
+    /// from Spectra's live probe (see `geometry_cpu_bridge`), so a MegaGeometry
+    /// forbidden CPU op the renderer records is reflected in this witness rather
+    /// than sitting vacuously at zero.
+    geometry_cpu_ownership: GeometryCpuOwnershipCounters,
+    /// Last-seen cumulative values of Spectra's `geometry_cpu_contract` probe.
+    /// The bridge folds the positive delta since this baseline into
+    /// `geometry_cpu_ownership`, so double-counting across frames is impossible.
+    geometry_cpu_bridge: GeometryCpuOwnershipBridge,
+}
+
+/// Monotonic baseline for the Spectra→engine CPU-ownership counter bridge.
+#[derive(Default)]
+struct GeometryCpuOwnershipBridge {
+    /// Indexed by `ForbiddenGeometryCpuActivity` discriminant (engine and Spectra
+    /// contracts share the discriminant layout, so the index maps 1:1).
+    forbidden: [u64; ForbiddenGeometryCpuActivity::ALL.len()],
+    native_calls: u64,
+    native_ns: u64,
+    page_calls: u64,
+    page_ns: u64,
 }
 
 impl ResidentSceneRenderer {
@@ -311,11 +339,7 @@ impl ResidentSceneRenderer {
                     .and_then(|v| v.parse::<u32>().ok())
                     .or_else(|| {
                         let ov = rcfg.glass_bounces_override;
-                        if ov >= 0 {
-                            Some(ov as u32)
-                        } else {
-                            None
-                        }
+                        if ov >= 0 { Some(ov as u32) } else { None }
                     })
                     .unwrap_or_else(|| glass_floor_for_tier(config.max_bounces));
                 floor = floor.max(g);
@@ -326,11 +350,7 @@ impl ResidentSceneRenderer {
                     .and_then(|v| v.parse::<u32>().ok())
                     .or_else(|| {
                         let ov = rcfg.water_bounces_override;
-                        if ov >= 0 {
-                            Some(ov as u32)
-                        } else {
-                            None
-                        }
+                        if ov >= 0 { Some(ov as u32) } else { None }
                     })
                     .unwrap_or_else(|| water_floor_for_tier(config.max_bounces));
                 floor = floor.max(wf);
@@ -577,19 +597,18 @@ impl ResidentSceneRenderer {
         // resident path because `RenderConfig::near_realtime` leaves
         // `ser_enabled = false`. The reorder coheres divergent material/closest-
         // hit shading work across a warp before the shade megakernel, which is a
-        // pure throughput win on the divergent city scene (many archetypes,
-        // glass/lit windows, foliage any-hit) and — being a deterministic
-        // gather/scatter on a stable sort key — leaves the IMAGE bit-identical
-        // (perturbation A/B witness). Default ON on the CUDA box (the only place
-        // the reorder kernel runs); the Vulkan/AMD dev path leaves it at the
-        // config default. `SPECTRA_SER=0` forces it OFF (the A/B baseline pass);
-        // `SPECTRA_SER=1` forces it ON. Mirrors spectra's own SPECTRA_SER
-        // override (render_config.rs:1348) so both layers agree.
+        // deterministic gather/scatter on a stable sort key and leaves the image
+        // bit-identical, but it is not automatically a throughput win: the live
+        // Meridian 1440p A/B measured 66.49 ms ON versus 50.76 ms OFF at 1 spp / four
+        // bounces. Default OFF until a representative scene proves otherwise.
+        // `SPECTRA_SER=1` remains the explicit A/B override. This mirrors
+        // spectra's own SPECTRA_SER override (render_config.rs:1348) so both
+        // layers agree.
         // SER is now a RUNTIME config field (was `#[cfg(target_os="windows")]`-
-        // gated). Config-first: the default (true) applies on every OS; the SER
-        // reorder kernel only actually fires on the CUDA box, and being a
-        // deterministic gather/scatter it is image-identical, so this is a pure
-        // throughput knob. env SPECTRA_SER (0|1) still overrides below.
+        // gated). Config-first: the default (false) applies on every OS; the SER
+        // reorder kernel only actually fires on the CUDA box. It remains
+        // image-identical, but its performance direction is scene-dependent.
+        // env SPECTRA_SER (0|1) still overrides below.
         config.ser_enabled = rcfg.ser_enabled;
         match std::env::var("SPECTRA_SER").as_deref() {
             Ok("1") => {
@@ -617,6 +636,8 @@ impl ResidentSceneRenderer {
             last_view_proj: None,
             last_projection: None,
             last_camera_view: None,
+            geometry_cpu_ownership: GeometryCpuOwnershipCounters::default(),
+            geometry_cpu_bridge: GeometryCpuOwnershipBridge::default(),
         };
         // Upload the initial scene (with the rig's lights + sky/atmosphere) so the
         // first render_camera has geometry/materials/lights resident.
@@ -638,6 +659,20 @@ impl ResidentSceneRenderer {
     /// resident scene rebuild.
     pub fn set_light_rig(&mut self, rig: LightRig) -> bool {
         self.set_lighting_state(rig, self.emissive_scale)
+    }
+
+    /// Select the production main-NEE sampler without enabling ReSTIR or
+    /// changing the one-shadow-ray-per-path budget.
+    pub fn set_nee_importance_sampling(&mut self, enabled: bool) {
+        self.renderer.set_nee_importance_sampling(enabled);
+        eprintln!(
+            "[nee-light-selection] mode={}",
+            if enabled {
+                "importance-reservoir"
+            } else {
+                "uniform-diagnostic"
+            }
+        );
     }
 
     /// Combined light-rig + emissive scale update. Use this when the game clock
@@ -869,11 +904,7 @@ impl ResidentSceneRenderer {
     /// WATER FLOW FIELD: per-cell `(vel_x, vel_z)` m/s interleaved (2 f32/cell) on
     /// the SAME grid as the depth field. Drives flow-aligned wave scroll +
     /// white-water on MAT_WATER. Empty/`enabled=false` → flow OFF.
-    pub fn set_water_flow_field(
-        &mut self,
-        values: &[f32],
-        enabled: bool,
-    ) -> Result<(), String> {
+    pub fn set_water_flow_field(&mut self, values: &[f32], enabled: bool) -> Result<(), String> {
         self.renderer
             .set_water_flow_field(values, enabled)
             .map_err(|e| format!("set_water_flow_field: {e:?}"))
@@ -1199,6 +1230,14 @@ impl ResidentSceneRenderer {
             .set_transform(instance_index as u32, transform);
     }
 
+    /// Record one instance's material-table base delta. This is the generic
+    /// retained primitive used by animated material variants such as emissive
+    /// indicators; it does not rebuild geometry, prototypes, or the scene.
+    pub fn update_instance_material_base(&mut self, instance_index: usize, material_base: u32) {
+        self.delta_ring
+            .set_material_base(instance_index as u32, material_base);
+    }
+
     /// Stamp the NodeId→instance_index mapping after a full scene upload.
     /// Call once after every `set_scene` that changes the instance order.
     pub fn reset_retained_mirror<I>(&mut self, nodes: I) -> Result<(), RetainedDeltaError>
@@ -1273,6 +1312,7 @@ impl ResidentSceneRenderer {
                 // the per-backend MODE_UPDATE refit from the same drained commands.
                 let dirty: Vec<(usize, [[f32; 4]; 3])> = cmds
                     .iter()
+                    .filter(|c| c.op == OP_SET_TRANSFORM)
                     .map(|c| (c.slot as usize, c.transform_3x4()))
                     .collect();
                 self.renderer
@@ -1318,6 +1358,7 @@ impl ResidentSceneRenderer {
                 // the per-backend MODE_UPDATE refit from the same drained commands.
                 let dirty: Vec<(usize, [[f32; 4]; 3])> = cmds
                     .iter()
+                    .filter(|c| c.op == OP_SET_TRANSFORM)
                     .map(|c| (c.slot as usize, c.transform_3x4()))
                     .collect();
                 self.renderer
@@ -1369,7 +1410,11 @@ impl ResidentSceneRenderer {
         self.renderer.set_camera_view_matrix(view);
         self.renderer.set_view_proj(view_proj);
         self.renderer.set_projection_matrix(proj);
-        self.renderer.render().map_err(|e| format!("render: {e:?}"))
+        let frame = self.renderer.render().map_err(|e| format!("render: {e:?}"))?;
+        // Mirror any MegaGeometry CPU-ownership activity Spectra recorded during
+        // this frame into the engine-side witness (lock-free; no GPU sync).
+        self.bridge_geometry_cpu_ownership();
+        Ok(frame)
     }
 
     /// Apply a batch of per-instance transform refits IMMEDIATELY through the
@@ -1441,22 +1486,86 @@ impl ResidentSceneRenderer {
         self.renderer.set_camera_view_matrix(view);
         self.renderer.set_view_proj(proj);
         self.renderer.set_projection_matrix(proj);
-        self.renderer.render().map_err(|e| format!("render: {e:?}"))
+        let frame = self.renderer.render().map_err(|e| format!("render: {e:?}"))?;
+        self.bridge_geometry_cpu_ownership();
+        Ok(frame)
     }
 
-    /// `(instances, clusters)` of the active RTX-Mega-Geometry CLAS scene
-    /// (per-prototype CLAS → GAS-over-CLAS → IAS), or `None` when the CLAS path
-    /// is not active (single-GAS / software fallback / built below
-    /// `SPECTRA_CLAS_THRESHOLD` / OptiX SDK not compiled). The witness that the
-    /// Mega-Geometry path actually engaged at scale.
-    pub fn clas_stats(&self) -> Option<(usize, usize)> {
-        self.renderer.device_clas_stats()
+    /// Invariant-checked facts for the active native acceleration scene.
+    pub fn geometry_accel_stats(
+        &self,
+    ) -> Result<
+        spectra_renderer::renderer::geometry_backend::GeometryAccelStats,
+        spectra_renderer::renderer::geometry_backend::GeometryBackendError,
+    > {
+        self.renderer.geometry_accel_stats()
     }
 
     /// Number of TLAS instances registered after the last scene upload — the
-    /// fallback instance count when [`clas_stats`] is `None`.
+    /// registered instance count (not an acceleration-kind substitute).
     pub fn tlas_instance_count(&self) -> usize {
         self.renderer.tlas_instance_count()
+    }
+
+    /// Snapshot of the engine-wide MegaGeometry CPU ownership contract. This is
+    /// diagnostic state and never forces a GPU synchronization or stats readback.
+    /// Reflects Spectra's live `geometry_cpu_contract` probe via
+    /// [`Self::bridge_geometry_cpu_ownership`], which the render paths run each
+    /// frame — so this witness is only vacuously zero when no MegaGeometry CPU op
+    /// actually occurred, never merely because nothing was wired to record one.
+    pub fn geometry_cpu_ownership(&self) -> GeometryCpuOwnershipSnapshot {
+        self.geometry_cpu_ownership.snapshot()
+    }
+
+    /// Bridge Spectra's probed `geometry_cpu_contract` counters (owned by the
+    /// inner `Renderer`, incremented by the GPU-owned MegaGeometry LOD/page/IAS
+    /// pipelines) into this engine-side witness. Reads the inner cumulative
+    /// snapshot, folds the positive per-activity / per-service delta since the
+    /// last bridge into `geometry_cpu_ownership`, and advances the baseline. Never
+    /// synchronizes the GPU or reads back device stats — the inner snapshot is a
+    /// lock-free atomic load. Idempotent across frames (delta == 0 is a no-op).
+    ///
+    /// Only the two MegaGeometry host services are mirrored; Spectra's
+    /// `FixedRenderPassSubmission` is the ordinary render-pass submit, not a
+    /// geometry host service, and is intentionally excluded from the witness.
+    fn bridge_geometry_cpu_ownership(&mut self) {
+        use spectra_renderer::renderer::geometry_cpu_contract::{
+            ForbiddenGeometryCpuActivity as SpectraForbidden, GeometryHostService as SpectraService,
+        };
+        let snap = self.renderer.geometry_cpu_ownership.snapshot();
+        for activity in SpectraForbidden::ALL {
+            let idx = activity as usize;
+            let cur = snap.forbidden_count(activity);
+            if cur > self.geometry_cpu_bridge.forbidden[idx] {
+                let delta = cur - self.geometry_cpu_bridge.forbidden[idx];
+                // Discriminants match 1:1, so `ALL[idx]` is the mirror variant.
+                self.geometry_cpu_ownership
+                    .add_forbidden(ForbiddenGeometryCpuActivity::ALL[idx], delta);
+                self.geometry_cpu_bridge.forbidden[idx] = cur;
+            }
+        }
+        let native_calls = snap.service_calls(SpectraService::NativeAccelerationSubmission);
+        if native_calls > self.geometry_cpu_bridge.native_calls {
+            let native_ns = snap.service_ns(SpectraService::NativeAccelerationSubmission);
+            self.geometry_cpu_ownership.add_host_service(
+                GeometryHostServiceKind::NativeAccelerationSubmission,
+                native_calls - self.geometry_cpu_bridge.native_calls,
+                native_ns.saturating_sub(self.geometry_cpu_bridge.native_ns),
+            );
+            self.geometry_cpu_bridge.native_calls = native_calls;
+            self.geometry_cpu_bridge.native_ns = native_ns;
+        }
+        let page_calls = snap.service_calls(SpectraService::OpaquePageTransport);
+        if page_calls > self.geometry_cpu_bridge.page_calls {
+            let page_ns = snap.service_ns(SpectraService::OpaquePageTransport);
+            self.geometry_cpu_ownership.add_host_service(
+                GeometryHostServiceKind::OpaquePageTransport,
+                page_calls - self.geometry_cpu_bridge.page_calls,
+                page_ns.saturating_sub(self.geometry_cpu_bridge.page_ns),
+            );
+            self.geometry_cpu_bridge.page_calls = page_calls;
+            self.geometry_cpu_bridge.page_ns = page_ns;
+        }
     }
 
     /// A fully-reused [`SceneSyncReport`] (`rebuilt == 0`, `reused == 1`): the report
@@ -1632,6 +1741,18 @@ impl ResidentSceneRenderer {
         self.renderer.last_vulkan_reconstruction()
     }
 
+    /// Enable/disable production of the full SNR guide set on the Vulkan device
+    /// present path (see `Renderer::set_snr_guides_enabled`).
+    pub fn set_snr_guides_enabled(&mut self, on: bool) {
+        self.renderer.set_snr_guides_enabled(on);
+    }
+
+    /// Request that the next SNR guide frame discards reprojected history
+    /// (camera cut / resize / teleport). Consumed once by the validity-mask pass.
+    pub fn request_snr_history_reset(&mut self) {
+        self.renderer.request_snr_history_reset();
+    }
+
     pub fn last_denoise_execution(&self) -> spectra_renderer::DenoiseExecution {
         self.renderer.last_denoise_execution()
     }
@@ -1757,10 +1878,13 @@ fn scene_has_mat_type(scene: &SceneState, want_ty: u32) -> bool {
 
 const MAT_EMISSION_SLOT: usize = 18;
 const MAT_EMISSION_COLOR_SLOT: usize = 15;
+const MAT_FLAGS_SLOT: usize = 49;
+const MAT_FLAG_SUPPRESS_NEE_EMITTER: u32 = 1 << 3;
+const MAT_FLAG_NEE_DOWNLIGHT: u32 = 1 << 4;
 
 // CONFIG-FIRST: the night-NEE emitter cap (`instancing.max_emissive_point_lights`,
 // default 4096) and the per-emitter radiant-power scale (`resident_renderer.
-// emissive_light_scale`, default 2000, env OCHROMA_EMISSIVE_LIGHT_SCALE) live in
+// emissive_light_scale`, default 200, env OCHROMA_EMISSIVE_LIGHT_SCALE) live in
 // `config/ochroma.ron` and are read at their call sites. NEE selects ONE light per
 // pixel uniformly so cost is O(1)/sample; the cap keeps the buffer upload + ReSTIR
 // candidate quality bounded, and the id-sorted slice keeps selection deterministic.
@@ -1794,11 +1918,7 @@ fn build_light_layer_for_scene(
     // P1 — ONE PHYSICAL SUN. E_sun drives both the visible disk and NEE disk.
     let l_sun = rig.sun_radiance / sun_solid_angle();
     let day_light_count = if vox_config::config().resident_renderer.nee_day_lights {
-        light_data.extend_from_slice(&pack_sun_disk_light(
-            sun.to_array(),
-            rig.sun_color,
-            l_sun,
-        ));
+        light_data.extend_from_slice(&pack_sun_disk_light(sun.to_array(), rig.sun_color, l_sun));
         for (dir, color, intensity) in [
             (
                 glam::Vec3::Y.to_array(),
@@ -1854,10 +1974,7 @@ fn build_light_layer_for_scene(
     }
 }
 
-fn emissive_point_lights(
-    scene: &SceneState,
-    scale: f32,
-) -> (Vec<f32>, usize) {
+fn emissive_point_lights(scene: &SceneState, scale: f32) -> (Vec<f32>, usize) {
     let geo = &scene.geometry;
     let mats = &scene.materials;
     let inst_count = geo.instance_count;
@@ -1875,7 +1992,7 @@ fn emissive_point_lights(
 
     // Precompute per-material emission (strength + color). An instance is a light
     // when ANY triangle of its prototype resolves to an emissive material.
-    let mat_emission: Vec<(f32, [f32; 3])> = (0..mats.material_count)
+    let mat_emission: Vec<(f32, [f32; 3], bool, bool)> = (0..mats.material_count)
         .map(|mi| {
             let b = mi * mstride;
             let em = mats
@@ -1897,10 +2014,23 @@ fn emissive_point_lights(
                     .copied()
                     .unwrap_or(1.0),
             ];
-            (em, col)
+            let nee_emitter = mats
+                .params
+                .get(b + MAT_FLAGS_SLOT)
+                .map(|flags| flags.to_bits() & MAT_FLAG_SUPPRESS_NEE_EMITTER == 0)
+                // Legacy packed materials predate the flag and remain eligible.
+                .unwrap_or(true);
+            let nee_downlight = mats
+                .params
+                .get(b + MAT_FLAGS_SLOT)
+                .is_some_and(|flags| flags.to_bits() & MAT_FLAG_NEE_DOWNLIGHT != 0);
+            (em, col, nee_emitter, nee_downlight)
         })
         .collect();
-    if !mat_emission.iter().any(|(em, _)| *em > 0.0) {
+    if !mat_emission
+        .iter()
+        .any(|(em, _, nee_emitter, _)| *em > 0.0 && *nee_emitter)
+    {
         return (Vec::new(), 0);
     }
 
@@ -1916,6 +2046,10 @@ fn emissive_point_lights(
         vox_config::config().instancing.max_emissive_point_lights as usize;
     let mut out: Vec<f32> = Vec::new();
     let mut count = 0usize;
+    let mut downlight_probe_count = 0usize;
+    let mut downlight_wet_min_lux = f32::INFINITY;
+    let mut downlight_dry_max_lux = 0.0f32;
+    let mut downlight_max_glare_cd = 0.0f32;
     for i in 0..inst_count {
         if count >= max_emissive_point_lights {
             break;
@@ -1923,39 +2057,123 @@ fn emissive_point_lights(
         let base = bases.get(i).copied().unwrap_or(0) as usize;
         let proto = protos.get(i).copied().unwrap_or(i as u32) as usize;
 
-        // Resolve whether this instance's proto has any emissive triangle and
-        // capture the (strongest) emissive material's color/strength.
-        let mut best_em = 0.0f32;
-        let mut best_col = [0.0f32; 3];
+        // Integrate the actual emissive surface. `emission_strength` is
+        // radiance, not radiant power: a tiny status LED must not illuminate a
+        // street as strongly as a large luminaire just because both materials
+        // carry the same scalar. The old strongest-material shortcut also put
+        // the point at the whole prototype AABB centre. That made traffic-light
+        // optics into huge coloured street lights and could place a streetlamp
+        // emitter halfway down its support pole.
+        //
+        // Accumulate emitted RGB flux (radiance * world-space triangle area)
+        // and its flux-weighted centroid. The point-light approximation then
+        // preserves the source's integrated power and location while keeping
+        // the existing O(1) ReSTIR light sample per pixel.
+        let mut flux_rgb = [0.0f32; 3];
+        let mut flux_weight = 0.0f32;
+        let mut emitter_power = 0.0f32;
+        let mut emitter_center = glam::Vec3::ZERO;
+        let mut emitter_direction = glam::Vec3::ZERO;
+        let mut strongest_emission = (0.0f32, [0.0f32; 3]);
+        let mut downlight = false;
         if let Some(&(_, _, t_off, t_cnt)) = ranges.get(proto) {
             let t0 = t_off as usize;
             let t1 = t0 + t_cnt as usize;
             for t in t0..t1.min(tri_mat.len()) {
                 let rel = tri_mat[t] as usize;
                 let abs = base + rel;
-                if let Some(&(em, col)) = mat_emission.get(abs) {
-                    if em > best_em {
-                        best_em = em;
-                        best_col = col;
+                if let Some(&(em, col, nee_emitter, nee_downlight)) = mat_emission.get(abs) {
+                    if !(em > 0.0) || !nee_emitter {
+                        continue;
                     }
+                    if em > strongest_emission.0 {
+                        strongest_emission = (em, col);
+                    }
+                    downlight |= nee_downlight;
+                    let ib = t * 3;
+                    let Some((&i0, rest)) =
+                        geo.indices.get(ib).zip(geo.indices.get(ib + 1..ib + 3))
+                    else {
+                        continue;
+                    };
+                    let [i1, i2] = rest else { continue };
+                    let read_world = |index: u32| -> Option<glam::Vec3> {
+                        let pb = index as usize * 3;
+                        let p = glam::Vec3::new(
+                            *geo.positions.get(pb)?,
+                            *geo.positions.get(pb + 1)?,
+                            *geo.positions.get(pb + 2)?,
+                        );
+                        let m = &geo.instance_transforms[i * 16..i * 16 + 16];
+                        Some(glam::Vec3::new(
+                            m[0] * p.x + m[1] * p.y + m[2] * p.z + m[3],
+                            m[4] * p.x + m[5] * p.y + m[6] * p.z + m[7],
+                            m[8] * p.x + m[9] * p.y + m[10] * p.z + m[11],
+                        ))
+                    };
+                    let (Some(p0), Some(p1), Some(p2)) =
+                        (read_world(i0), read_world(*i1), read_world(*i2))
+                    else {
+                        continue;
+                    };
+                    let area = 0.5 * (p1 - p0).cross(p2 - p0).length();
+                    if !(area > 0.0) || !area.is_finite() {
+                        continue;
+                    }
+                    let face_normal = (p1 - p0).cross(p2 - p0).normalize_or_zero();
+                    // A shielded luminaire emits from the authored lower panel,
+                    // not its sealed housing top and sides. Keeping only
+                    // downward-facing triangles preserves the fixture's inward
+                    // tilt and prevents cancelling normals.
+                    if nee_downlight && face_normal.y >= -0.10 {
+                        continue;
+                    }
+                    let tri_flux = em * area;
+                    emitter_power += tri_flux;
+                    for channel in 0..3 {
+                        flux_rgb[channel] += col[channel].max(0.0) * tri_flux;
+                    }
+                    let weight = tri_flux
+                        * (0.2126 * col[0].max(0.0)
+                            + 0.7152 * col[1].max(0.0)
+                            + 0.0722 * col[2].max(0.0));
+                    emitter_center += ((p0 + p1 + p2) / 3.0) * weight;
+                    emitter_direction += face_normal * weight;
+                    flux_weight += weight;
+                }
+            }
+            // Legacy/developer SceneState fixtures may provide material ranges
+            // without host geometry. Keep their old eligibility semantics; all
+            // product scenes carry the exact positions/indices and therefore
+            // take the area-integrated path above.
+            if emitter_power == 0.0 && (geo.positions.is_empty() || geo.indices.is_empty()) {
+                let (em, col) = strongest_emission;
+                if em > 0.0 {
+                    flux_rgb = col.map(|value| value.max(0.0) * em);
+                    flux_weight = em;
+                    emitter_power = em;
                 }
             }
         } else {
             // No proto ranges (single-soup legacy): treat base as the absolute id.
-            if let Some(&(em, col)) = mat_emission.get(base) {
-                if em > 0.0 {
-                    best_em = em;
-                    best_col = col;
+            if let Some(&(em, col, nee_emitter, nee_downlight)) = mat_emission.get(base) {
+                if em > 0.0 && nee_emitter {
+                    flux_rgb = col.map(|value| value.max(0.0) * em);
+                    flux_weight = em;
+                    emitter_power = em;
+                    downlight = nee_downlight;
                 }
             }
         }
-        if !(best_em > 0.0) {
+        let peak_flux = flux_rgb.into_iter().fold(0.0f32, f32::max);
+        if !(emitter_power > 0.0) {
             continue;
         }
-        // Preserve the exact authored emission color. In particular, black is
-        // black: the runtime must not invent a warm/sodium tint for incomplete
-        // or intentionally dark material data.
-        let color = best_col;
+        let color = if peak_flux > 0.0 {
+            flux_rgb.map(|value| value / peak_flux)
+        } else {
+            [0.0; 3]
+        };
 
         // World centroid: instance transform applied to the proto's object-space
         // AABB center when available, else the transform translation.
@@ -1972,17 +2190,102 @@ fn emissive_point_lights(
             })
             .unwrap_or([0.0, 0.0, 0.0]);
         // Row-major 4x4: world = M * [local,1]. Row r is m[r*4..r*4+4].
-        let wx = m[0] * local_center[0] + m[1] * local_center[1] + m[2] * local_center[2] + m[3];
-        let wy = m[4] * local_center[0] + m[5] * local_center[1] + m[6] * local_center[2] + m[7];
-        let wz = m[8] * local_center[0] + m[9] * local_center[1] + m[10] * local_center[2] + m[11];
-        out.extend_from_slice(&pack_point_light(
-            [wx, wy, wz],
-            color,
-            best_em * scale,
-        ));
+        let fallback_center = glam::Vec3::new(
+            m[0] * local_center[0] + m[1] * local_center[1] + m[2] * local_center[2] + m[3],
+            m[4] * local_center[0] + m[5] * local_center[1] + m[6] * local_center[2] + m[7],
+            m[8] * local_center[0] + m[9] * local_center[1] + m[10] * local_center[2] + m[11],
+        );
+        let center = if flux_weight > 0.0 {
+            emitter_center / flux_weight
+        } else {
+            fallback_center
+        };
+        let downlight_power_scale = std::env::var("OCHROMA_DOWNLIGHT_POWER_SCALE")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(vox_config::config().resident_renderer.downlight_power_scale)
+            .clamp(0.01, 1000.0);
+        let mut intensity = peak_flux.max(emitter_power * f32::EPSILON)
+            * scale
+            * if downlight {
+                downlight_power_scale
+            } else {
+                1.0
+            };
+        if downlight {
+            let min_intensity = vox_config::config()
+                .resident_renderer
+                .downlight_min_intensity
+                .max(0.0);
+            let max_intensity = vox_config::config()
+                .resident_renderer
+                .downlight_max_intensity
+                .max(min_intensity);
+            intensity = intensity.clamp(min_intensity, max_intensity);
+            // The authored road-light ledger uses a conservative far-edge probe
+            // 7.5 m below and 12 m inward, plus the directly-below dry maximum.
+            let far_wet = estimate_downlight_probe(intensity, 7.5, 12.0, true);
+            let near_dry = estimate_downlight_probe(intensity, 7.5, 0.0, false);
+            downlight_probe_count += 1;
+            downlight_wet_min_lux = downlight_wet_min_lux.min(far_wet.lux);
+            downlight_dry_max_lux = downlight_dry_max_lux.max(near_dry.lux);
+            downlight_max_glare_cd = downlight_max_glare_cd.max(far_wet.glare_candela);
+        }
+        let spot_direction = emitter_direction.normalize_or_zero();
+        out.extend_from_slice(&if downlight {
+            pack_spot_light(
+                center.to_array(),
+                color,
+                intensity,
+                spot_direction.to_array(),
+            )
+        } else {
+            pack_point_light(center.to_array(), color, intensity)
+        });
         count += 1;
     }
+    if downlight_probe_count > 0 {
+        eprintln!(
+            "[night-downlight-probes] count={downlight_probe_count} wet_far_min_lux={downlight_wet_min_lux:.2} dry_axis_max_lux={downlight_dry_max_lux:.2} glare_max_cd={downlight_max_glare_cd:.1} contract_lux=8.00..50.00 glare_cap_cd=2000"
+        );
+    }
     (out, count)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DownlightProbeEstimate {
+    lux: f32,
+    glare_candela: f32,
+}
+
+/// Deterministic engineering probe for the same broad 60/75 degree downlight
+/// packed by `pack_downlight`. Intensity is treated as luminous intensity;
+/// inverse-square falloff gives incident lux and the wet factor is the authored
+/// conservative road-surface acceptance condition.
+fn estimate_downlight_probe(
+    intensity: f32,
+    vertical_m: f32,
+    horizontal_m: f32,
+    wet: bool,
+) -> DownlightProbeEstimate {
+    let vertical_m = vertical_m.max(0.01);
+    let horizontal_m = horizontal_m.max(0.0);
+    let distance_sq = vertical_m * vertical_m + horizontal_m * horizontal_m;
+    let angle_deg = horizontal_m.atan2(vertical_m).to_degrees();
+    let angular = if angle_deg <= 60.0 {
+        1.0
+    } else if angle_deg >= 75.0 {
+        0.0
+    } else {
+        let t = (angle_deg - 60.0) / 15.0;
+        1.0 - t * t * (3.0 - 2.0 * t)
+    };
+    let condition = if wet { 0.72 } else { 1.0 };
+    DownlightProbeEstimate {
+        lux: intensity.max(0.0) * angular * condition / distance_sq,
+        glare_candela: intensity.max(0.0) * angular / std::f32::consts::PI,
+    }
 }
 
 fn scene_camera_forward(scene: &SceneState) -> glam::Vec3 {
@@ -2036,17 +2339,104 @@ fn camera_forward(view: [f32; 16]) -> glam::Vec3 {
 #[cfg(test)]
 mod glass_floor_tests {
     use super::{
-        emissive_point_lights, glass_floor_for_tier, water_floor_for_tier, GLASS_MIN_BOUNCES,
+        GLASS_MIN_BOUNCES, emissive_point_lights, estimate_downlight_probe, glass_floor_for_tier,
+        water_floor_for_tier,
     };
-    use crate::splat_backend::{pack_mesh_material, PbrMaterial};
+    use crate::splat_backend::{PbrMaterial, pack_mesh_material, pack_spot_light};
     use spectra_scene_state::{MaterialLayer, SceneState};
+
+    fn reservoir_hash(mut value: u32) -> u32 {
+        value ^= value >> 16;
+        value = value.wrapping_mul(0x7feb_352d);
+        value ^= value >> 15;
+        value = value.wrapping_mul(0x846c_a68b);
+        value ^ (value >> 16)
+    }
+
+    fn select_weighted(weights: &[f32], seed: u32) -> (usize, f32) {
+        let total: f32 = weights
+            .iter()
+            .copied()
+            .filter(|w| w.is_finite() && *w > 0.0)
+            .sum();
+        if !(total > 1.0e-20 && total < 1.0e30) {
+            let index = seed as usize % weights.len();
+            return (index, 1.0 / weights.len() as f32);
+        }
+        let mut running = 0.0;
+        let mut selected = 0usize;
+        for (index, weight) in weights.iter().copied().enumerate() {
+            let weight = if weight.is_finite() && weight > 0.0 {
+                weight
+            } else {
+                0.0
+            };
+            let next = running + weight;
+            let bits = reservoir_hash(seed ^ (index as u32).wrapping_mul(0x9e37_79b9));
+            let random = (bits >> 8) as f32 / 16_777_216.0;
+            if weight > 0.0 && random * next < weight {
+                selected = index;
+            }
+            running = next;
+        }
+        (selected, weights[selected] / total)
+    }
+
+    #[test]
+    fn nee_importance_reservoir_is_deterministic_and_uses_exact_pdf() {
+        let weights = [1.0, 3.0, 6.0];
+        for seed in [0, 1, 7, 19, 2_048, u32::MAX] {
+            let a = select_weighted(&weights, seed);
+            let b = select_weighted(&weights, seed);
+            assert_eq!(a, b);
+            assert_eq!(a.1, weights[a.0] / 10.0);
+        }
+    }
+
+    #[test]
+    fn nee_importance_reservoir_matches_weighted_distribution() {
+        let weights = [1.0, 3.0, 6.0];
+        let mut counts = [0u32; 3];
+        for seed in 0..100_000u32 {
+            counts[select_weighted(&weights, seed).0] += 1;
+        }
+        for (count, expected) in counts.into_iter().zip([0.1, 0.3, 0.6]) {
+            let observed = count as f32 / 100_000.0;
+            assert!(
+                (observed - expected).abs() < 0.01,
+                "{observed} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn nee_importance_estimator_is_unbiased_for_discrete_lights() {
+        let weights = [1.0, 3.0, 6.0];
+        let contributions = [2.0, 5.0, 11.0];
+        let expected = contributions.iter().sum::<f32>();
+        let weighted_expectation = weights
+            .iter()
+            .zip(contributions)
+            .map(|(weight, contribution)| {
+                let pdf = *weight / weights.iter().sum::<f32>();
+                pdf * contribution / pdf
+            })
+            .sum::<f32>();
+        assert!((weighted_expectation - expected).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn nee_zero_or_nonfinite_weights_fall_back_to_uniform() {
+        for weights in [[0.0, 0.0, 0.0], [f32::NAN, -1.0, 0.0]] {
+            assert_eq!(select_weighted(&weights, 1), (1, 1.0 / 3.0));
+        }
+    }
 
     fn one_instance_scene(material: PbrMaterial) -> SceneState {
         let mut scene = SceneState::new(1, 1);
         scene.geometry.instance_count = 1;
         scene.geometry.instance_transforms = vec![
-            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
-            1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
         scene.geometry.instance_material_base = vec![0];
         scene.geometry.instance_proto_index = vec![0];
@@ -2085,6 +2475,29 @@ mod glass_floor_tests {
             "an exact authored emissive material must remain eligible for night NEE"
         );
 
+        let visible_indicator = PbrMaterial {
+            emission_strength: 8.0,
+            nee_emitter: false,
+            ..PbrMaterial::default()
+        };
+        let (_, indicator_count) =
+            emissive_point_lights(&one_instance_scene(visible_indicator), 1.0);
+        assert_eq!(
+            indicator_count, 0,
+            "a visible indicator must not be promoted to environmental NEE"
+        );
+
+        let authored_downlight = PbrMaterial {
+            emission_strength: 5.0,
+            nee_downlight: true,
+            ..PbrMaterial::default()
+        };
+        let (downlight, downlight_count) =
+            emissive_point_lights(&one_instance_scene(authored_downlight), 1.0);
+        assert_eq!(downlight_count, 1);
+        assert_eq!(downlight[0].to_bits(), 5, "luminaire must pack LIGHT_SPOT");
+        assert_eq!(&downlight[18..21], &[0.0, -1.0, 0.0]);
+
         let authored_black_emitter = PbrMaterial {
             base_color: [0.0; 3],
             emission_strength: 5.0,
@@ -2098,6 +2511,55 @@ mod glass_floor_tests {
             &[0.0, 0.0, 0.0],
             "runtime must preserve authored black emission rather than inventing a warm tint"
         );
+    }
+
+    #[test]
+    fn authored_road_downlight_meets_wet_dry_lux_and_glare_contract() {
+        const PANEL_EMISSION: f32 = 0.18;
+        const PANEL_AREA_M2: f32 = 0.60 * 0.24;
+        const EMISSIVE_SCALE: f32 = 200.0;
+        const DOWNLIGHT_SCALE: f32 = 500.0;
+        let intensity = PANEL_EMISSION * PANEL_AREA_M2 * EMISSIVE_SCALE * DOWNLIGHT_SCALE;
+        let far_wet = estimate_downlight_probe(intensity, 7.5, 12.0, true);
+        let far_dry = estimate_downlight_probe(intensity, 7.5, 12.0, false);
+        let near_dry = estimate_downlight_probe(intensity, 7.5, 0.0, false);
+        eprintln!(
+            "[road-downlight-contract] wet_far_lux={:.2} dry_far_lux={:.2} dry_axis_lux={:.2} glare_cd={:.1}",
+            far_wet.lux, far_dry.lux, near_dry.lux, far_wet.glare_candela,
+        );
+        assert!(
+            far_wet.lux >= 8.0,
+            "wet far-edge probe under 8 lux: {far_wet:?}"
+        );
+        assert!(
+            far_dry.lux <= 50.0,
+            "dry far-edge probe over 50 lux: {far_dry:?}"
+        );
+        assert!(
+            near_dry.lux <= 50.0,
+            "dry axis probe over 50 lux: {near_dry:?}"
+        );
+        assert!(
+            far_wet.glare_candela <= 2_000.0,
+            "glare cap exceeded: {far_wet:?}"
+        );
+    }
+
+    #[test]
+    fn authored_spot_axis_is_not_replaced_by_canonical_down() {
+        let packed = pack_spot_light(
+            [0.0, 7.5, 0.0],
+            [1.0, 0.9, 0.75],
+            2400.0,
+            [0.45, -0.89, 0.0],
+        );
+        let axis = glam::Vec3::from_slice(&packed[18..21]);
+        let expected = glam::Vec3::new(0.45, -0.89, 0.0).normalize();
+        assert!(
+            axis.dot(expected) > 0.9999,
+            "packed={axis:?} expected={expected:?}"
+        );
+        assert!(axis.x > 0.4, "inward aim was discarded: {axis:?}");
     }
 
     /// Locks the per-tier glass bounce caps to the exact values witnessed on the

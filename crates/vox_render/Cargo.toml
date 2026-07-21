@@ -94,6 +94,10 @@ spectra-native = [
     "dep:image",
     "dep:image_dds",
     "spectra-gpu/vulkan-backend",
+    # Spectra Neural Reconstruction (SNR) live present path — portable Vulkan
+    # compute baseline + the versioned ReconstructionFrameV1 handoff. Portable
+    # (AMD/Intel/NVIDIA); pulls only the `vulkan`-gated SNR module.
+    "spectra-present/snr",
     "spectra-renderer/ocio",
 ]
 # Shipping runtime: consume only exact offline-cooked Vulkan SPIR-V/reflection
@@ -180,3 +184,13 @@ required-features = ["spectra-native"]
 [[example]]
 name = "aurora_delta_witness"
 required-features = ["spectra-native"]
+
+# Final three-mode City MegaGeometry benchmark (triangle / reference /
+# city_hybrid) over the seven required fixtures. The hardware suite needs the
+# native RT stack (spectra-native[,-optix]); off-feature it compiles to a no-op
+# main so `cargo check --example mega_geometry_bench` is clean on any host. Its
+# pure verdict/schema logic (examples/support/mega_geometry_bench_logic.rs) is
+# unit-tested by tests/mega_geometry_bench_contract.rs with no GPU. Not marked
+# required-features so the no-op main is checkable locally without CUDA/Slang.
+[[example]]
+name = "mega_geometry_bench"

@@ -225,6 +225,14 @@ pub struct ResidentRendererConfig {
     pub ser_enabled: bool,
     pub lit_windows_enabled: bool,
     pub emissive_light_scale: f32,
+    /// Additional radiant-power calibration for authored shielded downlights.
+    /// This decouples roadway illuminance from the visible diode panel's
+    /// emission, so luminaires need not look self-lit in daylight.
+    pub downlight_power_scale: f32,
+    /// Photometric floor/ceiling after area integration. Authored luminaire
+    /// panels vary in area, but municipal roadway targets must not.
+    pub downlight_min_intensity: f32,
+    pub downlight_max_intensity: f32,
     /// Register the DAY analytic NEE lights (sun disk + 3 directional fills)
     /// on the live path. In the ReSTIR present path the deferred NEE sun lands
     /// in a buffer that never reaches the film (audited 2026-07-02) — while
@@ -262,9 +270,12 @@ impl Default for ResidentRendererConfig {
             shot_spp_override: 0,
             max_pixels_per_dispatch: 2_000_000,
             use_cuda_graphs: false,
-            ser_enabled: true,
+            ser_enabled: false,
             lit_windows_enabled: true,
-            emissive_light_scale: 2000.0,
+            emissive_light_scale: 200.0,
+            downlight_power_scale: 500.0,
+            downlight_min_intensity: 2300.0,
+            downlight_max_intensity: 2800.0,
             nee_day_lights: false,
             aurora_trace: false,
             dispatch_timing: false,
@@ -687,7 +698,7 @@ mod tests {
         assert_eq!(c.instancing.gpu_gi_capacity, 200_000);
         assert_eq!(c.resident_renderer.spectral_mode, "hero4");
         assert!(!c.resident_renderer.use_cuda_graphs);
-        assert!(c.resident_renderer.ser_enabled);
+        assert!(!c.resident_renderer.ser_enabled);
         assert_eq!(c.spectral.preetham_luminance_scale, 20.0);
         assert_eq!(c.materials.splat_sigma_cutoff, 3.0);
     }

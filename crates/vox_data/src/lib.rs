@@ -9,6 +9,7 @@ pub mod library;
 pub mod map_file;
 pub mod marketplace;
 pub mod materials;
+pub mod mega_geometry;
 pub mod neural_compress;
 pub mod osm_import;
 pub mod ply_loader;

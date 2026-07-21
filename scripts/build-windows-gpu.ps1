@@ -28,6 +28,8 @@ param(
     [string]$Package = "vox_render",
     # Optional binary target to build/run (implies the package that owns it).
     [string]$Bin,
+    # Optional example target to build (mutually exclusive with -Bin).
+    [string]$Example,
     # After building, run the binary (requires -Bin).
     [switch]$Run,
     # Cargo features. If omitted: "spectra-native" for vox_render/vox_app, none otherwise.
@@ -181,10 +183,13 @@ $cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
 # Default features: the GPU renderer crates need spectra-native; everything else
 # (e.g. the wgpu game `play` binary) builds with its own defaults.
 if (-not $PSBoundParameters.ContainsKey('Features')) {
-    $Features = if ($Package -in @('vox_render', 'vox_app')) { 'spectra-native' } else { '' }
+    $Features = if ($Package -in @('vox_render', 'vox_app')) {
+        'spectra-native,spectra-native-optix'
+    } else { '' }
 }
 $cargoArgs = @("build", "-p", $Package)
 if ($Bin) { $cargoArgs += @("--bin", $Bin) }
+if ($Example) { $cargoArgs += @("--example", $Example) }
 if ($Features) { $cargoArgs += @("--features", $Features) }
 if ($NoDefaultFeatures) { $cargoArgs += "--no-default-features" }
 if ($Release) { $cargoArgs += "--release" }
