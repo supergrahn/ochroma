@@ -195,12 +195,22 @@ if ($NoDefaultFeatures) { $cargoArgs += "--no-default-features" }
 if ($Release) { $cargoArgs += "--release" }
 
 Write-Step ("cargo " + ($cargoArgs -join " "))
+# cargo prints compiler warnings on STDERR. This script sets
+# $ErrorActionPreference = "Stop" (top), under which a NATIVE command's stderr
+# write is surfaced as a terminating NativeCommandError — so the FIRST cargo
+# warning (e.g. "unused import") aborted the whole build at this line before a
+# single crate finished (reproduced over non-interactive ssh). Drop to Continue
+# around the cargo call so stderr is captured, not fatal; the authoritative
+# result is $LASTEXITCODE, checked below.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 if ($Log) {
     & $cargo @cargoArgs *>&1 | Tee-Object -FilePath $Log
 } else {
     & $cargo @cargoArgs
 }
 $code = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
 Write-Host ("[build-gpu] BUILD_EXIT=" + $code) -ForegroundColor ($(if ($code -eq 0) { "Green" } else { "Red" }))
 if ($code -eq 0 -and $Run -and $Bin) {
     $profileDir = if ($Release) { "release" } else { "debug" }
