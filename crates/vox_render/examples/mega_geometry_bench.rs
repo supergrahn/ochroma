@@ -218,9 +218,10 @@ mod native {
     const CITY_HYBRID_IS_DISTINCT_EXECUTION: bool = logic::HARNESS_CITY_HYBRID_DISTINCT_EXECUTION;
 
     /// Per-pixel first-hit provenance of the last timed frame:
-    /// (prim_id, material_id, bary_u, bary_v). The cross-mode correctness oracle
-    /// (triangle-GAS is the reference; CLAS modes are compared against it).
-    type ProvenanceFrame = (Vec<u32>, Vec<u32>, Vec<f32>, Vec<f32>);
+    /// (prim_id, material_id, bary_u, bary_v, depth_t). The cross-mode
+    /// correctness oracle (triangle-GAS is the reference; CLAS modes compared
+    /// against it, with depth_t used to gate measure-zero edge-face ties).
+    type ProvenanceFrame = (Vec<u32>, Vec<u32>, Vec<f32>, Vec<f32>, Vec<f32>);
 
     pub fn run(args: &BenchArgs) -> Result<i32, String> {
         let width = args.res;
@@ -382,9 +383,15 @@ mod native {
             // Cross-mode correctness oracle: triangle-GAS provenance is the
             // reference; CLAS modes are compared against it. Fills
             // material/uv/hit mismatches (all None => Unavailable, fail closed).
-            let oracle = triangle
-                .as_ref()
-                .map(|(_, (p, m, u, v))| (p.as_slice(), m.as_slice(), u.as_slice(), v.as_slice()));
+            let oracle = triangle.as_ref().map(|(_, (p, m, u, v, d))| {
+                (
+                    p.as_slice(),
+                    m.as_slice(),
+                    u.as_slice(),
+                    v.as_slice(),
+                    d.as_slice(),
+                )
+            });
             let mr = apply_provenance_oracle(mr, &prov, oracle);
             match mode {
                 logic::Mode::Triangle => triangle = Some((mr, prov)),
@@ -462,7 +469,7 @@ mod native {
         // First-hit provenance of the last timed frame: (prim_id, material_id,
         // bary_u, bary_v), one entry per pixel. The cross-mode correctness oracle.
         let mut last_prov: ProvenanceFrame =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
 
         let is_changing = matches!(
             spec.name.as_str(),
@@ -492,7 +499,7 @@ mod native {
                 // the cross-mode correctness oracle. Empty (fail-closed) if the
                 // renderer did not produce it.
                 if let Some(p) = out.first_hit_provenance {
-                    last_prov = (p.prim_id, p.material_id, p.bary_u, p.bary_v);
+                    last_prov = (p.prim_id, p.material_id, p.bary_u, p.bary_v, p.depth);
                 }
             }
         }
@@ -567,13 +574,19 @@ mod native {
     fn apply_provenance_oracle(
         mut mr: logic::ModeResult,
         prov: &ProvenanceFrame,
-        oracle: Option<(&[u32], &[u32], &[f32], &[f32])>,
+        oracle: Option<(&[u32], &[u32], &[f32], &[f32], &[f32])>,
     ) -> logic::ModeResult {
-        let (p, m, u, v) = prov;
+        let (p, m, u, v, d) = prov;
         let (hit, mat, uv) = logic::provenance_mismatches(
             matches!(mr.mode, logic::Mode::Triangle),
             oracle,
-            (p.as_slice(), m.as_slice(), u.as_slice(), v.as_slice()),
+            (
+                p.as_slice(),
+                m.as_slice(),
+                u.as_slice(),
+                v.as_slice(),
+                d.as_slice(),
+            ),
         );
         mr.correctness.hit_mismatches = hit;
         mr.correctness.material_mismatches = mat;

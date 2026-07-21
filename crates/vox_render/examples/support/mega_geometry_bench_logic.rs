@@ -288,6 +288,14 @@ pub const PROV_MISS_PRIM: u32 = 0xFFFF_FFFF;
 /// Max barycentric delta for the provenance UV compare (float interpolation).
 pub const PROV_UV_TOL: f32 = 1.0e-3;
 
+/// Relative hit-distance (`t`) tolerance for DEPTH-GATING a prim/material edge
+/// tie. Two acceleration structures grazing a shared triangle edge resolve a
+/// different FACE at the SAME surface point → identical `t`. A genuinely
+/// different surface has a `t` that differs by far more than 0.1% of depth, so
+/// this tolerates the measure-zero edge tie while still catching real geometry
+/// divergence. Scaled by `max(|t|, 1.0)` so it is meaningful at all depths.
+pub const PROV_DEPTH_REL_TOL: f32 = 1.0e-3;
+
 /// Compare candidate first-hit provenance against the `triangle` oracle and
 /// return `(hit_mismatches, material_mismatches, uv_mismatches)`.
 ///
@@ -296,17 +304,21 @@ pub const PROV_UV_TOL: f32 = 1.0e-3;
 /// is no oracle or the buffers are empty / mismatched length. Semantics (per
 /// pixel, primary ray, `g_hit_prim_id` is a GLOBAL `g_triangles` index in every
 /// HW-RT mode so it is directly comparable across triangle-GAS and CLAS):
-/// - **hit**: HIT/MISS status differs, OR both hit a DIFFERENT prim_id (same
-///   ray, different surface — a genuine geometry divergence).
-/// - **material**: both hit but the resolved global material_id differs.
+/// - **hit**: HIT/MISS status differs, OR both hit a DIFFERENT prim_id AT A
+///   DIFFERENT SURFACE (`t` differs beyond [`PROV_DEPTH_REL_TOL`]). A different
+///   prim at the SAME `t` is a measure-zero silhouette-edge face tie between two
+///   acceleration structures — NOT a geometry error — and is not counted.
+/// - **material**: both hit, different global material_id, AT A DIFFERENT
+///   SURFACE (same depth-gate — an edge face tie legitimately changes the face's
+///   material without being an error).
 /// - **uv**: both hit the SAME prim but barycentrics differ beyond tolerance.
 #[allow(clippy::type_complexity)]
 pub fn provenance_mismatches(
     is_triangle_mode: bool,
-    oracle: Option<(&[u32], &[u32], &[f32], &[f32])>,
-    cand: (&[u32], &[u32], &[f32], &[f32]),
+    oracle: Option<(&[u32], &[u32], &[f32], &[f32], &[f32])>,
+    cand: (&[u32], &[u32], &[f32], &[f32], &[f32]),
 ) -> (Option<u64>, Option<u64>, Option<u64>) {
-    let (cp, cm, cu, cv) = cand;
+    let (cp, cm, cu, cv, cd) = cand;
     if is_triangle_mode {
         // Self-compare = exact. A zero-length buffer is "nothing measured".
         if cp.is_empty() {
@@ -314,7 +326,7 @@ pub fn provenance_mismatches(
         }
         return (Some(0), Some(0), Some(0));
     }
-    let Some((op, om, ou, ov)) = oracle else {
+    let Some((op, om, ou, ov, od)) = oracle else {
         return (None, None, None);
     };
     let n = cp.len();
@@ -326,9 +338,11 @@ pub fn provenance_mismatches(
     if cm.len() != n
         || cu.len() != n
         || cv.len() != n
+        || cd.len() != n
         || om.len() != n
         || ou.len() != n
         || ov.len() != n
+        || od.len() != n
     {
         return (None, None, None);
     }
@@ -343,10 +357,14 @@ pub fn provenance_mismatches(
         if !o_hit {
             continue; // both miss — sky; nothing to compare
         }
-        if op[i] != cp[i] {
+        // Both hit. Depth-gate a differing prim/material: same surface point
+        // (identical t) ⇒ a measure-zero edge FACE tie, not a divergence.
+        let same_surface =
+            (cd[i] - od[i]).abs() <= PROV_DEPTH_REL_TOL * od[i].abs().max(1.0);
+        if op[i] != cp[i] && !same_surface {
             hit += 1;
         }
-        if om[i] != cm[i] {
+        if om[i] != cm[i] && !same_surface {
             mat += 1;
         }
         if op[i] == cp[i]
