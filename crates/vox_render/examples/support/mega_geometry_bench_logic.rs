@@ -280,6 +280,84 @@ pub fn hit_oracle_mismatches(
     )
 }
 
+/// The `prim_id` sentinel written for a primary-ray MISS (`asfloat(0xFFFFFFFF)`
+/// on the device → this `u32` on readback). Distinct from any valid triangle
+/// index (including 0), so hit-vs-miss divergence is detectable.
+pub const PROV_MISS_PRIM: u32 = 0xFFFF_FFFF;
+
+/// Max barycentric delta for the provenance UV compare (float interpolation).
+pub const PROV_UV_TOL: f32 = 1.0e-3;
+
+/// Compare candidate first-hit provenance against the `triangle` oracle and
+/// return `(hit_mismatches, material_mismatches, uv_mismatches)`.
+///
+/// `triangle` mode is its OWN oracle → `(Some(0), Some(0), Some(0))`. Returns
+/// all-`None` (Unavailable — never `Some(0)` conjured from nothing) when there
+/// is no oracle or the buffers are empty / mismatched length. Semantics (per
+/// pixel, primary ray, `g_hit_prim_id` is a GLOBAL `g_triangles` index in every
+/// HW-RT mode so it is directly comparable across triangle-GAS and CLAS):
+/// - **hit**: HIT/MISS status differs, OR both hit a DIFFERENT prim_id (same
+///   ray, different surface — a genuine geometry divergence).
+/// - **material**: both hit but the resolved global material_id differs.
+/// - **uv**: both hit the SAME prim but barycentrics differ beyond tolerance.
+#[allow(clippy::type_complexity)]
+pub fn provenance_mismatches(
+    is_triangle_mode: bool,
+    oracle: Option<(&[u32], &[u32], &[f32], &[f32])>,
+    cand: (&[u32], &[u32], &[f32], &[f32]),
+) -> (Option<u64>, Option<u64>, Option<u64>) {
+    let (cp, cm, cu, cv) = cand;
+    if is_triangle_mode {
+        // Self-compare = exact. A zero-length buffer is "nothing measured".
+        if cp.is_empty() {
+            return (None, None, None);
+        }
+        return (Some(0), Some(0), Some(0));
+    }
+    let Some((op, om, ou, ov)) = oracle else {
+        return (None, None, None);
+    };
+    let n = cp.len();
+    if n == 0 || op.len() != n {
+        return (None, None, None);
+    }
+    // Every channel (oracle + candidate) must agree in length or it is not a
+    // valid per-pixel comparison.
+    if cm.len() != n
+        || cu.len() != n
+        || cv.len() != n
+        || om.len() != n
+        || ou.len() != n
+        || ov.len() != n
+    {
+        return (None, None, None);
+    }
+    let (mut hit, mut mat, mut uv) = (0u64, 0u64, 0u64);
+    for i in 0..n {
+        let o_hit = op[i] != PROV_MISS_PRIM;
+        let c_hit = cp[i] != PROV_MISS_PRIM;
+        if o_hit != c_hit {
+            hit += 1;
+            continue; // hit-vs-miss divergence; material/uv not meaningful
+        }
+        if !o_hit {
+            continue; // both miss — sky; nothing to compare
+        }
+        if op[i] != cp[i] {
+            hit += 1;
+        }
+        if om[i] != cm[i] {
+            mat += 1;
+        }
+        if op[i] == cp[i]
+            && ((cu[i] - ou[i]).abs() > PROV_UV_TOL || (cv[i] - ov[i]).abs() > PROV_UV_TOL)
+        {
+            uv += 1;
+        }
+    }
+    (Some(hit), Some(mat), Some(uv))
+}
+
 /// True only if `names` contains exactly the seven required fixtures. A verdict
 /// computed over a subset is not a suite verdict.
 pub fn all_required_fixtures_present(names: &[String]) -> bool {

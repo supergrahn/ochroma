@@ -217,6 +217,11 @@ mod native {
     /// test. `false` today (see `logic::HARNESS_CITY_HYBRID_DISTINCT_EXECUTION`).
     const CITY_HYBRID_IS_DISTINCT_EXECUTION: bool = logic::HARNESS_CITY_HYBRID_DISTINCT_EXECUTION;
 
+    /// Per-pixel first-hit provenance of the last timed frame:
+    /// (prim_id, material_id, bary_u, bary_v). The cross-mode correctness oracle
+    /// (triangle-GAS is the reference; CLAS modes are compared against it).
+    type ProvenanceFrame = (Vec<u32>, Vec<u32>, Vec<f32>, Vec<f32>);
+
     pub fn run(args: &BenchArgs) -> Result<i32, String> {
         let width = args.res;
         let height = (args.res * 9 / 16).max(1);
@@ -361,7 +366,7 @@ mod native {
         height: u32,
         cfg: &logic::TimedRunConfig,
     ) -> Result<logic::FixtureReport, String> {
-        let mut triangle: Option<(logic::ModeResult, Vec<f32>)> = None;
+        let mut triangle: Option<(logic::ModeResult, ProvenanceFrame)> = None;
         let mut reference: Option<logic::ModeResult> = None;
         let mut hybrid: Option<logic::ModeResult> = None;
 
@@ -373,12 +378,16 @@ mod native {
             if !args.modes.contains(&mode) {
                 continue;
             }
-            let (mr, frame) = measure_mode(spec, mode, width, height, cfg)?;
-            let oracle_frame = triangle.as_ref().map(|(_, f)| f);
-            let has_triangle_oracle = args.modes.contains(&logic::Mode::Triangle);
-            let mr = apply_hit_oracle(mr, &frame, oracle_frame, has_triangle_oracle);
+            let (mr, prov) = measure_mode(spec, mode, width, height, cfg)?;
+            // Cross-mode correctness oracle: triangle-GAS provenance is the
+            // reference; CLAS modes are compared against it. Fills
+            // material/uv/hit mismatches (all None => Unavailable, fail closed).
+            let oracle = triangle
+                .as_ref()
+                .map(|(_, (p, m, u, v))| (p.as_slice(), m.as_slice(), u.as_slice(), v.as_slice()));
+            let mr = apply_provenance_oracle(mr, &prov, oracle);
             match mode {
-                logic::Mode::Triangle => triangle = Some((mr, frame)),
+                logic::Mode::Triangle => triangle = Some((mr, prov)),
                 logic::Mode::Reference => reference = Some(mr),
                 logic::Mode::CityHybrid => hybrid = Some(mr),
             }
@@ -423,7 +432,7 @@ mod native {
         width: u32,
         height: u32,
         cfg: &logic::TimedRunConfig,
-    ) -> Result<(logic::ModeResult, Vec<f32>), String> {
+    ) -> Result<(logic::ModeResult, ProvenanceFrame), String> {
         apply_mode_env(mode);
 
         let (blas, materials) = fixture_prototype();
@@ -450,7 +459,10 @@ mod native {
         let mut trace_samples: Vec<f64> = Vec::with_capacity(cfg.timed_frames as usize);
         let mut frame_samples: Vec<f64> = Vec::with_capacity(cfg.timed_frames as usize);
         let mut dirty: Vec<(usize, [[f32; 4]; 3])> = Vec::with_capacity(spec.instances as usize);
-        let mut last_frame: Vec<f32> = Vec::new();
+        // First-hit provenance of the last timed frame: (prim_id, material_id,
+        // bary_u, bary_v), one entry per pixel. The cross-mode correctness oracle.
+        let mut last_prov: ProvenanceFrame =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
 
         let is_changing = matches!(
             spec.name.as_str(),
@@ -476,7 +488,12 @@ mod native {
             trace_samples.push(render_ms);
             frame_samples.push(update_ms + render_ms);
             if frame + 1 == cfg.timed_frames {
-                last_frame = out.beauty;
+                // Capture the first-hit provenance AOV of the LAST timed frame for
+                // the cross-mode correctness oracle. Empty (fail-closed) if the
+                // renderer did not produce it.
+                if let Some(p) = out.first_hit_provenance {
+                    last_prov = (p.prim_id, p.material_id, p.bary_u, p.bary_v);
+                }
             }
         }
 
@@ -493,10 +510,11 @@ mod native {
             correctness: logic::Correctness {
                 source_primitives: stats.source_primitive_count(),
                 mapped_primitives: stats.mapped_primitive_count(),
-                // No provenance-compare hook yet -> unavailable (fail closed).
+                // Start Unavailable (fail closed); all three are filled by
+                // apply_provenance_oracle from the real cross-mode first-hit
+                // provenance compare against the triangle-GAS oracle.
                 material_mismatches: None,
                 uv_mismatches: None,
-                // Filled by apply_hit_oracle from the real cross-mode compare.
                 hit_mismatches: None,
             },
             stage: logic::GeometryStage {
@@ -535,24 +553,31 @@ mod native {
             unexpected_fallback: stats.fallback_reason().is_some()
                 && !matches!(mode, logic::Mode::Triangle),
         };
-        Ok((mr, last_frame))
+        Ok((mr, last_prov))
     }
 
-    /// Fill `hit_mismatches` from the real cross-mode compare via the shared,
-    /// unit-tested `logic::hit_oracle_mismatches` (which returns `None`, never
-    /// `Some(0)`, when there is no oracle or either buffer is empty).
-    fn apply_hit_oracle(
+    /// Fill `hit_mismatches`, `material_mismatches`, and `uv_mismatches` from the
+    /// real cross-mode FIRST-HIT PROVENANCE compare via the shared, unit-tested
+    /// `logic::provenance_mismatches`. This replaces the old beauty-frame compare
+    /// (which conflated shading/AA noise with geometry divergence): the primary
+    /// hit's GLOBAL prim_id / material_id / barycentrics are compared per pixel
+    /// against the triangle-GAS oracle, so a mismatch is a genuine geometry or
+    /// material divergence. All three stay `None` (Unavailable, fail closed) when
+    /// there is no oracle or the buffers are empty.
+    fn apply_provenance_oracle(
         mut mr: logic::ModeResult,
-        frame: &[f32],
-        oracle: Option<&Vec<f32>>,
-        has_triangle_oracle: bool,
+        prov: &ProvenanceFrame,
+        oracle: Option<(&[u32], &[u32], &[f32], &[f32])>,
     ) -> logic::ModeResult {
-        mr.correctness.hit_mismatches = logic::hit_oracle_mismatches(
+        let (p, m, u, v) = prov;
+        let (hit, mat, uv) = logic::provenance_mismatches(
             matches!(mr.mode, logic::Mode::Triangle),
-            has_triangle_oracle,
-            frame,
-            oracle.map(|v| v.as_slice()),
+            oracle,
+            (p.as_slice(), m.as_slice(), u.as_slice(), v.as_slice()),
         );
+        mr.correctness.hit_mismatches = hit;
+        mr.correctness.material_mismatches = mat;
+        mr.correctness.uv_mismatches = uv;
         mr
     }
 
@@ -722,6 +747,10 @@ mod native {
     fn apply_mode_env(mode: logic::Mode) {
         // SAFETY: single-threaded harness; env read by the renderer on next build.
         unsafe {
+            // Correctness oracle: have the renderer read back the per-pixel
+            // first-hit provenance AOV (prim_id/material/bary) each frame so the
+            // harness can compare it cross-mode. Set for every mode.
+            std::env::set_var("SPECTRA_PROVENANCE_AOV", "1");
             match mode {
                 logic::Mode::Triangle => {
                     std::env::set_var("SPECTRA_CLAS_THRESHOLD", "18446744073709551615");
