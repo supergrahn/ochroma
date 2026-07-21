@@ -227,14 +227,18 @@ pub fn required_fixtures() -> Vec<FixtureSpec> {
 /// claims require (the corpus families in `mega_geometry_corpus.ron`).
 pub const REAL_ASSET_FAMILIES: [&str; 2] = ["repeated_highrise", "detached_residential"];
 
-/// Whether the harness can currently prove `city_hybrid` resolves to a DISTINCT
-/// execution representation from `reference`. It cannot today (`MEGAGEOMETRY_MODE`
-/// is not consumed by the renderer), so this is `false` and every target fixture
-/// is `Unavailable`. Routing the harness's distinct-execution flag through this
-/// pinned constant means a stray flip-to-true is caught by a test
-/// (`harness_does_not_yet_prove_distinct_execution`) in addition to the redundant
-/// `mode_distinct` global gate.
-pub const HARNESS_CITY_HYBRID_DISTINCT_EXECUTION: bool = false;
+/// Whether the harness can prove `city_hybrid` resolves to a DISTINCT execution
+/// representation from `reference`. Now `true`: the renderer consumes
+/// `MEGAGEOMETRY_MODE=city_hybrid` and builds a hierarchical root→child IAS
+/// (deferred device build in `optix_setup`, `scene.rs`/`sample.rs`), which
+/// `launch()` selects over the flat CLAS IAS that `reference` uses. Witnessed on
+/// the RTX 4070 Ti: city_hybrid engages the hierarchical IAS (1/4/16 partitions),
+/// keeps the provenance oracle at 0/0/0 vs the triangle baseline, and has a
+/// distinct geometry-stage time from `reference`. (city_hybrid is not yet
+/// FASTER on static synthetic scenes — the LOD + paging that pay off the
+/// hierarchical overhead are the next increment — so a target fixture can be a
+/// Loss/Unavailable, but it is no longer suppressed as "not distinct".)
+pub const HARNESS_CITY_HYBRID_DISTINCT_EXECUTION: bool = true;
 
 /// Whether the forbidden CPU-ownership counters are actually bridged/probed in
 /// the harness's live path. They are not yet (Spectra's probed

@@ -794,13 +794,16 @@ fn unprobed_cpu_counters_suppress() {
 }
 
 #[test]
-fn harness_does_not_yet_prove_distinct_execution() {
-    // Pin the harness constant: a stray flip-to-true is caught here (in addition
-    // to the redundant `mode_distinct` global gate).
+fn harness_proves_distinct_execution() {
+    // Pin the harness constant. This was flipped to `true` when the renderer
+    // began honoring MEGAGEOMETRY_MODE=city_hybrid by building a hierarchical
+    // root→child IAS (distinct from reference's flat CLAS IAS), witnessed on the
+    // 4070 Ti with the provenance oracle at 0/0/0. A stray flip BACK to false
+    // (regressing the wiring) is caught here.
     assert!(
-        !HARNESS_CITY_HYBRID_DISTINCT_EXECUTION,
-        "city_hybrid is not yet a distinct execution path; do not flip this to \
-         true until the renderer honors a per-mode execution representation"
+        HARNESS_CITY_HYBRID_DISTINCT_EXECUTION,
+        "city_hybrid IS a distinct execution path (hierarchical IAS); do not flip \
+         this to false unless the per-mode execution wiring is removed"
     );
 }
 
