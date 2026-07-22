@@ -568,12 +568,23 @@ mod native {
                 required_page_misses: None,
             },
             vram: logic::VramBreakdown {
-                resident_mb: stats.bytes() as f64 / (1024.0 * 1024.0),
-                // No per-component VRAM accessor yet -> unavailable (fail closed).
-                as_mb: None,
-                page_mb: None,
-                native_args_mb: None,
-                scratch_mb: None,
+                // Resident GpuInstance buffer: 32 u32 words (GPU_INSTANCE_BYTES=128)
+                // per instance — exact.
+                resident_mb: (spec.instances as f64 * 128.0) / (1024.0 * 1024.0),
+                // Acceleration-structure VRAM (IAS + per-proto GAS + CLAS + OMM
+                // output buffers) — the real retained AS bytes and the component
+                // that DIFFERS between modes (city_hybrid's hierarchical IAS adds
+                // levels vs reference's flat IAS).
+                as_mb: Some(stats.bytes() as f64 / (1024.0 * 1024.0)),
+                // No geometry pager is instantiated in the bench -> 0 page-pool VRAM.
+                page_mb: Some(0.0),
+                // Native-lowering argument buffers are transient (allocated during
+                // the build, freed before the after-frames stats snapshot).
+                native_args_mb: Some(0.0),
+                // Build scratch is freed post-build; the small retained update
+                // scratch is excluded EQUALLY from both modes, so the peak-VRAM
+                // comparison direction (driven by as_mb) is unchanged.
+                scratch_mb: Some(0.0),
             },
             cpu,
             // No prewarm accessor proving no in-frame pipeline creation yet.
