@@ -4,6 +4,12 @@ This file is for Codex and other coding agents. It summarizes the actionable
 parts of `CLAUDE.md`; when in doubt, read `CLAUDE.md` and the game
 `../../Ochroma/projects/urban_horizon/AGENTS.md` too.
 
+## Working principle (LAW)
+
+- Every step takes us forward — no shortcuts, done properly.
+- No old/outdated tech or techniques; forward-leaning, **AAA SOTA in everything**.
+- A step that isn't SOTA-quality isn't done.
+
 ## Purpose
 
 - Ochroma exists to ship Urban Horizon, a real-time deterministic city builder.
@@ -31,6 +37,16 @@ parts of `CLAUDE.md`; when in doubt, read `CLAUDE.md` and the game
 - No self-deception: no `todo!()`, `unimplemented!()`, empty bodies,
   `assert!(x.is_some())` tests, unwired features, or population-independent
   benches presented as product evidence.
+- Dependency direction (LAW): the engine NEVER asks Forge for anything. Forge is
+  an independent authoring oracle. Design decides what assets/terrains/maps are
+  needed and asks Forge for them independently; the engine/game/renderer only
+  make assets from Forge game objects, load, and render them faithfully. "Feature
+  X can't win until Forge/the cook covers more / produces something richer" is a
+  category error and a forbidden conclusion. Scope every engine/render task to
+  what the engine owns — correctly and efficiently converting, loading, and
+  rendering the game objects AS GIVEN. Content coverage/detail/representation is a
+  design decision made by asking Forge, never an engine gap. Inverting this arrow
+  is what makes investigations false-dead-end at the cook.
 
 ## Render And Config Laws
 

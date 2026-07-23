@@ -2,6 +2,12 @@
 
 Spectral Gaussian Splatting game engine.
 
+## Working principle (LAW)
+
+**Every step takes us forward. No shortcuts — we do things properly.** No old or
+outdated technologies or techniques; we are forward-leaning and aim for **AAA SOTA
+in everything we do.** A step that isn't SOTA-quality isn't done.
+
 ## Why this exists (product north-star)
 
 The engine exists to ship a flagship game — **Urban Horizon**, a care-first city
@@ -38,6 +44,32 @@ cargo test
 - `vox_app` — application binary, UI (GAME layer)
 
 **Rule: Engine crates must NEVER contain game-specific concepts (buildings, zoning, traffic). Game logic belongs in vox_app or vox_sim.**
+
+## Dependency direction — the engine NEVER asks Forge for anything (LAW)
+
+Forge is an **independent authoring oracle**. The flow is strictly one-way:
+
+1. **We** (design) decide what assets, terrains, and maps we need.
+2. **We** ask Forge for exactly those, **independently** of the engine.
+3. Forge authors the game objects.
+4. The **engine / game / renderer** just **make assets from the Forge game objects, load them, and render them** — faithfully, as well as possible.
+
+The engine's job is to render whatever a game object contains — not to make demands
+of Forge or the cook. **"Feature X can't win until Forge/the cook produces something
+richer (more coverage, more detail, a different representation)" is a category error
+and a forbidden conclusion.** The cook is a faithful converter (Forge game object →
+renderable asset), not a negotiation partner the engine lobbies. If a game object has
+16% of its geometry as MegaGeometry programs, the engine renders 16% programs + 84%
+mesh, correctly — full stop. If we want that content shaped differently, **we ask
+Forge, independently** — that is a design/content decision, never an engine gap.
+
+Why this is a LAW: inverting this arrow — letting the engine's success depend on the
+content pipeline delivering more — manufactures a false dependency that always
+dead-ends at the cook (the one component downstream of everything and never "done"),
+turning it into a permanent scapegoat. Scope every engine/render investigation to
+what the engine owns: correctly and efficiently converting, loading, and rendering the
+game objects **as given**. Coverage/detail/representation of the content is out of
+scope for the engine by construction.
 
 ## Specs
 
