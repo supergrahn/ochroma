@@ -7,12 +7,16 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const READY_MEGA_GEOMETRY_SCHEMA: u32 = 4;
+pub const READY_MEGA_GEOMETRY_SCHEMA: u32 = 6;
 pub const READY_VISIBILITY_PROGRAM_WORDS: usize = 32;
 pub const READY_VISIBILITY_DEFORMATION_WORDS: usize = 16;
 pub const READY_VISIBILITY_TEMPLATE_WORDS: usize = 28;
 pub const READY_VISIBILITY_PROGRAM_BYTES: u32 = 128;
 pub const READY_VISIBILITY_TEMPLATE_BYTES: u32 = 112;
+/// `child_group, child_prim, parent_group, parent_prim, error_q, valid`.
+pub const READY_SURFACE_CORRESPONDENCE_WORDS: usize = 6;
+/// `parent, left, right, first_program, program_count, min.xyz, max.xyz`.
+pub const READY_VISIBILITY_PAGE_NODE_WORDS: usize = 11;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,6 +41,14 @@ pub struct ReadyMegaGeometry {
     selectors: Vec<u32>,
     /// Conservative object-space AABBs, six floats per program.
     aabbs: Vec<f32>,
+    /// Forge-cooked stable correspondence, one entry per exact program. The
+    /// initial full-detail representation uses certified identity parents;
+    /// future cooked LOD cuts replace only the parent pair, never invent data
+    /// at runtime.
+    surface_correspondence_words: Vec<u32>,
+    /// Forge-cooked, full-detail page hierarchy. It is a residency/visibility
+    /// structure, never a runtime-generated distance mesh.
+    page_hierarchy_words: Vec<u32>,
 }
 
 impl ReadyMegaGeometry {
@@ -52,6 +64,8 @@ impl ReadyMegaGeometry {
         template_words: Vec<u32>,
         selectors: Vec<u32>,
         aabbs: Vec<f32>,
+        surface_correspondence_words: Vec<u32>,
+        page_hierarchy_words: Vec<u32>,
     ) -> Result<Self, ReadyMegaGeometryError> {
         let program_count = exact_record_count(
             "program",
@@ -85,6 +99,8 @@ impl ReadyMegaGeometry {
             template_words,
             selectors,
             aabbs,
+            surface_correspondence_words,
+            page_hierarchy_words,
         };
         payload.validate()?;
         Ok(payload)
@@ -139,9 +155,47 @@ impl ReadyMegaGeometry {
         )?;
         if self.selectors.len() != self.selector_count as usize
             || self.aabbs.len() != self.program_count as usize * 6
+            || self.surface_correspondence_words.len()
+                != self.program_count as usize * READY_SURFACE_CORRESPONDENCE_WORDS
+            || self.page_hierarchy_words.len() % READY_VISIBILITY_PAGE_NODE_WORDS != 0
             || self.aabbs.iter().any(|value| !value.is_finite())
         {
             return Err(ReadyMegaGeometryError::InvalidBufferLength("selector/aabb"));
+        }
+        for record in self
+            .surface_correspondence_words
+            .chunks_exact(READY_SURFACE_CORRESPONDENCE_WORDS)
+        {
+            if record[0] >= self.program_count || record[2] >= self.program_count || record[5] > 1 {
+                return Err(ReadyMegaGeometryError::InvalidSurfaceCorrespondence);
+            }
+        }
+        let page_nodes = self.page_hierarchy_words.chunks_exact(READY_VISIBILITY_PAGE_NODE_WORDS);
+        let page_node_count = page_nodes.len() as u32;
+        if page_node_count == 0 || page_nodes.clone().any(|record| {
+            record[4] == 0
+                || record[3].checked_add(record[4]).is_none_or(|end| end > self.program_count)
+                || record[5..11].iter().any(|word| !f32::from_bits(*word).is_finite())
+                || (0..3).any(|axis| f32::from_bits(record[5 + axis]) > f32::from_bits(record[8 + axis]))
+        }) {
+            return Err(ReadyMegaGeometryError::InvalidPageHierarchy);
+        }
+        let page_nodes = self.page_hierarchy_words.chunks_exact(READY_VISIBILITY_PAGE_NODE_WORDS).collect::<Vec<_>>();
+        let roots = page_nodes.iter().enumerate().filter(|(_, node)| node[0] == u32::MAX).collect::<Vec<_>>();
+        if roots.len() != 1 || roots[0].1[3] != 0 || roots[0].1[4] != self.program_count {
+            return Err(ReadyMegaGeometryError::InvalidPageHierarchy);
+        }
+        for (index, node) in page_nodes.iter().enumerate() {
+            let index = index as u32;
+            let left = node[1]; let right = node[2];
+            if left == u32::MAX {
+                if right != u32::MAX { return Err(ReadyMegaGeometryError::InvalidPageHierarchy); }
+                continue;
+            }
+            if right == u32::MAX || left >= index || right >= index
+                || page_nodes[left as usize][0] != index || page_nodes[right as usize][0] != index {
+                return Err(ReadyMegaGeometryError::InvalidPageHierarchy);
+            }
         }
         for (index, record) in self
             .program_words
@@ -258,6 +312,10 @@ impl ReadyMegaGeometry {
     pub fn aabbs(&self) -> &[f32] {
         &self.aabbs
     }
+    pub fn surface_correspondence_words(&self) -> &[u32] {
+        &self.surface_correspondence_words
+    }
+    pub fn page_hierarchy_words(&self) -> &[u32] { &self.page_hierarchy_words }
 }
 
 fn exact_record_count(
@@ -301,4 +359,8 @@ pub enum ReadyMegaGeometryError {
     RangeEscapesPayload(usize),
     #[error("program {0} contains an invalid local template selector")]
     InvalidSelector(usize),
+    #[error("invalid MegaGeometry surface correspondence")]
+    InvalidSurfaceCorrespondence,
+    #[error("invalid MegaGeometry page hierarchy")]
+    InvalidPageHierarchy,
 }

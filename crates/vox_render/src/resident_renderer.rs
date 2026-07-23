@@ -1610,6 +1610,13 @@ impl ResidentSceneRenderer {
         self.renderer.set_present_ray_reconstruction(on);
     }
 
+    /// Tell Spectra that present owns temporal radiance reconstruction (SNR or
+    /// RR), so its internal temporal accumulator must not run as a second owner.
+    pub fn set_present_reconstruction_owns_temporal(&mut self, on: bool) {
+        self.renderer
+            .set_present_reconstruction_owns_temporal(on);
+    }
+
     /// WATER (MAT_WATER) procedural-wave + shoreline-foam controls, forwarded to
     /// the spectra `Renderer` (`u_water_*` in the megakernel). `[amp, scale, speed,
     /// time, foam_strength, foam_rough]`. The game advances `time` by wall-clock

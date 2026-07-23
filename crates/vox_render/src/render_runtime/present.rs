@@ -10,7 +10,9 @@ pub use spectra_gpu::SharedMetalBackend;
 pub use spectra_gpu::{GpuBackend, SharedVulkanBackend, VulkanSlangBackend};
 pub use spectra_present::{
     DeviceFrame, DevicePixelOrder, DeviceTemporalFrame, FrameGenerationKind,
-    FrameGenerationRequest, FrameGenerationStatus, GpuUiAtlas, GpuUiLayer, GpuUiVertex,
+    FrameGenerationRequest, FrameGenerationStatus, FrameDeliveryScheduler, FramePlan,
+    FramePlanDropReason, FrameSynthesisSourceError, FrameSynthesisSourceV1,
+    FrameSynthesisUiLayer, GpuUiAtlas, GpuUiLayer, GpuUiVertex, PresentFraction,
     MetalPresentOptions, Present, PresentBackend, PresentChoice, PresentError, PresentFrame,
     PresentGradeParams, PresentKind, ReconstructionCamera, ReconstructionFrameV1,
     ReconstructionGuides, ReconstructionModeRequest, RrGuides, UpscalerKind,

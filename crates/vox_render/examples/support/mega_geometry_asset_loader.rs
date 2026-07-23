@@ -18,7 +18,9 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use vox_data::mega_geometry::ReadyMegaGeometry;
 use vox_render::splat_backend::{BlasDesc, PbrMaterial};
+use vox_render::MegaGeometryLayer;
 
 /// A cooked asset resolved to bench geometry: the base (full-detail) mesh, its
 /// LOD chain (progressively coarser meshes), the material palette, and a content
@@ -33,6 +35,82 @@ pub struct CookedAsset {
     /// Hex of the cooked content hash (`mega_geometry.content_hash`, else an FNV
     /// of the base positions) — the fixture's `asset_content_hash`.
     pub content_hash: String,
+    /// The cooked MegaGeometry visibility-program payload (Forge ray-native
+    /// geometry). `Some` for building assets whose cook admitted procedural
+    /// geometry. This is what city_hybrid traces ray-native (via
+    /// `SceneState.mega_geometry`) — the real MegaGeometry, NOT mesh LOD.
+    pub mega: Option<Arc<ReadyMegaGeometry>>,
+}
+
+/// Assemble a `MegaGeometryLayer` (the `SceneState.mega_geometry` payload the
+/// renderer's native visibility-program trace consumes) from ONE cooked
+/// `ReadyMegaGeometry` payload instanced by `transforms`. Mirrors the game's
+/// `assemble_mega_geometry_layer`; the single-payload case needs no offset
+/// patching (all program/deformation/template/selector offsets are already
+/// 0-based). Each instance references the whole program range; material remap is
+/// empty (the bench's per-triangle materials carry through the base mesh).
+pub fn assemble_mega_layer(
+    payload: &ReadyMegaGeometry,
+    transforms: &[[f32; 16]],
+    material_count: u32,
+) -> MegaGeometryLayer {
+    let mut layer = MegaGeometryLayer::default();
+    layer
+        .program_words
+        .extend_from_slice(payload.program_words());
+    layer
+        .deformation_words
+        .extend_from_slice(payload.deformation_words());
+    layer
+        .template_words
+        .extend_from_slice(payload.template_words());
+    layer.selectors.extend_from_slice(payload.selectors());
+    layer
+        .surface_correspondence_words
+        .extend_from_slice(payload.surface_correspondence_words());
+    layer
+        .surface_correspondence_slots
+        .extend(0..payload.program_count());
+    layer.aabbs.extend_from_slice(payload.aabbs());
+    layer.source_patch_count = payload.source_patch_count() as u64;
+    layer.source_triangle_count = payload.source_triangle_count() as u64;
+
+    // ONE shared identity material-remap block (authored id N -> resident id N):
+    // the instances share the building's material palette, so every instance's
+    // range references this block. `MegaGeometryLayer::validate` requires each
+    // range have count > 0 and stay within `material_remap`.
+    let mc = material_count.max(1);
+    for m in 0..mc {
+        layer.material_remap.push((m, m));
+    }
+
+    // MegaGeometry visibility programs are authored in the payload's SOURCE
+    // space; the cooked mesh is in OBJECT space. The two differ by the payload's
+    // `source_to_object` transform (e.g. a Z-flip + origin shift). Compose it
+    // into each mega instance transform exactly as the game does
+    // (`mega_proto_instance_transform`, asset_placement.rs) so the realized
+    // visibility surface lands ON the mesh instead of a z-flipped, offset ghost.
+    //
+    // Convention bridge: the bench's instance transforms are the KHR row-major
+    // layout (3×3 in indices [0,1,2 / 4,5,6 / 8,9,10], translation at 12/13/14),
+    // so reconstruct the mathematical `object_to_world` before composing. The
+    // mega layer is consumed column-major (the uploader reads row 0 as
+    // [m0,m4,m8,m12]), which is exactly `glam::Mat4::to_cols_array`.
+    let source_to_object = glam::Mat4::from_cols_array(&payload.source_to_object());
+    let program_count = payload.program_count();
+    for t in transforms {
+        let object_to_world = glam::Mat4::from_cols_array(&[
+            t[0], t[4], t[8], 0.0, //
+            t[1], t[5], t[9], 0.0, //
+            t[2], t[6], t[10], 0.0, //
+            t[12], t[13], t[14], 1.0,
+        ]);
+        let mega = (object_to_world * source_to_object).to_cols_array();
+        layer.instance_transforms.extend_from_slice(&mega);
+        layer.instance_ranges.push((0, program_count, 0));
+        layer.material_remap_ranges.push((0, mc));
+    }
+    layer
 }
 
 impl CookedAsset {
@@ -49,6 +127,48 @@ impl CookedAsset {
     /// Triangle count of the full-detail base mesh.
     pub fn base_triangles(&self) -> usize {
         self.base.indices.len()
+    }
+
+    /// The base mesh with the MegaGeometry-COVERED triangles removed — the
+    /// `city_hybrid` residual mesh. The cooked `covered_triangle_indices` are the
+    /// source triangles the visibility programs reproduce exactly, so a mega
+    /// scene must trace them via the programs (realized/procedural), NOT ALSO as
+    /// materialized mesh. Leaving them in the soup double-covers every covered
+    /// surface: the coincident mesh + realized triangles z-fight, and the KHR
+    /// tie-break reports the mesh prim id with the realized triangle's
+    /// barycentrics (a spurious UV divergence against the triangle oracle). With
+    /// them removed, covered pixels resolve ONLY through mega (a different prim
+    /// id at the same surface — forgiven by the oracle's depth gate) and the
+    /// residual mesh reproduces the rest exactly.
+    ///
+    /// Returns the base unchanged when there is no mega payload or no covered
+    /// set. Unreferenced vertices are left in place (harmless for tracing); only
+    /// per-triangle `indices` / `material_ids` are filtered.
+    pub fn base_without_covered(&self) -> BlasDesc {
+        let Some(mega) = self.mega.as_ref() else {
+            return self.base.clone();
+        };
+        let covered: std::collections::HashSet<u32> =
+            mega.covered_triangle_indices().iter().copied().collect();
+        if covered.is_empty() {
+            return self.base.clone();
+        }
+        let mut base = self.base.clone();
+        let has_mat = base.material_ids.len() == base.indices.len();
+        let mut kept_indices = Vec::with_capacity(base.indices.len());
+        let mut kept_mats = Vec::with_capacity(base.material_ids.len());
+        for (tri, idx) in base.indices.iter().enumerate() {
+            if covered.contains(&(tri as u32)) {
+                continue;
+            }
+            kept_indices.push(*idx);
+            if has_mat {
+                kept_mats.push(base.material_ids[tri]);
+            }
+        }
+        base.indices = kept_indices;
+        base.material_ids = if has_mat { kept_mats } else { base.material_ids };
+        base
     }
 }
 
@@ -238,11 +358,22 @@ fn parse_cooked(bytes: &[u8], proto_id: u64) -> Result<CookedAsset, String> {
             }
             format!("{h:016x}")
         });
+    // The cooked MegaGeometry visibility-program payload (city_hybrid ray-native
+    // geometry). Deserialize the `mega_geometry` sub-object into a
+    // ReadyMegaGeometry; keep it only if it self-validates.
+    let mega = v
+        .get("mega_geometry")
+        .filter(|m| !m.is_null())
+        .and_then(|m| serde_json::from_value::<ReadyMegaGeometry>(m.clone()).ok())
+        .filter(|rm| rm.validate().is_ok())
+        .map(Arc::new);
+
     Ok(CookedAsset {
         base,
         lods,
         materials,
         content_hash,
+        mega,
     })
 }
 

@@ -381,6 +381,13 @@ impl RenderRuntime {
         self.renderer.set_present_ray_reconstruction(on);
     }
 
+    /// Select exactly one temporal radiance owner. A denoising present
+    /// reconstruction (SNR/RR) sets this; SR-only paths leave it off.
+    pub fn set_present_reconstruction_owns_temporal(&mut self, on: bool) {
+        self.renderer
+            .set_present_reconstruction_owns_temporal(on);
+    }
+
     /// Enable/disable production of the full SNR `ReconstructionFrameV1` guide set
     /// on the Vulkan device present path. Default on (so a settings-driven SNR
     /// request activates without extra wiring); a game can gate this by

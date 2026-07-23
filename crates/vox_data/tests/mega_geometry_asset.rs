@@ -34,6 +34,8 @@ fn fixture() -> ReadyMegaGeometry {
         template,
         vec![0],
         vec![-1.0, -1.0, -1.0, 1.0, 1.0, 1.0],
+        vec![0, 0, 0, 0, 0, 1],
+        vec![u32::MAX, u32::MAX, u32::MAX, 0, 1, (-1.0f32).to_bits(), (-1.0f32).to_bits(), (-1.0f32).to_bits(), 1.0f32.to_bits(), 1.0f32.to_bits(), 1.0f32.to_bits()],
     )
     .unwrap()
 }
@@ -52,6 +54,14 @@ fn ready_mega_geometry_round_trips_deterministically() {
 fn selectors_cannot_escape_a_program_template_dictionary() {
     let mut value = serde_json::to_value(fixture()).unwrap();
     value["selectors"] = serde_json::json!([1]);
+    let payload: ReadyMegaGeometry = serde_json::from_value(value).unwrap();
+    assert!(payload.validate().is_err());
+}
+
+#[test]
+fn page_hierarchy_must_remain_a_complete_tree() {
+    let mut value = serde_json::to_value(fixture()).unwrap();
+    value["page_hierarchy_words"][0] = serde_json::json!(0_u32);
     let payload: ReadyMegaGeometry = serde_json::from_value(value).unwrap();
     assert!(payload.validate().is_err());
 }

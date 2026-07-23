@@ -264,8 +264,29 @@ mod native {
         };
 
         let fixtures = logic::required_fixtures();
+        // Diagnostic-only fixture narrowing (`MEGAGEOMETRY_ONLY=name[,name]`).
+        // Running fewer than the seven required fixtures ALWAYS suppresses the
+        // overall verdict (`compute_overall` requires the full set), so this can
+        // only make a run stricter/faster — never fabricate a win. Used to
+        // witness one fixture without paying the 122 MB meridian parse + full
+        // suite time. Absent/empty ⇒ the full required set.
+        let only: Vec<String> = std::env::var("MEGAGEOMETRY_ONLY")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let selected: Vec<&logic::FixtureSpec> = if only.is_empty() {
+            fixtures.iter().collect()
+        } else {
+            eprintln!("[mega_geometry_bench] MEGAGEOMETRY_ONLY active: {only:?} (verdict WILL be suppressed — diagnostic run)");
+            fixtures
+                .iter()
+                .filter(|f| only.iter().any(|o| o == &f.name))
+                .collect()
+        };
         let mut fixture_reports = Vec::new();
-        for spec in &fixtures {
+        for spec in selected {
             fixture_reports.push(run_fixture(spec, args, width, height, &timed_cfg)?);
         }
 
@@ -463,16 +484,25 @@ mod native {
         } else {
             None
         };
+        // city_hybrid traces the MegaGeometry-covered triangles ray-native via
+        // the visibility programs, so its RESIDUAL mesh must exclude them — else
+        // the covered surface is double-represented (mesh + realized) and z-fights
+        // (§ `CookedAsset::base_without_covered`). triangle/reference keep the full
+        // mesh (the oracle compares mega-reconstructed vs full-detail geometry).
+        let city_residual: Option<BlasDesc> = match (&asset, mode) {
+            (Some(a), logic::Mode::CityHybrid) => Some(a.base_without_covered()),
+            _ => None,
+        };
         let (blas, materials): (&BlasDesc, &[PbrMaterial]) = match (&asset, &cube_fallback) {
-            // Full-detail base mesh for every mode; per-mode LOD selection is a
-            // later increment (the LOD-cut consumer). The correctness oracle
-            // verifies all three modes still hit this same real geometry.
-            (Some(a), _) => (&a.base, a.materials.as_slice()),
+            (Some(a), _) => (
+                city_residual.as_ref().unwrap_or(&a.base),
+                a.materials.as_slice(),
+            ),
             (None, Some((b, m))) => (b, m.as_slice()),
             _ => unreachable!(),
         };
         let instances = grid_instances(spec.instances as usize);
-        let scene = meshes_to_instanced_scene(
+        let mut scene = meshes_to_instanced_scene(
             std::slice::from_ref(blas),
             &instances,
             materials,
@@ -480,6 +510,27 @@ mod native {
             width,
             height,
         );
+
+        // city_hybrid traces the buildings RAY-NATIVE via the cooked MegaGeometry
+        // visibility programs — THE actual MegaGeometry, not mesh/cluster LOD.
+        // Populate SceneState.mega_geometry from the loaded ReadyMegaGeometry so
+        // `use_mega_geometry` engages (mega_tlas + programs) and the megakernel
+        // executes the programs for the covered triangles instead of tracing
+        // them as materialized mesh. triangle/reference keep the full-detail
+        // mesh, so the correctness oracle compares ray-native vs materialized.
+        if matches!(mode, logic::Mode::CityHybrid) {
+            if let Some(a) = &asset {
+                if let Some(payload) = &a.mega {
+                    let transforms: Vec<[f32; 16]> =
+                        instances.iter().map(|i| i.transform).collect();
+                    scene.mega_geometry = asset_loader::assemble_mega_layer(
+                        payload,
+                        &transforms,
+                        materials.len() as u32,
+                    );
+                }
+            }
+        }
 
         let mut r = ResidentSceneRenderer::new(width, height, LightRig::default(), 1, 1, scene)
             .map_err(|e| format!("{}/{}: renderer build: {e}", spec.name, mode.as_str()))?;
@@ -630,6 +681,28 @@ mod native {
         mr.correctness.hit_mismatches = hit;
         mr.correctness.material_mismatches = mat;
         mr.correctness.uv_mismatches = uv;
+        if std::env::var("MEGAGEOMETRY_DIAG").is_ok() && !matches!(mr.mode, logic::Mode::Triangle) {
+            if let Some((op, om, _ou, _ov, od)) = oracle {
+                let n = p.len().min(op.len());
+                let mut shown = 0;
+                for i in 0..n {
+                    let o_hit = op[i] != logic::PROV_MISS_PRIM;
+                    let c_hit = p[i] != logic::PROV_MISS_PRIM;
+                    let same_surface =
+                        (d[i] - od[i]).abs() <= logic::PROV_DEPTH_REL_TOL * od[i].abs().max(1.0);
+                    let is_hit_mismatch =
+                        o_hit != c_hit || (o_hit && c_hit && op[i] != p[i] && !same_surface);
+                    if is_hit_mismatch && shown < 24 {
+                        eprintln!(
+                            "[DIAG hit] px={i} o_hit={o_hit} c_hit={c_hit} prim(o={} c={}) mat(o={} c={}) depth(o={:.5} c={:.5} d={:.5})",
+                            op[i], p[i], om[i], m[i], od[i], d[i], (d[i]-od[i]).abs()
+                        );
+                        shown += 1;
+                    }
+                }
+                eprintln!("[DIAG hit] mode={} shown={shown}", mr.mode.as_str());
+            }
+        }
         mr
     }
 

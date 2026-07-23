@@ -294,7 +294,10 @@ pub struct PbrMaterial {
     /// `MAT_GLASS`. The magnitude is the authored whole-pane solar
     /// transmittance: Spectra attenuates the exterior-entry transmission and
     /// visible interior radiance by this value while preserving Fresnel
-    /// reflection. It is not only a material-type switch.
+    /// reflection. At 1 spp the glass sampler conditions its reflection versus
+    /// transmission choice on the surviving coating energy, avoiding clear-room
+    /// outliers without changing the expected energy. This field is not only a
+    /// material-type switch.
     pub transmission: f32,
     /// Normal-incidence reflectance of the exterior glass coating. The neutral
     /// 0.04 matches uncoated architectural dielectric glass; solar-control
