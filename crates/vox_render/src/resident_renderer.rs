@@ -128,6 +128,15 @@ pub struct ResidentSceneRenderer {
     /// Last camera view matrix, used to distinguish a real cut/teleport from
     /// continuous orbit/pan motion.
     last_camera_view: Option<[f32; 16]>,
+    /// Previous camera transform retained for external temporal consumers
+    /// (DLSS-G); unlike internal accumulation this survives until the following
+    /// rendered frame has consumed it.
+    previous_view_proj: Option<[f32; 16]>,
+    /// Reset decision associated with the most recently rendered camera frame.
+    /// External temporal consumers must use the same cut decision as Spectra.
+    last_camera_reset: bool,
+    /// Monotonic traced-frame identity exported to present backends.
+    present_frame_index: u32,
     /// Fail-closed ownership evidence shared by every game using the resident
     /// renderer. Allowed native submissions are measured separately from
     /// forbidden CPU geometry decisions. Fed by [`Self::bridge_geometry_cpu_ownership`]
@@ -636,6 +645,9 @@ impl ResidentSceneRenderer {
             last_view_proj: None,
             last_projection: None,
             last_camera_view: None,
+            previous_view_proj: None,
+            last_camera_reset: true,
+            present_frame_index: 0,
             geometry_cpu_ownership: GeometryCpuOwnershipCounters::default(),
             geometry_cpu_bridge: GeometryCpuOwnershipBridge::default(),
         };
@@ -1195,6 +1207,8 @@ impl ResidentSceneRenderer {
         self.last_view_proj = None;
         self.last_projection = None;
         self.last_camera_view = None;
+        self.previous_view_proj = None;
+        self.last_camera_reset = true;
         if std::env::var("SPECTRA_DISPATCH_TIMING").as_deref() == Ok("1") {
             eprintln!(
                 "[dispatch_timing] load_scene_state (BVH/TLAS upload): {:.1} ms",
@@ -1391,30 +1405,55 @@ impl ResidentSceneRenderer {
         let camera_moved = self
             .last_camera_view
             .is_some_and(|prev| camera_motion_changed(prev, view));
+        let camera_cut_now = self
+            .last_camera_view
+            .is_some_and(|prev| camera_cut(prev, view));
+        let temporal_reset =
+            self.last_view_proj.is_none() || projection_changed || camera_cut_now;
         if projection_changed || camera_moved {
-            if projection_changed
-                || self
-                    .last_camera_view
-                    .is_some_and(|prev| camera_cut(prev, view))
-            {
+            if projection_changed || camera_cut_now {
                 self.renderer.reset_camera_accumulation();
             } else {
                 self.renderer.reset_camera_color_accumulation();
             }
         }
+        self.previous_view_proj = self.last_view_proj;
         self.last_view_proj = Some(view_proj);
         self.last_projection = Some(proj);
         self.last_camera_view = Some(view);
+        self.last_camera_reset = temporal_reset;
         // Keep the camera frame (eye/forward) from the view matrix; then set the
         // COMBINED view-projection as u_view_proj.
         self.renderer.set_camera_view_matrix(view);
         self.renderer.set_view_proj(view_proj);
         self.renderer.set_projection_matrix(proj);
         let frame = self.renderer.render().map_err(|e| format!("render: {e:?}"))?;
+        self.present_frame_index = self.present_frame_index.wrapping_add(1);
         // Mirror any MegaGeometry CPU-ownership activity Spectra recorded during
         // this frame into the engine-side witness (lock-free; no GPU sync).
         self.bridge_geometry_cpu_ownership();
         Ok(frame)
+    }
+
+    /// Camera state for vendor-neutral temporal presentation. The matrices are
+    /// captured at the same resident render boundary as the guide textures.
+    pub fn present_camera_state(
+        &self,
+    ) -> Option<([f32; 16], [f32; 16], [f32; 16], [f32; 16])> {
+        Some((
+            self.last_camera_view?,
+            self.last_projection?,
+            self.last_view_proj?,
+            self.previous_view_proj.unwrap_or(self.last_view_proj?),
+        ))
+    }
+
+    pub fn frame_index(&self) -> u32 {
+        self.present_frame_index
+    }
+
+    pub fn temporal_reset_pending(&self) -> bool {
+        self.last_camera_reset
     }
 
     /// Apply a batch of per-instance transform refits IMMEDIATELY through the

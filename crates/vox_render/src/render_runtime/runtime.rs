@@ -405,6 +405,9 @@ impl RenderRuntime {
         // need scaling into pixels, so the correct scale here is identity.
         let mv_scale_x = 1.0;
         let mv_scale_y = 1.0;
+        let camera = self.renderer.present_camera_state();
+        let (camera_view, camera_projection, current_view_projection, previous_view_projection) =
+            camera.unwrap_or(([0.0; 16], [0.0; 16], [0.0; 16], [0.0; 16]));
         let guides = crate::render_runtime::present::RrGuides {
             diffuse_albedo: g[0],
             specular_albedo: g[1],
@@ -417,6 +420,16 @@ impl RenderRuntime {
             jitter_y: jy,
             mv_scale_x,
             mv_scale_y,
+            camera_view,
+            camera_projection,
+            current_view_projection,
+            previous_view_projection,
+            camera_valid: camera.is_some(),
+            // `rr_guides` is called once at the renderer->present boundary;
+            // use the renderer's own monotonic frame sequence rather than a
+            // UI/present counter so temporal consumers see the traced frame.
+            frame_id: self.renderer.frame_index(),
+            camera_reset: self.renderer.temporal_reset_pending(),
         };
         if std::env::var("SPECTRA_RR_GUIDE_DIAG").as_deref() == Ok("1") {
             use std::sync::atomic::{AtomicU32, Ordering};
