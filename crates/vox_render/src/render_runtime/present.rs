@@ -27,4 +27,6 @@ pub use spectra_present::{
 pub use spectra_present::{select_metal_present_shared, select_metal_present_shared_with_options};
 
 #[cfg(feature = "spectra-native-optix")]
-pub use spectra_present::{HeadlessRrOutput, headless_rr_eval};
+pub use spectra_present::{
+    bootstrap_streamline_before_graphics, headless_rr_eval, HeadlessRrOutput,
+};

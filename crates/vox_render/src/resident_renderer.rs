@@ -1806,7 +1806,7 @@ impl ResidentSceneRenderer {
     /// RR (DLSS Ray Reconstruction) guide device ptrs for the last frame, in the
     /// order `(diffuse_albedo, specular_albedo, normals, roughness, depth,
     /// motion)`. See `Renderer::rr_guide_ptrs`.
-    pub fn rr_guide_ptrs(&mut self) -> [u64; 6] {
+    pub fn rr_guide_ptrs(&mut self) -> [u64; 7] {
         self.renderer.rr_guide_ptrs()
     }
 

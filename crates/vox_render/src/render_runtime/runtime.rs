@@ -414,6 +414,7 @@ impl RenderRuntime {
             normals: g[2],
             roughness: g[3],
             depth: g[4],
+            device_depth: g[6],
             motion: g[5],
             ready_event,
             jitter_x: jx,
@@ -437,13 +438,14 @@ impl RenderRuntime {
             let n = GUIDE_DIAG_FRAME.fetch_add(1, Ordering::Relaxed);
             if n % 30 == 0 {
                 eprintln!(
-                    "[rr-guides] f{n} diffuse={} specular={} normals={} roughness={} depth={} motion={} \
+                    "[rr-guides] f{n} diffuse={} specular={} normals={} roughness={} depth={} device_depth={} motion={} \
                      jitter=({:.3},{:.3}) mv_scale=({:.3},{:.3})",
                     guides.diffuse_albedo != 0,
                     guides.specular_albedo != 0,
                     guides.normals != 0,
                     guides.roughness != 0,
                     guides.depth != 0,
+                    guides.device_depth != 0,
                     guides.motion != 0,
                     guides.jitter_x,
                     guides.jitter_y,
