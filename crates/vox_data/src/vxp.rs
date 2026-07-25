@@ -23,6 +23,11 @@
 //! * **Index**: a single top-level `index.json` entry, written FIRST, lets a
 //!   reader enumerate every asset and pull `.Metadata` + `.Texture` at startup
 //!   **without touching geometry**.
+//! * **Texture register**: `index.json` also carries a [`VxpTexture`] entry for
+//!   every material texture the pack's assets sample ([`VxpIndex::textures`]),
+//!   so GPU residency — which textures, how many bytes, which mip tail stays
+//!   resident — is decidable from the index ALONE, without opening a single
+//!   `.Surface`. See the "Texture register" section below.
 //!
 //! # Determinism (project LAW)
 //!
@@ -32,6 +37,32 @@
 //! `1980-01-01 00:00:00`, and no "created at"/tool-version/host field exists.
 //! [`tests::pack_is_byte_identical_across_writes`] proves it.
 //!
+//! # Texture register
+//!
+//! Material textures are NOT entries in the pack — they are separate GPU-native
+//! artifacts (BCn DDS/KTX2) shared by many assets across many packs, so packing
+//! a copy per pack would multiply them. What the pack carries instead is a
+//! **register**: [`VxpIndex::textures`], one [`VxpTexture`] per texture the
+//! pack's assets sample, keyed by the texture payload's [`content_id`].
+//!
+//! The register exists to make **residency decidable from `index.json` alone**.
+//! Before it, a loader had to open and parse every `.Surface` to learn which
+//! textures a pack even wants — which means on-demand loading could only ever
+//! be added as a FORMAT MIGRATION. With it, the loader reads one small JSON
+//! entry and knows the full texture set, its byte cost, and which mip levels are
+//! permanently resident.
+//!
+//! Each entry carries `width`, `height`, [`VxpTextureFormat`], `mip_count`,
+//! `bytes` (GPU bytes for the whole mip chain) and the **always-resident mip
+//! tail**: `tail_mip` (the first level that never leaves memory) and
+//! `tail_bytes`. The tail is why a shader never has to stall: a sample of a
+//! non-resident texture reads the tail and comes back BLURRY, never wrong and
+//! never blocked on I/O — a shader cannot do file I/O, and that is the one
+//! constraint streaming actually has to solve.
+//!
+//! Bindless slots are assigned by [`VxpTextureSlots`] from the CONTENT HASH, so
+//! the same texture lands in the same slot no matter which order packs load in.
+//!
 //! # Reading
 //!
 //! [`VxpReader`] parses the central directory once (ZIP64-aware) and then serves
@@ -39,7 +70,7 @@
 //! content hash embedded in the entry name, so a truncated or swapped payload is
 //! a loud error rather than silent corruption.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -79,6 +110,25 @@ pub enum VxpError {
         #[source]
         source: serde_json::Error,
     },
+    /// A register entry that cannot describe a real texture. Always names the
+    /// texture and the exact disagreement — never a silent default.
+    #[error("vxp texture register entry {id}: {reason}")]
+    TextureRegister { id: String, reason: String },
+    /// An asset samples a texture the pack never registered. This is the one
+    /// failure the register exists to make impossible to miss: without it the
+    /// loader would size residency from an incomplete set and quietly render
+    /// the wrong thing.
+    #[error(
+        "vxp asset {asset_id} references texture {texture_id}, which is absent from the \
+         pack's texture register — register it before writing the pack"
+    )]
+    UnregisteredTexture {
+        asset_id: String,
+        texture_id: String,
+    },
+    /// The register says one thing, the texture payload says another.
+    #[error("vxp texture {id} disagrees with its payload: {reason}")]
+    TextureMismatch { id: String, reason: String },
 }
 
 type Result<T> = std::result::Result<T, VxpError>;
@@ -159,11 +209,445 @@ pub fn entry_name(asset_id: &str, kind: VxpKind, lod: Option<u8>, cid: &str) -> 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Texture register
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The GPU formats a registered texture can be in.
+///
+/// This is a *sizing* taxonomy, not a renderer one: the register only has to
+/// answer "how many bytes does this texture cost, per mip level". Block size
+/// and block footprint are all that requires, which is why this enum is tiny and
+/// game-agnostic. The names are the same SCREAMING_SNAKE spellings the cook's
+/// residency manifest already uses, so `index.json` reads the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum VxpTextureFormat {
+    #[serde(rename = "BC1_UNORM")]
+    Bc1Unorm,
+    #[serde(rename = "BC1_UNORM_SRGB")]
+    Bc1UnormSrgb,
+    #[serde(rename = "BC3_UNORM")]
+    Bc3Unorm,
+    #[serde(rename = "BC3_UNORM_SRGB")]
+    Bc3UnormSrgb,
+    #[serde(rename = "BC4_UNORM")]
+    Bc4Unorm,
+    #[serde(rename = "BC5_UNORM")]
+    Bc5Unorm,
+    #[serde(rename = "BC6H_UF16")]
+    Bc6hUf16,
+    #[serde(rename = "BC7_UNORM")]
+    Bc7Unorm,
+    #[serde(rename = "BC7_UNORM_SRGB")]
+    Bc7UnormSrgb,
+    #[serde(rename = "RGBA8_UNORM")]
+    Rgba8Unorm,
+    #[serde(rename = "RGBA8_UNORM_SRGB")]
+    Rgba8UnormSrgb,
+}
+
+impl VxpTextureFormat {
+    pub const ALL: [VxpTextureFormat; 11] = [
+        VxpTextureFormat::Bc1Unorm,
+        VxpTextureFormat::Bc1UnormSrgb,
+        VxpTextureFormat::Bc3Unorm,
+        VxpTextureFormat::Bc3UnormSrgb,
+        VxpTextureFormat::Bc4Unorm,
+        VxpTextureFormat::Bc5Unorm,
+        VxpTextureFormat::Bc6hUf16,
+        VxpTextureFormat::Bc7Unorm,
+        VxpTextureFormat::Bc7UnormSrgb,
+        VxpTextureFormat::Rgba8Unorm,
+        VxpTextureFormat::Rgba8UnormSrgb,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        use VxpTextureFormat::*;
+        match self {
+            Bc1Unorm => "BC1_UNORM",
+            Bc1UnormSrgb => "BC1_UNORM_SRGB",
+            Bc3Unorm => "BC3_UNORM",
+            Bc3UnormSrgb => "BC3_UNORM_SRGB",
+            Bc4Unorm => "BC4_UNORM",
+            Bc5Unorm => "BC5_UNORM",
+            Bc6hUf16 => "BC6H_UF16",
+            Bc7Unorm => "BC7_UNORM",
+            Bc7UnormSrgb => "BC7_UNORM_SRGB",
+            Rgba8Unorm => "RGBA8_UNORM",
+            Rgba8UnormSrgb => "RGBA8_UNORM_SRGB",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        VxpTextureFormat::ALL.into_iter().find(|f| f.as_str() == s)
+    }
+
+    /// Edge length of one compression block in texels (1 for uncompressed).
+    pub fn block_dim(self) -> u32 {
+        use VxpTextureFormat::*;
+        match self {
+            Rgba8Unorm | Rgba8UnormSrgb => 1,
+            _ => 4,
+        }
+    }
+
+    /// Bytes one block occupies.
+    pub fn block_bytes(self) -> u64 {
+        use VxpTextureFormat::*;
+        match self {
+            // 4 bpp block formats.
+            Bc1Unorm | Bc1UnormSrgb | Bc4Unorm => 8,
+            // 8 bpp block formats.
+            Bc3Unorm | Bc3UnormSrgb | Bc5Unorm | Bc6hUf16 | Bc7Unorm | Bc7UnormSrgb => 16,
+            Rgba8Unorm | Rgba8UnormSrgb => 4,
+        }
+    }
+
+    /// Bytes one mip level of `width` x `height` occupies, rounded up to whole
+    /// blocks the way every BCn upload path does.
+    pub fn level_bytes(self, width: u32, height: u32) -> u64 {
+        let block = self.block_dim();
+        let bw = u64::from(width.div_ceil(block).max(1));
+        let bh = u64::from(height.div_ceil(block).max(1));
+        bw * bh * self.block_bytes()
+    }
+}
+
+impl fmt::Display for VxpTextureFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Dimensions of mip `level` of a `width` x `height` texture.
+pub fn mip_dimensions(width: u32, height: u32, level: u32) -> (u32, u32) {
+    (
+        (width >> level.min(31)).max(1),
+        (height >> level.min(31)).max(1),
+    )
+}
+
+/// Number of levels in a complete mip chain down to 1x1.
+pub fn full_mip_count(width: u32, height: u32) -> u32 {
+    u32::BITS - width.max(height).max(1).leading_zeros()
+}
+
+/// Largest edge, in texels, a mip level may have and still be part of the
+/// ALWAYS-RESIDENT tail.
+///
+/// 128 is a deliberate trade, not a round number. The tail is the image a ray
+/// gets when the texture it wants is not resident, so it has to be legible: at
+/// 128 a facade still shows its brick coursing and its true colour, and the miss
+/// reads as "one frame softer", which is exactly the cost §4.4 of the design
+/// budgets for. It is also cheap — the whole tail of a 2K BC7 texture is ~21 KB,
+/// about 0.4 % of its 5.6 MB chain — so the permanently-pinned set stays in the
+/// single-digit-MB range for a corpus of hundreds of textures. Going lower (64,
+/// 32) saves bytes nobody is short of and makes the fallback a colour smear;
+/// going higher pins tens of MB for a frame the player barely sees.
+pub const VXP_TAIL_MAX_DIM: u32 = 128;
+
+/// First mip level of the always-resident tail: the coarsest-first level whose
+/// largest edge is at most [`VXP_TAIL_MAX_DIM`].
+///
+/// A texture already smaller than the threshold is resident in full (`0`); a
+/// texture whose chain is too short still pins at least its last level, so
+/// EVERY texture has a tail.
+pub fn tail_mip_for(width: u32, height: u32, mip_count: u32) -> u32 {
+    let last = mip_count.saturating_sub(1);
+    for level in 0..mip_count {
+        let (w, h) = mip_dimensions(width, height, level);
+        if w.max(h) <= VXP_TAIL_MAX_DIM {
+            return level;
+        }
+    }
+    last
+}
+
+/// What a texture payload actually turned out to be, as observed by whoever
+/// decoded it. Compared against a [`VxpTexture`] by
+/// [`VxpTexture::verify_against_payload`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VxpTextureDesc {
+    pub width: u32,
+    pub height: u32,
+    pub format: VxpTextureFormat,
+    pub mip_count: u32,
+    /// Length of the texel data alone — container headers excluded.
+    pub texel_bytes: u64,
+}
+
+/// One texture in a pack's register.
+///
+/// Everything a residency decision needs, and nothing that requires opening the
+/// texture or the `.Surface` that references it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VxpTexture {
+    /// [`content_id`] of the texture payload: 32 lowercase hex. This is the
+    /// identity — the same texture referenced from ten packs is ONE entry with
+    /// ONE id, and [`VxpTextureSlots`] turns that id into a bindless slot.
+    pub id: String,
+    pub width: u32,
+    pub height: u32,
+    pub format: VxpTextureFormat,
+    pub mip_count: u32,
+    /// GPU bytes for the COMPLETE mip chain.
+    pub bytes: u64,
+    /// First level of the always-resident tail — see [`tail_mip_for`].
+    pub tail_mip: u32,
+    /// GPU bytes for levels `tail_mip .. mip_count`: what this texture costs
+    /// permanently, whether or not anything is looking at it.
+    pub tail_bytes: u64,
+}
+
+impl VxpTexture {
+    /// Build a register entry, computing `bytes`, `tail_mip` and `tail_bytes`
+    /// from the description. Rejects anything that cannot be a real texture.
+    pub fn new(
+        id: impl Into<String>,
+        width: u32,
+        height: u32,
+        format: VxpTextureFormat,
+        mip_count: u32,
+    ) -> Result<Self> {
+        let id = id.into();
+        let bad = |reason: String| VxpError::TextureRegister {
+            id: id.clone(),
+            reason,
+        };
+        if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+            return Err(bad(
+                "id must be 32 lowercase hex characters (the payload's content_id)".to_string(),
+            ));
+        }
+        if width == 0 || height == 0 {
+            return Err(bad(format!("degenerate dimensions {width}x{height}")));
+        }
+        if mip_count == 0 {
+            return Err(bad("mip_count 0: a texture has at least one level".to_string()));
+        }
+        let full = full_mip_count(width, height);
+        if mip_count > full {
+            return Err(bad(format!(
+                "mip_count {mip_count} exceeds the {full} levels a {width}x{height} chain can have"
+            )));
+        }
+        let tail_mip = tail_mip_for(width, height, mip_count);
+        Ok(Self {
+            id,
+            width,
+            height,
+            format,
+            mip_count,
+            bytes: level_range_bytes(width, height, format, 0, mip_count),
+            tail_mip,
+            tail_bytes: level_range_bytes(width, height, format, tail_mip, mip_count),
+        })
+    }
+
+    /// Re-derive every computed field and refuse an entry that disagrees with
+    /// itself. Read packs go through this, so a hand-edited or foreign
+    /// `index.json` fails loudly instead of mis-sizing residency.
+    pub fn validate(&self) -> Result<()> {
+        let recomputed = VxpTexture::new(
+            self.id.clone(),
+            self.width,
+            self.height,
+            self.format,
+            self.mip_count,
+        )?;
+        if &recomputed != self {
+            return Err(VxpError::TextureRegister {
+                id: self.id.clone(),
+                reason: format!(
+                    "declares bytes={} tail_mip={} tail_bytes={}, but a {}x{} {} chain of {} \
+                     levels is bytes={} tail_mip={} tail_bytes={}",
+                    self.bytes,
+                    self.tail_mip,
+                    self.tail_bytes,
+                    self.width,
+                    self.height,
+                    self.format,
+                    self.mip_count,
+                    recomputed.bytes,
+                    recomputed.tail_mip,
+                    recomputed.tail_bytes
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Bytes of the levels that are NOT permanently resident — what streaming
+    /// would ever have to move.
+    pub fn streamable_bytes(&self) -> u64 {
+        self.bytes - self.tail_bytes
+    }
+
+    /// Byte cost of one mip level.
+    pub fn level_bytes(&self, level: u32) -> u64 {
+        let (w, h) = mip_dimensions(self.width, self.height, level);
+        self.format.level_bytes(w, h)
+    }
+
+    /// Prove this entry describes the payload it claims to.
+    ///
+    /// Both halves fail by NAME: a payload whose content id is not `self.id` is
+    /// the wrong texture; a payload whose decoded dimensions/format/mip count or
+    /// texel length disagree means the register would size residency from
+    /// fiction. Neither is ever tolerated as a default.
+    pub fn verify_against_payload(&self, payload: &[u8], observed: VxpTextureDesc) -> Result<()> {
+        let actual = content_id(payload);
+        if actual != self.id {
+            return Err(VxpError::TextureMismatch {
+                id: self.id.clone(),
+                reason: format!("payload content id is {actual}"),
+            });
+        }
+        let mut wrong = Vec::new();
+        if observed.width != self.width || observed.height != self.height {
+            wrong.push(format!(
+                "dimensions {}x{} (register says {}x{})",
+                observed.width, observed.height, self.width, self.height
+            ));
+        }
+        if observed.format != self.format {
+            wrong.push(format!(
+                "format {} (register says {})",
+                observed.format, self.format
+            ));
+        }
+        if observed.mip_count != self.mip_count {
+            wrong.push(format!(
+                "mip_count {} (register says {})",
+                observed.mip_count, self.mip_count
+            ));
+        }
+        if observed.texel_bytes != self.bytes {
+            wrong.push(format!(
+                "texel bytes {} (register says {})",
+                observed.texel_bytes, self.bytes
+            ));
+        }
+        if wrong.is_empty() {
+            Ok(())
+        } else {
+            Err(VxpError::TextureMismatch {
+                id: self.id.clone(),
+                reason: format!("payload has {}", wrong.join(", ")),
+            })
+        }
+    }
+}
+
+fn level_range_bytes(
+    width: u32,
+    height: u32,
+    format: VxpTextureFormat,
+    from: u32,
+    to: u32,
+) -> u64 {
+    (from..to)
+        .map(|level| {
+            let (w, h) = mip_dimensions(width, height, level);
+            format.level_bytes(w, h)
+        })
+        .sum()
+}
+
+/// Bindless slot assignment keyed by CONTENT HASH, never by load order.
+///
+/// The descriptor array is rewritten every dispatch, so a slot that moved
+/// because packs happened to load in a different order is a whole class of
+/// "wrong texture on the wrong surface" bug waiting to happen. Slots here are a
+/// pure function of the SET of texture ids: ids are collected into a
+/// `BTreeMap`, then numbered in ascending id order. Same corpus, any pack order,
+/// same slots.
+///
+/// (Adding a texture to the corpus does renumber the ids after it. That is a
+/// content change, handled at build time, not the frame-to-frame instability
+/// the hash keying exists to rule out.)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VxpTextureSlots {
+    by_id: BTreeMap<String, (u32, VxpTexture)>,
+}
+
+impl VxpTextureSlots {
+    /// Build the slot table from any number of pack indices, in any order.
+    ///
+    /// Reads ONLY the indices — no `.Surface`, no texture payload.
+    pub fn from_indices<'a, I>(indices: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = &'a VxpIndex>,
+    {
+        let mut merged: BTreeMap<String, VxpTexture> = BTreeMap::new();
+        for index in indices {
+            for texture in &index.textures {
+                texture.validate()?;
+                if let Some(existing) = merged.get(&texture.id) {
+                    if existing != texture {
+                        return Err(VxpError::TextureRegister {
+                            id: texture.id.clone(),
+                            reason: format!(
+                                "packs disagree about the same content hash: {existing:?} vs \
+                                 {texture:?}"
+                            ),
+                        });
+                    }
+                } else {
+                    merged.insert(texture.id.clone(), texture.clone());
+                }
+            }
+        }
+        Ok(Self {
+            by_id: merged
+                .into_iter()
+                .enumerate()
+                .map(|(slot, (id, texture))| (id, (slot as u32, texture)))
+                .collect(),
+        })
+    }
+
+    pub fn slot(&self, id: &str) -> Option<u32> {
+        self.by_id.get(id).map(|(slot, _)| *slot)
+    }
+
+    pub fn texture(&self, id: &str) -> Option<&VxpTexture> {
+        self.by_id.get(id).map(|(_, texture)| texture)
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
+    }
+
+    /// `(slot, texture)` in slot order.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &VxpTexture)> {
+        self.by_id.values().map(|(slot, tex)| (*slot, tex))
+    }
+
+    /// Bytes permanently pinned for the whole corpus — the always-resident mip
+    /// tails, counted once per distinct texture.
+    pub fn resident_tail_bytes(&self) -> u64 {
+        self.by_id.values().map(|(_, t)| t.tail_bytes).sum()
+    }
+
+    /// Bytes every texture would cost if all of them were fully resident.
+    pub fn total_bytes(&self) -> u64 {
+        self.by_id.values().map(|(_, t)| t.bytes).sum()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Index
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub const VXP_INDEX_ENTRY: &str = "index.json";
-pub const VXP_INDEX_VERSION: u32 = 1;
+/// Bumped to 2 when the texture register landed. A v1 pack carries no register,
+/// so a v1 pack read by this build would make residency silently undecidable —
+/// exactly the failure the register exists to prevent. Fail closed: re-cook.
+pub const VXP_INDEX_VERSION: u32 = 2;
 
 /// One asset's entries, as recorded in the pack index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +665,10 @@ pub struct VxpAssetIndex {
     pub metadata: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture: Option<String>,
+    /// Content ids of the material textures this asset samples, ascending.
+    /// Every one of them resolves in [`VxpIndex::textures`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texture_ids: Vec<String>,
     /// Uncompressed byte size of every entry belonging to this asset.
     pub bytes: u64,
 }
@@ -193,6 +681,11 @@ pub struct VxpIndex {
     pub pack_id: String,
     /// Ascending by `asset_id` — the pack's canonical order.
     pub assets: Vec<VxpAssetIndex>,
+    /// THE TEXTURE REGISTER: every material texture this pack's assets sample,
+    /// ascending by content id. Always present (possibly empty) so "this pack
+    /// needs no textures" and "this pack predates the register" can never be
+    /// confused.
+    pub textures: Vec<VxpTexture>,
 }
 
 impl VxpIndex {
@@ -201,6 +694,53 @@ impl VxpIndex {
             .binary_search_by(|probe| probe.asset_id.as_str().cmp(asset_id))
             .ok()
             .map(|i| &self.assets[i])
+    }
+
+    pub fn texture(&self, id: &str) -> Option<&VxpTexture> {
+        self.textures
+            .binary_search_by(|probe| probe.id.as_str().cmp(id))
+            .ok()
+            .map(|i| &self.textures[i])
+    }
+
+    /// Bytes this pack's textures would cost fully resident.
+    pub fn texture_bytes(&self) -> u64 {
+        self.textures.iter().map(|t| t.bytes).sum()
+    }
+
+    /// Bytes of this pack's always-resident mip tails.
+    pub fn resident_tail_bytes(&self) -> u64 {
+        self.textures.iter().map(|t| t.tail_bytes).sum()
+    }
+
+    /// Check the register is internally sound: ascending, unique, self-
+    /// consistent, and closed over every id an asset references. This is what
+    /// the reader runs, so an incomplete register is never handed to a loader.
+    pub fn validate_texture_register(&self) -> Result<()> {
+        let mut previous: Option<&str> = None;
+        for texture in &self.textures {
+            texture.validate()?;
+            if let Some(previous) = previous {
+                if previous >= texture.id.as_str() {
+                    return Err(VxpError::TextureRegister {
+                        id: texture.id.clone(),
+                        reason: format!("register is not ascending/unique (follows {previous})"),
+                    });
+                }
+            }
+            previous = Some(texture.id.as_str());
+        }
+        for asset in &self.assets {
+            for texture_id in &asset.texture_ids {
+                if self.texture(texture_id).is_none() {
+                    return Err(VxpError::UnregisteredTexture {
+                        asset_id: asset.asset_id.clone(),
+                        texture_id: texture_id.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -216,6 +756,9 @@ struct PendingAsset {
     surface: Option<Vec<u8>>,
     metadata: Option<Vec<u8>>,
     texture: Option<Vec<u8>>,
+    /// Content ids of the material textures this asset samples. A `BTreeSet`
+    /// so the emitted order is the content's, not the caller's.
+    texture_ids: BTreeSet<String>,
 }
 
 /// Builds a `.vxp`. Payloads are staged in a `BTreeMap` so the emitted order is
@@ -226,6 +769,7 @@ struct PendingAsset {
 pub struct VxpWriter {
     pack_id: String,
     assets: BTreeMap<String, PendingAsset>,
+    textures: BTreeMap<String, VxpTexture>,
 }
 
 impl VxpWriter {
@@ -233,6 +777,7 @@ impl VxpWriter {
         Self {
             pack_id: pack_id.into(),
             assets: BTreeMap::new(),
+            textures: BTreeMap::new(),
         }
     }
 
@@ -261,6 +806,46 @@ impl VxpWriter {
     /// ships; [`VxpWriter::finish`] refuses to write a pack that is missing one.
     pub fn add_texture(&mut self, asset_id: &str, png: Vec<u8>) {
         self.entry(asset_id).texture = Some(png);
+    }
+
+    /// Put a texture in the pack's register.
+    ///
+    /// Idempotent for an identical entry (the same texture is normally reached
+    /// through many assets); a second registration of the same content id with
+    /// DIFFERENT metadata is a named error, because one of the two descriptions
+    /// is a lie about the same bytes.
+    pub fn register_texture(&mut self, texture: VxpTexture) -> Result<()> {
+        texture.validate()?;
+        match self.textures.get(&texture.id) {
+            Some(existing) if existing != &texture => Err(VxpError::TextureRegister {
+                id: texture.id.clone(),
+                reason: format!(
+                    "already registered as {existing:?}; refusing the conflicting {texture:?}"
+                ),
+            }),
+            Some(_) => Ok(()),
+            None => {
+                self.textures.insert(texture.id.clone(), texture);
+                Ok(())
+            }
+        }
+    }
+
+    /// Record that `asset_id` samples the texture with this content id.
+    ///
+    /// The id does not have to be registered yet — [`VxpWriter::finish`] checks
+    /// that every referenced id ended up in the register, so a reference the
+    /// pipeline could not resolve fails the WRITE rather than shipping a pack
+    /// whose residency set is short.
+    pub fn reference_texture(&mut self, asset_id: &str, texture_id: &str) {
+        self.entry(asset_id)
+            .texture_ids
+            .insert(texture_id.to_string());
+    }
+
+    /// Textures registered so far.
+    pub fn texture_count(&self) -> usize {
+        self.textures.len()
     }
 
     fn entry(&mut self, asset_id: &str) -> &mut PendingAsset {
@@ -301,6 +886,9 @@ impl VxpWriter {
             version: VXP_INDEX_VERSION,
             pack_id: self.pack_id.clone(),
             assets: Vec::with_capacity(self.assets.len()),
+            // `BTreeMap` values come out ascending by content id, which is the
+            // canonical register order and what makes the bytes reproducible.
+            textures: self.textures.values().cloned().collect(),
         };
         let mut payloads: Vec<(String, Vec<u8>)> = Vec::new();
 
@@ -312,6 +900,7 @@ impl VxpWriter {
                 surface: None,
                 metadata: None,
                 texture: None,
+                texture_ids: pending.texture_ids.iter().cloned().collect(),
                 bytes: 0,
             };
             let mut push = |kind: VxpKind, lod: Option<u8>, bytes: &Vec<u8>| -> String {
@@ -344,6 +933,12 @@ impl VxpWriter {
             }
             index.assets.push(record);
         }
+
+        // The register must be CLOSED before a byte is written: an asset that
+        // samples a texture the pack never registered would leave the loader
+        // sizing residency from an incomplete set — the exact silent default
+        // this format change exists to make impossible.
+        index.validate_texture_register()?;
 
         let index_bytes = serde_json::to_vec(&index).map_err(|source| VxpError::Json {
             context: format!("{} index", path.display()),
@@ -430,6 +1025,7 @@ impl VxpReader {
                 version: 0,
                 pack_id: String::new(),
                 assets: Vec::new(),
+                textures: Vec::new(),
             },
         };
         let index_bytes = reader.read_raw(VXP_INDEX_ENTRY)?;
@@ -441,11 +1037,13 @@ impl VxpReader {
             return Err(VxpError::Format {
                 path: path.to_path_buf(),
                 reason: format!(
-                    "index version {} but this build reads {VXP_INDEX_VERSION}",
+                    "index version {} but this build reads {VXP_INDEX_VERSION} \
+                     (a v1 pack has no texture register — re-cook it)",
                     reader.index.version
                 ),
             });
         }
+        reader.index.validate_texture_register()?;
         Ok(reader)
     }
 
@@ -1248,14 +1846,45 @@ mod tests {
         assert!(format!("{err}").contains("bad magic"), "got: {err}");
     }
 
+    /// Two textures both sample assets share, so the register also proves
+    /// dedupe-by-content-hash.
+    fn sample_textures() -> [VxpTexture; 2] {
+        [
+            VxpTexture::new(
+                content_id(b"brick base color"),
+                2048,
+                2048,
+                VxpTextureFormat::Bc7UnormSrgb,
+                12,
+            )
+            .expect("brick"),
+            VxpTexture::new(
+                content_id(b"brick normal"),
+                1024,
+                1024,
+                VxpTextureFormat::Bc5Unorm,
+                11,
+            )
+            .expect("normal"),
+        ]
+    }
+
     fn write_sample_pack(dir: &Path, name: &str) -> (PathBuf, VxpIndex) {
         let mut w = VxpWriter::new("test_theme");
+        // Registered in the OPPOSITE order to the canonical one, to prove the
+        // emitted register is ordered by content, not by call order.
+        for texture in sample_textures().into_iter().rev() {
+            w.register_texture(texture).expect("register");
+        }
         for id in ["b_two", "a_one"] {
             w.add_geometry(id, sample_geometry().encode());
             w.add_geometry_lod(id, 1, sample_geometry().encode());
             w.add_surface(id, br#"{"materials":[]}"#.to_vec());
             w.add_metadata(id, format!(r#"{{"id":"{id}"}}"#).into_bytes());
             w.add_texture(id, vec![0x89, b'P', b'N', b'G', 13, 10, 26, 10]);
+            for texture in sample_textures() {
+                w.reference_texture(id, &texture.id);
+            }
         }
         let path = dir.join(name);
         let index = w.finish(&path, true).expect("write pack");
@@ -1338,14 +1967,21 @@ mod tests {
         let b = std::fs::read(&second).unwrap();
         assert_eq!(a, b, "two identical cooks must produce identical bytes");
 
-        // Now build the same pack adding assets in the opposite order.
+        // Now build the same pack adding assets — and registering textures —
+        // in the opposite order.
         let mut w = VxpWriter::new("test_theme");
+        for texture in sample_textures() {
+            w.register_texture(texture).expect("register");
+        }
         for id in ["a_one", "b_two"] {
             w.add_geometry(id, sample_geometry().encode());
             w.add_geometry_lod(id, 1, sample_geometry().encode());
             w.add_surface(id, br#"{"materials":[]}"#.to_vec());
             w.add_metadata(id, format!(r#"{{"id":"{id}"}}"#).into_bytes());
             w.add_texture(id, vec![0x89, b'P', b'N', b'G', 13, 10, 26, 10]);
+            for texture in sample_textures().into_iter().rev() {
+                w.reference_texture(id, &texture.id);
+            }
         }
         let third = dir.path().join("three.vxp");
         w.finish(&third, true).unwrap();
