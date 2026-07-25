@@ -64,6 +64,15 @@ containers.
     (build menus, asset pickers).
 - **Grouping:** many assets per pack, grouped by category/theme — not one file per asset.
   (CS2 ships 512 entries in one 96 MB blob; that density is the right order of magnitude.)
+- **SUB-ASSETS are first-class entries.** Verified in CS2's `Blob_Bikes.cok`: `Bicycle01`,
+  then `Bicycle01Battery01` and `Bicycle02Basket01` as their OWN entries, each with its own
+  `_LOD1`/`_LOD2` chain. Naming grammar is compositional: `<Parent><Part><NN>`.
+  So a rooftop HVAC unit, a vent, an aerial or a shopfront sign is authored ONCE as its own
+  asset (`OfficeTower01HVAC01` + LODs) and composed onto parents — reusable across buildings,
+  not duplicated inside each one.
+- **Two further kinds seen in CS2 and worth supporting:** `.Animation` (moving parts ride the
+  same container — e.g. `Bicycle01_Cycling`) and `.Atlas` (a shared texture atlas, which is
+  how CS2 avoids per-asset textures).
 
 **Where we deliberately DIFFER from CS2** (verified against the install — do not describe
 these as "adopting CS2"):
