@@ -1,0 +1,46 @@
+{
+  "name": "Forge Candidate",
+  "theme": "Isolated authoring candidate",
+  "assets": [
+    {
+      "id": "city.res_med.l3.3x4.rowhouse_02",
+      "name": "Georgian Brick Rowhouse",
+      "style": "Georgian",
+      "usage": {
+        "Zonable": "ResidentialMed"
+      },
+      "level": 3,
+      "footprint": [
+        14.0,
+        20.0
+      ],
+      "footprint_bucket": "3x4",
+      "floors": [
+        3,
+        4
+      ],
+      "attributes": {
+        "class": "MediumResidential",
+        "households": [
+          5,
+          8
+        ],
+        "jobs": [
+          0,
+          2
+        ],
+        "property_value": [
+          350000,
+          610000
+        ],
+        "build_cost": 150000,
+        "upkeep": 0
+      },
+      "visual": {
+        "atoms": "atoms/city.res_med.l3.3x4.rowhouse_02.atoms.json",
+        "source": "rust-native://forge/city.res_med.l3.3x4.rowhouse_02",
+        "preview": null
+      }
+    }
+  ]
+}
