@@ -65,6 +65,32 @@ The game and the assets are **completely separated** until an asset is created a
   on Forge freely. **The game/engine depends on NEITHER Forge NOR the cook** — only on
   the asset bundle format it reads at runtime.
 
+### Asset container format — `.cok`, modelled on Cities: Skylines II (RATIFIED)
+
+Read from the local CS2 install; the user ratified it: *"This is how we should handle assets."*
+
+- **Container:** a ZIP with compression method **STORE** (uncompressed), extension `.cok`,
+  written by the pipeline into `assets/official/`. Uncompressed so entries map directly
+  with no inflate cost at load.
+- **Entry naming:** `<asset_id>_<32-hex-content-hash>.<Kind>`, each with a **32-byte `.cid`**
+  sidecar. Content-addressed: identical content dedupes, integrity is checkable.
+- **Kinds — together these ARE the "game object" (mesh + the attributes it needs in game and sim):**
+  - `.Geometry` — the finished mesh, **BINARY** (never pretty-printed JSON).
+  - `.Geometry` per LOD as separate entries (`_LOD1`, `_LOD2`, …).
+  - `.Surface` — material / PBR data.
+  - `.Metadata` — the game/sim attributes (footprint, zone, levels, capacities, sockets).
+    Keep it **small** so it can be read without the mesh.
+  - `.Texture` — a **thumbnail, REQUIRED for every asset**, for in-game display
+    (build menus, asset pickers).
+- **Grouping:** many assets per blob, grouped by category/theme (CS2 ships 512 entries in one
+  96 MB `Blob_Bikes.cok`) — not one file per asset.
+- **Index:** a top-level index lets the game enumerate content and read `.Metadata` +
+  `.Texture` at startup **without loading geometry**; geometry loads on demand. (CS2 proves the
+  pattern: a 644-byte metadata entry sits beside a 74 MB payload.)
+- **Settings/config ship as PLAIN readable files** (`assets/official/config/*.ron`) — not
+  blobbed, not compiled into the binary.
+- **Only finished meshes** live in the game folder. No authored source, no directives.
+
 **Mechanical test (must hold):** `cargo tree -p urban_horizon | grep -c forge` == `0`,
 and the game builds and renders with **no** asset/cook feature enabled.
 
