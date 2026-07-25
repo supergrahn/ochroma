@@ -64,6 +64,15 @@ containers.
     (build menus, asset pickers).
 - **Grouping:** many assets per pack, grouped by category/theme — not one file per asset.
   (CS2 ships 512 entries in one 96 MB blob; that density is the right order of magnitude.)
+
+**Where we deliberately DIFFER from CS2** (verified against the install — do not describe
+these as "adopting CS2"):
+- CS2 has **no `.Metadata` kind**; it keeps gameplay data outside the container. We put the
+  game/sim attributes **in** the pack, because the "game object" is defined here as mesh +
+  attributes travelling together.
+- CS2's `.Texture` is **not** a per-asset thumbnail — only ~165 of 27,910 entries are
+  textures, and they are **atlased**, with mips in separate `MidMips*.cok`. Our required
+  per-asset `.Texture` thumbnail is **our own addition**, for in-game display.
 - **Index:** a top-level index lets the game enumerate content and read `.Metadata` +
   `.Texture` at startup **without loading geometry**; geometry loads on demand. This is the
   single most valuable idea from the CS2 study: they put a 644-byte metadata entry beside a
