@@ -45,6 +45,36 @@ cargo test
 
 **Rule: Engine crates must NEVER contain game-specific concepts (buildings, zoning, traffic). Game logic belongs in vox_app or vox_sim.**
 
+## Assets are NEVER cooked with the game (LAW)
+
+**No asset is cooked with the game. Not buildings, not maps, no asset at all.**
+The game and the assets are **completely separated** until an asset is created as a
+**game object**.
+
+- A **game object** = the **mesh** + the attributes it needs to work in the game and
+  in the **simulation**.
+- The mesh is **still not cooked with the game**. It is only **COPIED** into
+  `game/assets/official/`, and **loaded at runtime when the game starts**.
+- **Game, engine and renderer are PRE-BUILT.** Authoring or cooking an asset must
+  trigger **ZERO** game/engine/renderer recompilation. If touching an asset rebuilds
+  the game, the separation is broken — fix the dependency, do not work around it.
+- **Cooking is incremental and standalone**: cook **only the newly authored asset**
+  (never the corpus), then **render it to inspect**. Author → cook-one → render-one
+  → look. That loop is seconds-to-a-minute, not tens of minutes.
+- The asset pipeline (Forge + the cook tools) is its **own** workspace. It may depend
+  on Forge freely. **The game/engine depends on NEITHER Forge NOR the cook** — only on
+  the asset bundle format it reads at runtime.
+
+**Mechanical test (must hold):** `cargo tree -p urban_horizon | grep -c forge` == `0`,
+and the game builds and renders with **no** asset/cook feature enabled.
+
+**Why this is a LAW:** welding the cook into the game crate made every render witness
+rebuild the entire authoring toolchain (plus Slang), pushed one project's `target/` to
+137 GB, put 36 GB of cooked output inside the game repo, and made a Forge edit force a
+game rebuild — turning a should-be-seconds authoring loop into 20+ minutes. It also
+inverts the dependency-direction LAW below: the engine's job is to **load and render**
+game objects, never to produce them.
+
 ## Dependency direction — the engine NEVER asks Forge for anything (LAW)
 
 Forge is an **independent authoring oracle**. The flow is strictly one-way:
