@@ -3599,7 +3599,21 @@ pub fn pack_mesh_material(m: PbrMaterial) -> [f32; MATERIAL_FLOATS] {
     md.tex_base_color = m.albedo_tex;
     md.tex_metallic_roughness = m.roughness_tex;
     md.tex_normal = m.normal_tex;
-    md.is_thin = if glass && m.thin_walled { 1 } else { 0 };
+    // THE SEA IS NOT A 4 mm PANE. `is_thin` selects the thin-walled branch in
+    // `material_dispatch.slang` (`if (mat.thin_walled != 0)`), which fires BEFORE
+    // the dedicated `else if (mat.type == MAT_WATER)` physical-depth branch. Thin
+    // transmission is a straight-through ray (`result.wi = -wo`, no Snell bend)
+    // whose energy is multiplied by `mat.albedo` — and the cooked sea's albedo is
+    // the near-black (0.015, 0.06, 0.09) from `terrain_surface.water.rgb`. So a
+    // thin-walled sea extinguished the bed lobe by ~94% at EVERY depth: no sand
+    // through 30 cm of water, no refraction, no per-metre Beer-Lambert, no depth
+    // gradient — a flat opaque blue-grey plane, which is exactly the symptom.
+    // Water is a THICK refractive dielectric by construction, so the packer refuses
+    // the thin flag for MAT_WATER regardless of what a cooked artifact carries.
+    // (`cook_product_water_artifact` also no longer writes `thin_walled: true`;
+    // this keeps every already-cooked `*.water.zst` correct without a re-cook.)
+    // MAT_GLASS panes are untouched — thin architectural glazing still packs thin.
+    md.is_thin = if glass && !water && m.thin_walled { 1 } else { 0 };
 
     let mut v = md.to_f32_array();
     // Canonical [64] is `specular_weight`. MAT_GLASS interprets it as the

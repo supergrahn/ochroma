@@ -87,6 +87,21 @@ pub struct TerrainUpload {
     /// OFF (byte-identical to still procedural ripples). Length must be
     /// `2 * depth_res[0] * depth_res[1]` when non-empty.
     pub flow_values: Vec<f32>,
+    /// WATER OPTICS FIELD: per-cell water-body INHERENT OPTICAL PROPERTIES
+    /// `(cdom_440, nap_440, bbp_550, bbp_slope)`, interleaved **4 f32/cell**,
+    /// row-major `iz*res_x+ix` on the SAME grid as `depth_values`.
+    ///
+    /// This is what makes water clarity a property of the WATER BODY instead of one
+    /// global number for the whole map. A tropical lagoon (a_g(440) ~0.01 m^-1), a
+    /// temperate open coast (~0.08) and a river-mouth sediment plume (~1.2) are
+    /// physically different water, and on a real coastal map they are all in the
+    /// same frame. Rasterizing per body onto the depth lattice also lets a river
+    /// plume fade continuously into the sea, which is what a plume actually does.
+    ///
+    /// Empty = per-body optics OFF → the single global IOP set from
+    /// `set_water_look_params[7..11]` applies everywhere (one-body behaviour).
+    /// Length must be `4 * depth_res[0] * depth_res[1]` when non-empty.
+    pub optics_values: Vec<f32>,
     /// UNDERWATER BED atlas slots (P3): the submerged bed materials the megakernel
     /// blends by `depth_values` — `wet_sand` (~0 m) → `shallow_mud` (~2 m) →
     /// `deep_silt` (~8 m+), plus `riverbed` (driven by flow, follow-up). Each is an
@@ -157,6 +172,7 @@ impl Default for TerrainUpload {
             // Flow field OFF by default (empty → still procedural ripples,
             // byte-identical to a map that does not fill it).
             flow_values: Vec::new(),
+            optics_values: Vec::new(),
             // Underwater bed slots default to -1 (absent) — NOT 0, which is a valid
             // atlas slot that would wrongly fire the bed blend on a field-less ground.
             uw_wet_albedo: -1,

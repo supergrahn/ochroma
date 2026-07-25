@@ -611,7 +611,28 @@ impl RenderRuntime {
             upload.uw_bed_normal,
             upload.uw_bed_rough,
         );
-        if !upload.depth_values.is_empty() {
+        // FAIL-CLOSED on an ALL-DRY depth field. Uploading it would set
+        // `u_depth_enabled = 1` while every cell reads 0 m, and the megakernel's
+        // MAT_WATER block treats a 0 m sample as "no data" and silently falls back to
+        // the per-vertex `hit_uv.y` bake — so per-pixel shoreline foam and the
+        // submerged wet-sand/mud/silt bed blend would be OFF while the log and the
+        // uniform both claimed the field was live. That silent substitution hid a real
+        // content bug for weeks (a map cook that stamped `Reserved` over every `Water`
+        // cell outside the buildable core). Refuse the upload and NAME it instead.
+        let depth_wet_cells = upload.depth_values.iter().filter(|d| **d > 0.0).count();
+        let depth_field_live = !upload.depth_values.is_empty() && depth_wet_cells > 0;
+        if !upload.depth_values.is_empty() && depth_wet_cells == 0 {
+            eprintln!(
+                "[water-depth] FAIL-CLOSED: refusing an ALL-DRY per-cell field ({}x{} cells @ {:.2}m, \
+                 sea_y={:.2}, wet cells=0). u_depth_enabled stays 0 so the per-vertex foam/bed \
+                 fallback is EXPLICIT, not a silent substitution. Fix the map's water mask and re-cook.",
+                upload.depth_res[0],
+                upload.depth_res[1],
+                upload.depth_cell_size,
+                upload.depth_sea_level,
+            );
+        }
+        if depth_field_live {
             self.renderer.set_depth_field(
                 &upload.depth_values,
                 upload.depth_res,
@@ -620,22 +641,33 @@ impl RenderRuntime {
                 upload.depth_sea_level,
             )?;
             eprintln!(
-                "[water-depth] per-cell field uploaded: {}x{} cells @ {:.2}m, sea_y={:.2} (uw_wet={} uw_mud={} uw_silt={})",
+                "[water-depth] per-cell field uploaded: {}x{} cells @ {:.2}m, sea_y={:.2}, wet_cells={} (uw_wet={} uw_mud={} uw_silt={})",
                 upload.depth_res[0],
                 upload.depth_res[1],
                 upload.depth_cell_size,
                 upload.depth_sea_level,
+                depth_wet_cells,
                 upload.uw_wet_albedo,
                 upload.uw_mud_albedo,
                 upload.uw_silt_albedo
             );
         }
-        if !upload.flow_values.is_empty() {
+        if depth_field_live && !upload.flow_values.is_empty() {
             self.renderer
                 .set_water_flow_field(&upload.flow_values, true)?;
             eprintln!(
                 "[water-flow] per-cell flow field uploaded: {} cells (vx,vz) on the {}x{} depth grid",
                 upload.flow_values.len() / 2,
+                upload.depth_res[0],
+                upload.depth_res[1]
+            );
+        }
+        if depth_field_live && !upload.optics_values.is_empty() {
+            self.renderer
+                .set_water_optics_field(&upload.optics_values, true)?;
+            eprintln!(
+                "[water-optics] per-water-body IOP field uploaded: {} cells (cdom_440, nap_440, bbp_550, bbp_slope) on the {}x{} depth grid",
+                upload.optics_values.len() / 4,
                 upload.depth_res[0],
                 upload.depth_res[1]
             );

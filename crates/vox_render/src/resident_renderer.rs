@@ -922,6 +922,20 @@ impl ResidentSceneRenderer {
             .map_err(|e| format!("set_water_flow_field: {e:?}"))
     }
 
+    /// WATER OPTICS FIELD: per-cell water-body inherent optical properties
+    /// `(cdom_440, nap_440, bbp_550, bbp_slope)`, interleaved **4 f32/cell** on the
+    /// SAME grid as the water-depth field. This is what makes water clarity a
+    /// property of the WATER BODY rather than one global number for the whole map:
+    /// a tropical lagoon, a temperate open coast and a river-mouth sediment plume
+    /// get their own measured absorption/backscatter and therefore their own
+    /// colour, entirely through the physics. `enabled == false` or empty values →
+    /// the single global IOP set from `set_water_look_params` (one-body behaviour).
+    pub fn set_water_optics_field(&mut self, values: &[f32], enabled: bool) -> Result<(), String> {
+        self.renderer
+            .set_water_optics_field(values, enabled)
+            .map_err(|e| format!("set_water_optics_field: {e:?}"))
+    }
+
     /// K5 (animated water): per-frame refit of the water surface's vertices. `node`
     /// is the retained water HybridMesh's scene node; `verts` are its new displaced
     /// positions (proto-local order, exactly the water proto's vertex count). Resolves
@@ -1670,11 +1684,18 @@ impl ResidentSceneRenderer {
     /// WATER (MAT_WATER) non-animated optical look, forwarded to the spectra
     /// `Renderer`. Channel order:
     /// `[clarity, roughness_floor, inscatter_r, inscatter_g, inscatter_b,
-    /// scatter_sigma, foam_depth_m]`.
+    /// scatter_sigma, foam_depth_m, cdom_440, nap_440, bbp_550, bbp_slope]`.
     ///
     /// This is resident state, not process env, so render.ron/dev hot reload can
     /// update water colour/depth response without reconstructing the renderer.
-    pub fn set_water_look_params(&mut self, params: [f32; 7]) {
+    ///
+    /// `[7..11]` are the DEFAULT water-body inherent optical properties, used where
+    /// the per-body optics field (`set_water_optics_field`) has no coverage.
+    /// Turbidity belongs here, not in `clarity`: `clarity` scales the PURE-water
+    /// Pope & Fry curve whose physical floor is 1.0, so raising it makes red — the
+    /// most-absorbed band already — absorb even harder, which is how one global
+    /// value turned every water body on the map into a silty harbour.
+    pub fn set_water_look_params(&mut self, params: [f32; 11]) {
         self.renderer.set_water_look_params(params);
     }
 

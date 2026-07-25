@@ -481,6 +481,59 @@ fn mesh_craftsman_textured_lit() {
     );
 }
 
+/// REGRESSION (2026-07-25) — THE SEA IS NOT A 4 mm PANE. Cooked water carried
+/// `thin_walled: true`, which packs `a[61] = 1` and makes `material_dispatch.slang`
+/// take the thin-glass branch BEFORE the dedicated `MAT_WATER` physical-depth
+/// branch. Thin transmission is a straight-through ray whose energy is multiplied
+/// by `mat.albedo` — and the cooked sea's albedo is the near-black
+/// (0.015, 0.06, 0.09) water rgb — so the bed lobe was extinguished ~94% at EVERY
+/// depth: no sand through 30 cm of water, no Snell bend, no per-metre
+/// Beer-Lambert, no depth gradient. The packer must refuse the thin flag for
+/// MAT_WATER no matter what a cooked artifact says, while leaving MAT_GLASS panes
+/// free to be thin.
+#[cfg(feature = "spectra-native")]
+#[test]
+fn water_never_packs_thin_walled_but_glass_still_can() {
+    use super::PbrMaterial;
+
+    let sea = PbrMaterial {
+        // The exact cooked sea material: `terrain_surface.water` in urban_horizon.ron.
+        base_color: [0.015, 0.06, 0.09],
+        roughness: 0.04,
+        transmission: 0.7,
+        ior: 1.33,
+        thin_walled: true, // what every already-cooked *.water.zst carries
+        is_water: true,
+        ..Default::default()
+    };
+    let packed = super::pack_mesh_material(sea);
+    assert_eq!(packed[0].to_bits(), 21, "a[0] must pack MAT_WATER (21)");
+    assert_eq!(
+        packed[61].to_bits(),
+        0,
+        "a[61] thin_walled MUST be 0 for MAT_WATER even though the cooked \
+         material says true — a thin-walled sea multiplies the bed lobe by the \
+         near-black water albedo and renders as a flat opaque plane"
+    );
+
+    // A thin architectural pane is untouched: glass may still be thin.
+    let pane = PbrMaterial {
+        base_color: [1.0, 1.0, 1.0],
+        transmission: 1.0,
+        ior: 1.5,
+        thin_walled: true,
+        is_water: false,
+        ..Default::default()
+    };
+    let packed_pane = super::pack_mesh_material(pane);
+    assert_eq!(packed_pane[0].to_bits(), 3, "a[0] must pack MAT_GLASS (3)");
+    assert_eq!(
+        packed_pane[61].to_bits(),
+        1,
+        "thin architectural glazing must keep a[61] = 1"
+    );
+}
+
 /// Mesh GLASS ISOLATION GATE: prove REAL transmission through the mesh
 /// path tracer on a TRIVIAL, CHEAP scene — a 16x16 emissive checkerboard
 /// wall at z=0 and a two-faced glass slab (front face z=2.0, back face

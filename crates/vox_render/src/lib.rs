@@ -107,6 +107,11 @@ pub use spectra_scene_state::MegaGeometryLayer;
 /// taking a direct dependency on `spectra-scene-state`.
 #[cfg(feature = "spectra-native")]
 pub use spectra_scene_state::SceneState;
+/// The analytic terrain SDF layer (heightfield base + CSG feature list). Engine-
+/// generic: a heightfield and CSG primitives carry no game concept, so this stays
+/// on the engine side of the split while the game decides what to carve.
+#[cfg(feature = "spectra-native")]
+pub use spectra_scene_state::TerrainSdfLayer;
 
 #[cfg(feature = "spectra-native")]
 pub mod material_table;
