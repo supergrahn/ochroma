@@ -24,6 +24,9 @@ pub mod templates;
 pub mod tile_streamer;
 pub mod vxm;
 pub mod vxm_v2;
+/// The `.vxp` (vox pack) shipping asset container: a deterministic STORE-only
+/// ZIP of content-addressed entries with BINARY geometry.
+pub mod vxp;
 pub mod world_save;
 pub use splat_codec::{from_saved_geom, to_saved_geom};
 pub mod import_helpers;

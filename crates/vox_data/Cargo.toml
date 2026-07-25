@@ -20,6 +20,9 @@ bevy_app = { workspace = true }
 gltf = "1"
 dirs-next = "2"
 flate2 = "1"
+# `.vxp` content addressing: the 32-hex entry id is the first 128 bits of a
+# SHA-256 over the payload.
+sha2 = "0.10"
 
 [features]
 # legacy-raster: opt-in for the PLY-render integration tests, which render
