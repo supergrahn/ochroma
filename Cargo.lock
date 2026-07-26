@@ -7763,6 +7763,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vox_water"
+version = "0.1.0"
+dependencies = [
+ "glam 0.29.3",
+ "serde",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

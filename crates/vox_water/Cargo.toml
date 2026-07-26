@@ -1,0 +1,9 @@
+[package]
+name = "vox_water"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+glam = { workspace = true }
+serde = { workspace = true }

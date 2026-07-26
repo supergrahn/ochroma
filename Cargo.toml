@@ -17,6 +17,11 @@ members = [
     "crates/vox_audio",
     "crates/vox_physics",
     "crates/vox_terrain",
+    # Water SURFACE dynamics + sea state (engine, game-agnostic). Created
+    # 2026-07-26 as the runtime home for the water simulation that was stranded
+    # in `forge-water`, which the game may never depend on (Forge is an
+    # authoring oracle). Bed hydrology stays in vox_terrain::water::WaterField.
+    "crates/vox_water",
     "crates/vox_ui",
     "crates/vox_tools",
     "crates/vox_nodes",
