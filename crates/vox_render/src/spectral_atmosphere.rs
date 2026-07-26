@@ -1,3 +1,14 @@
+//! ⚰️ DEAD SKY (relative to the game) — CPU spectral Rayleigh sky.
+//!
+//! It has consumers, but none of them are reachable from the game: `spectral_gi`,
+//! `relight`, `gpu::relight_gpu` and `ochroma_engine::engine_loop`. The game
+//! imports `ochroma_engine::game_view` only, so `engine_loop` — and everything
+//! hanging off it — is pure build cost. No shipped pixel is coloured here.
+//!
+//! The live sky is the GPU analytic single-scatter dome in
+//! `spectra/slang/atmosphere.slang` (`atmospheric_sky`); see its header for the
+//! census of all six sky implementations. Verified 2026-07-26.
+//!
 //! Physically based spectral sky model.
 //! Rayleigh scattering scales as λ⁻⁴: shorter wavelengths scatter more.
 //!

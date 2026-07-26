@@ -1,3 +1,13 @@
+//! ⚰️ DEAD SKY — CPU Rayleigh/Mie atmosphere parameters + scattering helpers.
+//!
+//! Not on the game's live render path. The sky every shipped pixel sees is the
+//! GPU analytic single-scatter dome in `spectra/slang/atmosphere.slang`
+//! (`atmospheric_sky`), evaluated per ray in the megakernel's sky-miss branch.
+//! See that file's header for the census of all six sky implementations in this
+//! project and why exactly one of them ships.
+//!
+//! Verified 2026-07-26. Do not wire this in; do not add a seventh sky.
+
 use glam::Vec3;
 
 /// Atmospheric scattering parameters.
