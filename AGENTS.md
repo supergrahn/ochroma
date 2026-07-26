@@ -174,6 +174,9 @@ game objects, never to produce them.
   closure (kernels, reconstruction, frame generation, and every legal native
   dependency for that target). Spectra is not separately installed and games
   never resolve source-tree, SDK, cache, or system-installed renderer payloads.
+- The shipped game executable statically links Ochroma and Spectra code as one
+  typed Rust product. `runtime/renderer` is external data/native dependency
+  closure, not a Spectra executable, process, dynamic engine ABI, or plug-in.
 - Local `spectra-native` tests can fail before compiling code if `libslang.so`
   is not on the loader path; report that as an environment gap, not a code result.
 - Avoid broad `rustfmt` over large dirty files; it can create noisy unrelated

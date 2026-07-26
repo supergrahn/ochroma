@@ -170,18 +170,38 @@ Key rules enforced by the templates:
 
 Plans go in `docs/superpowers/plans/`. Design docs go in `docs/superpowers/specs/`.
 
-## Render/material capabilities (engine side) — built, most one wire from the world
+## Render/material capabilities (engine side) — ONE SOURCE OF TRUTH, and it is not this file
 
-The Spectra path tracer + `vox_render` already implement far more than the live game shows. Full Forge geometry/material inventory: `../forge/CLAUDE.md`. Engine-side, re-verified 2026-07-10 (visual audit): **the three historical choke points in earlier versions of this section are ALL FIXED — do not re-fix them**:
+**Canonical inventory: `../../Ochroma/projects/urban_horizon/docs/reference/capability-matrix.md`.**
+710 lines, four columns per capability — **BUILT / REACHABLE / ENABLED / WITNESSED** — with `file:line`
+evidence, a DEAD list (zero non-test callers), a DORMANT list (gate + shipped default), the
+CUDA-vs-Vulkan-vs-Metal split, and a §10 block of re-verification commands with expected output.
+Full Forge geometry/material inventory: `../forge/CLAUDE.md`.
 
-- **Glass/transmission** — `PbrMaterial.transmission/ior` (`vox_render/src/splat_backend.rs:180`); the Glass material channel → `transmission 0.9, ior 1.5, roughness 0.05` (`spectra_frame.rs:267`), packed to `MAT_GLASS` → `brdf_glass.slang` (auto bounce-bump to 8). Real semi-transparent glass.
-- **Normal + roughness + POM/cone-step relief** — fully in the megakernel + packer, and the `HybridMesh` seam is WIDE (`vox_render/src/hybrid_compose.rs:109-120` carries normal/roughness/displacement paths). The old "albedo-only choke point" is gone.
-- **7-channel weathering** — cooked masks now have live setters on `ResidentCityRenderer` (`resident_renderer.rs:782-786, 1096-1107`).
-- **Hero-wavelength spectral** — the force-to-`SpectralMode::Single` is GONE; Hero4 is the default (`resident_renderer.rs:531-554`).
-- **Clouds are LIVE** in the sky-miss path (`megakernel.slang:2661`) — a bare-looking sky is an art-direction gap, not missing tech. Emission / lit windows (`MAT_GLASS_LIT`), advanced BSDF lobes, denoise stack, Bruneton atmosphere + celestial, DaylitCity tonemap — all real.
-- Still genuinely unwired (2026-07-10): SVT setter has zero callers; vox_aether weather beyond sky_model; sim-driven weathering intensity; vehicles; vox_audio.
+**Why this section no longer lists capabilities.** It used to, and on 2026-07-26 an audit found **ten
+of its claims contradicted by the code** — including a type name that does not exist
+(`ResidentCityRenderer`), a material id that is not a material (`MAT_GLASS_LIT`), "Bruneton
+atmosphere" and "DaylitCity tonemap" (neither ships), and "clouds are LIVE… not missing tech" (they
+were a scalar dimming factor). Every line number it quoted was stale. A full working day was lost
+reasoning from those claims. **A hand-maintained capability list drifts silently; a matrix of
+re-runnable commands does not.** Do not re-add one here.
 
-**Rule:** a SOTA render needs ZERO new render tech — only wiring (drive Forge's directive path → real geometry+zones; widen the `HybridMesh` texture seam; route cooked `material_zones` to the renderer). Don't validate render/content on box-stub scenes — the witness is a hero-camera frame.
+**The four columns exist because they disagree.** Repeatedly, in one session: the `.vxp` reader was
+complete and tested with 2.9 GB of packs the game could not open; vegetation wind was finished on both
+sides and imported by nothing; `refit_proto_vertices` ran every frame, failed every frame, and logged
+why into a void because the game installed **no tracing subscriber**; `prev_transform` was written for
+motion vectors and never read. **A flag, struct or function existing is NOT evidence the path runs —
+check the CALLER and the ARTIFACTS.**
+
+**Standing rules (these are the durable part):**
+- Most render gaps are **wiring, not missing tech** — but verify against the matrix, never against
+  memory or a comment. Three load-bearing comments were found false on 2026-07-26 alone
+  (`mesh_convert.rs:209` "CLAS assumes de-indexed" — false, and de-indexed is ~3× *worse* for cluster
+  packing; three comments claiming the tick drives celestial time; `render.ron`'s "NVIDIA/OptiX only"
+  on the vertex-refit path).
+- **Don't validate render/content on box-stub scenes** — the witness is a hero-camera frame on the
+  real-time present path.
+- **Never conclude a render gap needs richer content from Forge** — see the dependency-direction LAW.
 
 ## Witness protocol + real-time pipeline + terrain (hard-won 2026-06-23)
 
