@@ -794,6 +794,23 @@ pub struct LightRig {
     /// Position angle (radians, CCW from celestial north) of the bright-limb
     /// midpoint — orients the crescent toward the sun. Default `0.0`.
     pub moon_bright_limb_angle: f32,
+    /// World-space direction TOWARD the TRUE SUN (Y-up, normalized), valid
+    /// **above AND below** the horizon — the sun's own NOAA ephemeris direction,
+    /// SEPARATE from the `sun_dir`/key slot (which carries the MOON at night).
+    ///
+    /// Why this exists: `sun_dir` is the blended KEY light, so from the moment
+    /// the sun crosses the horizon the shader is told the "sun" is the moon.
+    /// TWILIGHT is scattered SUNLIGHT arriving over the horizon, so the sky dome
+    /// cannot compute it — not its brightness, not its hue, not its azimuth —
+    /// without knowing where the sun actually is. This is the only channel that
+    /// carries that below the horizon; `sun_altitude_rad` carries the elevation
+    /// but not the bearing (the warm afterglow band and the anti-twilight arch
+    /// are both azimuthally placed).
+    ///
+    /// Default `[0,1,0]` (zenith, `y > 0`) — a legacy rig that never sets it
+    /// looks like full day to the twilight branch, which is therefore skipped
+    /// and the render stays byte-identical.
+    pub sun_true_dir: [f32; 3],
 }
 
 /// A named display LOOK = tonemap operator + exposure (EV). The renderer owns
@@ -987,6 +1004,9 @@ impl Default for LightRig {
             moon_radiance: 0.0,
             moon_phase: 0.0,
             moon_bright_limb_angle: 0.0,
+            // Zenith = unambiguous day → the dome's below-horizon twilight
+            // branch never runs for a rig that does not set this.
+            sun_true_dir: [0.0, 1.0, 0.0],
         }
     }
 }

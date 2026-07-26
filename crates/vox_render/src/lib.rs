@@ -58,6 +58,11 @@ pub mod web_renderer;
 /// even-dimension rule are owned here.
 pub use dlss::DlssPreset;
 pub mod animation_driver;
+/// ONE BINARY: the acceleration backend is probed from the device at runtime
+/// (NVIDIA -> OptiX, AMD/Intel -> Vulkan KHR, Apple -> Metal), never chosen by
+/// a compile flag.
+#[cfg(feature = "spectra-native")]
+pub mod backend_select;
 pub mod biome;
 pub mod frame_debugger;
 pub mod gi_baker;
@@ -93,6 +98,8 @@ pub mod splat_particles;
 pub mod spline;
 pub mod visual_effects;
 pub mod world_partition;
+#[cfg(feature = "spectra-native")]
+pub use backend_select::{ResidentBackendKind, select_resident_backend};
 #[cfg(feature = "spectra-native")]
 pub use resident_renderer::{ResidentSceneRenderer, SceneSyncReport};
 #[cfg(feature = "spectra-native")]

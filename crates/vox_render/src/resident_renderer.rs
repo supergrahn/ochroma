@@ -18,35 +18,30 @@
 
 #![cfg(feature = "spectra-native")]
 
-#[cfg(all(target_os = "windows", feature = "spectra-native-optix"))]
-use spectra_gpu::CudarcSlangBackend;
 use spectra_gpu::GpuBufferHandle;
-#[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
-use spectra_gpu::SharedMetalBackend;
-#[cfg(not(any(
-    all(target_os = "windows", feature = "spectra-native-optix"),
-    all(target_os = "macos", feature = "spectra-native-metal")
-)))]
-use spectra_gpu::SharedVulkanBackend;
 pub use spectra_renderer::FrameOutput;
 use spectra_renderer::{RenderConfig, RenderSettings, Renderer, RendererTexture2D};
 
-/// The LIVE path-tracer compute backend. The standing rule: use CUDA on NVIDIA
-/// when available. On the Windows CUDA box built WITH `spectra-native-optix`
-/// this is the cudarc CUDA backend (RT cores + DLSS + OptiX); elsewhere — the
-/// Linux/AMD dev box, OR a Windows build WITHOUT the optix feature (the
-/// KHR-water witness build) — it is the Vulkan backend. Gating on the feature
-/// (not just the OS) lets the box exercise the VK_KHR animated-water path. The
-/// window present is a separate, thin swapchain (display only), independent of this.
-#[cfg(all(target_os = "windows", feature = "spectra-native-optix"))]
-type ResidentBackend = CudarcSlangBackend;
-#[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
-type ResidentBackend = SharedMetalBackend;
-#[cfg(not(any(
-    all(target_os = "windows", feature = "spectra-native-optix"),
-    all(target_os = "macos", feature = "spectra-native-metal")
-)))]
-type ResidentBackend = SharedVulkanBackend;
+/// The LIVE path-tracer compute backend — chosen FROM THE DEVICE at runtime.
+///
+/// This used to be a `type` alias picked by `target_os` + cargo feature
+/// (`windows + spectra-native-optix` -> `CudarcSlangBackend`, `macos +
+/// spectra-native-metal` -> `SharedMetalBackend`, else `SharedVulkanBackend`) —
+/// a decision made before the binary had ever seen the player's GPU. Now it is
+/// `Box<dyn GpuBackend>` and [`crate::backend_select::select_resident_backend`]
+/// probes the device: NVIDIA with a usable OptiX -> CUDA + OptiX RT cores,
+/// AMD/Intel (and NVIDIA without OptiX) -> Vulkan `VK_KHR_ray_query`, Apple ->
+/// Metal. One binary, correct on every machine.
+///
+/// `Box<dyn GpuBackend>` is a `GpuBackend` because
+/// `spectra-gpu/src/dyn_backend.rs` implements the trait for it, forwarding all
+/// 50 methods — including the 31 with conservative defaults (`Err`/`None`/
+/// `false`) that a forgetful delegation would silently downgrade to
+/// "unsupported" without failing to compile.
+///
+/// The window present is a separate, thin swapchain (display only) which runs
+/// its own hardware probe (`PresentChoice::Auto`), independent of this.
+type ResidentBackend = Box<dyn spectra_gpu::GpuBackend>;
 use spectra_scene_state::{GpuSceneCmd, LightLayer, OP_SET_TRANSFORM, SceneDeltaRing, SceneState};
 
 /// Re-export the R31 fidelity tier and tier-table types so the game layer can
@@ -95,6 +90,17 @@ pub struct ResidentSceneRenderer {
     /// cache + per-layer fingerprints), RenderState, AtmosphereManager. Reused
     /// across every frame.
     renderer: Renderer<ResidentBackend>,
+    /// WHICH backend the device probe actually chose this run. The renderer's
+    /// `G` is now `Box<dyn GpuBackend>`, so the type no longer says.
+    backend_kind: crate::backend_select::ResidentBackendKind,
+    /// The un-boxed Vulkan backend — the SAME device object as `renderer.gpu`,
+    /// kept because the same-device present path binds its swapchain to this
+    /// `VkDevice`, which is real interop and cannot go through `dyn GpuBackend`.
+    /// `None` when the probe chose CUDA or Metal.
+    vulkan: Option<spectra_gpu::SharedVulkanBackend>,
+    /// Ditto for Metal.
+    #[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
+    metal: Option<spectra_gpu::SharedMetalBackend>,
     /// Internal render resolution.
     width: u32,
     height: u32,
@@ -225,7 +231,15 @@ impl ResidentSceneRenderer {
         max_bounces: u32,
         initial: SceneState,
     ) -> Result<Self, String> {
-        let gpu = ResidentBackend::new(0).map_err(|e| format!("gpu backend init: {e:?}"))?;
+        // HARDWARE DECIDES, NOT THE BUILD. Probes the device and announces what
+        // it chose (and screams if the choice has no hardware traversal — the
+        // software BVH drops every instanced prototype, i.e. no buildings).
+        let selected = crate::backend_select::select_resident_backend()?;
+        let backend_kind = selected.kind;
+        let vulkan = selected.vulkan;
+        #[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
+        let metal = selected.metal;
+        let gpu: ResidentBackend = selected.gpu;
         // CONFIG-FIRST: the live present-path gates default from `config/ochroma.ron`
         // (`vox_config`); a still-present env var (the documented A/B "sweep lever")
         // wins over the config value, which wins over the former hardcoded literal.
@@ -636,6 +650,10 @@ impl ResidentSceneRenderer {
 
         let mut me = Self {
             renderer,
+            backend_kind,
+            vulkan,
+            #[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
+            metal,
             width,
             height,
             rig,
@@ -1029,39 +1047,101 @@ impl ResidentSceneRenderer {
             .map_err(|e| format!("set_water_optics_field: {e:?}"))
     }
 
-    /// K5 (animated water): per-frame refit of the water surface's vertices. `node`
-    /// is the retained water HybridMesh's scene node; `verts` are its new displaced
-    /// positions (proto-local order, exactly the water proto's vertex count). Resolves
-    /// node → resident instance → prototype, then rebuilds ONLY that proto's GAS +
-    /// the IAS (no scene rebuild). Returns `Ok(false)` when the CLAS IAS path is not
-    /// active (AMD/Vulkan) or nothing was refit; `Err` on a bad node / count mismatch.
-    /// Call BEFORE `render_camera`.
-    pub fn refit_water_geometry(
+    /// ANIMATED VERTICES: per-frame refit of ONE retained mesh's vertex positions
+    /// into the acceleration structure.
+    ///
+    /// GAME-AGNOSTIC BY CONSTRUCTION. `node` is any retained `HybridMesh` scene
+    /// node and `verts` are its new positions in proto-local order (exactly that
+    /// prototype's vertex count) — a displaced sea sheet, a vertex-deformed
+    /// canopy and a skinned character are the same operation, and the engine
+    /// crate names none of them. Resolves node → resident instance → prototype,
+    /// then updates ONLY that prototype's BLAS/GAS + the top-level structure. No
+    /// scene rebuild, no structure-revision bump.
+    ///
+    /// `Ok(true)` when the update reached the acceleration structure. `Ok(false)`
+    /// means the geometry did NOT move on the GPU — the backend prints the exact
+    /// reason once (`[vertex-refit] FAILED: …`); it is never a silent outcome.
+    /// `Err` on a bad node / count mismatch. Call BEFORE `render_camera`.
+    pub fn refit_animated_vertices(
         &mut self,
         node: vox_scene::NodeId,
         verts: &[[f32; 3]],
+        normals: &[[f32; 3]],
     ) -> Result<bool, String> {
+        if !normals.is_empty() && normals.len() != verts.len() {
+            return Err(format!(
+                "refit_animated_vertices: {} positions but {} normals — they must be parallel                  (or normals empty to keep the built ones)",
+                verts.len(),
+                normals.len()
+            ));
+        }
         let inst = self.retained_instance_index(node).ok_or_else(|| {
-            format!("refit_water_geometry: no resident instance for node {node:?}")
+            format!("refit_animated_vertices: no resident instance for node {node:?}")
         })?;
-        let proto = {
+        let (proto, proto_verts) = {
             let st = self
                 .renderer
                 .state
                 .as_ref()
-                .ok_or("refit_water_geometry: renderer state uninitialized")?;
+                .ok_or("refit_animated_vertices: renderer state uninitialized")?;
             let ss = st
                 .scene_state
                 .as_ref()
-                .ok_or("refit_water_geometry: no resident scene")?;
-            *ss.geometry
+                .ok_or("refit_animated_vertices: no resident scene")?;
+            let proto = *ss
+                .geometry
                 .instance_proto_index
                 .get(inst)
-                .ok_or_else(|| format!("refit_water_geometry: no proto for instance {inst}"))?
+                .ok_or_else(|| format!("refit_animated_vertices: no proto for instance {inst}"))?;
+            let verts = ss
+                .geometry
+                .proto_ranges
+                .get(proto as usize)
+                .map(|r| r.1)
+                .unwrap_or(0);
+            (proto, verts)
         };
+        // CHECK THE SHAPE HERE, not three crates down in the driver call. A
+        // prototype that carries MORE than this node's mesh (a merge group, a
+        // shared proto) cannot take a bare position array: the array is
+        // proto-local and would silently be interpreted as the prototype's first
+        // N vertices. The backend rejects it, but only the engine knows the node
+        // that asked, so the engine is where the message is useful.
+        if verts.len() != proto_verts as usize {
+            // Print the whole retained table ONCE. "Your node maps to the wrong
+            // prototype" is unactionable without seeing which prototypes exist
+            // and how big they are; this is a handful of lines (retained nodes
+            // are the animatable meshes, not the scene) and it is what turns a
+            // mismatch into a fix.
+            static DUMPED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !DUMPED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                if let Some(ss) = self
+                    .renderer
+                    .state
+                    .as_ref()
+                    .and_then(|st| st.scene_state.as_ref())
+                {
+                    for i in 0..self.retained_node_count() {
+                        let n = self.retained_node_for_instance(i);
+                        let p = ss.geometry.instance_proto_index.get(i).copied();
+                        let r = p.and_then(|p| ss.geometry.proto_ranges.get(p as usize)).copied();
+                        eprintln!(
+                            "[vertex-refit] retained[{i}] node={n:?} proto={p:?} range={r:?}"
+                        );
+                    }
+                }
+            }
+            return Err(format!(
+                "refit_animated_vertices: node {node:?} (instance {inst}) supplied {} vertices \
+                 but its prototype {proto} holds {proto_verts} — the node does not own its \
+                 prototype, so its vertices cannot be refit independently",
+                verts.len()
+            ));
+        }
         self.renderer
-            .refit_water_geometry(proto, verts)
-            .map_err(|e| format!("refit_water_geometry: {e:?}"))
+            .refit_animated_geometry(proto, verts, normals)
+            .map_err(|e| format!("refit_animated_vertices: {e:?}"))
     }
 
     /// UNDERWATER BED atlas slots (P3). Bind the submerged bed materials the
@@ -1206,6 +1286,12 @@ impl ResidentSceneRenderer {
         // Bruneton haze in render.ron silently left u_sun_radiance at 0. The
         // atmosphere flag gates only the haze/scatter integrals.
         self.renderer.set_sun(sun.to_array(), e_sun);
+        // THE TRUE SUN, SEPARATE FROM THE KEY SLOT. `set_sun` above hands the
+        // dome the BLENDED key light, which below the horizon is the MOON at
+        // zero radiance — so from sunset onward the sky model had no sun at all
+        // and produced no twilight. Twilight IS sunlight scattered over the
+        // horizon, so the dome needs the sun's real bearing and depression.
+        self.renderer.set_solar_direction(rig.sun_true_dir);
         self.renderer.set_moon(
             rig.moon_dir,
             rig.moon_color,
@@ -1883,30 +1969,47 @@ impl ResidentSceneRenderer {
         self.renderer.last_pack_output_ptr()
     }
 
+    /// Which backend the device probe chose this run.
+    pub fn backend_kind(&self) -> crate::backend_select::ResidentBackendKind {
+        self.backend_kind
+    }
+
+    /// The path tracer's own `VkDevice`, for the same-device present path —
+    /// `None` when the runtime probe chose CUDA or Metal instead.
+    ///
+    /// This became an `Option` when backend choice moved from compile time to
+    /// runtime. It used to be infallible only because a `cfg` had already
+    /// decided the answer; now the caller must handle "this machine is not on
+    /// the Vulkan path", and returning a wrong device here would present a black
+    /// window from a buffer the swapchain cannot see.
     #[cfg(not(any(
         all(target_os = "windows", feature = "spectra-native-optix"),
         all(target_os = "macos", feature = "spectra-native-metal")
     )))]
-    pub fn shared_vulkan_backend(&self) -> SharedVulkanBackend {
-        self.renderer.gpu.clone()
+    pub fn shared_vulkan_backend(&self) -> Option<spectra_gpu::SharedVulkanBackend> {
+        self.vulkan.clone()
     }
 
+    /// Identity of the Vulkan device the last frame was produced on, used to
+    /// prove a `DeviceFrame` and its presenter are the same device. `None` when
+    /// the run is not on the Vulkan path.
     #[cfg(not(any(
         all(target_os = "windows", feature = "spectra-native-optix"),
         all(target_os = "macos", feature = "spectra-native-metal")
     )))]
-    pub fn vulkan_backend_identity(&self) -> usize {
-        self.renderer.gpu.identity()
+    pub fn vulkan_backend_identity(&self) -> Option<usize> {
+        self.vulkan.as_ref().map(|b| b.identity())
+    }
+
+    /// See [`Self::shared_vulkan_backend`] — same reasoning, Metal.
+    #[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
+    pub fn shared_metal_backend(&self) -> Option<spectra_gpu::SharedMetalBackend> {
+        self.metal.clone()
     }
 
     #[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
-    pub fn shared_metal_backend(&self) -> SharedMetalBackend {
-        self.renderer.gpu.clone()
-    }
-
-    #[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
-    pub fn metal_backend_identity(&self) -> usize {
-        self.renderer.gpu.identity()
+    pub fn metal_backend_identity(&self) -> Option<usize> {
+        self.metal.as_ref().map(|b| b.identity())
     }
 
     #[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]

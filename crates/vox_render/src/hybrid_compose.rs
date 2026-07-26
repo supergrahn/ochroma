@@ -240,6 +240,45 @@ pub struct HybridMesh {
     /// hard error. Non-AOT diagnostics retain the legacy synthesized pattern for
     /// compatibility. Deterministic plain per-vertex data — no map/RNG ordering.
     pub weathering_masks: Vec<f32>,
+    /// KEEP THIS MESH INDEXED — do not expand it to one unique vertex triple per
+    /// triangle when it becomes a prototype.
+    ///
+    /// Scene assembly de-indexes by default so a FLAT per-triangle face normal is
+    /// exact: a faceted hard-surface mesh needs three independent copies of each
+    /// corner because the same corner carries a different normal in each adjacent
+    /// face. That is the right default for authored props, facades and trim.
+    ///
+    /// It is the WRONG default for a smooth surface that is also ANIMATED. Such a
+    /// mesh wants shared vertices and smooth (area-weighted or carried) normals
+    /// anyway — flat facets on it are the artifact, not the goal — and the
+    /// de-index multiplies its prototype by `3 x triangles / vertices` (≈6x for a
+    /// regular grid). Every per-frame vertex refit then pays that multiple TWICE:
+    /// once expanding the regenerated vertices on the CPU, once writing them
+    /// across the PCIe-visible vertex soup. Setting this flag makes the prototype
+    /// vertex order equal the SOURCE vertex order, so a producer's regenerated
+    /// vertex array IS the refit array — no expansion and no gather at all.
+    ///
+    /// Deliberately GENERIC (a Gerstner sea sheet, a vertex-deformed canopy and a
+    /// skinned character are the same case); the engine never names the content.
+    ///
+    /// `#[serde(skip)]`, NOT `#[serde(default)]` — and the distinction is not
+    /// stylistic. `HybridMesh` is serialized with **bincode** into the cooked
+    /// `<map>.terrain_mesh.zst` artifacts (`ProductTerrainMeshArtifact.meshes`),
+    /// and bincode is a POSITIONAL format with no field names: `#[serde(default)]`
+    /// only rescues a missing field in a self-describing format. Adding a
+    /// serialized field here therefore shifts every subsequent byte and every
+    /// already-cooked map fails to load — measured, first run after the field was
+    /// added: `parse exact terrain-mesh artifact forge_coastal_cove.terrain_mesh
+    /// .zst: invalid u8 while decoding bool, expected 0 or 1, found 190`. Skipping
+    /// it keeps the wire format byte-identical, which is required: the engine
+    /// renders cooked game objects AS GIVEN and may never demand a re-cook.
+    ///
+    /// Skipping is also semantically right. This is a RUNTIME layout decision made
+    /// by scene assembly (like the neighbouring `mega_geometry` seam, skipped for
+    /// the same reason), not authored content — the producer sets it on the mesh
+    /// it just built, and no deserialized mesh has ever needed it.
+    #[serde(skip)]
+    pub shared_vertex_topology: bool,
 }
 
 /// One material slot of a multi-material [`HybridMesh`], selected per-triangle via
@@ -314,7 +353,15 @@ impl HybridMesh {
             mega_instance_transform: None,
             submesh_materials: Vec::new(),
             weathering_masks: Vec::new(),
+            shared_vertex_topology: false,
         }
+    }
+
+    /// Opt this mesh out of the prototype de-index — see
+    /// [`HybridMesh::shared_vertex_topology`]. Builder style.
+    pub fn with_shared_vertex_topology(mut self) -> Self {
+        self.shared_vertex_topology = true;
+        self
     }
 
     /// Attach COOKED per-vertex weathering masks (7 floats/vertex, parallel to

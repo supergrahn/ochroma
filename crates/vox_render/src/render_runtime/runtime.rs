@@ -277,10 +277,24 @@ impl RenderRuntime {
             .last_device_ldr_buffer()
             .ok_or_else(|| "renderer produced no device frame".to_string())?;
         let (render_width, render_height) = interop_dims(&rendered, self.iw, self.ih);
+        // The device identity is what proves this frame's buffer and the
+        // presenter's swapchain live on the SAME device. It is `None` when the
+        // runtime probe put the path tracer on a backend this same-device
+        // present path cannot consume (i.e. `SPECTRA_BACKEND=cuda` forced on a
+        // build whose present path is Vulkan). Erroring is correct: a fabricated
+        // identity would hand the presenter a buffer it cannot read.
         #[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
-        let backend_identity = self.renderer.metal_backend_identity();
+        let backend_identity = self.renderer.metal_backend_identity().ok_or_else(|| {
+            "same-device Metal present needs the path tracer on the Metal backend, but the \
+             runtime probe chose another backend"
+                .to_string()
+        })?;
         #[cfg(not(all(target_os = "macos", feature = "spectra-native-metal")))]
-        let backend_identity = self.renderer.vulkan_backend_identity();
+        let backend_identity = self.renderer.vulkan_backend_identity().ok_or_else(|| {
+            "same-device Vulkan present needs the path tracer on the Vulkan backend, but the \
+             runtime probe chose another backend (check the [backend] line)"
+                .to_string()
+        })?;
         let mut frame = DeviceFrame::new(
             buffer,
             backend_identity,
@@ -729,14 +743,17 @@ impl RenderRuntime {
         self.renderer.retained_node_count()
     }
 
-    /// K5 (animated water): per-frame refit of the water surface node's vertices
-    /// (see [`ResidentSceneRenderer::refit_water_geometry`]). No-op `Ok(false)` off
-    /// the CLAS IAS path (AMD/Vulkan) or when the node isn't resident.
-    pub fn refit_water_geometry(
+    /// ANIMATED VERTICES: per-frame refit of one retained mesh node's vertex
+    /// positions into the acceleration structure (see
+    /// [`ResidentSceneRenderer::refit_animated_vertices`]). Not water-specific —
+    /// any retained `HybridMesh` whose vertices move. `Ok(false)` means the
+    /// update did NOT reach the GPU, and the backend has already printed why.
+    pub fn refit_animated_vertices(
         &mut self,
         node: NodeId,
         verts: &[[f32; 3]],
+        normals: &[[f32; 3]],
     ) -> Result<bool, String> {
-        self.renderer.refit_water_geometry(node, verts)
+        self.renderer.refit_animated_vertices(node, verts, normals)
     }
 }
