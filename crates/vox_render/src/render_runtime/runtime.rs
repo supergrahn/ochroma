@@ -665,11 +665,36 @@ impl RenderRuntime {
         if depth_field_live && !upload.optics_values.is_empty() {
             self.renderer
                 .set_water_optics_field(&upload.optics_values, true)?;
+            // PROVE ARRIVAL, not just "the call happened". An all-zero IOP field is
+            // laboratory distilled water and renders as a plausible clear sea, so the
+            // only honest witness is the range of the numbers that were uploaded.
+            let stride = spectra_renderer::WATER_OPTICS_STRIDE;
+            let cells = upload.optics_values.len() / stride;
+            let stat = |ch: usize| -> (f32, f32, f64) {
+                let mut lo = f32::INFINITY;
+                let mut hi = f32::NEG_INFINITY;
+                let mut sum = 0.0f64;
+                for c in 0..cells {
+                    let v = upload.optics_values[c * stride + ch];
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                    sum += v as f64;
+                }
+                (lo, hi, sum / cells.max(1) as f64)
+            };
+            let names = ["cdom_440", "nap_440", "bbp_550", "bbp_slope", "chl"];
+            let mut detail = String::new();
+            for (ch, name) in names.iter().enumerate() {
+                let (lo, hi, mean) = stat(ch);
+                detail.push_str(&format!(" {name}=[{lo:.4}..{hi:.4} mean {mean:.4}]"));
+            }
             eprintln!(
-                "[water-optics] per-water-body IOP field uploaded: {} cells (cdom_440, nap_440, bbp_550, bbp_slope) on the {}x{} depth grid",
-                upload.optics_values.len() / 4,
+                "[water-optics] per-water-body IOP field uploaded: {} cells x {} f32 on the {}x{} depth grid;{}",
+                cells,
+                stride,
                 upload.depth_res[0],
-                upload.depth_res[1]
+                upload.depth_res[1],
+                detail
             );
         }
         self.renderer.set_slope_snow(

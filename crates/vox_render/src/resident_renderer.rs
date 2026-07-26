@@ -1807,7 +1807,7 @@ impl ResidentSceneRenderer {
     /// Pope & Fry curve whose physical floor is 1.0, so raising it makes red — the
     /// most-absorbed band already — absorb even harder, which is how one global
     /// value turned every water body on the map into a silty harbour.
-    pub fn set_water_look_params(&mut self, params: [f32; 11]) {
+    pub fn set_water_look_params(&mut self, params: [f32; 7]) {
         self.renderer.set_water_look_params(params);
     }
 
