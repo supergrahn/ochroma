@@ -29,7 +29,8 @@ use vox_core::types::GaussianSplat;
 
 #[cfg(feature = "spectra-native")]
 use crate::splat_backend::{
-    BlasDesc, InstanceRecordGpu, MATERIAL_FLOATS, PbrMaterial, pack_mesh_material,
+    BlasDesc, InstanceRecordGpu, MATERIAL_FLOATS, PbrMaterial, WEATHERING_SCALE_NEUTRAL,
+    pack_mesh_material,
 };
 
 /// One quad = 4 vertices, 2 triangles (6 indices).
@@ -381,6 +382,45 @@ pub fn meshes_to_instanced_scene(
     width: u32,
     height: u32,
 ) -> SceneState {
+    meshes_to_instanced_scene_with_weathering(
+        blas,
+        instances,
+        materials,
+        spectral_spd,
+        &[],
+        width,
+        height,
+    )
+}
+
+/// [`meshes_to_instanced_scene`] plus the SIM's per-instance dynamic weathering.
+///
+/// `instance_weathering` is a SPARSE, ASCENDING-instance-index side table:
+/// `(instance_index, per-channel scale)`. Only instances the sim actually owns
+/// (buildings, which know their own age and maintenance) appear in it; every
+/// other instance is materialised as [`WEATHERING_SCALE_NEUTRAL`], which
+/// reproduces the previous global-only render exactly. An EMPTY table emits no
+/// buffer at all, so the GPU keeps its zero-cost legacy path.
+///
+/// Sparse rather than a field on [`InstanceRecordGpu`] because buildings are a
+/// small minority of a city scene's instances (a few hundred among tens of
+/// thousands of terrain chunks, cims, vehicles and scattered plants), and
+/// because it keeps every unrelated push site untouched.
+///
+/// # Panics
+/// If the table is not strictly ascending, or names an instance that does not
+/// exist. Both are host bugs that would otherwise silently weather the wrong
+/// building — the exact defect class this feature exists to fix.
+#[cfg(feature = "spectra-native")]
+pub fn meshes_to_instanced_scene_with_weathering(
+    blas: &[BlasDesc],
+    instances: &[InstanceRecordGpu],
+    materials: &[PbrMaterial],
+    spectral_spd: &[(u32, [f32; 16])],
+    instance_weathering: &[(u32, [f32; 7])],
+    width: u32,
+    height: u32,
+) -> SceneState {
     use spectra_scene_state::MaterialLayer;
 
     // SLOT-0 OPAQUE CONTRACT: the megakernel clamps every out-of-range resolved
@@ -611,6 +651,36 @@ pub fn meshes_to_instanced_scene(
     scene.geometry.instance_transforms = instance_transforms;
     scene.geometry.instance_material_base = instance_material_base;
     scene.geometry.instance_proto_index = instance_proto_index;
+    // --- Per-instance DYNAMIC weathering (7 floats / instance, or empty) ---
+    // Materialise the sparse sim table into the dense buffer the kernel indexes
+    // by committed TLAS instance. Ascending order is asserted, not assumed:
+    // an out-of-order or out-of-range entry means the host mapped a building to
+    // the wrong instance, which would show up as a randomly grimy neighbour and
+    // is exactly what this feature must never do.
+    scene.geometry.instance_weathering = if instance_weathering.is_empty() {
+        Vec::new()
+    } else {
+        let mut dense = vec![1.0f32; instances.len() * WEATHERING_SCALE_NEUTRAL.len()];
+        let mut previous: Option<u32> = None;
+        for (index, scale) in instance_weathering {
+            assert!(
+                previous.is_none_or(|p| *index > p),
+                "instance_weathering must be strictly ascending by instance index \
+                 (saw {index} after {previous:?}); a re-ordered table would weather \
+                 the wrong buildings"
+            );
+            assert!(
+                (*index as usize) < instances.len(),
+                "instance_weathering names instance {index} but the scene has only {} \
+                 instances",
+                instances.len()
+            );
+            previous = Some(*index);
+            let base = *index as usize * WEATHERING_SCALE_NEUTRAL.len();
+            dense[base..base + WEATHERING_SCALE_NEUTRAL.len()].copy_from_slice(scale);
+        }
+        dense
+    };
     scene.geometry.proto_aabbs = proto_aabbs;
     scene.geometry.proto_ranges = proto_ranges;
     scene.materials = MaterialLayer {

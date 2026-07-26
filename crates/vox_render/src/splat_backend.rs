@@ -431,6 +431,19 @@ pub struct InstanceRecordGpu {
     pub material_base: u32,
 }
 
+/// The neutral per-instance weathering scale — keep the global intensity
+/// unchanged. This is the correct value for every instance the sim does not
+/// own (terrain, roads, vehicles, vegetation), and the value the converter
+/// pads with when the caller supplies no entry for an instance.
+///
+/// Per-instance weathering does NOT live on [`InstanceRecordGpu`] on purpose:
+/// only building instances have a sim identity, they are a minority of the
+/// instance array, and threading a seventh-element array through every unrelated
+/// push site (terrain chunks, cims, vehicles, 65k scattered plants) would be
+/// pure noise. The converter takes a SPARSE, id-sorted side table instead —
+/// the same shape the retained signal-material bindings already use.
+pub const WEATHERING_SCALE_NEUTRAL: [f32; 7] = [1.0; 7];
+
 /// A linear source image for resident material texture upload.
 ///
 /// Row-major, channels interleaved (`data[(y*width + x)*channels + c]`),

@@ -1158,6 +1158,25 @@ impl ResidentSceneRenderer {
         self.renderer.set_weathering_intensity(intensity);
     }
 
+    /// Push the SIM's LIVE per-instance weathering scales — the per-building
+    /// answer to the frame-wide vector [`set_weathering_intensity`] sets.
+    ///
+    /// `scales` is 7 floats per resident TLAS instance, same channel order as the
+    /// masks, each MULTIPLYING the global intensity for that instance alone:
+    /// `1.0` keeps the authored global look (the right value for terrain, roads,
+    /// vehicles and vegetation), `0.0` renders that instance clean. An empty
+    /// slice drops the override.
+    ///
+    /// This exists so a city can keep ageing WITHOUT a scene rebuild: the scene
+    /// upload carries a snapshot, and this replaces it. Cost is one buffer
+    /// upload, so drive it on a sim cadence (weathering moves over hundreds of
+    /// ticks), not per frame.
+    pub fn set_instance_weathering(&mut self, scales: &[f32]) -> Result<(), String> {
+        self.renderer
+            .set_instance_weathering(scales)
+            .map_err(|e| format!("set_instance_weathering: {e:?}"))
+    }
+
     fn apply_rig_uniforms(&mut self) {
         let rig = self.rig;
         let sun = glam::Vec3::from(rig.sun_dir).normalize_or_zero();
