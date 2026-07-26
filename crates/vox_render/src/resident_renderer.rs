@@ -893,6 +893,99 @@ impl ResidentSceneRenderer {
             .map_err(|e| format!("set_curvature_field: {e:?}"))
     }
 
+    /// CONTACT DECALS. Build the world-space contact-decal field from the
+    /// scene's instance columns and upload it, so every object that stands on
+    /// something gets a band of dirt where it meets that something instead of a
+    /// bare polygonal seam.
+    ///
+    /// Derived purely geometrically from instance transforms + prototype AABBs,
+    /// so this stays game-agnostic: the engine never learns what a "building" or
+    /// a "road" is, it only knows that flat enormous meshes are the ground and
+    /// upright bounded ones stand on it.
+    ///
+    /// `look` is `[strength, opacity, darken, roughness, interior, min_up,
+    /// wall_factor]` and `height_m` is the vertical half-extent of the band —
+    /// both arrive from `render.ron` and are consumed as uniforms, so retuning
+    /// the look needs neither a field rebuild nor a recompile.
+    ///
+    /// The field is built separately (`ContactDecalField::build`) because the
+    /// `SceneState` it is derived from is MOVED into this renderer at
+    /// construction — the caller builds from the scene's instance columns first,
+    /// then hands the finished field here.
+    ///
+    /// Returns the number of decals uploaded (0 = feature inert this scene).
+    pub fn set_contact_decals(
+        &mut self,
+        field: &crate::contact_decals::ContactDecalField,
+        params: &crate::contact_decals::ContactDecalParams,
+        height_m: f32,
+        look: [f32; 7],
+        tint: [f32; 3],
+    ) -> Result<usize, String> {
+        let band = [
+            params.band_base_m,
+            params.band_per_size,
+            params.band_max_m,
+            height_m,
+        ];
+        self.renderer
+            .set_contact_decals(
+                &field.decals,
+                &field.cell_start,
+                &field.cell_items,
+                field.res,
+                field.origin,
+                field.cell_size,
+                band,
+                look,
+                tint,
+            )
+            .map_err(|e| format!("set_contact_decals: {e:?}"))?;
+        let n = field.len();
+        // FOOTPRINT DISTRIBUTION is the diagnostic that matters. A contact decal
+        // is supposed to be a BAND, and the failure mode that is easy to ship
+        // blind is a handful of oversized footprints washing the whole ground —
+        // which is exactly what an AABB-derived footprint did to trees. Printing
+        // the size spread makes that visible in the log instead of only in a
+        // frame someone has to notice.
+        let mut sizes: Vec<f32> = field
+            .decals
+            .chunks_exact(crate::contact_decals::CONTACT_DECAL_FLOATS)
+            .map(|d| d[5])
+            .collect();
+        sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let pick = |q: f32| -> f32 {
+            if sizes.is_empty() {
+                0.0
+            } else {
+                sizes[(((sizes.len() - 1) as f32) * q).round() as usize]
+            }
+        };
+        eprintln!(
+            "[contact-decals] decals={n} grid={}x{} cell={:.1}m origin=({:.1},{:.1}) \
+             dropped={} band=({:.2}+{:.2}/m, max {:.1}m) height={:.2}m \
+             footprint_m(min/p50/p90/max)={:.2}/{:.2}/{:.2}/{:.2} \
+             protos(geometry/aabb-fallback)={}/{}",
+            field.res[0],
+            field.res[1],
+            field.cell_size,
+            field.origin[0],
+            field.origin[1],
+            field.dropped,
+            params.band_base_m,
+            params.band_per_size,
+            params.band_max_m,
+            height_m,
+            pick(0.0),
+            pick(0.5),
+            pick(0.9),
+            pick(1.0),
+            field.protos_from_geometry,
+            field.protos_from_aabb,
+        );
+        Ok(n)
+    }
+
     /// WATER-DEPTH FIELD (P3, ROOT 4). Forward a world-space per-cell water-column
     /// depth grid (1 f32/cell, row-major `iz*res_x+ix`; `0` = dry) baked from the
     /// heightmap + sea plane. The megakernel ground path samples it BILINEARLY at the

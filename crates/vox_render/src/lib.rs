@@ -5,6 +5,7 @@ pub mod atom_instances;
 pub mod camera;
 pub mod cine;
 pub mod clas;
+pub mod contact_decals;
 pub mod dlss;
 pub mod frustum;
 pub mod gi_cache;
