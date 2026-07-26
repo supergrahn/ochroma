@@ -80,6 +80,39 @@ pub struct KeyLightPalette {
     pub sun_radiance_scale: f32,
     /// Sun radiance altitude exponent.
     pub sun_radiance_exp: f32,
+    // ── Twilight band (BELOW-horizon sky-dome ramp) ──────────────────────────
+    /// Solar altitude (deg) at which the sky-dome blend reaches the FULL NIGHT
+    /// anchor. Astronomical twilight ends at −18°: that — not −6° — is where
+    /// the sky stops being lit by the sun at all.
+    ///
+    /// Historically this ramp shared the ±6° civil-twilight `smoothstep` that
+    /// drives the key-light body swap, so the dome hit `night_*` at the END of
+    /// CIVIL twilight and every altitude from −6° to −90° rendered the same
+    /// black sky. See `celestial_key_light` for the two-driver split.
+    pub twilight_night_below_deg: f32,
+    /// Solar altitude (deg) at which the sky-dome blend reaches the DUSK anchor
+    /// — the geometric horizon. Above it the (unchanged) dusk→day stage runs.
+    pub twilight_dusk_at_deg: f32,
+    /// E-FOLDING WIDTH (deg of solar depression) of the twilight ramp.
+    ///
+    /// Twilight is not a smoothstep. The sunlit air column collapses as
+    /// `exp(−h_shadow/H)` with `h_shadow = R·(sec θ − 1)`, which in illuminance
+    /// terms is ≈400 lx at 0°, ≈40 lx at −4° and ≈3.4 lx at −6° — two decades in
+    /// six degrees, front-loaded hard against the horizon and then flattening.
+    /// A symmetric smoothstep across −18°…0° gets that backwards: it barely
+    /// moves for the first few degrees (the brightest, fastest-changing part of
+    /// twilight) and then dumps most of its range below −9°, where nothing is
+    /// left to see. This is the e-fold of an EXPONENTIAL ramp, renormalised so
+    /// it still hits the dusk anchor exactly at `twilight_dusk_at_deg` and the
+    /// night anchor exactly at `twilight_night_below_deg`.
+    ///
+    /// The absolute range is still the display-graded `dusk_intensity ↔
+    /// night_intensity` span (≈19×, not the physical ≈4 decades) — a tonemapped
+    /// game cannot spend four decades on a sky the player must still see. Only
+    /// the SHAPE across that span is physical.
+    ///
+    /// `<= 0` falls back to the symmetric smoothstep.
+    pub twilight_e_fold_deg: f32,
 }
 
 impl Default for KeyLightPalette {
@@ -108,6 +141,17 @@ impl Default for KeyLightPalette {
             sun_radiance_base: 8.0,
             sun_radiance_scale: 22.0,
             sun_radiance_exp: 0.4,
+            // Twilight band: dusk anchor AT the horizon, full night only once
+            // ASTRONOMICAL twilight has ended (−18°). The old ramp reached the
+            // night anchor at −6° — the end of CIVIL twilight — which is why
+            // civil twilight rendered as night.
+            twilight_night_below_deg: -18.0,
+            twilight_dusk_at_deg: 0.0,
+            // One e-fold per 6.5° — the shape of exp(−h_shadow/H) compressed
+            // into the display-graded dusk↔night span. Spends ≈49% of the span
+            // by −4° and ≈85% by −12°, i.e. front-loaded against the horizon,
+            // exactly where real twilight moves fastest.
+            twilight_e_fold_deg: 6.5,
         }
     }
 }
@@ -185,16 +229,47 @@ pub fn celestial_key_light(
     // saturated pure-blue dome at high intensity floods every surface with blue
     // and washes the brick grey).
     //
-    // Two-stage blend: night→dusk at t=0..0.5, dusk→day at t=0.5..1.
-    let (sky_zenith, sky_horizon, sky_intensity) = if t <= 0.5 {
-        let s = t * 2.0; // 0..1 over night→dusk
+    // TWO DRIVERS, NOT ONE (fix 2026-07-26 — the civil-twilight black frame):
+    //
+    //   above the horizon   dusk→day, driven by `t` (the ±6° civil-twilight
+    //                       smoothstep). UNCHANGED — `t ≥ 0.5` ⇔ `alt ≥ 0`, so
+    //                       `s = (t−0.5)·2` is byte-identical to the old path.
+    //   below the horizon   night→dusk, driven by its OWN smoothstep over
+    //                       [`twilight_night_below_deg`, `twilight_dusk_at_deg`]
+    //                       = −18°…0° by default.
+    //
+    // The old code used `t` for BOTH stages, so the night anchor was reached at
+    // −6°: the END of CIVIL twilight. Physically −6° is still bright enough to
+    // read a newspaper outdoors (≈3.4 lx, vs ≈0.25 lx under a full moon) and the
+    // sky does not stop being sunlit until −18°. Collapsing 0°…−6° onto the
+    // whole night→dusk range and then holding the night anchor flat from −6° to
+    // −90° is what made civil twilight render black with no blue hour, no
+    // afterglow and no gradual falloff.
+    //
+    // Both stages meet EXACTLY at the dusk anchor at `alt = 0` (upper stage
+    // `s = 0`, lower stage `s = 1`), so the transition is continuous by
+    // construction — there is no seam at the horizon.
+    // A degenerate (or inverted) authored band would divide by zero in
+    // `smoothstep`; fall back to the documented default width rather than
+    // emitting NaN into every sky uniform.
+    let (tw_lo, tw_hi) = if palette.twilight_dusk_at_deg > palette.twilight_night_below_deg {
+        (
+            palette.twilight_night_below_deg,
+            palette.twilight_dusk_at_deg,
+        )
+    } else {
+        (-18.0, 0.0)
+    };
+    let (sky_zenith, sky_horizon, sky_intensity) = if sun_alt_deg < tw_hi {
+        // 0 at/below `twilight_night_below_deg` (full night) → 1 at the horizon.
+        let s = twilight_mix(tw_lo, tw_hi, palette.twilight_e_fold_deg, sun_alt_deg);
         (
             lerp3(palette.night_zenith, palette.dusk_zenith, s),
             lerp3(palette.night_horizon, palette.dusk_horizon, s),
             lerp(palette.night_intensity, palette.dusk_intensity, s),
         )
     } else {
-        let s = (t - 0.5) * 2.0; // 0..1 over dusk→day
+        let s = ((t - 0.5) * 2.0).clamp(0.0, 1.0); // 0..1 over dusk→day
         (
             lerp3(palette.dusk_zenith, palette.day_zenith, s),
             lerp3(palette.dusk_horizon, palette.day_horizon, s),
@@ -213,6 +288,37 @@ pub fn celestial_key_light(
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────
+
+/// Night→dusk mix for a sun BELOW the horizon: `0` at `night_lo`, `1` at
+/// `dusk_hi`, falling EXPONENTIALLY in solar depression in between.
+///
+/// Real twilight is front-loaded: horizontal illuminance runs ≈400 lx at 0°,
+/// ≈40 lx at −4°, ≈3.4 lx at −6° and ≈0.008 lx at −12°, because the sunlit
+/// scattering column collapses as `exp(−h_shadow/H)` with `h_shadow = R·(sec θ
+/// − 1)`. A symmetric smoothstep does the opposite — nearly flat for the first
+/// few degrees (the brightest, fastest-moving part of twilight) and then
+/// dumping most of its range below −9° where nothing is left to see. That shape
+/// is what made the −2°…−4° frames come out BRIGHTER than the sunset frame once
+/// the dome's own low-sky illuminant stopped being red-crushed.
+///
+/// `exp(−dep/e)` is renormalised over the band so both anchors are hit exactly:
+/// `1.0` at `dusk_hi` and `0.0` at `night_lo`, with no discontinuity at either
+/// end. `e_fold <= 0` (or a non-finite value) falls back to the smoothstep.
+#[inline]
+fn twilight_mix(night_lo: f32, dusk_hi: f32, e_fold: f32, alt_deg: f32) -> f32 {
+    if !(e_fold > 0.0) || !e_fold.is_finite() {
+        return smoothstep(night_lo, dusk_hi, alt_deg);
+    }
+    let band = dusk_hi - night_lo;
+    let dep = (dusk_hi - alt_deg).clamp(0.0, band);
+    let tail = (-band / e_fold).exp();
+    // Guard the degenerate `tail → 1` case (band ≪ e_fold).
+    let denom = 1.0 - tail;
+    if denom <= 1e-6 {
+        return smoothstep(night_lo, dusk_hi, alt_deg);
+    }
+    (((-dep / e_fold).exp() - tail) / denom).clamp(0.0, 1.0)
+}
 
 #[inline]
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
@@ -406,6 +512,116 @@ mod tests {
             key.radiance, 0.0,
             "below-horizon moon should give zero key radiance"
         );
+    }
+
+    /// A synthetic sun at an EXACT altitude, so the twilight band can be probed
+    /// degree by degree without solving for an hour.
+    fn sun_at_altitude(alt_deg: f64) -> SunPosition {
+        let a = alt_deg.to_radians();
+        SunPosition {
+            altitude_rad: a,
+            azimuth_rad: std::f64::consts::PI,
+            direction: [0.0, a.sin() as f32, a.cos() as f32],
+            declination_rad: 0.0,
+            equation_of_time_minutes: 0.0,
+            apparent_altitude_rad: a,
+        }
+    }
+
+    /// THE CIVIL-TWILIGHT BLACK-FRAME REGRESSION.
+    ///
+    /// The sky dome used to reach the NIGHT anchor at solar altitude −6° — the
+    /// end of CIVIL twilight — and then hold it flat all the way to −90°, so
+    /// every frame from −6° down rendered the same black sky with no blue hour
+    /// and no falloff. Civil twilight (−6°) is ≈3.4 lx outdoors; a full moon is
+    /// ≈0.25 lx. It is emphatically not night.
+    ///
+    /// The dome must now fall CONTINUOUSLY and MONOTONICALLY from the dusk
+    /// anchor at the horizon to the night anchor at −18°, and −6° must land
+    /// clearly above the night anchor.
+    #[test]
+    fn civil_twilight_is_not_night() {
+        let p = KeyLightPalette::default();
+        let moon = full_moon_position(false); // no moon: sky dome is the ONLY light
+        let intensity_at = |alt: f64| {
+            celestial_key_light(&sun_at_altitude(alt), &moon, &p).sky_intensity
+        };
+
+        let horizon = intensity_at(0.0);
+        let civil = intensity_at(-6.0);
+        let nautical = intensity_at(-12.0);
+        let astronomical = intensity_at(-18.0);
+        let deep = intensity_at(-30.0);
+
+        // The horizon lands EXACTLY on the dusk anchor (the two stages meet).
+        assert!(
+            (horizon - p.dusk_intensity).abs() < 1e-6,
+            "solar altitude 0 must be the dusk anchor ({:.3}); got {horizon:.4}",
+            p.dusk_intensity
+        );
+        // Civil twilight must be far above night. The regression rendered
+        // EXACTLY p.night_intensity here.
+        assert!(
+            civil > p.night_intensity * 4.0,
+            "civil twilight (−6°) must be well above the night anchor \
+             ({:.4}); got {civil:.4}",
+            p.night_intensity
+        );
+        // FRONT-LOADED, not symmetric. Real twilight loses most of its light in
+        // the first few degrees (≈400 lx at 0° → ≈40 lx at −4°). A SYMMETRIC
+        // smoothstep across the band spends only ~10% of its range by −4°, which
+        // is what let the −4° frame render BRIGHTER than the sunset frame once
+        // the dome's low sky stopped being red-crushed (MEASURED sky luma 16.3 /
+        // 17.8 / 27.5 at 0° / −2° / −4°). Pin against that exact alternative
+        // rather than a bare number, so retuning `twilight_e_fold_deg` cannot
+        // silently slide back to the symmetric shape.
+        let span = p.dusk_intensity - p.night_intensity;
+        let spent_by_4 = (horizon - intensity_at(-4.0)) / span;
+        let smoothstep_spent_by_4 =
+            1.0 - smoothstep(p.twilight_night_below_deg, p.twilight_dusk_at_deg, -4.0);
+        assert!(
+            spent_by_4 > smoothstep_spent_by_4 * 3.0,
+            "twilight must be front-loaded: {:.0}% of the dusk→night span is \
+             spent by −4°, barely more than the symmetric smoothstep's {:.0}%",
+            spent_by_4 * 100.0,
+            smoothstep_spent_by_4 * 100.0
+        );
+        // Strictly monotonic falloff — no cliff, no plateau, no black step.
+        assert!(
+            horizon > civil && civil > nautical && nautical > astronomical,
+            "twilight must fall monotonically: 0°={horizon:.4} −6°={civil:.4} \
+             −12°={nautical:.4} −18°={astronomical:.4}"
+        );
+        // Astronomical twilight IS night — and stays night below it.
+        assert!(
+            (astronomical - p.night_intensity).abs() < 1e-6,
+            "−18° must be the night anchor ({:.4}); got {astronomical:.4}",
+            p.night_intensity
+        );
+        assert!(
+            (deep - p.night_intensity).abs() < 1e-6,
+            "below −18° must stay at the night anchor; got {deep:.4}"
+        );
+    }
+
+    /// The DAY side of the blend is untouched by the twilight fix: at and above
+    /// the horizon the dome still runs the original `t`-driven dusk→day stage.
+    #[test]
+    fn above_horizon_dome_matches_the_original_t_ramp() {
+        let p = KeyLightPalette::default();
+        let moon = full_moon_position(false);
+        for alt in [0.0_f64, 1.5, 3.0, 4.5, 6.0, 20.0, 60.0] {
+            let key = celestial_key_light(&sun_at_altitude(alt), &moon, &p);
+            // Reproduce the ORIGINAL formula for the upper stage.
+            let t = smoothstep(-6.0, 6.0, alt as f32);
+            let s = ((t - 0.5) * 2.0).clamp(0.0, 1.0);
+            let want = lerp(p.dusk_intensity, p.day_intensity, s);
+            assert!(
+                (key.sky_intensity - want).abs() < 1e-6,
+                "alt {alt}°: dome intensity {:.6} != original ramp {want:.6}",
+                key.sky_intensity
+            );
+        }
     }
 
     /// Sky intensity increases from midnight to civil-twilight start to noon.

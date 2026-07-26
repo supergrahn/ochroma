@@ -191,6 +191,15 @@ pub struct WindResponse {
     pub foam_gain: f32,
     pub foam_min: f32,
     pub foam_max: f32,
+    /// Exaggeration gain on the PHYSICAL significant wave height, applied by
+    /// [`mesh_amplitude_scale`](Self::mesh_amplitude_scale).
+    ///
+    /// `1.0` means the displaced water MESH realises exactly the `H_s` this
+    /// module's Pierson-Moskowitz solver reports for the live wind — so the
+    /// `[sea-state]` log line and the rendered silhouette are the SAME number, and
+    /// "H_s = 4.20 m" becomes a claim a witness can measure instead of a hope.
+    /// Above 1.0 deliberately over-drives the swell; below 1.0 calms it.
+    pub height_gain: f32,
 }
 
 impl Default for WindResponse {
@@ -211,6 +220,8 @@ impl Default for WindResponse {
             foam_gain: 0.35,
             foam_min: 0.30,
             foam_max: 2.00,
+            // 1.0 = the mesh IS the physics. Anything else is an admitted lie.
+            height_gain: 1.0,
         }
     }
 }
@@ -275,6 +286,53 @@ impl WindResponse {
             foam_scale,
         }
     }
+
+    /// The multiplier a caller must apply to a BAKED Gerstner spectrum's
+    /// amplitudes so the displaced MESH realises the live sea state's significant
+    /// wave height.
+    ///
+    /// [`drive`](Self::drive)`.amplitude_scale` alone only makes the sea RESPOND to
+    /// wind — it is a ratio against the reference wind, so it preserves whatever
+    /// absolute height the offline cook happened to bake. That absolute height was
+    /// never in the same units as the physics: on `forge_coastal_cove` the cooked
+    /// spectrum realises `H_s ≈ 14.5 m` while the solver reports `H_s = 4.20 m`.
+    /// Dividing the baked height back out (`H_s(U_ref) / H_s_baked`) CALIBRATES the
+    /// authored spectrum onto the physical one, after which
+    ///
+    /// ```text
+    ///     mesh H_s(U) = height_gain · H_s_solver(U)
+    /// ```
+    ///
+    /// exactly (for `amplitude_exponent == 1` and inside the amplitude clamps).
+    ///
+    /// `baked_significant_height_m` is the spectrum's own
+    /// `H_s = 4·sqrt(Σ aᵢ²/2)`; a non-positive or non-finite value skips the
+    /// calibration (there is nothing to calibrate against) and returns the plain
+    /// wind drive, so this can never make the sea undefined.
+    #[must_use]
+    pub fn mesh_amplitude_scale(
+        &self,
+        wind_speed_ms: f32,
+        baked_significant_height_m: f32,
+    ) -> f32 {
+        let drive = self.drive(wind_speed_ms);
+        if !self.enabled {
+            return drive.amplitude_scale;
+        }
+        let gain = if self.height_gain.is_finite() && self.height_gain >= 0.0 {
+            self.height_gain
+        } else {
+            1.0
+        };
+        let reference_hs = SeaState::from_wind(self.reference_wind_ms).significant_wave_height_m;
+        if !baked_significant_height_m.is_finite()
+            || baked_significant_height_m <= 1e-4
+            || reference_hs <= 1e-6
+        {
+            return drive.amplitude_scale * gain;
+        }
+        drive.amplitude_scale * gain * (reference_hs / baked_significant_height_m)
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +341,57 @@ mod tests {
 
     /// Pierson-Moskowitz at U10 = 10 m/s, computed by hand from the published
     /// coefficients. These are the numbers the model MUST reproduce.
+    /// The CALIBRATION seam: whatever absolute height the offline cook baked, the
+    /// displaced mesh must end up realising the solver's `H_s`. This is the
+    /// property the `[water-swell]` witness line measures off the real vertices.
+    #[test]
+    fn mesh_amplitude_scale_makes_the_baked_spectrum_realise_the_solver_height() {
+        let wr = WindResponse::default(); // reference 14 m/s, exponent 1, gain 1
+        // The cooked forge_coastal_cove spectrum realises this; the solver says 4.20 m.
+        let baked_hs = 14.55_f32;
+        for wind in [6.0_f32, 10.0, 14.0, 18.0] {
+            let scale = wr.mesh_amplitude_scale(wind, baked_hs);
+            let realised = baked_hs * scale;
+            let target = SeaState::from_wind(wind).significant_wave_height_m;
+            // Inside the amplitude clamps the mesh height IS the physical height.
+            let ratio = target / SeaState::from_wind(wr.reference_wind_ms).significant_wave_height_m;
+            if ratio > wr.amplitude_min && ratio < wr.amplitude_max {
+                assert!(
+                    (realised - target).abs() < 1.0e-3 * target.max(1.0),
+                    "wind {wind}: mesh H_s {realised} m != solver H_s {target} m"
+                );
+            }
+        }
+    }
+
+    /// `height_gain` is the ONLY exaggeration dial, and it is exact.
+    #[test]
+    fn height_gain_scales_the_realised_height_exactly() {
+        let baked_hs = 14.55_f32;
+        let one = WindResponse::default();
+        let half = WindResponse { height_gain: 0.5, ..WindResponse::default() };
+        let a = one.mesh_amplitude_scale(14.0, baked_hs);
+        let b = half.mesh_amplitude_scale(14.0, baked_hs);
+        assert!((b - 0.5 * a).abs() < 1.0e-6, "gain 0.5 gave {b}, expected {}", 0.5 * a);
+        // Gain 0 is a genuinely flat sea (the witness control), not a near-flat one.
+        let zero = WindResponse { height_gain: 0.0, ..WindResponse::default() };
+        assert_eq!(zero.mesh_amplitude_scale(14.0, baked_hs), 0.0);
+    }
+
+    /// A missing / nonsensical baked height must never make the sea undefined —
+    /// it falls back to the plain wind drive.
+    #[test]
+    fn calibration_degrades_to_the_plain_drive_without_a_baked_height() {
+        let wr = WindResponse::default();
+        for bad in [0.0_f32, -1.0, f32::NAN] {
+            let scale = wr.mesh_amplitude_scale(14.0, bad);
+            assert!(
+                (scale - wr.drive(14.0).amplitude_scale).abs() < 1.0e-6,
+                "baked H_s {bad} gave {scale}"
+            );
+        }
+    }
+
     #[test]
     fn pierson_moskowitz_matches_hand_computed_values_at_10ms() {
         let s = SeaState::from_wind(10.0);
