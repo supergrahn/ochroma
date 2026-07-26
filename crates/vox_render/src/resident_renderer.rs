@@ -2122,20 +2122,36 @@ fn build_light_layer_for_scene(
         0
     };
 
-    // Config-first: night lit windows default ON (config.lit_windows_enabled);
-    // env OCHROMA_LIT_WINDOWS=0|off force-disables for an A/B witness.
+    // Config-first: lit windows default ON (config.lit_windows_enabled).
+    // OCHROMA_LIT_WINDOWS is the A/B witness lever for the three arms of the
+    // question "should daytime windows be NEE lights?":
+    //   0|off   -> never registered (measures what the NEE list costs)
+    //   always  -> registered at FULL weight at every hour, including high noon
+    //              (measures what always-on costs — in ms AND in lost cast sun
+    //              shadows, since u_num_lights>0 disables `defer_sun`)
+    //   unset   -> the shipped photometric ramp
+    let lit_window_env = std::env::var("OCHROMA_LIT_WINDOWS");
     let lit_window_disabled = !vox_config::config().resident_renderer.lit_windows_enabled
-        || matches!(
-            std::env::var("OCHROMA_LIT_WINDOWS").as_deref(),
-            Ok("0") | Ok("off")
-        );
-    let (emissive_lights, emissive_count) = if rig.is_night && !lit_window_disabled {
+        || matches!(lit_window_env.as_deref(), Ok("0") | Ok("off"));
+    // Continuous solar-altitude handover, NOT a step at `is_night`. See
+    // `lit_window_nee_weight` for the photometry and the shadow-ray argument.
+    let nee_weight = if lit_window_disabled {
+        0.0
+    } else if matches!(lit_window_env.as_deref(), Ok("always")) {
+        1.0
+    } else {
+        lit_window_nee_weight(rig.sun_altitude_rad)
+    };
+    let (emissive_lights, emissive_count) = if nee_weight > 0.0 {
         let point_scale = std::env::var("OCHROMA_EMISSIVE_LIGHT_SCALE")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
             .filter(|v| *v > 0.0)
             .unwrap_or(vox_config::config().resident_renderer.emissive_light_scale);
-        emissive_point_lights(scene, point_scale * emissive_surface_scale.max(0.0))
+        emissive_point_lights(
+            scene,
+            point_scale * emissive_surface_scale.max(0.0) * nee_weight,
+        )
     } else {
         (Vec::new(), 0)
     };
@@ -2143,14 +2159,74 @@ fn build_light_layer_for_scene(
     let light_count = day_light_count + emissive_count;
     if emissive_count > 0 {
         eprintln!(
-            "[night-lights] derived {emissive_count} emissive point lights \
-             -> {light_count} total lights"
+            "[lit-windows] sun_alt={:.2}deg nee_weight={nee_weight:.3} -> \
+             {emissive_count} emissive point lights ({light_count} total lights; \
+             cast sun shadows OFF while u_num_lights>0)",
+            rig.sun_altitude_rad.to_degrees()
         );
     }
     LightLayer {
         light_data,
         light_count,
     }
+}
+
+/// How much weight lit-window / lamp emitters get in the NEE light list, as a
+/// function of the sun's true geometric altitude (radians). `1.0` = full, `0.0` =
+/// not registered at all.
+///
+/// # Why this is not "are the lights on?"
+///
+/// The lights are ALWAYS on. Interior lighting does not switch off at sunrise —
+/// it is dimmed by daylight-linked control and then simply overwhelmed outdoors.
+/// That part is already physical in this renderer and costs nothing: lit glass
+/// carries `emission_intensity` in its packed material, the megakernel adds it at
+/// EVERY hit (`megakernel.slang` §1 Emission), and the game ramps its strength
+/// continuously across dawn/dusk via `emissive_modulation_for_clock`
+/// (day ≈0.25× / night ≈2.0×). So a window read directly by a camera ray, seen in
+/// a reflection, or found by a BSDF-sampled bounce GLOWS at high noon.
+///
+/// # What this function actually decides
+///
+/// Whether those emitters additionally join the NEE list — a pure VARIANCE
+/// decision, not a physical one. An emitter outside the list still contributes
+/// through BSDF sampling; NEE only makes that contribution cheap. And NEE is not
+/// free here:
+///
+/// 1. **The shadow ray is a shared, single-slot budget.** The megakernel emits one
+///    deferred shadow ray per pixel per bounce. Its cast-sun-shadow path
+///    (`defer_sun`) is explicitly gated on `u_num_lights == 0`, so registering ANY
+///    NEE light removes every cast sun shadow from the frame — terrain, canopy and
+///    building shadows all go flat.
+/// 2. **Selection is O(N) per shading point** — a one-pass weighted reservoir over
+///    all `u_num_lights` entries, per pixel, per bounce.
+///
+/// # Where the crossover belongs
+///
+/// Clear-sky horizontal illuminance against solar altitude: ~85 klx at +45°,
+/// ~6 klx at +5°, ~400 lx at 0° (sunset), ~40 lx at −4°, ~3.4 lx at −6° (end of
+/// civil twilight). Exterior illuminance produced by lit windows on a nearby
+/// facade is order 10–100 lx. So the sun outweighs the windows by 10²–10³ while it
+/// is up, and loses within a few degrees of setting.
+///
+/// Above `none_above_deg` the omitted window term is <1 % of the key — a bounded,
+/// sub-noise approximation that buys back the sun's shadows. Below
+/// `full_below_deg` the sun contributes nothing to shadow at all, so the ray costs
+/// nothing to give away. Between them the weight ramps smoothly (smoothstep), so
+/// neither the windows nor the shadows pop.
+fn lit_window_nee_weight(sun_altitude_rad: f32) -> f32 {
+    let cfg = vox_config::config();
+    let full_below = cfg.resident_renderer.lit_window_nee_full_below_deg;
+    let none_above = cfg.resident_renderer.lit_window_nee_none_above_deg;
+    let alt_deg = sun_altitude_rad.to_degrees();
+    if !(none_above > full_below) {
+        // Misconfigured band — fall back to the historical hard step at 0° rather
+        // than dividing by zero.
+        return if alt_deg < 0.0 { 1.0 } else { 0.0 };
+    }
+    let t = ((alt_deg - full_below) / (none_above - full_below)).clamp(0.0, 1.0);
+    // 1 - smoothstep: full weight at/below `full_below`, zero at/above `none_above`.
+    1.0 - t * t * (3.0 - 2.0 * t)
 }
 
 fn emissive_point_lights(scene: &SceneState, scale: f32) -> (Vec<f32>, usize) {
@@ -2519,7 +2595,7 @@ fn camera_forward(view: [f32; 16]) -> glam::Vec3 {
 mod glass_floor_tests {
     use super::{
         GLASS_MIN_BOUNCES, emissive_point_lights, estimate_downlight_probe, glass_floor_for_tier,
-        water_floor_for_tier,
+        lit_window_nee_weight, water_floor_for_tier,
     };
     use crate::splat_backend::{PbrMaterial, pack_mesh_material, pack_spot_light};
     use spectra_scene_state::{MaterialLayer, SceneState};
@@ -2794,5 +2870,70 @@ mod glass_floor_tests {
                 "base {base} -> unexpected floor {floor}"
             );
         }
+    }
+
+    /// The lit-window NEE handover must be a RAMP over the shipped solar-altitude
+    /// band, not the old step at 0°. Real numbers at real solar altitudes.
+    #[test]
+    fn lit_window_nee_weight_ramps_across_the_twilight_band() {
+        let w = |deg: f32| lit_window_nee_weight(deg.to_radians());
+        let full_below = vox_config::config()
+            .resident_renderer
+            .lit_window_nee_full_below_deg;
+        let none_above = vox_config::config()
+            .resident_renderer
+            .lit_window_nee_none_above_deg;
+        assert!(
+            none_above > full_below,
+            "shipped band must be ordered: full_below={full_below} none_above={none_above}"
+        );
+
+        // Deep night and high noon are the two saturated ends.
+        assert_eq!(w(-30.0), 1.0, "deep night must give windows full NEE weight");
+        assert_eq!(w(full_below), 1.0, "at the full-weight altitude, weight = 1");
+        assert_eq!(w(60.0), 0.0, "high noon must register NO window NEE lights");
+        assert_eq!(w(none_above), 0.0, "at the cutoff altitude, weight = 0");
+
+        // The interesting part: strictly decreasing INSIDE the band, and — the
+        // whole point of this change — NOT a step at zero.
+        let mid = 0.5 * (full_below + none_above);
+        let inside = w(mid);
+        assert!(
+            inside > 0.0 && inside < 1.0,
+            "mid-band ({mid}deg) must be a partial weight, got {inside}"
+        );
+        let mut prev = f32::INFINITY;
+        for i in 0..=20 {
+            let deg = full_below + (none_above - full_below) * (i as f32 / 20.0);
+            let cur = w(deg);
+            assert!(
+                cur <= prev + 1.0e-6,
+                "weight must be monotonically non-increasing: {deg}deg -> {cur} after {prev}"
+            );
+            prev = cur;
+        }
+
+        // Sunset (0°) sits inside the band, so the old hard step is gone: the
+        // weight just below and just above the horizon must be close, not 1 vs 0.
+        let below = w(-0.25);
+        let above = w(0.25);
+        assert!(
+            (below - above).abs() < 0.2,
+            "no discontinuity at the horizon: {below} vs {above}"
+        );
+
+        println!(
+            "[lit-window-nee] band={full_below}..{none_above}deg | -30:{:.3} -6:{:.3} \
+             -4:{:.3} -2:{:.3} 0:{:.3} +1:{:.3} +2:{:.3} +5:{:.3} +45:{:.3}",
+            w(-30.0),
+            w(-6.0),
+            w(-4.0),
+            w(-2.0),
+            w(0.0),
+            w(1.0),
+            w(2.0),
+            w(5.0),
+            w(45.0)
+        );
     }
 }

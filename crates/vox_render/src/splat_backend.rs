@@ -755,6 +755,18 @@ pub struct LightRig {
     /// so uploading masks without setting intensity reproduces the legacy
     /// weathered render. Forced to `[0; 7]` when `weathering_enabled` is false.
     pub weathering_intensity: [f32; 7],
+    /// TRUE geometric altitude of the SUN above the horizon, in radians, from the
+    /// game's celestial clock (NOAA solar position). Negative = below the horizon.
+    ///
+    /// This is the CONTINUOUS quantity behind [`is_night`](Self::is_night), and it
+    /// is what the renderer should key exposure-scale decisions on: exterior
+    /// horizontal illuminance falls roughly 85 klx (alt 45°) → 6 klx (5°) →
+    /// 400 lx (0°) → 40 lx (−4°) → 3.4 lx (−6°, end of civil twilight), so any
+    /// "is it dark enough for X" threshold is a smooth function of THIS, never a
+    /// step at zero. Independent of `sun_dir`, which carries the MOON at night.
+    /// Default `FRAC_PI_2` (sun at zenith = unambiguous day) so a legacy rig that
+    /// never sets it behaves exactly as `is_night: false` did.
+    pub sun_altitude_rad: f32,
     /// True when the SUN is below the horizon (night). Driven by the game's
     /// celestial clock (`rig.sun.altitude_rad < 0`), NOT by `sun_dir` — at night
     /// the `sun_dir`/key slot carries the MOON, which can be above the horizon, so
@@ -966,6 +978,7 @@ impl Default for LightRig {
             weathering_intensity: [1.0; 7],
             // Day by default — the night MegaLights path is opt-in via the game's
             // celestial clock, so every legacy render stays byte-identical.
+            sun_altitude_rad: std::f32::consts::FRAC_PI_2,
             is_night: false,
             // Moon slot: inert defaults (zenith dir, full-moon color, zero
             // radiance/phase) so legacy rigs that ignore the moon are unchanged.

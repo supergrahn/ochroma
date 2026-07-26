@@ -225,6 +225,33 @@ pub struct ResidentRendererConfig {
     pub ser_enabled: bool,
     pub lit_windows_enabled: bool,
     pub emissive_light_scale: f32,
+    /// Solar altitude (DEGREES) at or below which lit windows / street lamps get
+    /// their FULL weight in the NEE light list.
+    ///
+    /// Interior lights are on around the clock, and their EMISSIVE SURFACE is
+    /// always rendered (a directly-seen or BSDF-sampled window glows at any hour).
+    /// Putting them in the NEE list is a separate, purely SAMPLING decision — it
+    /// reduces variance for emitters that matter, and it is not free:
+    ///
+    /// * the megakernel has ONE deferred shadow ray per pixel per bounce, and its
+    ///   cast-sun-shadow path (`megakernel.slang` `defer_sun`) requires
+    ///   `u_num_lights == 0` — so ANY registered NEE light DELETES every cast sun
+    ///   shadow in the frame;
+    /// * light selection is an O(`u_num_lights`) reservoir loop per shading point.
+    ///
+    /// Physics decides who should own that ray. Clear-sky horizontal illuminance
+    /// is ~85 klx at 45° solar elevation, ~6 klx at +5°, ~400 lx at 0°, ~40 lx at
+    /// −4° and ~3.4 lx at −6°; window-driven illuminance on a nearby facade is
+    /// order 10–100 lx. The sun wins by 10²–10³ while it is up and loses once it
+    /// is a few degrees down, so the handover belongs in that band — as a RAMP,
+    /// not a step at exactly 0°.
+    pub lit_window_nee_full_below_deg: f32,
+    /// Solar altitude (DEGREES) at or above which lit windows leave the NEE list
+    /// entirely (their surface emission is unaffected). Above this the window term
+    /// is <1 % of the exterior key, so dropping it is a bounded, sub-noise
+    /// approximation — and it hands the shadow ray back to the sun. Must be
+    /// greater than [`lit_window_nee_full_below_deg`](Self::lit_window_nee_full_below_deg).
+    pub lit_window_nee_none_above_deg: f32,
     /// Additional radiant-power calibration for authored shielded downlights.
     /// This decouples roadway illuminance from the visible diode panel's
     /// emission, so luminaires need not look self-lit in daylight.
@@ -273,6 +300,13 @@ impl Default for ResidentRendererConfig {
             ser_enabled: false,
             lit_windows_enabled: true,
             emissive_light_scale: 200.0,
+            // Handover band: full window NEE once the sun is 4° down (horizontal
+            // illuminance ~40 lx — comparable to what the windows themselves put
+            // on a facade), none once it is 2° up (~2 klx — the windows are then
+            // <1 % of the key and the sun needs the shadow ray back). The old
+            // shipped behaviour was a hard step at exactly 0.0°.
+            lit_window_nee_full_below_deg: -4.0,
+            lit_window_nee_none_above_deg: 2.0,
             downlight_power_scale: 500.0,
             downlight_min_intensity: 2300.0,
             downlight_max_intensity: 2800.0,
