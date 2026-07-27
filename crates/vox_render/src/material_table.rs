@@ -110,6 +110,10 @@ pub struct MaterialTable {
     /// old `spectral_spd` vec).
     spectral: Vec<(u32, [f32; 16])>,
     lookup: HashMap<MaterialKey, u32>,
+    /// Dedup index for CONTIGUOUS runs (`intern_run`), keyed by the whole
+    /// ordered zone tuple. Separate from `lookup` because a run's identity is
+    /// the sequence, not any single material.
+    run_lookup: HashMap<Vec<MaterialKey>, u32>,
 }
 
 impl MaterialTable {
@@ -120,6 +124,7 @@ impl MaterialTable {
             materials: Vec::with_capacity(cap),
             spectral: Vec::with_capacity(cap),
             lookup: HashMap::new(),
+            run_lookup: HashMap::new(),
         }
     }
 
@@ -168,6 +173,56 @@ impl MaterialTable {
         self.materials.push(mat);
         self.spectral.push((s, spd));
         s
+    }
+
+    /// Intern a CONTIGUOUS, deduplicated run of material slots for one
+    /// multi-zone shared prototype. Returns the base slot; zone `k` of the
+    /// prototype resolves in the closest-hit as `base + k`, matching
+    /// `InstanceRecordGpu::material_base`'s `final = base + tri.material_id`.
+    ///
+    /// Why this exists: a building prototype carries ~20 material zones. Giving
+    /// each zone its own BLAS and its own TLAS instance multiplies instance
+    /// count (and therefore TLAS traversal cost) by the zone count. Folding the
+    /// zones into ONE prototype needs their slots adjacent so a single
+    /// `material_base` addresses all of them.
+    ///
+    /// Dedup is on the WHOLE ordered tuple, not per material, so two placements
+    /// of the same asset with the same zone materials share one run while a
+    /// different colour variation gets its own — preserving the per-instance
+    /// colour/emission variation that shared prototypes rely on.
+    ///
+    /// Unlike [`Self::reserve_palette`], every reserved slot records its
+    /// spectral SPD: building zones are spectrally shaded and dropping the SPD
+    /// would silently change their look.
+    ///
+    /// Panics if the three slices disagree in length, or if `keys` is empty.
+    pub fn intern_run(
+        &mut self,
+        keys: &[MaterialKey],
+        mats: &[PbrMaterial],
+        spds: &[[f32; 16]],
+    ) -> u32 {
+        assert!(!keys.is_empty(), "intern_run needs at least one zone");
+        assert!(
+            keys.len() == mats.len() && keys.len() == spds.len(),
+            "intern_run slice lengths disagree: {} keys, {} materials, {} spds",
+            keys.len(),
+            mats.len(),
+            spds.len()
+        );
+        if let Some(&base) = self.run_lookup.get(keys) {
+            return base;
+        }
+        let base = self.materials.len() as u32;
+        for (mat, spd) in mats.iter().zip(spds.iter()) {
+            // push_undeduped, inlined: a run MUST stay contiguous, so it can
+            // never take the dedup shortcut that `intern` would.
+            let s = self.materials.len() as u32;
+            self.materials.push(*mat);
+            self.spectral.push((s, *spd));
+        }
+        self.run_lookup.insert(keys.to_vec(), base);
+        base
     }
 
     /// Reserve a contiguous block of palette slots (the cim clothing palette).
@@ -257,5 +312,107 @@ mod tests {
             ..a
         };
         assert_ne!(key(&a), key(&b));
+    }
+
+    // ---- intern_run: contiguous multi-zone prototype runs -----------------
+    //
+    // These two properties are what let a ~20-zone building prototype collapse
+    // from 20 TLAS instances to 1. If either breaks, zones shade with the wrong
+    // material rather than failing loudly, so they are pinned here.
+
+    fn zone(i: u8) -> (MaterialKey, PbrMaterial, [f32; 16]) {
+        let mat = PbrMaterial {
+            base_color: [i as f32 / 32.0, 0.5, 0.25],
+            ..PbrMaterial::default()
+        };
+        (key(&mat), mat, [i as f32; 16])
+    }
+
+    fn split(zones: &[(MaterialKey, PbrMaterial, [f32; 16])]) -> (Vec<MaterialKey>, Vec<PbrMaterial>, Vec<[f32; 16]>) {
+        (
+            zones.iter().map(|z| z.0).collect(),
+            zones.iter().map(|z| z.1).collect(),
+            zones.iter().map(|z| z.2).collect(),
+        )
+    }
+
+    #[test]
+    fn intern_run_slots_are_contiguous_so_one_material_base_addresses_every_zone() {
+        let mut table = MaterialTable::with_capacity(8);
+        table.reserve_opaque_fallback_slot();
+        // An unrelated intern first, so the run cannot accidentally start at 0.
+        let (k, m, s) = zone(99);
+        table.intern(k, m, s);
+
+        let zones: Vec<_> = (0..20).map(zone).collect();
+        let (keys, mats, spds) = split(&zones);
+        let base = table.intern_run(&keys, &mats, &spds);
+
+        // `final = base + tri.material_id` must land on exactly this zone's
+        // material for every zone.
+        for (k, expected) in zones.iter().enumerate() {
+            let slot = base as usize + k;
+            assert_eq!(
+                table.materials()[slot].base_color, expected.1.base_color,
+                "zone {k} did not resolve at base+{k}"
+            );
+        }
+        assert_eq!(table.len(), base + 20, "run must not leave gaps");
+    }
+
+    #[test]
+    fn intern_run_records_a_spectral_spd_for_every_reserved_slot() {
+        // reserve_palette deliberately records none; a building zone that lost
+        // its SPD would shade non-spectrally and change look silently.
+        let mut table = MaterialTable::with_capacity(4);
+        let zones: Vec<_> = (0..5).map(zone).collect();
+        let (keys, mats, spds) = split(&zones);
+        let base = table.intern_run(&keys, &mats, &spds);
+
+        for (k, expected) in zones.iter().enumerate() {
+            let slot = base + k as u32;
+            let found = table
+                .spectral()
+                .iter()
+                .find(|(s, _)| *s == slot)
+                .unwrap_or_else(|| panic!("zone {k} (slot {slot}) has no spectral entry"));
+            assert_eq!(found.1, expected.2);
+        }
+    }
+
+    #[test]
+    fn intern_run_dedups_on_the_whole_tuple_but_keeps_colour_variations_apart() {
+        let mut table = MaterialTable::with_capacity(8);
+        let zones: Vec<_> = (0..6).map(zone).collect();
+        let (keys, mats, spds) = split(&zones);
+
+        let first = table.intern_run(&keys, &mats, &spds);
+        let repeat = table.intern_run(&keys, &mats, &spds);
+        assert_eq!(first, repeat, "same zone tuple must share one run");
+        assert_eq!(table.len(), 6, "the repeat must not allocate again");
+
+        // One zone recoloured = a different variation = its own run, so two
+        // placements of the same asset can differ in colour.
+        let mut varied = zones.clone();
+        varied[3] = zone(31);
+        let (vkeys, vmats, vspds) = split(&varied);
+        let other = table.intern_run(&vkeys, &vmats, &vspds);
+        assert_ne!(first, other, "a colour variation must get its own run");
+        assert_eq!(table.len(), 12);
+    }
+
+    #[test]
+    fn intern_run_ordering_is_part_of_run_identity() {
+        // base+k indexes by POSITION, so a permuted tuple is a different run.
+        let mut table = MaterialTable::with_capacity(8);
+        let zones: Vec<_> = (0..4).map(zone).collect();
+        let (keys, mats, spds) = split(&zones);
+        let forward = table.intern_run(&keys, &mats, &spds);
+
+        let mut rev = zones.clone();
+        rev.reverse();
+        let (rkeys, rmats, rspds) = split(&rev);
+        let backward = table.intern_run(&rkeys, &rmats, &rspds);
+        assert_ne!(forward, backward);
     }
 }
