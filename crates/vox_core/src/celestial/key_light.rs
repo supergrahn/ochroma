@@ -415,11 +415,15 @@ mod tests {
             "noon color should be warm white; got {:?}",
             key.color
         );
-        // Sky should be at the daytime intensity anchor (the WORKING value: the
-        // desaturated soft-blue dome runs at ~HALF strength so the warm sun
-        // dominates and shadows keep contrast — DAY_INTENSITY 0.45, NOT the old
-        // washed-out 0.9). Pin against the palette default so a render.ron edit
-        // to day_intensity is caught here too.
+        // Sky should be at the daytime intensity anchor: the desaturated
+        // soft-blue dome runs below full strength so the warm sun dominates and
+        // shadows keep contrast, as against the old washed-out 0.9.
+        //
+        // The assertion reads the palette default rather than a literal, ON
+        // PURPOSE — the game's render.ron owns this number and has already moved
+        // it once (0.45 -> 0.65). A literal here would have to be edited in
+        // lockstep and would silently rot when it was not; naming a figure in
+        // the PROSE has the same failure, which is why none is named now.
         assert!(
             (key.sky_intensity - KeyLightPalette::default().day_intensity).abs() < 1e-6,
             "noon sky intensity should equal the day anchor ({:.2}); got {:.2}",
