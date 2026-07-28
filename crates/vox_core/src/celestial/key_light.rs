@@ -125,7 +125,10 @@ impl Default for KeyLightPalette {
             // directional sun dominates and shadows read with contrast.
             day_zenith: [0.40, 0.52, 0.72], // soft desaturated sky-blue
             day_horizon: [0.80, 0.83, 0.88], // near-neutral warm horizon
-            day_intensity: 0.45,
+            // 0.65 mirrors the game's authored render.ron, which owns these
+            // numbers ("the ENGINE owns the blend, the GAME owns these
+            // numbers"). This fallback had drifted behind it at 0.45.
+            day_intensity: 0.65,
             dusk_zenith: [0.12, 0.16, 0.45],  // deep dusk blue
             dusk_horizon: [1.00, 0.45, 0.18], // orange-red horizon
             dusk_intensity: 0.35,
