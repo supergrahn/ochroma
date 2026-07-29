@@ -79,6 +79,45 @@ impl Heightmap {
         self.sample_local(local_x, local_z)
     }
 
+    /// Sample the exact piecewise-planar surface produced by the canonical
+    /// heightmap triangle topology.
+    ///
+    /// [`sample`](Self::sample) is intentionally bilinear and remains the
+    /// simulation/terrain-authoring contract. A rendered heightfield is a
+    /// triangle mesh, however: each cell is split from its top-right corner to
+    /// its bottom-left corner. On a saddle cell that planar surface can differ
+    /// materially from the bilinear patch. Geometry that must sit on the
+    /// *visible* ground (roads, foundations, props) uses this sampler so the
+    /// terrain cannot pass through it between heightmap vertices.
+    #[inline]
+    pub fn sample_triangulated(&self, world_x: f32, world_z: f32) -> f32 {
+        if self.width < 2 || self.height < 2 {
+            return self.sample(world_x, world_z);
+        }
+
+        let local_x = ((world_x - self.origin[0]) / self.cell_size)
+            .clamp(0.0, (self.width - 1) as f32);
+        let local_z = ((world_z - self.origin[1]) / self.cell_size)
+            .clamp(0.0, (self.height - 1) as f32);
+        let ix = (local_x.floor() as usize).min(self.width - 2);
+        let iz = (local_z.floor() as usize).min(self.height - 2);
+        let fx = local_x - ix as f32;
+        let fz = local_z - iz as f32;
+
+        let h00 = self.data[iz * self.width + ix];
+        let h10 = self.data[iz * self.width + ix + 1];
+        let h01 = self.data[(iz + 1) * self.width + ix];
+        let h11 = self.data[(iz + 1) * self.width + ix + 1];
+
+        if fx + fz <= 1.0 {
+            // Canonical first triangle: top-left, bottom-left, top-right.
+            h00 + (h10 - h00) * fx + (h01 - h00) * fz
+        } else {
+            // Canonical second triangle: top-right, bottom-left, bottom-right.
+            h11 + (h10 - h11) * (1.0 - fz) + (h01 - h11) * (1.0 - fx)
+        }
+    }
+
     /// Compute surface normal at a point (from surrounding heights).
     pub fn normal_at(&self, world_x: f32, world_z: f32) -> [f32; 3] {
         // Four taps one cell apart. Each local coordinate is computed with the
@@ -183,6 +222,26 @@ impl Heightmap {
                 row
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Heightmap;
+
+    #[test]
+    fn triangulated_sample_matches_the_rendered_cell_diagonal() {
+        // Saddle cell: bilinear interpolation lands at 0.5 in the centre, but
+        // the canonical top-right -> bottom-left render diagonal is y=1.
+        let hm = Heightmap::from_data(2, 2, vec![0.0, 1.0, 1.0, 0.0], 10.0);
+        assert_eq!(hm.sample(5.0, 5.0), 0.5);
+        assert_eq!(hm.sample_triangulated(5.0, 5.0), 1.0);
+
+        // Both samplers retain the exact authored samples at grid vertices.
+        assert_eq!(hm.sample_triangulated(0.0, 0.0), 0.0);
+        assert_eq!(hm.sample_triangulated(10.0, 0.0), 1.0);
+        assert_eq!(hm.sample_triangulated(0.0, 10.0), 1.0);
+        assert_eq!(hm.sample_triangulated(10.0, 10.0), 0.0);
     }
 }
 

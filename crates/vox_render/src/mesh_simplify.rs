@@ -18,29 +18,32 @@
 //!   Degenerate triangles (two or three corners welded to the same output vertex)
 //!   are dropped.
 //!
-//! # Algorithm — vertex-GRID CLUSTERING
+//! # Algorithm — QUADRIC ERROR METRIC (Garland-Heckbert) edge collapse
 //!
-//! 1. Compute an AABB for the vertices referenced by each material. A small
-//!    authored material island therefore gets its own spatial budget instead of
-//!    disappearing inside the full mesh's much larger bounds.
-//! 2. Pick a grid resolution per material from `target_ratio` (fewer cells →
-//!    fewer output vertices → fewer triangles). The resolution is derived
-//!    purely from that material's referenced vertex count, bounds, and the ratio,
-//!    so it is a deterministic function of the input. Every nontrivial material
-//!    receives at least a four-cell budget so a small textured quad can survive.
-//! 3. Snap every referenced source vertex/material pair to its integer grid cell.
-//!    The cluster key is `(cell_x, cell_y, cell_z, triangle_material)`. All pairs
-//!    sharing a key weld to one OUTPUT vertex whose position and UV are the
-//!    arithmetic mean of the distinct source vertices (a stable, fixed-order
-//!    reduction — we accumulate in a Vec indexed by first-seen cluster order, so
-//!    there is no HashMap iteration in the output ordering).
-//! 4. Rebuild the triangle list against the welded vertices; drop any triangle
-//!    whose three corners no longer reference three distinct output vertices
-//!    (degenerate after the collapse). Each surviving triangle keeps its ORIGINAL
-//!    `material_id`.
-//! 5. If clustering would erase an authored material or collapse a material's
-//!    varied UV stream to one texel, retain that material's exact source triangles
-//!    in the cooked output. Detail loss is never accepted as a valid LOD.
+//! 1. Every vertex accumulates the AREA-WEIGHTED sum of the plane quadrics of its
+//!    incident faces. Area weighting is what makes a large flat facade dominate
+//!    the small triangles sitting on it, so planes stay planar.
+//! 2. OPEN BOUNDARY and MATERIAL-SEAM edges additionally receive a CONSTRAINT
+//!    quadric: the plane through the edge perpendicular to the incident face,
+//!    weighted by `SEAM_WEIGHT`. This is what holds a roofline straight and stops
+//!    a material border drifting.
+//! 3. Candidate collapses are costed by the summed quadric and taken
+//!    CHEAPEST-FIRST from a binary heap. The collapse position minimises the
+//!    quadric; when the system is singular (a flat or symmetric neighbourhood) it
+//!    falls back to the cheaper of the endpoints and the midpoint rather than
+//!    inventing an optimum off the surface.
+//! 4. Every collapse is VALIDATED first: any incident triangle that would flip by
+//!    more than 90 degrees, or collapse to zero area, rejects it. A
+//!    quadric-optimal position can otherwise fold a fan inside out.
+//! 5. Triangle `material_id` and source-triangle provenance ride through
+//!    verbatim; UVs are interpolated along the collapsed edge at the parameter
+//!    where the new position landed.
+//!
+//! Replaces an earlier vertex-grid clustering pass. That welded vertices to
+//! grid-cell means with no notion of curvature, boundary or silhouette, which is
+//! acceptable for foliage but destroyed architecture: flat facades went lumpy and
+//! building corners dissolved (measured — see the plan
+//! `docs/superpowers/plans/2026-07-27-qem-mesh-simplifier.md`).
 //!
 //! # Determinism
 //!
@@ -51,7 +54,8 @@
 //! Vec, so two runs on identical input produce byte-identical output. Position/UV
 //! averaging is a fixed-order sum (input vertex order) divided by the count.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 /// Input to [`simplify_mesh`]: parallel position / UV vertex streams, a triangle
 /// index list, and a per-triangle material id.
@@ -112,9 +116,15 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
     let have_uvs = !input.uvs.is_empty() && input.uvs.len() == n_verts;
     // material_ids only honored when parallel to indices; else all-zero.
     let have_mats = !input.material_ids.is_empty() && input.material_ids.len() == n_tris;
-    let mat_of = |t: usize| -> u32 { if have_mats { input.material_ids[t] } else { 0 } };
+    let mat_of = |t: usize| -> u32 {
+        if have_mats {
+            input.material_ids[t]
+        } else {
+            0
+        }
+    };
 
-    // Passthrough: nothing to gain (or too small to cluster safely).
+    // Passthrough: nothing to gain (or too small to simplify safely).
     if target_ratio >= 1.0 || n_tris <= 1 || n_verts < 4 {
         return MeshOutput {
             positions: input.positions.to_vec(),
@@ -129,276 +139,272 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
         };
     }
     let ratio = target_ratio.clamp(1e-4, 1.0);
+    let target_tris = ((n_tris as f64) * f64::from(ratio)).round().max(1.0) as usize;
 
-    // -- Per-material AABBs and grid resolutions. ---------------------------
-    // Material ids may also encode a semantic surface in their upper bits. That
-    // is intentional: each authored surface then retains a local detail budget.
-    let mut referenced = BTreeMap::<u32, BTreeSet<usize>>::new();
-    for (ti, triangle) in input.indices.iter().enumerate() {
-        let vertices = referenced.entry(mat_of(ti)).or_default();
-        for &index in triangle {
-            let index = index as usize;
-            if index < n_verts {
-                vertices.insert(index);
-            }
-        }
-    }
-    let mut material_grids = BTreeMap::<u32, ([f32; 3], [u32; 3], [f32; 3])>::new();
-    for (material, vertices) in referenced {
-        let mut lo = [f32::INFINITY; 3];
-        let mut hi = [f32::NEG_INFINITY; 3];
-        for index in &vertices {
-            let position = input.positions[*index];
-            for axis in 0..3 {
-                if position[axis].is_finite() {
-                    lo[axis] = lo[axis].min(position[axis]);
-                    hi[axis] = hi[axis].max(position[axis]);
-                }
-            }
-        }
-        let mut extent = [0.0_f32; 3];
-        for axis in 0..3 {
-            extent[axis] = (hi[axis] - lo[axis]).max(0.0);
-            if !extent[axis].is_finite() {
-                lo[axis] = 0.0;
-                extent[axis] = 0.0;
-            }
-        }
-        let minimum_cells = vertices.len().min(4);
-        let target_cells = ((vertices.len() as f64 * ratio as f64).round() as usize)
-            .max(minimum_cells)
-            .max(1);
-        let resolution = grid_resolution(target_cells, extent);
-        let inverse_cell = std::array::from_fn(|axis| {
-            if extent[axis] > 0.0 {
-                resolution[axis] as f32 / extent[axis]
-            } else {
-                0.0
-            }
-        });
-        material_grids.insert(material, (lo, resolution, inverse_cell));
-    }
-
-    // -- Cluster: (cell_x, cell_y, cell_z, triangle_material) -> cluster id. --
-    // A source vertex may belong to several triangle materials. It therefore
-    // receives one output mapping per material; using one "incident material"
-    // bucket for the vertex would let another material reuse that output vertex
-    // and would cross the seam. Accumulate each distinct source-vertex/material
-    // pair exactly once so UV means are independent of triangle valence.
-    // The HashMap is used ONLY to resolve a key to an already-seen cluster index;
-    // the OUTPUT vertex order is the first-seen order recorded in `out_pos`, so the
-    // result is byte-identical across runs (no HashMap iteration in output order).
-    let mut cluster_of: HashMap<(i32, i32, i32, u32), u32> = HashMap::new();
-    // Per-cluster accumulators (Vec indexed by first-seen cluster id).
-    let mut acc_pos: Vec<[f64; 3]> = Vec::new();
-    let mut acc_uv: Vec<[f64; 2]> = Vec::new();
-    let mut acc_count: Vec<u32> = Vec::new();
-    let mut vertex_material_cluster: HashMap<(usize, u32), u32> = HashMap::new();
-    let mut corner_clusters = vec![[u32::MAX; 3]; n_tris];
-
-    for (ti, tri) in input.indices.iter().enumerate() {
-        let material = mat_of(ti);
-        for (corner, &source_index) in tri.iter().enumerate() {
-            let vi = source_index as usize;
-            if vi >= n_verts {
-                continue;
-            }
-            let pair = (vi, material);
-            let cid = if let Some(&cid) = vertex_material_cluster.get(&pair) {
-                cid
-            } else {
-                let p = input.positions[vi];
-                let (lo, resolution, inverse_cell) = material_grids
-                    .get(&material)
-                    .expect("referenced triangle material has a deterministic grid");
-                let mut cell = [0_i32; 3];
-                for axis in 0..3 {
-                    if inverse_cell[axis] > 0.0 && p[axis].is_finite() {
-                        // Clamp into [0, resolution-1] so a vertex exactly on the
-                        // upper bound lands in the last cell, not one past it.
-                        let value = ((p[axis] - lo[axis]) * inverse_cell[axis]).floor();
-                        cell[axis] =
-                            (value as i32).clamp(0, resolution[axis].saturating_sub(1) as i32);
-                    }
-                }
-                let key = (cell[0], cell[1], cell[2], material);
-                let cid = match cluster_of.get(&key) {
-                    Some(&cid) => cid,
-                    None => {
-                        let cid = acc_pos.len() as u32;
-                        cluster_of.insert(key, cid);
-                        acc_pos.push([0.0; 3]);
-                        acc_uv.push([0.0; 2]);
-                        acc_count.push(0);
-                        cid
-                    }
-                };
-                let position_sum = &mut acc_pos[cid as usize];
-                position_sum[0] += p[0] as f64;
-                position_sum[1] += p[1] as f64;
-                position_sum[2] += p[2] as f64;
-                if have_uvs {
-                    let uv = input.uvs[vi];
-                    let uv_sum = &mut acc_uv[cid as usize];
-                    uv_sum[0] += uv[0] as f64;
-                    uv_sum[1] += uv[1] as f64;
-                }
-                acc_count[cid as usize] += 1;
-                vertex_material_cluster.insert(pair, cid);
-                cid
-            };
-            corner_clusters[ti][corner] = cid;
-        }
-    }
-
-    // -- Finalize welded vertices (cluster means). --------------------------
-    let n_out = acc_pos.len();
-    let mut out_pos: Vec<[f32; 3]> = Vec::with_capacity(n_out);
-    let mut out_uv: Vec<[f32; 2]> = if have_uvs {
-        Vec::with_capacity(n_out)
+    // ---- working state ---------------------------------------------------
+    let mut pos: Vec<[f64; 3]> = input
+        .positions
+        .iter()
+        .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+        .collect();
+    let mut uv: Vec<[f32; 2]> = if have_uvs {
+        input.uvs.to_vec()
     } else {
         Vec::new()
     };
-    for c in 0..n_out {
-        let n = acc_count[c].max(1) as f64;
-        let p = acc_pos[c];
-        out_pos.push([(p[0] / n) as f32, (p[1] / n) as f32, (p[2] / n) as f32]);
+    // Triangles, with their ORIGINAL index kept so provenance survives.
+    let mut tri: Vec<[u32; 3]> = Vec::with_capacity(n_tris);
+    let mut tri_src: Vec<u32> = Vec::with_capacity(n_tris);
+    let mut tri_mat: Vec<u32> = Vec::with_capacity(n_tris);
+    for (ti, t) in input.indices.iter().enumerate() {
+        let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+        // Drop out-of-range or already-degenerate source triangles rather than
+        // letting them poison adjacency.
+        if a >= n_verts || b >= n_verts || c >= n_verts || a == b || b == c || a == c {
+            continue;
+        }
+        tri.push(*t);
+        tri_src.push(ti as u32);
+        tri_mat.push(mat_of(ti));
+    }
+    if tri.len() <= target_tris {
+        return MeshOutput {
+            positions: input.positions.to_vec(),
+            uvs: if have_uvs {
+                input.uvs.to_vec()
+            } else {
+                Vec::new()
+            },
+            indices: tri,
+            material_ids: tri_mat,
+            source_triangle_indices: tri_src,
+        };
+    }
+    let mut tri_alive = vec![true; tri.len()];
+    let mut vert_alive = vec![false; n_verts];
+    let mut vtri: Vec<Vec<u32>> = vec![Vec::new(); n_verts];
+    for (ti, t) in tri.iter().enumerate() {
+        for &v in t {
+            vtri[v as usize].push(ti as u32);
+            vert_alive[v as usize] = true;
+        }
+    }
+
+    // ---- quadrics --------------------------------------------------------
+    let mut quad = vec![Quadric::default(); n_verts];
+    for (ti, t) in tri.iter().enumerate() {
+        let (p0, p1, p2) = (
+            pos[t[0] as usize],
+            pos[t[1] as usize],
+            pos[t[2] as usize],
+        );
+        if let Some((n, d, area)) = plane_of(p0, p1, p2) {
+            // Area weighting makes a large flat facade dominate the small
+            // triangles that happen to sit on it — which is exactly the
+            // planarity the grid clusterer destroyed.
+            let q = Quadric::from_plane(n, d).scaled(area);
+            for &v in t {
+                quad[v as usize].add(&q);
+            }
+        }
+        let _ = ti;
+    }
+
+    // Constraint quadrics: OPEN BOUNDARY and MATERIAL-SEAM edges get a plane
+    // perpendicular to the incident face through the edge. Without these a
+    // roofline drifts and a facade's border rounds off — the two failures that
+    // read as "rubble" at distance.
+    {
+        let mut edge_faces: BTreeMap<(u32, u32), Vec<u32>> = BTreeMap::new();
+        for (ti, t) in tri.iter().enumerate() {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                edge_faces
+                    .entry(if a < b { (a, b) } else { (b, a) })
+                    .or_default()
+                    .push(ti as u32);
+            }
+        }
+        for ((a, b), faces) in &edge_faces {
+            let open = faces.len() == 1;
+            let seam = faces.len() > 1
+                && faces
+                    .iter()
+                    .any(|&f| tri_mat[f as usize] != tri_mat[faces[0] as usize]);
+            if !open && !seam {
+                continue;
+            }
+            let (pa, pb) = (pos[*a as usize], pos[*b as usize]);
+            for &f in faces {
+                let t = tri[f as usize];
+                let (p0, p1, p2) = (
+                    pos[t[0] as usize],
+                    pos[t[1] as usize],
+                    pos[t[2] as usize],
+                );
+                let Some((fn_, _, _)) = plane_of(p0, p1, p2) else {
+                    continue;
+                };
+                let e = sub3(pb, pa);
+                let n = cross3(e, fn_);
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                if len <= 1e-20 {
+                    continue;
+                }
+                let n = [n[0] / len, n[1] / len, n[2] / len];
+                let d = -(n[0] * pa[0] + n[1] * pa[1] + n[2] * pa[2]);
+                let q = Quadric::from_plane(n, d).scaled(SEAM_WEIGHT);
+                quad[*a as usize].add(&q);
+                quad[*b as usize].add(&q);
+            }
+        }
+    }
+
+    // ---- collapse loop ---------------------------------------------------
+    // Lazy heap: entries carry the endpoint versions they were costed with, and
+    // a stale entry is skipped rather than rebuilt. Ordering is on
+    // (cost_bits, v0, v1) so two runs are byte-identical (determinism is a
+    // product moat here, not a nicety).
+    let mut version = vec![0u32; n_verts];
+    let mut heap: BinaryHeap<Reverse<Collapse>> = BinaryHeap::new();
+    let mut push_edge = |heap: &mut BinaryHeap<Reverse<Collapse>>,
+                         quad: &[Quadric],
+                         pos: &[[f64; 3]],
+                         version: &[u32],
+                         a: u32,
+                         b: u32| {
+        let (v0, v1) = if a < b { (a, b) } else { (b, a) };
+        let mut q = quad[v0 as usize];
+        q.add(&quad[v1 as usize]);
+        let target = q.optimum(pos[v0 as usize], pos[v1 as usize]);
+        let cost = q.error_at(target).max(0.0);
+        heap.push(Reverse(Collapse {
+            cost_bits: cost.to_bits(),
+            v0,
+            v1,
+            ver0: version[v0 as usize],
+            ver1: version[v1 as usize],
+            target,
+        }));
+    };
+    {
+        let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new();
+        for t in &tri {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                let e = if a < b { (a, b) } else { (b, a) };
+                if seen.insert(e) {
+                    push_edge(&mut heap, &quad, &pos, &version, e.0, e.1);
+                }
+            }
+        }
+    }
+
+    let mut live_tris = tri.len();
+    while live_tris > target_tris {
+        let Some(Reverse(c)) = heap.pop() else {
+            break; // exact-preservation floor: no legal collapse remains
+        };
+        let (v0, v1) = (c.v0 as usize, c.v1 as usize);
+        if !vert_alive[v0] || !vert_alive[v1] {
+            continue;
+        }
+        if version[v0] != c.ver0 || version[v1] != c.ver1 {
+            continue; // stale cost — a neighbour moved since this was queued
+        }
+        if !collapse_is_valid(&tri, &tri_alive, &vtri, &pos, v0 as u32, v1 as u32, c.target) {
+            continue;
+        }
+
+        // Interpolate UV along the collapsed edge by where the target landed.
         if have_uvs {
-            let uv = acc_uv[c];
-            out_uv.push([(uv[0] / n) as f32, (uv[1] / n) as f32]);
-        }
-    }
-
-    // -- Rebuild triangles against welded vertices; drop degenerates. -------
-    let mut out_idx: Vec<[u32; 3]> = Vec::with_capacity(n_tris);
-    let mut out_mat: Vec<u32> = Vec::with_capacity(n_tris);
-    let mut out_source: Vec<u32> = Vec::with_capacity(n_tris);
-    for (ti, _) in input.indices.iter().enumerate() {
-        let [ca, cb, cc] = corner_clusters[ti];
-        // Out-of-range source index → an unmapped corner; drop defensively.
-        if ca == u32::MAX || cb == u32::MAX || cc == u32::MAX {
-            continue;
-        }
-        // Degenerate after the collapse: two or three corners welded together.
-        if ca == cb || cb == cc || ca == cc {
-            continue;
-        }
-        out_idx.push([ca, cb, cc]);
-        out_mat.push(mat_of(ti));
-        out_source.push(ti as u32);
-    }
-
-    // -- Exact material/UV contract preservation. --------------------------
-    // A tiny trim, leaf, decal, or reveal can still vanish if every one of its
-    // triangles degenerates in a coarse grid. Likewise, the only surviving UVs
-    // could all average to one value. Neither is an acceptable textured LOD: for
-    // those material groups, remove the partial simplified result and append the
-    // exact source triangles. This happens in the offline cook callers; runtime
-    // only consumes the resulting immutable mesh.
-    let mut source_materials = BTreeSet::new();
-    let mut source_uv_contract = BTreeMap::<u32, ([f32; 2], bool)>::new();
-    for (ti, triangle) in input.indices.iter().enumerate() {
-        let material = mat_of(ti);
-        source_materials.insert(material);
-        if !have_uvs {
-            continue;
-        }
-        for &index in triangle {
-            let Some(&uv) = input.uvs.get(index as usize) else {
-                continue;
+            let e = sub3(pos[v1], pos[v0]);
+            let denom = e[0] * e[0] + e[1] * e[1] + e[2] * e[2];
+            let t = if denom > 1e-20 {
+                let d = sub3(c.target, pos[v0]);
+                ((d[0] * e[0] + d[1] * e[1] + d[2] * e[2]) / denom).clamp(0.0, 1.0) as f32
+            } else {
+                0.5
             };
-            source_uv_contract
-                .entry(material)
-                .and_modify(|(first, varied)| {
-                    *varied |=
-                        (uv[0] - first[0]).abs() > 1.0e-6 || (uv[1] - first[1]).abs() > 1.0e-6;
-                })
-                .or_insert((uv, false));
+            let (a, b) = (uv[v0], uv[v1]);
+            uv[v0] = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        }
+
+        pos[v0] = c.target;
+        let q1 = quad[v1];
+        quad[v0].add(&q1);
+        vert_alive[v1] = false;
+        version[v0] = version[v0].wrapping_add(1);
+        version[v1] = version[v1].wrapping_add(1);
+
+        // Re-point v1's triangles at v0, killing any that degenerate.
+        let moved = std::mem::take(&mut vtri[v1]);
+        for &ti in &moved {
+            let ti = ti as usize;
+            if !tri_alive[ti] {
+                continue;
+            }
+            let t = &mut tri[ti];
+            for s in t.iter_mut() {
+                if *s == v1 as u32 {
+                    *s = v0 as u32;
+                }
+            }
+            if t[0] == t[1] || t[1] == t[2] || t[0] == t[2] {
+                tri_alive[ti] = false;
+                live_tris -= 1;
+            } else {
+                vtri[v0].push(ti as u32);
+            }
+        }
+
+        // Re-cost every edge still touching v0.
+        let mut ring: BTreeSet<u32> = BTreeSet::new();
+        for &ti in &vtri[v0] {
+            if !tri_alive[ti as usize] {
+                continue;
+            }
+            for &v in &tri[ti as usize] {
+                if v != v0 as u32 && vert_alive[v as usize] {
+                    ring.insert(v);
+                }
+            }
+        }
+        for v in ring {
+            push_edge(&mut heap, &quad, &pos, &version, v0 as u32, v);
         }
     }
-    let mut output_materials = BTreeSet::new();
-    let mut output_uv_contract = BTreeMap::<u32, ([f32; 2], bool)>::new();
-    for (triangle, &material) in out_idx.iter().zip(&out_mat) {
-        output_materials.insert(material);
-        if !have_uvs {
+
+    // ---- rebuild ---------------------------------------------------------
+    let mut remap = vec![u32::MAX; n_verts];
+    let mut out_pos: Vec<[f32; 3]> = Vec::new();
+    let mut out_uv: Vec<[f32; 2]> = Vec::new();
+    let mut out_idx: Vec<[u32; 3]> = Vec::new();
+    let mut out_mat: Vec<u32> = Vec::new();
+    let mut out_src: Vec<u32> = Vec::new();
+    for (ti, t) in tri.iter().enumerate() {
+        if !tri_alive[ti] {
             continue;
         }
-        for &index in triangle {
-            let Some(&uv) = out_uv.get(index as usize) else {
-                continue;
-            };
-            output_uv_contract
-                .entry(material)
-                .and_modify(|(first, varied)| {
-                    *varied |=
-                        (uv[0] - first[0]).abs() > 1.0e-6 || (uv[1] - first[1]).abs() > 1.0e-6;
-                })
-                .or_insert((uv, false));
+        let mut o = [0u32; 3];
+        for (k, &v) in t.iter().enumerate() {
+            let v = v as usize;
+            if remap[v] == u32::MAX {
+                remap[v] = out_pos.len() as u32;
+                let p = pos[v];
+                out_pos.push([p[0] as f32, p[1] as f32, p[2] as f32]);
+                if have_uvs {
+                    out_uv.push(uv[v]);
+                }
+            }
+            o[k] = remap[v];
         }
-    }
-    let restore_materials: BTreeSet<u32> = source_materials
-        .into_iter()
-        .filter(|material| {
-            if !output_materials.contains(material) {
-                return true;
-            }
-            have_uvs
-                && source_uv_contract
-                    .get(material)
-                    .is_some_and(|(_, varied)| *varied)
-                && !output_uv_contract
-                    .get(material)
-                    .is_some_and(|(_, varied)| *varied)
-        })
-        .collect();
-    if !restore_materials.is_empty() {
-        let mut retained_indices = Vec::with_capacity(out_idx.len());
-        let mut retained_materials = Vec::with_capacity(out_mat.len());
-        let mut retained_sources = Vec::with_capacity(out_source.len());
-        for ((triangle, material), source) in out_idx.into_iter().zip(out_mat).zip(out_source) {
-            if !restore_materials.contains(&material) {
-                retained_indices.push(triangle);
-                retained_materials.push(material);
-                retained_sources.push(source);
-            }
+        if o[0] == o[1] || o[1] == o[2] || o[0] == o[2] {
+            continue;
         }
-        out_idx = retained_indices;
-        out_mat = retained_materials;
-        out_source = retained_sources;
-
-        let mut exact_vertex = HashMap::<(usize, u32), u32>::new();
-        for (ti, triangle) in input.indices.iter().enumerate() {
-            let material = mat_of(ti);
-            if !restore_materials.contains(&material) {
-                continue;
-            }
-            let mut restored = [0_u32; 3];
-            let mut complete = true;
-            for (corner, &source_index) in triangle.iter().enumerate() {
-                let source_index = source_index as usize;
-                let Some(&position) = input.positions.get(source_index) else {
-                    complete = false;
-                    break;
-                };
-                let key = (source_index, material);
-                restored[corner] = if let Some(&index) = exact_vertex.get(&key) {
-                    index
-                } else {
-                    let index = out_pos.len() as u32;
-                    out_pos.push(position);
-                    if have_uvs {
-                        out_uv.push(input.uvs[source_index]);
-                    }
-                    exact_vertex.insert(key, index);
-                    index
-                };
-            }
-            if complete {
-                out_idx.push(restored);
-                out_mat.push(material);
-                out_source.push(ti as u32);
-            }
-        }
+        out_idx.push(o);
+        out_mat.push(tri_mat[ti]);
+        out_src.push(tri_src[ti]);
     }
 
     MeshOutput {
@@ -406,30 +412,243 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
         uvs: out_uv,
         indices: out_idx,
         material_ids: out_mat,
-        source_triangle_indices: out_source,
+        source_triangle_indices: out_src,
     }
 }
 
-/// Choose a per-axis integer grid resolution whose cell-product is ~`target_cells`,
-/// distributed in proportion to the AABB extents. Deterministic. Each axis is at
-/// least 1; a zero-extent axis stays at 1.
-fn grid_resolution(target_cells: usize, extent: [f32; 3]) -> [u32; 3] {
-    // Count axes with real extent; collapse zero-extent axes to a single layer.
-    let live: Vec<usize> = (0..3).filter(|&k| extent[k] > 0.0).collect();
-    if live.is_empty() {
-        return [1, 1, 1];
+/// Weight applied to OPEN-BOUNDARY and MATERIAL-SEAM constraint planes. High
+/// enough that a collapse which would move a seam is never the cheapest option
+/// while the interior still has slack.
+const SEAM_WEIGHT: f64 = 1.0e3;
+
+/// One queued edge collapse. Ordering is `(cost_bits, v0, v1)`: `cost` is a
+/// NON-NEGATIVE f64, whose `to_bits()` is monotonic, so this is a total order that
+/// does not depend on float `PartialOrd` — two runs pop in the same sequence.
+#[derive(Clone, Copy)]
+struct Collapse {
+    cost_bits: u64,
+    v0: u32,
+    v1: u32,
+    ver0: u32,
+    ver1: u32,
+    target: [f64; 3],
+}
+
+// Equality is defined on the ORDERING KEY ONLY. `target` is an f64 payload and
+// plays no part in heap order; deriving Eq over it would not even compile.
+impl PartialEq for Collapse {
+    fn eq(&self, other: &Self) -> bool {
+        self.cost_bits == other.cost_bits && self.v0 == other.v0 && self.v1 == other.v1
     }
-    // Geometric mean cell-count per live axis, then scale by each axis' fraction of
-    // the total live extent so longer axes get more subdivisions.
-    let total_extent: f64 = live.iter().map(|&k| extent[k] as f64).sum();
-    let per_axis = (target_cells as f64).powf(1.0 / live.len() as f64);
-    let mut res = [1u32; 3];
-    for &k in &live {
-        let frac = (extent[k] as f64) / total_extent * live.len() as f64;
-        let r = (per_axis * frac).round().max(1.0);
-        res[k] = r as u32;
+}
+impl Eq for Collapse {}
+
+impl Ord for Collapse {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.cost_bits
+            .cmp(&other.cost_bits)
+            .then(self.v0.cmp(&other.v0))
+            .then(self.v1.cmp(&other.v1))
     }
-    res
+}
+impl PartialOrd for Collapse {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Symmetric 4x4 quadric stored as its 10 distinct coefficients.
+#[derive(Clone, Copy, Default)]
+struct Quadric {
+    xx: f64,
+    xy: f64,
+    xz: f64,
+    xw: f64,
+    yy: f64,
+    yz: f64,
+    yw: f64,
+    zz: f64,
+    zw: f64,
+    ww: f64,
+}
+
+impl Quadric {
+    fn from_plane(n: [f64; 3], d: f64) -> Self {
+        Self {
+            xx: n[0] * n[0],
+            xy: n[0] * n[1],
+            xz: n[0] * n[2],
+            xw: n[0] * d,
+            yy: n[1] * n[1],
+            yz: n[1] * n[2],
+            yw: n[1] * d,
+            zz: n[2] * n[2],
+            zw: n[2] * d,
+            ww: d * d,
+        }
+    }
+    fn scaled(mut self, s: f64) -> Self {
+        self.xx *= s;
+        self.xy *= s;
+        self.xz *= s;
+        self.xw *= s;
+        self.yy *= s;
+        self.yz *= s;
+        self.yw *= s;
+        self.zz *= s;
+        self.zw *= s;
+        self.ww *= s;
+        self
+    }
+    fn add(&mut self, o: &Self) {
+        self.xx += o.xx;
+        self.xy += o.xy;
+        self.xz += o.xz;
+        self.xw += o.xw;
+        self.yy += o.yy;
+        self.yz += o.yz;
+        self.yw += o.yw;
+        self.zz += o.zz;
+        self.zw += o.zw;
+        self.ww += o.ww;
+    }
+    fn error_at(&self, v: [f64; 3]) -> f64 {
+        let (x, y, z) = (v[0], v[1], v[2]);
+        self.xx * x * x
+            + 2.0 * self.xy * x * y
+            + 2.0 * self.xz * x * z
+            + 2.0 * self.xw * x
+            + self.yy * y * y
+            + 2.0 * self.yz * y * z
+            + 2.0 * self.yw * y
+            + self.zz * z * z
+            + 2.0 * self.zw * z
+            + self.ww
+    }
+    /// Position minimising this quadric. Falls back to the cheaper of the two
+    /// endpoints and their midpoint when the system is singular — a flat or
+    /// symmetric neighbourhood has no unique optimum and inventing one there is
+    /// how a simplifier puts vertices off the surface.
+    fn optimum(&self, a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        let m = [
+            [self.xx, self.xy, self.xz],
+            [self.xy, self.yy, self.yz],
+            [self.xz, self.yz, self.zz],
+        ];
+        let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+        if det.abs() > 1e-12 {
+            let r = [-self.xw, -self.yw, -self.zw];
+            let inv_det = 1.0 / det;
+            let x = (r[0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                - m[0][1] * (r[1] * m[2][2] - m[1][2] * r[2])
+                + m[0][2] * (r[1] * m[2][1] - m[1][1] * r[2]))
+                * inv_det;
+            let y = (m[0][0] * (r[1] * m[2][2] - m[1][2] * r[2])
+                - r[0] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * r[2] - r[1] * m[2][0]))
+                * inv_det;
+            let z = (m[0][0] * (m[1][1] * r[2] - r[1] * m[2][1])
+                - m[0][1] * (m[1][0] * r[2] - r[1] * m[2][0])
+                + r[0] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
+                * inv_det;
+            let v = [x, y, z];
+            if v.iter().all(|c| c.is_finite()) {
+                return v;
+            }
+        }
+        let mid = [
+            (a[0] + b[0]) * 0.5,
+            (a[1] + b[1]) * 0.5,
+            (a[2] + b[2]) * 0.5,
+        ];
+        let mut best = a;
+        let mut best_e = self.error_at(a);
+        for cand in [b, mid] {
+            let e = self.error_at(cand);
+            if e < best_e {
+                best_e = e;
+                best = cand;
+            }
+        }
+        best
+    }
+}
+
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Unit normal, plane offset, and TWICE the triangle area (the area weight).
+fn plane_of(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3]) -> Option<([f64; 3], f64, f64)> {
+    let n = cross3(sub3(p1, p0), sub3(p2, p0));
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if !len.is_finite() || len <= 1e-20 {
+        return None;
+    }
+    let n = [n[0] / len, n[1] / len, n[2] / len];
+    let d = -(n[0] * p0[0] + n[1] * p0[1] + n[2] * p0[2]);
+    Some((n, d, len))
+}
+
+/// Reject a collapse that would flip an incident triangle over (>90 degrees) or
+/// drive one to zero area. Without this a quadric-optimal position can happily
+/// fold a fan inside out — visually far worse than the error it saves.
+fn collapse_is_valid(
+    tri: &[[u32; 3]],
+    tri_alive: &[bool],
+    vtri: &[Vec<u32>],
+    pos: &[[f64; 3]],
+    v0: u32,
+    v1: u32,
+    target: [f64; 3],
+) -> bool {
+    for &v in &[v0, v1] {
+        for &ti in &vtri[v as usize] {
+            let ti = ti as usize;
+            if !tri_alive[ti] {
+                continue;
+            }
+            let t = tri[ti];
+            // Triangles that vanish in this collapse cannot flip.
+            if t.contains(&v0) && t.contains(&v1) {
+                continue;
+            }
+            let before = plane_of(
+                pos[t[0] as usize],
+                pos[t[1] as usize],
+                pos[t[2] as usize],
+            );
+            let mut moved = [[0.0f64; 3]; 3];
+            for (k, &idx) in t.iter().enumerate() {
+                moved[k] = if idx == v0 || idx == v1 {
+                    target
+                } else {
+                    pos[idx as usize]
+                };
+            }
+            let after = plane_of(moved[0], moved[1], moved[2]);
+            match (before, after) {
+                (Some((nb, _, _)), Some((na, _, _))) => {
+                    let dot = nb[0] * na[0] + nb[1] * na[1] + nb[2] * na[2];
+                    if dot <= 0.0 {
+                        return false;
+                    }
+                }
+                (Some(_), None) => return false, // would become degenerate
+                _ => {}
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -557,21 +776,30 @@ mod tests {
         let m5 = out.material_ids.iter().filter(|&&m| m == 5).count();
         assert!(m0 >= 1, "material-0 triangles must survive, got {m0}");
         assert!(m5 >= 1, "material-5 triangles must survive, got {m5}");
-        // No surviving triangle may reference a vertex shared between the two
-        // material groups: check the two groups use disjoint vertex sets.
-        let mut verts_m0 = std::collections::BTreeSet::new();
-        let mut verts_m5 = std::collections::BTreeSet::new();
-        for (t, &m) in out.indices.iter().zip(out.material_ids.iter()) {
-            let set = if m == 0 { &mut verts_m0 } else { &mut verts_m5 };
-            for &v in t {
-                set.insert(v);
-            }
+        // CONTRACT CHANGE (QEM, 2026-07-27). The grid clusterer keyed clusters on
+        // (cell, material) and therefore DUPLICATED every vertex shared by two
+        // materials, so the two groups came out with disjoint vertex sets. QEM does
+        // not split the mesh: this INPUT already shares vertices 3/4/5 between the
+        // two quads, and duplicating them would open a crack along the seam and
+        // inflate the vertex count. The seam is held by CONSTRAINT QUADRICS instead.
+        //
+        // What must still hold, and is what actually matters downstream:
+        //   1. every surviving triangle keeps its SOURCE material, and
+        //   2. the seam vertices themselves are preserved geometrically.
+        for (k, &src) in out.source_triangle_indices.iter().enumerate() {
+            assert_eq!(
+                out.material_ids[k], mats[src as usize],
+                "triangle {k} changed material away from its source"
+            );
         }
-        let shared: Vec<_> = verts_m0.intersection(&verts_m5).collect();
-        assert!(
-            shared.is_empty(),
-            "material 0 and 5 must not share welded vertices (seam crossed): {shared:?}"
-        );
+        for seam in [pos[3], pos[4], pos[5]] {
+            let kept = out.positions.iter().any(|p| {
+                (p[0] - seam[0]).abs() < 1e-4
+                    && (p[1] - seam[1]).abs() < 1e-4
+                    && (p[2] - seam[2]).abs() < 1e-4
+            });
+            assert!(kept, "seam vertex {seam:?} was not preserved");
+        }
     }
 
     #[test]
@@ -680,5 +908,202 @@ mod tests {
             out.material_ids.iter().all(|&m| m == 0),
             "empty ids -> all-zero"
         );
+    }
+}
+
+#[cfg(test)]
+mod qem_tests {
+    use super::*;
+
+    /// A subdivided unit cube: six faces, each an n×n quad grid, welded per face
+    /// (so face borders are UV/attribute seams exactly as a cooked building has).
+    fn subdivided_cube(n: usize) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
+        let mut pos = Vec::new();
+        let mut idx = Vec::new();
+        // (origin, du, dv) per face of the unit cube.
+        let faces: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
+            ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+            ([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+            ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+            ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+        ];
+        for (o, du, dv) in faces {
+            let base = pos.len() as u32;
+            for j in 0..=n {
+                for i in 0..=n {
+                    let (s, t) = (i as f32 / n as f32, j as f32 / n as f32);
+                    pos.push([
+                        o[0] + du[0] * s + dv[0] * t,
+                        o[1] + du[1] * s + dv[1] * t,
+                        o[2] + du[2] * s + dv[2] * t,
+                    ]);
+                }
+            }
+            let row = (n + 1) as u32;
+            for j in 0..n as u32 {
+                for i in 0..n as u32 {
+                    let a = base + j * row + i;
+                    idx.push([a, a + 1, a + row]);
+                    idx.push([a + 1, a + row + 1, a + row]);
+                }
+            }
+        }
+        (pos, idx)
+    }
+
+    /// One-sided Hausdorff: worst distance from any REFERENCE vertex to the
+    /// nearest REDUCED vertex. Deliberately independent of `asset::lod_error` so
+    /// this crate's test does not depend on the game crate.
+    fn hausdorff(reference: &[[f32; 3]], reduced: &[[f32; 3]]) -> f32 {
+        let mut worst = 0.0f32;
+        for r in reference {
+            let mut best = f32::INFINITY;
+            for q in reduced {
+                let d = (r[0] - q[0]).powi(2) + (r[1] - q[1]).powi(2) + (r[2] - q[2]).powi(2);
+                if d < best {
+                    best = d;
+                }
+            }
+            worst = worst.max(best.sqrt());
+        }
+        worst
+    }
+
+    /// Every output vertex of a decimated cube must still lie ON the cube surface
+    /// (some coordinate at 0 or 1). Grid clustering moves vertices to cell MEANS,
+    /// which lifts them off the faces — that is the "lumpy facade" failure.
+    #[test]
+    fn qem_keeps_vertices_on_the_surface_of_a_box() {
+        let (pos, idx) = subdivided_cube(8);
+        let out = simplify_mesh(
+            &MeshInput {
+                positions: &pos,
+                uvs: &[],
+                indices: &idx,
+                material_ids: &[],
+            },
+            0.25,
+        );
+        assert!(!out.positions.is_empty(), "decimation produced no geometry");
+        let mut worst_off = 0.0f32;
+        for p in &out.positions {
+            // Distance to the nearest of the six planes x/y/z = 0 or 1.
+            let off = p
+                .iter()
+                .map(|c| c.abs().min((c - 1.0).abs()))
+                .fold(f32::INFINITY, f32::min);
+            worst_off = worst_off.max(off);
+        }
+        assert!(
+            worst_off < 1e-3,
+            "QEM moved a vertex {worst_off} off the cube surface — planarity lost"
+        );
+    }
+
+    /// The eight cube corners are the silhouette. Losing them is exactly what
+    /// makes a distant building read as rubble.
+    #[test]
+    fn qem_preserves_the_corners_of_a_box() {
+        let (pos, idx) = subdivided_cube(8);
+        let out = simplify_mesh(
+            &MeshInput {
+                positions: &pos,
+                uvs: &[],
+                indices: &idx,
+                material_ids: &[],
+            },
+            0.25,
+        );
+        for cx in [0.0f32, 1.0] {
+            for cy in [0.0f32, 1.0] {
+                for cz in [0.0f32, 1.0] {
+                    let corner = [cx, cy, cz];
+                    let d = hausdorff(&[corner], &out.positions);
+                    assert!(
+                        d < 1e-3,
+                        "corner {corner:?} lost (nearest output vertex {d} away)"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Byte-identical output across runs — determinism is a product moat here.
+    #[test]
+    fn qem_is_deterministic() {
+        let (pos, idx) = subdivided_cube(6);
+        let mk = || {
+            simplify_mesh(
+                &MeshInput {
+                    positions: &pos,
+                    uvs: &[],
+                    indices: &idx,
+                    material_ids: &[],
+                },
+                0.3,
+            )
+        };
+        let a = mk();
+        let b = mk();
+        assert_eq!(a.positions, b.positions, "positions differ between runs");
+        assert_eq!(a.indices, b.indices, "indices differ between runs");
+    }
+
+    /// Per-triangle material ids ride through verbatim and stay parallel.
+    #[test]
+    fn qem_carries_material_ids_and_provenance() {
+        let (pos, idx) = subdivided_cube(6);
+        // Two materials split by triangle parity — plenty of seam edges.
+        let mats: Vec<u32> = (0..idx.len() as u32).map(|i| i % 2).collect();
+        let out = simplify_mesh(
+            &MeshInput {
+                positions: &pos,
+                uvs: &[],
+                indices: &idx,
+                material_ids: &mats,
+            },
+            0.4,
+        );
+        assert_eq!(
+            out.material_ids.len(),
+            out.indices.len(),
+            "material_ids must stay parallel to indices"
+        );
+        assert_eq!(
+            out.source_triangle_indices.len(),
+            out.indices.len(),
+            "provenance must stay parallel to indices"
+        );
+        for (k, &src) in out.source_triangle_indices.iter().enumerate() {
+            assert_eq!(
+                out.material_ids[k], mats[src as usize],
+                "triangle {k} changed material away from its source"
+            );
+        }
+    }
+
+    /// UVs stay inside the authored range and parallel to positions.
+    #[test]
+    fn qem_preserves_uv_stream() {
+        let (pos, idx) = subdivided_cube(6);
+        let uvs: Vec<[f32; 2]> = pos.iter().map(|p| [p[0], p[1]]).collect();
+        let out = simplify_mesh(
+            &MeshInput {
+                positions: &pos,
+                uvs: &uvs,
+                indices: &idx,
+                material_ids: &[],
+            },
+            0.35,
+        );
+        assert_eq!(out.uvs.len(), out.positions.len(), "UV stream desynced");
+        for uv in &out.uvs {
+            assert!(
+                (-1e-3..=1.0 + 1e-3).contains(&uv[0]) && (-1e-3..=1.0 + 1e-3).contains(&uv[1]),
+                "UV {uv:?} escaped the authored [0,1] range"
+            );
+        }
     }
 }

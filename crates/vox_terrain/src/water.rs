@@ -42,6 +42,7 @@
 //! explicitly OUT of scope; see [`WaterField::surface_height`] for the seam
 //! where the field would feed the water mesh / SDF level set.
 
+use rayon::prelude::*;
 use vox_sim::cim_sim::report::ReplayHasher;
 
 /// Fixed-ε quantization grid (1e-6 m). Every `f64` that enters the replay hash
@@ -468,27 +469,41 @@ impl WaterField {
         // (2) FLOW pass — Saint-Venant velocity advection (downhill flow), with
         //     NO-FLUX edges and order-independent double-buffering.
         //   (a) free surface = bed + depth.
-        for i in 0..n {
-            self.surf[i] = bed[i] + self.depth[i];
-        }
+        self.surf
+            .par_iter_mut()
+            .zip(bed.par_iter())
+            .zip(self.depth.par_iter())
+            .for_each(|((surface, bed), depth)| *surface = *bed + *depth);
         //   (b) surface gradient (dry-bank clamped + one-sided at the borders),
         //       velocity update (gravity + LINEAR drag + clamp), and CFL-limited
         //       flux. Reads `surf`/`bed` + own velocity, writes own vel/flux only
         //       → order-independent. A locally FLAT cell is forced to rest with
         //       zero flux so a filled basin stays bit-exact at equilibrium.
-        for z in 0..h {
-            for x in 0..w {
-                let i = z * w + x;
+        let depth = &self.depth;
+        let surf = &self.surf;
+        let vel_x = &mut self.vel_x;
+        let vel_z = &mut self.vel_z;
+        let flux_x = &mut self.flux_x;
+        let flux_z = &mut self.flux_z;
+        vel_x
+            .par_iter_mut()
+            .zip(vel_z.par_iter_mut())
+            .zip(flux_x.par_iter_mut())
+            .zip(flux_z.par_iter_mut())
+            .enumerate()
+            .for_each(|(i, (((vel_x, vel_z), flux_x), flux_z))| {
+                let x = i % w;
+                let z = i / w;
                 let s = self.surf[i];
 
                 // Dry-bank clamp: a DRY neighbour whose BED stands above this
                 // cell's surface is a wall, not deeper water — it exerts no head,
                 // so substitute this cell's own surface (zero head) for it.
                 let eff = |ni: usize| -> f64 {
-                    if self.depth[ni] == 0.0 && bed[ni] > s {
+                    if depth[ni] == 0.0 && bed[ni] > s {
                         s
                     } else {
-                        self.surf[ni]
+                        surf[ni]
                     }
                 };
                 let gx = if w == 1 {
@@ -510,30 +525,30 @@ impl WaterField {
                     (eff(i + w) - eff(i - w)) * inv_2dx
                 };
 
-                let grad_mag = (gx * gx + gz * gz).sqrt();
-                if grad_mag < GRAD_EPS {
-                    self.vel_x[i] = 0.0;
-                    self.vel_z[i] = 0.0;
-                    self.flux_x[i] = 0.0;
-                    self.flux_z[i] = 0.0;
-                    continue;
+                let grad_sq = gx * gx + gz * gz;
+                if grad_sq < GRAD_EPS * GRAD_EPS {
+                    *vel_x = 0.0;
+                    *vel_z = 0.0;
+                    *flux_x = 0.0;
+                    *flux_z = 0.0;
+                    return;
                 }
 
                 // gravity pull down-gradient, then linear drag, then clamp.
                 let damp = 1.0 - FLOW_DRAG * FLOW_DT;
-                let mut vx = (self.vel_x[i] - FLOW_DT * GRAVITY * gx) * damp;
-                let mut vz = (self.vel_z[i] - FLOW_DT * GRAVITY * gz) * damp;
-                let vmag = (vx * vx + vz * vz).sqrt();
-                if vmag > max_vel {
-                    let sc = max_vel / vmag;
+                let mut vx = (*vel_x - FLOW_DT * GRAVITY * gx) * damp;
+                let mut vz = (*vel_z - FLOW_DT * GRAVITY * gz) * damp;
+                let vmag_sq = vx * vx + vz * vz;
+                if vmag_sq > max_vel * max_vel {
+                    let sc = max_vel / vmag_sq.sqrt();
                     vx *= sc;
                     vz *= sc;
                 }
-                self.vel_x[i] = vx;
-                self.vel_z[i] = vz;
+                *vel_x = vx;
+                *vel_z = vz;
 
                 // flux = depth · vel · dt / dx, CFL-limited to FLUX_FRAC·depth.
-                let d = self.depth[i];
+                let d = depth[i];
                 let mut fx = d * vx * FLOW_DT / dx;
                 let mut fz = d * vz * FLOW_DT / dx;
                 let tot = fx.abs() + fz.abs();
@@ -543,87 +558,46 @@ impl WaterField {
                     fx *= sc;
                     fz *= sc;
                 }
-                self.flux_x[i] = fx;
-                self.flux_z[i] = fz;
-            }
-        }
-        //   (c) NO-FLUX divergence into `next`. The flux gate is SYMMETRIC — a
-        //       flux i→j is admitted iff `bed[j] < surf[i]` (water cannot climb
-        //       into a higher dry bank) — so every out term at `i` equals exactly
-        //       one in term at the neighbour: on-grid mass is conserved (modulo
-        //       fixed-ε float-sum order, which the replay fold quantizes away).
-        for z in 0..h {
-            for x in 0..w {
-                let i = z * w + x;
-                let si = self.surf[i];
-                let mut out = 0.0;
-                let mut inflow = 0.0;
-                if x + 1 < w {
-                    let j = i + 1;
-                    if self.flux_x[i] > 0.0 && bed[j] < si {
-                        out += self.flux_x[i];
-                    }
-                    if self.flux_x[j] < 0.0 && bed[i] < self.surf[j] {
-                        inflow += -self.flux_x[j];
-                    }
-                }
-                if x > 0 {
-                    let j = i - 1;
-                    if self.flux_x[i] < 0.0 && bed[j] < si {
-                        out += -self.flux_x[i];
-                    }
-                    if self.flux_x[j] > 0.0 && bed[i] < self.surf[j] {
-                        inflow += self.flux_x[j];
-                    }
-                }
-                if z + 1 < h {
-                    let j = i + w;
-                    if self.flux_z[i] > 0.0 && bed[j] < si {
-                        out += self.flux_z[i];
-                    }
-                    if self.flux_z[j] < 0.0 && bed[i] < self.surf[j] {
-                        inflow += -self.flux_z[j];
-                    }
-                }
-                if z > 0 {
-                    let j = i - w;
-                    if self.flux_z[i] < 0.0 && bed[j] < si {
-                        out += -self.flux_z[i];
-                    }
-                    if self.flux_z[j] > 0.0 && bed[i] < self.surf[j] {
-                        inflow += self.flux_z[j];
-                    }
-                }
-                let nd = (self.depth[i] - out + inflow).max(0.0);
-                max_delta = max_delta.max((nd - self.depth[i]).abs());
-                self.next[i] = nd;
-            }
-        }
-
-        //   (d) CONTAMINANT advection. Dissolved load rides the water: the SAME
-        //       admitted mass-flux gates that move `depth` move the contaminant,
-        //       so a plume travels DOWNSTREAM. The fraction of cell `i`'s water
-        //       that leaves carries the same fraction of its contaminant; each
-        //       admitted inflow from a neighbour `j` carries `contam[j] · (flux /
-        //       depth[j])`. Reads the FRONT `depth`/`contam` + `flux`/`surf`,
-        //       writes only `contam_next` → order-independent. A fixed
-        //       `CONTAM_DECAY` self-purification is applied last. Mass is
-        //       conserved (modulo decay + fixed-ε float order the fold quantizes).
-        for z in 0..h {
-            for x in 0..w {
-                let i = z * w + x;
+                *flux_x = fx;
+                *flux_z = fz;
+            });
+        //   (c+d) NO-FLUX divergence and CONTAMINANT advection share one
+        //         memory-bandwidth pass. Both consume the exact same admitted
+        //         neighbour fluxes, so walking the 1024² field twice only repeated
+        //         four boundary/gate tests per cell. The water and contaminant
+        //         writes remain disjoint double buffers and every per-cell sum
+        //         retains its original neighbour order, preserving replay bits.
+        //
+        //         The flux gate is SYMMETRIC — a flux i→j is admitted iff
+        //         `bed[j] < surf[i]` (water cannot climb into a higher dry bank) —
+        //         so every out term at `i` equals exactly one in term at the
+        //         neighbour: on-grid water and dissolved mass are conserved
+        //         (modulo decay + the fixed-ε replay quantization).
+        let transport_max_delta = self
+            .next
+            .par_iter_mut()
+            .zip(self.contam_next.par_iter_mut())
+            .enumerate()
+            .map(|(i, (next, contam_next))| {
+                let x = i % w;
+                let z = i / w;
                 let si = self.surf[i];
                 let d_i = self.depth[i];
                 let c_i = self.contam[i];
                 let mut out_water = 0.0;
+                let mut inflow = 0.0;
                 let mut in_contam = 0.0;
                 if x + 1 < w {
                     let j = i + 1;
                     if self.flux_x[i] > 0.0 && bed[j] < si {
                         out_water += self.flux_x[i];
                     }
-                    if self.flux_x[j] < 0.0 && bed[i] < self.surf[j] && self.depth[j] > 0.0 {
-                        in_contam += self.contam[j] * (-self.flux_x[j] / self.depth[j]);
+                    if self.flux_x[j] < 0.0 && bed[i] < self.surf[j] {
+                        let incoming = -self.flux_x[j];
+                        inflow += incoming;
+                        if self.depth[j] > 0.0 {
+                            in_contam += self.contam[j] * (incoming / self.depth[j]);
+                        }
                     }
                 }
                 if x > 0 {
@@ -631,8 +605,12 @@ impl WaterField {
                     if self.flux_x[i] < 0.0 && bed[j] < si {
                         out_water += -self.flux_x[i];
                     }
-                    if self.flux_x[j] > 0.0 && bed[i] < self.surf[j] && self.depth[j] > 0.0 {
-                        in_contam += self.contam[j] * (self.flux_x[j] / self.depth[j]);
+                    if self.flux_x[j] > 0.0 && bed[i] < self.surf[j] {
+                        let incoming = self.flux_x[j];
+                        inflow += incoming;
+                        if self.depth[j] > 0.0 {
+                            in_contam += self.contam[j] * (incoming / self.depth[j]);
+                        }
                     }
                 }
                 if z + 1 < h {
@@ -640,8 +618,12 @@ impl WaterField {
                     if self.flux_z[i] > 0.0 && bed[j] < si {
                         out_water += self.flux_z[i];
                     }
-                    if self.flux_z[j] < 0.0 && bed[i] < self.surf[j] && self.depth[j] > 0.0 {
-                        in_contam += self.contam[j] * (-self.flux_z[j] / self.depth[j]);
+                    if self.flux_z[j] < 0.0 && bed[i] < self.surf[j] {
+                        let incoming = -self.flux_z[j];
+                        inflow += incoming;
+                        if self.depth[j] > 0.0 {
+                            in_contam += self.contam[j] * (incoming / self.depth[j]);
+                        }
                     }
                 }
                 if z > 0 {
@@ -649,10 +631,17 @@ impl WaterField {
                     if self.flux_z[i] < 0.0 && bed[j] < si {
                         out_water += -self.flux_z[i];
                     }
-                    if self.flux_z[j] > 0.0 && bed[i] < self.surf[j] && self.depth[j] > 0.0 {
-                        in_contam += self.contam[j] * (self.flux_z[j] / self.depth[j]);
+                    if self.flux_z[j] > 0.0 && bed[i] < self.surf[j] {
+                        let incoming = self.flux_z[j];
+                        inflow += incoming;
+                        if self.depth[j] > 0.0 {
+                            in_contam += self.contam[j] * (incoming / self.depth[j]);
+                        }
                     }
                 }
+
+                let nd = (d_i - out_water + inflow).max(0.0);
+                *next = nd;
                 // Fraction of i's water (and thus its dissolved load) that leaves.
                 // `out_water < depth` always (CFL FLUX_FRAC limiter), so the
                 // out fraction is in [0, 1) and contaminant can never go negative.
@@ -663,10 +652,11 @@ impl WaterField {
                 };
                 let moved = (c_i - out_contam + in_contam).max(0.0);
                 let cn = moved * (1.0 - CONTAM_DECAY);
-                max_delta = max_delta.max((cn - self.contam[i]).abs());
-                self.contam_next[i] = cn;
-            }
-        }
+                *contam_next = cn;
+                (nd - d_i).abs().max((cn - c_i).abs())
+            })
+            .reduce(|| 0.0_f64, |a, b| a.max(b));
+        max_delta = max_delta.max(transport_max_delta);
 
         std::mem::swap(&mut self.depth, &mut self.next);
         std::mem::swap(&mut self.contam, &mut self.contam_next);
@@ -677,9 +667,13 @@ impl WaterField {
         //     UNFED cells are LEFT UNCHANGED so the FLOW pass owns the water that
         //     is not sea-connected (a released column on a dry slope is not
         //     force-drained — it flows downhill and pools).
-        for z in 0..h {
-            for x in 0..w {
-                let i = z * w + x;
+        let fill_max_delta = self
+            .next
+            .par_iter_mut()
+            .enumerate()
+            .map(|(i, next)| {
+                let x = i % w;
+                let z = i / w;
                 let bed_i = bed[i];
                 let cap = (sea_level - bed_i).max(0.0);
                 let cur = self.depth[i];
@@ -706,13 +700,15 @@ impl WaterField {
                     if (nv - cap).abs() < SNAP_EPS {
                         nv = cap;
                     }
-                    max_delta = max_delta.max((nv - cur).abs());
-                    self.next[i] = nv;
+                    *next = nv;
+                    (nv - cur).abs()
                 } else {
-                    self.next[i] = cur;
+                    *next = cur;
+                    0.0
                 }
-            }
-        }
+            })
+            .reduce(|| 0.0_f64, |a, b| a.max(b));
+        max_delta = max_delta.max(fill_max_delta);
 
         std::mem::swap(&mut self.depth, &mut self.next);
         self.rev += 1;
