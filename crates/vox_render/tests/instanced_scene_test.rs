@@ -91,6 +91,7 @@ fn inst(proto: u32, mat: u32, t: [f32; 3]) -> InstanceRecordGpu {
             t[0], t[1], t[2], 1.0,
         ],
         material_base: mat,
+        dynamic: false,
     }
 }
 

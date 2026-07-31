@@ -33,6 +33,7 @@ pub struct MaterialKey {
     pub albedo_tex: i32,
     pub normal_tex: i32,
     pub roughness_tex: i32,
+    pub metallic_roughness_tex: i32,
     pub displacement_tex: i32,
     pub opacity_tex: i32,
     pub vegetation_bsdf: bool,
@@ -72,6 +73,7 @@ impl MaterialKey {
             albedo_tex,
             normal_tex,
             roughness_tex,
+            metallic_roughness_tex: mat.metallic_roughness_tex,
             displacement_tex,
             opacity_tex: mat.opacity_tex,
             vegetation_bsdf: mat.vegetation_bsdf,
@@ -287,6 +289,16 @@ mod tests {
     }
 
     #[test]
+    fn packed_metallic_roughness_binding_is_part_of_material_identity() {
+        let plain = PbrMaterial::default();
+        let packed = PbrMaterial {
+            metallic_roughness_tex: 17,
+            ..plain
+        };
+        assert_ne!(key(&plain), key(&packed));
+    }
+
+    #[test]
     fn untextured_authored_colours_do_not_collapse_to_three_bits() {
         let a = PbrMaterial {
             base_color: [0.20, 0.25, 0.30],
@@ -328,7 +340,9 @@ mod tests {
         (key(&mat), mat, [i as f32; 16])
     }
 
-    fn split(zones: &[(MaterialKey, PbrMaterial, [f32; 16])]) -> (Vec<MaterialKey>, Vec<PbrMaterial>, Vec<[f32; 16]>) {
+    fn split(
+        zones: &[(MaterialKey, PbrMaterial, [f32; 16])],
+    ) -> (Vec<MaterialKey>, Vec<PbrMaterial>, Vec<[f32; 16]>) {
         (
             zones.iter().map(|z| z.0).collect(),
             zones.iter().map(|z| z.1).collect(),
@@ -353,7 +367,8 @@ mod tests {
         for (k, expected) in zones.iter().enumerate() {
             let slot = base as usize + k;
             assert_eq!(
-                table.materials()[slot].base_color, expected.1.base_color,
+                table.materials()[slot].base_color,
+                expected.1.base_color,
                 "zone {k} did not resolve at base+{k}"
             );
         }

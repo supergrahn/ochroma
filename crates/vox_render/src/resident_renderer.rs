@@ -111,14 +111,19 @@ pub struct ResidentSceneRenderer {
     /// direct-hit emission and NEE lights stay in lockstep.
     emissive_scale: f32,
     /// Aurora Step 1: the id-sorted, coalesced (latest-wins-per-slot) command
-    /// ring for resident transform deltas. Backed by a `BTreeMap<slot, …>` so
-    /// the drained stream is ALWAYS ascending-slot with one command per slot —
-    /// never HashMap/RNG/allocator order. Flushed on `render_camera` through the
-    /// GPU `apply_scene_delta` indexed scatter (ONE buffer upload + ONE
-    /// dispatch), REPLACING the old per-frame CPU `pending_refits` Vec push+sort
-    /// +drain. The indexed scatter is order-independent, so the resident buffer
-    /// is a pure function of this id-sorted command log (the determinism moat).
+    /// ring for resident transform deltas. Backed by retained slot arrays and
+    /// compact active-slot lists so the drained stream is ALWAYS ascending-slot
+    /// with one command per `(slot, op)` — never HashMap/RNG/allocator order.
+    /// Flushed on `render_camera` through the GPU `apply_scene_delta` indexed
+    /// scatter using its fixed mapped arena. The indexed scatter is
+    /// order-independent, so the resident buffer is a pure function of this
+    /// id-sorted command log (the determinism moat).
     delta_ring: SceneDeltaRing,
+    /// Structurally admitted command/refit scratch retained across frames.
+    /// These vectors are sized from the scene's instance domain during upload;
+    /// delta application never creates a transient `Vec`.
+    delta_commands: Vec<GpuSceneCmd>,
+    legacy_delta_refits: Vec<(usize, [[f32; 4]; 3])>,
     /// Engine-owned mirror for the NodeId→instance_index mapping of the scene
     /// currently uploaded. Populated by `reset_retained_mirror` after every
     /// `set_scene`; drives `drain_scene_deltas` so the game only emits
@@ -404,6 +409,22 @@ impl ResidentSceneRenderer {
         // rejects this on AMD/Vulkan/no-CUDA → software fallback, so it's correct
         // on the dev 780M too. SPECTRA_USE_OPTIX_RT remains an override.
         config.use_optix_rt = rcfg.use_optix_rt;
+        // Explicit benchmark-mode representation selection. The live product
+        // never sets `MEGAGEOMETRY_MODE`; its policy remains config-first.
+        // The benchmark may construct a separate internal scalar MegaGeometry
+        // calibration scene under `reference`; its public reference fixture
+        // remains the complete-mesh native cluster/CLAS baseline.
+        match std::env::var("MEGAGEOMETRY_MODE").as_deref() {
+            Ok("reference") => {
+                config.mega_geometry.visibility_execution =
+                    spectra_types::spectra_config::VisibilityExecutionPolicy::NativeScalar;
+            }
+            Ok("city_hybrid") => {
+                config.mega_geometry.visibility_execution =
+                    spectra_types::spectra_config::VisibilityExecutionPolicy::CertifiedFabric;
+            }
+            _ => {}
+        }
 
         // GROUND ANTI-TILING (FIX 1) — the stochastic texture-bombing knobs the
         // megakernel ground path reads (`u_ground_antitile_*`). The spectra
@@ -659,6 +680,8 @@ impl ResidentSceneRenderer {
             rig,
             emissive_scale: 1.0,
             delta_ring: SceneDeltaRing::new(),
+            delta_commands: Vec::new(),
+            legacy_delta_refits: Vec::new(),
             retained_mirror: RetainedRenderMirror::new(),
             last_view_proj: None,
             last_projection: None,
@@ -1062,6 +1085,93 @@ impl ResidentSceneRenderer {
     /// means the geometry did NOT move on the GPU — the backend prints the exact
     /// reason once (`[vertex-refit] FAILED: …`); it is never a silent outcome.
     /// `Err` on a bad node / count mismatch. Call BEFORE `render_camera`.
+    /// Resolve a node to its prototype and the soup slice that prototype owns.
+    ///
+    /// Shared by the GPU-animated displaced-surface calls below, which need the
+    /// SAME resolution the host-array refit does but must not be handed vertex
+    /// arrays. Returns `(proto, proto_vertex_count, vertex_base_floats)`.
+    fn resolve_animated_proto(&self, node: vox_scene::NodeId) -> Result<(u32, u32, u32), String> {
+        let inst = self
+            .retained_instance_index(node)
+            .ok_or_else(|| format!("no resident instance for node {node:?}"))?;
+        let st = self
+            .renderer
+            .state
+            .as_ref()
+            .ok_or("renderer state uninitialized")?;
+        let ss = st.scene_state.as_ref().ok_or("no resident scene")?;
+        let proto = *ss
+            .geometry
+            .instance_proto_index
+            .get(inst)
+            .ok_or_else(|| format!("no proto for instance {inst}"))?;
+        let range = ss
+            .geometry
+            .proto_ranges
+            .get(proto as usize)
+            .copied()
+            .ok_or_else(|| format!("no proto range for proto {proto}"))?;
+        let stride = (spectra_types::constants::VERTEX_FLOATS as u32);
+        Ok((proto, range.1, range.0 * stride))
+    }
+
+    /// Upload the STATIC halves of a GPU-animated displaced surface, once.
+    ///
+    /// Engine-generic: a "displaced point field with a topology", not a sea.
+    pub fn upload_animated_surface(
+        &mut self,
+        node: vox_scene::NodeId,
+        points: &[f32],
+        corners: &[u32],
+        adj_offsets: &[u32],
+        adj_triangles: &[u32],
+    ) -> Result<usize, String> {
+        let (proto, proto_verts, _) = self
+            .resolve_animated_proto(node)
+            .map_err(|e| format!("upload_animated_surface: {e}"))?;
+        // SHARED-VERTEX TOPOLOGY ONLY. If the prototype is de-indexed it holds
+        // `3 x triangles` vertices, every vertex has exactly one incident
+        // triangle, and the surface renders FACETED rather than frozen — a
+        // failure no downstream length check would catch, because the arrays are
+        // individually well-formed.
+        let records = points.len() / 20;
+        if records != proto_verts as usize {
+            return Err(format!(
+                "upload_animated_surface: node {node:?} supplied {records} point records but its                  prototype {proto} holds {proto_verts} vertices — the prototype is not                  shared-vertex indexed, so per-vertex animation cannot address it"
+            ));
+        }
+        self.renderer
+            .upload_water_surface(proto, points, corners, adj_offsets, adj_triangles)
+            .map_err(|e| format!("upload_animated_surface: {e:?}"))
+    }
+
+    /// Animate an uploaded surface ON THE GPU and refit its acceleration
+    /// structure. No vertex array crosses the host.
+    ///
+    /// Returns `false` when the surface is not GPU-animated, so the caller can
+    /// fall back to the host path rather than refit over unwritten vertices.
+    pub fn refit_animated_surface(
+        &mut self,
+        node: vox_scene::NodeId,
+        time_state: &[f32; 48],
+        origin: [f32; 3],
+    ) -> Result<bool, String> {
+        let (proto, _, base_floats) = self
+            .resolve_animated_proto(node)
+            .map_err(|e| format!("refit_animated_surface: {e}"))?;
+        let stride = (spectra_types::constants::VERTEX_FLOATS as u32);
+        let dispatched = self
+            .renderer
+            .dispatch_water_surface(proto, time_state, origin, base_floats, stride)
+            .map_err(|e| format!("refit_animated_surface: {e:?}"))?;
+        if !dispatched {
+            return Ok(false);
+        }
+        Ok(self
+            .renderer
+            .refit_animated_geometry_device(proto, base_floats, stride))
+    }
+
     pub fn refit_animated_vertices(
         &mut self,
         node: vox_scene::NodeId,
@@ -1088,11 +1198,10 @@ impl ResidentSceneRenderer {
                 .scene_state
                 .as_ref()
                 .ok_or("refit_animated_vertices: no resident scene")?;
-            let proto = *ss
-                .geometry
-                .instance_proto_index
-                .get(inst)
-                .ok_or_else(|| format!("refit_animated_vertices: no proto for instance {inst}"))?;
+            let proto =
+                *ss.geometry.instance_proto_index.get(inst).ok_or_else(|| {
+                    format!("refit_animated_vertices: no proto for instance {inst}")
+                })?;
             let verts = ss
                 .geometry
                 .proto_ranges
@@ -1125,7 +1234,9 @@ impl ResidentSceneRenderer {
                     for i in 0..self.retained_node_count() {
                         let n = self.retained_node_for_instance(i);
                         let p = ss.geometry.instance_proto_index.get(i).copied();
-                        let r = p.and_then(|p| ss.geometry.proto_ranges.get(p as usize)).copied();
+                        let r = p
+                            .and_then(|p| ss.geometry.proto_ranges.get(p as usize))
+                            .copied();
                         eprintln!(
                             "[vertex-refit] retained[{i}] node={n:?} proto={p:?} range={r:?}"
                         );
@@ -1315,6 +1426,17 @@ impl ResidentSceneRenderer {
 
     /// Shared upload body used by both `new` and `set_scene`.
     fn upload_scene(&mut self, mut scene: SceneState) -> Result<SceneSyncReport, String> {
+        let instance_count = scene.geometry.instance_count;
+        self.delta_ring.reserve_slots(instance_count);
+        self.delta_commands.clear();
+        let command_capacity = instance_count.saturating_mul(2);
+        if self.delta_commands.capacity() < command_capacity {
+            self.delta_commands.reserve(command_capacity);
+        }
+        self.legacy_delta_refits.clear();
+        if self.legacy_delta_refits.capacity() < instance_count {
+            self.legacy_delta_refits.reserve(instance_count);
+        }
         // Force the internal render resolution onto the scene's camera so the
         // film matches the renderer's framebuffer.
         scene.camera.width = self.width;
@@ -1445,15 +1567,60 @@ impl ResidentSceneRenderer {
     /// indexed scatter into the persistent resident buffer (copying current →
     /// prev_transform before overwrite, for motion vectors / DLSS-RR).
     ///
-    /// Determinism: the ring is a `BTreeMap<slot, …>`, so repeated writes to the
-    /// same slot coalesce latest-wins in place (no push+sort, no HashMap/RNG
-    /// order), and the drained stream is ascending-slot — the indexed scatter is
-    /// order-independent. This REPLACES the old CPU `pending_refits` Vec.
+    /// Determinism: retained slot arrays coalesce repeated writes latest-wins in
+    /// place, and sorted compact active-slot lists produce an ascending
+    /// `(slot, op)` stream without HashMap/RNG order or frame allocation. The
+    /// indexed scatter is order-independent.
     ///
     /// `transform` is a row-major 3×4 (upper rows of a 4×4 world transform).
     pub fn update_instance_transform(&mut self, instance_index: usize, transform: [[f32; 4]; 3]) {
         self.delta_ring
             .set_transform(instance_index as u32, transform);
+    }
+
+    /// Upload the STATIC per-instance vegetation-wind records, once.
+    ///
+    /// 16 floats per plant, packed as `vegetation_wind.slang` documents. After
+    /// this the host never computes a plant transform again: the kernel writes
+    /// animated transforms straight into the resident instance buffer, and only
+    /// seven scalar uniforms cross per frame.
+    ///
+    /// This exists so wind costs the SIMULATION nothing. The previous path ran a
+    /// host loop over every budgeted plant every frame and pushed each result
+    /// through `update_instance_transform` above.
+    pub fn upload_vegetation_wind_plants(&mut self, records: &[f32]) -> Result<usize, String> {
+        self.renderer
+            .upload_vegetation_wind_plants(records)
+            .map_err(|e| format!("upload vegetation wind plants: {e:?}"))
+    }
+
+    /// Animate every wind-driven instance on the GPU for this frame.
+    ///
+    /// Returns the number of plants dispatched; 0 means the scene declared none,
+    /// which is not an error. Must be called BEFORE the frame's TLAS refit so
+    /// the refit observes the animated transforms.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_vegetation_wind(
+        &mut self,
+        wind_speed: f32,
+        wind_direction: f32,
+        time: f32,
+        lean_per_speed_metre: f32,
+        flutter_freq: f32,
+        flutter_amp: f32,
+        max_angle_rad: f32,
+    ) -> Result<usize, String> {
+        self.renderer
+            .dispatch_vegetation_wind(
+                wind_speed,
+                wind_direction,
+                time,
+                lean_per_speed_metre,
+                flutter_freq,
+                flutter_amp,
+                max_angle_rad,
+            )
+            .map_err(|e| format!("dispatch vegetation wind: {e:?}"))
     }
 
     /// Record one instance's material-table base delta. This is the generic
@@ -1528,21 +1695,24 @@ impl ResidentSceneRenderer {
     /// ring is empty.
     pub fn flush_pending_deltas(&mut self) -> Result<(), String> {
         if !self.delta_ring.is_empty() {
-            let cmds = self.delta_ring.drain_commands();
+            self.delta_ring
+                .drain_commands_into(&mut self.delta_commands);
             let ias_refit = self
                 .renderer
-                .apply_scene_delta_and_refit_ias(&cmds)
+                .apply_scene_delta_and_refit_ias(&self.delta_commands)
                 .map_err(|e| format!("apply_scene_delta_and_refit_ias: {e:?}"))?;
             if !ias_refit {
                 // Legacy fallback (no CLAS IAS active): drive the traversed TLAS via
                 // the per-backend MODE_UPDATE refit from the same drained commands.
-                let dirty: Vec<(usize, [[f32; 4]; 3])> = cmds
-                    .iter()
-                    .filter(|c| c.op == OP_SET_TRANSFORM)
-                    .map(|c| (c.slot as usize, c.transform_3x4()))
-                    .collect();
+                self.legacy_delta_refits.clear();
+                self.legacy_delta_refits.extend(
+                    self.delta_commands
+                        .iter()
+                        .filter(|command| command.op == OP_SET_TRANSFORM)
+                        .map(|command| (command.slot as usize, command.transform_3x4())),
+                );
                 self.renderer
-                    .refit_instance_transforms(&dirty)
+                    .refit_instance_transforms(&self.legacy_delta_refits)
                     .map_err(|e| format!("refit_instance_transforms: {e:?}"))?;
             }
         }
@@ -1574,26 +1744,29 @@ impl ResidentSceneRenderer {
         // that path. On the NVIDIA/CUDA ship target the CLAS IAS refit runs and the
         // legacy refit is RETIRED (never reached).
         if !self.delta_ring.is_empty() {
-            let cmds = self.delta_ring.drain_commands();
+            self.delta_ring
+                .drain_commands_into(&mut self.delta_commands);
             let ias_refit = self
                 .renderer
-                .apply_scene_delta_and_refit_ias(&cmds)
+                .apply_scene_delta_and_refit_ias(&self.delta_commands)
                 .map_err(|e| format!("apply_scene_delta_and_refit_ias: {e:?}"))?;
             if !ias_refit {
                 // Legacy fallback (no CLAS IAS active): drive the traversed TLAS via
                 // the per-backend MODE_UPDATE refit from the same drained commands.
-                let dirty: Vec<(usize, [[f32; 4]; 3])> = cmds
-                    .iter()
-                    .filter(|c| c.op == OP_SET_TRANSFORM)
-                    .map(|c| (c.slot as usize, c.transform_3x4()))
-                    .collect();
+                self.legacy_delta_refits.clear();
+                self.legacy_delta_refits.extend(
+                    self.delta_commands
+                        .iter()
+                        .filter(|command| command.op == OP_SET_TRANSFORM)
+                        .map(|command| (command.slot as usize, command.transform_3x4())),
+                );
                 self.renderer
-                    .refit_instance_transforms(&dirty)
+                    .refit_instance_transforms(&self.legacy_delta_refits)
                     .map_err(|e| format!("refit_instance_transforms: {e:?}"))?;
             } else if std::env::var("OCHROMA_AURORA_TRACE").as_deref() == Ok("1") {
                 eprintln!(
                     "[aurora-k4] {} delta(s) → g_instances → OptiX IAS refit (no CPU scene rebuild)",
-                    cmds.len()
+                    self.delta_commands.len()
                 );
             }
         }
@@ -1620,8 +1793,7 @@ impl ResidentSceneRenderer {
         let camera_cut_now = self
             .last_camera_view
             .is_some_and(|prev| camera_cut(prev, view));
-        let temporal_reset =
-            self.last_view_proj.is_none() || projection_changed || camera_cut_now;
+        let temporal_reset = self.last_view_proj.is_none() || projection_changed || camera_cut_now;
         if projection_changed || camera_moved {
             if projection_changed || camera_cut_now {
                 self.renderer.reset_camera_accumulation();
@@ -1639,7 +1811,10 @@ impl ResidentSceneRenderer {
         self.renderer.set_camera_view_matrix(view);
         self.renderer.set_view_proj(view_proj);
         self.renderer.set_projection_matrix(proj);
-        let frame = self.renderer.render().map_err(|e| format!("render: {e:?}"))?;
+        let frame = self
+            .renderer
+            .render()
+            .map_err(|e| format!("render: {e:?}"))?;
         self.present_frame_index = self.present_frame_index.wrapping_add(1);
         // Mirror any MegaGeometry CPU-ownership activity Spectra recorded during
         // this frame into the engine-side witness (lock-free; no GPU sync).
@@ -1649,9 +1824,7 @@ impl ResidentSceneRenderer {
 
     /// Camera state for vendor-neutral temporal presentation. The matrices are
     /// captured at the same resident render boundary as the guide textures.
-    pub fn present_camera_state(
-        &self,
-    ) -> Option<([f32; 16], [f32; 16], [f32; 16], [f32; 16])> {
+    pub fn present_camera_state(&self) -> Option<([f32; 16], [f32; 16], [f32; 16], [f32; 16])> {
         Some((
             self.last_camera_view?,
             self.last_projection?,
@@ -1692,9 +1865,10 @@ impl ResidentSceneRenderer {
         if self.delta_ring.is_empty() {
             return Ok(());
         }
-        let cmds = self.delta_ring.drain_commands();
+        self.delta_ring
+            .drain_commands_into(&mut self.delta_commands);
         self.renderer
-            .apply_scene_delta(&cmds)
+            .apply_scene_delta(&self.delta_commands)
             .map_err(|e| format!("apply_scene_delta: {e:?}"))
     }
 
@@ -1737,7 +1911,10 @@ impl ResidentSceneRenderer {
         self.renderer.set_camera_view_matrix(view);
         self.renderer.set_view_proj(proj);
         self.renderer.set_projection_matrix(proj);
-        let frame = self.renderer.render().map_err(|e| format!("render: {e:?}"))?;
+        let frame = self
+            .renderer
+            .render()
+            .map_err(|e| format!("render: {e:?}"))?;
         self.bridge_geometry_cpu_ownership();
         Ok(frame)
     }
@@ -1750,6 +1927,87 @@ impl ResidentSceneRenderer {
         spectra_renderer::renderer::geometry_backend::GeometryBackendError,
     > {
         self.renderer.geometry_accel_stats()
+    }
+
+    /// Exact retained streaming/page/native-build allocation sizes. Collection
+    /// reads admitted handle metadata only and never synchronizes the GPU.
+    pub fn geometry_streaming_memory_stats(
+        &self,
+    ) -> Option<spectra_renderer::renderer::geometry_streaming::MegaGeometryStreamingMemoryStats>
+    {
+        self.renderer.geometry_streaming_memory_stats()
+    }
+
+    pub fn geometry_required_page_misses(&self) -> Option<u64> {
+        self.renderer.geometry_required_page_misses()
+    }
+
+    /// Blocking completed-frame diagnostic. It is intentionally exposed only
+    /// beside the other post-timed evidence accessors.
+    pub fn geometry_temporal_reuse_stats(
+        &self,
+    ) -> Result<spectra_renderer::renderer::GeometryTemporalReuseStats, String> {
+        self.renderer.geometry_temporal_reuse_stats()
+    }
+
+    pub fn update_geometry_visibility_parameters(
+        &self,
+        updates: &[(u32, f32)],
+    ) -> Result<(), String> {
+        self.renderer
+            .update_geometry_visibility_parameters(updates)
+    }
+
+    pub fn geometry_parameter_update_stats(
+        &self,
+    ) -> Result<spectra_renderer::renderer::GeometryParameterUpdateStats, String> {
+        self.renderer.geometry_parameter_update_stats()
+    }
+
+    /// Raw backend identity for product evidence. These values are reported,
+    /// never converted into a same-machine cross-backend "match" claim.
+    pub fn geometry_gpu_api(&self) -> spectra_gpu::GpuApiKind {
+        self.renderer.geometry_gpu_api()
+    }
+
+    pub fn geometry_gpu_device_name(&self) -> &str {
+        self.renderer.geometry_gpu_device_name()
+    }
+
+    pub fn geometry_gpu_capability_fingerprint(&self) -> [u8; 32] {
+        self.renderer.geometry_gpu_capability_fingerprint()
+    }
+
+    pub fn geometry_packet_abi_hash(&self) -> [u8; 32] {
+        self.renderer.geometry_packet_abi_hash()
+    }
+
+    /// Blocking diagnostic only. Call after the timed present interval, never
+    /// from an interactive frame.
+    pub fn geometry_control_hash_after_timed_frames(&self) -> Result<[u8; 32], String> {
+        self.renderer.geometry_control_hash_after_timed_frames()
+    }
+
+    /// Blocking diagnostic only. Call after the timed present interval.
+    pub fn visibility_queue_stats_after_timed_frames(
+        &self,
+    ) -> Result<spectra_gpu::VisibilityQueueStats, String> {
+        self.renderer.visibility_queue_stats_after_timed_frames()
+    }
+
+    /// Arm one serialized GPU-timestamp calibration frame. Benchmark-only;
+    /// product present never calls this path.
+    pub fn begin_visibility_calibration_frame(&mut self) -> Result<(), String> {
+        self.renderer.begin_visibility_calibration_frame()
+    }
+
+    /// Consume the exact per-dispatch GPU timings from the armed frame.
+    pub fn finish_visibility_calibration_frame(&mut self) -> Result<Vec<(String, f32)>, String> {
+        self.renderer.finish_visibility_calibration_frame()
+    }
+
+    pub fn geometry_pipeline_evidence(&self) -> (usize, u64) {
+        self.renderer.geometry_pipeline_evidence()
     }
 
     /// Number of TLAS instances registered after the last scene upload — the
@@ -1817,6 +2075,11 @@ impl ResidentSceneRenderer {
             self.geometry_cpu_bridge.page_calls = page_calls;
             self.geometry_cpu_bridge.page_ns = page_ns;
         }
+        self.geometry_cpu_ownership.set_submission_evidence(
+            snap.service_p95_ns(SpectraService::FixedRenderPassSubmission),
+            snap.host_submit_p95_ns(),
+            self.renderer.hierarchical_host_deadline_misses(),
+        );
     }
 
     /// A fully-reused [`SceneSyncReport`] (`rebuilt == 0`, `reused == 1`): the report
@@ -1864,8 +2127,7 @@ impl ResidentSceneRenderer {
     /// Tell Spectra that present owns temporal radiance reconstruction (SNR or
     /// RR), so its internal temporal accumulator must not run as a second owner.
     pub fn set_present_reconstruction_owns_temporal(&mut self, on: bool) {
-        self.renderer
-            .set_present_reconstruction_owns_temporal(on);
+        self.renderer.set_present_reconstruction_owns_temporal(on);
     }
 
     /// WATER (MAT_WATER) procedural-wave + shoreline-foam controls, forwarded to
@@ -2992,8 +3254,16 @@ mod glass_floor_tests {
         );
 
         // Deep night and high noon are the two saturated ends.
-        assert_eq!(w(-30.0), 1.0, "deep night must give windows full NEE weight");
-        assert_eq!(w(full_below), 1.0, "at the full-weight altitude, weight = 1");
+        assert_eq!(
+            w(-30.0),
+            1.0,
+            "deep night must give windows full NEE weight"
+        );
+        assert_eq!(
+            w(full_below),
+            1.0,
+            "at the full-weight altitude, weight = 1"
+        );
         assert_eq!(w(60.0), 0.0, "high noon must register NO window NEE lights");
         assert_eq!(w(none_above), 0.0, "at the cutoff altitude, weight = 0");
 

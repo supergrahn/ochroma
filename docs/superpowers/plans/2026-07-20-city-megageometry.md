@@ -2,45 +2,170 @@
 
 > **For agentic workers:** Execute one task at a time, preserve every dirty worktree, and stop at each hardware gate until remote/game execution is explicitly authorized. Use a task-execution skill if one is available in that session.
 >
-> **Status:** In progress; the AMD Vulkan path now completes Forge directive -> typed Ochroma payload -> Urban placement -> GPU-only realization -> native triangle BLAS/TLAS -> live Spectra present. The compressed-source/native-execution breakthrough is witnessed; CUDA/OptiX, Metal, multi-family product performance, and the stronger visibility-fabric/NVIDIA claims remain hardware gates.
+> **Status:** In progress; the AMD Vulkan path now completes finished game object -> Urban Horizon load/placement -> Ochroma geometry ownership -> Spectra GPU realization -> native triangle BLAS/TLAS -> live present. The compressed-source/native-execution breakthrough is witnessed; CUDA/OptiX, Metal, multi-family product performance, and the stronger visibility-fabric/NVIDIA claims remain hardware gates.
 > **Design:** [City MegaGeometry Design](../specs/2026-07-20-city-megageometry-design.md)
-> **Scope:** Forge authoring/cook, Urban Horizon payload and wiring, Ochroma resident bridge, Spectra scene state/renderer/OptiX
+> **Scope:** Finished game-object contract, Urban Horizon load/placement, Ochroma geometry system, and Spectra scene state/renderer/native backends
 > **Hardware gates:** NVIDIA RTX 4070 Ti OptiX box and AMD 780M Vulkan product machine; named Apple Silicon Metal 4 hardware is required before the Metal adapter graduates from experimental, but does not block the NVIDIA/AMD city release
 
-**Goal:** Ship a truthful deterministic, GPU-owned city visibility system that keeps supported Forge construction compact and backend-neutral through storage and streaming, then chooses the measured device-native execution representation at residency. That may be certified ray domains, coherent GPU packets, native custom primitives, CLAS, or GPU-realized fixed-function triangles; source representation is never confused with execution representation. The system eliminates CPU geometry materialization, topology-changing runtime LOD, and individual ray work where each measured path wins; preserves stable parametric surface identity; and delivers measured wins without moving scheduling to CPU or violating visual correctness.
+**Goal:** Ship a truthful deterministic, GPU-owned city visibility system that keeps finished game-object geometry compact and backend-neutral through storage and streaming, then chooses the measured device-native execution representation at residency. That may be certified ray domains, coherent GPU packets, native custom primitives, CLAS, or GPU-realized fixed-function triangles; source representation is never confused with execution representation. The system eliminates CPU geometry materialization, topology-changing runtime LOD, and individual ray work where each measured path wins; preserves stable surface identity; and delivers measured wins without moving scheduling to CPU or violating visual correctness.
 
-**Done When:** The authorized NVIDIA suite command prints `MEGAGEOMETRY_OVERALL winner=city_hybrid losses=0 target_wins=4 claim=better_city_geometry_system`, the geometry-program and scalar ray-native results are honestly scoped, and the largest result prints `MEGAGEOMETRY_FABRIC_BREAKTHROUGH structured_ray_coverage>=0.60 certified_without_per_ray_traversal>=0.35 active_packet_lanes>=0.75 intersection_speedup_vs_scalar>=2.0 geometry_stage_speedup>=2.0 routing_queue_overhead_pct<=10.0 correctness_mismatches=0 cpu_scheduling=0 real_asset_families>=2 losses=0 claim=certified_visibility_fabric`; CPU ownership remains zero, CUDA/Vulkan packet and control contracts match, the authorized AMD witness holds at least 30 fps, and a human has inspected both real-time 1 spp present captures. Metal remains `support=experimental` until its independent hardware gate passes. Failure of a breakthrough line narrows the claim but does not invalidate a winning subset.
+**Done When:** The final CUDA/Vulkan/product acceptance join prints `MEGAGEOMETRY_OVERALL winner=city_hybrid losses=0 target_wins=4 claim=better_city_geometry_system`, the geometry-program and scalar ray-native results are honestly scoped, and both raw backend results satisfy `MEGAGEOMETRY_FABRIC_BREAKTHROUGH structured_ray_coverage>=0.60 certified_without_per_ray_traversal>=0.35 active_packet_lanes>=0.75 intersection_speedup_vs_scalar>=2.0 geometry_stage_speedup>=2.0 routing_queue_overhead_pct<=10.0 correctness_mismatches=0 cpu_scheduling=0 real_asset_families>=2 losses=0 claim=certified_visibility_fabric`; CPU ownership remains zero, CUDA/Vulkan packet and control contracts match, the authorized AMD witness holds at least 30 fps, and a human has inspected both real-time 1 spp present captures. Metal remains `support=experimental` until its independent hardware gate passes. Failure of a breakthrough line narrows the claim but does not invalidate a winning subset.
 
-**Architecture:** Forge dual-lowers its validated construction DAG into the existing mesh oracle and a finite data-only visibility IR with sparse visibility cells and factorized surface coefficients. Spectra first classifies coherent ray domains using exact conservative bounds: certified domains emit analytic hits without per-ray traversal, ambiguous domains split, unresolved rays bin by cell/family/ray class for subgroup or cooperative packet intersection, and irregular residue enters native RT. Supported surfaces can also use scalar native custom intersection; unsupported subgraphs become local topology-program or dense-triangle residuals. Every queue, count, subdivision, dispatch, reduction, and fallback selection remains GPU-owned with fixed admitted capacities.
+**Architecture:** Forge is an independent offline asset author and is outside this system. Its only possible contribution is a finished game object written to disk, exactly like a finished object from any other authoring tool. Urban Horizon loads that object and supplies it to Ochroma. Ochroma validates the authoritative source geometry and owns all reusable topology, correspondence, page, and scheduling data. Spectra consumes Ochroma's renderer-facing state and owns coherent ray classification, GPU detail selection, residency, eviction, native acceleration selection, and traversal. Every queue, count, subdivision, dispatch, reduction, and fallback selection remains GPU-owned with fixed admitted capacities.
 
 **Design Document:** `docs/superpowers/specs/2026-07-20-city-megageometry-design.md`
 
-**Tech Stack:** Rust, Slang, Forge BlueprintGraph dual lowering, conservative interval ray-domain classification, GPU wavefront queues, subgroup packet algebra, optional cooperative matrices for dense coefficient tiles, CUDA/PTX/OptiX 9.1 custom primitives and CLAS, Vulkan/SPIR-V procedural AABB and KHR RT, Metal/MSL bounding-box intersection, DGF/DGFS reference formats, optional DirectStorage GPU decompression, Forge asset cook, RON product configuration
+**Tech Stack:** Rust, Slang, the versioned finished game-object ABI, conservative interval ray-domain classification, GPU wavefront queues, subgroup packet algebra, optional cooperative matrices for dense coefficient tiles, CUDA/PTX/OptiX 9.1 custom primitives and CLAS, Vulkan/SPIR-V procedural AABB and KHR RT, Metal/MSL bounding-box intersection, DGF/DGFS reference formats, optional DirectStorage GPU decompression, and RON product configuration
 
 **Build:** Local pure-Rust crates use `cargo test`/`cargo check`; CUDA/OptiX and live NVIDIA gates run only on the authorized NVIDIA box, Vulkan gates on the AMD product machine, and Metal support requires a named Apple Silicon runner. Hardware adapter commands remain permission-gated.
 
-### Implementation checkpoint — 2026-07-20
+> **Dependency-direction correction — 2026-07-30:** Forge creates assets
+> offline. It does not call, link, configure, or otherwise know about Urban
+> Horizon, Ochroma, or Spectra; none of those products calls or links Forge.
+> The boundary is the versioned finished game object on disk. Urban Horizon
+> loads it, Ochroma owns its engine representation, and Ochroma uses Spectra to
+> render it. There is no MegaGeometry exporter, authoring bridge, sidecar, or
+> special asset format. One authoritative full-detail mesh enters the product. Ochroma
+> derives source clusters, correspondence, reusable topology, page/group
+> schedules, and their content addresses; Spectra owns every frame-time
+> visibility/detail/residency/eviction decision and native
+> triangle/cluster/procedural selection. Asset-authored distance meshes are
+> rejected. This paragraph supersedes every older sentence in this document
+> that assigns runtime data, runtime schedules, or renderer-facing contracts to
+> Forge.
 
-- **The missing execution-layer opportunity is now implemented:** compressed Forge programs are the storage/streaming representation, not a mandate to execute programmable intersections. Spectra realizes certified exact-cell programs once on the GPU into its canonical vertex/shading stream plus a tight native index stream, synchronizes on-device, and builds ordinary opaque triangle BLASes. The CPU performs no geometry generation, de-indexing, repacking, readback, or per-frame scheduling.
+### Implementation checkpoint — 2026-07-30
+
+- One authoritative mesh now carries an Ochroma-derived, exact source-triangle
+  cluster permutation. Urban payload schema 5 validates complete coverage and
+  rejects authored distance meshes; Spectra uploads the permutation and native
+  adapters preserve source primitive/material/UV/normal identity.
+- OptiX lowering builds real hardware CLAS when queried support exists, factors
+  reusable exact-topology templates, and retains deterministic triangle
+  fallback elsewhere. Cluster claims require successful native builds.
+- `.vxp` stores only the finished game object: authoritative mesh, surfaces,
+  metadata, and thumbnail. It contains no authored LODs, clusters,
+  MegaGeometry records, or geometry pages. Ochroma's disposable engine cache
+  stores derived pages by content address; enumeration still reads no geometry.
+- `.vxp` index version 4 enforces that boundary mechanically: `VxpWriter`
+  exposes no authored-LOD or runtime-page emission API, and its index contains
+  no geometry-page field. Version 2/3 packs remain read-only migration inputs;
+  their retired detail is never admitted as runtime authority.
+- Urban assembles real global group/page descriptors from those resolved ranges.
+  Spectra uploads the immutable manifests, selects the cut and required/optional
+  requests on GPU, accumulates delayed per-hit feedback on GPU, and runs the
+  fixed GPU page allocator/evictor.
+- The bounded host island opens source packs once and performs file I/O on its
+  dedicated thread. It cannot choose priority, victim, page, or destination.
+  A GPU completion kernel validates slot generation, content address and byte
+  count at the frame boundary. Scene replacement explicitly releases every
+  control-graph allocation.
+- The opaque packet now uses persistent host-visible receipt allocations on
+  CUDA, Vulkan, and Metal. Completed-frame reads perform no submission, wait,
+  allocation, or device download. File bytes land in a fixed coherent staging
+  pool; the GPU copies them into device-local page storage before publishing
+  residency. Required parents are fully admitted before the first present.
+- The final benchmark now keeps its three public competitors honest:
+  `triangle` is the authoritative source-GAS oracle, `reference` retains the
+  complete source mesh for native cluster/CLAS selection, and only
+  `city_hybrid` receives Ochroma-derived MegaGeometry and removes covered
+  triangles. Scalar ray-native calibration is recorded separately. Raw
+  backend artifacts can validate and exit cleanly without pretending to prove
+  the external product fixture or cross-backend equality; the final acceptance
+  compositor alone joins CUDA, Vulkan, and the Urban Horizon product witness.
+- The benchmark now derives storage/count evidence directly from the finished
+  `.vxp` mesh and Ochroma's disposable runtime payload. It retains measured
+  partial/losing evidence in JSON, prints every unmeasured value as
+  `unavailable` instead of zero, and composes program/visibility metrics from
+  two real finished-object families. The final compositor requires both CUDA
+  and Vulkan to pass the program, scalar ray-native, and Fabric claims.
+  Bounded program-parameter updates, topology-changing temporal invalidations,
+  and the independent scalar-procedural intersection comparison now have
+  matched GPU experiments. Parameter updates are non-identity, GPU-validated,
+  conservatively bounded, and receipt-count fine-AS builds. The temporal
+  experiment captures raw representation-local keys beside stable mapped keys
+  for the same cut transition. Scalar procedural and native reference timing
+  use the same device-event stage boundary. Their CUDA/Vulkan outcomes remain
+  hardware gates; no local compile result or placeholder can authorize them.
+- GPU page residency now resolves the selected cut to a resident group or its
+  resident parent and filters procedural intersection before program decode.
+  Ochroma now derives a deterministic four-level constrained-QEM hierarchy,
+  independently decodable pages, bounded parent maps, and direct-root surface
+  correspondence from the authoritative mesh. Native build records contain
+  only required roots or GPU-selected uploaded pages.
+- Mandatory roots now complete upload, GPU decode, fixed-slot native build,
+  trace-readiness publication, instance-key lowering, and IAS/TLAS admission
+  before the first present. Interactive OptiX slot updates stay on the bounded
+  host service, while the complete GPU-selected IAS schedule is enqueued on the
+  render stream before traversal so detail-cut changes cannot race native
+  acceleration state. Vulkan performs the equivalent ordered TLAS refit.
+- OptiX streamed triangle detail now has an exact alpha any-hit path using the
+  resident material remap, authored UV transform/wrap, and the same native
+  texture handles as ordinary shading. CUDA admission fails closed unless the
+  OptiX implementation is compiled.
+- Local proof passes the OptiX contract suite, renderer geometry/control suites,
+  scene-state/upload suites, Ochroma hierarchy/page suites, and Urban VXP
+  hierarchy fixture. NVIDIA CUDA/OptiX execution, cross-backend control hashes,
+  AMD product performance, and live visual gates remain authorization-bound
+  hardware evidence, not locally claimed results.
+- Visibility calibration identity now names Ochroma's
+  `runtime_geometry_schema` rather than a cook schema and hashes every live
+  visibility shader plus its shared ray-queue dependency. A manifest test
+  prevents a newly added visibility source from escaping cache invalidation.
+  Legacy `cook_schema` files are migration inputs only.
+- The product A/B compositor now has direct fail-closed tests and rejects
+  malformed hashes, empty intervals, non-finite/negative metrics, and inverted
+  percentile ordering before it can publish a win.
+
+### Rejected legacy checkpoint — 2026-07-20
+
+> The evidence below predates the corrected dependency boundary and used
+> cooked/serialized visibility programs. It is retained only as historical
+> performance/debug evidence. It does **not** satisfy any current task or gate
+> and must not be revived as a MegaGeometry exporter, authored sidecar, special
+> Forge path, or `.vxp` payload extension.
+
+- **The missing execution-layer opportunity is now implemented:** compressed
+  finished-object programs are a storage/streaming representation, not a
+  mandate to execute programmable intersections. Ochroma validates and owns
+  them; Spectra realizes certified exact-cell programs once on the GPU into its
+  canonical vertex/shading stream plus a tight native index stream,
+  synchronizes on-device, and builds ordinary opaque triangle BLASes. The CPU
+  performs no geometry generation, de-indexing, repacking, readback, or
+  per-frame scheduling.
 - The Meridian House product payload carries 3,199 exact programs, 49 shared templates, 3,199 selectors, and 9,597 patches in 409,472 program bytes. Those programs replace 19,194 source facade triangles; the remaining source geometry stays an exact residual. The live log prints `MEGAGEOMETRY_GPU_REALIZED programs=3199 patches=9597 triangles=19194 cpu_geometry_work=0 status=device_resident`.
 - A same-binary, same-map, same-camera, 60-frame live-present A/B on AMD 780M measured `render_median=39.03ms` for GPU-realized MegaGeometry and `render_median=38.31ms` for the source-triangle control: a 1.88% delta, placing the compressed path in native-triangle execution parity rather than the much slower programmable-AABB path. Xwayland throttled presentation to 1 Hz during this long background run, so present/sustained FPS is not product-performance evidence; the render medians are the valid relative GPU result.
 - The focused full-render equivalence test removes the source wall triangles, realizes them on-device, shades through the normal wavefront renderer, and compares against an identical triangle control. It reports `max_image_error=0.000000149`, `triangle_primary_ms=0.245358`, `mega_primary_ms=0.171390`, `cpu_geometry_work=0`, and exits cleanly. A teardown ownership defect found by this test was fixed so caller-owned GPU index buffers are never unmapped or freed by the Vulkan acceleration adapter.
 - The inspected live 1 spp + temporal reconstruction witness is `urban_horizon/artifacts/mega_geometry_live/meridian_gpu_realized_current_frontage.png`; a settled close crop separately exposes authored glass, mullion, spandrel, reveal, trim, and interior-card material zones.
 
-- Forge now factors 10,334 exact visibility patches / 20,668 local triangles from two real authored asset families into 14 broad surface programs, 53 shared cell templates, and 3,448 selectors. The real corpus reports `coarse_primitive_reduction=738.143x`, exact material/normal/UV identity `20668/20668`, and nearest-hit mesh-oracle agreement `2090/2090`.
+- The finished-object corpus carries 10,334 exact visibility patches /
+  20,668 local triangles from two real authored asset families. Ochroma factors
+  them into 14 broad surface programs, 53 shared cell templates, and 3,448
+  selectors. The real corpus reports
+  `coarse_primitive_reduction=738.143x`, exact material/normal/UV identity
+  `20668/20668`, and nearest-hit mesh-oracle agreement `2090/2090`.
 - The checked-in census is deterministic: two independent cooks produced SHA-256 `838aabef0d86d8134f6b0c84e45a972c8b715f1e9c0c3f607749f9a023fd5c37`.
 - Spectra has a fixed backend-neutral 128-byte surface-program record, 112-byte four-rectangle template, device-owned ray count/index packet, and a Slang broad-surface kernel. The encoded broad records occupy 21,520 bytes versus 1,322,752 bytes for exact patch records (`61.466x` reduction).
 - Twisted surfaces use a fixed 32-segment multi-root sweep plus 20 bisection steps and exact local 3x3 cell refinement. Work is bounded independently of source patch/triangle count; no CPU per-frame scheduler or readback participates.
 - The compute-only Vulkan hardware gate passes on `AMD Radeon 780M Graphics (RADV PHOENIX)`: 1,549 broad-surface rays compared against the exact patch GPU kernel produce zero misses and zero hit/material/key/distance/normal/UV mismatches.
 - Vulkan native routing is now real: 14 procedural AABBs build as instanced BLAS/TLAS state and the 1,549-ray native query agrees with the exact-patch GPU oracle at zero mismatches. The latest microprobe reports native build `3.780618 ms` and native dispatch `2.637698 ms`; the exact-patch known-index dispatch is only a correctness lower bound, not a fair RT baseline.
-- `ReadyMegaGeometry` is a validated, backend-neutral Ochroma asset ABI. The real cottage product cook emits four programs replacing 172 source triangles (`2256` encoded bytes), and validates through `ReadyAssetPayload` schema 3.
+- Historical invalid architecture: `ReadyMegaGeometry` was once treated as an
+  asset ABI and emitted by the product cook. That path is retired. The current
+  runtime representation is derived by Ochroma from the one authoritative
+  finished mesh after Urban Horizon loads it, and is never stored in
+  `ReadyAssetPayload` or `.vxp`.
 - Urban LOD0 placement removes exactly the covered source triangle ids only when prototype sharing and native MegaGeometry are admitted. It preserves all residual triangles, instance transforms, and authored-to-resident material mappings. Spectra deduplicates immutable program storage by content hash and builds true transformed AABB prototype instances.
 - Native MegaGeometry now participates in the real Spectra wavefront nearest-hit contract, material/BSDF/lighting/AOV path, and shadow occlusion without CPU ray scheduling or readback. Vulkan closest-hit triangle and MegaGeometry work is fused into one wavefront dispatch; the shadow variant remains split because the fused variant measured substantially worse register pressure on RDNA3.
 - The AMD 780M offscreen full-render witness deliberately removes the visible wall's two source triangles, retains one ordinary residual triangle, and still shades the procedural wall red through the complete renderer. It prints `mean_luminance=0.701619`, `primary_merge_ms=1.839133`, `shadow_merge_ms=2.002087`, `status=pass` at 128x96, 1 spp, two bounces.
 - Product admission is config-first through `assets/config/render.ron` (`mega_geometry.native_enabled`), with the environment retained only as an A/B override. Primary-ray generation and both triangle traversal paths explicitly clear the procedural hit discriminator, preventing stale layer tags across scene transitions.
 - Procedural hits now preserve exact object-space `dpdu`/`dpdv` through native traversal and solve screen-space UV derivatives in the common megakernel. EWA mip selection, parallax, and tangent-space normal mapping therefore consume the same authored differential geometry as triangle hits instead of zero gradients or a synthetic tangent frame.
 - Urban now converts the established row-major proto-instance linear transform explicitly before composing the column-major MegaGeometry transform. A rotation/mirror/non-uniform-scale contract test passes, and live AMD beauty plus material-slot A/B captures align the procedural walls with Forge-authored rustication, plaster/trim, windows, and residual facade dressing.
-- Forge oracle refinement is fail-closed at runtime primitive granularity: a mismatch expands to the complete authored analytic surface, its original triangles remain residual, and its broad surface program is omitted. The Forge oracle suite reports `8 passed; 0 failed`; the freshly recooked cottage remains fully certified at four programs and 172 removed source triangles.
+- Offline finished-object refinement is fail-closed at primitive granularity: a
+  mismatch expands to the complete tool-neutral analytic surface, its original
+  triangles remain residual, and its broad surface program is omitted. The
+  independent source-oracle suite reports `8 passed; 0 failed`; the freshly
+  converted cottage remains fully certified at four programs and 172 removed
+  source triangles.
 - The dominant untwisted/untapered architectural family now takes an exact plane solve before cell lookup, bypassing Newton and inverse deformation. In the equal-image wall witness this reduced primary procedural intersection from roughly `1.87 ms` to `0.39 ms` in the first observed run; timings remain too noisy and undersized for a product claim. The native-triangle control was `0.26 ms`, while the rendered images agreed to `1.401e-6` maximum channel error.
 - A fair real-corpus AS admission comparison now builds both 20,668 exact source triangles and the 14 broad AABBs on the same AMD Vulkan device. It reports `triangle_bytes=744048`, `broad_aabb_bytes=336`, `storage_reduction=2214.429x`, `triangle_build_ms=2.340191`, and `broad_build_ms=2.243490`. This is a major representation/transfer result but only a `1.043x` build win at this tiny two-asset scale, so it does not satisfy the complete-stage speedup gate by itself.
 - The **compressed-source/native-fixed-function-execution** breakthrough is authorized for the witnessed AMD Vulkan path. It is not evidence for `better_city_geometry_system`, `ray_native_city_geometry`, or `certified_visibility_fabric`: those broader claims still require the plan's two-family, 120-frame product, NVIDIA CUDA/OptiX, and independent Metal hardware gates.
@@ -49,32 +174,40 @@
 
 ## IMPORTANT NOTES
 
-- `GeometryAccelStats` and every new cross-crate cook/layer type have private fields and validating constructors. Use accessors; do not mutate accepted schedules.
-- `cook_mega_geometry(input: &MegaGeometryCookInput<'_>, visibility: Option<&CookedVisibilityProgramSet>, settings: &MegaGeometryCookSettings) -> Result<CookedMegaGeometry, MegaGeometryCookError>` is the exact Forge entry point; it proves ray-native plus residual source coverage exactly once.
-- `forge_building::blueprint::lower_visibility_graph(graph: &BlueprintGraph) -> Result<forge_mesh::VisibilityConstructionGraph, ForgeError>` dual-lowers the validated source without changing the mesh oracle.
-- `forge_mesh::cook_visibility_program(input: &VisibilityConstructionGraph, settings: &VisibilityCookSettings) -> Result<CookedVisibilityProgramSet, VisibilityCookError>` emits only finite validated primitive families plus explicit residuals.
-- `ReadyMegaGeometry::try_from_cooked(cooked: &forge_mesh::CookedMegaGeometry) -> Result<Self, ReadyAssetError>` is the exact Urban payload adapter.
+- `GeometryAccelStats` and every new cross-crate runtime/layer type have private fields and validating constructors. Use accessors; do not mutate accepted schedules.
+- `prepare_mesh_programs(MeshProgramInput) -> Result<MeshProgramPreparation, MeshProgramError>` is the exact Ochroma topology-program derivation/cache boundary.
+- `prepare_runtime_detail(...) -> Result<RuntimeDetailPreparation, RuntimeDetailError>` is the exact Ochroma hierarchy/correspondence/page-cache boundary.
+- `RuntimeGeometryService::submit(RuntimeGeometrySource) -> Result<RuntimeGeometryKey, RuntimeGeometryServiceError>` is the bounded asynchronous admission boundary used after the game loads an ordinary finished mesh.
 - `GeometryLayer::set_mega_geometry(&mut self, mega_geometry: MegaGeometryLayer) -> Result<(), SceneStateError>` is the exact scene-state setter.
 - `GpuBackend::capabilities(&self) -> &GpuCapabilities` is immutable after device initialization and its fingerprint participates in every shader/calibration cache key.
 - `select_geometry_kernel_variant(caps: &GpuCapabilities, family: GeometryKernelFamily, calibration: Option<&GeometryKernelCalibration>) -> GeometryKernelVariant` selects only precompiled variants at structural admission.
-- `resolve_geometry_schedule(variants: &[GeometryScheduleVariantDesc], calibration: Option<&GeometryScheduleCalibration>) -> GeometryScheduleDecision` selects one pre-cooked Pareto candidate at admission and never generates topology.
+- `resolve_geometry_schedule(variants: &[GeometryScheduleVariantDesc], calibration: Option<&GeometryScheduleCalibration>) -> GeometryScheduleDecision` selects one Ochroma-derived Pareto candidate at admission and never moves topology authoring into Spectra.
 - `GeometryAccelBackend::admit_geometry_scene(&mut self, input: &GeometryAdmissionInput<'_>, queue: &GpuQueueToken) -> Result<GeometryResidentHandle, GeometryBackendError>` is structural/load-time only.
 - `GeometryAccelBackend::encode_geometry_builds(&mut self, input: &GeometryIndirectBuildInput<'_>, queue: &GpuQueueToken) -> Result<GpuEpoch, GeometryBackendError>` consumes GPU-written records and GPU-written counts without readback.
 - `GeometryAccelBackend::collect_geometry_stats(&mut self, completed: &GpuEpoch) -> Result<GeometryAccelStats, GeometryBackendError>` is benchmark/diagnostic only and never runs before present.
-- `resolve_geometry_accel(traits: &GeometryDomainTraits, calibration: Option<&GeometryCalibration>) -> GeometryPolicyDecision` runs only at cooked-domain admission/calibration and cannot enter simulation or save state.
+- `resolve_geometry_accel(traits: &GeometryDomainTraits, calibration: Option<&GeometryCalibration>) -> GeometryPolicyDecision` runs only at Ochroma runtime-domain admission/calibration and cannot enter simulation or save state.
 - `GeometryGpuPipeline::dispatch_prepare(&mut self, input: &GeometryPrepareInput<'_>, queue: &GpuQueueToken) -> Result<&GeometryGpuWorkBuffers, GeometryGpuError>` is the sole steady-state LOD/page/build-work decision path.
 - `VisibilityGpuPipeline::dispatch_visibility(&mut self, input: &VisibilityDispatchInput<'_>, geometry: &GeometryGpuWorkBuffers, queue: &GpuQueueToken) -> Result<GpuEpoch, VisibilityGpuError>` is the sole certified-domain/packet/residual visibility scheduler. It consumes GPU count handles and cannot read them on CPU.
 - `GeometryPageTransport::service_transfer_batch(&mut self, records: &[GeometryTransferRecord], completed_fence: u64) -> Result<GeometryTransferCompletions, GeometryTransportError>` executes opaque GPU decisions only.
 - OptiX uses hierarchical IAS and graph depth 3. Do not name it PTLAS; Vulkan PTLAS is out of the initial scope.
-- Forge owns cluster topology, continuous LOD hierarchy, boundaries, and pages. Urban gameplay and Spectra runtime do not run QEM or repair authored geometry.
+- Ochroma owns source-cluster topology, continuous-detail hierarchy,
+  correspondence, reusable templates, page boundaries, and content addresses.
+  It derives them exclusively from the ordinary finished mesh and its finished
+  surface streams. Urban gameplay never chooses detail, and Spectra consumes
+  the immutable Ochroma schedule rather than repairing source geometry.
 - Per frame, CPU code may not walk scene geometry, choose LOD, prioritize/evict pages, compact dirty partitions, allocate page slots, generate CLAS args, or synchronously read counts/stats.
 - Common scene state and packets may contain only fixed-width backend-neutral records and `GpuBufferHandle`s; native pointers, queues, and API structs exist only inside the final adapter.
 - Slang `linalg::CoopMat` is the cooperative source abstraction. Every eligible kernel retains an ordinary subgroup/SIMD GPU implementation; matrix support is optional, measured, and never CPU-emulated.
-- Forge topology reuse is proven by decoded topology/attribute/provenance hashes, never authoring labels. Unique geometry uses a dense-block fallback benchmarked against DGF/DGFS-style encoding.
+- Mesh topology reuse is proven by decoded topology/attribute/provenance hashes,
+  never authoring labels. Unique geometry uses a dense-block fallback
+  benchmarked against DGF/DGFS-style encoding.
 - Ray-native programs are finite data, never BlueprintGraph interpretation, arbitrary bytecode, runtime code generation, or per-asset shaders. Every node has conservative bounds and a fixed worst-case intersection budget.
 - Ray-domain certification is exact work elimination, not an image-space approximation: a common hit requires conservative containment plus strict nearest-order proof over the whole domain. Ambiguous domains split or become explicit rays.
 - Domain subdivision, ray binning, packet fill decisions, residual routing, nearest-hit reduction, and all indirect counts remain GPU-owned. Queue overflow retains a correct admitted native path and suppresses the fabric claim; it never invokes a CPU scheduler.
-- Supported construction surfaces keep a stable `(construction_path, parametric_coordinate)` identity across tolerance/parameter changes. Residual triangle regions retain the explicit cross-LOD mapping contract.
+- Recognized source-mesh surfaces keep a stable
+  `(asset_hash, source_triangle_domain, local_coordinate)` identity across
+  derived representations. Residual triangle regions retain the explicit
+  cross-LOD mapping contract.
 - Parent/child surface correspondence is required for accepted topology-changing LOD. Invalid maps reject the schedule; the renderer never guesses mappings.
 - Ray feedback is delayed advisory input only. It may prioritize optional detail but cannot suppress required parents or override the conservative camera/error cut.
 - Floating cooperative results may not directly decide topology, LOD cuts, partition ids, residency, eviction, or build counts. Those outputs remain integer/fixed-point and bit-identical across supported backends.
@@ -88,29 +221,15 @@
 
 | Action | Path | Responsibility |
 |---|---|---|
-| Create | `$FORGE/crates/mesh/src/mega_geometry.rs` | Deterministic spatial cluster, group, and page cook |
-| Create | `$FORGE/crates/mesh/src/geometry_program.rs` | Topology factoring, dense blocks, quantized parameters/residuals, surface maps, and schedule candidates |
-| Create | `$FORGE/crates/mesh/src/visibility_program.rs` | Generic bounded visibility IR, sparse visibility-cell DAG, factorized coefficient blocks, primitive families, validation, stable surface keys, residual references, and cook |
-| Create | `$FORGE/crates/mesh/tests/mega_geometry.rs` | Cook determinism, seam, hierarchy, and coverage tests |
-| Create | `$FORGE/crates/mesh/tests/geometry_program.rs` | Decode identity, topology reuse, surface-map, and compression gates |
-| Create | `$FORGE/crates/mesh/tests/visibility_program.rs` | Bounds, finite-work, surface-key, local-residual, and deterministic-cook gates |
-| Modify | `$FORGE/crates/mesh/src/lib.rs` | Export the validated cook API |
-| Modify | `$FORGE/crates/mesh/Cargo.toml` | Cook implementation dependencies |
-| Modify | `$FORGE/crates/building/src/asset.rs` | Carry typed Forge MegaGeometry data |
-| Modify | `$FORGE/crates/building/src/directive/completion.rs` | Validate full hierarchy instead of source chunks only |
-| Create | `$FORGE/crates/building/src/blueprint/visibility.rs` | Dual-lower supported BlueprintGraph construction into generic visibility nodes |
-| Modify | `$FORGE/crates/building/src/blueprint/mod.rs` | Export the validated visibility lowering |
-| Create | `$FORGE/crates/building/tests/visibility_lowering.rs` | Mesh-oracle/source-coverage and unsupported-subgraph residual tests |
-| Create | `$OCHROMA/crates/vox_data/src/mega_geometry.rs` | Engine-owned serialized ReadyMegaGeometry contract reusable by every Ochroma game |
-| Create | `$OCHROMA/crates/vox_data/tests/mega_geometry_asset.rs` | Wire-schema validation, deterministic round-trip, and no-game-concepts contract |
-| Modify | `$OCHROMA/crates/vox_data/src/lib.rs` | Export the engine-owned MegaGeometry asset contract |
-| Modify | `$URBAN/src/asset/payload.rs` | ReadyAssetPayload v3 embeds `vox_data::ReadyMegaGeometry`; it does not define a game ABI |
-| Modify | `$URBAN/src/asset/validation.rs` | Payload schema and cluster hierarchy validation |
-| Modify | `$URBAN/src/bin/game_asset_cook/cli.rs` | Call Forge cook from the focused asset cook |
-| Modify | `$URBAN/src/bin/game_asset_cook/forge_runner.rs` | Convert Forge cook output to ready payload |
-| Modify | `$URBAN/src/bin/game_asset_cook/tests/mesh.rs` | Payload/cook integration evidence |
+| Create | `$OCHROMA/crates/vox_render/src/mesh_program.rs` | Deterministically derive reusable topology programs from an ordinary finished mesh |
+| Create | `$OCHROMA/crates/vox_render/src/mesh_detail.rs` | Deterministically derive detail hierarchy, exact correspondence, clusters, and pages into the disposable engine cache |
+| Create | `$OCHROMA/crates/vox_render/src/runtime_geometry.rs` | Bounded asynchronous admission of ordinary meshes without render-thread derivation |
+| Modify | `$URBAN/src/asset/payload.rs` | Retain only compatibility sinks for legacy authored runtime fields; never serialize new MegaGeometry data |
+| Modify | `$URBAN/src/asset/validation.rs` | Reject authoring-produced LODs, clusters, pages, and MegaGeometry |
+| Modify | `$URBAN/src/asset/vxp_source.rs` | Submit ordinary finished meshes to Ochroma and atomically promote derived engine state |
+| Modify | `$URBAN/src/asset/vxp_pack.rs` | Refuse every authored runtime-geometry field and write only the finished game object |
 | Create | `$URBAN/assets/config/mega_geometry_corpus.ron` | Ordered production-asset corpus and expected content hashes for the representation preflight |
-| Modify | `$URBAN/docs/superpowers/specs/2026-07-19-unified-forge-content-directive.md` | Clarify Forge-owned continuous cluster schedule |
+| Modify | `$URBAN/docs/superpowers/specs/2026-07-19-unified-forge-content-directive.md` | Clarify that Forge exports source assets and owns no runtime schedule |
 | Modify | `$URBAN/src/spectra_frame/mesh_convert.rs` | Convert asset-local cluster provenance to packed-scene ids |
 | Modify | `$URBAN/src/spectra_frame/scene_build.rs` | Attach typed MegaGeometry to the packed GeometryLayer |
 | Create | `$URBAN/src/spectra_frame/mega_geometry_conversion_tests.rs` | Conversion and permutation-stability tests |
@@ -194,14 +313,14 @@
 | Capability honesty | Actual API features, matrix shapes/types, RT kind, and fingerprint are printed and cache-keyed | Guessing support from vendor or architecture name |
 | Cooperative compute | Slang cooperative variant matches its subgroup oracle and is retained only on a complete-stage win | Checking an extension bit or renaming scalar math “tensor” |
 | Native RT adapters | OptiX/Vulkan/Metal lower common GPU records without CPU translation or count readback | A generic trait whose implementations rebuild CPU vectors |
-| Ray-native visibility | Real BlueprintGraph nodes traverse as native procedural AABBs, match the mesh oracle, and avoid fine triangle materialization/builds | Coarse proxies, SDF impostors, or meshes generated on CPU before tracing |
+| Ray-native visibility | Ochroma-recognized finished-mesh surfaces traverse as native procedural AABBs, match the mesh oracle, and avoid fine triangle materialization/builds | BlueprintGraph ingestion, coarse proxies, SDF impostors, or meshes generated on CPU before tracing |
 | Certified visibility fabric | Whole ray domains resolve only under strict conservative nearest/miss proofs; unresolved rays packetize coherently; complete cost beats scalar/native paths with zero CPU scheduling | Ray sorting alone, approximate tile hits, or tensor utilization that excludes failed certificates/queues/residuals |
-| Parametric surface identity | Construction-path keys and coordinates survive tolerance and parameter changes with zero temporal invalidation | Guessing identity from world position or clearing history |
+| Parametric surface identity | Source-mesh keys and local coordinates survive representation changes with zero temporal invalidation | Guessing identity from world position or clearing history |
 | Geometry programs | Decoded program blocks match provenance/material/UV oracles while repeated topology uses at most 25% of raw cluster bytes | Applying a general byte compressor to duplicated triangle pages |
-| Pareto schedule cook | Two-to-four deterministic candidates expose complete objective vectors and admission selects a measured winner | One triangle-count-minimized hierarchy for every device/workload |
+| Pareto schedule derivation | Two-to-four deterministic Ochroma candidates expose complete objective vectors and admission selects a measured winner | One triangle-count-minimized hierarchy for every device/workload |
 | Surface-stable LOD | Exact parent/child maps at least halve LOD-switch temporal invalidations without radiance bias | Clearing all temporal/ReSTIR history on every cut change |
 | Ray-feedback detail | GPU hit/footprint feedback improves optional residency with identical required-parent sequence under zero/stale feedback | Using last-frame visibility as a correctness cull |
-| Forge hierarchy | Repeated Meridian cooks are byte-identical with exact source coverage | Returning one source-order chunk |
+| Ochroma hierarchy | Repeated derivations from identical Meridian mesh bytes are byte-identical with exact source coverage | Returning one source-order chunk |
 | Hybrid policy | Measured static/changing fixtures select their actual winner | Hardcoding CLAS for all NVIDIA geometry |
 | Hierarchical IAS | Localized one-percent dirty million-instance run keeps root stable with bounded opaque host submission | CPU traversal over instances/partitions |
 | Continuous LOD | GPU-selected one-pixel, zero-seam live witness with 50% triangle reduction | CPU or whole-mesh distance selection |
@@ -210,7 +329,15 @@
 
 ## Outcome
 
-Ship a truthful, deterministic city visibility system whose common GPU work graph and packet ABI are not owned by one vendor—and whose source representation is not forced through triangles or one traversal per ray. Supported Forge construction remains parametric; coherent ray domains can be certified in bulk; unresolved structured rays become factorized packet algebra; irregular residue returns to fixed-function RT; residual repetition becomes shared topology programs; unique geometry remains dense-block encoded; surface identity survives precision and LOD changes; and GPU ray feedback improves the optional working set.
+Ship a truthful, deterministic city visibility system whose common GPU work
+graph and packet ABI are not owned by one vendor—and whose runtime
+representation is not forced through one detail level or one traversal per
+ray. Ochroma recognizes bounded structure from ordinary finished meshes;
+coherent ray domains can be certified in bulk; unresolved structured rays
+become factorized packet algebra; irregular residue returns to fixed-function
+RT; residual repetition becomes shared topology programs; unique geometry
+remains dense-block encoded; surface identity survives precision and detail
+changes; and GPU ray feedback improves the optional working set.
 
 The plan does not promise that CLAS wins every workload. The final claim requires zero losses, honest parity where `Auto` retains triangle GAS/OMM, and wins on the changing, streamed-LOD, localized-update, and mixed-city workloads under the exact correctness, performance, CPU-ownership, and VRAM rules in the design.
 
@@ -224,9 +351,10 @@ The plan does not promise that CLAS wins every workload. The final claim require
 - Spectra already has wavefront ray/hit buffers and an OptiX pass that traces those buffers before the Slang shade stage, providing the integration seam for a visibility fabric without moving shading to CPU.
 - Current OptiX tracing is host-launched. The fabric therefore needs fixed admitted launch bounds and device-side count checks rather than pretending OptiX can consume a device-indirect launch count.
 - Existing `ser_reorder.slang` reorganizes shader work but is not a portable whole-visibility scheduler or evidence that individual ray traversal was eliminated.
-- `ReadyAssetPayload` schema 2 has discrete `mesh_lods` plus untyped `forge_clusters` JSON.
-- Forge's current cluster manifold is a contiguous, full-detail, source-order schedule. It is not a continuous LOD hierarchy.
-- Forge already owns typed BlueprintGraph DAGs, assembly/module instances, sweeps, extrusions, subdivision cages, and a reconstructable description, but `ForgeAsset` hands the renderer a mesh and cluster manifold. There is no retained visibility lowering or custom-primitive runtime path.
+- Legacy `ReadyAssetPayload` inputs may contain authored distance meshes or
+  cluster fields. New packing rejects them, runtime deserialization ignores
+  them for compatibility, and `.vxp` writes only the authoritative mesh,
+  surfaces, metadata, and thumbnail.
 - The resident scene delta ring and indexed instance scatter are real and remain the update authority.
 - Local OptiX 9.1 headers define `optixClusterAccelBuild` as an indirect multi-build whose argument array and optional count live in device memory; the plan must use that path rather than generating per-frame args on CPU.
 - Ordinary OptiX IAS builds remain host-submitted. This is an explicit bounded submission island, not permission for CPU scene/geometry decisions.
@@ -234,7 +362,10 @@ The plan does not promise that CLAS wins every workload. The final claim require
 - `spectra-gpu` already has a broad `GpuBackend` trait plus CUDA, Vulkan, and macOS Metal implementations. Extend it; do not create a parallel generic compute framework.
 - Slang already exposes `linalg::CoopMat`, so Spectra should own capability discovery, specialization, ABI validation, and measurement rather than a second portable matrix language.
 - The current cross-backend trait exposes several raw-`u64` CUDA/RT seams and host-slice AS methods. MegaGeometry common records must stop at `GpuBufferHandle`; native pointers and host-shaped adapter calls cannot leak upward into the frame graph.
-- The current cook/runtime pipeline flattens Forge output into independent clusters and optimizes a single hierarchy. It does not exploit repeated procedural topology, DGF/DGFS-style dense blocks, multiple schedule candidates, or parent/child surface mapping.
+- Ochroma now derives exact source clusters, a bounded detail hierarchy,
+  direct-root correspondence, pages, and a limited exact topology-program
+  subset from the finished mesh. Program coverage and native execution wins
+  remain evidence-gated.
 - Current LOD correctness covers seams and pixel error but not temporal/ReSTIR validity across topology changes. That omission can erase much of the path-tracing quality/performance benefit.
 
 If any of these facts has changed when implementation begins, update the design and this plan before coding against the stale assumption.
@@ -246,7 +377,6 @@ Use these names throughout the plan:
 ```text
 OCHROMA=/home/tom-espen/src/ochroma
 SPECTRA=/home/tom-espen/src/spectra
-FORGE=/home/tom-espen/src/forge
 URBAN=/home/tom-espen/Ochroma/projects/urban_horizon
 ```
 
@@ -257,7 +387,7 @@ Resolve the live sibling paths with `git -C <root> rev-parse --show-toplevel` be
 Every benchmark run must print and store:
 
 ```text
-MEGAGEOMETRY_ENV gpu=<name> api=<cuda|vulkan|metal> driver=<version> rt_backend=<optix|vulkan_khr|vulkan_nv|metal> capability_hash=<hash> shader_abi=<hash> cook_schema=<n>
+MEGAGEOMETRY_ENV gpu=<name> api=<cuda|vulkan|metal> driver=<version> rt_backend=<optix|vulkan_khr|vulkan_nv|metal> capability_hash=<hash> shader_abi=<hash> runtime_geometry_schema=<n>
 MEGAGEOMETRY_CONFIG mode=<triangle|reference|city_hybrid> compute=<portable_subgroup|cooperative_matrix> fixture=<id> instances=<n> frames=<n> seed=<n>
 MEGAGEOMETRY_CORRECT source_primitives=<n> mapped_primitives=<n> material_mismatches=0 uv_mismatches=0 hit_mismatches=0
 MEGAGEOMETRY_RESULT build_ms_p50=<n> build_ms_p95=<n> update_ms_p50=<n> update_ms_p95=<n> native_lowering_ms_p95=<n> trace_ms_p50=<n> trace_ms_p95=<n> frame_ms_p50=<n> frame_ms_p95=<n> resident_vram_mb=<n> as_vram_mb=<n> page_vram_mb=<n> scratch_vram_mb=<n> peak_geometry_vram_mb=<n> traced_triangles=<n> required_page_misses=<n>
@@ -297,30 +427,43 @@ Do not run the game, a remote build, or a remote render until the user explicitl
 
 ## Gate A: Prove Ray-Native Visibility Before Freezing the Stack
 
-**Why first:** Portable adapters, CLAS wiring, compression, and GPU work graphs are still downstream of triangle materialization. The larger hypothesis is that much of a city can remain a compact construction program through ray intersection, eliminating tessellation, fine-detail AS builds, and topology-changing LOD. This gate tests that on real authored assets before either visibility or geometry-program ABIs become expensive to change.
+**Why first:** Portable adapters, CLAS wiring, compression, and GPU work graphs
+are downstream of the authoritative triangle mesh. The hypothesis is that
+Ochroma can recognize exact reusable or ray-native structure from that mesh
+without receiving authoring graphs, receipts, or exporter data.
 
 **Files**
 
-- Add `$FORGE/crates/mesh/src/visibility_program.rs` as an explicitly disposable finite visibility IR
-- Add `$FORGE/crates/mesh/tests/visibility_program.rs`
-- Add `$FORGE/crates/building/src/blueprint/visibility.rs` and `$FORGE/crates/building/tests/visibility_lowering.rs`
-- Add `$FORGE/crates/mesh/src/geometry_program.rs` as an explicitly disposable experimental encoder until the gate passes
-- Add `$FORGE/crates/mesh/tests/geometry_program.rs`
-- Modify `$URBAN/src/bin/game_asset_cook/cli.rs` and `$URBAN/src/bin/game_asset_cook/forge_runner.rs` to expose a census mode through the real importer
-- Add `$URBAN/assets/config/mega_geometry_corpus.ron`
+- Add `$OCHROMA/crates/vox_render/src/mesh_program.rs`
+- Add `$OCHROMA/crates/vox_render/src/mesh_detail.rs`
+- Add `$OCHROMA/crates/vox_render/src/runtime_geometry.rs`
+- Modify `$URBAN/src/asset/vxp_source.rs` to submit normally loaded mesh streams
+- Add real-pack runtime derivation evidence in `$URBAN/tests/vxp_runtime_load.rs`
 - Add `$SPECTRA/rust/spectra-renderer/examples/geometry_program_bench.rs` only for the minimal GPU decode/build probe; do not build the final integration yet
 - Add `$SPECTRA/rust/spectra-renderer/examples/visibility_program_bench.rs` for the minimal native procedural-AABB probe
 - Add `$SPECTRA/slang/geometry_program_decode.slang` only for the bounded probe codec
 - Add `$SPECTRA/slang/visibility_intersection.slang` and `$SPECTRA/slang/visibility_bounds.slang` only for finite AOT primitive families
 
-**Wiring requirement:** The real Forge importer evaluates each checked-in BlueprintGraph/directive twice: the unchanged mesh path supplies the oracle, while `lower_visibility_graph` supplies a generic finite construction graph. `cook_visibility_program` feeds those exact records unchanged to native custom-primitive traversal; unsupported subgraphs feed the residual geometry-program probe. Synthetic repetition is a sensitivity fixture, never the authorizing corpus.
+**Wiring requirement:** The real `.vxp` loader supplies only the finished mesh.
+Ochroma derives candidate programs and residual detail asynchronously and proves
+them against that same mesh oracle. Spectra receives only accepted Ochroma
+renderer state. Synthetic repetition is a sensitivity fixture, never the
+authorizing corpus.
 
 **Implementation steps**
 
-- [ ] Select a checked-in corpus spanning repeated Forge-authored structures, imported unique buildings, roads/props, multi-material meshes, and awkward seam-heavy geometry; store its ordered asset ids and content hashes.
-- [ ] Dual-lower supported real construction nodes into oriented prisms, planar polygons, extrusions, profile sweeps, repetition lattices, bounded interval operations, and explicit residual leaves. Report source-surface coverage by primitive family and asset, not only an aggregate.
-- [ ] Assign stable construction-path surface keys and parametric coordinates. Fire deterministic oracle rays, including grazing, inside-origin, seams, openings, negative transforms, and multi-hit cases, against both the evaluated mesh and visibility program.
-- [ ] Validate conservative AABBs, fixed child/step/memory limits, parameter-update envelopes, and local residualization. Arbitrary bytecode, runtime graph interpretation, and per-asset shader compilation are forbidden.
+- [ ] Select a checked-in corpus spanning ordinary finished structures,
+  imported unique buildings, roads/props, multi-material meshes, and awkward
+  seam-heavy geometry; store its ordered asset ids and content hashes.
+- [ ] Recognize only exact finite primitive/topology families from mesh
+  positions, indices, UVs, normals, materials, and seams. Report coverage by
+  family and asset, not only an aggregate.
+- [ ] Assign stable source-surface keys and correspondence from authoritative
+  primitive ids. Fire deterministic oracle rays, including grazing,
+  inside-origin, seams, openings, negative transforms, and multi-hit cases.
+- [ ] Validate conservative AABBs, fixed child/step/memory limits, and local
+  residualization. Authoring graphs, arbitrary bytecode, runtime code
+  generation, and per-asset shaders are forbidden.
 - [ ] Compute decoded-identity topology equivalence within and across assets. Report frequency distribution and source-byte coverage, not only the best repeated asset.
 - [ ] Measure quantized parameter/residual entropy, dictionary/index/hash overhead, page padding, dependency amplification, dense-block lower bounds, and the fraction of blocks that remain unique.
 - [ ] Attempt deterministic parent/child surface correspondence and report exact valid, ambiguous, seam-rejected, and out-of-domain counts.
@@ -333,8 +476,12 @@ Do not run the game, a remote build, or a remote render until the user explicitl
 **Local preflight**
 
 ```bash
+cd "$OCHROMA"
+cargo test -p vox_render mesh_program --lib
+cargo test -p vox_render mesh_detail --lib
+cargo test -p vox_render runtime_geometry --lib
 cd "$URBAN"
-cargo run --release --bin game_asset_cook -- --mega-geometry-census assets/config/mega_geometry_corpus.ron --json-out artifacts/geometry-program-census.json
+cargo test --test vxp_runtime_load -- --nocapture
 ```
 
 Required lines:
@@ -345,22 +492,35 @@ MEGAGEOMETRY_VISIBILITY_CENSUS ray_native_source_coverage>=0.60 residual_coverag
 MEGAGEOMETRY_SURFACE_PREFLIGHT valid_coverage>=0.99 ambiguous=<n> seam_rejected=<n> out_of_domain=0
 ```
 
-The minimal GPU probe runs on available supported hardware after the normal permission gate:
+This is Ochroma derivation evidence from normal finished game objects already
+stored in `.vxp`. Urban Horizon loads them through its ordinary asset path and
+hands their authoritative geometry to Ochroma; no special MegaGeometry export,
+sidecar, authoring bridge, or authoring-only census exists.
+
+Spectra's isolated algorithm and ABI checks use code-owned contract fixtures;
+they never ingest authoring output or game assets:
 
 ```bash
 cd "$SPECTRA/rust"
-cargo run --release -p spectra-renderer --example geometry_program_bench -- --probe --corpus "$URBAN/artifacts/geometry-program-census.json" --modes raw_clusters,dense_blocks,topology_programs --json-out artifacts/geometry-program-probe.json
-cargo run --release -p spectra-renderer --example visibility_program_bench -- --probe --corpus "$URBAN/artifacts/geometry-program-census.json" --modes triangle,clas,program_to_triangles,ray_native --json-out artifacts/visibility-program-probe.json
+cargo test -p spectra-renderer --test geometry_gpu --test visibility_fabric
 ```
+
+These checks validate renderer algorithms and ABI only; they are not product
+asset evidence. Every geometry-program, ray-native, CLAS, and visibility-fabric
+product claim comes from `vox_render`'s ordinary finished-object benchmark:
+Urban Horizon loads `.vxp`, hands the object to Ochroma, and Ochroma submits
+renderer state to Spectra. There is no authoring census adapter, MegaGeometry
+exporter, sidecar corpus, or alternate asset path. A Vulkan producer cannot
+request CLAS and silently substitute ordinary triangle BLAS.
 
 Required line:
 
 ```text
-MEGAGEOMETRY_PROGRAM_PROBE decoded_hash=match cpu_decode=0 fixed_arena=true transfer_decode_build_trace_ms_p95=<n> full_frame_regression_pct<=2.0 peak_geometry_vram_bytes=<n>
-MEGAGEOMETRY_VISIBILITY_PROBE hit_hash=match material_hash=match uv_normal_hash=match stable_surface_hash=match ray_native_coverage>=0.60 materialized_geometry_ratio<=0.25 parameter_update_fine_as_builds=0 geometry_stage_speedup>=1.50 cpu_geometry=0
+test result: ok. <n> passed; 0 failed
 ```
 
-Requested-but-unavailable execution exits nonzero; compile-only evidence cannot pass Gate A.
+Requested-but-unavailable native product execution exits nonzero; compile-only
+or isolated-contract evidence cannot pass Gate A.
 
 **Done When**
 
@@ -636,7 +796,7 @@ MEGAGEOMETRY_ERROR requested=optix_clas actual=triangle_gas reason=hardware_clas
 - [ ] Write the named real-behavior tests first.
 - [ ] Run the task test command and confirm it fails for the missing or incorrect behavior, not for an unrelated environment error.
 - [ ] Replace the triangle-GAS body of `build_clas_scene` with admission and calls to the existing true CLAS implementation.
-- [ ] Split any prototype exceeding queried OptiX CLAS limits into deterministic source-order clusters at admission for this first hardware witness. Task 4 replaces that temporary schedule with cooked spatial clusters; no frame-time CPU partitioner is allowed.
+- [ ] Split any prototype exceeding queried OptiX CLAS limits into deterministic source-order clusters at admission for this first hardware witness. Task 4 replaces that temporary schedule with Ochroma-derived spatial clusters; no frame-time CPU partitioner is allowed.
 - [ ] Allocate fixed-capacity common build records/count plus adapter-private triangle/template args, GAS-over-CLAS args, native counts, output handles, output sizes, and overflow flags.
 - [ ] Lower common records to OptiX argument structs on GPU, then call `optixClusterAccelBuild` with nonzero device pointers for `argsArray` and `argsCount`; chain GAS-over-CLAS from device output handles without host readback.
 - [ ] Add scene-state buffers for:
@@ -694,33 +854,24 @@ MEGAGEOMETRY_CPU clas_args=device clas_count=device blocking_readbacks=0 frame_a
 
 ---
 
-## Task 4: Compile Forge Visibility Programs, Geometry Residuals, Surface Maps, and Schedule Candidates
+## Task 4: Compile Finished-Object Visibility Programs, Geometry Residuals, Surface Maps, and Schedule Candidates
 
-**Depends on:** Task 1's custom-intersection capability/ABI contract and Task 3's provenance contract. Pure dual-lowering, cook, and oracle work can proceed locally; native intersection evidence remains permission- and hardware-gated.
+**Depends on:** Task 1's custom-intersection capability/ABI contract and Task
+3's provenance contract. All derivation starts from the authoritative ordinary
+mesh inside Ochroma; native intersection evidence remains permission- and
+hardware-gated.
 
 **Files**
 
-- Add `$FORGE/crates/mesh/src/mega_geometry.rs`
-- Add `$FORGE/crates/mesh/src/geometry_program.rs`
-- Add `$FORGE/crates/mesh/src/visibility_program.rs`
-- Modify `$FORGE/crates/mesh/src/lib.rs`
-- Modify `$FORGE/crates/mesh/Cargo.toml`
-- Modify `$FORGE/crates/building/src/asset.rs`
-- Modify `$FORGE/crates/building/src/directive/completion.rs`
-- Add `$FORGE/crates/building/src/blueprint/visibility.rs`
-- Modify `$FORGE/crates/building/src/blueprint/mod.rs`
-- Add `$FORGE/crates/building/tests/visibility_lowering.rs`
-- Add `$FORGE/crates/mesh/tests/mega_geometry.rs`
-- Add `$FORGE/crates/mesh/tests/geometry_program.rs`
-- Add `$FORGE/crates/mesh/tests/visibility_program.rs`
-- Add `$OCHROMA/crates/vox_data/src/mega_geometry.rs`
-- Add `$OCHROMA/crates/vox_data/tests/mega_geometry_asset.rs`
-- Modify `$OCHROMA/crates/vox_data/src/lib.rs`
+- Add `$OCHROMA/crates/vox_render/src/mesh_program.rs`
+- Add `$OCHROMA/crates/vox_render/src/mesh_detail.rs`
+- Add `$OCHROMA/crates/vox_render/src/runtime_geometry.rs`
+- Add deterministic derivation/cache tests beside those modules
 - Modify `$URBAN/src/asset/payload.rs`
 - Modify `$URBAN/src/asset/validation.rs`
-- Modify `$URBAN/src/bin/game_asset_cook/cli.rs`
-- Modify `$URBAN/src/bin/game_asset_cook/forge_runner.rs`
-- Modify `$URBAN/src/bin/game_asset_cook/tests/mesh.rs`
+- Modify `$URBAN/src/asset/vxp_pack.rs`
+- Modify `$URBAN/src/asset/vxp_source.rs`
+- Modify `$URBAN/tests/vxp_runtime_load.rs`
 - Modify `$URBAN/docs/superpowers/specs/2026-07-19-unified-forge-content-directive.md`
 - Add `$SPECTRA/rust/spectra-renderer/src/renderer/geometry_program.rs`
 - Add `$SPECTRA/rust/spectra-renderer/src/renderer/visibility_program.rs`
@@ -735,57 +886,81 @@ MEGAGEOMETRY_CPU clas_args=device clas_count=device blocking_readbacks=0 frame_a
 - Modify `$SPECTRA/rust/spectra-optix/ptx/programs/device_programs.cu`
 - Modify `$SPECTRA/rust/spectra-renderer/build.rs`
 
-**Wiring requirement:** Before mesh structure is discarded, the validated BlueprintGraph path calls `lower_visibility_graph`; the existing mesh evaluation remains the oracle. `forge_runner.rs` passes the generic construction graph to `cook_visibility_program`, then passes that validated result with the evaluated mesh to `cook_mega_geometry` so ray-native plus residual coverage is exact, and writes the combined typed result into ReadyAssetPayload v3. `visibility_program_bench` traces those exact visibility records through native procedural AABBs, while `geometry_program_bench` decodes only residual blocks through `GpuBackend`. No CPU-expanded or proxy benchmark surrogate is allowed.
+**Wiring requirement:** Urban Horizon loads the ordinary finished game object
+without deriving geometry. It submits the authoritative mesh to Ochroma's
+bounded asynchronous admission service. Ochroma derives and validates topology,
+correspondence, hierarchy, clusters, and pages in its disposable cache, then
+atomically promotes the engine representation while the original triangle
+scene remains correct and visible. Forge and the asset cooker have no
+MegaGeometry API, exporter, receipt, field, or dependency. Spectra consumes
+only Ochroma renderer state. No CPU-expanded or proxy benchmark surrogate is
+allowed.
 
 **Implementation steps**
 
 - [ ] Write the named real-behavior tests first.
 - [ ] Run the task test command and confirm it fails for the missing or incorrect behavior, not for an unrelated environment error.
-- [ ] Add a pure, game-agnostic Forge mesh cook that accepts indexed positions, per-triangle material/seam keys, and versioned settings.
-- [ ] Add a second deterministic lowering from BlueprintGraph construction to the generic finite `VisibilityConstructionGraph` without changing the existing evaluated mesh.
-- [ ] Cook supported oriented prisms, polygons, extrusions, sweeps, repetition lattices, and bounded interval operations into data-only visibility nodes with fixed child/step/memory limits, conservative AABBs, source provenance, material domains, and stable surface keys.
-- [ ] Cook a deterministic sparse visibility-cell DAG and factorized coefficient blocks for admitted planes/half-spaces, local transforms, and bounded polynomials. Record conservative cell bounds, front-to-back traversal relations, side domains, exact-refinement nodes, maximum domain subdivision, and decoded hashes.
+- [ ] Add deterministic Ochroma derivation that accepts the ordinary indexed
+  mesh and exact material/seam streams from the loaded game object.
+- [ ] Derive supported oriented prisms, polygons, extrusions, sweeps,
+  repetition lattices, and bounded interval operations from finished mesh data
+  into bounded visibility nodes with conservative AABBs, source provenance,
+  material domains, and stable surface keys.
+- [ ] Derive a deterministic sparse visibility-cell DAG and factorized
+  coefficient blocks for admitted planes/half-spaces, local transforms, and
+  bounded polynomials. Record conservative cell bounds, front-to-back traversal
+  relations, side domains, exact-refinement nodes, maximum domain subdivision,
+  and decoded hashes.
 - [ ] Residualize unsupported or ill-conditioned subgraphs locally into the ordinary mesh path. Validate that every source surface is covered exactly once by either ray-native or residual representation.
 - [ ] Implement shared AOT Slang intersection math for every admitted primitive family plus thin native entry wrappers where the RT API requires them, including the OptiX CUDA/PTX wrapper. Every target consumes the same reflected records and emits exact material/UV/normal/surface-key output. The runtime may dispatch by finite node kind but may not interpret BlueprintGraph or compile asset-specific shaders.
 - [ ] Admit parameter envelopes. In-envelope changes update only GPU parameter buffers; an envelope escape emits GPU procedural-AABB refit/rebuild records and cannot trace stale bounds.
 - [ ] Create 4-to-256-triangle clusters with deterministic spatial centroid ordering and source triangle id tie-breaking.
 - [ ] Never cross material, opacity class, hard-normal, or locked boundary seams within a simplification operation.
 - [ ] Build parent cluster groups bottom-up with locked shared boundaries and monotonic geometric error.
-- [ ] Preserve generic Forge construction provenance where available, then independently hash decoded topology/attributes to discover reusable templates within and across assets. Authoring labels are hints only and cannot establish equality.
+- [ ] Let Ochroma hash decoded topology/attributes to discover reusable
+  templates within and across assets. No authoring labels or construction
+  receipts enter the derivation.
 - [ ] Factor accepted reuse into shared topology templates, quantized canonical parameters, per-use transform/material/semantic parameters, and bounded residual blocks. Preserve exact source/material/UV provenance after decode.
 - [ ] Implement a dense independently decodable unique-geometry path and compare it with public DGF/DGFS format/codec behavior. Do not require native DGF hardware and do not call a general compressed triangle blob a geometry program.
 - [ ] Emit deterministic parent/child surface correspondence with parent primitive, quantized barycentric/parametric coordinates, orientation/material domain, validity, and bounded error. Reject ambiguous or out-of-domain mappings.
 - [ ] Emit two-to-four bounded schedule candidates spanning spatial locality, topology reuse, dense packing, page locality, update cost, and boundary quality. Record the complete objective vector; never choose solely by triangle count.
 - [ ] Pack immutable pages by group dependency and stable ids. Emit page content hashes.
-- [ ] Emit complete source triangle provenance for the full-detail level and explicit cooked-level triangle ids for simplified levels.
-- [ ] Replace Forge's source-only completion check with validation of:
+- [ ] Emit complete source triangle provenance for the full-detail level and
+  explicit engine-derived triangle ids for simplified levels.
+- [ ] Validate the engine-derived cache against the finished-object oracle:
    - full source coverage exactly once;
    - cluster sizes 4 through 256 except a documented final tiny remainder;
    - valid acyclic parent groups;
    - monotonic error;
    - boundary-lock consistency;
    - complete page dependencies.
-- [ ] After Gate A selects `ray_native`, `geometry_programs`, or `dense_only`, define typed `ReadyMegaGeometry` in Ochroma `vox_data`; Urban Horizon embeds that engine-owned type in `ReadyAssetPayload`, bumps `READY_PAYLOAD_VERSION` from 2 to 3, and keeps the old untyped JSON only as migration input. Other games must be able to serialize the same type without depending on Urban Horizon.
+- [ ] Keep engine-derived MegaGeometry out of `ReadyAssetPayload` and `.vxp`.
+  Runtime-only carrier types may cross Ochroma/Spectra internally but are never
+  serialized as authored product data.
 - [ ] Add the ordinary subgroup GPU decoder and fixed transient decode arena. Cooperative residual decode is optional and must use the Task-1 selection contract.
 - [ ] Benchmark raw independent clusters, DGF/DGFS-style dense blocks, and topology programs on one repetition-heavy structural fixture and one unique/mixed fixture using identical decoded geometry and build/trace boundaries.
 - [ ] Benchmark `triangle`, `clas`, `program_to_triangles`, and `ray_native` from identical construction sources/rays, including coarse AABB build, programmable intersection, shading, residual, update, peak-VRAM, and full-frame boundaries.
-- [ ] Move runtime-authoritative LOD schedule creation out of Urban gameplay code. `game_asset_cook` adapts the Forge output and never invents camera-specific meshes.
-- [ ] Add a deterministic version-2 migration only if old payload inputs exist in the current asset pipeline; otherwise reject version 2 with the focused recook command.
+- [ ] Keep runtime-authoritative detail schedule creation in Ochroma. The asset
+  pipeline copies only finished source data and never creates LODs, clusters,
+  pages, programs, or camera-specific meshes.
+- [ ] Ignore legacy authored runtime-geometry fields on load and reject them
+  when producing a new `.vxp`; never migrate them into current engine state.
 
 **Local verification**
 
 ```bash
-cd "$FORGE"
-cargo test -p forge-mesh --test mega_geometry
-cargo test -p forge-mesh --test geometry_program
-cargo test -p forge-mesh --test visibility_program
-cargo test -p forge-building --test visibility_lowering
+cd "$OCHROMA"
+cargo test -p vox_render mesh_program --lib
+cargo test -p vox_render mesh_detail --lib
+cargo test -p vox_render runtime_geometry --lib
+cd "$URBAN"
+cargo test --test vxp_runtime_load -- --nocapture
 ```
 
 Required tests:
 
 ```text
-test cook_is_byte_identical_across_repeated_runs ... ok
+test cache_is_byte_identical_across_repeated_derivations ... ok
 test spatial_clusters_cover_every_source_triangle_once ... ok
 test clusters_respect_material_and_boundary_seams ... ok
 test group_errors_are_monotonic ... ok
@@ -804,16 +979,16 @@ test stable_surface_keys_survive_tolerance_and_parameter_changes ... ok
 
 ```bash
 cd "$URBAN"
-cargo test --bin game_asset_cook mesh
 cargo test --lib asset::validation
+cargo test --lib asset::vxp_pack
 ```
 
 Required tests:
 
 ```text
-test ready_payload_v3_round_trips_typed_mega_geometry ... ok
-test v2_payload_has_explicit_migration_or_recook_error ... ok
-test cooked_meridian_cluster_mapping_preserves_materials ... ok
+test raw_validation_rejects_authoring_produced_source_clusters ... ok
+test vxp_metadata_contains_no_runtime_geometry ... ok
+test runtime_derivation_preserves_materials ... ok
 ```
 
 ```bash
@@ -838,29 +1013,31 @@ MEGAGEOMETRY_PROGRAM fixture=mixed_unique mode=<dense_blocks|topology_programs> 
 MEGAGEOMETRY_VISIBILITY fixture=<real-family> mode=ray_native hit_hash=match source_surface_coverage>=0.60 materialized_geometry_ratio<=0.25 parameter_update_fine_as_builds=0 geometry_stage_speedup>=1.50 cpu_geometry=0
 ```
 
-Run the focused cook without launching the game:
+Run the focused ordinary-pack load without launching the game:
 
 ```bash
 cd "$URBAN"
-cargo run --release --bin game_asset_cook -- --source assets/source/buildings --only city.res_high.l5.8x8.meridian_house_01 --output artifacts/cook/meridian_house_01
+cargo test --test vxp_runtime_load -- --nocapture
 ```
 
 Required final line:
 
 ```text
-MEGAGEOMETRY_COOK asset=city.res_high.l5.8x8.meridian_house_01 schema=3 deterministic=true max_cluster_triangles=256 source_coverage=exact material_mismatches=0 ray_native_surface_coverage=<n> residual_coverage=<n> visibility_cells=<n> coefficient_blocks=<n> stable_surface_coverage=1.0 schedule_candidates=<2..4> topology_templates=<n> surface_map_coverage=1.0
+VXP_RUNTIME_TIMING open_ms=<n> materialise_ms=<n> asset=<id>
 ```
 
 **Done When**
 
-- [ ] Repeated cooks are byte-identical.
+- [ ] Repeated runtime derivations from byte-identical finished meshes are byte-identical.
 - [ ] `ReadyAssetPayload` no longer relies on untyped JSON at render time.
 - [ ] At least two real asset families dual-lower with exact source coverage, stable surface keys, local residuals, and mesh-oracle hit/material/UV/normal parity.
 - [ ] Ray-native candidates meet the Gate-A materialization, update-build, and complete geometry-stage targets; otherwise their exact unsupported regions remain on the measured geometry-program/dense path.
 - [ ] Repetition-heavy geometry uses at most 25% and mixed/unique geometry at most 50% of raw independent-cluster bytes without exceeding 2% full-frame regression.
 - [ ] Every accepted topology-changing LOD schedule has complete bounded surface correspondence.
 - [ ] The selected portable representation decodes on GPU into the Task-3 build contract without CPU expansion.
-- [ ] The existing Meridian asset crosses Forge, cook, payload validation, and renderer conversion without visual-authoring changes.
+- [ ] The existing Meridian finished asset crosses ordinary `.vxp` loading,
+      Ochroma runtime derivation, scene conversion, and Spectra realization
+      without an authoring-specific path.
 
 ---
 
@@ -937,6 +1114,7 @@ Requested unsupported modes exit nonzero. The comparison must report all modes r
 
 ```text
 MEGAGEOMETRY_FABRIC_BREAKTHROUGH structured_ray_coverage>=0.60 certified_without_per_ray_traversal>=0.35 active_packet_lanes>=0.75 intersection_speedup_vs_scalar>=2.0 geometry_stage_speedup>=2.0 routing_queue_overhead_pct<=10.0 correctness_mismatches=0 cpu_scheduling=0 real_asset_families>=2 losses=0 claim=certified_visibility_fabric
+MEGAGEOMETRY_RAW_ARTIFACT api=cuda gpu=<actual-device> validation=pass
 ```
 
 **Done When**
@@ -949,7 +1127,7 @@ MEGAGEOMETRY_FABRIC_BREAKTHROUGH structured_ray_coverage>=0.60 certified_without
 
 ---
 
-## Task 5: Carry Cooked Visibility and Geometry Through Ochroma Into Spectra
+## Task 5: Carry Ochroma-Derived Runtime Geometry Into Spectra
 
 **Depends on:** Task 4
 
@@ -971,15 +1149,21 @@ MEGAGEOMETRY_FABRIC_BREAKTHROUGH structured_ray_coverage>=0.60 certified_without
 
 - [ ] Write the named real-behavior tests first.
 - [ ] Run the task test command and confirm it fails for the missing or incorrect behavior, not for an unrelated environment error.
-- [ ] Add generic scene-state descriptors for cooked prototype cluster ranges, group ranges, pages, errors, bounds, and provenance offsets.
-- [ ] Carry topology-template ranges, encoded program blocks, decoded hashes, parent/child surface maps, and bounded schedule candidates without flattening or duplicating them in Urban/Ochroma.
+- [ ] Add generic scene-state descriptors for runtime prototype cluster ranges,
+  group ranges, pages, errors, bounds, and provenance offsets.
+- [ ] Carry topology-template ranges, encoded program blocks, decoded hashes,
+  parent/child surface maps, and bounded schedule candidates from Ochroma
+  without flattening or duplicating them in Urban.
 - [ ] Carry visibility programs, finite node kinds, sparse visibility cells, factorized coefficient blocks, conservative bounds, parameter buffers, stable surface keys, and residual ranges without converting ray-native regions back into meshes.
-- [ ] Convert asset-local cooked triangle ids to packed-scene triangle ids exactly once in `mesh_convert`.
+- [ ] Convert asset-local source triangle ids to packed-scene triangle ids
+  exactly once in `mesh_convert`.
 - [ ] Keep ids sorted by `(prototype, level, group, cluster)` and reject duplicate ids.
 - [ ] Upload immutable metadata with the resident prototype state, not every frame.
 - [ ] Call `resolve_geometry_schedule` at admission with the versioned capability/calibration key; store only the selected variant id in resident render state. A cache miss chooses the conservative dense/raw candidate while calibration remains outside timed frames.
 - [ ] Key admission by scene/prototype content hash and prove that unchanged frames reuse the resident layer/work buffers without rebuilding `GeometryLayer` or revisiting payloads.
-- [ ] Change the Task-3 OptiX CLAS adapter to consume cooked cluster boundaries when present. Source-order runtime partitioning remains diagnostic fallback only and is labeled as such.
+- [ ] Change the Task-3 OptiX CLAS adapter to consume Ochroma-derived cluster
+  boundaries when present. Source-order partitioning remains a diagnostic
+  fallback only and is labeled as such.
 - [ ] Ensure ordinary triangle-GAS prototypes ignore cluster metadata without changing their output.
 
 **Local verification**
@@ -992,13 +1176,13 @@ cargo test mega_geometry_conversion
 Required lines:
 
 ```text
-test packed_scene_mapping_matches_cooked_provenance ... ok
+test packed_scene_mapping_matches_derived_provenance ... ok
 test conversion_is_stable_under_asset_input_permutation ... ok
 test triangle_gas_ignores_cluster_metadata_without_output_drift ... ok
 test unchanged_frames_perform_zero_geometry_admissions ... ok
 test topology_templates_remain_shared_after_scene_packing ... ok
 test surface_maps_survive_asset_and_scene_id_remapping ... ok
-test schedule_selection_never_changes_cooked_topology ... ok
+test schedule_selection_never_changes_derived_topology ... ok
 test visibility_programs_survive_scene_packing_without_mesh_expansion ... ok
 test visibility_cells_and_coefficients_survive_packing_byte_exact ... ok
 test stable_surface_keys_survive_asset_and_scene_id_remapping ... ok
@@ -1015,15 +1199,15 @@ cargo check -p spectra-renderer
 Repeat Task 3 with `--cluster-source cooked`. Required line:
 
 ```text
-MEGAGEOMETRY_ACCEL accel=optix_clas cluster_source=forge_cooked hardware_clas_builds=1 source_coverage=exact
+MEGAGEOMETRY_ACCEL accel=optix_clas cluster_source=finished_object hardware_clas_builds=1 source_coverage=exact
 MEGAGEOMETRY_CPU geometry_admissions_during_frames=0 payload_visits_during_frames=0
 ```
 
 **Done When**
 
-- [ ] The live CLAS path consumes the typed Forge schedule.
-- [ ] The live procedural/fabric paths consume the typed Forge visibility program, cells, coefficients, and residuals without frame-time graph interpretation or triangle generation.
-- [ ] No frame-time path parses Forge JSON or rebuilds cluster topology.
+- [ ] The live CLAS path consumes the typed Ochroma-derived runtime schedule.
+- [ ] The live procedural/fabric paths consume finished-object visibility programs, cells, coefficients, and residuals without frame-time graph interpretation or triangle generation.
+- [ ] No frame-time path parses authoring data or rebuilds cluster topology.
 - [ ] Triangle GAS and CLAS still resolve the same packed scene triangles.
 
 ---
@@ -1050,19 +1234,21 @@ MEGAGEOMETRY_CPU geometry_admissions_during_frames=0 payload_visits_during_frame
 - [ ] Run the task test command and confirm it fails for the missing or incorrect behavior, not for an unrelated environment error.
 - [ ] Add backend-neutral `Auto`, `Triangle`, `Cluster`, and `RayNative` policy values. Diagnostic CLI may request composite backend modes, but scene state stores structure and backend on separate axes.
 - [ ] Add separate `VisibilityExecutionPolicy::{Auto, NativeScalar, CertifiedFabric}` and measured packet variants. Do not encode fabric selection as a fake acceleration-structure kind.
-- [ ] Define immutable cooked-domain traits: static, deforming, page-changing, OMM, continuous-LOD, ray-native family/work bound, residual coverage, triangle count, cluster count, and material feature mask.
+- [ ] Define immutable Ochroma-derived runtime-domain traits: static, deforming, page-changing, OMM, continuous-detail, ray-native family/work bound, residual coverage, triangle count, cluster count, and material feature mask.
 - [ ] Add a versioned per-device calibration record keyed exactly as described in the design.
 - [ ] Run calibration outside timed frames and persist only diagnostic device data.
-- [ ] Measure each bounded cooked schedule on decode, native lowering/build, trace, update, page traffic, and peak memory. Discard dominated candidates and select from the Pareto set by the configured workload objective; triangle count alone is never the objective.
+- [ ] Measure each bounded Ochroma-derived schedule on decode, native lowering/build, trace, update, page traffic, and peak memory. Discard dominated candidates and select from the Pareto set by the configured workload objective; triangle count alone is never the objective.
 - [ ] For every ray-native candidate, include coarse-AABB build/refit, intersection-shader instructions/divergence/occupancy, shading, residual trace, materialized bytes, parameter updates, temporal invalidations, and peak memory. Fewer triangles alone cannot select it.
 - [ ] For every fabric candidate, include certification attempts/failures, subdivision, routing, queue atomics/traffic, empty launches, packet fill, cooperative setup, exact refinement, native residual trace, hit merge, peak working memory, and full geometry-stage/frame cost. Certificate rate or active lanes alone cannot select it.
-- [ ] Resolve policy only at cooked-domain admission/calibration invalidation; prohibit per-frame domain/prototype walks or policy calls.
+- [ ] Resolve policy only at Ochroma runtime-domain admission/calibration invalidation; prohibit per-frame domain/prototype walks or policy calls.
 - [ ] Select compacted triangle GAS conservatively on a cache miss.
 - [ ] Keep OMM on triangle GAS until a dedicated combined witness exists.
 - [ ] Print requested policy, selected kind, selection reason, and calibration key for every benchmark fixture.
 - [ ] Print schedule candidate objective vectors, selected variant id, selection reason, and calibration key.
 - [ ] Add forced modes only for diagnostics; forced unsupported CLAS exits non-zero.
-- [ ] Forced unsupported `ray_native` exits non-zero; `Auto` may use only already-cooked residuals and cannot ask CPU code to evaluate construction.
+- [ ] Forced unsupported `ray_native` exits non-zero; `Auto` may use only the
+  already-admitted residual from Ochroma's runtime derivation and cannot ask
+  CPU code to evaluate construction.
 
 **Local verification**
 
@@ -1077,7 +1263,7 @@ Required tests:
 test static_uncalibrated_defaults_to_triangle_gas ... ok
 test omm_defaults_to_validated_triangle_path ... ok
 test deforming_candidate_uses_clas_only_after_measured_win ... ok
-test calibration_key_changes_with_shader_or_cook_schema ... ok
+test calibration_key_changes_with_shader_or_runtime_geometry_schema ... ok
 test policy_does_not_enter_simulation_or_save_state ... ok
 test policy_resolution_never_runs_in_frame_prepare ... ok
 test schedule_selection_uses_complete_cost_vector ... ok
@@ -1202,7 +1388,7 @@ Also run uniform one-percent and 100% dirty. Hierarchical may be no more than 10
 
 ---
 
-## Task 8: Wire Forge-Cooked Continuous Cluster LOD
+## Task 8: Wire Ochroma-Derived Continuous Cluster Detail
 
 **Depends on:** Tasks 3, 4, and 6
 
@@ -1226,7 +1412,13 @@ Also run uniform one-percent and 100% dirty. Hierarchical may be no more than 10
 - Modify `$URBAN/assets/config/render.ron`
 - Modify `$SPECTRA/rust/spectra-renderer/tests/geometry_gpu.rs`
 
-**Wiring requirement:** The interactive path dispatches GPU geometry preparation; ray-native regions receive an evaluation-tolerance/ray-class update without topology replacement, residual regions receive a cooked cluster cut, closest-hit/trace writes quantized group hit/footprint feedback, and `restir_pt.slang` consumes stable parametric surface keys or validated residual surface maps. No Rust LOD selector, feedback interpreter, or global history reset exists.
+**Wiring requirement:** The interactive path dispatches GPU geometry
+preparation; ray-native regions receive an evaluation-tolerance/ray-class
+update without topology replacement, residual regions receive an
+Ochroma-derived cluster cut, closest-hit/trace writes quantized group
+hit/footprint feedback, and `restir_pt.slang` consumes stable parametric surface
+keys or validated residual surface maps. No asset-authored distance mesh, Rust
+LOD selector, feedback interpreter, or global history reset exists.
 
 **Implementation steps**
 
@@ -1238,11 +1430,11 @@ Also run uniform one-percent and 100% dirty. Hierarchical may be no more than 10
 - [ ] For ray-native surfaces, derive a bounded evaluation tolerance/ray class from the same conservative error contract while retaining identical construction-path surface keys. Do not tessellate or switch topology merely to change visible precision.
 - [ ] Store selected groups in resident GPU state and compact only changed groups into device-indirect CLAS/template args.
 - [ ] Reuse resident group traversables or update CLAS from GPU-written cached-template inputs; do not invoke runtime QEM or read back `argsCount`.
-- [ ] Remove the interactive-render blanket disable for this cooked path. Preserve the disable only for legacy runtime simplification.
+- [ ] Remove the interactive-render blanket disable for this Ochroma-derived path. Preserve the disable only for legacy runtime simplification.
 - [ ] Add a no-LOD oracle mode and a deterministic seam/error witness.
 - [ ] Accumulate quantized per-group hit density, ray-footprint/cone class, neighboring-miss pressure, and LOD-transition confidence into double-buffered GPU feedback. Use stable integer reductions and clear/rotate entirely on GPU.
 - [ ] Apply one-frame-delayed feedback only after the conservative camera/error cut to rank optional detail/prefetch. Zero, stale, overflowed, or disabled feedback must produce the same required-parent sequence.
-- [ ] Use cooked parent/child correspondence to remap primary-hit identity, motion vectors, and eligible ReSTIR/temporal reservoirs across cut changes. Reject invalid/high-error mappings locally; do not clear an entire object's history.
+- [ ] Use Ochroma-derived parent/child correspondence to remap primary-hit identity, motion vectors, and eligible ReSTIR/temporal reservoirs across cut changes. Reject invalid/high-error mappings locally; do not clear an entire object's history.
 - [ ] Use direct parametric coordinates for ray-native motion/temporal reuse. Its expected invalidation count from precision-only changes is zero; cross-LOD maps remain the residual geometry path.
 - [ ] Add no-feedback, no-remap, and highest-detail oracles plus fast camera, disocclusion, and repeated threshold-crossing fixtures.
 - [ ] Ensure gameplay never chooses a distance mesh or substitutes geometry by camera range.
@@ -1283,7 +1475,7 @@ cargo test spectra_frame::witnesses::mega_geometry_lod
 Required final line:
 
 ```text
-MEGAGEOMETRY_LOD source=forge_cooked selector=gpu feedback_owner=gpu surface_map_coverage=1.0 max_error_px=1.0 open_boundary_seams=0 runtime_qem_calls=0 cpu_lod_decisions=0
+MEGAGEOMETRY_LOD source=finished_object selector=gpu feedback_owner=gpu surface_map_coverage=1.0 max_error_px=1.0 open_boundary_seams=0 runtime_qem_calls=0 cpu_lod_decisions=0
 ```
 
 **Live present gate, after permission**
@@ -1298,7 +1490,7 @@ Inspect the rendered frames. Numeric gates alone are not visual evidence.
 
 **Done When**
 
-- [ ] Interactive rendering consumes cooked cluster LOD.
+- [ ] Interactive rendering consumes Ochroma-derived continuous cluster detail.
 - [ ] The real present witness has no visible cracks or material changes.
 - [ ] The triangle reduction and one-pixel gates pass.
 - [ ] Valid surface remapping at least halves LOD-switch temporal invalidations without radiance bias.
@@ -1417,7 +1609,7 @@ Any optional-detail miss must be accompanied by a resident parent group and must
 - [ ] Write the named real-behavior tests first.
 - [ ] Run the task test command and confirm it fails for the missing or incorrect behavior, not for an unrelated environment error.
 - [ ] Query and record template limits/capabilities from the live OptiX device.
-- [ ] Cache templates by cooked topology hash and compatible build settings at admission; upload handles/compatibility ids into resident GPU metadata.
+- [ ] Cache templates by Ochroma-derived topology hash and compatible build settings at admission; upload handles/compatibility ids into resident GPU metadata.
 - [ ] Reuse one template across every decoded geometry-program block with the same proven topology signature, including spatial reuse within one frame; positions, transforms, materials, and provenance remain per use.
 - [ ] Generate changing vertex data/group cuts and template-instantiation args on GPU without changing semantic triangle mapping.
 - [ ] Keep template lifetime fenced and versioned with the shader/build ABI.
@@ -1506,7 +1698,9 @@ If template CLAS does not win, keep it disabled in `Auto` and record the measure
 - [ ] Prove all shaders/pipelines were loaded and prewarmed before timed frames; any frame-time compilation, pipeline creation, or cache repair suppresses the verdict.
 - [ ] Compute a fixture winner only under the design's correctness, p95 geometry cost, and peak geometry VRAM rules.
 - [ ] Print a scoped overall claim. Never print `winner=city_hybrid` if any required fixture loses or falls back unexpectedly.
-- [ ] Add the AMD conventional-AS run. NVIDIA-only features may be unavailable there, but the same resident scene and cooked LOD must keep the 30 fps Performance-tier gate.
+- [ ] Add the AMD conventional-AS run. NVIDIA-only features may be unavailable
+      there, but the same resident scene and Ochroma-derived detail hierarchy
+      must keep the 30 fps Performance-tier gate.
 - [ ] Include the paging teleport/thrash fixture and cooperative `on/off/auto` sweep. Cooperative compute is a win only on full-stage/full-frame cost, never instruction utilization alone.
 - [ ] At identical frame/VRAM/error settings, measure encoded storage, peak decoded working set, source-equivalent visible detail, temporal invalidations after LOD switches, and full-frame cost for raw clusters, dense blocks, and topology programs.
 - [ ] Emit `city_geometry_program_breakthrough` only when topology programs meet both storage ratios, at least double valid visible detail at fixed budget, halve LOD temporal invalidations, have zero losing fixtures, and win at least three independent axes. Never manufacture three wins from correlated counters.
@@ -1554,11 +1748,11 @@ test cpu_queue_scheduling_suppresses_fabric_and_overall_claims ... ok
 cargo run --release -p vox_render --example mega_geometry_bench --features spectra-native,spectra-native-optix -- --suite city --modes triangle,reference,city_hybrid --warmup 60 --frames 240 --json-out artifacts/megageometry/final-nvidia.json
 ```
 
-The claim gate requires:
+The NVIDIA raw-artifact gate requires backend-local evidence only:
 
 ```text
 MEGAGEOMETRY_SUITE correctness=pass unexpected_fallbacks=0 required_page_misses=0
-MEGAGEOMETRY_PORTABLE packet_abi=match control_hash=match cpu_fallbacks=0 adapter_overhead_pct<=2.0
+MEGAGEOMETRY_IDENTITY mode=city_hybrid packet_abi_hash=<64-hex> control_hash=<64-hex> capability_fingerprint=<64-hex>
 MEGAGEOMETRY_CPU render_thread_scene_visits=0 visibility_node_visits=0 construction_evaluations=0 lod_decisions=0 page_decisions=0 eviction_decisions=0 blocking_readbacks=0 frame_allocations=0 host_deadline_misses=0 render_thread_submit_ms_p95<=0.25 host_submit_ms_p95<=0.50
 MEGAGEOMETRY_FIXTURE name=static_meridian outcome=parity regression_pct<=2.0
 MEGAGEOMETRY_FIXTURE name=multi_material outcome=correctness_only mismatches=0
@@ -1566,19 +1760,124 @@ MEGAGEOMETRY_FIXTURE name=omm_foliage outcome=parity unexpected_fallbacks=0
 MEGAGEOMETRY_FIXTURE name=changing_geometry outcome=win winner=city_hybrid
 MEGAGEOMETRY_FIXTURE name=streamed_lod outcome=win winner=city_hybrid
 MEGAGEOMETRY_FIXTURE name=localized_updates outcome=win winner=city_hybrid
-MEGAGEOMETRY_FIXTURE name=mixed_city outcome=win winner=city_hybrid
-MEGAGEOMETRY_OVERALL winner=city_hybrid losses=0 target_wins=4 claim=better_city_geometry_system
+MEGAGEOMETRY_FIXTURE name=mixed_city outcome=unavailable
+MEGAGEOMETRY_OVERALL winner=none
 MEGAGEOMETRY_BREAKTHROUGH geometry_program=pass repeated_storage_ratio<=0.25 mixed_storage_ratio<=0.50 fixed_budget_detail_ratio>=2.0 lod_temporal_invalidations_reduction>=0.50 full_frame_regression_pct<=2.0 winning_axes>=3 losses=0 claim=city_geometry_program_breakthrough
 MEGAGEOMETRY_VISIBILITY_BREAKTHROUGH ray_native_coverage>=0.60 materialized_geometry_ratio<=0.25 parameter_update_fine_as_builds=0 geometry_stage_speedup>=1.50 fixed_budget_detail_ratio>=4.0 ray_native_temporal_invalidations=0 correctness_mismatches=0 real_asset_families>=2 losses=0 claim=ray_native_city_geometry
 MEGAGEOMETRY_FABRIC_BREAKTHROUGH structured_ray_coverage>=0.60 certified_without_per_ray_traversal>=0.35 active_packet_lanes>=0.75 intersection_speedup_vs_scalar>=2.0 geometry_stage_speedup>=2.0 routing_queue_overhead_pct<=10.0 correctness_mismatches=0 cpu_scheduling=0 real_asset_families>=2 losses=0 claim=certified_visibility_fabric
 ```
+
+`mixed_city outcome=unavailable` and `winner=none` are mandatory honesty in a
+raw backend artifact, not failures. A single backend cannot compare packet or
+control identities with another backend and cannot replace the live Urban
+Horizon product A/B. `mega_geometry_product_compose` later authorizes
+`mixed_city`; `mega_geometry_acceptance` alone prints cross-backend conformance
+and the joined overall winner.
 
 **AMD final run, after permission**
 
 Run the same mixed-city witness through the product Performance configuration and real present path. Required line:
 
 ```text
-MEGAGEOMETRY_AMD gpu=AMD_780M api=vulkan rt_backend=vulkan_khr present_path=realtime_1spp packet_abi=match control_hash=match performance_fps_p50>=30.0 runtime_qem_calls=0 missing_geometry=0 cpu_construction_evaluations=0 cpu_lod_decisions=0 cpu_page_decisions=0 blocking_readbacks=0
+MEGAGEOMETRY_AMD gpu=<actual-device> api=vulkan rt_backend=vulkan_khr present_path=realtime_1spp fsr_upscale=true packet_abi_hash=<64-hex> control_hash=<64-hex> capability_fingerprint=<64-hex> performance_fps_p50=<measured> performance_fps_at_p95_frame_time>=30.0 runtime_qem_calls=0 missing_geometry=0 cpu_construction_evaluations=0 cpu_lod_decisions=0 cpu_page_decisions=0 cpu_eviction_decisions=0 blocking_readbacks=0 frame_allocations=0 host_deadline_misses=0 render_thread_submit_ms_p95<=0.25 host_submit_ms_p95<=0.50
+```
+
+Set `OCHROMA_MEGAGEOMETRY_WITNESS_JSON` to
+`$URBAN/artifacts/megageometry/product-reference.json` or
+`$URBAN/artifacts/megageometry/product-city-hybrid.json` for the matching live
+product run. These `ProductWitness` artifacts are intentionally distinct from
+the backend benchmark report below. The
+product witness writes the raw Vulkan packet ABI and capability fingerprint; it
+must never print `packet_abi=match` or `control_hash=match` on this AMD-only
+machine. Cross-backend equality is a separate join over independently captured
+AMD/Vulkan and NVIDIA/CUDA conformance artifacts. A missing second artifact is
+`unavailable`, not a local failure and not a match.
+
+Compose independently captured backend reports only after both exist:
+
+```bash
+cargo run --release -p vox_render --example mega_geometry_bench --features spectra-native -- \
+  --suite city \
+  --modes triangle,reference,city_hybrid \
+  --warmup 60 \
+  --frames 240 \
+  --json-out artifacts/megageometry/final-amd-vulkan-bench.json
+
+cargo run -p vox_render --example mega_geometry_compose -- \
+  --cuda artifacts/megageometry/final-nvidia.json \
+  --vulkan artifacts/megageometry/final-amd-vulkan-bench.json \
+  --json-out artifacts/megageometry/backend-conformance.json
+```
+
+`final-amd-vulkan-bench.json` is a `BenchReport`; it must never be replaced by
+an Urban Horizon `ProductWitness`. The distinct schemas measure different
+parts of the acceptance contract.
+
+Required line:
+
+```text
+MEGAGEOMETRY_CONFORMANCE packet_abi=match control_hash=match same_inputs=true compared_mode_records>0 unavailable_records=0 result=pass
+```
+
+The `mixed_city` result is a product A/B, never a synthetic renderer fixture.
+Capture the same save/camera/config explicitly with
+`MEGAGEOMETRY_MODE=reference` and `MEGAGEOMETRY_MODE=city_hybrid`,
+`OCHROMA_MEGAGEOMETRY_WITNESS_JSON`, and `OCHROMA_PRESENT_SHOT`. The witness
+pins the exact save, camera, render config and final displayed capture by
+SHA-256 and records p50/p95. After inspecting both captures, write a UTF-8
+receipt containing an exact `verdict=pass` line and compose:
+
+```bash
+cargo run --no-default-features --bin mega_geometry_product_compose -- \
+  --reference artifacts/megageometry/product-reference.json \
+  --city-hybrid artifacts/megageometry/product-city-hybrid.json \
+  --reference-capture artifacts/megageometry/product-reference.png \
+  --city-hybrid-capture artifacts/megageometry/product-city-hybrid.png \
+  --visual-inspection artifacts/megageometry/product-visual-inspection.txt \
+  --json-out artifacts/megageometry/product-ab.json
+```
+
+Required line:
+
+```text
+MEGAGEOMETRY_PRODUCT_AB outcome=win winner=city_hybrid p50_improvement_pct>=-2.000 p95_improvement_pct>=2.000
+```
+
+Join the independent CUDA/Vulkan finished-object reports and inspected product
+artifact in one final fail-closed process. Geometry-program, ray-native, and
+Fabric evidence are fields of the same CUDA city report; separate probe files
+cannot authorize product claims:
+
+Each raw report must carry a SHA-256 finished-object corpus and render-config
+identity, real GPU/driver and Git revision identities, and capability/packet
+ABI hashes derived from measured renderer receipts. The final join recomputes
+all three breakthrough claims from raw per-fixture receipts and reruns the full
+raw-backend validator on both artifacts; producer-authored aggregate labels are
+never accepted as authority.
+The Urban Horizon product composition retains its scene, camera, two raw
+witnesses, two displayed captures, inspection receipt, and render-config
+SHA-256 identities. Its render-config identity must equal both raw backend
+reports in the final join.
+
+```bash
+cd "$OCHROMA"
+cargo run -p vox_render --example mega_geometry_acceptance -- \
+  --cuda artifacts/megageometry/final-nvidia.json \
+  --vulkan artifacts/megageometry/final-amd-vulkan-bench.json \
+  --product "$URBAN/artifacts/megageometry/product-ab.json" \
+  --json-out artifacts/megageometry/final-acceptance.json
+```
+
+This composer has no Forge input, revision, schema, or dependency. It consumes
+only evidence from the finished Urban Horizon -> Ochroma -> Spectra runtime
+chain, recomputes cross-backend conformance, requires a measured native OptiX
+CLAS count, and rejects missing hardware probes or breakthrough metrics.
+
+Required line:
+
+```text
+MEGAGEOMETRY_OVERALL winner=city_hybrid losses=0 target_wins=4 claim=better_city_geometry_system
+MEGAGEOMETRY_ACCEPTANCE backend_conformance=true native_clas=true geometry_program=true ray_native=true product_ab=true program_breakthrough=true visibility_breakthrough=true fabric_breakthrough=true status=pass claim=complete_ochroma_megageometry
 ```
 
 Visually inspect both live present captures. Record the exact screenshots and any differences. Do not claim a render/content fix from the benchmark buffers alone.
@@ -1591,6 +1890,9 @@ Visually inspect both live present captures. Record the exact screenshots and an
 - [ ] GPU owns steady-state geometry decisions on both NVIDIA and AMD; only the documented opaque host services remain.
 - [ ] CUDA and Vulkan consume the same packet ABI and produce the same persistent control hash; actual cooperative selection is measured and reported.
 - [ ] The geometry-program, ray-native, and certified-fabric breakthrough lines are each either fully proven or absent; core MegaGeometry may still ship with a narrower truthful claim.
+- [ ] `mega_geometry_acceptance` publishes the sole complete-system claim and
+      exits nonzero for any missing, stale, mismatched, or below-threshold
+      component artifact.
 - [ ] The results document prints either the exact supported win above or a narrower truthful verdict naming the losing fixtures and selected fallbacks.
 
 ---
@@ -1626,7 +1928,7 @@ real-asset dual-lowering + native custom-intersection preflight
     -> portable capabilities + packet ABI + subgroup/cooperative variants + native adapter boundary
       -> truthful stats
         -> true device-indirect CLAS + provenance
-          -> Forge ray-native visibility + geometry residuals + surface maps + schedule portfolio
+          -> Ochroma-derived ray-native visibility + geometry residuals + surface maps + schedule portfolio
             -> certified ray-domain + packet + native-residual fabric gate
               -> typed scene/payload wiring
                 -> admission-time hybrid visibility execution + AS + schedule policy
@@ -1645,7 +1947,10 @@ Stop and revise the design rather than pushing forward if any of these occurs:
 
 - The common record ABI, Rust/Slang reflection layout, or persistent integer control hash differs between CUDA and Vulkan.
 - The real-asset census cannot leave overhead-adjusted headroom below the final repeated/mixed storage targets. Keep the dense path and pivot before freezing `TopologyProgramV1`.
-- Ray-native lowering cannot cover at least 60% of source-equivalent surfaces on two real asset families, cannot bound intersection work/AABBs, or loses its complete-stage target. Keep those regions on cooked residual geometry and do not freeze/promote the visibility schema.
+- Ray-native lowering cannot cover at least 60% of source-equivalent surfaces
+  on two real asset families, cannot bound intersection work/AABBs, or loses
+  its complete-stage target. Keep those regions on exact source-mesh residual
+  geometry and do not freeze/promote the visibility schema.
 - Any ray-native hit, material, UV, normal, motion, or stable-surface key differs from the mesh oracle beyond the exact declared tolerance.
 - A whole-domain certificate cannot prove conservative containment and strict nearest ordering, accepts any approximation, or differs from explicit-ray oracles. Ambiguous domains must split or materialize rays.
 - Certified-domain, ray-bin, packet-fill, residual-route, or queue-overflow decisions require CPU inspection/readback; native host calls may submit only the same pre-admitted bounded pass graph.
@@ -1659,14 +1964,14 @@ Stop and revise the design rather than pushing forward if any of these occurs:
 - Geometry programs miss the 25% repeated or 50% mixed storage gates, require full-asset decode, exceed 2% full-frame regression, or lack a competitive dense unique-geometry fallback. In that case do not freeze/promote the program schema.
 - Parent/child surface correspondence is incomplete/ambiguous, biases the radiance oracle, or cannot at least halve LOD-switch temporal invalidations on its fixture.
 - Zero/stale ray feedback changes required-parent residency, correctness, or the deterministic required request sequence.
-- Capability, shader ABI, compiler, driver, or cook-schema changes can reuse a stale pipeline/calibration cache entry.
+- Capability, shader ABI, compiler, driver, or runtime-geometry-schema changes can reuse a stale pipeline/calibration cache entry.
 - Capability enumeration causes unbounded shader-variant growth or a frame-time compilation path.
 - The current OptiX headers or driver do not support the required true CLAS form.
 - CLAS hit programs cannot recover exact material/UV/source identity.
 - Multi-level IAS is unsupported or invalid in the shipping OptiX pipeline.
 - The OptiX host-submission worker makes the render thread wait, exceeds 0.50 ms p95 on localized dirtiness, or scales with total scene size rather than compact packet size.
 - Any frame-time CPU path walks geometry/visibility nodes, evaluates construction, selects LOD/tolerance, prioritizes/evicts pages, builds native AS args, or allocates geometry pages.
-- The Forge hierarchy requires game-specific camera or asset behavior.
+- Ochroma runtime derivation requires game-specific camera or asset behavior.
 - The one-pixel LOD gate requires runtime mesh repair.
 - Paging needs synchronous GPU readback to avoid missing geometry.
 - GPU work queues cannot detect overflow and retain a correct resident fallback without invoking a CPU builder.
@@ -1680,11 +1985,16 @@ The correct response to a stop condition is a measured fallback and an updated s
 
 ## Final Deliverables
 
-- Engine-owned `vox_data::ReadyMegaGeometry`, embedded by Urban Horizon's typed version-3 ReadyAssetPayload and reusable by other Ochroma games, with deterministic Forge visibility programs, sparse cells, factorized coefficient blocks, residual ranges, and cluster hierarchy.
-- Dual lowering from the same validated BlueprintGraph/construction source into the unchanged mesh oracle and a finite game-agnostic visibility IR.
+- Engine-owned `RuntimeGeometryProduct`, held in Ochroma's disposable
+  content-addressed runtime cache and reusable by other Ochroma games, with
+  deterministic tool-neutral visibility programs, sparse cells, factorized
+  coefficient blocks, residual ranges, and cluster hierarchy. It is never
+  embedded in `ReadyAssetPayload` or `.vxp`.
+- Dual lowering from the same validated finished mesh into the unchanged mesh
+  oracle and a finite game-agnostic visibility IR.
 - AOT Slang primitive-family intersections over native OptiX/Vulkan/Metal procedural AABBs, with stable construction-path surface keys and parameter-only zero-fine-build updates.
 - A certified visibility fabric that resolves coherent ray domains without per-ray traversal, packetizes unresolved structured rays, and sends irregular residue to fixed-function RT with deterministic exact hit merge.
-- Portable Forge geometry programs with proven topology dictionaries, quantized parameter/residual blocks, DGF/DGFS-style dense fallback, complete surface correspondence, and a bounded Pareto schedule portfolio.
+- Portable finished-object geometry programs with proven topology dictionaries, quantized parameter/residual blocks, DGF/DGFS-style dense fallback, complete surface correspondence, and an Ochroma-derived bounded Pareto schedule portfolio.
 - Fixed-arena GPU decode, topology-template spatial reuse, quantized ray feedback, and LOD-aware ReSTIR/temporal remapping.
 - One versioned backend-neutral geometry record ABI, immutable capability fingerprint, opaque queue/epoch model, and cross-backend conformance harness.
 - CUDA, Vulkan, and experimental Metal adapters over the existing `GpuBackend`, with support status limited by their independent hardware evidence.
@@ -1694,7 +2004,7 @@ The correct response to a stop condition is a measured fallback and an updated s
 - Measured per-prototype triangle-GAS/CLAS selection.
 - Measured per-subgraph ray-native/triangle-GAS/CLAS selection using complete AABB/intersection/shading/residual cost.
 - GPU dirty-partition compaction plus bounded hierarchical OptiX IAS submission.
-- GPU-selected cooked continuous cluster LOD with crack/error evidence.
+- GPU-selected Ochroma-derived continuous cluster detail with crack/error evidence.
 - GPU-managed fixed geometry page pool plus opaque asynchronous transport.
 - Measured device-indirect CLAS template path for changing geometry.
 - CPU-ownership evidence with zero forbidden decisions/visits/readbacks/allocations.
@@ -1717,7 +2027,9 @@ The correct response to a stop condition is a measured fallback and an updated s
 - [x] Done When names the exact final commands and human-visible verdicts.
 - [x] API/type names are consistent between the design and plan.
 - [x] Existing dirty worktrees are preserved and commit/remote/game operations remain permission-gated.
-- [x] Forge owns asset topology/LOD/page authoring; renderer and gameplay shortcuts are explicitly forbidden.
+- [x] Ochroma owns derived topology/detail/pages and validates every runtime
+  representation. Forge may author a source asset but owns no game, engine, or
+  renderer contract; renderer/gameplay shortcuts are explicitly forbidden.
 - [x] GPU owns every steady-state geometry decision; CPU work is limited to named, bounded, opaque host API services.
 - [x] GPU owns ray-domain subdivision, queue/bin construction, packet selection, residual routing, and counts; native host APIs only submit the fixed admitted pass graph without reading device state.
 - [x] Device-indirect OptiX CLAS args/count are required, not an optional optimization.
@@ -1730,9 +2042,13 @@ The correct response to a stop condition is a measured fallback and an updated s
 - [x] AOT/reflection/cache compatibility, queue/barrier ownership, build scratch, multi-frame lifetime, stale completions, camera teleports, and budget thrash have explicit tasks or stop conditions.
 - [x] Metal and future adapters cannot be advertised from compile-only evidence or green skips.
 - [x] The opportunity register separates immediate architecture from measured follow-ons and keeps tensorized BVH traversal out of the critical path.
-- [x] The plan exploits Forge construction structure rather than merely producing better independent clusters, while keeping engine types game-agnostic.
+- [x] The plan derives reusable structure from ordinary finished meshes in
+  Ochroma; Forge construction structure and authoring metadata are outside the
+  system.
 - [x] Unique geometry has a dense-block baseline; procedural reuse is never mandatory or label-trusted.
-- [x] Cook optimization covers decode/build/trace/update/page/memory Pareto costs rather than triangle count alone.
+- [x] Engine derivation and runtime selection cover
+  decode/build/trace/update/page/memory Pareto costs rather than triangle count
+  alone.
 - [x] Cross-LOD surface identity, ReSTIR/temporal reuse, ray-feedback safety, and fixed-budget visible detail have independent correctness and performance gates.
 - [x] Each breakthrough claim requires its independent product gates and can fail without corrupting narrower measured results.
 - [x] A real-asset entropy/cost preflight can kill or redirect the representation hypothesis before schema freeze and broad backend integration.

@@ -169,6 +169,15 @@ impl RenderRuntime {
         deltas: &mut Vec<vox_scene::SceneDelta>,
         camera: &RenderCamera,
     ) -> Result<PresentResult, String> {
+        // The same retained runtime can alternate between the zero-copy live
+        // presenter and an explicit authoring/readback witness. Restore the
+        // authoritative host-beauty target here; otherwise a preceding interop
+        // frame leaves host beauty disabled and the capture contains no traced
+        // pixels even though traversal was live.
+        if self.renderer.render_target() != spectra_renderer::RenderTarget::HostBeauty {
+            self.renderer
+                .set_render_target(spectra_renderer::RenderTarget::HostBeauty);
+        }
         let delta_t = std::time::Instant::now();
         let plan = self.renderer.drain_scene_deltas(deltas)?;
         let delta_apply_ms = elapsed_ms(delta_t);
@@ -398,8 +407,7 @@ impl RenderRuntime {
     /// Select exactly one temporal radiance owner. A denoising present
     /// reconstruction (SNR/RR) sets this; SR-only paths leave it off.
     pub fn set_present_reconstruction_owns_temporal(&mut self, on: bool) {
-        self.renderer
-            .set_present_reconstruction_owns_temporal(on);
+        self.renderer.set_present_reconstruction_owns_temporal(on);
     }
 
     /// Enable/disable production of the full SNR `ReconstructionFrameV1` guide set
@@ -704,11 +712,7 @@ impl RenderRuntime {
             }
             eprintln!(
                 "[water-optics] per-water-body IOP field uploaded: {} cells x {} f32 on the {}x{} depth grid;{}",
-                cells,
-                stride,
-                upload.depth_res[0],
-                upload.depth_res[1],
-                detail
+                cells, stride, upload.depth_res[0], upload.depth_res[1], detail
             );
         }
         self.renderer.set_slope_snow(
@@ -755,5 +759,30 @@ impl RenderRuntime {
         normals: &[[f32; 3]],
     ) -> Result<bool, String> {
         self.renderer.refit_animated_vertices(node, verts, normals)
+    }
+
+    /// Upload the STATIC halves of a GPU-animated displaced surface, once.
+    pub fn upload_animated_surface(
+        &mut self,
+        node: NodeId,
+        points: &[f32],
+        corners: &[u32],
+        adj_offsets: &[u32],
+        adj_triangles: &[u32],
+    ) -> Result<usize, String> {
+        self.renderer
+            .upload_animated_surface(node, points, corners, adj_offsets, adj_triangles)
+    }
+
+    /// Animate an uploaded surface ON THE GPU and refit its acceleration
+    /// structure. `Ok(false)` means the caller must use the host path.
+    pub fn refit_animated_surface(
+        &mut self,
+        node: NodeId,
+        time_state: &[f32; 48],
+        origin: [f32; 3],
+    ) -> Result<bool, String> {
+        self.renderer
+            .refit_animated_surface(node, time_state, origin)
     }
 }

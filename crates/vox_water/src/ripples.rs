@@ -85,7 +85,8 @@ impl RippleSimulator {
 
     /// Add a ripple source with the default decay length.
     pub fn add_ripple(&mut self, position: Vec3, amplitude: f32, frequency: f32) {
-        self.ripples.push(Ripple::new(position, amplitude, frequency));
+        self.ripples
+            .push(Ripple::new(position, amplitude, frequency));
     }
 
     /// Add a fully specified ripple source.
@@ -178,7 +179,11 @@ mod tests {
         let omega = std::f32::consts::TAU * 2.0;
         let k = omega * omega / GRAVITY;
         let expected = 0.5 * (k * 50.0f32).sin() * (-50.0f32 / DEFAULT_DECAY_LENGTH).exp();
-        assert!((h[1 * 3 + 2] - expected).abs() < 1e-5, "got {}", h[1 * 3 + 2]);
+        assert!(
+            (h[1 * 3 + 2] - expected).abs() < 1e-5,
+            "got {}",
+            h[1 * 3 + 2]
+        );
     }
 
     #[test]

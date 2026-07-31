@@ -669,8 +669,14 @@ mod tests {
             enabled: false,
             ..ContactDecalParams::default()
         };
-        let field =
-            ContactDecalField::build(&xform(0.0, 0.0, 0.0), &[0], &[post_aabb()], &[], &[], &params);
+        let field = ContactDecalField::build(
+            &xform(0.0, 0.0, 0.0),
+            &[0],
+            &[post_aabb()],
+            &[],
+            &[],
+            &params,
+        );
         assert!(field.is_empty());
         assert_eq!(field.res, [0, 0]);
         assert!(field.cell_start.is_empty(), "no grid ⇒ nothing to bind");
@@ -723,8 +729,14 @@ mod tests {
             cell_size_m: 1.0,
             ..ContactDecalParams::default()
         };
-        let field =
-            ContactDecalField::build(&xform(0.0, 0.0, 0.0), &[0], &[post_aabb()], &[], &[], &params);
+        let field = ContactDecalField::build(
+            &xform(0.0, 0.0, 0.0),
+            &[0],
+            &[post_aabb()],
+            &[],
+            &[],
+            &params,
+        );
         assert_eq!(field.len(), 1);
         let listed = field.cell_items.iter().filter(|&&i| i == 0).count();
         assert!(
@@ -916,14 +928,7 @@ mod tests {
         // A 30 m x 1.5 m paving slab: tall enough for min_object_height_m,
         // smaller than max_footprint_m, but flat in proportion.
         let slab = ([-15.0, 0.0, -15.0], [15.0, 1.5, 15.0]);
-        let f = ContactDecalField::build(
-            &xform(0.0, 0.0, 0.0),
-            &[0],
-            &[slab],
-            &[],
-            &[],
-            &params,
-        );
+        let f = ContactDecalField::build(&xform(0.0, 0.0, 0.0), &[0], &[slab], &[], &[], &params);
         assert_eq!(
             f.len(),
             0,
@@ -932,14 +937,8 @@ mod tests {
 
         // A building of comparable width but real height MUST still qualify.
         let building = ([-15.0, 0.0, -15.0], [15.0, 18.0, 15.0]);
-        let f = ContactDecalField::build(
-            &xform(0.0, 0.0, 0.0),
-            &[0],
-            &[building],
-            &[],
-            &[],
-            &params,
-        );
+        let f =
+            ContactDecalField::build(&xform(0.0, 0.0, 0.0), &[0], &[building], &[], &[], &params);
         assert_eq!(
             f.len(),
             1,
@@ -989,8 +988,14 @@ mod tests {
             c, 0.0, c, 0.0, //
             0.0, 0.0, 0.0, 1.0,
         ];
-        let field =
-            ContactDecalField::build(&m, &[0], &[post_aabb()], &[], &[], &ContactDecalParams::default());
+        let field = ContactDecalField::build(
+            &m,
+            &[0],
+            &[post_aabb()],
+            &[],
+            &[],
+            &ContactDecalParams::default(),
+        );
         assert_eq!(field.len(), 1);
         let half_x = field.decals[3];
         assert!(

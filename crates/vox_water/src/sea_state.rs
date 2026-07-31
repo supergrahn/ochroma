@@ -277,8 +277,8 @@ impl WindResponse {
         // Soften the very steep whitecap law by interpolating from 1.0 by `gain`,
         // so `foam_gain: 0` pins foam to the authored value and `1.0` tracks
         // Monahan exactly.
-        let foam_scale = (1.0 + self.foam_gain * (whitecap_ratio - 1.0))
-            .clamp(self.foam_min, self.foam_max);
+        let foam_scale =
+            (1.0 + self.foam_gain * (whitecap_ratio - 1.0)).clamp(self.foam_min, self.foam_max);
 
         SurfaceDrive {
             amplitude_scale,
@@ -310,11 +310,7 @@ impl WindResponse {
     /// calibration (there is nothing to calibrate against) and returns the plain
     /// wind drive, so this can never make the sea undefined.
     #[must_use]
-    pub fn mesh_amplitude_scale(
-        &self,
-        wind_speed_ms: f32,
-        baked_significant_height_m: f32,
-    ) -> f32 {
+    pub fn mesh_amplitude_scale(&self, wind_speed_ms: f32, baked_significant_height_m: f32) -> f32 {
         let drive = self.drive(wind_speed_ms);
         if !self.enabled {
             return drive.amplitude_scale;
@@ -354,7 +350,8 @@ mod tests {
             let realised = baked_hs * scale;
             let target = SeaState::from_wind(wind).significant_wave_height_m;
             // Inside the amplitude clamps the mesh height IS the physical height.
-            let ratio = target / SeaState::from_wind(wr.reference_wind_ms).significant_wave_height_m;
+            let ratio =
+                target / SeaState::from_wind(wr.reference_wind_ms).significant_wave_height_m;
             if ratio > wr.amplitude_min && ratio < wr.amplitude_max {
                 assert!(
                     (realised - target).abs() < 1.0e-3 * target.max(1.0),
@@ -369,12 +366,22 @@ mod tests {
     fn height_gain_scales_the_realised_height_exactly() {
         let baked_hs = 14.55_f32;
         let one = WindResponse::default();
-        let half = WindResponse { height_gain: 0.5, ..WindResponse::default() };
+        let half = WindResponse {
+            height_gain: 0.5,
+            ..WindResponse::default()
+        };
         let a = one.mesh_amplitude_scale(14.0, baked_hs);
         let b = half.mesh_amplitude_scale(14.0, baked_hs);
-        assert!((b - 0.5 * a).abs() < 1.0e-6, "gain 0.5 gave {b}, expected {}", 0.5 * a);
+        assert!(
+            (b - 0.5 * a).abs() < 1.0e-6,
+            "gain 0.5 gave {b}, expected {}",
+            0.5 * a
+        );
         // Gain 0 is a genuinely flat sea (the witness control), not a near-flat one.
-        let zero = WindResponse { height_gain: 0.0, ..WindResponse::default() };
+        let zero = WindResponse {
+            height_gain: 0.0,
+            ..WindResponse::default()
+        };
         assert_eq!(zero.mesh_amplitude_scale(14.0, baked_hs), 0.0);
     }
 

@@ -23,6 +23,8 @@ pub mod material_gpu_eval;
 pub mod material_graph;
 pub mod mega_geometry;
 pub mod memory_pool;
+pub mod mesh_detail;
+pub mod mesh_program;
 pub mod mesh_simplify;
 pub mod naga_builder;
 pub mod particles;
@@ -33,6 +35,7 @@ pub mod profiling;
 #[cfg(feature = "bevy")]
 pub mod render_ecs;
 pub mod render_graph;
+pub mod runtime_geometry;
 pub mod scene_delta_adapter;
 pub mod sdf_scene;
 #[cfg(feature = "bevy")]
@@ -109,7 +112,7 @@ pub use spectra_renderer::{RendererTexture2D, RendererTextureMip};
 #[cfg(feature = "spectra-native")]
 pub use spectra_scene_state::CameraLayer as SpectraCameraParams;
 #[cfg(feature = "spectra-native")]
-pub use spectra_scene_state::MegaGeometryLayer;
+pub use spectra_scene_state::GeometryStreamingLayer;
 /// Re-export the native scene-state type so downstream crates (the game's live
 /// frame seam) can name the type returned by the instanced-scene builder without
 /// taking a direct dependency on `spectra-scene-state`.
@@ -120,6 +123,10 @@ pub use spectra_scene_state::SceneState;
 /// on the engine side of the split while the game decides what to carve.
 #[cfg(feature = "spectra-native")]
 pub use spectra_scene_state::TerrainSdfLayer;
+#[cfg(feature = "spectra-native")]
+pub use spectra_scene_state::{GpuPageDescriptor, PAGE_NONE};
+#[cfg(feature = "spectra-native")]
+pub use spectra_scene_state::{MegaGeometryExecution, MegaGeometryLayer};
 
 #[cfg(feature = "spectra-native")]
 pub mod material_table;

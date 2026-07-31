@@ -94,9 +94,7 @@ pub enum VxpError {
     Format { path: PathBuf, reason: String },
     #[error("vxp entry {name} not found in {path}")]
     MissingEntry { path: PathBuf, name: String },
-    #[error(
-        "vxp entry {name} in {path} is corrupt: {reason}"
-    )]
+    #[error("vxp entry {name} in {path} is corrupt: {reason}")]
     Corrupt {
         path: PathBuf,
         name: String,
@@ -137,7 +135,7 @@ type Result<T> = std::result::Result<T, VxpError>;
 // Kinds
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The four entry kinds a `.vxp` carries. Together they ARE one finished asset:
+/// The entry kinds a `.vxp` carries. Together they ARE one finished asset:
 /// the mesh plus the attributes it needs in the game and in the simulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum VxpKind {
@@ -150,14 +148,20 @@ pub enum VxpKind {
     Metadata,
     /// A thumbnail image (PNG bytes) for in-game display.
     Texture,
+    /// Skeleton/clip payload for moving parts or skinned characters.
+    Animation,
+    /// Shared texture-atlas payload.
+    Atlas,
 }
 
 impl VxpKind {
-    pub const ALL: [VxpKind; 4] = [
+    pub const ALL: [VxpKind; 6] = [
         VxpKind::Geometry,
         VxpKind::Surface,
         VxpKind::Metadata,
         VxpKind::Texture,
+        VxpKind::Animation,
+        VxpKind::Atlas,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -166,6 +170,8 @@ impl VxpKind {
             VxpKind::Surface => "Surface",
             VxpKind::Metadata => "Metadata",
             VxpKind::Texture => "Texture",
+            VxpKind::Animation => "Animation",
+            VxpKind::Atlas => "Atlas",
         }
     }
 
@@ -190,10 +196,22 @@ impl fmt::Display for VxpKind {
 /// addressed store (git's future SHA-256 truncation, OCI, Bazel) relies on for
 /// an identity key, and it keeps the entry name short enough to stay readable.
 pub fn content_id(bytes: &[u8]) -> String {
+    hex_bytes(&sha256(bytes)[..16])
+}
+
+/// Full SHA-256 content address used by GPU geometry-page integrity checks.
+pub fn content_hash(bytes: &[u8]) -> [u8; 32] {
+    sha256(bytes)
+}
+
+fn sha256(bytes: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(32);
-    for byte in &digest[..16] {
+    Sha256::digest(bytes).into()
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
         out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap());
         out.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap());
     }
@@ -413,7 +431,11 @@ impl VxpTexture {
             id: id.clone(),
             reason,
         };
-        if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        if id.len() != 32
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
             return Err(bad(
                 "id must be 32 lowercase hex characters (the payload's content_id)".to_string(),
             ));
@@ -422,7 +444,9 @@ impl VxpTexture {
             return Err(bad(format!("degenerate dimensions {width}x{height}")));
         }
         if mip_count == 0 {
-            return Err(bad("mip_count 0: a texture has at least one level".to_string()));
+            return Err(bad(
+                "mip_count 0: a texture has at least one level".to_string()
+            ));
         }
         let full = full_mip_count(width, height);
         if mip_count > full {
@@ -538,13 +562,7 @@ impl VxpTexture {
     }
 }
 
-fn level_range_bytes(
-    width: u32,
-    height: u32,
-    format: VxpTextureFormat,
-    from: u32,
-    to: u32,
-) -> u64 {
+fn level_range_bytes(width: u32, height: u32, format: VxpTextureFormat, from: u32, to: u32) -> u64 {
     (from..to)
         .map(|level| {
             let (w, h) = mip_dimensions(width, height, level);
@@ -644,10 +662,16 @@ impl VxpTextureSlots {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub const VXP_INDEX_ENTRY: &str = "index.json";
-/// Bumped to 2 when the texture register landed. A v1 pack carries no register,
-/// so a v1 pack read by this build would make residency silently undecidable —
-/// exactly the failure the register exists to prevent. Fail closed: re-cook.
-pub const VXP_INDEX_VERSION: u32 = 2;
+/// Version 2 introduced the mandatory texture register. Version 3 briefly
+/// admitted asset-side runtime geometry pages; version 4 removes that
+/// architectural violation. New packs contain one authoritative finished mesh
+/// only. Ochroma derives every cluster, detail level, page, and MegaGeometry
+/// representation into its disposable runtime cache after loading the asset.
+/// Readers still accept v2/v3 packs for migration and ignore unknown legacy
+/// index fields; version 1 remains forbidden because texture residency would
+/// be undecidable.
+pub const VXP_INDEX_VERSION: u32 = 4;
+const VXP_MIN_READABLE_INDEX_VERSION: u32 = 2;
 
 /// One asset's entries, as recorded in the pack index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -657,6 +681,9 @@ pub struct VxpAssetIndex {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<String>,
     /// `(lod_level, entry_name)`, ascending by level.
+    ///
+    /// Read-only migration data for old v2 packs. `VxpWriter` cannot emit
+    /// authored LODs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub geometry_lods: Vec<(u8, String)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -665,6 +692,12 @@ pub struct VxpAssetIndex {
     pub metadata: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture: Option<String>,
+    /// `(clip_id, entry_name)`, sorted by clip id. Required social roles are
+    /// validated by the product pack gate, never silently substituted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub animations: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atlas: Option<String>,
     /// Content ids of the material textures this asset samples, ascending.
     /// Every one of them resolves in [`VxpIndex::textures`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -752,10 +785,11 @@ impl VxpIndex {
 #[derive(Debug, Default, Clone)]
 struct PendingAsset {
     geometry: Option<Vec<u8>>,
-    geometry_lods: BTreeMap<u8, Vec<u8>>,
     surface: Option<Vec<u8>>,
     metadata: Option<Vec<u8>>,
     texture: Option<Vec<u8>>,
+    animations: BTreeMap<String, Vec<u8>>,
+    atlas: Option<Vec<u8>>,
     /// Content ids of the material textures this asset samples. A `BTreeSet`
     /// so the emitted order is the content's, not the caller's.
     texture_ids: BTreeSet<String>,
@@ -790,10 +824,6 @@ impl VxpWriter {
         self.entry(asset_id).geometry = Some(bytes);
     }
 
-    pub fn add_geometry_lod(&mut self, asset_id: &str, level: u8, bytes: Vec<u8>) {
-        self.entry(asset_id).geometry_lods.insert(level, bytes);
-    }
-
     pub fn add_surface(&mut self, asset_id: &str, bytes: Vec<u8>) {
         self.entry(asset_id).surface = Some(bytes);
     }
@@ -806,6 +836,16 @@ impl VxpWriter {
     /// ships; [`VxpWriter::finish`] refuses to write a pack that is missing one.
     pub fn add_texture(&mut self, asset_id: &str, png: Vec<u8>) {
         self.entry(asset_id).texture = Some(png);
+    }
+
+    pub fn add_animation(&mut self, asset_id: &str, clip_id: &str, bytes: Vec<u8>) {
+        self.entry(asset_id)
+            .animations
+            .insert(clip_id.to_string(), bytes);
+    }
+
+    pub fn add_atlas(&mut self, asset_id: &str, bytes: Vec<u8>) {
+        self.entry(asset_id).atlas = Some(bytes);
     }
 
     /// Put a texture in the pack's register.
@@ -891,6 +931,12 @@ impl VxpWriter {
             textures: self.textures.values().cloned().collect(),
         };
         let mut payloads: Vec<(String, Vec<u8>)> = Vec::new();
+        // The index is the ownership/reference layer. Identical immutable
+        // payloads are stored once and every asset record points at that one
+        // content-addressed entry. This is especially important for authored
+        // GLBs shared by character wardrobe variants: the VXP must reference
+        // the source bytes, not copy them once per variant.
+        let mut staged: BTreeMap<(VxpKind, String), String> = BTreeMap::new();
 
         for (asset_id, pending) in &self.assets {
             let mut record = VxpAssetIndex {
@@ -900,36 +946,78 @@ impl VxpWriter {
                 surface: None,
                 metadata: None,
                 texture: None,
+                animations: Vec::new(),
+                atlas: None,
                 texture_ids: pending.texture_ids.iter().cloned().collect(),
                 bytes: 0,
             };
-            let mut push = |kind: VxpKind, lod: Option<u8>, bytes: &Vec<u8>| -> String {
-                let cid = content_id(bytes);
-                let name = entry_name(asset_id, kind, lod, &cid);
-                payloads.push((name.clone(), bytes.clone()));
-                payloads.push((format!("{name}.cid"), cid.into_bytes()));
-                name
-            };
             if let Some(bytes) = &pending.geometry {
                 record.bytes += bytes.len() as u64;
-                record.geometry = Some(push(VxpKind::Geometry, None, bytes));
-            }
-            for (level, bytes) in &pending.geometry_lods {
-                record.bytes += bytes.len() as u64;
-                let name = push(VxpKind::Geometry, Some(*level), bytes);
-                record.geometry_lods.push((*level, name));
+                record.geometry = Some(stage_payload(
+                    &mut payloads,
+                    &mut staged,
+                    asset_id,
+                    VxpKind::Geometry,
+                    None,
+                    bytes,
+                ));
             }
             if let Some(bytes) = &pending.surface {
                 record.bytes += bytes.len() as u64;
-                record.surface = Some(push(VxpKind::Surface, None, bytes));
+                record.surface = Some(stage_payload(
+                    &mut payloads,
+                    &mut staged,
+                    asset_id,
+                    VxpKind::Surface,
+                    None,
+                    bytes,
+                ));
             }
             if let Some(bytes) = &pending.metadata {
                 record.bytes += bytes.len() as u64;
-                record.metadata = Some(push(VxpKind::Metadata, None, bytes));
+                record.metadata = Some(stage_payload(
+                    &mut payloads,
+                    &mut staged,
+                    asset_id,
+                    VxpKind::Metadata,
+                    None,
+                    bytes,
+                ));
             }
             if let Some(bytes) = &pending.texture {
                 record.bytes += bytes.len() as u64;
-                record.texture = Some(push(VxpKind::Texture, None, bytes));
+                record.texture = Some(stage_payload(
+                    &mut payloads,
+                    &mut staged,
+                    asset_id,
+                    VxpKind::Texture,
+                    None,
+                    bytes,
+                ));
+            }
+            for (clip_id, bytes) in &pending.animations {
+                record.bytes += bytes.len() as u64;
+                let sub_asset_id = format!("{asset_id}_{clip_id}");
+                let name = stage_payload(
+                    &mut payloads,
+                    &mut staged,
+                    &sub_asset_id,
+                    VxpKind::Animation,
+                    None,
+                    bytes,
+                );
+                record.animations.push((clip_id.clone(), name));
+            }
+            if let Some(bytes) = &pending.atlas {
+                record.bytes += bytes.len() as u64;
+                record.atlas = Some(stage_payload(
+                    &mut payloads,
+                    &mut staged,
+                    asset_id,
+                    VxpKind::Atlas,
+                    None,
+                    bytes,
+                ));
             }
             index.assets.push(record);
         }
@@ -987,6 +1075,26 @@ impl VxpWriter {
     }
 }
 
+fn stage_payload(
+    payloads: &mut Vec<(String, Vec<u8>)>,
+    staged: &mut BTreeMap<(VxpKind, String), String>,
+    asset_id: &str,
+    kind: VxpKind,
+    lod: Option<u8>,
+    bytes: &[u8],
+) -> String {
+    let cid = content_id(bytes);
+    let key = (kind, cid.clone());
+    if let Some(name) = staged.get(&key) {
+        return name.clone();
+    }
+    let name = entry_name(asset_id, kind, lod, &cid);
+    payloads.push((name.clone(), bytes.to_vec()));
+    payloads.push((format!("{name}.cid"), cid.into_bytes()));
+    staged.insert(key, name.clone());
+    name
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Reader
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1008,6 +1116,17 @@ pub struct VxpReader {
     file: File,
     dir: BTreeMap<String, DirEntry>,
     index: VxpIndex,
+}
+
+/// Exact byte range of one STORE entry inside a `.vxp`.
+///
+/// Geometry transport can copy this range directly from the pack into a
+/// GPU-selected destination. It never has to inflate, reinterpret, or scan the
+/// container on the render thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VxpEntryLocation {
+    pub data_offset: u64,
+    pub byte_count: u64,
 }
 
 impl VxpReader {
@@ -1033,13 +1152,13 @@ impl VxpReader {
             context: format!("{} {VXP_INDEX_ENTRY}", path.display()),
             source,
         })?;
-        if reader.index.version != VXP_INDEX_VERSION {
+        if !(VXP_MIN_READABLE_INDEX_VERSION..=VXP_INDEX_VERSION).contains(&reader.index.version) {
             return Err(VxpError::Format {
                 path: path.to_path_buf(),
                 reason: format!(
-                    "index version {} but this build reads {VXP_INDEX_VERSION} \
-                     (a v1 pack has no texture register — re-cook it)",
-                    reader.index.version
+                    "index version {} but this build reads {}..={VXP_INDEX_VERSION} \
+                     (v1 has no texture register; a newer version is unknown)",
+                    reader.index.version, VXP_MIN_READABLE_INDEX_VERSION,
                 ),
             });
         }
@@ -1053,6 +1172,51 @@ impl VxpReader {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Resolve an entry's exact stored-data range without reading its payload.
+    pub fn entry_location(&mut self, name: &str) -> Result<VxpEntryLocation> {
+        let entry = self
+            .dir
+            .get(name)
+            .cloned()
+            .ok_or_else(|| VxpError::MissingEntry {
+                path: self.path.clone(),
+                name: name.to_string(),
+            })?;
+        let path = self.path.clone();
+        let io = |source| VxpError::Io {
+            path: path.clone(),
+            source,
+        };
+        self.file
+            .seek(SeekFrom::Start(entry.local_header_offset))
+            .map_err(io)?;
+        let mut header = [0u8; 30];
+        self.file.read_exact(&mut header).map_err(io)?;
+        if u32::from_le_bytes([header[0], header[1], header[2], header[3]]) != 0x0403_4b50 {
+            return Err(VxpError::Corrupt {
+                path: self.path.clone(),
+                name: name.to_string(),
+                reason: "local file header signature missing".to_string(),
+            });
+        }
+        let method = u16::from_le_bytes([header[8], header[9]]);
+        if method != 0 {
+            return Err(VxpError::Corrupt {
+                path: self.path.clone(),
+                name: name.to_string(),
+                reason: format!(
+                    "entry uses compression method {method}; geometry pages require STORE"
+                ),
+            });
+        }
+        let name_len = u16::from_le_bytes([header[26], header[27]]) as u64;
+        let extra_len = u16::from_le_bytes([header[28], header[29]]) as u64;
+        Ok(VxpEntryLocation {
+            data_offset: entry.local_header_offset + 30 + name_len + extra_len,
+            byte_count: entry.size,
+        })
     }
 
     /// Read an entry, verifying BOTH the ZIP CRC-32 and the content hash carried
@@ -1081,31 +1245,17 @@ impl VxpReader {
                 path: self.path.clone(),
                 name: name.to_string(),
             })?;
+        let path = self.path.clone();
         let io = |source| VxpError::Io {
-            path: self.path.clone(),
+            path: path.clone(),
             source,
         };
         // The local header repeats the name/extra lengths; the payload begins
         // right after them. (Sizes are read from the central directory, which is
         // authoritative and already parsed.)
+        let location = self.entry_location(name)?;
         self.file
-            .seek(SeekFrom::Start(entry.local_header_offset))
-            .map_err(io)?;
-        let mut header = [0u8; 30];
-        self.file.read_exact(&mut header).map_err(io)?;
-        if u32::from_le_bytes([header[0], header[1], header[2], header[3]]) != 0x0403_4b50 {
-            return Err(VxpError::Corrupt {
-                path: self.path.clone(),
-                name: name.to_string(),
-                reason: "local file header signature missing".to_string(),
-            });
-        }
-        let name_len = u16::from_le_bytes([header[26], header[27]]) as u64;
-        let extra_len = u16::from_le_bytes([header[28], header[29]]) as u64;
-        self.file
-            .seek(SeekFrom::Start(
-                entry.local_header_offset + 30 + name_len + extra_len,
-            ))
+            .seek(SeekFrom::Start(location.data_offset))
             .map_err(io)?;
         let mut bytes = vec![0u8; entry.size as usize];
         self.file.read_exact(&mut bytes).map_err(io)?;
@@ -1570,7 +1720,11 @@ impl<W: Write> StoredZipWriter<W> {
         eocd.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
         eocd.extend_from_slice(&0u16.to_le_bytes());
         eocd.extend_from_slice(&0u16.to_le_bytes());
-        let count16 = if count > 0xFFFF { 0xFFFFu16 } else { count as u16 };
+        let count16 = if count > 0xFFFF {
+            0xFFFFu16
+        } else {
+            count as u16
+        };
         eocd.extend_from_slice(&count16.to_le_bytes());
         eocd.extend_from_slice(&count16.to_le_bytes());
         eocd.extend_from_slice(
@@ -1664,7 +1818,8 @@ fn read_central_directory(file: &mut File, path: &Path) -> Result<BTreeMap<Strin
             let mut e = 0usize;
             while e + 4 <= extra.len() {
                 let tag = u16::from_le_bytes(extra[e..e + 2].try_into().unwrap());
-                let field_len = u16::from_le_bytes(extra[e + 2..e + 4].try_into().unwrap()) as usize;
+                let field_len =
+                    u16::from_le_bytes(extra[e + 2..e + 4].try_into().unwrap()) as usize;
                 if tag == 0x0001 {
                     let f = &extra[e + 4..(e + 4 + field_len).min(extra.len())];
                     let mut o = 0usize;
@@ -1703,7 +1858,11 @@ fn crc32(bytes: &[u8]) -> u32 {
         for (i, slot) in table.iter_mut().enumerate() {
             let mut c = i as u32;
             for _ in 0..8 {
-                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                c = if c & 1 != 0 {
+                    0xEDB8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
             }
             *slot = c;
         }
@@ -1878,10 +2037,12 @@ mod tests {
         }
         for id in ["b_two", "a_one"] {
             w.add_geometry(id, sample_geometry().encode());
-            w.add_geometry_lod(id, 1, sample_geometry().encode());
             w.add_surface(id, br#"{"materials":[]}"#.to_vec());
             w.add_metadata(id, format!(r#"{{"id":"{id}"}}"#).into_bytes());
             w.add_texture(id, vec![0x89, b'P', b'N', b'G', 13, 10, 26, 10]);
+            w.add_animation(id, "Talk", b"animation-talk".to_vec());
+            w.add_animation(id, "Hug", b"animation-hug".to_vec());
+            w.add_atlas(id, b"shared-atlas".to_vec());
             for texture in sample_textures() {
                 w.reference_texture(id, &texture.id);
             }
@@ -1897,6 +2058,7 @@ mod tests {
         let (path, written) = write_sample_pack(dir.path(), "theme.vxp");
         let mut reader = VxpReader::open(&path).expect("open");
         assert_eq!(reader.index(), &written);
+        assert_eq!(reader.index().version, 4);
         assert_eq!(reader.index().pack_id, "test_theme");
         // Index order is by asset id, not insertion order.
         let ids: Vec<&str> = reader
@@ -1912,15 +2074,51 @@ mod tests {
         let bytes = reader.read_entry(&geometry_name).expect("read geometry");
         assert_eq!(VxpGeometry::decode(&bytes).unwrap(), sample_geometry());
         assert_eq!(
-            reader.read_entry(record.metadata.as_ref().unwrap()).unwrap(),
+            reader
+                .read_entry(record.metadata.as_ref().unwrap())
+                .unwrap(),
             br#"{"id":"a_one"}"#
         );
         assert_eq!(
             reader.read_entry(record.texture.as_ref().unwrap()).unwrap()[..4],
             [0x89, b'P', b'N', b'G']
         );
-        assert_eq!(record.geometry_lods.len(), 1);
-        assert_eq!(record.geometry_lods[0].0, 1);
+        assert!(
+            record.geometry_lods.is_empty(),
+            "new packs must contain only the authoritative mesh"
+        );
+        assert_eq!(
+            record
+                .animations
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            ["Hug", "Talk"]
+        );
+        assert_eq!(
+            reader.read_entry(&record.animations[1].1).unwrap(),
+            b"animation-talk"
+        );
+        assert_eq!(
+            reader.read_entry(record.atlas.as_ref().unwrap()).unwrap(),
+            b"shared-atlas"
+        );
+    }
+
+    #[test]
+    fn new_pack_index_cannot_carry_authored_detail_or_runtime_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = write_sample_pack(dir.path(), "theme.vxp");
+        let mut reader = VxpReader::open(&path).expect("open");
+        let index = String::from_utf8(
+            reader
+                .read_entry(VXP_INDEX_ENTRY)
+                .expect("read canonical index"),
+        )
+        .expect("index utf8");
+        assert!(!index.contains("geometry_lods"), "{index}");
+        assert!(!index.contains("geometry_pages"), "{index}");
+        assert!(!index.contains("_PAGE"), "{index}");
     }
 
     #[test]
@@ -1948,13 +2146,34 @@ mod tests {
 
     #[test]
     fn identical_content_dedupes_to_the_same_entry_name() {
-        // Two assets whose geometry is byte-identical get the same content id,
-        // which is the point of content addressing.
-        let a = entry_name("a_one", VxpKind::Geometry, None, &content_id(b"same"));
-        let b = entry_name("b_two", VxpKind::Geometry, None, &content_id(b"same"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.vxp");
+        let mut writer = VxpWriter::new("shared");
+        for id in ["a_one", "b_two"] {
+            writer.add_geometry(id, b"same authoritative GLB".to_vec());
+            writer.add_texture(id, b"same thumbnail".to_vec());
+        }
+        let index = writer.finish(&path, true).unwrap();
+        let a = index.asset("a_one").unwrap();
+        let b = index.asset("b_two").unwrap();
         assert_eq!(
-            a.rsplit_once('.').unwrap().0.rsplit_once('_').unwrap().1,
-            b.rsplit_once('.').unwrap().0.rsplit_once('_').unwrap().1
+            a.geometry, b.geometry,
+            "both assets must reference the one stored geometry entry"
+        );
+        assert_eq!(
+            a.texture, b.texture,
+            "dedupe applies to every immutable payload kind"
+        );
+
+        let reader = VxpReader::open(&path).unwrap();
+        assert_eq!(
+            reader
+                .dir
+                .keys()
+                .filter(|name| name.ends_with(".Geometry"))
+                .count(),
+            1,
+            "the archive must physically contain one Geometry entry"
         );
     }
 
@@ -1975,10 +2194,15 @@ mod tests {
         }
         for id in ["a_one", "b_two"] {
             w.add_geometry(id, sample_geometry().encode());
-            w.add_geometry_lod(id, 1, sample_geometry().encode());
             w.add_surface(id, br#"{"materials":[]}"#.to_vec());
             w.add_metadata(id, format!(r#"{{"id":"{id}"}}"#).into_bytes());
             w.add_texture(id, vec![0x89, b'P', b'N', b'G', 13, 10, 26, 10]);
+            // Add the same animation set as `write_sample_pack`, in the
+            // opposite call order. Canonical output must be independent of
+            // both asset and sub-asset insertion order.
+            w.add_animation(id, "Hug", b"animation-hug".to_vec());
+            w.add_animation(id, "Talk", b"animation-talk".to_vec());
+            w.add_atlas(id, b"shared-atlas".to_vec());
             for texture in sample_textures().into_iter().rev() {
                 w.reference_texture(id, &texture.id);
             }
@@ -2009,9 +2233,10 @@ mod tests {
             at += 30 + name_len + extra_len + size;
             seen += 1;
         }
-        // index + 2 assets x 5 payloads x (entry + .cid) = 1 + 20 entries... the
-        // index has no sidecar, so 1 + 2*5*2 = 21.
-        assert_eq!(seen, 21, "expected every entry to be walked as STORE");
+        // index + 2 assets x 7 payloads x (entry + .cid): authoritative
+        // geometry, surface, metadata, thumbnail, two animations, and atlas.
+        // The index has no sidecar, so 1 + 2*7*2 = 29.
+        assert_eq!(seen, 29, "expected every entry to be walked as STORE");
     }
 
     #[test]
@@ -2047,7 +2272,10 @@ mod tests {
         let err = w
             .finish(&dir.path().join("t.vxp"), true)
             .expect_err("must refuse");
-        assert!(format!("{err}").contains("no .Texture thumbnail"), "got: {err}");
+        assert!(
+            format!("{err}").contains("no .Texture thumbnail"),
+            "got: {err}"
+        );
     }
 
     #[test]

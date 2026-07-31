@@ -6312,6 +6312,7 @@ dependencies = [
  "glam 0.29.3",
  "libloading 0.8.9",
  "serde",
+ "sha2",
  "spectra-gpu",
  "spectra-types",
  "thiserror 2.0.18",
@@ -6386,6 +6387,7 @@ dependencies = [
  "rand 0.8.5",
  "ron",
  "serde",
+ "sha2",
  "shader-slang",
  "spectra-aov-mgr",
  "spectra-atmosphere-mgr",
@@ -6542,7 +6544,6 @@ name = "spectra-vk-interop"
 version = "0.1.0"
 dependencies = [
  "ash",
- "cudarc",
  "ffx-sys",
  "log",
  "thiserror 2.0.18",
@@ -7665,6 +7666,7 @@ dependencies = [
  "spectra-types",
  "spectra-upscale",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "toml",
  "uuid",

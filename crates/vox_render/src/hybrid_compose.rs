@@ -222,6 +222,18 @@ pub struct HybridMesh {
     /// a mirror into its local vertices.
     #[serde(skip)]
     pub mega_instance_transform: Option<[f32; 16]>,
+    /// Ochroma-derived exact source partition plus independently addressable
+    /// triangle-detail pages for this immutable prototype.
+    #[serde(skip)]
+    pub geometry_detail: Option<std::sync::Arc<vox_data::geometry_clusters::ReadyGeometryClusters>>,
+    /// Object-to-world transform for the authoritative triangle-detail pages.
+    #[serde(skip)]
+    pub geometry_detail_instance_transform: Option<[f32; 16]>,
+    /// Authored material-table index used by triangle-detail page primitives.
+    /// Scene assembly maps it to the resident material slot carried by this
+    /// material carrier.
+    #[serde(skip)]
+    pub geometry_detail_material_index: Option<u32>,
     /// Per-submesh material descriptors, indexed by the values in
     /// [`material_ids`]. **EMPTY = use the existing single-material fields**
     /// ([`material_channel`] + [`albedo_tex_path`]/[`normal_tex_path`]/
@@ -351,6 +363,9 @@ impl HybridMesh {
             proto_instance_transform: None,
             mega_geometry: None,
             mega_instance_transform: None,
+            geometry_detail: None,
+            geometry_detail_instance_transform: None,
+            geometry_detail_material_index: None,
             submesh_materials: Vec::new(),
             weathering_masks: Vec::new(),
             shared_vertex_topology: false,

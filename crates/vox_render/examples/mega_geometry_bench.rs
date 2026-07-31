@@ -52,7 +52,6 @@ struct BenchArgs {
     frames: u32,
     seed: u64,
     json_out: Option<String>,
-    corpus: Option<String>,
     res: u32,
 }
 
@@ -65,7 +64,6 @@ impl Default for BenchArgs {
             frames: 240,
             seed: 0x0C17_0A11,
             json_out: None,
-            corpus: None,
             res: 1280,
         }
     }
@@ -125,7 +123,6 @@ fn parse_args<I: Iterator<Item = String>>(mut it: I) -> Result<BenchArgs, String
                     .map_err(|e| format!("--seed: {e}"))?
             }
             "--json-out" => args.json_out = Some(it.next().ok_or("--json-out needs a value")?),
-            "--corpus" => args.corpus = Some(it.next().ok_or("--corpus needs a value")?),
             "--res" => {
                 args.res = it
                     .next()
@@ -201,13 +198,41 @@ fn main() {
 
 #[cfg(feature = "spectra-native")]
 mod native {
+    use super::BenchArgs;
     use super::asset_loader;
     use super::logic;
-    use super::BenchArgs;
+    use sha2::{Digest as _, Sha256};
+    use std::collections::BTreeSet;
     use std::time::Instant;
     use vox_render::resident_renderer::ResidentSceneRenderer;
     use vox_render::splat_backend::{BlasDesc, InstanceRecordGpu, LightRig, PbrMaterial};
     use vox_render::splat_convert::meshes_to_instanced_scene;
+
+    fn hex32(bytes: [u8; 32]) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::with_capacity(64);
+        for byte in bytes {
+            let _ = write!(&mut out, "{byte:02x}");
+        }
+        out
+    }
+
+    fn finished_object_corpus_hash(fixtures: &[logic::FixtureReport]) -> String {
+        let mut records = fixtures
+            .iter()
+            .map(|fixture| {
+                format!(
+                    "{}\0{}\0{}\0{}",
+                    fixture.name,
+                    fixture.asset_id,
+                    fixture.identity_hash,
+                    fixture.asset_content_hash.as_deref().unwrap_or("external")
+                )
+            })
+            .collect::<Vec<_>>();
+        records.sort();
+        hex32(Sha256::digest(records.join("\n").as_bytes()).into())
+    }
 
     /// The RT backend the enabled build feature requests (compile-time truth).
     fn requested_rt_backend() -> &'static str {
@@ -219,7 +244,8 @@ mod native {
     }
 
     /// Routed through the pinned logic constant so a stray flip is caught by a
-    /// test. `false` today (see `logic::HARNESS_CITY_HYBRID_DISTINCT_EXECUTION`).
+    /// test. The harness must also construct genuinely different scene state
+    /// below; this constant is not accepted as evidence by itself.
     const CITY_HYBRID_IS_DISTINCT_EXECUTION: bool = logic::HARNESS_CITY_HYBRID_DISTINCT_EXECUTION;
 
     /// Per-pixel first-hit provenance of the last timed frame:
@@ -227,6 +253,7 @@ mod native {
     /// correctness oracle (triangle-GAS is the reference; CLAS modes compared
     /// against it, with depth_t used to gate measure-zero edge-face ties).
     type ProvenanceFrame = (Vec<u32>, Vec<u32>, Vec<f32>, Vec<f32>, Vec<f32>);
+    const VISIBILITY_CALIBRATION_FRAMES: u32 = 8;
 
     pub fn run(args: &BenchArgs) -> Result<i32, String> {
         let width = args.res;
@@ -248,20 +275,11 @@ mod native {
         }
         if !CITY_HYBRID_IS_DISTINCT_EXECUTION {
             eprintln!(
-                "[mega_geometry_bench] city_hybrid is not yet a distinct execution path from \
-                 reference (MEGAGEOMETRY_MODE is unconsumed by the renderer). Refusing to award a \
-                 win; target fixtures report Unavailable and the process exits nonzero."
+                "[mega_geometry_bench] city_hybrid is not a distinct certified-Fabric execution \
+                 path from the native-scalar reference. Refusing to award a win; target fixtures \
+                 report Unavailable and the process exits nonzero."
             );
         }
-
-        let corpus_hash = match &args.corpus {
-            Some(path) => {
-                let bytes =
-                    std::fs::read(path).map_err(|e| format!("corpus '{path}' unavailable: {e}"))?;
-                format!("{:016x}", logic::fnv1a(&bytes))
-            }
-            None => "unbound".to_string(),
-        };
 
         let fixtures = logic::required_fixtures();
         // Diagnostic-only fixture narrowing (`MEGAGEOMETRY_ONLY=name[,name]`).
@@ -279,7 +297,9 @@ mod native {
         let selected: Vec<&logic::FixtureSpec> = if only.is_empty() {
             fixtures.iter().collect()
         } else {
-            eprintln!("[mega_geometry_bench] MEGAGEOMETRY_ONLY active: {only:?} (verdict WILL be suppressed — diagnostic run)");
+            eprintln!(
+                "[mega_geometry_bench] MEGAGEOMETRY_ONLY active: {only:?} (verdict WILL be suppressed — diagnostic run)"
+            );
             fixtures
                 .iter()
                 .filter(|f| only.iter().any(|o| o == &f.name))
@@ -289,6 +309,7 @@ mod native {
         for spec in selected {
             fixture_reports.push(run_fixture(spec, args, width, height, &timed_cfg)?);
         }
+        let corpus_hash = finished_object_corpus_hash(&fixture_reports);
 
         let global = collect_global_signals(&fixture_reports);
         let fr_for_verdict: Vec<logic::FixtureResult> = fixture_reports
@@ -302,25 +323,26 @@ mod native {
             .collect();
         let overall = logic::compute_overall(&fr_for_verdict, &global);
 
-        // Breakthroughs default to their fully-unavailable (failing) state until
-        // the renderer exposes the corresponding evidence accessors.
-        let program_bt = logic::ProgramBreakthrough::unavailable();
-        let visibility_bt = logic::VisibilityBreakthrough::unavailable();
-        let fabric_bt = logic::FabricBreakthrough::unavailable();
+        // Program and broad ray-native claims are composed with their dedicated
+        // probes. The live full-frame Fabric claim is composed here from the
+        // real finished-object fixture receipts and calibration profiles.
+        let program_bt = logic::compute_program_breakthrough(&fixture_reports);
+        let visibility_bt = logic::compute_visibility_breakthrough(&fixture_reports);
+        let fabric_bt = logic::compute_fabric_breakthrough(&fixture_reports);
 
         // ---- Print the evidence ----
-        let env = collect_env_line();
+        let env = collect_env_line(&fixture_reports);
         println!("{}", env.line());
         for r in &fixture_reports {
             emit_fixture_evidence(r, args.frames);
         }
         println!(
-            "MEGAGEOMETRY_SUITE correctness={} unexpected_fallbacks={} required_page_misses=unavailable",
+            "MEGAGEOMETRY_SUITE correctness={} unexpected_fallbacks={} required_page_misses={}",
             suite_correctness(&fixture_reports),
-            fixture_reports
-                .iter()
-                .filter(|r| r.hybrid.unexpected_fallback || r.reference.unexpected_fallback)
-                .count(),
+            logic::renderer_local_unexpected_fallbacks(&fixture_reports),
+            logic::aggregate_required_page_misses(&fixture_reports)
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unavailable".into()),
         );
         println!("{}", logic::portable_line(&global, None));
         for r in &fixture_reports {
@@ -349,9 +371,15 @@ mod native {
             fixtures: fixture_reports,
             global,
             overall: overall.clone(),
-            program_breakthrough: program_bt.claim().map(|_| program_bt),
-            visibility_breakthrough: visibility_bt.claim().map(|_| visibility_bt),
-            fabric_breakthrough: fabric_bt.claim().map(|_| fabric_bt),
+            // Preserve partial/measured losing evidence. `None` is reserved for
+            // old artifacts; the claim methods remain fail-closed on every
+            // unmeasured field.
+            program_breakthrough: Some(program_bt),
+            visibility_breakthrough: Some(visibility_bt),
+            // Preserve measured losing evidence in the raw backend artifact;
+            // the final composer, not serialization, decides whether it earns
+            // the claim.
+            fabric_breakthrough: Some(fabric_bt),
         };
         if let Some(path) = &args.json_out {
             if let Some(parent) = std::path::Path::new(path).parent() {
@@ -361,10 +389,30 @@ mod native {
             eprintln!("[mega_geometry_bench] wrote {path}");
         }
 
-        // Exit nonzero on any hard, fail-closed abort (unavailable evidence,
-        // correctness failure, silent downgrade, CPU/portable/cache breach). A
-        // purely measured performance loss exits 0 with a narrower claim.
-        Ok(if overall.hard_abort { 1 } else { 0 })
+        // Raw producers cannot authorize cross-backend equality or the
+        // external Urban Horizon product fixture. They exit successfully when
+        // every backend-local receipt is complete and eligible for the final
+        // compositor, while the printed overall claim remains suppressed until
+        // that join. Missing local evidence still exits nonzero.
+        let raw_reasons = logic::raw_backend_validation_reasons(&report);
+        for reason in &raw_reasons {
+            eprintln!("[mega_geometry_bench] raw artifact rejected: {reason}");
+        }
+        if raw_reasons.is_empty() {
+            println!(
+                "MEGAGEOMETRY_RAW_ARTIFACT api={} gpu={} validation=pass",
+                report.env.api, report.env.gpu
+            );
+            Ok(0)
+        } else {
+            println!(
+                "MEGAGEOMETRY_RAW_ARTIFACT api={} gpu={} validation=fail reasons={}",
+                report.env.api,
+                report.env.gpu,
+                raw_reasons.len()
+            );
+            Ok(1)
+        }
     }
 
     fn spec_of(r: &logic::FixtureReport) -> logic::FixtureSpec {
@@ -375,11 +423,7 @@ mod native {
     }
 
     fn suite_correctness(reports: &[logic::FixtureReport]) -> &'static str {
-        let all_verified = reports.iter().all(|r| {
-            r.hybrid.correctness.is_exact() == Some(true)
-                && r.reference.correctness.is_exact() == Some(true)
-        });
-        if all_verified {
+        if logic::renderer_local_correctness_passes(reports) {
             "pass"
         } else {
             "unavailable"
@@ -393,6 +437,35 @@ mod native {
         height: u32,
         cfg: &logic::TimedRunConfig,
     ) -> Result<logic::FixtureReport, String> {
+        if spec.authorizing_witness_external {
+            let requested_backend = requested_rt_backend();
+            return Ok(logic::FixtureReport {
+                name: spec.name.clone(),
+                role: spec.role,
+                asset_id: spec.asset_id.clone(),
+                family: spec.family.clone(),
+                instances: spec.instances,
+                seed: spec.seed,
+                identity_hash: spec.identity_hash_hex(),
+                asset_content_hash: None,
+                outcome: logic::FixtureOutcome::Unavailable {
+                    reason: concat!(
+                        "requires independently captured Urban Horizon live-city ",
+                        "product evidence; proxy geometry is forbidden"
+                    )
+                    .into(),
+                },
+                hybrid: logic::ModeResult::unavailable(logic::Mode::CityHybrid, requested_backend),
+                reference: logic::ModeResult::unavailable(
+                    logic::Mode::Reference,
+                    requested_backend,
+                ),
+                triangle: None,
+                scalar_visibility_profile: None,
+                runtime_program: None,
+            });
+        }
+
         let mut triangle: Option<(logic::ModeResult, ProvenanceFrame)> = None;
         let mut reference: Option<logic::ModeResult> = None;
         let mut hybrid: Option<logic::ModeResult> = None;
@@ -439,7 +512,29 @@ mod native {
             &hybrid,
             &reference,
         );
+        let scalar_visibility_profile =
+            measure_scalar_visibility_profile(spec, width, height, cfg.warmup_frames)?;
 
+        let loaded_for_evidence = asset_loader::load_fixture_asset(&spec.asset_id, spec.seed).ok();
+        let runtime_program = loaded_for_evidence.as_ref().map(|asset| {
+            let payload = asset.mega.as_deref();
+            logic::RuntimeProgramEvidence {
+                source_triangles: asset.base_triangles() as u64,
+                covered_triangles: payload
+                    .map(|payload| u64::from(payload.source_triangle_count()))
+                    .unwrap_or(0),
+                program_count: payload
+                    .map(|payload| u64::from(payload.program_count()))
+                    .unwrap_or(0),
+                template_count: payload
+                    .map(|payload| u64::from(payload.template_count()))
+                    .unwrap_or(0),
+                source_geometry_bytes: asset.source_geometry_bytes,
+                covered_source_geometry_bytes: asset.covered_source_geometry_bytes,
+                residual_geometry_bytes: asset.residual_geometry_bytes,
+                runtime_program_bytes: asset.runtime_program_bytes,
+            }
+        });
         Ok(logic::FixtureReport {
             name: spec.name.clone(),
             role: spec.role,
@@ -448,18 +543,77 @@ mod native {
             instances: spec.instances,
             seed: spec.seed,
             identity_hash: spec.identity_hash_hex(),
-            // The REAL cooked asset's content hash (cache hit — the asset was
-            // loaded in measure_mode). `None` only for ids with no cooked file
+            // The real finished asset's content hash (cache hit — the asset was
+            // loaded in measure_mode). `None` only for ids with no installed file
             // (e.g. the externally-authorized mixed_city), which keeps that
             // fixture honestly uncertified by vox_render.
-            asset_content_hash: asset_loader::load_fixture_asset(&spec.asset_id, spec.seed)
-                .ok()
-                .map(|a| a.content_hash.clone()),
+            asset_content_hash: loaded_for_evidence
+                .as_ref()
+                .map(|asset| asset.content_hash.clone()),
             outcome,
             hybrid,
             reference,
             triangle: triangle.map(|(m, _)| m),
+            scalar_visibility_profile,
+            runtime_program,
         })
+    }
+
+    /// Measure the scalar ray-native calibration baseline over the same
+    /// residual mesh and Ochroma runtime programs as city_hybrid. This is not
+    /// the public `reference` result: reference remains the complete source
+    /// mesh lowered through native cluster/CLAS acceleration.
+    fn measure_scalar_visibility_profile(
+        spec: &logic::FixtureSpec,
+        width: u32,
+        height: u32,
+        warmup_frames: u32,
+    ) -> Result<Option<logic::VisibilityKernelProfile>, String> {
+        apply_mode_env(logic::Mode::Reference);
+        let Some(asset) = asset_loader::load_fixture_asset(&spec.asset_id, spec.seed).ok() else {
+            return Ok(None);
+        };
+        let Some(payload) = asset.mega.as_ref() else {
+            return Ok(None);
+        };
+        let residual = asset.base_without_covered();
+        let instances = grid_instances(spec.instances as usize);
+        let mut scene = meshes_to_instanced_scene(
+            std::slice::from_ref(&residual),
+            &instances,
+            asset.materials.as_slice(),
+            &[],
+            width,
+            height,
+        );
+        let transforms: Vec<[f32; 16]> = instances
+            .iter()
+            .map(|instance| instance.transform)
+            .collect();
+        scene.mega_geometry =
+            asset_loader::assemble_mega_layer(payload, &transforms, asset.materials.len() as u32);
+        let mut renderer =
+            ResidentSceneRenderer::new(width, height, LightRig::default(), 1, 1, scene).map_err(
+                |error| format!("{}/scalar_visibility: renderer build: {error}", spec.name),
+            )?;
+        let (view, projection) = camera(spec.instances as usize, width, height);
+        for frame in 0..warmup_frames {
+            renderer.render_only(view, projection).map_err(|error| {
+                format!(
+                    "{}/scalar_visibility: warmup frame {frame}: {error}",
+                    spec.name
+                )
+            })?;
+        }
+        collect_visibility_profile(
+            &mut renderer,
+            view,
+            projection,
+            logic::Mode::Reference,
+            spec,
+            true,
+        )
+        .map(Some)
     }
 
     fn measure_mode(
@@ -471,26 +625,28 @@ mod native {
     ) -> Result<(logic::ModeResult, ProvenanceFrame), String> {
         apply_mode_env(mode);
 
-        // Load the REAL Forge-cooked asset for this fixture (cached across modes).
-        // Fall back to the synthetic cube only for ids with no cooked file — e.g.
-        // the externally-authorized `mixed_city` (urban_horizon.live_city).
+        // Load the real finished game object for this fixture (cached across modes).
+        // Externally witnessed product fixtures returned before this function,
+        // so no live-city claim can ever fall back to proxy geometry.
         let asset = asset_loader::load_fixture_asset(&spec.asset_id, spec.seed).ok();
         let cube_fallback = if asset.is_none() {
             eprintln!(
-                "[mega_geometry_bench] {}: real asset '{}' unavailable; using synthetic cube proxy",
+                "[mega_geometry_bench] {}: real asset '{}' unavailable; using a non-authorizing synthetic diagnostic proxy",
                 spec.name, spec.asset_id
             );
             Some(fixture_prototype())
         } else {
             None
         };
-        // city_hybrid traces the MegaGeometry-covered triangles ray-native via
-        // the visibility programs, so its RESIDUAL mesh must exclude them — else
-        // the covered surface is double-represented (mesh + realized) and z-fights
-        // (§ `CookedAsset::base_without_covered`). triangle/reference keep the full
-        // mesh (the oracle compares mega-reconstructed vs full-detail geometry).
+        // Only city_hybrid may remove source triangles covered by an admitted
+        // Ochroma runtime representation. `reference` remains the independent
+        // native cluster/CLAS baseline over the complete authoritative mesh;
+        // feeding MegaGeometry to both modes would compare one execution path
+        // against itself and manufacture "distinct-mode" evidence.
         let city_residual: Option<BlasDesc> = match (&asset, mode) {
-            (Some(a), logic::Mode::CityHybrid) => Some(a.base_without_covered()),
+            (Some(a), mode) if logic::mode_uses_runtime_megageometry(mode) => {
+                Some(a.base_without_covered())
+            }
             _ => None,
         };
         let (blas, materials): (&BlasDesc, &[PbrMaterial]) = match (&asset, &cube_fallback) {
@@ -511,14 +667,10 @@ mod native {
             height,
         );
 
-        // city_hybrid traces the buildings RAY-NATIVE via the cooked MegaGeometry
-        // visibility programs — THE actual MegaGeometry, not mesh/cluster LOD.
-        // Populate SceneState.mega_geometry from the loaded ReadyMegaGeometry so
-        // `use_mega_geometry` engages (mega_tlas + programs) and the megakernel
-        // executes the programs for the covered triangles instead of tracing
-        // them as materialized mesh. triangle/reference keep the full-detail
-        // mesh, so the correctness oracle compares ray-native vs materialized.
-        if matches!(mode, logic::Mode::CityHybrid) {
+        // Populate MegaGeometry only for city_hybrid. Triangle remains the
+        // source-GAS oracle and reference remains the complete-mesh native
+        // cluster/CLAS competitor.
+        if logic::mode_uses_runtime_megageometry(mode) {
             if let Some(a) = &asset {
                 if let Some(payload) = &a.mega {
                     let transforms: Vec<[f32; 16]> =
@@ -540,6 +692,7 @@ mod native {
             r.render_only(view, proj)
                 .map_err(|e| format!("{}/{}: warmup: {e}", spec.name, mode.as_str()))?;
         }
+        let pipeline_before_timed = r.geometry_pipeline_evidence();
 
         let mut update_samples: Vec<f64> = Vec::with_capacity(cfg.timed_frames as usize);
         let mut trace_samples: Vec<f64> = Vec::with_capacity(cfg.timed_frames as usize);
@@ -582,17 +735,175 @@ mod native {
                 }
             }
         }
+        let pipeline_after_timed = r.geometry_pipeline_evidence();
 
         // Detailed device stats copied only AFTER the timed frames.
         let stats = r.geometry_accel_stats().map_err(|e| {
-            format!("{}/{}: no acceleration report: {e:?}", spec.name, mode.as_str())
+            format!(
+                "{}/{}: no acceleration report: {e:?}",
+                spec.name,
+                mode.as_str()
+            )
         })?;
+        let streaming_memory = r.geometry_streaming_memory_stats();
+        let required_page_misses = r.geometry_required_page_misses();
         let cpu = map_cpu_counters(&r.geometry_cpu_ownership());
         let backend = resolve_backend(mode, &stats);
+        let packet_abi_hash = Some(hex32(r.geometry_packet_abi_hash()));
+        let capability_fingerprint = Some(hex32(r.geometry_gpu_capability_fingerprint()));
+        let visibility_fabric = if logic::mode_uses_runtime_megageometry(mode) {
+            r.visibility_queue_stats_after_timed_frames()
+                .ok()
+                .map(|stats| logic::VisibilityQueueCounters {
+                    domains_seeded: u64::from(stats.domains_seeded),
+                    rays_certified_miss: u64::from(stats.rays_certified_miss),
+                    rays_certified_hit: u64::from(stats.rays_certified_hit),
+                    domains_split: u64::from(stats.domains_split),
+                    explicit_rays: u64::from(stats.explicit_rays),
+                    packet_rays: u64::from(stats.packet_rays),
+                    packet_active_lanes: u64::from(stats.packet_active_lanes),
+                    packet_total_lanes: u64::from(stats.packet_total_lanes),
+                    scalar_refinement_rays: u64::from(stats.scalar_refinement_rays),
+                    native_residual_rays: u64::from(stats.native_residual_rays),
+                    failed_certificates: u64::from(stats.failed_certificates),
+                    queue_overflow_mask: u64::from(stats.queue_overflow_mask),
+                    cpu_scheduling: u64::from(stats.cpu_scheduling),
+                    correctness_mismatches: u64::from(stats.correctness_mismatches),
+                    source_ray_capacity: u64::from(stats.source_ray_capacity),
+                    live_source_rays: u64::from(stats.live_source_rays),
+                })
+        } else {
+            None
+        };
+        // Only city_hybrid owns the persistent GPU geometry-control graph.
+        // Triangle/reference have no such state and report no hash; the
+        // independent compositor requires equality for the candidate only.
+        let control_hash = if logic::mode_uses_runtime_megageometry(mode) {
+            Some(hex32(
+                r.geometry_control_hash_after_timed_frames()
+                    .map_err(|error| {
+                        format!(
+                            "{}/{}: GPU control hash unavailable: {error}",
+                            spec.name,
+                            mode.as_str()
+                        )
+                    })?,
+            ))
+        } else {
+            None
+        };
+        // Exercise actual GPU detail-cut transitions separately from the timed
+        // product interval. A static settled frame is not temporal evidence.
+        // Each receipt is read only after its calibration frame completes and
+        // is never fed back into rendering or residency decisions.
+        let temporal_reuse = if logic::mode_uses_runtime_megageometry(mode) {
+            match collect_temporal_reuse_evidence(&mut r, spec, width, height, mode) {
+                Ok(evidence) => Some(evidence),
+                Err(error) => {
+                    eprintln!(
+                        "[mega_geometry_bench] {}/{}: temporal calibration unavailable: {error}",
+                        spec.name,
+                        mode.as_str()
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        // Serialized device timing is intentionally collected after both the
+        // ordinary timed interval and its receipts. These calibration frames
+        // never contribute to product frame percentiles.
+        let has_runtime_program = asset
+            .as_ref()
+            .and_then(|loaded| loaded.mega.as_ref())
+            .is_some();
+        let visibility_profile = if (logic::mode_uses_runtime_megageometry(mode)
+            && has_runtime_program)
+            || mode == logic::Mode::Reference
+        {
+            Some(collect_visibility_profile(
+                &mut r,
+                view,
+                proj,
+                mode,
+                spec,
+                logic::mode_uses_runtime_megageometry(mode),
+            )?)
+        } else {
+            None
+        };
+        let parameter_update_fine_as_builds =
+            if logic::mode_uses_runtime_megageometry(mode) && has_runtime_program {
+                match collect_parameter_update_evidence(&mut r, view, proj, mode, spec) {
+                    Ok(builds) => Some(builds),
+                    Err(error) => {
+                        eprintln!(
+                            "[mega_geometry_bench] {}/{}: parameter update unavailable: {error}",
+                            spec.name,
+                            mode.as_str()
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+        let mib = 1024.0 * 1024.0;
+        let streaming_as = streaming_memory
+            .map(|memory| memory.fixed_as_storage_bytes)
+            .unwrap_or(0);
+        let streaming_native = streaming_memory
+            .map(|memory| {
+                memory
+                    .native_argument_bytes
+                    .saturating_add(memory.control_bytes)
+                    .saturating_add(memory.fixed_as_build_input_bytes)
+            })
+            .unwrap_or(0);
+        let streaming_scratch = streaming_memory
+            .map(|memory| memory.fixed_as_scratch_bytes)
+            .unwrap_or(0);
+        let streaming_pages = streaming_memory
+            .map(|memory| memory.page_pool_bytes)
+            .unwrap_or(0);
+        let resident_geometry = stats
+            .materialized_geometry_bytes()
+            .ok_or_else(|| {
+                format!(
+                    "{}/{}: materialized geometry memory unavailable",
+                    spec.name,
+                    mode.as_str()
+                )
+            })?
+            .saturating_add(spec.instances as u64 * 128);
+        let as_storage = stats
+            .as_storage_bytes()
+            .ok_or_else(|| {
+                format!(
+                    "{}/{}: acceleration storage memory unavailable",
+                    spec.name,
+                    mode.as_str()
+                )
+            })?
+            .saturating_add(streaming_as);
+        let native_arguments = stats
+            .retained_build_input_bytes()
+            .map(|bytes| bytes.saturating_add(streaming_native));
+        let build_scratch = stats
+            .retained_scratch_bytes()
+            .map(|bytes| bytes.saturating_add(streaming_scratch));
 
         let mr = logic::ModeResult {
             mode,
             compute: logic::ComputeVariant::PortableSubgroup,
+            packet_abi_hash,
+            control_hash,
+            capability_fingerprint,
+            visibility_fabric,
+            visibility_profile,
+            temporal_reuse,
+            parameter_update_fine_as_builds,
             correctness: logic::Correctness {
                 source_primitives: stats.source_primitive_count(),
                 mapped_primitives: stats.mapped_primitive_count(),
@@ -615,31 +926,27 @@ mod native {
                 frame_ms_p50: p50(&frame_samples),
                 frame_ms_p95: p95(&frame_samples),
                 traced_triangles: stats.materialized_triangle_count(),
-                // No pager hook yet -> unavailable (fail closed).
-                required_page_misses: None,
+                required_page_misses: if logic::mode_uses_runtime_megageometry(mode) {
+                    required_page_misses
+                } else {
+                    // The two materialized controls intentionally have no
+                    // streaming graph, hence no page that can miss.
+                    Some(0)
+                },
             },
             vram: logic::VramBreakdown {
-                // Resident GpuInstance buffer: 32 u32 words (GPU_INSTANCE_BYTES=128)
-                // per instance — exact.
-                resident_mb: (spec.instances as f64 * 128.0) / (1024.0 * 1024.0),
-                // Acceleration-structure VRAM (IAS + per-proto GAS + CLAS + OMM
-                // output buffers) — the real retained AS bytes and the component
-                // that DIFFERS between modes (city_hybrid's hierarchical IAS adds
-                // levels vs reference's flat IAS).
-                as_mb: Some(stats.bytes() as f64 / (1024.0 * 1024.0)),
-                // No geometry pager is instantiated in the bench -> 0 page-pool VRAM.
-                page_mb: Some(0.0),
-                // Native-lowering argument buffers are transient (allocated during
-                // the build, freed before the after-frames stats snapshot).
-                native_args_mb: Some(0.0),
-                // Build scratch is freed post-build; the small retained update
-                // scratch is excluded EQUALLY from both modes, so the peak-VRAM
-                // comparison direction (driven by as_mb) is unchanged.
-                scratch_mb: Some(0.0),
+                resident_mb: resident_geometry as f64 / mib,
+                as_mb: Some(as_storage as f64 / mib),
+                page_mb: Some(streaming_pages as f64 / mib),
+                native_args_mb: native_arguments.map(|bytes| bytes as f64 / mib),
+                scratch_mb: build_scratch.map(|bytes| bytes as f64 / mib),
             },
             cpu,
-            // No prewarm accessor proving no in-frame pipeline creation yet.
-            prewarm: None,
+            prewarm: Some(logic::PrewarmState {
+                shaders_compiled_before_timed: pipeline_before_timed.0 > 0,
+                pipeline_created_in_timed_frame: pipeline_after_timed.0 != pipeline_before_timed.0,
+                cache_repaired_in_timed_frame: pipeline_after_timed.1 != pipeline_before_timed.1,
+            }),
             // The harness structurally collects stats AFTER the timed loop and
             // never inside present timing; that IS measured.
             stats: Some(logic::StatsCollection {
@@ -651,6 +958,259 @@ mod native {
                 && !matches!(mode, logic::Mode::Triangle),
         };
         Ok((mr, last_prov))
+    }
+
+    fn collect_parameter_update_evidence(
+        renderer: &mut ResidentSceneRenderer,
+        view: [f32; 16],
+        proj: [f32; 16],
+        mode: logic::Mode,
+        spec: &logic::FixtureSpec,
+    ) -> Result<u64, String> {
+        // 1.015 is non-identity and lies strictly inside the runtime schema's
+        // [0.975, 1.025] conservative facade-taper envelope.
+        renderer
+            .update_geometry_visibility_parameters(&[(0, 1.015)])
+            .map_err(|error| {
+                format!(
+                    "{}/{}: enqueue bounded parameter update: {error}",
+                    spec.name,
+                    mode.as_str()
+                )
+            })?;
+        renderer.render_only(view, proj).map_err(|error| {
+            format!(
+                "{}/{}: render bounded parameter update: {error}",
+                spec.name,
+                mode.as_str()
+            )
+        })?;
+        let receipt = renderer
+            .geometry_parameter_update_stats()
+            .map_err(|error| {
+                format!(
+                    "{}/{}: parameter update receipt: {error}",
+                    spec.name,
+                    mode.as_str()
+                )
+            })?;
+        if receipt.submitted != 1 || receipt.changed != 1 || receipt.rejected != 0 {
+            return Err(format!(
+                "GPU receipt is not a nontrivial accepted update: submitted={} changed={} rejected={}",
+                receipt.submitted, receipt.changed, receipt.rejected
+            ));
+        }
+        Ok(receipt.fine_as_builds)
+    }
+
+    fn collect_temporal_reuse_evidence(
+        renderer: &mut ResidentSceneRenderer,
+        spec: &logic::FixtureSpec,
+        width: u32,
+        height: u32,
+        mode: logic::Mode,
+    ) -> Result<logic::TemporalReuseEvidence, String> {
+        let mut evidence = logic::TemporalReuseEvidence {
+            relevant_surface_pixels: 0,
+            invalidated_surface_pixels: 0,
+            no_map_invalidated_surface_pixels: 0,
+            lod_cut_changes: 0,
+        };
+        // Alternate near/far views so the GPU selector must evaluate materially
+        // different projected errors. Returning to 1.0 also proves the state is
+        // persistent rather than a one-time admission artifact.
+        for distance_scale in [0.35_f32, 1.80, 0.55, 1.0] {
+            let (view, proj) =
+                camera_at_distance(spec.instances as usize, width, height, distance_scale);
+            renderer.render_only(view, proj).map_err(|error| {
+                format!(
+                    "{}/{} distance_scale={distance_scale}: render: {error}",
+                    spec.name,
+                    mode.as_str()
+                )
+            })?;
+            let frame = renderer.geometry_temporal_reuse_stats().map_err(|error| {
+                format!(
+                    "{}/{} distance_scale={distance_scale}: receipt: {error}",
+                    spec.name,
+                    mode.as_str()
+                )
+            })?;
+            evidence.relevant_surface_pixels = evidence
+                .relevant_surface_pixels
+                .saturating_add(frame.relevant_surface_pixels);
+            evidence.invalidated_surface_pixels = evidence
+                .invalidated_surface_pixels
+                .saturating_add(frame.invalidated_surface_pixels);
+            evidence.no_map_invalidated_surface_pixels = evidence
+                .no_map_invalidated_surface_pixels
+                .saturating_add(frame.no_map_invalidated_surface_pixels);
+            evidence.lod_cut_changes = evidence
+                .lod_cut_changes
+                .saturating_add(frame.lod_cut_changes);
+        }
+        Ok(evidence)
+    }
+
+    #[derive(Default)]
+    struct VisibilityFrameStages {
+        certification: f64,
+        subdivision: f64,
+        routing_queue: f64,
+        packet_intersection: f64,
+        exact_refinement: f64,
+        ordinary_native: f64,
+        native_residual: f64,
+        hit_merge: f64,
+        fixed_launch: f64,
+        saw_fixed_launch: bool,
+    }
+
+    fn collect_visibility_profile(
+        renderer: &mut ResidentSceneRenderer,
+        view: [f32; 16],
+        proj: [f32; 16],
+        mode: logic::Mode,
+        spec: &logic::FixtureSpec,
+        require_fixed_native_launch: bool,
+    ) -> Result<logic::VisibilityKernelProfile, String> {
+        let mut frames = Vec::with_capacity(VISIBILITY_CALIBRATION_FRAMES as usize);
+        for frame in 0..VISIBILITY_CALIBRATION_FRAMES {
+            renderer
+                .begin_visibility_calibration_frame()
+                .map_err(|error| {
+                    format!(
+                        "{}/{}: arm visibility calibration frame {frame}: {error}",
+                        spec.name,
+                        mode.as_str()
+                    )
+                })?;
+            renderer.render_only(view, proj).map_err(|error| {
+                format!(
+                    "{}/{}: visibility calibration frame {frame}: {error}",
+                    spec.name,
+                    mode.as_str()
+                )
+            })?;
+            let dispatches = renderer
+                .finish_visibility_calibration_frame()
+                .map_err(|error| {
+                    format!(
+                        "{}/{}: finish visibility calibration frame {frame}: {error}",
+                        spec.name,
+                        mode.as_str()
+                    )
+                })?;
+            frames.push(classify_visibility_dispatches(mode, &dispatches));
+        }
+        if frames.iter().any(|frame| {
+            (require_fixed_native_launch && !frame.saw_fixed_launch)
+                || frame.ordinary_native + frame.native_residual <= 0.0
+        }) {
+            return Err(format!(
+                "{}/{}: calibration omitted required native visibility work",
+                spec.name,
+                mode.as_str()
+            ));
+        }
+
+        let values = |select: fn(&VisibilityFrameStages) -> f64| -> Vec<f64> {
+            frames.iter().map(select).collect()
+        };
+        let complete: Vec<f64> = frames
+            .iter()
+            .map(|frame| {
+                frame.certification
+                    + frame.subdivision
+                    + frame.routing_queue
+                    + frame.packet_intersection
+                    + frame.exact_refinement
+                    + frame.ordinary_native
+                    + frame.native_residual
+                    + frame.hit_merge
+            })
+            .collect();
+        let profile = logic::VisibilityKernelProfile {
+            measured_frames: VISIBILITY_CALIBRATION_FRAMES,
+            certification_ms_p95: p95(&values(|frame| frame.certification)),
+            subdivision_ms_p95: p95(&values(|frame| frame.subdivision)),
+            routing_queue_ms_p95: p95(&values(|frame| frame.routing_queue)),
+            packet_intersection_ms_p95: p95(&values(|frame| frame.packet_intersection)),
+            exact_refinement_ms_p95: p95(&values(|frame| frame.exact_refinement)),
+            ordinary_native_ms_p95: p95(&values(|frame| frame.ordinary_native)),
+            native_residual_ms_p95: p95(&values(|frame| frame.native_residual)),
+            hit_merge_ms_p95: p95(&values(|frame| frame.hit_merge)),
+            // This is a subset of ordinary/native-residual timing and is not
+            // added to `complete_visibility_ms_p95` a second time.
+            fixed_empty_launch_ms_p95: p95(&values(|frame| frame.fixed_launch)),
+            complete_visibility_ms_p95: p95(&complete),
+            includes_fixed_empty_launches: frames.iter().all(|frame| frame.saw_fixed_launch),
+        };
+        profile.is_measured().then_some(profile).ok_or_else(|| {
+            format!(
+                "{}/{}: visibility calibration produced an incomplete profile",
+                spec.name,
+                mode.as_str()
+            )
+        })
+    }
+
+    fn classify_visibility_dispatches(
+        mode: logic::Mode,
+        dispatches: &[(String, f32)],
+    ) -> VisibilityFrameStages {
+        let mut stages = VisibilityFrameStages::default();
+        for (label, elapsed_ms) in dispatches {
+            let ms = f64::from(*elapsed_ms);
+            match label.as_str() {
+                "visibility_fabric_build_primary" | "visibility_domain_classify_exact" => {
+                    stages.certification += ms;
+                }
+                "visibility_domain_subdivide" => stages.subdivision += ms,
+                "visibility_fabric_reset"
+                | "visibility_route"
+                | "visibility_route_subdivision"
+                | "visibility_fabric_packetize"
+                | "visibility_fabric_fail_closed" => stages.routing_queue += ms,
+                "visibility_packet_intersect" => stages.packet_intersection += ms,
+                "visibility_hit_reduce" => stages.hit_merge += ms,
+                "visibility_native_residual_optix" => {
+                    stages.native_residual += ms;
+                    stages.fixed_launch += ms;
+                    stages.saw_fixed_launch = true;
+                }
+                "visibility_native_scalar_optix"
+                | "triangle_and_visibility_native_scalar_optix" => {
+                    stages.ordinary_native += ms;
+                    stages.fixed_launch += ms;
+                    stages.saw_fixed_launch = true;
+                }
+                "triangle_trace_optix" | "optix_traverse" => stages.ordinary_native += ms,
+                _ if label.starts_with("megageometry_merge_") => {
+                    if mode == logic::Mode::CityHybrid {
+                        stages.native_residual += ms;
+                    } else {
+                        stages.ordinary_native += ms;
+                    }
+                    stages.fixed_launch += ms;
+                    stages.saw_fixed_launch = true;
+                }
+                _ if label.starts_with("megageometry_fused_trace_") => {
+                    stages.ordinary_native += ms;
+                    stages.fixed_launch += ms;
+                    stages.saw_fixed_launch = true;
+                }
+                _ if label.starts_with("bvh_traverse")
+                    || label.starts_with("shadow_trace")
+                    || label.starts_with("megageometry_shadow_")
+                    || label.starts_with("megageometry_triangle_detail_") =>
+                {
+                    stages.ordinary_native += ms;
+                }
+                _ => {}
+            }
+        }
+        stages
     }
 
     /// Fill `hit_mismatches`, `material_mismatches`, and `uv_mismatches` from the
@@ -695,7 +1255,13 @@ mod native {
                     if is_hit_mismatch && shown < 24 {
                         eprintln!(
                             "[DIAG hit] px={i} o_hit={o_hit} c_hit={c_hit} prim(o={} c={}) mat(o={} c={}) depth(o={:.5} c={:.5} d={:.5})",
-                            op[i], p[i], om[i], m[i], od[i], d[i], (d[i]-od[i]).abs()
+                            op[i],
+                            p[i],
+                            om[i],
+                            m[i],
+                            od[i],
+                            d[i],
+                            (d[i] - od[i]).abs()
                         );
                         shown += 1;
                     }
@@ -712,9 +1278,9 @@ mod native {
         use vox_render::mega_geometry::{
             ForbiddenGeometryCpuActivity as F, GeometryHostServiceKind,
         };
-        let host_calls =
-            snap.host_service_calls(GeometryHostServiceKind::NativeAccelerationSubmission);
-        let host_ns = snap.host_service_ns(GeometryHostServiceKind::NativeAccelerationSubmission);
+        let host_calls = snap
+            .host_service_calls(GeometryHostServiceKind::NativeAccelerationSubmission)
+            + snap.host_service_calls(GeometryHostServiceKind::OpaquePageTransport);
         logic::CpuCounters {
             render_thread_scene_visits: snap.forbidden_count(F::RenderThreadInstanceVisit)
                 + snap.forbidden_count(F::RenderThreadPrototypeVisit)
@@ -727,19 +1293,12 @@ mod native {
             eviction_decisions: snap.forbidden_count(F::EvictionDecision),
             blocking_readbacks: snap.forbidden_count(F::BlockingReadback),
             frame_allocations: snap.forbidden_count(F::FrameAllocation),
-            // The forbidden counters are NOT yet bridged from Spectra's probe
-            // into vox_render's snapshot, so their zeros are not evidence.
             counters_probed: super::logic::HARNESS_CPU_OWNERSHIP_COUNTERS_PROBED,
-            // No deadline-miss counter exposed yet -> unavailable (fail closed).
-            host_deadline_misses: None,
-            // No render-thread submit-time accessor yet -> unavailable.
-            render_thread_submit_ms_p95: None,
+            host_deadline_misses: Some(snap.host_deadline_misses()),
+            render_thread_submit_ms_p95: Some(snap.render_thread_submit_p95_ns() as f64 / 1.0e6),
             host_submit_calls: host_calls,
-            // Zero recorded host-submit calls is "nothing measured" -> None
-            // (Unavailable), never a passing 0.0. Otherwise the mean is a p95
-            // proxy until a real percentile accessor exists.
             host_submit_ms_p95: if host_calls > 0 {
-                Some(host_ns as f64 / host_calls as f64 / 1.0e6)
+                Some(snap.host_submit_p95_ns() as f64 / 1.0e6)
             } else {
                 None
             },
@@ -759,7 +1318,7 @@ mod native {
             RayAccelBackendKind::Dxr => "dxr",
             RayAccelBackendKind::Unavailable => "unavailable",
         };
-        let requested_cluster = matches!(mode, logic::Mode::Reference | logic::Mode::CityHybrid);
+        let requested_cluster = logic::requires_hardware_clas(requested_rt_backend(), mode);
         // A cluster/CLAS representation requires HARDWARE CLAS builds. A derived
         // cluster count with zero hardware builds is a silent downgrade.
         let cluster_requested_without_hardware_clas =
@@ -773,6 +1332,7 @@ mod native {
             available,
             silently_downgraded: false,
             cpu_fallbacks: 0,
+            hardware_clas_builds: Some(u64::from(stats.hardware_clas_builds())),
             cluster_requested_without_hardware_clas,
         }
     }
@@ -781,28 +1341,44 @@ mod native {
         let spec = spec_of(r);
         for m in [&r.hybrid, &r.reference] {
             println!("{}", logic::config_line(m.mode, m.compute, &spec, frames));
+            println!("{}", logic::identity_line(m));
             println!("{}", logic::correct_line(&m.correctness));
             println!("{}", logic::result_line(&m.stage, &m.vram));
             println!("{}", logic::cpu_line(&m.cpu));
-            // Program / visibility / fabric / temporal evidence require renderer
-            // hooks that do not exist yet -> emit UNAVAILABLE lines (fail closed).
-            println!("{}", logic::ProgramLine::unavailable(m.mode.as_str()).line());
+            // Program / visibility timing evidence remains unavailable until
+            // the corresponding GPU timer receipts are exposed.
+            println!(
+                "{}",
+                logic::ProgramLine::unavailable(m.mode.as_str()).line()
+            );
             println!(
                 "{}",
                 logic::VisibilityLine::unavailable(m.mode.as_str()).line()
             );
-            println!("{}", logic::FabricLine::unavailable(m.mode.as_str()).line());
+            println!(
+                "{}",
+                m.visibility_fabric
+                    .map(|stats| stats.fabric_line(m.mode))
+                    .unwrap_or_else(|| logic::FabricLine::unavailable(m.mode.as_str()))
+                    .line()
+            );
         }
         println!("{}", logic::TemporalLine::unavailable().line());
     }
 
     fn collect_global_signals(fixtures: &[logic::FixtureReport]) -> logic::GlobalSignals {
         // Two scale samples (smallest and largest fixture) with the REAL forbidden
-        // CPU counters for the scaling proof. Every other global signal is
-        // UNAVAILABLE (fail closed) until its cross-backend/hook exists.
-        let mut small = &fixtures[0];
-        let mut large = &fixtures[0];
-        for f in fixtures {
+        // CPU counters for the scaling proof. The externally authorized live
+        // product fixture has no renderer-local receipts and is joined only by
+        // `mega_geometry_acceptance`; it must not poison or fabricate raw
+        // backend-global measurements.
+        let internal: Vec<_> = fixtures
+            .iter()
+            .filter(|fixture| !spec_of(fixture).authorizing_witness_external)
+            .collect();
+        let mut small = internal[0];
+        let mut large = internal[0];
+        for &f in &internal {
             if f.instances < small.instances {
                 small = f;
             }
@@ -810,19 +1386,87 @@ mod native {
                 large = f;
             }
         }
-        logic::GlobalSignals::unavailable(
-            logic::ScaleSample {
+        let cpu_fallbacks = internal
+            .iter()
+            .flat_map(|fixture| [&fixture.hybrid, &fixture.reference])
+            .map(|mode| mode.backend.cpu_fallbacks)
+            .sum();
+        let prewarm_states = internal
+            .iter()
+            .flat_map(|fixture| [&fixture.hybrid, &fixture.reference])
+            .map(|mode| mode.prewarm);
+        let cache_valid = if prewarm_states.clone().all(|state| state.is_some()) {
+            Some(prewarm_states.flatten().all(|state| state.is_valid()))
+        } else {
+            None
+        };
+        let fabric_receipts: Vec<_> = internal
+            .iter()
+            .filter(|fixture| logic::REAL_ASSET_FAMILIES.contains(&fixture.family.as_str()))
+            .map(|fixture| fixture.hybrid.visibility_fabric)
+            .collect();
+        let fabric_cpu_scheduling =
+            if !fabric_receipts.is_empty() && fabric_receipts.iter().all(Option::is_some) {
+                Some(
+                    fabric_receipts
+                        .iter()
+                        .flatten()
+                        .map(|stats| stats.cpu_scheduling)
+                        .sum(),
+                )
+            } else {
+                None
+            };
+
+        logic::GlobalSignals {
+            // A single-backend producer emits raw identities. Only the artifact
+            // composer may compare independent CUDA and Vulkan artifacts.
+            packet_abi_match: None,
+            control_hash_match: None,
+            adapter_overhead_pct: None,
+            cpu_fallbacks: Some(cpu_fallbacks),
+            fabric_cpu_scheduling,
+            cache_valid,
+            mode_distinct: Some(CITY_HYBRID_IS_DISTINCT_EXECUTION),
+            scale_small: logic::ScaleSample {
                 total_units: small.instances,
                 cpu: small.hybrid.cpu,
             },
-            logic::ScaleSample {
+            scale_large: logic::ScaleSample {
                 total_units: large.instances,
                 cpu: large.hybrid.cpu,
             },
-        )
+        }
     }
 
-    fn collect_env_line() -> logic::EnvLine {
+    fn collect_env_line(fixtures: &[logic::FixtureReport]) -> logic::EnvLine {
+        let mode_records = fixtures
+            .iter()
+            .filter(|fixture| {
+                !logic::required_fixtures()
+                    .iter()
+                    .any(|spec| spec.name == fixture.name && spec.authorizing_witness_external)
+            })
+            .flat_map(|fixture| {
+                let mut modes = vec![&fixture.reference, &fixture.hybrid];
+                modes.extend(fixture.triangle.iter());
+                modes
+            })
+            .collect::<Vec<_>>();
+        let capability_hashes = mode_records
+            .iter()
+            .filter_map(|mode| mode.capability_fingerprint.clone())
+            .collect::<BTreeSet<_>>();
+        let packet_abi_hashes = mode_records
+            .iter()
+            .filter_map(|mode| mode.packet_abi_hash.clone())
+            .collect::<BTreeSet<_>>();
+        let unique = |values: BTreeSet<String>| {
+            (values.len() == 1)
+                .then(|| values.into_iter().next())
+                .flatten()
+                .unwrap_or_else(|| "unavailable".into())
+        };
         logic::EnvLine {
             gpu: std::env::var("MEGAGEOMETRY_GPU").unwrap_or_else(|_| "unknown".into()),
             api: if cfg!(feature = "spectra-native-optix") {
@@ -833,11 +1477,9 @@ mod native {
             .to_string(),
             driver: std::env::var("MEGAGEOMETRY_DRIVER").unwrap_or_else(|_| "unknown".into()),
             rt_backend: requested_rt_backend().to_string(),
-            capability_hash: std::env::var("MEGAGEOMETRY_CAP_HASH")
-                .unwrap_or_else(|_| "unavailable".into()),
-            shader_abi: std::env::var("MEGAGEOMETRY_SHADER_ABI")
-                .unwrap_or_else(|_| "unavailable".into()),
-            cook_schema: 3,
+            capability_hash: unique(capability_hashes),
+            shader_abi: unique(packet_abi_hashes),
+            runtime_geometry_schema: vox_data::mega_geometry::READY_MEGA_GEOMETRY_SCHEMA,
         }
     }
 
@@ -845,7 +1487,6 @@ mod native {
         logic::GitRevisions {
             ochroma: git_rev(env!("CARGO_MANIFEST_DIR")),
             spectra: std::env::var("MEGAGEOMETRY_REV_SPECTRA").unwrap_or_else(|_| "unknown".into()),
-            forge: std::env::var("MEGAGEOMETRY_REV_FORGE").unwrap_or_else(|_| "unknown".into()),
             urban: std::env::var("MEGAGEOMETRY_REV_URBAN").unwrap_or_else(|_| "unknown".into()),
         }
     }
@@ -864,11 +1505,9 @@ mod native {
         std::env::var("MEGAGEOMETRY_RENDER_CONFIG_HASH").unwrap_or_else(|_| "unavailable".into())
     }
 
-    /// Mode selection knobs. NOTE: `MEGAGEOMETRY_MODE` is not consumed by the
-    /// renderer yet, so these do NOT (today) produce distinct execution paths —
-    /// which is exactly why `CITY_HYBRID_IS_DISTINCT_EXECUTION` is false and the
-    /// harness fails closed. When the policy/IAS integration honors these knobs,
-    /// flip that constant and the win becomes provable.
+    /// Benchmark-only mode selection. The product does not read these values:
+    /// its visibility policy remains config-first and requires persisted
+    /// calibration evidence.
     fn apply_mode_env(mode: logic::Mode) {
         // SAFETY: single-threaded harness; env read by the renderer on next build.
         unsafe {
@@ -880,14 +1519,17 @@ mod native {
                 logic::Mode::Triangle => {
                     std::env::set_var("SPECTRA_CLAS_THRESHOLD", "18446744073709551615");
                     std::env::set_var("MEGAGEOMETRY_MODE", "triangle");
+                    std::env::remove_var("MEGAGEOMETRY_VISIBILITY_CALIBRATION_CANDIDATE");
                 }
                 logic::Mode::Reference => {
                     std::env::set_var("SPECTRA_CLAS_THRESHOLD", "1");
                     std::env::set_var("MEGAGEOMETRY_MODE", "reference");
+                    std::env::remove_var("MEGAGEOMETRY_VISIBILITY_CALIBRATION_CANDIDATE");
                 }
                 logic::Mode::CityHybrid => {
                     std::env::set_var("SPECTRA_CLAS_THRESHOLD", "1");
                     std::env::set_var("MEGAGEOMETRY_MODE", "city_hybrid");
+                    std::env::set_var("MEGAGEOMETRY_VISIBILITY_CALIBRATION_CANDIDATE", "1");
                 }
             }
         }
@@ -978,6 +1620,7 @@ mod native {
                     1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, 0.0, z, 1.0,
                 ],
                 material_base: 0,
+                dynamic: false,
             });
         }
         out
@@ -1008,14 +1651,25 @@ mod native {
     }
 
     fn camera(n: usize, width: u32, height: u32) -> ([f32; 16], [f32; 16]) {
+        camera_at_distance(n, width, height, 1.0)
+    }
+
+    fn camera_at_distance(
+        n: usize,
+        width: u32,
+        height: u32,
+        distance_scale: f32,
+    ) -> ([f32; 16], [f32; 16]) {
         let cols = (n as f64).sqrt().ceil() as f32;
         let extent = cols.max(1.0) * 2.0;
-        let dist = extent * 1.2 + 5.0;
+        let dist = (extent * 1.2 + 5.0) * distance_scale.max(0.1);
         let eye = glam::Vec3::new(0.0, dist * 0.6, dist);
         let view = glam::Mat4::look_at_rh(eye, glam::Vec3::ZERO, glam::Vec3::Y).to_cols_array();
         let aspect = width as f32 / height.max(1) as f32;
-        let proj = glam::Mat4::perspective_rh(60f32.to_radians(), aspect, 0.5, dist * 4.0 + 100.0)
-            .to_cols_array();
+        let scene_extent = extent * 1.2 + 5.0;
+        let proj =
+            glam::Mat4::perspective_rh(60f32.to_radians(), aspect, 0.5, scene_extent * 8.0 + 100.0)
+                .to_cols_array();
         (view, proj)
     }
 

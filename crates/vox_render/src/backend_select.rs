@@ -240,9 +240,11 @@ fn new_cuda() -> Result<SelectedBackend, String> {
 
 #[cfg(not(all(target_os = "macos", feature = "spectra-native-metal")))]
 fn new_metal() -> Result<SelectedBackend, String> {
-    Err("Metal backend is not compiled into this binary (needs macOS + \
+    Err(
+        "Metal backend is not compiled into this binary (needs macOS + \
          vox_render/spectra-native-metal)"
-        .to_string())
+            .to_string(),
+    )
 }
 
 #[cfg(all(target_os = "macos", feature = "spectra-native-metal"))]
@@ -305,7 +307,13 @@ mod tests {
             None => unsafe { std::env::remove_var("SPECTRA_BACKEND") },
         }
         assert!(err.contains("rtx-please"), "got: {err}");
-        assert!(err.contains("vulkan"), "must list what IS accepted, got: {err}");
-        assert!(err.contains("metal"), "must list what IS accepted, got: {err}");
+        assert!(
+            err.contains("vulkan"),
+            "must list what IS accepted, got: {err}"
+        );
+        assert!(
+            err.contains("metal"),
+            "must list what IS accepted, got: {err}"
+        );
     }
 }

@@ -48,11 +48,9 @@
 //! # Determinism
 //!
 //! Replay-exact: there is NO RNG, NO float-key HashMap iteration in any path that
-//! affects output ordering, and all folds are over id-ordered Vecs. The cluster
-//! lookup uses a `HashMap` keyed by integer cell coordinates ONLY to find the
-//! cluster index; the *output* vertex order is the first-seen order recorded in a
-//! Vec, so two runs on identical input produce byte-identical output. Position/UV
-//! averaging is a fixed-order sum (input vertex order) divided by the count.
+//! affects output ordering. Adjacency and seam construction use ordered maps and
+//! sets; the collapse heap has an explicit `(cost_bits, v0, v1)` tie-break; and
+//! every geometry fold follows stable vertex/triangle id order.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
@@ -94,15 +92,15 @@ pub struct MeshOutput {
 }
 
 /// Deterministically decimate `input` toward `target_ratio` of its triangles
-/// (clamped to `(0, 1]`) via vertex-grid clustering, **preserving UVs (averaged
-/// per cluster) and per-triangle material ids (verbatim; never welded across a
-/// material seam)**.
+/// (clamped to `(0, 1]`) via constrained quadric-error edge collapse,
+/// **preserving UVs and per-triangle material ids (verbatim; never collapsed
+/// across a material seam)**.
 ///
 /// - `target_ratio >= 1.0`, or a mesh too small to cluster (`< 4` verts /`<= 1`
 ///   tri), returns the input unchanged (re-packed into a [`MeshOutput`]).
-/// - Output triangle count is always `<= input`. The grid resolution targets the
-///   ratio; exact counts vary with geometry (a flat fan clusters harder than a
-///   sphere), as is normal for grid clustering.
+/// - Output triangle count is always `<= input`. The ratio is a target; exact
+///   counts vary because boundary, seam, degeneracy, and flip checks may reject
+///   every remaining collapse.
 /// - UVs: if `input.uvs` is non-empty it MUST be parallel to `positions`; a
 ///   mismatched length disables UV averaging (output UVs empty) so a bad input can
 ///   never desync the streams.
@@ -116,13 +114,7 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
     let have_uvs = !input.uvs.is_empty() && input.uvs.len() == n_verts;
     // material_ids only honored when parallel to indices; else all-zero.
     let have_mats = !input.material_ids.is_empty() && input.material_ids.len() == n_tris;
-    let mat_of = |t: usize| -> u32 {
-        if have_mats {
-            input.material_ids[t]
-        } else {
-            0
-        }
-    };
+    let mat_of = |t: usize| -> u32 { if have_mats { input.material_ids[t] } else { 0 } };
 
     // Passthrough: nothing to gain (or too small to simplify safely).
     if target_ratio >= 1.0 || n_tris <= 1 || n_verts < 4 {
@@ -193,11 +185,7 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
     // ---- quadrics --------------------------------------------------------
     let mut quad = vec![Quadric::default(); n_verts];
     for (ti, t) in tri.iter().enumerate() {
-        let (p0, p1, p2) = (
-            pos[t[0] as usize],
-            pos[t[1] as usize],
-            pos[t[2] as usize],
-        );
+        let (p0, p1, p2) = (pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]);
         if let Some((n, d, area)) = plane_of(p0, p1, p2) {
             // Area weighting makes a large flat facade dominate the small
             // triangles that happen to sit on it — which is exactly the
@@ -237,11 +225,7 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
             let (pa, pb) = (pos[*a as usize], pos[*b as usize]);
             for &f in faces {
                 let t = tri[f as usize];
-                let (p0, p1, p2) = (
-                    pos[t[0] as usize],
-                    pos[t[1] as usize],
-                    pos[t[2] as usize],
-                );
+                let (p0, p1, p2) = (pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]);
                 let Some((fn_, _, _)) = plane_of(p0, p1, p2) else {
                     continue;
                 };
@@ -267,12 +251,12 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
     // product moat here, not a nicety).
     let mut version = vec![0u32; n_verts];
     let mut heap: BinaryHeap<Reverse<Collapse>> = BinaryHeap::new();
-    let mut push_edge = |heap: &mut BinaryHeap<Reverse<Collapse>>,
-                         quad: &[Quadric],
-                         pos: &[[f64; 3]],
-                         version: &[u32],
-                         a: u32,
-                         b: u32| {
+    let push_edge = |heap: &mut BinaryHeap<Reverse<Collapse>>,
+                     quad: &[Quadric],
+                     pos: &[[f64; 3]],
+                     version: &[u32],
+                     a: u32,
+                     b: u32| {
         let (v0, v1) = if a < b { (a, b) } else { (b, a) };
         let mut q = quad[v0 as usize];
         q.add(&quad[v1 as usize]);
@@ -312,7 +296,9 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
         if version[v0] != c.ver0 || version[v1] != c.ver1 {
             continue; // stale cost — a neighbour moved since this was queued
         }
-        if !collapse_is_valid(&tri, &tri_alive, &vtri, &pos, v0 as u32, v1 as u32, c.target) {
+        if !collapse_is_valid(
+            &tri, &tri_alive, &vtri, &pos, v0 as u32, v1 as u32, c.target,
+        ) {
             continue;
         }
 
@@ -529,6 +515,16 @@ impl Quadric {
     /// endpoints and their midpoint when the system is singular — a flat or
     /// symmetric neighbourhood has no unique optimum and inventing one there is
     /// how a simplifier puts vertices off the surface.
+    ///
+    /// The determinant test alone does not catch that. `det` is an ABSOLUTE
+    /// threshold on a quantity that scales with the mesh's units and area
+    /// weighting, so a NEARLY singular neighbourhood — a foliage card, a scan
+    /// shell's near-coplanar fan — passes it and yields an optimum that is
+    /// finite but nowhere near the edge it replaces. Measured on the cooked
+    /// prototype set, that put `ph.boulder_01` LOD1 vertices 5.27 m outside the
+    /// source silhouette and hulled a 0.15 m celandine to 2.28 m, in 20 of 78
+    /// cooked levels. So the optimum must ALSO land near its edge; when it does
+    /// not, the endpoint/midpoint fallback below is the honest answer.
     fn optimum(&self, a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         let m = [
             [self.xx, self.xy, self.xz],
@@ -554,7 +550,7 @@ impl Quadric {
                 + r[0] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
                 * inv_det;
             let v = [x, y, z];
-            if v.iter().all(|c| c.is_finite()) {
+            if v.iter().all(|c| c.is_finite()) && optimum_is_near_edge(v, a, b) {
                 return v;
             }
         }
@@ -574,6 +570,33 @@ impl Quadric {
         }
         best
     }
+}
+
+/// How far, in multiples of the collapsing edge's own length, a quadric-optimal
+/// position may sit from that edge's midpoint.
+///
+/// A genuine feature-preserving optimum — the corner a cube's three planes meet
+/// at, the crease two roof slopes share — lies at most about one edge length
+/// out, because the planes that define it are the planes of the faces touching
+/// that edge. Two edge lengths therefore keeps every legitimate optimum while
+/// rejecting the near-singular solves, which miss by one to three ORDERS of
+/// magnitude, not by a factor of two.
+const OPTIMUM_REACH_IN_EDGE_LENGTHS: f64 = 2.0;
+
+/// Does a quadric-optimal position sit close enough to the edge it replaces to
+/// be believable? A degenerate (zero-length) edge has no scale to judge against,
+/// so nothing but its own endpoints is believable there.
+fn optimum_is_near_edge(v: [f64; 3], a: [f64; 3], b: [f64; 3]) -> bool {
+    let mid = [
+        (a[0] + b[0]) * 0.5,
+        (a[1] + b[1]) * 0.5,
+        (a[2] + b[2]) * 0.5,
+    ];
+    let edge = sub3(b, a);
+    let half_length = (edge[0] * edge[0] + edge[1] * edge[1] + edge[2] * edge[2]).sqrt() * 0.5;
+    let offset = sub3(v, mid);
+    let distance = (offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]).sqrt();
+    distance <= half_length * 2.0 * OPTIMUM_REACH_IN_EDGE_LENGTHS
 }
 
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -622,11 +645,7 @@ fn collapse_is_valid(
             if t.contains(&v0) && t.contains(&v1) {
                 continue;
             }
-            let before = plane_of(
-                pos[t[0] as usize],
-                pos[t[1] as usize],
-                pos[t[2] as usize],
-            );
+            let before = plane_of(pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]);
             let mut moved = [[0.0f64; 3]; 3];
             for (k, &idx) in t.iter().enumerate() {
                 moved[k] = if idx == v0 || idx == v1 {

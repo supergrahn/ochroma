@@ -550,9 +550,8 @@ mod tests {
     fn civil_twilight_is_not_night() {
         let p = KeyLightPalette::default();
         let moon = full_moon_position(false); // no moon: sky dome is the ONLY light
-        let intensity_at = |alt: f64| {
-            celestial_key_light(&sun_at_altitude(alt), &moon, &p).sky_intensity
-        };
+        let intensity_at =
+            |alt: f64| celestial_key_light(&sun_at_altitude(alt), &moon, &p).sky_intensity;
 
         let horizon = intensity_at(0.0);
         let civil = intensity_at(-6.0);

@@ -267,6 +267,13 @@ pub struct PbrMaterial {
     /// materials historically replaced the factor; authored vehicle/glTF PBR
     /// uses factor x texture consistently across atlas and SVT paths.
     pub modulate_roughness_texture: bool,
+    /// Packed glTF metallic-roughness texture id (-1 = off). The green channel
+    /// modulates `roughness` and the blue channel modulates `metallic`.
+    ///
+    /// This shares Spectra's existing `tex_metallic_roughness` GPU slot with
+    /// `roughness_tex`; setting both is a caller error. `roughness_tex` remains
+    /// the legacy single-channel-R contract.
+    pub metallic_roughness_tex: i32,
     pub normal_tex: i32,
     /// Opacity / alpha-cutout texture id (-1 = off / opaque). For foliage leaf
     /// cards (PolyHaven glTF), the leaf alpha is carried in the BASE-COLOR
@@ -345,6 +352,7 @@ impl Default for PbrMaterial {
             modulate_base_color_texture: false,
             roughness_tex: -1,
             modulate_roughness_texture: false,
+            metallic_roughness_tex: -1,
             normal_tex: -1,
             opacity_tex: -1,
             vegetation_bsdf: false,
@@ -429,6 +437,10 @@ pub struct InstanceRecordGpu {
     /// instance custom index, superseding the old per-instance material override
     /// and its `u32::MAX` "no override" sentinel.
     pub material_base: u32,
+    /// Continuously moving instances use the renderer's dedicated dynamic IAS
+    /// and receive an unconditional native update. Static buildings, terrain,
+    /// roads and stationary scatter remain in stable spatial partitions.
+    pub dynamic: bool,
 }
 
 /// The neutral per-instance weathering scale — keep the global intensity
@@ -3630,7 +3642,12 @@ pub fn pack_mesh_material(m: PbrMaterial) -> [f32; MATERIAL_FLOATS] {
     let glass = m.transmission > 0.0;
     let water = glass && m.is_water;
     let vegetation = !glass && m.vegetation_bsdf;
-    let metal = !glass && !vegetation && m.metallic > 0.5;
+    let metal = !glass && !vegetation && m.metallic_roughness_tex < 0 && m.metallic > 0.5;
+
+    assert!(
+        m.roughness_tex < 0 || m.metallic_roughness_tex < 0,
+        "PbrMaterial must not bind both legacy roughness_tex and packed metallic_roughness_tex"
+    );
 
     let mut md = MaterialData::default();
     md.base_color = [m.base_color[0], m.base_color[1], m.base_color[2], 1.0];
@@ -3643,7 +3660,11 @@ pub fn pack_mesh_material(m: PbrMaterial) -> [f32; MATERIAL_FLOATS] {
     md.emission_strength = m.emission_strength;
     md.transmission = m.transmission;
     md.tex_base_color = m.albedo_tex;
-    md.tex_metallic_roughness = m.roughness_tex;
+    md.tex_metallic_roughness = if m.metallic_roughness_tex >= 0 {
+        m.metallic_roughness_tex
+    } else {
+        m.roughness_tex
+    };
     md.tex_normal = m.normal_tex;
     // THE SEA IS NOT A 4 mm PANE. `is_thin` selects the thin-walled branch in
     // `material_dispatch.slang` (`if (mat.thin_walled != 0)`), which fires BEFORE
@@ -3659,7 +3680,11 @@ pub fn pack_mesh_material(m: PbrMaterial) -> [f32; MATERIAL_FLOATS] {
     // (`cook_product_water_artifact` also no longer writes `thin_walled: true`;
     // this keeps every already-cooked `*.water.zst` correct without a re-cook.)
     // MAT_GLASS panes are untouched — thin architectural glazing still packs thin.
-    md.is_thin = if glass && !water && m.thin_walled { 1 } else { 0 };
+    md.is_thin = if glass && !water && m.thin_walled {
+        1
+    } else {
+        0
+    };
 
     let mut v = md.to_f32_array();
     // Canonical [64] is `specular_weight`. MAT_GLASS interprets it as the
@@ -3730,6 +3755,10 @@ pub fn pack_mesh_material(m: PbrMaterial) -> [f32; MATERIAL_FLOATS] {
     let mut material_flags = 0u32;
     material_flags |= u32::from(m.modulate_base_color_texture) << 1;
     material_flags |= u32::from(m.modulate_roughness_texture) << 2;
+    // Bit 5 tells Spectra that slot [24] is glTF packed MR: G=roughness,
+    // B=metallic. This is an ABI-neutral use of the existing flag word and
+    // existing tex_metallic_roughness slot.
+    material_flags |= u32::from(m.metallic_roughness_tex >= 0) << 5;
     // Bit 3 is the opt-out (not opt-in) so legacy packed scenes whose flag word
     // is zero preserve their historical NEE eligibility.
     material_flags |= u32::from(!m.nee_emitter) << 3;
@@ -3832,6 +3861,31 @@ mod base_color_modulation_tests {
         let packed = pack_mesh_material(material);
         assert_eq!(packed.len(), MATERIAL_FLOATS);
         assert_eq!(packed[49].to_bits(), (1 << 1) | (1 << 2));
+    }
+
+    #[test]
+    fn packed_metallic_roughness_reuses_canonical_texture_slot() {
+        let material = PbrMaterial {
+            roughness: 0.7,
+            metallic: 1.0,
+            metallic_roughness_tex: 11,
+            ..PbrMaterial::default()
+        };
+        let packed = pack_mesh_material(material);
+        assert_eq!(packed.len(), MATERIAL_FLOATS);
+        assert_eq!(packed[0].to_bits(), 16, "per-pixel MR requires OpenPBR");
+        assert_eq!(packed[24].to_bits() as i32, 11);
+        assert_ne!(packed[49].to_bits() & (1 << 5), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "must not bind both")]
+    fn packed_and_legacy_roughness_bindings_are_mutually_exclusive() {
+        let _ = pack_mesh_material(PbrMaterial {
+            roughness_tex: 3,
+            metallic_roughness_tex: 4,
+            ..PbrMaterial::default()
+        });
     }
 
     #[test]
@@ -4079,7 +4133,7 @@ impl Drop for SpectraRenderBackend {
 /// `Shutdown` arrives. The published frame is written into `last_output` as a
 /// `u8` RGBA buffer via `Arc::make_mut` allocation reuse.
 #[cfg(feature = "spectra-native")]
-fn run_render_loop<G: GpuBackend>(
+fn run_render_loop<G: GpuBackend + 'static>(
     gpu: G,
     config: RenderConfig,
     rx: std::sync::mpsc::Receiver<RtCommand>,
@@ -4526,7 +4580,7 @@ pub fn spectra_resident_bench_fsr(
             if let (Some(mvbuf), Some(_)) = (mv_packed_buf, prev_view_proj) {
                 if let Some(mv_id) = renderer.kernels.get(
                     spectra_renderer::kernel_set::names::PACK_MOTION_VECTORS,
-                    &mut renderer.gpu,
+                    renderer.gpu.as_ref(),
                 ) {
                     if let Some(vel) = renderer.state.as_ref().and_then(|s| s.velocity_buf) {
                         let mut b = BindingMap::with_capacity(2, 3);
@@ -4553,7 +4607,7 @@ pub fn spectra_resident_bench_fsr(
             .kernels
             .get(
                 spectra_renderer::kernel_set::names::PACK_RGBA,
-                &mut renderer.gpu,
+                renderer.gpu.as_ref(),
             )
             .ok_or("PACK_RGBA kernel compile failed")?;
         {

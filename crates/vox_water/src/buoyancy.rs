@@ -173,9 +173,14 @@ mod tests {
         let draft = b.equilibrium_draft_fraction(density);
         // Place the centre so exactly `draft` of the height is under y = 0.
         let center_y = height * 0.5 - draft * height;
-        let lift = b.force(Vec3::new(0.0, center_y, 0.0), volume, height, 0.0).y;
+        let lift = b
+            .force(Vec3::new(0.0, center_y, 0.0), volume, height, 0.0)
+            .y;
         let weight = density * volume * GRAVITY;
-        assert!((lift - weight).abs() < 1e-1, "lift {lift} vs weight {weight}");
+        assert!(
+            (lift - weight).abs() < 1e-1,
+            "lift {lift} vs weight {weight}"
+        );
     }
 
     #[test]

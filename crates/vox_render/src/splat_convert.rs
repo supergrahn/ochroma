@@ -469,9 +469,40 @@ pub fn meshes_to_instanced_scene_with_weathering(
     // BLAS per prototype (the multi-proto TLAS that makes 100K buildings + 1M cims
     // representable instead of one merged soup).
     let mut proto_ranges: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(blas.len());
-    for b in blas {
+    let mut source_triangle_order = Vec::with_capacity(total_tris);
+    let mut source_clusters = Vec::new();
+    for (proto_index, b) in blas.iter().enumerate() {
         let v_start = vbase;
         let t_start = tbase;
+        if !b.indices.is_empty() {
+            let partition = vox_data::geometry_clusters::ReadyGeometryClusters::from_source_mesh(
+                &b.positions,
+                &b.indices,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "prototype {} cannot enter Ochroma MegaGeometry source partition: {error}",
+                    b.proto_id
+                )
+            });
+            let order_start = source_triangle_order.len() as u32;
+            source_triangle_order.extend(
+                partition
+                    .triangle_order()
+                    .iter()
+                    .map(|triangle| t_start + triangle),
+            );
+            for cluster in partition.clusters() {
+                source_clusters.push(spectra_scene_state::SourceGeometryCluster {
+                    cluster_id: source_clusters.len() as u32,
+                    proto_index: proto_index as u32,
+                    triangle_order_start: order_start + cluster.triangle_order_start(),
+                    triangle_count: cluster.triangle_count(),
+                    bounds_min: cluster.bounds_min(),
+                    bounds_max: cluster.bounds_max(),
+                });
+            }
+        }
         #[cfg(feature = "aot-shaders")]
         assert_eq!(
             b.positions.len(),
@@ -563,10 +594,12 @@ pub fn meshes_to_instanced_scene_with_weathering(
     let mut instance_transforms: Vec<f32> = Vec::with_capacity(instances.len() * 16);
     let mut instance_material_base: Vec<u32> = Vec::with_capacity(instances.len());
     let mut instance_proto_index: Vec<u32> = Vec::with_capacity(instances.len());
+    let mut instance_dynamic: Vec<u32> = Vec::with_capacity(instances.len());
     for inst in instances {
         instance_transforms.extend_from_slice(&inst.transform);
         instance_material_base.push(inst.material_base);
         instance_proto_index.push(inst.proto_index);
+        instance_dynamic.push(u32::from(inst.dynamic));
     }
 
     // --- Materials: one backend-independent scalar-layout ABI ---
@@ -651,6 +684,7 @@ pub fn meshes_to_instanced_scene_with_weathering(
     scene.geometry.instance_transforms = instance_transforms;
     scene.geometry.instance_material_base = instance_material_base;
     scene.geometry.instance_proto_index = instance_proto_index;
+    scene.geometry.instance_dynamic = instance_dynamic;
     // --- Per-instance DYNAMIC weathering (7 floats / instance, or empty) ---
     // Materialise the sparse sim table into the dense buffer the kernel indexes
     // by committed TLAS instance. Ascending order is asserted, not assumed:
@@ -683,6 +717,8 @@ pub fn meshes_to_instanced_scene_with_weathering(
     };
     scene.geometry.proto_aabbs = proto_aabbs;
     scene.geometry.proto_ranges = proto_ranges;
+    scene.geometry.source_triangle_order = source_triangle_order;
+    scene.geometry.source_clusters = source_clusters;
     scene.materials = MaterialLayer {
         params,
         spectral_spd: spd_map,
@@ -958,16 +994,19 @@ mod tests {
                 proto_index: 0,
                 transform: ident,
                 material_base: 0,
+                dynamic: false,
             },
             InstanceRecordGpu {
                 proto_index: 1,
                 transform: ident,
                 material_base: 0,
+                dynamic: true,
             },
             InstanceRecordGpu {
                 proto_index: 0,
                 transform: ident,
                 material_base: 0,
+                dynamic: false,
             },
         ];
         let materials = [PbrMaterial::default()];
@@ -993,6 +1032,7 @@ mod tests {
         );
         // Per-instance proto index preserved in order.
         assert_eq!(scene.geometry.instance_proto_index, vec![0u32, 1, 0]);
+        assert_eq!(scene.geometry.instance_dynamic, vec![0u32, 1, 0]);
         // K1: per-proto soup sub-ranges (vbase, vcount, tbase, tcount), contiguous
         // + non-overlapping (proto 1 starts exactly where proto 0 ends — no soup
         // corruption; this is what the multi-proto uploader slices BLASes from).
@@ -1012,6 +1052,14 @@ mod tests {
         // Geometry soup byte-identical: totals == sum of inputs (image unchanged).
         assert_eq!(scene.geometry.vertex_count, sum_verts);
         assert_eq!(scene.geometry.triangle_count, sum_tris);
+        scene
+            .geometry
+            .validate_source_clusters()
+            .expect("Ochroma source clusters bind exactly to the assembled prototypes");
+        assert_eq!(scene.geometry.source_triangle_order.len(), sum_tris);
+        assert_eq!(scene.geometry.source_clusters.len(), 2);
+        assert_eq!(scene.geometry.source_clusters[0].proto_index, 0);
+        assert_eq!(scene.geometry.source_clusters[1].proto_index, 1);
 
         println!(
             "protos={} aabbs_distinct={} soup_verts={}(==sum) soup_tris={}(==sum)",

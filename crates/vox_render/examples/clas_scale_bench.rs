@@ -294,6 +294,7 @@ fn grid_instances(n: usize) -> Vec<vox_render::splat_backend::InstanceRecordGpu>
                 x, 0.0, z, 1.0,
             ],
             material_base: 0,
+            dynamic: false,
         });
     }
     out

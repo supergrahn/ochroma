@@ -1,6 +1,7 @@
 pub mod asset_catalog;
 pub mod creator_tools;
 pub mod forge_ecs;
+pub mod geometry_clusters;
 pub mod gi_export;
 pub mod gltf_animation;
 pub mod gltf_import;

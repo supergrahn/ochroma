@@ -611,39 +611,39 @@ fn resolve_default_path() -> Option<PathBuf> {
 
     #[cfg(not(feature = "strict-runtime"))]
     {
-    // 2) Walk up from the current directory (covers running from the repo root or
-    //    any crate subdir during dev/test).
-    if let Ok(start) = std::env::current_dir() {
-        if let Some(path) = find_config_around(&start, false, false) {
-            return Some(path);
-        }
-    }
-    // 3) Legacy ship path: the game may still run with ochroma.ron beside the exe
-    //    or under exe_dir/config. Prefer `runtime/engine/config` above for
-    //    current bundles.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(start) = exe.parent() {
-            if let Some(path) = find_config_around(start, true, false) {
+        // 2) Walk up from the current directory (covers running from the repo root or
+        //    any crate subdir during dev/test).
+        if let Ok(start) = std::env::current_dir() {
+            if let Some(path) = find_config_around(&start, false, false) {
                 return Some(path);
             }
         }
-    }
-    // 4) DEV GAME path: Urban Horizon is usually checked out as
-    //    `<user>/ochroma/projects/urban_horizon`, while the engine config lives in
-    //    the sibling checkout `<user>/src/ochroma/config/ochroma.ron`. Launching
-    //    `play.exe` from the game tree must still load the engine source of truth.
-    if let Ok(start) = std::env::current_dir() {
-        if let Some(path) = find_config_around(&start, false, true) {
-            return Some(path);
+        // 3) Legacy ship path: the game may still run with ochroma.ron beside the exe
+        //    or under exe_dir/config. Prefer `runtime/engine/config` above for
+        //    current bundles.
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(start) = exe.parent() {
+                if let Some(path) = find_config_around(start, true, false) {
+                    return Some(path);
+                }
+            }
         }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(start) = exe.parent() {
-            if let Some(path) = find_config_around(start, false, true) {
+        // 4) DEV GAME path: Urban Horizon is usually checked out as
+        //    `<user>/ochroma/projects/urban_horizon`, while the engine config lives in
+        //    the sibling checkout `<user>/src/ochroma/config/ochroma.ron`. Launching
+        //    `play.exe` from the game tree must still load the engine source of truth.
+        if let Ok(start) = std::env::current_dir() {
+            if let Some(path) = find_config_around(&start, false, true) {
                 return Some(path);
             }
         }
-    }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(start) = exe.parent() {
+                if let Some(path) = find_config_around(start, false, true) {
+                    return Some(path);
+                }
+            }
+        }
         None
     }
 }

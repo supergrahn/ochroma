@@ -67,6 +67,9 @@ pub struct GeometryCpuOwnershipCounters {
     native_submission_ns: AtomicU64,
     page_transport_calls: AtomicU64,
     page_transport_ns: AtomicU64,
+    render_thread_submit_p95_ns: AtomicU64,
+    host_submit_p95_ns: AtomicU64,
+    host_deadline_misses: AtomicU64,
 }
 
 impl Default for GeometryCpuOwnershipCounters {
@@ -77,6 +80,9 @@ impl Default for GeometryCpuOwnershipCounters {
             native_submission_ns: AtomicU64::new(0),
             page_transport_calls: AtomicU64::new(0),
             page_transport_ns: AtomicU64::new(0),
+            render_thread_submit_p95_ns: AtomicU64::new(0),
+            host_submit_p95_ns: AtomicU64::new(0),
+            host_deadline_misses: AtomicU64::new(0),
         }
     }
 }
@@ -121,6 +127,20 @@ impl GeometryCpuOwnershipCounters {
         time_ctr.fetch_add(elapsed_ns, Ordering::Relaxed);
     }
 
+    pub fn set_submission_evidence(
+        &self,
+        render_thread_submit_p95_ns: u64,
+        host_submit_p95_ns: u64,
+        host_deadline_misses: u64,
+    ) {
+        self.render_thread_submit_p95_ns
+            .store(render_thread_submit_p95_ns, Ordering::Relaxed);
+        self.host_submit_p95_ns
+            .store(host_submit_p95_ns, Ordering::Relaxed);
+        self.host_deadline_misses
+            .store(host_deadline_misses, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> GeometryCpuOwnershipSnapshot {
         GeometryCpuOwnershipSnapshot {
             forbidden: std::array::from_fn(|index| self.forbidden[index].load(Ordering::Relaxed)),
@@ -128,6 +148,9 @@ impl GeometryCpuOwnershipCounters {
             native_submission_ns: self.native_submission_ns.load(Ordering::Relaxed),
             page_transport_calls: self.page_transport_calls.load(Ordering::Relaxed),
             page_transport_ns: self.page_transport_ns.load(Ordering::Relaxed),
+            render_thread_submit_p95_ns: self.render_thread_submit_p95_ns.load(Ordering::Relaxed),
+            host_submit_p95_ns: self.host_submit_p95_ns.load(Ordering::Relaxed),
+            host_deadline_misses: self.host_deadline_misses.load(Ordering::Relaxed),
         }
     }
 }
@@ -139,6 +162,9 @@ pub struct GeometryCpuOwnershipSnapshot {
     native_submission_ns: u64,
     page_transport_calls: u64,
     page_transport_ns: u64,
+    render_thread_submit_p95_ns: u64,
+    host_submit_p95_ns: u64,
+    host_deadline_misses: u64,
 }
 
 impl GeometryCpuOwnershipSnapshot {
@@ -166,6 +192,18 @@ impl GeometryCpuOwnershipSnapshot {
             GeometryHostServiceKind::NativeAccelerationSubmission => self.native_submission_ns,
             GeometryHostServiceKind::OpaquePageTransport => self.page_transport_ns,
         }
+    }
+
+    pub fn render_thread_submit_p95_ns(&self) -> u64 {
+        self.render_thread_submit_p95_ns
+    }
+
+    pub fn host_submit_p95_ns(&self) -> u64 {
+        self.host_submit_p95_ns
+    }
+
+    pub fn host_deadline_misses(&self) -> u64 {
+        self.host_deadline_misses
     }
 }
 

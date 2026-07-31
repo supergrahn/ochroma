@@ -2692,6 +2692,9 @@ fn block_scene_dusk() {
             if m.roughness_tex >= 0 {
                 m.roughness_tex += tbase;
             }
+            if m.metallic_roughness_tex >= 0 {
+                m.metallic_roughness_tex += tbase;
+            }
             if m.normal_tex >= 0 {
                 m.normal_tex += tbase;
             }
@@ -2719,6 +2722,7 @@ fn block_scene_dusk() {
         vegetation_bsdf: false,
         roughness_tex: -1,
         modulate_roughness_texture: false,
+        metallic_roughness_tex: -1,
         normal_tex: -1,
         displacement_tex: -1,
         displacement_scale: 0.0,

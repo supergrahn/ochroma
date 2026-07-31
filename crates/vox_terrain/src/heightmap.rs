@@ -95,10 +95,10 @@ impl Heightmap {
             return self.sample(world_x, world_z);
         }
 
-        let local_x = ((world_x - self.origin[0]) / self.cell_size)
-            .clamp(0.0, (self.width - 1) as f32);
-        let local_z = ((world_z - self.origin[1]) / self.cell_size)
-            .clamp(0.0, (self.height - 1) as f32);
+        let local_x =
+            ((world_x - self.origin[0]) / self.cell_size).clamp(0.0, (self.width - 1) as f32);
+        let local_z =
+            ((world_z - self.origin[1]) / self.cell_size).clamp(0.0, (self.height - 1) as f32);
         let ix = (local_x.floor() as usize).min(self.width - 2);
         let iz = (local_z.floor() as usize).min(self.height - 2);
         let fx = local_x - ix as f32;

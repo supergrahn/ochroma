@@ -119,6 +119,95 @@ fn camera_only_frame_reuses_scene() {
 /// (ring drain → `apply_scene_delta` g_instances patch → IAS refit / legacy
 /// fallback) with NO trace/present, so the witness reads the same patched buffer
 /// without needing a render-complete scene.
+/// GPU TLAS instance packing must be INDISTINGUISHABLE from the host repack at a
+/// realistic instance count — and the only honest way to compare two ways of
+/// building acceleration-structure descriptors is to LOOK at what they traverse.
+///
+/// A wrong descriptor does not error. It puts geometry somewhere else, or nowhere,
+/// and the only symptom is pixels. So this renders a many-instance scene, moves a
+/// large fraction of the instances, renders again, and prints a stable hash of the
+/// beauty buffer. Run the binary twice — once with `SPECTRA_TLAS_GPU_PACK=0` — and
+/// the two hashes must match. (The toggle is read once per process, so a single
+/// test run cannot cover both paths.)
+///
+/// Scale is the point: the packer is O(all instances) work moved off the host, and
+/// a 1-instance scene can neither show the win nor catch an indexing bug that only
+/// appears past the first record.
+#[cfg(feature = "spectra-native")]
+#[test]
+fn tlas_gpu_pack_matches_host_repack_at_scale() {
+    use vox_scene::{NodeId, SceneDelta as GraphSceneDelta, SceneTransform};
+
+    const GRID: usize = 24; // 576 instances
+    let mut scene = test_instanced_scene();
+    // Lay the SAME prototype out in a grid. One proto, many instances — exactly
+    // the shape the packer exists for.
+    let mut transforms: Vec<f32> = Vec::with_capacity(GRID * GRID * 16);
+    for iz in 0..GRID {
+        for ix in 0..GRID {
+            let (x, z) = (ix as f32 * 6.0 - 70.0, iz as f32 * 6.0 - 70.0);
+            transforms.extend_from_slice(&[
+                1.0, 0.0, 0.0, x, //
+                0.0, 1.0, 0.0, 0.0, //
+                0.0, 0.0, 1.0, z, //
+                0.0, 0.0, 0.0, 1.0,
+            ]);
+        }
+    }
+    scene.geometry.instance_count = GRID * GRID;
+    scene.geometry.instance_transforms = transforms;
+    scene.mark_geometry_changed();
+
+    let mut r = ResidentSceneRenderer::new(640, 360, LightRig::default(), 1, 2, scene)
+        .expect("construct many-instance scene");
+    // Retained mirror: node (i + 1) <-> instance i, in ascending order.
+    let nodes: Vec<NodeId> = (0..GRID * GRID)
+        .map(|i| NodeId::from_raw(i as u32 + 1).expect("node id"))
+        .collect();
+    r.reset_retained_mirror(nodes.iter().copied())
+        .expect("reset_retained_mirror with unique nodes");
+    let _ = r.render_camera(view_a(), proj()).expect("warm frame");
+
+    // Move every third instance. Enough that a descriptor indexing bug cannot hide
+    // behind the instances that did not move.
+    let mut deltas: Vec<GraphSceneDelta> = Vec::new();
+    for i in (0..GRID * GRID).step_by(3) {
+        let (x, z) = ((i % GRID) as f32 * 6.0 - 70.0, (i / GRID) as f32 * 6.0 - 70.0);
+        deltas.push(GraphSceneDelta::SetTransform {
+            id: nodes[i],
+            transform: SceneTransform::from_translation(x, 1.5 + (i % 7) as f32 * 0.25, z),
+        });
+    }
+    let moved = deltas.len();
+    r.drain_scene_deltas(&mut deltas)
+        .expect("transform-only drain must succeed");
+
+    let frame = r.render_camera(view_a(), proj()).expect("moved frame");
+    // Quantise before hashing: the path tracer is not bit-stable run to run, and a
+    // raw f32 hash would report a difference on every run regardless of the packer.
+    // 1e-3 is far finer than any descriptor error (which moves whole objects) and
+    // far coarser than sampling noise.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for v in &frame.beauty {
+        let q = (v * 1000.0).round() as i64;
+        for b in q.to_le_bytes() {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+    }
+    println!(
+        "[tlas-pack-scale] instances={} moved={} beauty_hash={hash:016x}",
+        GRID * GRID,
+        moved
+    );
+    assert!(
+        frame.beauty.iter().any(|v| *v > 0.0),
+        "a scene of {} instances rendered entirely black — the TLAS is empty, which \
+         is exactly what a mis-built instance descriptor produces",
+        GRID * GRID
+    );
+}
+
 #[cfg(feature = "spectra-native")]
 #[test]
 fn scene_delta_replay_exact() {

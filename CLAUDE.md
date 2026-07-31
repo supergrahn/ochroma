@@ -82,7 +82,9 @@ containers.
   `.cid`** sidecar. Content-addressed: identical content dedupes, integrity is checkable.
 - **Kinds — together these ARE the "game object" (mesh + the attributes it needs in game and sim):**
   - `.Geometry` — the finished mesh, **BINARY** (never pretty-printed JSON).
-  - `.Geometry` per LOD as separate entries (`_LOD1`, `_LOD2`, …).
+  - One authoritative full-detail `.Geometry`. Asset authoring/cooking does not
+    create distance LODs, clusters, pages, or MegaGeometry products; Ochroma
+    derives its disposable runtime/cache representations after load.
   - `.Surface` — material / PBR data.
   - `.Metadata` — the game/sim attributes (footprint, zone, levels, capacities, sockets).
     Keep it **small** so it can be read without the mesh.

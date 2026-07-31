@@ -548,6 +548,7 @@ pub fn load_cooked_data_texture_arc(path: &str, channels: u32) -> Option<Arc<Coo
     match channels {
         1 if texture.texture.format == spectra_gpu::GpuTextureFormat::Bc4Unorm => Some(texture),
         3 if texture.texture.format == spectra_gpu::GpuTextureFormat::Bc5Unorm => Some(texture),
+        4 if texture.texture.format == spectra_gpu::GpuTextureFormat::Bc7Unorm => Some(texture),
         _ => None,
     }
 }
@@ -1149,6 +1150,32 @@ mod tests {
         assert_eq!(cooked.texture.format, G::Bc7UnormSrgb);
         assert_eq!(cooked.texture.mips.len(), 4);
         assert_eq!((cooked.width, cooked.height, cooked.channels), (8, 8, 4));
+    }
+
+    #[test]
+    fn cooked_native_loader_accepts_linear_bc7_for_packed_material_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let linear = dir.path().join("metallic_roughness.dds");
+        write_encoded_dds(
+            &linear,
+            image_dds::ImageFormat::BC7RgbaUnorm,
+            image_dds::Mipmaps::GeneratedAutomatic,
+        );
+        let cooked = load_cooked_data_texture_arc(linear.to_str().unwrap(), 4).unwrap();
+        assert_eq!(cooked.texture.format, G::Bc7Unorm);
+        assert_eq!(cooked.texture.mips.len(), 4);
+        assert_eq!((cooked.width, cooked.height, cooked.channels), (8, 8, 4));
+
+        let srgb = dir.path().join("metallic_roughness_srgb.dds");
+        write_encoded_dds(
+            &srgb,
+            image_dds::ImageFormat::BC7RgbaUnormSrgb,
+            image_dds::Mipmaps::GeneratedAutomatic,
+        );
+        assert!(
+            load_cooked_data_texture_arc(srgb.to_str().unwrap(), 4).is_none(),
+            "packed metallic-roughness must never be sampled through sRGB decode"
+        );
     }
 
     #[test]

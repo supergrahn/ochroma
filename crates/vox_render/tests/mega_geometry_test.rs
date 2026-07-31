@@ -53,6 +53,16 @@ fn allowed_host_services_are_measured_without_becoming_cpu_decisions() {
 }
 
 #[test]
+fn submission_percentiles_and_deadlines_are_preserved_as_exact_evidence() {
+    let counters = GeometryCpuOwnershipCounters::default();
+    counters.set_submission_evidence(240_000, 470_000, 3);
+    let snapshot = counters.snapshot();
+    assert_eq!(snapshot.render_thread_submit_p95_ns(), 240_000);
+    assert_eq!(snapshot.host_submit_p95_ns(), 470_000);
+    assert_eq!(snapshot.host_deadline_misses(), 3);
+}
+
+#[test]
 fn bridge_delta_folds_reflect_spectra_probe_activity() {
     // The live-path bridge (`bridge_geometry_cpu_ownership`) folds the positive
     // per-activity / per-service delta of Spectra's probe into these engine-side
@@ -62,7 +72,11 @@ fn bridge_delta_folds_reflect_spectra_probe_activity() {
     let counters = GeometryCpuOwnershipCounters::default();
     counters.add_forbidden(ForbiddenGeometryCpuActivity::DirtyPartitionCompaction, 3);
     counters.add_host_service(GeometryHostServiceKind::OpaquePageTransport, 2, 5_000);
-    counters.add_host_service(GeometryHostServiceKind::NativeAccelerationSubmission, 0, 999);
+    counters.add_host_service(
+        GeometryHostServiceKind::NativeAccelerationSubmission,
+        0,
+        999,
+    );
     let snapshot = counters.snapshot();
 
     assert_eq!(

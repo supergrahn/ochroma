@@ -154,7 +154,10 @@ mod tests {
                 );
             }
         }
-        assert!(wet > 20, "expected a substantial wake region, got {wet} cells");
+        assert!(
+            wet > 20,
+            "expected a substantial wake region, got {wet} cells"
+        );
     }
 
     #[test]

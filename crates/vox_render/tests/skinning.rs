@@ -3,8 +3,8 @@
 //! game-side (urban_horizon Task 3).
 
 use vox_render::skinning::{
-    AnimationClip, JointChannel, Skeleton, SkinnedMesh, TransformTRS, joint_matrices, sample_clip,
-    skin_mesh,
+    AnimationClip, JointChannel, Skeleton, SkinnedMesh, TransformTRS, correct_skin_surface,
+    joint_matrices, sample_clip, skin_mesh, skin_mesh_dual_quat,
 };
 
 /// A 2-joint chain: joint 0 root at origin, joint 1 child offset +1 on Y.
@@ -26,6 +26,7 @@ fn two_joint_skeleton() -> Skeleton {
             j1_world.inverse().to_cols_array_2d(),
         ],
         local_bind: vec![TransformTRS::IDENTITY, j1_local],
+        local_prefix: vec![TransformTRS::IDENTITY, TransformTRS::IDENTITY],
     }
 }
 
@@ -150,4 +151,68 @@ fn lbs_deforms_vertex() {
         "expected horizontal displacement > 0.5 m, got x={}",
         d[0]
     );
+}
+
+#[test]
+fn dual_quaternion_blend_preserves_volume_between_opposed_rotations() {
+    use glam::{Mat4, Quat};
+
+    let mesh = SkinnedMesh {
+        positions: vec![[1.0, 0.0, 0.0]],
+        normals: vec![[1.0, 0.0, 0.0]],
+        uvs: vec![[0.0, 0.0]],
+        indices: vec![],
+        joints: vec![[0, 1, 0, 0]],
+        weights: vec![[0.5, 0.5, 0.0, 0.0]],
+        skeleton: Skeleton {
+            joint_parents: vec![-1, -1],
+            inverse_bind: vec![Mat4::IDENTITY.to_cols_array_2d(); 2],
+            local_bind: vec![TransformTRS::IDENTITY; 2],
+            local_prefix: vec![TransformTRS::IDENTITY; 2],
+        },
+    };
+    let skin = [
+        Mat4::from_quat(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)).to_cols_array_2d(),
+        Mat4::from_quat(Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)).to_cols_array_2d(),
+    ];
+    let linear = glam::Vec3::from_array(skin_mesh(&mesh, &skin).0[0]);
+    let dual = glam::Vec3::from_array(skin_mesh_dual_quat(&mesh, &skin).0[0]);
+    assert!(
+        linear.length() < 1.0e-4,
+        "matrix blending demonstrates the expected volume collapse"
+    );
+    assert!(
+        (dual.length() - 1.0).abs() < 1.0e-4,
+        "dual-quaternion blending must preserve unit radius, got {dual:?}"
+    );
+}
+
+#[test]
+fn pose_corrective_reduces_edge_stretch_without_detaching_pose() {
+    use glam::{Mat4, Vec3};
+
+    let mesh = SkinnedMesh {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        uvs: vec![[0.0, 0.0]; 3],
+        indices: vec![[0, 1, 2]],
+        joints: vec![[0, 0, 0, 0]; 3],
+        weights: vec![[1.0, 0.0, 0.0, 0.0]; 3],
+        skeleton: Skeleton {
+            joint_parents: vec![-1],
+            inverse_bind: vec![Mat4::IDENTITY.to_cols_array_2d()],
+            local_bind: vec![TransformTRS::IDENTITY],
+            local_prefix: vec![TransformTRS::IDENTITY],
+        },
+    };
+    let posed = [[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    let (corrected, normals) = correct_skin_surface(&mesh, &posed, 32, 0.02);
+    let before = Vec3::from_array(posed[0]).distance(Vec3::from_array(posed[1]));
+    let after = Vec3::from_array(corrected[0]).distance(Vec3::from_array(corrected[1]));
+    assert!((after - 1.0).abs() < (before - 1.0).abs());
+    assert!(
+        corrected[1][0] > 1.0,
+        "attachment must retain part of the authored pose"
+    );
+    assert!(normals.iter().flatten().all(|value| value.is_finite()));
 }

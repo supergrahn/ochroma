@@ -33,16 +33,36 @@ fn texture(seed: &[u8], width: u32, height: u32, format: VxpTextureFormat) -> Vx
 /// the real corpus shape — a handful of textures reached from hundreds of
 /// assets across dozens of packs.
 fn brick() -> VxpTexture {
-    texture(b"brick_wall_001/2k/diffuse", 2048, 2048, VxpTextureFormat::Bc7UnormSrgb)
+    texture(
+        b"brick_wall_001/2k/diffuse",
+        2048,
+        2048,
+        VxpTextureFormat::Bc7UnormSrgb,
+    )
 }
 fn brick_normal() -> VxpTexture {
-    texture(b"brick_wall_001/2k/normal", 2048, 2048, VxpTextureFormat::Bc5Unorm)
+    texture(
+        b"brick_wall_001/2k/normal",
+        2048,
+        2048,
+        VxpTextureFormat::Bc5Unorm,
+    )
 }
 fn slate() -> VxpTexture {
-    texture(b"roof_slates_02/1k/diffuse", 1024, 1024, VxpTextureFormat::Bc7UnormSrgb)
+    texture(
+        b"roof_slates_02/1k/diffuse",
+        1024,
+        1024,
+        VxpTextureFormat::Bc7UnormSrgb,
+    )
 }
 fn glass() -> VxpTexture {
-    texture(b"glass_clear/roughness", 512, 512, VxpTextureFormat::Bc4Unorm)
+    texture(
+        b"glass_clear/roughness",
+        512,
+        512,
+        VxpTextureFormat::Bc4Unorm,
+    )
 }
 
 fn write_pack(dir: &Path, pack_id: &str, textures: &[VxpTexture], asset_ids: &[&str]) -> PathBuf {
@@ -83,7 +103,10 @@ fn with_every_surface_destroyed(pack: &Path, out: &Path) -> usize {
         }
         at = data_at + size;
     }
-    assert!(wrecked > 0, "the fixture must contain .Surface entries to destroy");
+    assert!(
+        wrecked > 0,
+        "the fixture must contain .Surface entries to destroy"
+    );
     std::fs::write(out, &bytes).expect("write doctored pack");
     wrecked
 }
@@ -96,11 +119,21 @@ fn with_every_surface_destroyed(pack: &Path, out: &Path) -> usize {
 fn residency_is_decidable_from_index_json_alone_with_every_surface_destroyed() {
     let dir = tempfile::tempdir().unwrap();
     let all = [brick(), brick_normal(), slate(), glass()];
-    let pack = write_pack(dir.path(), "city.care", &all, &["a_one", "b_two", "c_three"]);
+    let pack = write_pack(
+        dir.path(),
+        "city.care",
+        &all,
+        &["a_one", "b_two", "c_three"],
+    );
 
     // Baseline: the intact pack's answer.
     let intact = VxpReader::open(&pack).expect("open intact");
-    let wanted: Vec<String> = intact.index().textures.iter().map(|t| t.id.clone()).collect();
+    let wanted: Vec<String> = intact
+        .index()
+        .textures
+        .iter()
+        .map(|t| t.id.clone())
+        .collect();
     let want_bytes = intact.index().texture_bytes();
     let want_tail = intact.index().resident_tail_bytes();
     drop(intact);
@@ -113,7 +146,11 @@ fn residency_is_decidable_from_index_json_alone_with_every_surface_destroyed() {
     let mut reader = VxpReader::open(&doctored).expect("index alone must still open");
     let index = reader.index();
     assert_eq!(
-        index.textures.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+        index
+            .textures
+            .iter()
+            .map(|t| t.id.clone())
+            .collect::<Vec<_>>(),
         wanted,
         "the full texture set must come from index.json"
     );
@@ -148,7 +185,9 @@ fn the_register_carries_every_field_a_residency_decision_needs() {
     let mut reader = VxpReader::open(&pack).unwrap();
     let raw = reader.read_entry(VXP_INDEX_ENTRY).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-    let register = json["textures"].as_array().expect("index.json has `textures`");
+    let register = json["textures"]
+        .as_array()
+        .expect("index.json has `textures`");
     assert_eq!(register.len(), 2);
     for entry in register {
         for field in [
@@ -196,7 +235,11 @@ fn every_texture_pins_a_legible_tail_and_the_tail_is_a_small_fraction_of_the_cha
         // coarsest-first level that qualifies, not an arbitrary one.
         if t.tail_mip > 0 {
             let (pw, ph) = mip_dimensions(t.width, t.height, t.tail_mip - 1);
-            assert!(pw.max(ph) > VXP_TAIL_MAX_DIM, "{}: tail starts too late", t.id);
+            assert!(
+                pw.max(ph) > VXP_TAIL_MAX_DIM,
+                "{}: tail starts too late",
+                t.id
+            );
         }
         assert_eq!(t.tail_bytes + t.streamable_bytes(), t.bytes);
         // The property that makes pinning affordable at corpus scale: the tail
@@ -232,21 +275,14 @@ fn byte_costs_are_bcn_block_math_not_an_estimate() {
     assert_eq!(t.mip_count, 12);
     assert_eq!(t.level_bytes(0), 512 * 512 * 16);
     assert_eq!(t.level_bytes(11), 16, "a 1x1 BC7 level is still one block");
-    let expected: u64 = 4_194_304
-        + 1_048_576
-        + 262_144
-        + 65_536
-        + 16_384
-        + 4_096
-        + 1_024
-        + 256
-        + 64
-        + 16
-        + 16
-        + 16;
+    let expected: u64 =
+        4_194_304 + 1_048_576 + 262_144 + 65_536 + 16_384 + 4_096 + 1_024 + 256 + 64 + 16 + 16 + 16;
     assert_eq!(t.bytes, expected);
     assert_eq!(t.tail_mip, 4, "128x128 is level 4 of a 2048 chain");
-    assert_eq!(t.tail_bytes, 16_384 + 4_096 + 1_024 + 256 + 64 + 16 + 16 + 16);
+    assert_eq!(
+        t.tail_bytes,
+        16_384 + 4_096 + 1_024 + 256 + 64 + 16 + 16 + 16
+    );
 
     // BC4 is half of BC7 at the same size.
     let bc4 = texture(b"scalar", 512, 512, VxpTextureFormat::Bc4Unorm);
@@ -291,7 +327,11 @@ fn slots_are_identical_however_the_packs_are_ordered() {
     let reversed = load([&res, &office, &care]);
     let shuffled = load([&office, &care, &res]);
 
-    assert_eq!(forward.len(), 4, "four distinct textures across three packs");
+    assert_eq!(
+        forward.len(),
+        4,
+        "four distinct textures across three packs"
+    );
     assert_eq!(forward, reversed, "pack order must not move a slot");
     assert_eq!(forward, shuffled, "pack order must not move a slot");
 
@@ -352,7 +392,10 @@ fn an_asset_referencing_an_unregistered_texture_fails_the_write_by_name() {
     let text = format!("{err}");
     assert!(text.contains("house"), "must name the asset: {text}");
     assert!(text.contains(&slate().id), "must name the texture: {text}");
-    assert!(text.contains("absent from the pack's texture register"), "{text}");
+    assert!(
+        text.contains("absent from the pack's texture register"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -408,7 +451,12 @@ fn a_register_entry_that_disagrees_with_its_payload_is_a_named_error() {
         )
         .expect_err("a disagreeing description must not verify");
     let text = format!("{err}");
-    for expected in ["dimensions 512x128", "format BC5_UNORM", "mip_count 7", "texel bytes 1"] {
+    for expected in [
+        "dimensions 512x128",
+        "format BC5_UNORM",
+        "mip_count 7",
+        "texel bytes 1",
+    ] {
         assert!(text.contains(expected), "missing {expected:?} in: {text}");
     }
     assert!(text.contains(&good.id), "must name the texture: {text}");
@@ -436,7 +484,10 @@ fn impossible_register_entries_are_refused_at_construction() {
         ),
     ];
     for (needle, err) in cases {
-        assert!(format!("{err}").contains(needle), "expected {needle:?}, got: {err}");
+        assert!(
+            format!("{err}").contains(needle),
+            "expected {needle:?}, got: {err}"
+        );
     }
 }
 
@@ -449,7 +500,9 @@ fn a_hand_edited_register_is_rejected_on_open() {
         assets: Vec::new(),
         textures: vec![brick()],
     };
-    index.validate_texture_register().expect("sound to start with");
+    index
+        .validate_texture_register()
+        .expect("sound to start with");
     // Halve the declared cost — the exact silent default that would under-size
     // a residency budget.
     index.textures[0].bytes /= 2;
@@ -467,14 +520,14 @@ fn a_pack_written_before_the_register_existed_is_refused_rather_than_read_blind(
     // Version 1 packs carry no `textures` field at all. Reading one as if it
     // did would silently report "this pack needs no textures".
     let dir = tempfile::tempdir().unwrap();
-    let pack = write_pack(dir.path(), "v2", &[brick()], &["a"]);
+    let pack = write_pack(dir.path(), "current", &[brick()], &["a"]);
     let mut bytes = std::fs::read(&pack).unwrap();
-    // `index.json` is the first entry; rewrite `"version":2` to `"version":1`
-    // in place (same length), leaving the CRC stale so BOTH gates would fire.
-    let needle = br#""version":2"#;
+    // `index.json` is the first entry; rewrite the one-digit current version to
+    // `"version":1` in place, leaving the CRC stale so BOTH gates would fire.
+    let needle = format!(r#""version":{}"#, vox_data::vxp::VXP_INDEX_VERSION);
     let at = bytes
         .windows(needle.len())
-        .position(|w| w == needle)
+        .position(|w| w == needle.as_bytes())
         .expect("index.json carries a version");
     bytes[at + needle.len() - 1] = b'1';
     let downgraded = dir.path().join("v1.vxp");
