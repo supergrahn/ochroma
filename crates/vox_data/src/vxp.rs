@@ -2233,10 +2233,17 @@ mod tests {
             at += 30 + name_len + extra_len + size;
             seen += 1;
         }
-        // index + 2 assets x 7 payloads x (entry + .cid): authoritative
-        // geometry, surface, metadata, thumbnail, two animations, and atlas.
-        // The index has no sidecar, so 1 + 2*7*2 = 29.
-        assert_eq!(seen, 29, "expected every entry to be walked as STORE");
+        // Content-addressed payloads are physically deduplicated, so two assets
+        // need not produce 2x the local headers. Compare the raw local-header
+        // walk with the authoritative central directory instead of hardcoding a
+        // pre-dedup entry count; equality proves that every real entry was
+        // reached and every one reported STORE above.
+        let reader = VxpReader::open(&path).unwrap();
+        assert_eq!(
+            seen,
+            reader.dir.len(),
+            "expected every central-directory entry to be walked as STORE"
+        );
     }
 
     #[test]

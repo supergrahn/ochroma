@@ -421,6 +421,55 @@ pub fn meshes_to_instanced_scene_with_weathering(
     width: u32,
     height: u32,
 ) -> SceneState {
+    // Compatibility entry point for callers that still borrow their prototype
+    // table. The live game path uses the consuming entry point below so source
+    // BLAS storage is released as each prototype is packed.
+    meshes_to_instanced_scene_with_weathering_owned(
+        blas.to_vec(),
+        instances,
+        materials,
+        spectral_spd,
+        instance_weathering,
+        width,
+        height,
+    )
+}
+
+// The consuming scene packer replaces large per-prototype vectors with one
+// contiguous soup. glibc otherwise retains the freed source arenas until the
+// entire conversion ends, making dead BLAS pages overlap the growing CLAS scene
+// in RSS. Return wholly free arenas between prototypes; this is load-time only
+// (never a frame-path allocator operation).
+#[cfg(target_os = "linux")]
+fn release_consumed_blas_pages() {
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    // SAFETY: process-global allocator maintenance takes no application pointer.
+    unsafe {
+        malloc_trim(0);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn release_consumed_blas_pages() {}
+
+/// Consuming variant of [`meshes_to_instanced_scene_with_weathering`].
+///
+/// A full city previously retained every [`BlasDesc`] while the contiguous
+/// `SceneState` soup was built. That makes source and packed geometry coexist at
+/// the exact host-RSS peak. Owning the table lets each completed prototype drop
+/// immediately after its streams are appended; no pixel or ABI contract changes.
+#[cfg(feature = "spectra-native")]
+pub fn meshes_to_instanced_scene_with_weathering_owned(
+    blas: Vec<BlasDesc>,
+    instances: &[InstanceRecordGpu],
+    materials: &[PbrMaterial],
+    spectral_spd: &[(u32, [f32; 16])],
+    instance_weathering: &[(u32, [f32; 7])],
+    width: u32,
+    height: u32,
+) -> SceneState {
     use spectra_scene_state::MaterialLayer;
 
     // SLOT-0 OPAQUE CONTRACT: the megakernel clamps every out-of-range resolved
@@ -462,6 +511,9 @@ pub fn meshes_to_instanced_scene_with_weathering(
     let mut uvs: Vec<f32> = Vec::with_capacity(total_verts * 2);
     let mut indices: Vec<u32> = Vec::with_capacity(total_tris * 3);
     let mut tri_material_ids: Vec<u32> = Vec::with_capacity(total_tris);
+    // Capture small per-prototype bounds before consuming the source streams.
+    let proto_aabbs: Vec<([f32; 3], [f32; 3])> =
+        blas.iter().map(|b| (b.aabb_min, b.aabb_max)).collect();
 
     let mut vbase: u32 = 0;
     let mut tbase: u32 = 0;
@@ -471,7 +523,17 @@ pub fn meshes_to_instanced_scene_with_weathering(
     let mut proto_ranges: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(blas.len());
     let mut source_triangle_order = Vec::with_capacity(total_tris);
     let mut source_clusters = Vec::new();
-    for (proto_index, b) in blas.iter().enumerate() {
+    // In non-AOT diagnostics most meshes have no authored weathering at all;
+    // constructing the legacy seven-float pattern for those neutral streams is
+    // pure zero residency. Keep the exact streams that do exist while each BLAS
+    // is consumed, then build the compatibility pattern only when it is needed.
+    #[cfg(not(feature = "aot-shaders"))]
+    let mut authored_weathering: Vec<(usize, Vec<f32>)> = Vec::new();
+    #[cfg(feature = "aot-shaders")]
+    let mut weathering_masks = Vec::with_capacity(total_verts * 7);
+    for (proto_index, b) in blas.into_iter().enumerate() {
+        // The prior iteration's source vectors are out of scope now.
+        release_consumed_blas_pages();
         let v_start = vbase;
         let t_start = tbase;
         if !b.indices.is_empty() {
@@ -517,6 +579,24 @@ pub fn meshes_to_instanced_scene_with_weathering(
             b.normals.len(),
             "BlasDesc positions/normals length mismatch"
         );
+        #[cfg(feature = "aot-shaders")]
+        {
+            let expected = b.positions.len() * 7;
+            assert_eq!(
+                b.weathering_masks.len(),
+                expected,
+                "product BLAS {} has {} weathering floats for {} vertices; expected exactly {} (7 per vertex); runtime synthesis/substitution is forbidden",
+                b.proto_id,
+                b.weathering_masks.len(),
+                b.positions.len(),
+                expected,
+            );
+            weathering_masks.extend_from_slice(&b.weathering_masks);
+        }
+        #[cfg(not(feature = "aot-shaders"))]
+        if !b.weathering_masks.is_empty() {
+            authored_weathering.push((v_start as usize, b.weathering_masks));
+        }
         for p in &b.positions {
             positions.extend_from_slice(p);
         }
@@ -582,13 +662,7 @@ pub fn meshes_to_instanced_scene_with_weathering(
         vbase += vcount;
         tbase += tcount;
     }
-
-    // --- Per-prototype object-space AABBs (K0: real per-proto bounds) ---
-    // One (min,max) per BlasDesc, parallel to proto order, so the TLAS can give
-    // each prototype its REAL bound instead of the merged scene-wide box. This is
-    // the shared instancing-keystone foundation that terrain chunks ride on.
-    let proto_aabbs: Vec<([f32; 3], [f32; 3])> =
-        blas.iter().map(|b| (b.aabb_min, b.aabb_max)).collect();
+    release_consumed_blas_pages();
 
     // --- Instances: transforms SoA + per-instance material BASE + proto index ---
     let mut instance_transforms: Vec<f32> = Vec::with_capacity(instances.len() * 16);
@@ -615,60 +689,24 @@ pub fn meshes_to_instanced_scene_with_weathering(
     }
 
     // --- Weathering stream (7 floats / scene vertex) ---
-    // Product/AOT builds concatenate exact cook-authored proto streams directly.
-    // There is no zero prefill, synthesis, or substitution: even intentionally
-    // clean geometry must carry explicit zero masks from the cook. Iteration is in
-    // the same deterministic proto order used to assemble the geometry soup.
     #[cfg(feature = "aot-shaders")]
-    let weathering_masks = {
-        let expected_total = positions.len() / 3 * 7;
-        let mut authored = Vec::with_capacity(expected_total);
-        for (b, &(v_start, vcount, _, _)) in blas.iter().zip(proto_ranges.iter()) {
-            assert_eq!(
-                authored.len(),
-                v_start as usize * 7,
-                "product weathering stream is not contiguous at BLAS {}; runtime gaps/substitution are forbidden",
-                b.proto_id
-            );
-            let expected = vcount as usize * 7;
-            assert_eq!(
-                b.weathering_masks.len(),
-                expected,
-                "product BLAS {} has {} weathering floats for {} vertices; expected exactly {} (7 per vertex); runtime synthesis/substitution is forbidden",
-                b.proto_id,
-                b.weathering_masks.len(),
-                vcount,
-                expected
-            );
-            authored.extend_from_slice(&b.weathering_masks);
-        }
-        assert_eq!(
-            authored.len(),
-            expected_total,
-            "product scene assembled {} authored weathering floats for {} vertices; expected exactly {}; runtime synthesis/substitution is forbidden",
-            authored.len(),
-            positions.len() / 3,
-            expected_total
-        );
-        authored
+    assert_eq!(
+        weathering_masks.len(),
+        positions.len() / 3 * 7,
+        "product scene assembled {} authored weathering floats for {} vertices",
+        weathering_masks.len(),
+        positions.len() / 3,
+    );
+    #[cfg(not(feature = "aot-shaders"))]
+    let mut weathering_masks = if authored_weathering.is_empty() {
+        Vec::new()
+    } else {
+        build_weathering_pattern(&positions, &normals)
     };
-
-    // Developer/test builds retain the legacy deterministic geometry pattern for
-    // old diagnostics. A proto with an exact authored stream overlays its own
-    // range; missing or malformed streams leave the deterministic legacy pattern
-    // intact. This branch is not compiled into an AOT product runtime.
     #[cfg(not(feature = "aot-shaders"))]
-    let mut weathering_masks = build_weathering_pattern(&positions, &normals);
-    #[cfg(not(feature = "aot-shaders"))]
-    if !weathering_masks.is_empty() {
-        for (b, &(v_start, vcount, _, _)) in blas.iter().zip(proto_ranges.iter()) {
-            if b.weathering_masks.len() != vcount as usize * 7 {
-                continue;
-            }
-            let dst = v_start as usize * 7;
-            weathering_masks[dst..dst + b.weathering_masks.len()]
-                .copy_from_slice(&b.weathering_masks);
-        }
+    for (v_start, authored) in authored_weathering {
+        let dst = v_start * 7;
+        weathering_masks[dst..dst + authored.len()].copy_from_slice(&authored);
     }
 
     let mut scene = SceneState::new(width, height);
@@ -719,6 +757,253 @@ pub fn meshes_to_instanced_scene_with_weathering(
     scene.geometry.proto_ranges = proto_ranges;
     scene.geometry.source_triangle_order = source_triangle_order;
     scene.geometry.source_clusters = source_clusters;
+    scene.materials = MaterialLayer {
+        params,
+        spectral_spd: spd_map,
+        material_count: materials.len(),
+    };
+    scene.mark_geometry_changed();
+    scene.mark_materials_changed();
+    scene
+}
+
+/// Append one already-CLAS-partitioned geometry chunk to another without
+/// rebuilding either partition. All chunk-local indices and source-cluster
+/// offsets are rebased into the destination's contiguous ABI.
+#[cfg(feature = "spectra-native")]
+pub fn append_instanced_scene_geometry(dst: &mut SceneState, mut src: SceneState) {
+    let vertex_base = dst.geometry.vertex_count as u32;
+    let triangle_base = dst.geometry.triangle_count as u32;
+    let proto_base = dst.geometry.proto_ranges.len() as u32;
+    let order_base = dst.geometry.source_triangle_order.len() as u32;
+
+    dst.geometry.positions.append(&mut src.geometry.positions);
+    dst.geometry.normals.append(&mut src.geometry.normals);
+    dst.geometry.uvs.append(&mut src.geometry.uvs);
+    dst.geometry.indices.extend(
+        src.geometry
+            .indices
+            .drain(..)
+            .map(|index| vertex_base + index),
+    );
+    dst.geometry
+        .material_ids
+        .append(&mut src.geometry.material_ids);
+    dst.geometry
+        .weathering_masks
+        .append(&mut src.geometry.weathering_masks);
+    dst.geometry.proto_aabbs.append(&mut src.geometry.proto_aabbs);
+    dst.geometry
+        .proto_ranges
+        .extend(src.geometry.proto_ranges.drain(..).map(
+            |(vertex_start, vertex_count, triangle_start, triangle_count)| {
+                (
+                    vertex_base + vertex_start,
+                    vertex_count,
+                    triangle_base + triangle_start,
+                    triangle_count,
+                )
+            },
+        ));
+    dst.geometry.source_triangle_order.extend(
+        src.geometry
+            .source_triangle_order
+            .drain(..)
+            .map(|triangle| triangle_base + triangle),
+    );
+    for mut cluster in src.geometry.source_clusters.drain(..) {
+        cluster.cluster_id = dst.geometry.source_clusters.len() as u32;
+        cluster.proto_index += proto_base;
+        cluster.triangle_order_start += order_base;
+        dst.geometry.source_clusters.push(cluster);
+    }
+    dst.geometry.vertex_count += src.geometry.vertex_count;
+    dst.geometry.triangle_count += src.geometry.triangle_count;
+    dst.mark_geometry_changed();
+}
+
+/// Partition and append exact, unweathered prototype BLASes directly into an
+/// existing CLAS geometry destination.
+///
+/// Unlike `meshes_to_instanced_scene_with_weathering_owned` followed by
+/// [`append_instanced_scene_geometry`], this never constructs a second complete
+/// `SceneState` for the incoming page. Source attribute streams are consumed and
+/// released one at a time as their flat resident representation is appended.
+/// This is the runtime admission primitive for streamed terrain/scatter/prop
+/// pages whose exact weathering representation is the absent stream.
+#[cfg(feature = "spectra-native")]
+pub fn append_unweathered_blas_geometry_owned(dst: &mut SceneState, blas: Vec<BlasDesc>) {
+    for b in blas {
+        let BlasDesc {
+            proto_id,
+            positions,
+            normals,
+            uvs,
+            indices,
+            material_ids,
+            aabb_min,
+            aabb_max,
+            weathering_masks,
+        } = b;
+        assert!(
+            weathering_masks.is_empty(),
+            "streamed unweathered BLAS {proto_id} carries {} weathering floats",
+            weathering_masks.len()
+        );
+        assert_eq!(
+            positions.len(),
+            normals.len(),
+            "streamed BLAS {proto_id} positions/normals mismatch"
+        );
+        assert_eq!(
+            positions.len(),
+            uvs.len(),
+            "streamed BLAS {proto_id} positions/UV mismatch"
+        );
+        assert_eq!(
+            indices.len(),
+            material_ids.len(),
+            "streamed BLAS {proto_id} triangles/material ids mismatch"
+        );
+
+        let vertex_base = dst.geometry.vertex_count as u32;
+        let triangle_base = dst.geometry.triangle_count as u32;
+        let proto_index = dst.geometry.proto_ranges.len() as u32;
+        let order_base = dst.geometry.source_triangle_order.len() as u32;
+        let vertex_count = positions.len() as u32;
+        let triangle_count = indices.len() as u32;
+
+        let partition = vox_data::geometry_clusters::ReadyGeometryClusters::from_source_mesh(
+            &positions,
+            &indices,
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "prototype {proto_id} cannot enter Ochroma MegaGeometry source partition: {error}"
+            )
+        });
+        let (triangle_order, clusters) = partition.into_partition();
+        dst.geometry.source_triangle_order.extend(
+            triangle_order
+                .into_iter()
+                .map(|triangle| triangle_base + triangle),
+        );
+        for cluster in clusters {
+            dst.geometry
+                .source_clusters
+                .push(spectra_scene_state::SourceGeometryCluster {
+                    cluster_id: dst.geometry.source_clusters.len() as u32,
+                    proto_index,
+                    triangle_order_start: order_base + cluster.triangle_order_start(),
+                    triangle_count: cluster.triangle_count(),
+                    bounds_min: cluster.bounds_min(),
+                    bounds_max: cluster.bounds_max(),
+                });
+        }
+
+        for position in positions {
+            dst.geometry.positions.extend_from_slice(&position);
+        }
+        release_consumed_blas_pages();
+        for normal in normals {
+            dst.geometry.normals.extend_from_slice(&normal);
+        }
+        release_consumed_blas_pages();
+        for uv in uvs {
+            dst.geometry.uvs.extend_from_slice(&uv);
+        }
+        release_consumed_blas_pages();
+        for triangle in indices {
+            dst.geometry.indices.extend_from_slice(&[
+                vertex_base + triangle[0],
+                vertex_base + triangle[1],
+                vertex_base + triangle[2],
+            ]);
+        }
+        release_consumed_blas_pages();
+        dst.geometry.material_ids.extend(material_ids);
+        release_consumed_blas_pages();
+
+        dst.geometry.proto_aabbs.push((aabb_min, aabb_max));
+        dst.geometry.proto_ranges.push((
+            vertex_base,
+            vertex_count,
+            triangle_base,
+            triangle_count,
+        ));
+        dst.geometry.vertex_count += vertex_count as usize;
+        dst.geometry.triangle_count += triangle_count as usize;
+    }
+    dst.mark_geometry_changed();
+}
+
+/// Attach the global instance/material tables after geometry has been admitted
+/// in independently streamed CLAS chunks.
+#[cfg(feature = "spectra-native")]
+pub fn finalize_instanced_scene_with_weathering(
+    mut scene: SceneState,
+    instances: &[InstanceRecordGpu],
+    materials: &[PbrMaterial],
+    spectral_spd: &[(u32, [f32; 16])],
+    instance_weathering: &[(u32, [f32; 7])],
+) -> SceneState {
+    use spectra_scene_state::MaterialLayer;
+
+    if let Some(m0) = materials.first() {
+        assert!(
+            m0.opacity_tex < 0 && !m0.vegetation_bsdf && m0.transmission <= 0.0,
+            "material slot 0 must be guaranteed opaque"
+        );
+    }
+    scene.geometry.instance_count = instances.len();
+    scene.geometry.instance_transforms = Vec::with_capacity(instances.len() * 16);
+    scene.geometry.instance_material_base = Vec::with_capacity(instances.len());
+    scene.geometry.instance_proto_index = Vec::with_capacity(instances.len());
+    scene.geometry.instance_dynamic = Vec::with_capacity(instances.len());
+    for instance in instances {
+        scene
+            .geometry
+            .instance_transforms
+            .extend_from_slice(&instance.transform);
+        scene
+            .geometry
+            .instance_material_base
+            .push(instance.material_base);
+        scene
+            .geometry
+            .instance_proto_index
+            .push(instance.proto_index);
+        scene
+            .geometry
+            .instance_dynamic
+            .push(u32::from(instance.dynamic));
+    }
+    scene.geometry.instance_weathering = if instance_weathering.is_empty() {
+        Vec::new()
+    } else {
+        let mut dense = vec![1.0f32; instances.len() * WEATHERING_SCALE_NEUTRAL.len()];
+        let mut previous = None;
+        for (index, scale) in instance_weathering {
+            assert!(
+                previous.is_none_or(|prior| *index > prior),
+                "instance_weathering must be strictly ascending"
+            );
+            assert!((*index as usize) < instances.len());
+            previous = Some(*index);
+            let base = *index as usize * WEATHERING_SCALE_NEUTRAL.len();
+            dense[base..base + WEATHERING_SCALE_NEUTRAL.len()].copy_from_slice(scale);
+        }
+        dense
+    };
+
+    let mut params = Vec::with_capacity(materials.len() * MATERIAL_FLOATS);
+    for material in materials {
+        params.extend_from_slice(&pack_mesh_material(*material));
+    }
+    let mut spd_map = std::collections::HashMap::with_capacity(spectral_spd.len());
+    for (material_id, spd) in spectral_spd {
+        spd_map.insert(*material_id, *spd);
+    }
     scene.materials = MaterialLayer {
         params,
         spectral_spd: spd_map,

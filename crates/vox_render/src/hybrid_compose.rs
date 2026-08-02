@@ -56,14 +56,62 @@ use crate::gpu::gaussian_camera::build_gaussian_camera;
 use crate::spectral::RenderCamera;
 use crate::spectral_framebuffer::SpectralFramebuffer;
 
+/// Deserialize a trusted binary geometry sequence with its encoded capacity.
+///
+/// Serde's generic `Vec<T>` visitor deliberately caps initial reservation at
+/// 1 MiB. That is sensible for untrusted/self-describing input, but exact
+/// hash-validated product meshes contain multi-million-element arrays: growing
+/// those from 1 MiB repeatedly makes old and new allocations coexist and rounds
+/// final capacity up to a large power of two. This visitor changes allocation
+/// only; the Serde/bincode wire representation stays byte-identical.
+fn deserialize_exact_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    use serde::de::{Error as _, SeqAccess, Visitor};
+    use std::marker::PhantomData;
+
+    struct ExactVecVisitor<T>(PhantomData<T>);
+    impl<'de, T> Visitor<'de> for ExactVecVisitor<T>
+    where
+        T: serde::Deserialize<'de>,
+    {
+        type Value = Vec<T>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an exact binary geometry sequence")
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let expected = sequence.size_hint().unwrap_or(0);
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(expected)
+                .map_err(A::Error::custom)?;
+            while let Some(value) = sequence.next_element()? {
+                values.push(value);
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_seq(ExactVecVisitor(PhantomData))
+}
+
 /// A triangle mesh with engine-agnostic geometry and per-mesh spectral
 /// reflectance. Positions are world-space; indices are triangle list (groups of
 /// three indices into `positions`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HybridMesh {
     /// World-space vertex positions.
+    #[serde(deserialize_with = "deserialize_exact_vec")]
     pub positions: Vec<[f32; 3]>,
     /// Triangle-list indices into `positions` (length should be a multiple of 3).
+    #[serde(deserialize_with = "deserialize_exact_vec")]
     pub indices: Vec<u32>,
     /// Optional per-vertex shading normals (parallel to `positions`). **EMPTY =
     /// the legacy behaviour** — the downstream BLAS converter derives flat
@@ -73,6 +121,7 @@ pub struct HybridMesh {
     /// like the terrain ground — can hand it through instead of relying on
     /// mesh-tessellation-derived normals that still step per quad on a decimated
     /// grid. Deterministic plain per-vertex data (no map/RNG ordering).
+    #[serde(deserialize_with = "deserialize_exact_vec")]
     pub normals: Vec<[f32; 3]>,
     /// 16-band spectral reflectance applied to the whole mesh.
     pub reflectance: [f32; 16],
@@ -91,6 +140,7 @@ pub struct HybridMesh {
     /// flat `reflectance` is used as the base colour. When present (same len as
     /// `positions`) and `albedo_tex >= 0`, the renderer samples the texture
     /// atlas instead of the flat colour. (Texture keystone.)
+    #[serde(deserialize_with = "deserialize_exact_vec")]
     pub uvs: Vec<[f32; 2]>,
     /// Albedo texture atlas slot for this mesh, or -1 for none (flat colour).
     /// Resolved during scene assembly from `albedo_tex_path`.
@@ -195,6 +245,7 @@ pub struct HybridMesh {
     /// vegetation/asset mesh can hold several materials (bark + leaf, etc.) in one
     /// `HybridMesh` without splitting it. Determinism: this is plain per-tri data,
     /// no map/RNG ordering. (Vegetation mesh-carrier seam.)
+    #[serde(deserialize_with = "deserialize_exact_vec")]
     pub material_ids: Vec<u32>,
     /// Optional MERGE-GROUP id. `None` (default) = the mesh gets its own BLAS in
     /// the per-mesh unmerge path. `Some(g)` = scene assembly MERGES every mesh
@@ -251,6 +302,7 @@ pub struct HybridMesh {
     /// surface carries explicit zero masks, while missing or malformed data is a
     /// hard error. Non-AOT diagnostics retain the legacy synthesized pattern for
     /// compatibility. Deterministic plain per-vertex data — no map/RNG ordering.
+    #[serde(deserialize_with = "deserialize_exact_vec")]
     pub weathering_masks: Vec<f32>,
     /// KEEP THIS MESH INDEXED — do not expand it to one unique vertex triple per
     /// triangle when it becomes a prototype.

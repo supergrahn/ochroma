@@ -140,6 +140,21 @@ game objects, never to produce them.
   verify it is live with an env sweep, config change, or visible probe.
 - Witness real-time rendering at 1 spp plus reconstruction/denoise/upscale.
   Never claim a render/content fix without inspecting the rendered frame.
+- **Do not restart the process for every look change.** Loading a real save
+  costs ~81 400 ms to reach a ~120 ms frame (738:1). Hold the scene open:
+  `OCHROMA_PRESENT_HOLD=1 urban_horizon --present-save-vulkan <save> <out.png> 3`,
+  then edit `assets/config/dev.ron` or `assets/config/render.ron` — each save
+  re-renders into the same PNG. `touch <out>.stop` ends it. Measured 123–147 ms
+  per edit vs 81 386 ms to reload (620x, 2026-08-01, AMD 780M), confirmed in
+  pixels. Judge the `-internal.png` (native traced res), never an upscaled frame.
+  It exits loudly instead of rendering a stale scene when a `render.ron` edit
+  changes baked resident inputs. ~12 GiB resident — run under `tmux`.
+- Rust changes still need a rebuild; asset/map changes still need a cook plus a
+  reload. Only look/lighting/clock/camera/`.slang` edits are hot.
+- **Before building faster tooling, check whether the seam already exists and is
+  simply unwired.** The hold loop above was ~150 lines because `DevLiveWatcher`,
+  the `dev.ron`/`render.ron` reloads and the capture hook were all already built
+  and had no caller on the headless path.
 - Local Linux may compile pure Rust and some Slang front-end pieces, but
   `spectra-native` can require `SLANG_DIR`, `LD_LIBRARY_PATH`, and GPU/OptiX
   resources that are not present locally.

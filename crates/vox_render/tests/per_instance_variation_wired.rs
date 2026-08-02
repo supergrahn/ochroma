@@ -286,17 +286,16 @@ fn colour_and_roughness_variation_is_applied_after_the_texture_fetch() {
         .rfind("apply_base_color_texture(")
         .expect("shade_and_bounce must sample a base-colour texture");
     let last_roughness_texture = mega
-        .rfind("apply_roughness_texture(")
-        .expect("shade_and_bounce must sample a roughness texture");
+        .rfind("apply_metallic_roughness_texture(")
+        .expect("shade_and_bounce must apply a packed metallic/roughness texture");
 
     assert!(
         apply_at > last_albedo_texture && apply_at > last_roughness_texture,
         "per-instance colour/roughness variation is applied at byte {apply_at}, \
          BEFORE the last texture fetch (albedo {last_albedo_texture}, roughness \
          {last_roughness_texture}).\n\n\
-         apply_base_color_texture / apply_roughness_texture REPLACE rather than \
-         modulate for any material without the corresponding flag bit — i.e. for \
-         essentially every textured facade and plant. Applied before them, the \
+         apply_base_color_texture / apply_metallic_roughness_texture can REPLACE \
+         channels for materials without the corresponding flag bits. Applied before them, the \
          jitter is silently overwritten and per-instance variation is a NO-OP \
          that still measures as 'wired'. It must be applied after."
     );

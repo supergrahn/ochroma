@@ -590,6 +590,13 @@ fn worker_main(shared: &Shared) {
         let result = derive_product(&source)
             .map(Arc::new)
             .map_err(|error| Arc::<str>::from(error));
+        // The product contains only derived programs plus page descriptors; it
+        // does not borrow the authoritative source. Release that potentially
+        // city-scale clone before publishing readiness, otherwise a renderer
+        // reacting to the completion epoch can upload the resident scene while
+        // this dead second mesh is still live on the worker stack.
+        drop(source);
+        trim_background_derivation_allocator();
         let mut state = shared
             .state
             .lock()
@@ -606,6 +613,22 @@ fn worker_main(shared: &Shared) {
         shared.wake.notify_all();
     }
 }
+
+#[cfg(target_os = "linux")]
+fn trim_background_derivation_allocator() {
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    // SAFETY: process-global allocator maintenance takes no application
+    // pointers. This runs only at a bulk-job lifetime boundary, after every
+    // source and temporary hierarchy allocation owned by the job was dropped.
+    unsafe {
+        malloc_trim(0);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn trim_background_derivation_allocator() {}
 
 fn hex_key(key: RuntimeGeometryKey) -> String {
     use std::fmt::Write as _;

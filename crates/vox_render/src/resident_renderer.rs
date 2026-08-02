@@ -19,7 +19,7 @@
 #![cfg(feature = "spectra-native")]
 
 use spectra_gpu::GpuBufferHandle;
-pub use spectra_renderer::FrameOutput;
+pub use spectra_renderer::{FirstHitProvenance, FrameOutput};
 use spectra_renderer::{RenderConfig, RenderSettings, Renderer, RendererTexture2D};
 
 /// The LIVE path-tracer compute backend — chosen FROM THE DEVICE at runtime.

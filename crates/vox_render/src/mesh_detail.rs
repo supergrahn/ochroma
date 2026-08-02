@@ -9,7 +9,7 @@
 use crate::mesh_simplify::{MeshInput, MeshOutput, simplify_mesh};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -134,34 +134,41 @@ pub fn prepare_runtime_detail(
         source,
     })?;
     let cache_path = cache_root.join(format!("{}.mgc", hex_hash(cache_key)));
-    let cached = load_cache_file(&cache_path, cache_key)?;
-    let (levels, encoded, page_offsets, cache_hit) = if let Some(cached) = cached {
-        (cached.levels, cached.pages, cached.page_offsets, true)
-    } else {
-        RUNTIME_DETAIL_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
-        let levels = derive_clustered_detail_levels(
-            &clusters,
-            residual_input,
-            residual_source_triangles,
-            full_indices.len(),
-            ratios,
-        )?;
-        let mut encoded = Vec::with_capacity(levels.len());
-        for level in &levels {
-            encoded.push(encode_detail_page(level)?);
-        }
-        let cache_bytes = encode_cache_file(cache_key, &encoded)?;
-        write_cache_atomically(&cache_path, &cache_bytes)?;
-        let cached = decode_cache_file(&cache_bytes, cache_key)?;
-        (cached.levels, cached.pages, cached.page_offsets, false)
-    };
-    let runtime_pages = runtime_pages_for_cache(&cache_path, &levels, &encoded, &page_offsets)?;
+    if let Some(runtime_pages) = load_cache_runtime_pages(&cache_path, cache_key)? {
+        let page_count = runtime_pages.len() as u32;
+        clusters.set_runtime_pages(runtime_pages);
+        return Ok(RuntimeDetailPreparation {
+            clusters,
+            cache_path: Some(cache_path),
+            cache_hit: true,
+            page_count,
+        });
+    }
+    RUNTIME_DETAIL_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+    let levels = derive_clustered_detail_levels(
+        &clusters,
+        residual_input,
+        residual_source_triangles,
+        full_indices.len(),
+        ratios,
+    )?;
+    let page_count = levels.len() as u32;
+    let mut encoded = Vec::with_capacity(levels.len());
+    // Consume each decoded level as soon as its independently streamable page
+    // exists. Retaining both complete hierarchy forms doubled a cold-cache job.
+    for level in levels {
+        encoded.push(encode_detail_page(&level)?);
+    }
+    write_cache_pages_atomically(&cache_path, cache_key, &encoded)?;
+    drop(encoded);
+    let runtime_pages = load_cache_runtime_pages(&cache_path, cache_key)?
+        .ok_or(RuntimeDetailError::CacheCorrupt)?;
     clusters.set_runtime_pages(runtime_pages);
     Ok(RuntimeDetailPreparation {
         clusters,
         cache_path: Some(cache_path),
-        cache_hit,
-        page_count: levels.len() as u32,
+        cache_hit: false,
+        page_count,
     })
 }
 
@@ -347,101 +354,43 @@ fn hash_u32s(hash: &mut Sha256, values: &[u32]) {
     }
 }
 
-fn runtime_pages_for_cache(
-    cache_path: &Path,
-    levels: &[DerivedDetailLevel],
-    encoded: &[Vec<u8>],
-    page_offsets: &[u64],
-) -> Result<Vec<vox_data::mega_geometry::RuntimeGeometryPage>, RuntimeDetailError> {
-    if levels.len() != encoded.len() || levels.len() != page_offsets.len() {
-        return Err(RuntimeDetailError::CacheCorrupt);
-    }
-    let mut hierarchy_bounds = vec![([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]); levels.len()];
-    let mut root = 0;
-    for (index, level) in levels.iter().enumerate() {
-        if level.parent_group_id.is_none() {
-            root = index;
-        }
-        for position in &level.mesh.positions {
-            for axis in 0..3 {
-                hierarchy_bounds[root].0[axis] = hierarchy_bounds[root].0[axis].min(position[axis]);
-                hierarchy_bounds[root].1[axis] = hierarchy_bounds[root].1[axis].max(position[axis]);
-            }
-        }
-    }
-    for index in 0..levels.len() {
-        let mut chain_root = index;
-        while let Some(parent) = levels[chain_root].parent_group_id {
-            chain_root = parent as usize;
-        }
-        hierarchy_bounds[index] = hierarchy_bounds[chain_root];
-    }
-    let mut runtime_pages = Vec::with_capacity(encoded.len());
-    for (index, ((level, bytes), source_offset)) in
-        levels.iter().zip(encoded).zip(page_offsets).enumerate()
-    {
-        let byte_count =
-            u32::try_from(bytes.len()).map_err(|_| RuntimeDetailError::AddressOverflow)?;
-        let decoded_byte_count = u64::try_from(level.mesh.positions.len())
-            .ok()
-            .and_then(|vertices| vertices.checked_mul(24 * 4))
-            .and_then(|vertex_bytes| {
-                u64::try_from(level.mesh.indices.len())
-                    .ok()
-                    .and_then(|triangles| triangles.checked_mul((3 + 1 + 1 + 15) * 4))
-                    .and_then(|triangle_bytes| vertex_bytes.checked_add(triangle_bytes))
-            })
-            .and_then(|bytes| u32::try_from(bytes).ok())
-            .ok_or(RuntimeDetailError::AddressOverflow)?;
-        runtime_pages.push(vox_data::mega_geometry::RuntimeGeometryPage {
-            page_id: index as u32,
-            kind: vox_data::mega_geometry::GEOMETRY_PAGE_KIND_TRIANGLE_DETAIL,
-            group_id: level.group_id,
-            vertex_count: u32::try_from(level.mesh.positions.len())
-                .map_err(|_| RuntimeDetailError::AddressOverflow)?,
-            primitive_count: u32::try_from(level.mesh.indices.len())
-                .map_err(|_| RuntimeDetailError::AddressOverflow)?,
-            bounds_min: hierarchy_bounds[index].0,
-            bounds_max: hierarchy_bounds[index].1,
-            geometric_error_q: (level.accumulated_world_error.max(0.0) * 1024.0)
-                .ceil()
-                .min(u32::MAX as f32) as u32,
-            parent_page_id: level.parent_group_id,
-            source_pack_id: 0,
-            source_path: cache_path.to_path_buf(),
-            source_offset: *source_offset,
-            byte_count,
-            decoded_byte_count,
-            codec:
-                vox_data::mega_geometry::GEOMETRY_PAGE_CODEC_TRIANGLE_DETAIL_MGTL_V3,
-            codec_version: DETAIL_PAGE_SCHEMA,
-            // The finished ordinary triangle mesh is the always-resident,
-            // exact fallback. Runtime detail roots are therefore streamable
-            // cache pages, not a second mandatory city-wide working set.
-            flags: 0,
-            content_hash: Sha256::digest(bytes).into(),
-        });
-    }
-    Ok(runtime_pages)
-}
-
 const DETAIL_CACHE_MAGIC: [u8; 4] = *b"MGCF";
 const DETAIL_CACHE_SCHEMA: u32 = 2;
 const DETAIL_CACHE_FIXED_HEADER: usize = 4 + 4 + 32 + 4;
 const DETAIL_CACHE_TABLE_ENTRY: usize = 8 + 32;
 
+#[cfg(test)]
 struct DecodedDetailCache {
     levels: Vec<DerivedDetailLevel>,
     pages: Vec<Vec<u8>>,
     page_offsets: Vec<u64>,
 }
 
-fn load_cache_file(
+#[derive(Clone, Copy)]
+struct CachedPageSummary {
+    group_id: u32,
+    parent_group_id: Option<u32>,
+    root_index: usize,
+    vertex_count: u32,
+    primitive_count: u32,
+    geometric_error_q: u32,
+    source_offset: u64,
+    byte_count: u32,
+    decoded_byte_count: u32,
+    content_hash: [u8; 32],
+}
+
+/// Validate a detail cache one independently decodable page at a time and emit
+/// only the runtime page table. A cache hit used to hold three complete forms at
+/// once: `std::fs::read` of the whole file, copied encoded pages, and every
+/// decoded hierarchy level. Runtime streaming needs none of those bodies after
+/// their descriptor has been checked; the file itself remains the page source.
+fn load_cache_runtime_pages(
     path: &Path,
     expected_key: [u8; 32],
-) -> Result<Option<DecodedDetailCache>, RuntimeDetailError> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
+) -> Result<Option<Vec<vox_data::mega_geometry::RuntimeGeometryPage>>, RuntimeDetailError> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => {
             return Err(RuntimeDetailError::Io {
@@ -450,13 +399,246 @@ fn load_cache_file(
             });
         }
     };
-    match decode_cache_file(&bytes, expected_key) {
-        Ok(cache) => Ok(Some(cache)),
-        Err(RuntimeDetailError::CacheCorrupt) => Ok(None),
-        Err(error) => Err(error),
+    let file_len = file
+        .metadata()
+        .map_err(|source| RuntimeDetailError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    let mut reader = std::io::BufReader::new(file);
+    let mut fixed = [0u8; DETAIL_CACHE_FIXED_HEADER];
+    if let Err(error) = reader.read_exact(&mut fixed) {
+        return if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            Ok(None)
+        } else {
+            Err(RuntimeDetailError::Io {
+                path: path.to_path_buf(),
+                source: error,
+            })
+        };
     }
+    if fixed[..4] != DETAIL_CACHE_MAGIC
+        || u32::from_le_bytes(fixed[4..8].try_into().expect("four-byte schema"))
+            != DETAIL_CACHE_SCHEMA
+        || fixed[8..40] != expected_key
+    {
+        return Ok(None);
+    }
+    let page_count =
+        u32::from_le_bytes(fixed[40..44].try_into().expect("four-byte page count")) as usize;
+    if page_count == 0 {
+        return Ok(None);
+    }
+    let table_bytes = page_count
+        .checked_mul(DETAIL_CACHE_TABLE_ENTRY)
+        .ok_or(RuntimeDetailError::AddressOverflow)?;
+    let mut records = Vec::with_capacity(page_count);
+    let mut table_entry = [0u8; DETAIL_CACHE_TABLE_ENTRY];
+    for _ in 0..page_count {
+        if reader.read_exact(&mut table_entry).is_err() {
+            return Ok(None);
+        }
+        let len = u64::from_le_bytes(table_entry[..8].try_into().expect("eight-byte page len"));
+        let hash = table_entry[8..]
+            .try_into()
+            .expect("thirty-two-byte page hash");
+        records.push((len, hash));
+    }
+    let first_page_offset = DETAIL_CACHE_FIXED_HEADER
+        .checked_add(table_bytes)
+        .ok_or(RuntimeDetailError::AddressOverflow)?;
+    let mut source_offset =
+        u64::try_from(first_page_offset).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+    let mut summaries: Vec<CachedPageSummary> = Vec::with_capacity(page_count);
+    let mut root_bounds = vec![([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]); page_count];
+    for (index, (len, expected_hash)) in records.into_iter().enumerate() {
+        let len = usize::try_from(len).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+        let mut page = Vec::new();
+        page.try_reserve_exact(len)
+            .map_err(|_| RuntimeDetailError::AddressOverflow)?;
+        page.resize(len, 0);
+        if reader.read_exact(&mut page).is_err()
+            || <[u8; 32]>::from(Sha256::digest(&page)) != expected_hash
+        {
+            return Ok(None);
+        }
+        let level = match decode_detail_page(&page) {
+            Ok(level) => level,
+            Err(_) => return Ok(None),
+        };
+        if level.group_id as usize != index
+            || level
+                .parent_group_id
+                .is_some_and(|parent| parent as usize >= index)
+        {
+            return Ok(None);
+        }
+        let root_index = level
+            .parent_group_id
+            .map(|parent| summaries[parent as usize].root_index)
+            .unwrap_or(index);
+        for position in &level.mesh.positions {
+            for axis in 0..3 {
+                root_bounds[root_index].0[axis] =
+                    root_bounds[root_index].0[axis].min(position[axis]);
+                root_bounds[root_index].1[axis] =
+                    root_bounds[root_index].1[axis].max(position[axis]);
+            }
+        }
+        let vertex_count = u32::try_from(level.mesh.positions.len())
+            .map_err(|_| RuntimeDetailError::AddressOverflow)?;
+        let primitive_count = u32::try_from(level.mesh.indices.len())
+            .map_err(|_| RuntimeDetailError::AddressOverflow)?;
+        let decoded_byte_count = u64::from(vertex_count)
+            .checked_mul(24 * 4)
+            .and_then(|vertex_bytes| {
+                u64::from(primitive_count)
+                    .checked_mul((3 + 1 + 1 + 15) * 4)
+                    .and_then(|triangle_bytes| vertex_bytes.checked_add(triangle_bytes))
+            })
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .ok_or(RuntimeDetailError::AddressOverflow)?;
+        summaries.push(CachedPageSummary {
+            group_id: level.group_id,
+            parent_group_id: level.parent_group_id,
+            root_index,
+            vertex_count,
+            primitive_count,
+            geometric_error_q: (level.accumulated_world_error.max(0.0) * 1024.0)
+                .ceil()
+                .min(u32::MAX as f32) as u32,
+            source_offset,
+            byte_count: u32::try_from(len).map_err(|_| RuntimeDetailError::AddressOverflow)?,
+            decoded_byte_count,
+            content_hash: expected_hash,
+        });
+        source_offset = source_offset
+            .checked_add(u64::try_from(len).map_err(|_| RuntimeDetailError::AddressOverflow)?)
+            .ok_or(RuntimeDetailError::AddressOverflow)?;
+    }
+    if source_offset != file_len {
+        return Ok(None);
+    }
+    let runtime_pages = summaries
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| {
+            let bounds = root_bounds[summary.root_index];
+            vox_data::mega_geometry::RuntimeGeometryPage {
+                page_id: index as u32,
+                kind: vox_data::mega_geometry::GEOMETRY_PAGE_KIND_TRIANGLE_DETAIL,
+                group_id: summary.group_id,
+                vertex_count: summary.vertex_count,
+                primitive_count: summary.primitive_count,
+                bounds_min: bounds.0,
+                bounds_max: bounds.1,
+                geometric_error_q: summary.geometric_error_q,
+                parent_page_id: summary.parent_group_id,
+                source_pack_id: 0,
+                source_path: path.to_path_buf(),
+                source_offset: summary.source_offset,
+                byte_count: summary.byte_count,
+                decoded_byte_count: summary.decoded_byte_count,
+                codec: vox_data::mega_geometry::GEOMETRY_PAGE_CODEC_TRIANGLE_DETAIL_MGTL_V3,
+                codec_version: DETAIL_PAGE_SCHEMA,
+                flags: 0,
+                content_hash: summary.content_hash,
+            }
+        })
+        .collect();
+    Ok(Some(runtime_pages))
 }
 
+fn write_cache_pages_atomically(
+    path: &Path,
+    source_key: [u8; 32],
+    pages: &[Vec<u8>],
+) -> Result<(), RuntimeDetailError> {
+    let parent = path.parent().ok_or(RuntimeDetailError::CacheCorrupt)?;
+    let sequence = CACHE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("detail"),
+        std::process::id(),
+        sequence,
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|source| RuntimeDetailError::Io {
+            path: temp.clone(),
+            source,
+        })?;
+    let write = |file: &mut std::fs::File, bytes: &[u8]| {
+        file.write_all(bytes).map_err(|source| RuntimeDetailError::Io {
+            path: temp.clone(),
+            source,
+        })
+    };
+    write(&mut file, &DETAIL_CACHE_MAGIC)?;
+    write(&mut file, &DETAIL_CACHE_SCHEMA.to_le_bytes())?;
+    write(&mut file, &source_key)?;
+    write(
+        &mut file,
+        &u32::try_from(pages.len())
+            .map_err(|_| RuntimeDetailError::AddressOverflow)?
+            .to_le_bytes(),
+    )?;
+    for page in pages {
+        write(
+            &mut file,
+            &u64::try_from(page.len())
+                .map_err(|_| RuntimeDetailError::AddressOverflow)?
+                .to_le_bytes(),
+        )?;
+        write(&mut file, &<[u8; 32]>::from(Sha256::digest(page)))?;
+    }
+    for page in pages {
+        write(&mut file, page)?;
+    }
+    file.sync_all().map_err(|source| RuntimeDetailError::Io {
+        path: temp.clone(),
+        source,
+    })?;
+    drop(file);
+    if let Err(first_error) = std::fs::rename(&temp, path) {
+        // Windows cannot atomically replace an existing destination. Another
+        // process may have published the same content-addressed cache first;
+        // validate it through the bounded reader before replacing anything.
+        if load_cache_runtime_pages(path, source_key)?.is_some() {
+            let _ = std::fs::remove_file(&temp);
+        } else {
+            if path.exists() {
+                std::fs::remove_file(path).map_err(|source| RuntimeDetailError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            }
+            std::fs::rename(&temp, path).map_err(|source| RuntimeDetailError::Io {
+                path: path.to_path_buf(),
+                source: if source.kind() == std::io::ErrorKind::AlreadyExists {
+                    first_error
+                } else {
+                    source
+                },
+            })?;
+        }
+    }
+    #[cfg(unix)]
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| RuntimeDetailError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    Ok(())
+}
+
+#[cfg(test)]
 fn encode_cache_file(
     source_key: [u8; 32],
     pages: &[Vec<u8>],
@@ -497,6 +679,7 @@ fn encode_cache_file(
     Ok(out)
 }
 
+#[cfg(test)]
 fn decode_cache_file(
     bytes: &[u8],
     expected_key: [u8; 32],
@@ -570,6 +753,7 @@ fn decode_cache_file(
     })
 }
 
+#[cfg(test)]
 fn read_cache_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, RuntimeDetailError> {
     let end = cursor
         .checked_add(4)
@@ -585,6 +769,7 @@ fn read_cache_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, RuntimeDetail
     ))
 }
 
+#[cfg(test)]
 fn read_cache_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64, RuntimeDetailError> {
     let end = cursor
         .checked_add(8)
@@ -598,63 +783,6 @@ fn read_cache_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64, RuntimeDetail
             .try_into()
             .map_err(|_| RuntimeDetailError::CacheCorrupt)?,
     ))
-}
-
-fn write_cache_atomically(path: &Path, bytes: &[u8]) -> Result<(), RuntimeDetailError> {
-    let parent = path.parent().ok_or(RuntimeDetailError::CacheCorrupt)?;
-    let sequence = CACHE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(
-        ".{}.{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("detail"),
-        std::process::id(),
-        sequence,
-    ));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|source| RuntimeDetailError::Io {
-            path: temp.clone(),
-            source,
-        })?;
-    file.write_all(bytes)
-        .map_err(|source| RuntimeDetailError::Io {
-            path: temp.clone(),
-            source,
-        })?;
-    file.sync_all().map_err(|source| RuntimeDetailError::Io {
-        path: temp.clone(),
-        source,
-    })?;
-    drop(file);
-    match std::fs::rename(&temp, path) {
-        Ok(()) => {}
-        Err(_) if std::fs::read(path).is_ok_and(|existing| existing == bytes) => {
-            let _ = std::fs::remove_file(&temp);
-        }
-        Err(_) => {
-            if path.exists() {
-                std::fs::remove_file(path).map_err(|source| RuntimeDetailError::Io {
-                    path: path.to_path_buf(),
-                    source,
-                })?;
-            }
-            std::fs::rename(&temp, path).map_err(|source| RuntimeDetailError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
-        }
-    }
-    #[cfg(unix)]
-    std::fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|source| RuntimeDetailError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    Ok(())
 }
 
 fn hex_hash(hash: [u8; 32]) -> String {
@@ -1736,7 +1864,17 @@ fn evaluate_parent_candidate(
     let mut max_position_error = 0.0_f32;
     let mut max_uv_error = 0.0_f32;
     for corner in 0..3 {
-        let (mapped, weights) = closest_point_barycentric(child_pos[corner], parent_pos);
+        let (_, raw_weights) = closest_point_barycentric(child_pos[corner], parent_pos);
+        let Some(weights) = normalized_nonnegative_barycentric(raw_weights) else {
+            return;
+        };
+        let mapped = add(
+            add(
+                mul(parent_pos[0], weights[0]),
+                mul(parent_pos[1], weights[1]),
+            ),
+            mul(parent_pos[2], weights[2]),
+        );
         bary[corner] = weights;
         max_position_error = max_position_error.max(length(sub(child_pos[corner], mapped)));
         if !child.uvs.is_empty() && !parent.uvs.is_empty() {
@@ -1762,6 +1900,26 @@ fn evaluate_parent_candidate(
             orientation,
         ));
     }
+}
+
+/// Floating-point closest-point region tests can return a tiny negative
+/// barycentric on large, thin architectural triangles. The mathematical result
+/// is still on the triangle, so canonicalise it before it becomes persistent
+/// surface correspondence. Truly non-finite/empty weights still reject the
+/// candidate instead of being hidden by a fallback.
+fn normalized_nonnegative_barycentric(weights: [f32; 3]) -> Option<[f32; 3]> {
+    if weights.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    let mut normalized = weights.map(|value| value.max(0.0));
+    let sum = normalized.iter().sum::<f32>();
+    if !sum.is_finite() || sum <= 1.0e-20 {
+        return None;
+    }
+    for value in &mut normalized {
+        *value /= sum;
+    }
+    Some(normalized)
 }
 
 fn closest_point_barycentric(p: [f32; 3], t: [[f32; 3]; 3]) -> ([f32; 3], [f32; 3]) {

@@ -78,6 +78,9 @@ pub struct GpuPresentResult {
 #[cfg(not(all(target_os = "windows", feature = "spectra-native-optix")))]
 pub struct DevicePresentResult {
     pub frame: DeviceFrame,
+    /// Authoring-only primary-hit truth. `None` during normal gameplay because
+    /// Spectra gates the GPU readback behind `SPECTRA_PROVENANCE_AOV=1`.
+    pub first_hit_provenance: Option<crate::resident_renderer::FirstHitProvenance>,
     pub sync: SceneSyncReport,
     pub plan: RetainedDeltaPlan,
     pub delta_apply_ms: f64,
@@ -286,6 +289,7 @@ impl RenderRuntime {
             .last_device_ldr_buffer()
             .ok_or_else(|| "renderer produced no device frame".to_string())?;
         let (render_width, render_height) = interop_dims(&rendered, self.iw, self.ih);
+        let first_hit_provenance = rendered.first_hit_provenance;
         // The device identity is what proves this frame's buffer and the
         // presenter's swapchain live on the SAME device. It is `None` when the
         // runtime probe put the path tracer on a backend this same-device
@@ -365,6 +369,7 @@ impl RenderRuntime {
         }
         Ok(DevicePresentResult {
             frame,
+            first_hit_provenance,
             sync,
             plan,
             delta_apply_ms,

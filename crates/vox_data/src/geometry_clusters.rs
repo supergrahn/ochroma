@@ -111,7 +111,8 @@ impl ReadyGeometryClusters {
         }
         let source_triangle_count = u32::try_from(indices.len())
             .map_err(|_| ReadyGeometryClustersError::TriangleCountOverflow)?;
-        let mut centroids = Vec::with_capacity(indices.len());
+        let mut centroid_min = [f32::INFINITY; 3];
+        let mut centroid_max = [f32::NEG_INFINITY; 3];
         for (triangle, source_indices) in indices.iter().enumerate() {
             let mut centroid = [0.0_f32; 3];
             for &vertex in source_indices {
@@ -128,9 +129,13 @@ impl ReadyGeometryClusters {
                     centroid[axis] += position[axis] / 3.0;
                 }
             }
-            centroids.push(centroid);
+            for axis in 0..3 {
+                centroid_min[axis] = centroid_min[axis].min(centroid[axis]);
+                centroid_max[axis] = centroid_max[axis].max(centroid[axis]);
+            }
         }
-        let triangle_order = canonical_morton_order(&centroids);
+        let triangle_order =
+            canonical_morton_order(positions, indices, centroid_min, centroid_max);
         let ranges = canonical_cluster_ranges(indices.len());
         let mut clusters = Vec::with_capacity(ranges.len());
         for (id, (start, count)) in ranges.into_iter().enumerate() {
@@ -257,6 +262,15 @@ impl ReadyGeometryClusters {
         &self.clusters
     }
 
+    /// Consume the validated partition into its two runtime streams.
+    ///
+    /// Scene assembly uses this after validation so a large prototype's Morton
+    /// order can move into the resident CLAS table instead of being copied from
+    /// a temporary [`ReadyGeometryClusters`] allocation.
+    pub fn into_partition(self) -> (Vec<u32>, Vec<ReadyGeometryCluster>) {
+        (self.triangle_order, self.clusters)
+    }
+
     pub fn runtime_pages(&self) -> &[RuntimeGeometryPage] {
         &self.runtime_pages
     }
@@ -287,36 +301,46 @@ fn canonical_cluster_ranges(triangle_count: usize) -> Vec<(usize, usize)> {
     ranges
 }
 
-fn canonical_morton_order(centroids: &[[f32; 3]]) -> Vec<u32> {
-    let mut minimum = [f32::INFINITY; 3];
-    let mut maximum = [f32::NEG_INFINITY; 3];
-    for centroid in centroids {
-        for axis in 0..3 {
-            minimum[axis] = minimum[axis].min(centroid[axis]);
-            maximum[axis] = maximum[axis].max(centroid[axis]);
-        }
-    }
+fn canonical_morton_order(
+    positions: &[[f32; 3]],
+    indices: &[[u32; 3]],
+    minimum: [f32; 3],
+    maximum: [f32; 3],
+) -> Vec<u32> {
     let extent = [
         (maximum[0] - minimum[0]).max(1.0e-6),
         (maximum[1] - minimum[1]).max(1.0e-6),
         (maximum[2] - minimum[2]).max(1.0e-6),
     ];
-    let mut keyed = centroids
+    // One packed u64 per triangle replaces the old 12-byte centroid array plus
+    // an 8-byte keyed array. The first validation pass above already established
+    // finite/in-range source data; recomputing three adds here is cheaper than
+    // retaining hundreds of MiB solely across the sort.
+    let mut keyed = indices
         .iter()
         .enumerate()
-        .map(|(triangle, centroid)| {
+        .map(|(triangle, source_indices)| {
+            let mut centroid = [0.0_f32; 3];
+            for &vertex in source_indices {
+                let position = positions[vertex as usize];
+                for axis in 0..3 {
+                    centroid[axis] += position[axis] / 3.0;
+                }
+            }
             let quantized = [0, 1, 2].map(|axis| {
                 (((centroid[axis] - minimum[axis]) / extent[axis]).clamp(0.0, 1.0) * 1023.0).round()
                     as u32
             });
-            (
-                morton_3d_10bit(quantized[0], quantized[1], quantized[2]),
-                triangle as u32,
-            )
+            (u64::from(morton_3d_10bit(
+                quantized[0],
+                quantized[1],
+                quantized[2],
+            )) << 32)
+                | triangle as u64
         })
         .collect::<Vec<_>>();
     keyed.sort_unstable();
-    keyed.into_iter().map(|(_, triangle)| triangle).collect()
+    keyed.into_iter().map(|entry| entry as u32).collect()
 }
 
 fn morton_3d_10bit(x: u32, y: u32, z: u32) -> u32 {

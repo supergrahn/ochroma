@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 #[cfg(any(test, not(feature = "aot-shaders")))]
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::UNIX_EPOCH;
 
 #[cfg(any(test, not(feature = "aot-shaders")))]
@@ -38,7 +38,11 @@ pub struct CookedNativeTexture {
     pub texture: crate::RendererTexture2D,
 }
 
-type CookedNativeTextureCache = HashMap<String, Arc<CookedNativeTexture>>;
+// A scene owns the native texture bytes. The path cache is lookup acceleration,
+// not a second residency owner: retaining strong Arcs here kept every uploaded
+// DDS alive in addition to the renderer's owned copy (about 800 MiB for the
+// current Urban Horizon closure).
+type CookedNativeTextureCache = HashMap<String, Weak<CookedNativeTexture>>;
 
 #[cfg(any(test, not(feature = "aot-shaders")))]
 #[derive(Clone, Copy)]
@@ -512,13 +516,13 @@ fn load_cooked_native_dds_arc(
 ) -> Option<Arc<CookedNativeTexture>> {
     let key = format!("cooked-native:{}", texture_cache_key(path, mode)?);
     if let Ok(cache) = cooked_native_texture_cache().lock()
-        && let Some(hit) = cache.get(&key)
+        && let Some(hit) = cache.get(&key).and_then(Weak::upgrade)
     {
-        return Some(Arc::clone(hit));
+        return Some(hit);
     }
     let texture = Arc::new(load_cooked_native_dds(path, requested_channels)?);
     if let Ok(mut cache) = cooked_native_texture_cache().lock() {
-        cache.insert(key, Arc::clone(&texture));
+        cache.insert(key, Arc::downgrade(&texture));
     }
     Some(texture)
 }
