@@ -124,7 +124,7 @@ pub use spectra_scene_state::SceneState;
 #[cfg(feature = "spectra-native")]
 pub use spectra_scene_state::TerrainSdfLayer;
 #[cfg(feature = "spectra-native")]
-pub use spectra_scene_state::{GpuPageDescriptor, PAGE_NONE};
+pub use spectra_scene_state::{GpuPageDescriptor, PAGE_FLAG_REQUIRED_BASE, PAGE_NONE};
 #[cfg(feature = "spectra-native")]
 pub use spectra_scene_state::{MegaGeometryExecution, MegaGeometryLayer};
 
