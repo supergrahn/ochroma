@@ -144,6 +144,49 @@ impl SprayField {
         &self.strokes
     }
 
+    /// Canonical final material state over the immutable authored baseline.
+    /// Entries are row-major and strictly index-sorted by construction. Saves
+    /// persist this state, never the brush operations that happened to produce it.
+    pub fn final_cell_overrides(&self) -> Vec<(u32, [u8; SPRAY_CHANNELS])> {
+        self.weights
+            .iter()
+            .zip(&self.baseline)
+            .enumerate()
+            .filter_map(|(index, (&weights, &baseline))| {
+                (weights != baseline).then_some((index as u32, weights))
+            })
+            .collect()
+    }
+
+    /// Install a save's canonical final material cells directly over the
+    /// packaged baseline. No stroke kernel is executed during load.
+    pub fn install_final_cell_overrides(
+        &mut self,
+        overrides: &[(u32, [u8; SPRAY_CHANNELS])],
+    ) -> Result<(), String> {
+        if overrides.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err("spray cell overrides must be strictly index-sorted".to_string());
+        }
+        for &(index, weights) in overrides {
+            let Some(&baseline) = self.baseline.get(index as usize) else {
+                return Err(format!("spray cell override {index} is out of range"));
+            };
+            if weights == baseline {
+                return Err(format!(
+                    "spray cell override {index} redundantly equals the baseline"
+                ));
+            }
+        }
+        self.weights.copy_from_slice(&self.baseline);
+        self.strokes.clear();
+        for &(index, weights) in overrides {
+            let cell = &mut self.weights[index as usize];
+            *cell = weights;
+        }
+        self.version = self.version.wrapping_add(1);
+        Ok(())
+    }
+
     /// World XZ → fractional cell coordinate (cell centres at integer coords).
     #[inline]
     fn world_to_cell(&self, wx: f32, wz: f32) -> (f32, f32) {
@@ -637,6 +680,32 @@ mod tests {
             b.weights(),
             "replaying the stroke log must reproduce the field bit-exact"
         );
+    }
+
+    #[test]
+    fn final_cell_state_installs_without_strokes() {
+        let seed = |_x: f32, _z: f32| {
+            let mut weights = [0.0; SPRAY_CHANNELS];
+            weights[0] = 0.7;
+            weights[1] = 0.3;
+            weights
+        };
+        let mut authored = SprayField::new(64, 64, [10.0, -5.0], 1.25);
+        authored.seed_from(seed);
+        authored.paint_texture(4, [44.0, 24.0], 7.0, 0.9, 0.8);
+        let final_cells = authored.final_cell_overrides();
+        assert!(!final_cells.is_empty());
+
+        let mut loaded = SprayField::new(64, 64, [10.0, -5.0], 1.25);
+        loaded.seed_from(seed);
+        loaded.install_final_cell_overrides(&final_cells).unwrap();
+
+        assert_eq!(loaded.weights(), authored.weights());
+        assert!(
+            loaded.strokes().is_empty(),
+            "load must not recreate authoring history"
+        );
+        assert_eq!(loaded.final_cell_overrides(), final_cells);
     }
 
     #[test]
