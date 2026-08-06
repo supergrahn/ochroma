@@ -780,6 +780,16 @@ pub fn meshes_to_instanced_scene_with_weathering_owned(
 /// offsets are rebased into the destination's contiguous ABI.
 #[cfg(feature = "spectra-native")]
 pub fn append_instanced_scene_geometry(dst: &mut SceneState, mut src: SceneState) {
+    // An empty detail table is the compact exact-only representation. As soon
+    // as either chunk carries derived aggregate levels, expand the other side
+    // to explicit one-level chains so the merged arrays remain parallel to the
+    // merged prototype table.
+    if !dst.geometry.proto_detail_ranges.is_empty()
+        || !src.geometry.proto_detail_ranges.is_empty()
+    {
+        materialise_exact_proto_detail_chains(&mut dst.geometry);
+        materialise_exact_proto_detail_chains(&mut src.geometry);
+    }
     let vertex_base = dst.geometry.vertex_count as u32;
     let triangle_base = dst.geometry.triangle_count as u32;
     let proto_base = dst.geometry.proto_ranges.len() as u32;
@@ -816,6 +826,15 @@ pub fn append_instanced_scene_geometry(dst: &mut SceneState, mut src: SceneState
                 )
             },
         ));
+    dst.geometry.proto_detail_ranges.extend(
+        src.geometry
+            .proto_detail_ranges
+            .drain(..)
+            .map(|(first_proto, level_count)| (proto_base + first_proto, level_count)),
+    );
+    dst.geometry
+        .proto_detail_errors
+        .append(&mut src.geometry.proto_detail_errors);
     dst.geometry.source_triangle_order.extend(
         src.geometry
             .source_triangle_order
@@ -831,6 +850,16 @@ pub fn append_instanced_scene_geometry(dst: &mut SceneState, mut src: SceneState
     dst.geometry.vertex_count += src.geometry.vertex_count;
     dst.geometry.triangle_count += src.geometry.triangle_count;
     dst.mark_geometry_changed();
+}
+
+#[cfg(feature = "spectra-native")]
+fn materialise_exact_proto_detail_chains(geometry: &mut spectra_scene_state::GeometryLayer) {
+    if geometry.proto_detail_ranges.is_empty() {
+        geometry.proto_detail_ranges = (0..geometry.proto_ranges.len() as u32)
+            .map(|proto| (proto, 1))
+            .collect();
+        geometry.proto_detail_errors = vec![0.0; geometry.proto_ranges.len()];
+    }
 }
 
 /// Partition and append exact, unweathered prototype BLASes directly into an
@@ -950,6 +979,10 @@ pub fn append_unweathered_blas_geometry_owned(dst: &mut SceneState, blas: Vec<Bl
             triangle_base,
             triangle_count,
         ));
+        if !dst.geometry.proto_detail_ranges.is_empty() {
+            dst.geometry.proto_detail_ranges.push((proto_index, 1));
+            dst.geometry.proto_detail_errors.push(0.0);
+        }
         dst.geometry.vertex_count += vertex_count as usize;
         dst.geometry.triangle_count += triangle_count as usize;
     }
@@ -1375,5 +1408,26 @@ mod tests {
             scene.geometry.vertex_count,
             scene.geometry.triangle_count,
         );
+    }
+
+    #[cfg(feature = "spectra-native")]
+    #[test]
+    fn appending_geometry_rebases_shared_detail_chains_without_placement_copies() {
+        let mut dst = SceneState::new(1, 1);
+        dst.geometry.proto_ranges = vec![(0, 0, 0, 0), (0, 0, 0, 0)];
+
+        let mut src = SceneState::new(1, 1);
+        src.geometry.proto_ranges = vec![(0, 0, 0, 0), (0, 0, 0, 0)];
+        src.geometry.proto_detail_ranges = vec![(0, 2), (0, 2)];
+        src.geometry.proto_detail_errors = vec![0.0, 0.5];
+
+        append_instanced_scene_geometry(&mut dst, src);
+
+        assert_eq!(
+            dst.geometry.proto_detail_ranges,
+            vec![(0, 1), (1, 1), (2, 2), (2, 2)]
+        );
+        assert_eq!(dst.geometry.proto_detail_errors, vec![0.0, 0.0, 0.0, 0.5]);
+        assert_eq!(dst.geometry.validate_proto_detail_chains(), Ok(()));
     }
 }
