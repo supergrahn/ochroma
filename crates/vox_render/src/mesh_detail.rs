@@ -7,6 +7,7 @@
 //! orientation-compatible parent triangle of the same material.
 
 use crate::mesh_simplify::{MeshInput, MeshOutput, simplify_mesh};
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, Write};
@@ -71,6 +72,20 @@ pub struct RuntimeDetailPreparation {
     pub cache_path: Option<PathBuf>,
     pub cache_hit: bool,
     pub page_count: u32,
+    /// Coarsest hole-free prototype cut, merged without de-indexing. Backends
+    /// that cannot yet instance an aggregate cluster cut natively use this one
+    /// shared derived BLAS instead of multiplying cluster pages by placements.
+    pub prototype_root: Option<RuntimeDetailPrototypeMesh>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RuntimeDetailPrototypeMesh {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub uvs: Vec<[f32; 2]>,
+    pub indices: Vec<[u32; 3]>,
+    pub material_ids: Vec<u32>,
+    pub weathering_masks: Vec<[f32; 7]>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -112,6 +127,7 @@ pub fn prepare_runtime_detail(
             cache_path: None,
             cache_hit: true,
             page_count: 0,
+            prototype_root: None,
         });
     }
     validate_runtime_detail_request(
@@ -137,11 +153,13 @@ pub fn prepare_runtime_detail(
     if let Some(runtime_pages) = load_cache_runtime_pages(&cache_path, cache_key)? {
         let page_count = runtime_pages.len() as u32;
         clusters.set_runtime_pages(runtime_pages);
+        let prototype_root = load_prototype_root(&clusters)?;
         return Ok(RuntimeDetailPreparation {
             clusters,
             cache_path: Some(cache_path),
             cache_hit: true,
             page_count,
+            prototype_root: Some(prototype_root),
         });
     }
     RUNTIME_DETAIL_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
@@ -157,12 +175,94 @@ pub fn prepare_runtime_detail(
     let runtime_pages = load_cache_runtime_pages(&cache_path, cache_key)?
         .ok_or(RuntimeDetailError::CacheCorrupt)?;
     clusters.set_runtime_pages(runtime_pages);
+    let prototype_root = load_prototype_root(&clusters)?;
     Ok(RuntimeDetailPreparation {
         clusters,
         cache_path: Some(cache_path),
         cache_hit: false,
         page_count,
+        prototype_root: Some(prototype_root),
     })
+}
+
+fn load_prototype_root(
+    clusters: &vox_data::geometry_clusters::ReadyGeometryClusters,
+) -> Result<RuntimeDetailPrototypeMesh, RuntimeDetailError> {
+    let roots = clusters
+        .runtime_pages()
+        .iter()
+        .filter(|page| page.parent_page_id.is_none())
+        .collect::<Vec<_>>();
+    if roots.is_empty() {
+        return Err(RuntimeDetailError::CacheCorrupt);
+    }
+    let source_path = roots[0].source_path.clone();
+    if roots.iter().any(|page| page.source_path != source_path) {
+        return Err(RuntimeDetailError::CacheCorrupt);
+    }
+    let mut file = std::fs::File::open(&source_path).map_err(|source| RuntimeDetailError::Io {
+        path: source_path.clone(),
+        source,
+    })?;
+    let mut merged = RuntimeDetailPrototypeMesh {
+        positions: Vec::new(),
+        normals: Vec::new(),
+        uvs: Vec::new(),
+        indices: Vec::new(),
+        material_ids: Vec::new(),
+        weathering_masks: Vec::new(),
+    };
+    for page in roots {
+        file.seek(std::io::SeekFrom::Start(page.source_offset))
+            .map_err(|source| RuntimeDetailError::Io {
+                path: page.source_path.clone(),
+                source,
+            })?;
+        let mut bytes = vec![0u8; page.byte_count as usize];
+        file.read_exact(&mut bytes)
+            .map_err(|source| RuntimeDetailError::Io {
+                path: page.source_path.clone(),
+                source,
+            })?;
+        if <[u8; 32]>::from(Sha256::digest(&bytes)) != page.content_hash {
+            return Err(RuntimeDetailError::CacheCorrupt);
+        }
+        let level = decode_detail_page(&bytes).map_err(|_| RuntimeDetailError::CacheCorrupt)?;
+        if level.parent_group_id.is_some() {
+            return Err(RuntimeDetailError::CacheCorrupt);
+        }
+        let vertex_base = u32::try_from(merged.positions.len())
+            .map_err(|_| RuntimeDetailError::AddressOverflow)?;
+        merged.positions.extend(level.mesh.positions);
+        merged.normals.extend(level.normals);
+        merged.uvs.extend(level.mesh.uvs);
+        for triangle in level.mesh.indices {
+            merged.indices.push([
+                triangle[0]
+                    .checked_add(vertex_base)
+                    .ok_or(RuntimeDetailError::AddressOverflow)?,
+                triangle[1]
+                    .checked_add(vertex_base)
+                    .ok_or(RuntimeDetailError::AddressOverflow)?,
+                triangle[2]
+                    .checked_add(vertex_base)
+                    .ok_or(RuntimeDetailError::AddressOverflow)?,
+            ]);
+        }
+        merged.material_ids.extend(level.mesh.material_ids);
+        merged.weathering_masks.extend(level.weathering_masks);
+    }
+    if merged.positions.is_empty()
+        || merged.indices.is_empty()
+        || merged.normals.len() != merged.positions.len()
+        || (!merged.uvs.is_empty() && merged.uvs.len() != merged.positions.len())
+        || merged.material_ids.len() != merged.indices.len()
+        || (!merged.weathering_masks.is_empty()
+            && merged.weathering_masks.len() != merged.positions.len())
+    {
+        return Err(RuntimeDetailError::CacheCorrupt);
+    }
+    Ok(merged)
 }
 
 fn validate_runtime_detail_request(
@@ -227,73 +327,105 @@ fn for_each_clustered_detail_level(
     ratios: &[f32],
     mut emit: impl FnMut(DerivedDetailLevel) -> Result<(), RuntimeDetailError>,
 ) -> Result<usize, RuntimeDetailError> {
-    let residual_by_source = residual_source_triangles
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(local, source)| (source, local))
-        .collect::<BTreeMap<_, _>>();
+    // Source triangle ids are dense by contract. A direct table avoids a
+    // multi-million-node BTreeMap on large vegetation prototypes and turns the
+    // per-cluster lookup into one bounds-checked array access.
+    let mut residual_by_source = vec![usize::MAX; full_triangle_count];
+    for (local, &source) in residual_source_triangles.iter().enumerate() {
+        residual_by_source[source as usize] = local;
+    }
     let mut emitted = 0usize;
-    for cluster in clusters.clusters() {
-        let start = cluster.triangle_order_start() as usize;
-        let end = start
-            .checked_add(cluster.triangle_count() as usize)
-            .ok_or(RuntimeDetailError::AddressOverflow)?;
-        let mut local_indices = Vec::new();
-        let mut local_materials = Vec::new();
-        let mut local_sources = Vec::new();
-        for &source_triangle in clusters
-            .triangle_order()
-            .get(start..end)
-            .ok_or(DetailDerivationError::InvalidSource)?
-        {
-            let Some(&local) = residual_by_source.get(&source_triangle) else {
-                continue;
-            };
-            local_indices.push(residual_input.indices[local]);
-            local_materials.push(residual_input.material_ids[local]);
-            local_sources.push(source_triangle);
-        }
-        if local_indices.is_empty() {
-            continue;
-        }
-        let mut hierarchy = derive_detail_hierarchy(
-            DetailMeshInput {
-                positions: residual_input.positions,
-                normals: residual_input.normals,
-                uvs: residual_input.uvs,
-                indices: &local_indices,
-                material_ids: &local_materials,
-                weathering_masks: residual_input.weathering_masks,
-            },
-            ratios,
-        )?;
-        remap_source_triangles(&mut hierarchy, &local_sources, full_triangle_count)?;
-        let group_base =
-            u32::try_from(emitted).map_err(|_| RuntimeDetailError::AddressOverflow)?;
-        for level in &mut hierarchy.levels {
-            level.group_id = level
-                .group_id
-                .checked_add(group_base)
-                .ok_or(RuntimeDetailError::AddressOverflow)?;
-            level.parent_group_id = match level.parent_group_id {
-                Some(parent) => Some(
-                    parent
-                        .checked_add(group_base)
-                        .ok_or(RuntimeDetailError::AddressOverflow)?,
-                ),
-                None => None,
-            };
-        }
-        for level in hierarchy.levels {
-            emit(level)?;
-            emitted += 1;
+    // Cluster simplification is independent. Derive a bounded wave in
+    // parallel, then publish it in canonical cluster order so cache bytes and
+    // group ids remain deterministic across core counts. The wave bound avoids
+    // retaining a complete city-scale decoded hierarchy before it is written.
+    let wave_size = rayon::current_num_threads().max(1) * 4;
+    for wave in clusters.clusters().chunks(wave_size) {
+        let hierarchies = wave
+            .par_iter()
+            .map(|cluster| {
+                derive_cluster_detail_hierarchy(
+                    cluster,
+                    clusters.triangle_order(),
+                    residual_input,
+                    &residual_by_source,
+                    full_triangle_count,
+                    ratios,
+                )
+            })
+            .collect::<Result<Vec<_>, RuntimeDetailError>>()?;
+        for hierarchy in hierarchies.into_iter().flatten() {
+            let group_base =
+                u32::try_from(emitted).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+            for mut level in hierarchy.levels {
+                level.group_id = level
+                    .group_id
+                    .checked_add(group_base)
+                    .ok_or(RuntimeDetailError::AddressOverflow)?;
+                level.parent_group_id = match level.parent_group_id {
+                    Some(parent) => Some(
+                        parent
+                            .checked_add(group_base)
+                            .ok_or(RuntimeDetailError::AddressOverflow)?,
+                    ),
+                    None => None,
+                };
+                emit(level)?;
+                emitted += 1;
+            }
         }
     }
     if emitted == 0 {
         return Err(DetailDerivationError::EmptyLevel.into());
     }
     Ok(emitted)
+}
+
+fn derive_cluster_detail_hierarchy(
+    cluster: &vox_data::geometry_clusters::ReadyGeometryCluster,
+    triangle_order: &[u32],
+    residual_input: DetailMeshInput<'_>,
+    residual_by_source: &[usize],
+    full_triangle_count: usize,
+    ratios: &[f32],
+) -> Result<Option<DerivedDetailHierarchy>, RuntimeDetailError> {
+    let start = cluster.triangle_order_start() as usize;
+    let end = start
+        .checked_add(cluster.triangle_count() as usize)
+        .ok_or(RuntimeDetailError::AddressOverflow)?;
+    let mut local_indices = Vec::new();
+    let mut local_materials = Vec::new();
+    let mut local_sources = Vec::new();
+    for &source_triangle in triangle_order
+        .get(start..end)
+        .ok_or(DetailDerivationError::InvalidSource)?
+    {
+        let local = *residual_by_source
+            .get(source_triangle as usize)
+            .ok_or(DetailDerivationError::InvalidSource)?;
+        if local == usize::MAX {
+            continue;
+        }
+        local_indices.push(residual_input.indices[local]);
+        local_materials.push(residual_input.material_ids[local]);
+        local_sources.push(source_triangle);
+    }
+    if local_indices.is_empty() {
+        return Ok(None);
+    }
+    let mut hierarchy = derive_detail_hierarchy(
+        DetailMeshInput {
+            positions: residual_input.positions,
+            normals: residual_input.normals,
+            uvs: residual_input.uvs,
+            indices: &local_indices,
+            material_ids: &local_materials,
+            weathering_masks: residual_input.weathering_masks,
+        },
+        ratios,
+    )?;
+    remap_source_triangles(&mut hierarchy, &local_sources, full_triangle_count)?;
+    Ok(Some(hierarchy))
 }
 
 fn runtime_detail_cache_root() -> PathBuf {

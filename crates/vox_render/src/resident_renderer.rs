@@ -305,6 +305,20 @@ impl ResidentSceneRenderer {
         settings.render.upscaler = tier_settings.render.upscaler.clone();
         settings.features.spectral = tier_settings.features.spectral.clone();
         settings.features.restir = tier_settings.features.restir.clone();
+        // GI / PT / NRC were MISSING from this overlay (2026-08-06). The game's
+        // render.ron tier rows said `restir_gi: Some(true), restir_pt:
+        // Some(true), nrc: Some(true)` and `for_tier_from_ron` faithfully set
+        // them on `tier_settings` — which were then dropped on the floor here,
+        // so `apply_settings` read the defaults and downstream
+        // `render_config.rs` forced `resample_mode = None`. Measured tell: a
+        // witness capture logged `g_pt_candidate_rad_* ... not bound, dummy
+        // substituted` (ReSTIR PT off) while every config source said on.
+        // The comment above says "the tier — not the rig and not the base
+        // preset — owns spp / bounces / spectral / ReSTIR"; now it actually
+        // owns ALL of ReSTIR, not just DI.
+        settings.features.restir_gi = tier_settings.features.restir_gi.clone();
+        settings.features.restir_pt = tier_settings.features.restir_pt.clone();
+        settings.features.nrc = tier_settings.features.nrc.clone();
         config.apply_settings(&settings);
         config.max_bounces = max_bounces;
 

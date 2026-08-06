@@ -46,6 +46,17 @@ pub struct RuntimeGeometrySource {
     /// lazily materialised VXP payload). Mutually exclusive with
     /// `shared_prototype`; owned geometry vectors remain empty.
     pub borrowed_source: Option<RuntimeGeometryBorrowedSource>,
+    /// Exact structural programs are valuable for architectural meshes but
+    /// make organic geometry pay for a three-edge BTreeMap per triangle only
+    /// to discover that it has no repeated planar lattice. Organic prototypes
+    /// request continuous detail directly.
+    pub derivation: RuntimeGeometryDerivation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeGeometryDerivation {
+    ProgramsAndDetail,
+    DetailOnly,
 }
 
 impl RuntimeGeometrySource {
@@ -129,6 +140,7 @@ impl RuntimeGeometrySource {
             weathering_masks: Vec::new(),
             shared_prototype: None,
             borrowed_source: None,
+            derivation: RuntimeGeometryDerivation::ProgramsAndDetail,
         };
         source.validate()?;
         Ok(source)
@@ -174,10 +186,30 @@ impl RuntimeGeometrySource {
     pub fn key_from_hybrid_mesh(
         mesh: &crate::hybrid_compose::HybridMesh,
     ) -> Result<RuntimeGeometryKey, RuntimeGeometryServiceError> {
+        Self::key_from_hybrid_mesh_with_derivation(
+            mesh,
+            RuntimeGeometryDerivation::ProgramsAndDetail,
+        )
+    }
+
+    pub fn key_from_hybrid_mesh_detail_only(
+        mesh: &crate::hybrid_compose::HybridMesh,
+    ) -> Result<RuntimeGeometryKey, RuntimeGeometryServiceError> {
+        Self::key_from_hybrid_mesh_with_derivation(mesh, RuntimeGeometryDerivation::DetailOnly)
+    }
+
+    fn key_from_hybrid_mesh_with_derivation(
+        mesh: &crate::hybrid_compose::HybridMesh,
+        derivation: RuntimeGeometryDerivation,
+    ) -> Result<RuntimeGeometryKey, RuntimeGeometryServiceError> {
         let triangle_count = Self::validate_hybrid_mesh(mesh)?;
         let mut hash = Sha256::new();
         hash.update(b"OCHROMA_RUNTIME_GEOMETRY_SOURCE");
         hash.update(RUNTIME_GEOMETRY_SOURCE_SCHEMA.to_le_bytes());
+        hash.update([match derivation {
+            RuntimeGeometryDerivation::ProgramsAndDetail => 0,
+            RuntimeGeometryDerivation::DetailOnly => 1,
+        }]);
         hash_f32_arrays(&mut hash, mesh.positions());
         hash_f32_arrays(&mut hash, mesh.normals());
         hash_f32_arrays(&mut hash, mesh.uvs());
@@ -234,6 +266,7 @@ impl RuntimeGeometrySource {
                 weathering_masks: Vec::new(),
                 shared_prototype: Some(shared_prototype),
                 borrowed_source: None,
+                derivation: RuntimeGeometryDerivation::ProgramsAndDetail,
             };
             source.validate()?;
             debug_assert_eq!(source.key(), Self::key_from_hybrid_mesh(mesh)?);
@@ -265,6 +298,7 @@ impl RuntimeGeometrySource {
             weathering_masks,
             shared_prototype: None,
             borrowed_source: None,
+            derivation: RuntimeGeometryDerivation::ProgramsAndDetail,
         };
         source.validate()?;
         debug_assert_eq!(source.key(), Self::key_from_hybrid_mesh(mesh)?);
@@ -317,6 +351,10 @@ impl RuntimeGeometrySource {
         let mut hash = Sha256::new();
         hash.update(b"OCHROMA_RUNTIME_GEOMETRY_SOURCE");
         hash.update(RUNTIME_GEOMETRY_SOURCE_SCHEMA.to_le_bytes());
+        hash.update([match self.derivation {
+            RuntimeGeometryDerivation::ProgramsAndDetail => 0,
+            RuntimeGeometryDerivation::DetailOnly => 1,
+        }]);
         hash_f32_arrays(&mut hash, self.source_positions());
         hash_f32_arrays(&mut hash, self.source_normals());
         hash_f32_arrays(&mut hash, self.source_uvs());
@@ -324,6 +362,12 @@ impl RuntimeGeometrySource {
         hash_u32s(&mut hash, self.source_material_ids());
         hash_f32_arrays(&mut hash, self.source_weathering_masks());
         RuntimeGeometryKey(hash.finalize().into())
+    }
+
+    #[must_use]
+    pub fn detail_only(mut self) -> Self {
+        self.derivation = RuntimeGeometryDerivation::DetailOnly;
+        self
     }
 }
 
@@ -351,6 +395,8 @@ pub enum RuntimeGeometryServiceError {
     InvalidSource,
     #[error("runtime geometry admission queue is full (capacity {capacity})")]
     QueueFull { capacity: usize },
+    #[error("deferred runtime geometry requires immutable shared source storage")]
+    DeferredSourceNotShared,
     #[error("runtime geometry service has shut down")]
     Shutdown,
 }
@@ -585,6 +631,7 @@ impl Drop for RuntimeGeometryService {
 pub struct RuntimeGeometryRegistry {
     service: RuntimeGeometryService,
     active: Mutex<BTreeSet<RuntimeGeometryKey>>,
+    waiting: Mutex<BTreeMap<RuntimeGeometryKey, RuntimeGeometrySource>>,
     products: Mutex<BTreeMap<RuntimeGeometryKey, Arc<RuntimeGeometryProduct>>>,
     failures: AtomicU64,
 }
@@ -595,6 +642,7 @@ impl RuntimeGeometryRegistry {
         Self {
             service: RuntimeGeometryService::new(capacity),
             active: Mutex::new(BTreeSet::new()),
+            waiting: Mutex::new(BTreeMap::new()),
             products: Mutex::new(BTreeMap::new()),
             failures: AtomicU64::new(0),
         }
@@ -642,6 +690,50 @@ impl RuntimeGeometryRegistry {
         Ok(key)
     }
 
+    /// Request eventual admission for a source already held in immutable
+    /// shared storage. Saturation retains only an Arc/borrowed view, never a
+    /// second geometry allocation. Pending keys are submitted in content-key
+    /// order as worker slots complete, so a one-shot scene build cannot lose
+    /// every prototype after the first bounded batch.
+    pub fn admit_or_defer_shared(
+        &self,
+        source: RuntimeGeometrySource,
+    ) -> Result<RuntimeGeometryKey, RuntimeGeometryServiceError> {
+        source.validate()?;
+        if source.shared_prototype.is_none() && source.borrowed_source.is_none() {
+            return Err(RuntimeGeometryServiceError::DeferredSourceNotShared);
+        }
+        let key = source.key();
+        if self.product(key).is_some()
+            || self
+                .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&key)
+            || self
+                .waiting
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(&key)
+        {
+            return Ok(key);
+        }
+        if self.service.has_capacity() {
+            let submitted = self.service.submit(source)?;
+            self.active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key);
+            debug_assert_eq!(submitted, key);
+        } else {
+            self.waiting
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key, source);
+        }
+        Ok(key)
+    }
+
     /// Promote every terminal worker result. This never waits or derives.
     pub fn refresh(&self) -> Result<usize, String> {
         let mut active = self
@@ -679,7 +771,44 @@ impl RuntimeGeometryRegistry {
                 RuntimeGeometryStatus::Queued | RuntimeGeometryStatus::Running => {}
             }
         }
+        drop(active);
+        self.admit_waiting()?;
         Ok(promoted)
+    }
+
+    fn admit_waiting(&self) -> Result<(), String> {
+        loop {
+            if !self.service.has_capacity() {
+                return Ok(());
+            }
+            let next = self
+                .waiting
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_first();
+            let Some((key, source)) = next else {
+                return Ok(());
+            };
+            match self.service.submit(source) {
+                Ok(submitted) => {
+                    debug_assert_eq!(submitted, key);
+                    self.active
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(key);
+                }
+                Err(RuntimeGeometryServiceError::QueueFull { .. }) => {
+                    return Err("runtime geometry capacity changed while admitting deferred source".into());
+                }
+                Err(error) => {
+                    self.failures.fetch_add(1, Ordering::Relaxed);
+                    return Err(format!(
+                        "Ochroma deferred runtime geometry admission failed for {}: {error}",
+                        hex_key(key)
+                    ));
+                }
+            }
+        }
     }
 
     #[must_use]
@@ -701,6 +830,11 @@ impl RuntimeGeometryRegistry {
         self.service.is_idle()
             && self
                 .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+            && self
+                .waiting
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_empty()
@@ -745,9 +879,21 @@ fn worker_main(shared: &Shared) {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         };
+        let source_triangles = source.source_indices().len();
+        let started = Instant::now();
         let result = derive_product(&source)
             .map(Arc::new)
             .map_err(|error| Arc::<str>::from(error));
+        if let Ok(product) = &result {
+            eprintln!(
+                "[mega-geometry] derived key={} triangles={} pages={} cache_hit={} elapsed_ms={:.1}",
+                &hex_key(key)[..12],
+                source_triangles,
+                product.detail.page_count,
+                product.detail.cache_hit,
+                started.elapsed().as_secs_f64() * 1_000.0,
+            );
+        }
         // The product contains only derived programs plus page descriptors; it
         // does not borrow the authoritative source. Release that potentially
         // city-scale clone before publishing readiness, otherwise a renderer
@@ -804,14 +950,25 @@ fn derive_product(source: &RuntimeGeometrySource) -> Result<RuntimeGeometryProdu
     let indices = source.source_indices();
     let material_ids = source.source_material_ids();
     let weathering_masks = source.source_weathering_masks();
-    let programs = prepare_mesh_programs(MeshProgramInput {
-        positions,
-        indices,
-        uvs,
-        material_ids,
-    })
-    .map_err(|error| format!("derive exact programs: {error}"))?
-    .derivation;
+    let programs = match source.derivation {
+        RuntimeGeometryDerivation::ProgramsAndDetail => prepare_mesh_programs(MeshProgramInput {
+            positions,
+            indices,
+            uvs,
+            material_ids,
+        })
+        .map_err(|error| format!("derive exact programs: {error}"))?
+        .derivation,
+        RuntimeGeometryDerivation::DetailOnly => MeshProgramDerivation {
+            payload: None,
+            exact_quad_count: 0,
+            program_count: 0,
+            covered_triangle_count: 0,
+            residual_triangle_count: u32::try_from(indices.len())
+                .map_err(|_| "detail-only source exceeds u32 triangles".to_string())?,
+            rejected_quad_candidates: 0,
+        },
+    };
     let covered = programs
         .payload
         .as_ref()
@@ -895,6 +1052,7 @@ mod tests {
             weathering_masks: vec![[0.0; 7]; 6],
             shared_prototype: None,
             borrowed_source: None,
+            derivation: RuntimeGeometryDerivation::ProgramsAndDetail,
         }
     }
 
@@ -957,6 +1115,7 @@ mod tests {
                 indices,
                 weathering_masks: weathering,
             }),
+            derivation: RuntimeGeometryDerivation::ProgramsAndDetail,
         };
         borrowed.validate().unwrap();
         assert_eq!(borrowed.source_positions().as_ptr(), positions_ptr);
@@ -981,6 +1140,23 @@ mod tests {
         assert_eq!(service.completion_epoch(), 1);
         assert_eq!(product.programs.covered_triangle_count, 4);
         assert_eq!(product.detail.page_count, 0);
+    }
+
+    #[test]
+    fn organic_detail_only_request_skips_exact_program_extraction() {
+        let service = RuntimeGeometryService::new(1);
+        let mut organic = source();
+        organic.positions[5][2] = 0.37;
+        let key = service.submit(organic.detail_only()).unwrap();
+        let RuntimeGeometryStatus::Ready(product) =
+            service.wait(key, Duration::from_secs(10))
+        else {
+            panic!("detail-only runtime geometry did not complete");
+        };
+        assert!(product.programs.payload.is_none());
+        assert_eq!(product.programs.program_count, 0);
+        assert_eq!(product.programs.residual_triangle_count, 4);
+        assert!(product.detail.page_count > 0);
     }
 
     #[test]
@@ -1079,5 +1255,39 @@ mod tests {
         registry
             .admit(distinct)
             .expect("caller can retry after a bounded slot drains");
+    }
+
+    #[test]
+    fn registry_defers_shared_sources_and_drains_them() {
+        let registry = RuntimeGeometryRegistry::new(1);
+        let first_mesh = hybrid_source().freeze_prototype_geometry();
+        let mut second_mesh = hybrid_source();
+        second_mesh.positions[0][2] = 0.25;
+        let second_mesh = second_mesh.freeze_prototype_geometry();
+        let first_key = registry
+            .admit_or_defer_shared(RuntimeGeometrySource::from_hybrid_mesh(&first_mesh).unwrap())
+            .unwrap();
+        let second_key = registry
+            .admit_or_defer_shared(RuntimeGeometrySource::from_hybrid_mesh(&second_mesh).unwrap())
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !registry.is_idle() && Instant::now() < deadline {
+            registry.refresh().unwrap();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        registry.refresh().unwrap();
+        assert!(registry.is_idle());
+        assert!(registry.product(first_key).is_some());
+        assert!(registry.product(second_key).is_some());
+    }
+
+    #[test]
+    fn deferred_admission_rejects_owned_duplicate_source() {
+        let registry = RuntimeGeometryRegistry::new(1);
+        assert_eq!(
+            registry.admit_or_defer_shared(source()),
+            Err(RuntimeGeometryServiceError::DeferredSourceNotShared)
+        );
     }
 }

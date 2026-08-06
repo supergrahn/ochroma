@@ -520,6 +520,15 @@ impl HybridMesh {
     /// No vertices are expanded and the source index order is preserved.
     #[must_use]
     pub fn freeze_prototype_geometry(mut self) -> Self {
+        self.freeze_prototype_geometry_in_place();
+        self
+    }
+
+    /// In-place form used when an already assembled runtime prototype must be
+    /// shared by the source BLAS and bounded asynchronous MegaGeometry work.
+    /// Accessors continue to expose the same indexed streams; only ownership
+    /// moves into one immutable allocation.
+    pub fn freeze_prototype_geometry_in_place(&mut self) {
         if self.prototype_geometry.is_none() {
             assert_eq!(
                 self.indices.len() % 3,
@@ -551,7 +560,6 @@ impl HybridMesh {
                 weathering_masks,
             }));
         }
-        self
     }
 
     /// Remove every geometry owner from a transform-only instance descriptor.
