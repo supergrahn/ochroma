@@ -32,6 +32,9 @@ pub mod particles;
 pub mod perf_inspector;
 pub mod postprocess;
 pub mod profiling;
+pub mod progressive_reveal;
+#[cfg(feature = "spectra-native")]
+pub use spectra_scene_state::ProgressiveRevealStateGpu;
 #[cfg(feature = "bevy")]
 pub mod render_ecs;
 pub mod render_graph;

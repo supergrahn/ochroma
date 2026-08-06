@@ -400,6 +400,9 @@ pub struct BlasDesc {
     /// city's >255 distinct (channel,texture,colour) combos are not capped/aliased.
     /// May be empty (all triangles default to relative material 0).
     pub material_ids: Vec<u32>,
+    /// Optional authored construction assembly rank per triangle. Empty means
+    /// the prototype has no progressive-assembly contract.
+    pub construction_group_ids: Vec<u32>,
     /// REAL per-mesh AABB: `(min, max)` object-space corners.
     pub aabb_min: [f32; 3],
     pub aabb_max: [f32; 3],

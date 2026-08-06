@@ -17,6 +17,19 @@ use std::time::{Duration, Instant};
 
 const RUNTIME_GEOMETRY_SOURCE_SCHEMA: u32 = 1;
 
+/// Static read-only views into an authoritative source allocation owned by a
+/// game-object cache. The admission worker may outlive the caller's stack but
+/// never the cache, so callers must provide genuinely process/catalog-lifetime
+/// storage. This prevents a second city-scale copy while pages are derived.
+#[derive(Clone, Copy, Debug)]
+pub struct RuntimeGeometryBorrowedSource {
+    pub positions: &'static [[f32; 3]],
+    pub normals: &'static [[f32; 3]],
+    pub uvs: &'static [[f32; 2]],
+    pub indices: &'static [[u32; 3]],
+    pub weathering_masks: &'static [[f32; 7]],
+}
+
 #[derive(Clone, Debug)]
 pub struct RuntimeGeometrySource {
     pub positions: Vec<[f32; 3]>,
@@ -25,33 +38,130 @@ pub struct RuntimeGeometrySource {
     pub indices: Vec<[u32; 3]>,
     pub material_ids: Vec<u32>,
     pub weathering_masks: Vec<[f32; 7]>,
+    /// Shared immutable source backing when admission originates from a frozen
+    /// `HybridMesh` prototype. Owned vectors stay empty on this path, so the
+    /// bounded worker does not clone the full source before deriving pages.
+    pub shared_prototype: Option<Arc<crate::hybrid_compose::HybridPrototypeGeometry>>,
+    /// Shared source owned by a non-renderer game-object cache (for example a
+    /// lazily materialised VXP payload). Mutually exclusive with
+    /// `shared_prototype`; owned geometry vectors remain empty.
+    pub borrowed_source: Option<RuntimeGeometryBorrowedSource>,
 }
 
 impl RuntimeGeometrySource {
+    fn source_positions(&self) -> &[[f32; 3]] {
+        if let Some(source) = self.borrowed_source {
+            source.positions
+        } else {
+            self.shared_prototype
+                .as_ref()
+                .map_or(self.positions.as_slice(), |geometry| geometry.positions())
+        }
+    }
+
+    fn source_normals(&self) -> &[[f32; 3]] {
+        if let Some(source) = self.borrowed_source {
+            source.normals
+        } else {
+            self.shared_prototype
+                .as_ref()
+                .map_or(self.normals.as_slice(), |geometry| geometry.normals())
+        }
+    }
+
+    fn source_uvs(&self) -> &[[f32; 2]] {
+        if let Some(source) = self.borrowed_source {
+            source.uvs
+        } else {
+            self.shared_prototype
+                .as_ref()
+                .map_or(self.uvs.as_slice(), |geometry| geometry.uvs())
+        }
+    }
+
+    fn source_indices(&self) -> &[[u32; 3]] {
+        if let Some(source) = self.borrowed_source {
+            source.indices
+        } else {
+            self.shared_prototype
+                .as_ref()
+                .map_or(self.indices.as_slice(), |geometry| geometry.indices())
+        }
+    }
+
+    fn source_material_ids(&self) -> &[u32] {
+        self.shared_prototype
+            .as_ref()
+            .map_or(self.material_ids.as_slice(), |geometry| {
+                if geometry.material_ids().is_empty() {
+                    self.material_ids.as_slice()
+                } else {
+                    geometry.material_ids()
+                }
+            })
+    }
+
+    fn source_weathering_masks(&self) -> &[[f32; 7]] {
+        if let Some(source) = self.borrowed_source {
+            source.weathering_masks
+        } else {
+            self.shared_prototype
+                .as_ref()
+                .map_or(self.weathering_masks.as_slice(), |geometry| {
+                    geometry.weathering_masks()
+                })
+        }
+    }
+
+    /// Normalize an immutable scene prototype for the shared runtime-geometry
+    /// admission path. This is used by small derived prototypes such as a
+    /// progressive-reveal frontier; the returned content key deduplicates one
+    /// source BLAS across every active instance of the authored section.
+    pub fn from_proto_mesh(
+        mesh: &vox_scene::ProtoMesh,
+    ) -> Result<Self, RuntimeGeometryServiceError> {
+        let source = Self {
+            positions: mesh.positions.clone(),
+            normals: mesh.normals.clone(),
+            uvs: mesh.uvs.clone(),
+            indices: mesh.indices.clone(),
+            material_ids: mesh.material_ids.clone(),
+            weathering_masks: Vec::new(),
+            shared_prototype: None,
+            borrowed_source: None,
+        };
+        source.validate()?;
+        Ok(source)
+    }
+
     fn validate_hybrid_mesh(
         mesh: &crate::hybrid_compose::HybridMesh,
     ) -> Result<usize, RuntimeGeometryServiceError> {
-        let triangle_count = mesh.indices.len() / 3;
-        if mesh.positions.is_empty()
+        let positions = mesh.positions();
+        let indices = mesh.indices();
+        let normals = mesh.normals();
+        let uvs = mesh.uvs();
+        let weathering_masks = mesh.weathering_masks();
+        let material_ids = mesh.material_ids();
+        let triangle_count = indices.len() / 3;
+        if positions.is_empty()
             || triangle_count == 0
-            || mesh.indices.len() % 3 != 0
-            || mesh.normals.len() != mesh.positions.len()
-            || (!mesh.uvs.is_empty() && mesh.uvs.len() != mesh.positions.len())
-            || (!mesh.weathering_masks.is_empty()
-                && mesh.weathering_masks.len() != mesh.positions.len() * 7)
-            || (!mesh.material_ids.is_empty() && mesh.material_ids.len() != triangle_count)
+            || indices.len() % 3 != 0
+            || normals.len() != positions.len()
+            || (!uvs.is_empty() && uvs.len() != positions.len())
+            || (!weathering_masks.is_empty() && weathering_masks.len() != positions.len() * 7)
+            || (!material_ids.is_empty() && material_ids.len() != triangle_count)
             || mesh
-                .positions
+                .positions()
                 .iter()
                 .flatten()
-                .chain(mesh.normals.iter().flatten())
-                .chain(mesh.uvs.iter().flatten())
-                .chain(mesh.weathering_masks.iter())
+                .chain(normals.iter().flatten())
+                .chain(uvs.iter().flatten())
+                .chain(weathering_masks.iter())
                 .any(|value| !value.is_finite())
-            || mesh
-                .indices
+            || indices
                 .iter()
-                .any(|index| *index as usize >= mesh.positions.len())
+                .any(|index| *index as usize >= positions.len())
         {
             return Err(RuntimeGeometryServiceError::InvalidSource);
         }
@@ -68,32 +178,32 @@ impl RuntimeGeometrySource {
         let mut hash = Sha256::new();
         hash.update(b"OCHROMA_RUNTIME_GEOMETRY_SOURCE");
         hash.update(RUNTIME_GEOMETRY_SOURCE_SCHEMA.to_le_bytes());
-        hash_f32_arrays(&mut hash, &mesh.positions);
-        hash_f32_arrays(&mut hash, &mesh.normals);
-        hash_f32_arrays(&mut hash, &mesh.uvs);
+        hash_f32_arrays(&mut hash, mesh.positions());
+        hash_f32_arrays(&mut hash, mesh.normals());
+        hash_f32_arrays(&mut hash, mesh.uvs());
         hash.update((triangle_count as u64).to_le_bytes());
-        for index in &mesh.indices {
+        for index in mesh.indices() {
             hash.update(index.to_le_bytes());
         }
         hash.update((triangle_count as u64).to_le_bytes());
-        if mesh.material_ids.is_empty() {
+        if mesh.material_ids().is_empty() {
             for _ in 0..triangle_count {
                 hash.update(u32::from(mesh.material_channel).to_le_bytes());
             }
         } else {
-            for material in &mesh.material_ids {
+            for material in mesh.material_ids() {
                 hash.update(material.to_le_bytes());
             }
         }
         hash.update(
-            (if mesh.weathering_masks.is_empty() {
+            (if mesh.weathering_masks().is_empty() {
                 0
             } else {
-                mesh.positions.len()
+                mesh.positions().len()
             } as u64)
                 .to_le_bytes(),
         );
-        for value in &mesh.weathering_masks {
+        for value in mesh.weathering_masks() {
             hash.update(value.to_bits().to_le_bytes());
         }
         Ok(RuntimeGeometryKey(hash.finalize().into()))
@@ -109,30 +219,52 @@ impl RuntimeGeometrySource {
         mesh: &crate::hybrid_compose::HybridMesh,
     ) -> Result<Self, RuntimeGeometryServiceError> {
         let triangle_count = Self::validate_hybrid_mesh(mesh)?;
+        if let Some(shared_prototype) = mesh.shared_prototype_geometry() {
+            let material_ids = if shared_prototype.material_ids().is_empty() {
+                vec![u32::from(mesh.material_channel); triangle_count]
+            } else {
+                Vec::new()
+            };
+            let source = Self {
+                positions: Vec::new(),
+                normals: Vec::new(),
+                uvs: Vec::new(),
+                indices: Vec::new(),
+                material_ids,
+                weathering_masks: Vec::new(),
+                shared_prototype: Some(shared_prototype),
+                borrowed_source: None,
+            };
+            source.validate()?;
+            debug_assert_eq!(source.key(), Self::key_from_hybrid_mesh(mesh)?);
+            return Ok(source);
+        }
         let indices = mesh
-            .indices
+            .indices()
             .chunks_exact(3)
             .map(|triangle| [triangle[0], triangle[1], triangle[2]])
             .collect::<Vec<_>>();
         let weathering_masks = mesh
-            .weathering_masks
+            .weathering_masks()
             .chunks_exact(7)
             .map(|channels| {
                 <[f32; 7]>::try_from(channels).expect("seven-channel chunks are validated")
             })
             .collect::<Vec<_>>();
-        let material_ids = if mesh.material_ids.is_empty() {
+        let material_ids = if mesh.material_ids().is_empty() {
             vec![u32::from(mesh.material_channel); triangle_count]
         } else {
-            mesh.material_ids.clone()
+            mesh.material_ids().to_vec()
         };
         let source = Self {
-            positions: mesh.positions.clone(),
-            normals: mesh.normals.clone(),
-            uvs: mesh.uvs.clone(),
+            positions: mesh.positions().to_vec(),
+            normals: mesh.normals().to_vec(),
+            uvs: mesh.uvs().to_vec(),
             material_ids,
             indices,
             weathering_masks,
+            shared_prototype: None,
+            borrowed_source: None,
         };
         source.validate()?;
         debug_assert_eq!(source.key(), Self::key_from_hybrid_mesh(mesh)?);
@@ -140,26 +272,40 @@ impl RuntimeGeometrySource {
     }
 
     pub fn validate(&self) -> Result<(), RuntimeGeometryServiceError> {
-        if self.positions.is_empty()
-            || self.indices.is_empty()
-            || self.normals.len() != self.positions.len()
-            || (!self.uvs.is_empty() && self.uvs.len() != self.positions.len())
-            || (!self.weathering_masks.is_empty()
-                && self.weathering_masks.len() != self.positions.len())
-            || self.material_ids.len() != self.indices.len()
+        if self.borrowed_source.is_some() && self.shared_prototype.is_some()
+            || self.borrowed_source.is_some()
+                && (!self.positions.is_empty()
+                    || !self.normals.is_empty()
+                    || !self.uvs.is_empty()
+                    || !self.indices.is_empty()
+                    || !self.weathering_masks.is_empty())
+        {
+            return Err(RuntimeGeometryServiceError::InvalidSource);
+        }
+        let positions = self.source_positions();
+        let normals = self.source_normals();
+        let uvs = self.source_uvs();
+        let indices = self.source_indices();
+        let material_ids = self.source_material_ids();
+        let weathering_masks = self.source_weathering_masks();
+        if positions.is_empty()
+            || indices.is_empty()
+            || normals.len() != positions.len()
+            || (!uvs.is_empty() && uvs.len() != positions.len())
+            || (!weathering_masks.is_empty() && weathering_masks.len() != positions.len())
+            || material_ids.len() != indices.len()
             || self
-                .positions
+                .source_positions()
                 .iter()
                 .flatten()
-                .chain(self.normals.iter().flatten())
-                .chain(self.uvs.iter().flatten())
-                .chain(self.weathering_masks.iter().flatten())
+                .chain(normals.iter().flatten())
+                .chain(uvs.iter().flatten())
+                .chain(weathering_masks.iter().flatten())
                 .any(|value| !value.is_finite())
-            || self
-                .indices
+            || indices
                 .iter()
                 .flatten()
-                .any(|index| *index as usize >= self.positions.len())
+                .any(|index| *index as usize >= positions.len())
         {
             return Err(RuntimeGeometryServiceError::InvalidSource);
         }
@@ -171,12 +317,12 @@ impl RuntimeGeometrySource {
         let mut hash = Sha256::new();
         hash.update(b"OCHROMA_RUNTIME_GEOMETRY_SOURCE");
         hash.update(RUNTIME_GEOMETRY_SOURCE_SCHEMA.to_le_bytes());
-        hash_f32_arrays(&mut hash, &self.positions);
-        hash_f32_arrays(&mut hash, &self.normals);
-        hash_f32_arrays(&mut hash, &self.uvs);
-        hash_u32_arrays(&mut hash, &self.indices);
-        hash_u32s(&mut hash, &self.material_ids);
-        hash_f32_arrays(&mut hash, &self.weathering_masks);
+        hash_f32_arrays(&mut hash, self.source_positions());
+        hash_f32_arrays(&mut hash, self.source_normals());
+        hash_f32_arrays(&mut hash, self.source_uvs());
+        hash_u32_arrays(&mut hash, self.source_indices());
+        hash_u32s(&mut hash, self.source_material_ids());
+        hash_f32_arrays(&mut hash, self.source_weathering_masks());
         RuntimeGeometryKey(hash.finalize().into())
     }
 }
@@ -454,6 +600,15 @@ impl RuntimeGeometryRegistry {
         }
     }
 
+    /// Whether a new owned scene source can enter the bounded derivation
+    /// island. Callers check this before normalising/cloning a finished mesh;
+    /// constructing a city-scale source merely to return `QueueFull` defeats
+    /// the bound and was the source of multi-gigabyte transient allocations.
+    #[must_use]
+    pub fn has_capacity(&self) -> bool {
+        self.service.has_capacity()
+    }
+
     /// Admit a finished mesh without waiting. Returns its stable content key.
     ///
     /// `QueueFull` means the authoritative triangle mesh remains renderable and
@@ -559,7 +714,10 @@ impl RuntimeGeometryRegistry {
 
 impl Default for RuntimeGeometryRegistry {
     fn default() -> Self {
-        Self::new(8)
+        // Ordinary scene meshes are owned vectors, not borrowed VXP mappings.
+        // One running/ready source bounds duplicate live geometry to one exact
+        // prototype; completed products are promoted before the next admission.
+        Self::new(1)
     }
 }
 
@@ -640,11 +798,17 @@ fn hex_key(key: RuntimeGeometryKey) -> String {
 }
 
 fn derive_product(source: &RuntimeGeometrySource) -> Result<RuntimeGeometryProduct, String> {
+    let positions = source.source_positions();
+    let normals = source.source_normals();
+    let uvs = source.source_uvs();
+    let indices = source.source_indices();
+    let material_ids = source.source_material_ids();
+    let weathering_masks = source.source_weathering_masks();
     let programs = prepare_mesh_programs(MeshProgramInput {
-        positions: &source.positions,
-        indices: &source.indices,
-        uvs: &source.uvs,
-        material_ids: &source.material_ids,
+        positions,
+        indices,
+        uvs,
+        material_ids,
     })
     .map_err(|error| format!("derive exact programs: {error}"))?
     .derivation;
@@ -656,24 +820,24 @@ fn derive_product(source: &RuntimeGeometrySource) -> Result<RuntimeGeometryProdu
     let mut residual_indices = Vec::new();
     let mut residual_materials = Vec::new();
     let mut residual_sources = Vec::new();
-    for (triangle, indices) in source.indices.iter().copied().enumerate() {
+    for (triangle, indices) in indices.iter().copied().enumerate() {
         if covered.binary_search(&(triangle as u32)).is_ok() {
             continue;
         }
         residual_indices.push(indices);
-        residual_materials.push(source.material_ids[triangle]);
+        residual_materials.push(material_ids[triangle]);
         residual_sources.push(triangle as u32);
     }
     let detail = prepare_runtime_detail(
-        &source.positions,
-        &source.indices,
+        positions,
+        indices,
         DetailMeshInput {
-            positions: &source.positions,
-            normals: &source.normals,
-            uvs: &source.uvs,
+            positions,
+            normals,
+            uvs,
             indices: &residual_indices,
             material_ids: &residual_materials,
-            weathering_masks: &source.weathering_masks,
+            weathering_masks,
         },
         &residual_sources,
         &[0.125, 0.25, 0.5, 1.0],
@@ -729,6 +893,8 @@ mod tests {
             indices: vec![[0, 2, 1], [0, 3, 2], [1, 5, 4], [1, 2, 5]],
             material_ids: vec![0; 4],
             weathering_masks: vec![[0.0; 7]; 6],
+            shared_prototype: None,
+            borrowed_source: None,
         }
     }
 
@@ -743,6 +909,64 @@ mod tests {
         mesh.uvs = source().uvs;
         mesh.weathering_masks = vec![0.0; mesh.positions.len() * 7];
         mesh
+    }
+
+    #[test]
+    fn frozen_hybrid_admission_shares_source_geometry() {
+        let mesh = hybrid_source().freeze_prototype_geometry();
+        assert!(mesh.positions.is_empty());
+        assert!(mesh.indices.is_empty());
+        assert_eq!(mesh.positions().len(), 6);
+        let before = mesh.prototype_geometry_strong_count();
+        let source = RuntimeGeometrySource::from_hybrid_mesh(&mesh).unwrap();
+        assert!(source.positions.is_empty());
+        assert!(source.indices.is_empty());
+        assert!(source.weathering_masks.is_empty());
+        assert!(source.shared_prototype.is_some());
+        assert_eq!(mesh.prototype_geometry_strong_count(), before + 1);
+        assert_eq!(source.source_positions().len(), 6);
+        assert_eq!(source.source_indices().len(), 4);
+        assert_eq!(source.source_weathering_masks().len(), 6);
+        assert_eq!(
+            source.key(),
+            RuntimeGeometrySource::key_from_hybrid_mesh(&mesh).unwrap()
+        );
+    }
+
+    #[test]
+    fn borrowed_game_object_admission_keeps_one_source_allocation() {
+        let owned = source();
+        let positions = Box::leak(owned.positions.into_boxed_slice());
+        let normals = Box::leak(owned.normals.into_boxed_slice());
+        let uvs = Box::leak(owned.uvs.into_boxed_slice());
+        let indices = Box::leak(owned.indices.into_boxed_slice());
+        let weathering = Box::leak(owned.weathering_masks.into_boxed_slice());
+        let positions_ptr = positions.as_ptr();
+        let borrowed = RuntimeGeometrySource {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            indices: Vec::new(),
+            material_ids: owned.material_ids,
+            weathering_masks: Vec::new(),
+            shared_prototype: None,
+            borrowed_source: Some(RuntimeGeometryBorrowedSource {
+                positions,
+                normals,
+                uvs,
+                indices,
+                weathering_masks: weathering,
+            }),
+        };
+        borrowed.validate().unwrap();
+        assert_eq!(borrowed.source_positions().as_ptr(), positions_ptr);
+        assert!(borrowed.positions.capacity() == 0 && borrowed.indices.capacity() == 0);
+        let service = RuntimeGeometryService::new(1);
+        let key = service.submit(borrowed).unwrap();
+        assert!(matches!(
+            service.wait(key, Duration::from_secs(10)),
+            RuntimeGeometryStatus::Ready(_)
+        ));
     }
 
     #[test]
@@ -815,10 +1039,7 @@ mod tests {
             RuntimeGeometryStatus::Ready(_)
         ));
         assert!(!service.is_idle());
-        assert!(matches!(
-            service.take(key),
-            RuntimeGeometryStatus::Ready(_)
-        ));
+        assert!(matches!(service.take(key), RuntimeGeometryStatus::Ready(_)));
         assert!(service.is_idle());
     }
 

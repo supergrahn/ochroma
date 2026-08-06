@@ -1631,6 +1631,40 @@ impl ResidentSceneRenderer {
             .set_material_base(instance_index as u32, material_base);
     }
 
+    /// Bind or unbind one instance's sparse progressive-reveal record. The GPU
+    /// changes the record index and active bit atomically while preserving all
+    /// unrelated instance flags; no geometry, BLAS, scene, or IAS rebuild occurs.
+    pub fn update_instance_progressive_reveal(
+        &mut self,
+        instance_index: usize,
+        state_index: Option<u32>,
+    ) {
+        self.delta_ring
+            .set_progressive_reveal(instance_index as u32, state_index);
+    }
+
+    /// Upload the sparse progressive-reveal records referenced by active
+    /// resident instances. Completed instances have no record and no lookup.
+    pub fn set_progressive_reveal_states(
+        &mut self,
+        records: &[spectra_scene_state::ProgressiveRevealStateGpu],
+    ) -> Result<(), String> {
+        self.renderer
+            .set_progressive_reveal_states(records)
+            .map_err(|e| format!("set_progressive_reveal_states: {e:?}"))
+    }
+
+    /// Apply id-sorted progress changes into the structurally admitted sparse
+    /// record buffer with no scene/IAS/BLAS rebuild and no live-path allocation.
+    pub fn update_progressive_reveal_states(
+        &mut self,
+        updates: &[(u32, spectra_scene_state::ProgressiveRevealStateGpu)],
+    ) -> Result<(), String> {
+        self.renderer
+            .update_progressive_reveal_states(updates)
+            .map_err(|e| format!("update_progressive_reveal_states: {e:?}"))
+    }
+
     /// Stamp the NodeId→instance_index mapping after a full scene upload.
     /// Call once after every `set_scene` that changes the instance order.
     pub fn reset_retained_mirror<I>(&mut self, nodes: I) -> Result<(), RetainedDeltaError>

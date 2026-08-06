@@ -9,7 +9,7 @@
 use crate::mesh_simplify::{MeshInput, MeshOutput, simplify_mesh};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -145,22 +145,15 @@ pub fn prepare_runtime_detail(
         });
     }
     RUNTIME_DETAIL_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
-    let levels = derive_clustered_detail_levels(
+    let page_count = derive_and_write_cache_atomically(
+        &cache_path,
+        cache_key,
         &clusters,
         residual_input,
         residual_source_triangles,
         full_indices.len(),
         ratios,
     )?;
-    let page_count = levels.len() as u32;
-    let mut encoded = Vec::with_capacity(levels.len());
-    // Consume each decoded level as soon as its independently streamable page
-    // exists. Retaining both complete hierarchy forms doubled a cold-cache job.
-    for level in levels {
-        encoded.push(encode_detail_page(&level)?);
-    }
-    write_cache_pages_atomically(&cache_path, cache_key, &encoded)?;
-    drop(encoded);
     let runtime_pages = load_cache_runtime_pages(&cache_path, cache_key)?
         .ok_or(RuntimeDetailError::CacheCorrupt)?;
     clusters.set_runtime_pages(runtime_pages);
@@ -226,20 +219,21 @@ fn remap_source_triangles(
 /// the existing 256-triangle source partition as the page domain bounds decode
 /// storage, native rebuild work, and eviction granularity without changing the
 /// finished asset or accepting an authored LOD.
-fn derive_clustered_detail_levels(
+fn for_each_clustered_detail_level(
     clusters: &vox_data::geometry_clusters::ReadyGeometryClusters,
     residual_input: DetailMeshInput<'_>,
     residual_source_triangles: &[u32],
     full_triangle_count: usize,
     ratios: &[f32],
-) -> Result<Vec<DerivedDetailLevel>, RuntimeDetailError> {
+    mut emit: impl FnMut(DerivedDetailLevel) -> Result<(), RuntimeDetailError>,
+) -> Result<usize, RuntimeDetailError> {
     let residual_by_source = residual_source_triangles
         .iter()
         .copied()
         .enumerate()
         .map(|(local, source)| (source, local))
         .collect::<BTreeMap<_, _>>();
-    let mut levels = Vec::new();
+    let mut emitted = 0usize;
     for cluster in clusters.clusters() {
         let start = cluster.triangle_order_start() as usize;
         let end = start
@@ -276,7 +270,7 @@ fn derive_clustered_detail_levels(
         )?;
         remap_source_triangles(&mut hierarchy, &local_sources, full_triangle_count)?;
         let group_base =
-            u32::try_from(levels.len()).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+            u32::try_from(emitted).map_err(|_| RuntimeDetailError::AddressOverflow)?;
         for level in &mut hierarchy.levels {
             level.group_id = level
                 .group_id
@@ -291,12 +285,15 @@ fn derive_clustered_detail_levels(
                 None => None,
             };
         }
-        levels.extend(hierarchy.levels);
+        for level in hierarchy.levels {
+            emit(level)?;
+            emitted += 1;
+        }
     }
-    if levels.is_empty() {
+    if emitted == 0 {
         return Err(DetailDerivationError::EmptyLevel.into());
     }
-    Ok(levels)
+    Ok(emitted)
 }
 
 fn runtime_detail_cache_root() -> PathBuf {
@@ -355,9 +352,14 @@ fn hash_u32s(hash: &mut Sha256, values: &[u32]) {
 }
 
 const DETAIL_CACHE_MAGIC: [u8; 4] = *b"MGCF";
-const DETAIL_CACHE_SCHEMA: u32 = 2;
+// Schema 3 makes the cache table a real page index. Schema 2 stored only
+// (length, hash), forcing every cache hit to read, hash and fully decode every
+// page before a single page could be admitted. That is not a cache: it made a
+// 28 GiB body pack part of scene startup. Page bodies are now validated lazily
+// by Spectra when the indexed range is admitted.
+const DETAIL_CACHE_SCHEMA: u32 = 3;
 const DETAIL_CACHE_FIXED_HEADER: usize = 4 + 4 + 32 + 4;
-const DETAIL_CACHE_TABLE_ENTRY: usize = 8 + 32;
+const DETAIL_CACHE_TABLE_ENTRY: usize = 8 + 32 + 6 * 4 + 6 * 4;
 
 #[cfg(test)]
 struct DecodedDetailCache {
@@ -378,13 +380,13 @@ struct CachedPageSummary {
     byte_count: u32,
     decoded_byte_count: u32,
     content_hash: [u8; 32],
+    bounds_min: [f32; 3],
+    bounds_max: [f32; 3],
 }
 
-/// Validate a detail cache one independently decodable page at a time and emit
-/// only the runtime page table. A cache hit used to hold three complete forms at
-/// once: `std::fs::read` of the whole file, copied encoded pages, and every
-/// decoded hierarchy level. Runtime streaming needs none of those bodies after
-/// their descriptor has been checked; the file itself remains the page source.
+/// Read only the fixed header and compact page index. Page bodies stay cold
+/// until Spectra admits the indexed range and validates its content hash. A
+/// cache hit therefore scales with page count, not with cached geometry bytes.
 fn load_cache_runtime_pages(
     path: &Path,
     expected_key: [u8; 32],
@@ -433,88 +435,73 @@ fn load_cache_runtime_pages(
     let table_bytes = page_count
         .checked_mul(DETAIL_CACHE_TABLE_ENTRY)
         .ok_or(RuntimeDetailError::AddressOverflow)?;
-    let mut records = Vec::with_capacity(page_count);
+    let first_page_offset = DETAIL_CACHE_FIXED_HEADER
+        .checked_add(table_bytes)
+        .ok_or(RuntimeDetailError::AddressOverflow)?;
+    if u64::try_from(first_page_offset).map_err(|_| RuntimeDetailError::AddressOverflow)?
+        > file_len
+    {
+        return Ok(None);
+    }
+    let mut source_offset =
+        u64::try_from(first_page_offset).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+    let mut summaries: Vec<CachedPageSummary> = Vec::with_capacity(page_count);
     let mut table_entry = [0u8; DETAIL_CACHE_TABLE_ENTRY];
-    for _ in 0..page_count {
+    for index in 0..page_count {
         if reader.read_exact(&mut table_entry).is_err() {
             return Ok(None);
         }
         let len = u64::from_le_bytes(table_entry[..8].try_into().expect("eight-byte page len"));
-        let hash = table_entry[8..]
+        let hash = table_entry[8..40]
             .try_into()
             .expect("thirty-two-byte page hash");
-        records.push((len, hash));
-    }
-    let first_page_offset = DETAIL_CACHE_FIXED_HEADER
-        .checked_add(table_bytes)
-        .ok_or(RuntimeDetailError::AddressOverflow)?;
-    let mut source_offset =
-        u64::try_from(first_page_offset).map_err(|_| RuntimeDetailError::AddressOverflow)?;
-    let mut summaries: Vec<CachedPageSummary> = Vec::with_capacity(page_count);
-    let mut root_bounds = vec![([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]); page_count];
-    for (index, (len, expected_hash)) in records.into_iter().enumerate() {
-        let len = usize::try_from(len).map_err(|_| RuntimeDetailError::AddressOverflow)?;
-        let mut page = Vec::new();
-        page.try_reserve_exact(len)
-            .map_err(|_| RuntimeDetailError::AddressOverflow)?;
-        page.resize(len, 0);
-        if reader.read_exact(&mut page).is_err()
-            || <[u8; 32]>::from(Sha256::digest(&page)) != expected_hash
-        {
-            return Ok(None);
-        }
-        let level = match decode_detail_page(&page) {
-            Ok(level) => level,
-            Err(_) => return Ok(None),
+        let word = |offset: usize| {
+            u32::from_le_bytes(
+                table_entry[offset..offset + 4]
+                    .try_into()
+                    .expect("four-byte cache-index word"),
+            )
         };
-        if level.group_id as usize != index
-            || level
-                .parent_group_id
-                .is_some_and(|parent| parent as usize >= index)
+        let group_id = word(40);
+        let parent_word = word(44);
+        let parent_group_id = (parent_word != u32::MAX).then_some(parent_word);
+        let vertex_count = word(48);
+        let primitive_count = word(52);
+        let geometric_error_q = word(56);
+        let decoded_byte_count = word(60);
+        let bounds_min = std::array::from_fn(|axis| f32::from_bits(word(64 + axis * 4)));
+        let bounds_max = std::array::from_fn(|axis| f32::from_bits(word(76 + axis * 4)));
+        if group_id as usize != index
+            || parent_group_id.is_some_and(|parent| parent as usize >= index)
+            || vertex_count == 0
+            || primitive_count == 0
+            || bounds_min
+                .iter()
+                .chain(bounds_max.iter())
+                .any(|value| !value.is_finite())
+            || (0..3).any(|axis| bounds_min[axis] > bounds_max[axis])
         {
             return Ok(None);
         }
-        let root_index = level
-            .parent_group_id
-            .map(|parent| summaries[parent as usize].root_index)
-            .unwrap_or(index);
-        for position in &level.mesh.positions {
-            for axis in 0..3 {
-                root_bounds[root_index].0[axis] =
-                    root_bounds[root_index].0[axis].min(position[axis]);
-                root_bounds[root_index].1[axis] =
-                    root_bounds[root_index].1[axis].max(position[axis]);
-            }
-        }
-        let vertex_count = u32::try_from(level.mesh.positions.len())
-            .map_err(|_| RuntimeDetailError::AddressOverflow)?;
-        let primitive_count = u32::try_from(level.mesh.indices.len())
-            .map_err(|_| RuntimeDetailError::AddressOverflow)?;
-        let decoded_byte_count = u64::from(vertex_count)
-            .checked_mul(24 * 4)
-            .and_then(|vertex_bytes| {
-                u64::from(primitive_count)
-                    .checked_mul((3 + 1 + 1 + 15) * 4)
-                    .and_then(|triangle_bytes| vertex_bytes.checked_add(triangle_bytes))
-            })
-            .and_then(|bytes| u32::try_from(bytes).ok())
-            .ok_or(RuntimeDetailError::AddressOverflow)?;
+        let byte_count = u32::try_from(len).map_err(|_| RuntimeDetailError::AddressOverflow)?;
         summaries.push(CachedPageSummary {
-            group_id: level.group_id,
-            parent_group_id: level.parent_group_id,
-            root_index,
+            group_id,
+            parent_group_id,
+            root_index: parent_group_id
+                .map(|parent| summaries[parent as usize].root_index)
+                .unwrap_or(index),
             vertex_count,
             primitive_count,
-            geometric_error_q: (level.accumulated_world_error.max(0.0) * 1024.0)
-                .ceil()
-                .min(u32::MAX as f32) as u32,
+            geometric_error_q,
             source_offset,
-            byte_count: u32::try_from(len).map_err(|_| RuntimeDetailError::AddressOverflow)?,
+            byte_count,
             decoded_byte_count,
-            content_hash: expected_hash,
+            content_hash: hash,
+            bounds_min,
+            bounds_max,
         });
         source_offset = source_offset
-            .checked_add(u64::try_from(len).map_err(|_| RuntimeDetailError::AddressOverflow)?)
+            .checked_add(len)
             .ok_or(RuntimeDetailError::AddressOverflow)?;
     }
     if source_offset != file_len {
@@ -524,15 +511,14 @@ fn load_cache_runtime_pages(
         .iter()
         .enumerate()
         .map(|(index, summary)| {
-            let bounds = root_bounds[summary.root_index];
             vox_data::mega_geometry::RuntimeGeometryPage {
                 page_id: index as u32,
                 kind: vox_data::mega_geometry::GEOMETRY_PAGE_KIND_TRIANGLE_DETAIL,
                 group_id: summary.group_id,
                 vertex_count: summary.vertex_count,
                 primitive_count: summary.primitive_count,
-                bounds_min: bounds.0,
-                bounds_max: bounds.1,
+                bounds_min: summary.bounds_min,
+                bounds_max: summary.bounds_max,
                 geometric_error_q: summary.geometric_error_q,
                 parent_page_id: summary.parent_group_id,
                 source_pack_id: 0,
@@ -550,11 +536,49 @@ fn load_cache_runtime_pages(
     Ok(Some(runtime_pages))
 }
 
-fn write_cache_pages_atomically(
+fn derive_and_write_cache_atomically(
     path: &Path,
     source_key: [u8; 32],
-    pages: &[Vec<u8>],
-) -> Result<(), RuntimeDetailError> {
+    clusters: &vox_data::geometry_clusters::ReadyGeometryClusters,
+    residual_input: DetailMeshInput<'_>,
+    residual_source_triangles: &[u32],
+    full_triangle_count: usize,
+    ratios: &[f32],
+) -> Result<u32, RuntimeDetailError> {
+    let residual_sources = residual_source_triangles
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let active_clusters = clusters
+        .clusters()
+        .iter()
+        .filter(|cluster| {
+            let start = cluster.triangle_order_start() as usize;
+            let end = start.saturating_add(cluster.triangle_count() as usize);
+            clusters
+                .triangle_order()
+                .get(start..end)
+                .is_some_and(|triangles| {
+                    triangles
+                        .iter()
+                        .any(|triangle| residual_sources.contains(triangle))
+                })
+        })
+        .count();
+    let page_count = active_clusters
+        .checked_mul(ratios.len())
+        .ok_or(RuntimeDetailError::AddressOverflow)?;
+    if page_count == 0 {
+        return Err(DetailDerivationError::EmptyLevel.into());
+    }
+    let page_count_u32 =
+        u32::try_from(page_count).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+    let table_bytes = page_count
+        .checked_mul(DETAIL_CACHE_TABLE_ENTRY)
+        .ok_or(RuntimeDetailError::AddressOverflow)?;
+    let first_page_offset = DETAIL_CACHE_FIXED_HEADER
+        .checked_add(table_bytes)
+        .ok_or(RuntimeDetailError::AddressOverflow)?;
     let parent = path.parent().ok_or(RuntimeDetailError::CacheCorrupt)?;
     let sequence = CACHE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(
@@ -566,6 +590,7 @@ fn write_cache_pages_atomically(
         sequence,
     ));
     let mut file = std::fs::OpenOptions::new()
+        .read(true)
         .write(true)
         .create_new(true)
         .open(&temp)
@@ -573,38 +598,153 @@ fn write_cache_pages_atomically(
             path: temp.clone(),
             source,
         })?;
-    let write = |file: &mut std::fs::File, bytes: &[u8]| {
-        file.write_all(bytes).map_err(|source| RuntimeDetailError::Io {
+    file.set_len(
+        u64::try_from(first_page_offset).map_err(|_| RuntimeDetailError::AddressOverflow)?,
+    )
+    .map_err(|source| RuntimeDetailError::Io {
+        path: temp.clone(),
+        source,
+    })?;
+    file.seek(std::io::SeekFrom::Start(
+        u64::try_from(first_page_offset).map_err(|_| RuntimeDetailError::AddressOverflow)?,
+    ))
+    .map_err(|source| RuntimeDetailError::Io {
+        path: temp.clone(),
+        source,
+    })?;
+
+    let mut summaries: Vec<CachedPageSummary> = Vec::with_capacity(page_count);
+    let mut root_bounds = vec![([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]); page_count];
+    let mut source_offset =
+        u64::try_from(first_page_offset).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+    let emitted = for_each_clustered_detail_level(
+        clusters,
+        residual_input,
+        residual_source_triangles,
+        full_triangle_count,
+        ratios,
+        |level| {
+            let page = encode_detail_page(&level)?;
+            let index = summaries.len();
+            let root_index = level
+                .parent_group_id
+                .map(|parent| summaries[parent as usize].root_index)
+                .unwrap_or(index);
+            for position in &level.mesh.positions {
+                for axis in 0..3 {
+                    root_bounds[root_index].0[axis] =
+                        root_bounds[root_index].0[axis].min(position[axis]);
+                    root_bounds[root_index].1[axis] =
+                        root_bounds[root_index].1[axis].max(position[axis]);
+                }
+            }
+            let vertex_count = u32::try_from(level.mesh.positions.len())
+                .map_err(|_| RuntimeDetailError::AddressOverflow)?;
+            let primitive_count = u32::try_from(level.mesh.indices.len())
+                .map_err(|_| RuntimeDetailError::AddressOverflow)?;
+            let decoded_byte_count = u64::from(vertex_count)
+                .checked_mul(24 * 4)
+                .and_then(|vertex_bytes| {
+                    u64::from(primitive_count)
+                        .checked_mul((3 + 1 + 1 + 15) * 4)
+                        .and_then(|triangle_bytes| vertex_bytes.checked_add(triangle_bytes))
+                })
+                .and_then(|bytes| u32::try_from(bytes).ok())
+                .ok_or(RuntimeDetailError::AddressOverflow)?;
+            let byte_count =
+                u32::try_from(page.len()).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+            file.write_all(&page)
+                .map_err(|source| RuntimeDetailError::Io {
+                    path: temp.clone(),
+                    source,
+                })?;
+            summaries.push(CachedPageSummary {
+                group_id: level.group_id,
+                parent_group_id: level.parent_group_id,
+                root_index,
+                vertex_count,
+                primitive_count,
+                geometric_error_q: (level.accumulated_world_error.max(0.0) * 1024.0)
+                    .ceil()
+                    .min(u32::MAX as f32) as u32,
+                source_offset,
+                byte_count,
+                decoded_byte_count,
+                content_hash: Sha256::digest(&page).into(),
+                bounds_min: [0.0; 3],
+                bounds_max: [0.0; 3],
+            });
+            source_offset = source_offset
+                .checked_add(u64::from(byte_count))
+                .ok_or(RuntimeDetailError::AddressOverflow)?;
+            Ok(())
+        },
+    )?;
+    if emitted != page_count {
+        return Err(RuntimeDetailError::CacheCorrupt);
+    }
+    for summary in &mut summaries {
+        let bounds = root_bounds[summary.root_index];
+        summary.bounds_min = bounds.0;
+        summary.bounds_max = bounds.1;
+    }
+    file.seek(std::io::SeekFrom::Start(0))
+        .map_err(|source| RuntimeDetailError::Io {
             path: temp.clone(),
             source,
-        })
-    };
-    write(&mut file, &DETAIL_CACHE_MAGIC)?;
-    write(&mut file, &DETAIL_CACHE_SCHEMA.to_le_bytes())?;
-    write(&mut file, &source_key)?;
-    write(
-        &mut file,
-        &u32::try_from(pages.len())
-            .map_err(|_| RuntimeDetailError::AddressOverflow)?
-            .to_le_bytes(),
-    )?;
-    for page in pages {
-        write(
-            &mut file,
-            &u64::try_from(page.len())
-                .map_err(|_| RuntimeDetailError::AddressOverflow)?
-                .to_le_bytes(),
-        )?;
-        write(&mut file, &<[u8; 32]>::from(Sha256::digest(page)))?;
-    }
-    for page in pages {
-        write(&mut file, page)?;
+        })?;
+    file.write_all(&DETAIL_CACHE_MAGIC)
+        .and_then(|_| file.write_all(&DETAIL_CACHE_SCHEMA.to_le_bytes()))
+        .and_then(|_| file.write_all(&source_key))
+        .and_then(|_| file.write_all(&page_count_u32.to_le_bytes()))
+        .map_err(|source| RuntimeDetailError::Io {
+            path: temp.clone(),
+            source,
+        })?;
+    for summary in &summaries {
+        file.write_all(&u64::from(summary.byte_count).to_le_bytes())
+            .and_then(|_| file.write_all(&summary.content_hash))
+            .map_err(|source| RuntimeDetailError::Io {
+                path: temp.clone(),
+                source,
+            })?;
+        for word in [
+            summary.group_id,
+            summary.parent_group_id.unwrap_or(u32::MAX),
+            summary.vertex_count,
+            summary.primitive_count,
+            summary.geometric_error_q,
+            summary.decoded_byte_count,
+        ] {
+            file.write_all(&word.to_le_bytes())
+                .map_err(|source| RuntimeDetailError::Io {
+                    path: temp.clone(),
+                    source,
+                })?;
+        }
+        for value in summary.bounds_min.into_iter().chain(summary.bounds_max) {
+            file.write_all(&value.to_bits().to_le_bytes())
+                .map_err(|source| RuntimeDetailError::Io {
+                    path: temp.clone(),
+                    source,
+                })?;
+        }
     }
     file.sync_all().map_err(|source| RuntimeDetailError::Io {
         path: temp.clone(),
         source,
     })?;
     drop(file);
+    publish_cache_temp(&temp, path, source_key)?;
+    Ok(page_count_u32)
+}
+
+fn publish_cache_temp(
+    temp: &Path,
+    path: &Path,
+    source_key: [u8; 32],
+) -> Result<(), RuntimeDetailError> {
+    let parent = path.parent().ok_or(RuntimeDetailError::CacheCorrupt)?;
     if let Err(first_error) = std::fs::rename(&temp, path) {
         // Windows cannot atomically replace an existing destination. Another
         // process may have published the same content-addressed cache first;
@@ -639,6 +779,79 @@ fn write_cache_pages_atomically(
 }
 
 #[cfg(test)]
+fn summarize_cache_pages(
+    pages: &[Vec<u8>],
+    first_page_offset: usize,
+) -> Result<Vec<CachedPageSummary>, RuntimeDetailError> {
+    let mut summaries: Vec<CachedPageSummary> = Vec::with_capacity(pages.len());
+    let mut root_bounds = vec![([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]); pages.len()];
+    let mut source_offset =
+        u64::try_from(first_page_offset).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+    for (index, page) in pages.iter().enumerate() {
+        let level = decode_detail_page(page).map_err(|_| RuntimeDetailError::CacheCorrupt)?;
+        if level.group_id as usize != index
+            || level
+                .parent_group_id
+                .is_some_and(|parent| parent as usize >= index)
+        {
+            return Err(RuntimeDetailError::CacheCorrupt);
+        }
+        let root_index = level
+            .parent_group_id
+            .map(|parent| summaries[parent as usize].root_index)
+            .unwrap_or(index);
+        for position in &level.mesh.positions {
+            for axis in 0..3 {
+                root_bounds[root_index].0[axis] =
+                    root_bounds[root_index].0[axis].min(position[axis]);
+                root_bounds[root_index].1[axis] =
+                    root_bounds[root_index].1[axis].max(position[axis]);
+            }
+        }
+        let vertex_count = u32::try_from(level.mesh.positions.len())
+            .map_err(|_| RuntimeDetailError::AddressOverflow)?;
+        let primitive_count = u32::try_from(level.mesh.indices.len())
+            .map_err(|_| RuntimeDetailError::AddressOverflow)?;
+        let decoded_byte_count = u64::from(vertex_count)
+            .checked_mul(24 * 4)
+            .and_then(|vertex_bytes| {
+                u64::from(primitive_count)
+                    .checked_mul((3 + 1 + 1 + 15) * 4)
+                    .and_then(|triangle_bytes| vertex_bytes.checked_add(triangle_bytes))
+            })
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .ok_or(RuntimeDetailError::AddressOverflow)?;
+        let byte_count =
+            u32::try_from(page.len()).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+        summaries.push(CachedPageSummary {
+            group_id: level.group_id,
+            parent_group_id: level.parent_group_id,
+            root_index,
+            vertex_count,
+            primitive_count,
+            geometric_error_q: (level.accumulated_world_error.max(0.0) * 1024.0)
+                .ceil()
+                .min(u32::MAX as f32) as u32,
+            source_offset,
+            byte_count,
+            decoded_byte_count,
+            content_hash: Sha256::digest(page).into(),
+            bounds_min: [0.0; 3],
+            bounds_max: [0.0; 3],
+        });
+        source_offset = source_offset
+            .checked_add(u64::from(byte_count))
+            .ok_or(RuntimeDetailError::AddressOverflow)?;
+    }
+    for summary in &mut summaries {
+        let bounds = root_bounds[summary.root_index];
+        summary.bounds_min = bounds.0;
+        summary.bounds_max = bounds.1;
+    }
+    Ok(summaries)
+}
+
+#[cfg(test)]
 fn encode_cache_file(
     source_key: [u8; 32],
     pages: &[Vec<u8>],
@@ -657,6 +870,7 @@ fn encode_cache_file(
         .and_then(|value| value.checked_add(page_bytes))
         .ok_or(RuntimeDetailError::AddressOverflow)?;
     let mut out = Vec::with_capacity(capacity);
+    let summaries = summarize_cache_pages(pages, DETAIL_CACHE_FIXED_HEADER + table_bytes)?;
     out.extend_from_slice(&DETAIL_CACHE_MAGIC);
     out.extend_from_slice(&DETAIL_CACHE_SCHEMA.to_le_bytes());
     out.extend_from_slice(&source_key);
@@ -665,13 +879,22 @@ fn encode_cache_file(
             .map_err(|_| RuntimeDetailError::AddressOverflow)?
             .to_le_bytes(),
     );
-    for page in pages {
-        out.extend_from_slice(
-            &u64::try_from(page.len())
-                .map_err(|_| RuntimeDetailError::AddressOverflow)?
-                .to_le_bytes(),
-        );
-        out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(page)));
+    for summary in &summaries {
+        out.extend_from_slice(&u64::from(summary.byte_count).to_le_bytes());
+        out.extend_from_slice(&summary.content_hash);
+        for word in [
+            summary.group_id,
+            summary.parent_group_id.unwrap_or(u32::MAX),
+            summary.vertex_count,
+            summary.primitive_count,
+            summary.geometric_error_q,
+            summary.decoded_byte_count,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        for value in summary.bounds_min.into_iter().chain(summary.bounds_max) {
+            out.extend_from_slice(&value.to_bits().to_le_bytes());
+        }
     }
     for page in pages {
         out.extend_from_slice(page);
@@ -714,6 +937,10 @@ fn decode_cache_file(
             .try_into()
             .map_err(|_| RuntimeDetailError::CacheCorrupt)?;
         cursor = hash_end;
+        cursor = cursor
+            .checked_add(6 * 4 + 6 * 4)
+            .filter(|end| *end <= bytes.len())
+            .ok_or(RuntimeDetailError::CacheCorrupt)?;
         records.push((len, hash));
     }
     let mut levels = Vec::with_capacity(page_count);

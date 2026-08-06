@@ -105,6 +105,53 @@ where
 /// A triangle mesh with engine-agnostic geometry and per-mesh spectral
 /// reflectance. Positions are world-space; indices are triangle list (groups of
 /// three indices into `positions`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HybridPrototypeGeometry {
+    positions: Box<[[f32; 3]]>,
+    indices: Box<[[u32; 3]]>,
+    normals: Box<[[f32; 3]]>,
+    uvs: Box<[[f32; 2]]>,
+    material_ids: Box<[u32]>,
+    construction_group_ids: Box<[u32]>,
+    weathering_masks: Box<[[f32; 7]]>,
+}
+
+impl HybridPrototypeGeometry {
+    #[must_use]
+    pub fn positions(&self) -> &[[f32; 3]] {
+        &self.positions
+    }
+
+    #[must_use]
+    pub fn indices(&self) -> &[[u32; 3]] {
+        &self.indices
+    }
+
+    #[must_use]
+    pub fn normals(&self) -> &[[f32; 3]] {
+        &self.normals
+    }
+
+    #[must_use]
+    pub fn uvs(&self) -> &[[f32; 2]] {
+        &self.uvs
+    }
+
+    #[must_use]
+    pub fn material_ids(&self) -> &[u32] {
+        &self.material_ids
+    }
+
+    pub fn construction_group_ids(&self) -> &[u32] {
+        &self.construction_group_ids
+    }
+
+    #[must_use]
+    pub fn weathering_masks(&self) -> &[[f32; 7]] {
+        &self.weathering_masks
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HybridMesh {
     /// World-space vertex positions.
@@ -247,6 +294,13 @@ pub struct HybridMesh {
     /// no map/RNG ordering. (Vegetation mesh-carrier seam.)
     #[serde(deserialize_with = "deserialize_exact_vec")]
     pub material_ids: Vec<u32>,
+    /// Runtime-only per-triangle authored assembly rank used by progressive
+    /// reveal. `u32::MAX` means that the triangle is not a member of the active
+    /// construction assembly sequence. This stream is derived from the VXP
+    /// triangle semantic ids plus its validated construction profile; it is not
+    /// serialized into map artifacts and never changes source topology.
+    #[serde(skip)]
+    pub construction_group_ids: Vec<u32>,
     /// Optional MERGE-GROUP id. `None` (default) = the mesh gets its own BLAS in
     /// the per-mesh unmerge path. `Some(g)` = scene assembly MERGES every mesh
     /// sharing this `g` into ONE multi-material BLAS (per-triangle material ids),
@@ -285,6 +339,26 @@ pub struct HybridMesh {
     /// material carrier.
     #[serde(skip)]
     pub geometry_detail_material_index: Option<u32>,
+    /// Runtime-only engine-generic identity for sparse progressive reveal.
+    /// Games may map construction, repair, assembly, or excavation onto it;
+    /// it is never serialized into authored/cooked mesh data.
+    #[serde(skip)]
+    pub progressive_reveal_key: Option<u64>,
+    /// Runtime-only identity for a shared progressive-reveal frontier instance.
+    /// Unlike `progressive_reveal_key`, this mesh is the cap and is never clipped.
+    #[serde(skip)]
+    pub progressive_reveal_frontier_key: Option<u64>,
+    /// Object-to-world transform before translation along the reveal axis.
+    #[serde(skip)]
+    pub progressive_reveal_frontier_base_transform: Option<[f32; 16]>,
+    /// Object-local unit axis along which `reveal_position` translates the cap.
+    #[serde(skip)]
+    pub progressive_reveal_frontier_axis: [f32; 3],
+    /// When present, this resident instance is a reusable phase prop rather
+    /// than a moving frontier. It is visible only while the shared reveal
+    /// record is in this zero-based phase; other phases park its transform.
+    #[serde(skip)]
+    pub progressive_reveal_frontier_phase: Option<u32>,
     /// Per-submesh material descriptors, indexed by the values in
     /// [`material_ids`]. **EMPTY = use the existing single-material fields**
     /// ([`material_channel`] + [`albedo_tex_path`]/[`normal_tex_path`]/
@@ -343,6 +417,17 @@ pub struct HybridMesh {
     /// it just built, and no deserialized mesh has ever needed it.
     #[serde(skip)]
     pub shared_vertex_topology: bool,
+    /// Runtime-only immutable indexed geometry backing for a shared prototype.
+    ///
+    /// The ordinary Vec fields remain the serialized interchange format. Once a
+    /// finished prototype has been validated, [`freeze_prototype_geometry`]
+    /// moves those allocations here exactly once. Cache entries and the one
+    /// scene anchor then clone only this Arc; transform-only instances drop it.
+    /// This keeps the asset format stable while preventing cache/scene clones
+    /// from duplicating city-scale vertex streams.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub prototype_geometry: Option<std::sync::Arc<HybridPrototypeGeometry>>,
 }
 
 /// One material slot of a multi-material [`HybridMesh`], selected per-triangle via
@@ -410,6 +495,7 @@ impl HybridMesh {
             uv_antitile: false,
             vegetation_bsdf: false,
             material_ids: Vec::new(),
+            construction_group_ids: Vec::new(),
             merge_group: None,
             proto_share_key: None,
             proto_instance_transform: None,
@@ -418,10 +504,166 @@ impl HybridMesh {
             geometry_detail: None,
             geometry_detail_instance_transform: None,
             geometry_detail_material_index: None,
+            progressive_reveal_key: None,
+            progressive_reveal_frontier_key: None,
+            progressive_reveal_frontier_base_transform: None,
+            progressive_reveal_frontier_axis: [0.0; 3],
+            progressive_reveal_frontier_phase: None,
             submesh_materials: Vec::new(),
             weathering_masks: Vec::new(),
             shared_vertex_topology: false,
+            prototype_geometry: None,
         }
+    }
+
+    /// Move this mesh's indexed streams into one immutable shared allocation.
+    /// No vertices are expanded and the source index order is preserved.
+    #[must_use]
+    pub fn freeze_prototype_geometry(mut self) -> Self {
+        if self.prototype_geometry.is_none() {
+            assert_eq!(
+                self.indices.len() % 3,
+                0,
+                "prototype indices must be triangles"
+            );
+            assert!(
+                self.weathering_masks.is_empty() || self.weathering_masks.len() % 7 == 0,
+                "prototype weathering must contain seven channels per vertex"
+            );
+            let indices = std::mem::take(&mut self.indices)
+                .chunks_exact(3)
+                .map(|triangle| [triangle[0], triangle[1], triangle[2]])
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            let weathering_masks = std::mem::take(&mut self.weathering_masks)
+                .chunks_exact(7)
+                .map(|channels| std::array::from_fn(|channel| channels[channel]))
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            self.prototype_geometry = Some(std::sync::Arc::new(HybridPrototypeGeometry {
+                positions: std::mem::take(&mut self.positions).into_boxed_slice(),
+                indices,
+                normals: std::mem::take(&mut self.normals).into_boxed_slice(),
+                uvs: std::mem::take(&mut self.uvs).into_boxed_slice(),
+                material_ids: std::mem::take(&mut self.material_ids).into_boxed_slice(),
+                construction_group_ids: std::mem::take(&mut self.construction_group_ids)
+                    .into_boxed_slice(),
+                weathering_masks,
+            }));
+        }
+        self
+    }
+
+    /// Remove every geometry owner from a transform-only instance descriptor.
+    pub fn strip_prototype_geometry(&mut self) {
+        self.positions = Vec::new();
+        self.indices = Vec::new();
+        self.normals = Vec::new();
+        self.uvs = Vec::new();
+        self.material_ids = Vec::new();
+        self.construction_group_ids = Vec::new();
+        self.weathering_masks = Vec::new();
+        self.prototype_geometry = None;
+    }
+
+    #[must_use]
+    pub fn positions(&self) -> &[[f32; 3]] {
+        self.prototype_geometry
+            .as_ref()
+            .map_or(self.positions.as_slice(), |geometry| &geometry.positions)
+    }
+
+    #[must_use]
+    pub fn indices(&self) -> &[u32] {
+        self.prototype_geometry
+            .as_ref()
+            .map_or(self.indices.as_slice(), |geometry| {
+                geometry.indices.as_flattened()
+            })
+    }
+
+    #[must_use]
+    pub fn normals(&self) -> &[[f32; 3]] {
+        self.prototype_geometry
+            .as_ref()
+            .map_or(self.normals.as_slice(), |geometry| &geometry.normals)
+    }
+
+    #[must_use]
+    pub fn uvs(&self) -> &[[f32; 2]] {
+        self.prototype_geometry
+            .as_ref()
+            .map_or(self.uvs.as_slice(), |geometry| &geometry.uvs)
+    }
+
+    #[must_use]
+    pub fn material_ids(&self) -> &[u32] {
+        self.prototype_geometry
+            .as_ref()
+            .map_or(self.material_ids.as_slice(), |geometry| {
+                &geometry.material_ids
+            })
+    }
+
+    #[must_use]
+    pub fn construction_group_ids(&self) -> &[u32] {
+        self.prototype_geometry.as_ref().map_or(
+            self.construction_group_ids.as_slice(),
+            |geometry| geometry.construction_group_ids(),
+        )
+    }
+
+    #[must_use]
+    pub fn weathering_masks(&self) -> &[f32] {
+        self.prototype_geometry
+            .as_ref()
+            .map_or(self.weathering_masks.as_slice(), |geometry| {
+                geometry.weathering_masks.as_flattened()
+            })
+    }
+
+    #[must_use]
+    pub fn shared_prototype_geometry(&self) -> Option<std::sync::Arc<HybridPrototypeGeometry>> {
+        self.prototype_geometry.as_ref().map(std::sync::Arc::clone)
+    }
+
+    #[must_use]
+    pub fn prototype_triangles(&self) -> Option<&[[u32; 3]]> {
+        self.prototype_geometry
+            .as_ref()
+            .map(|geometry| geometry.indices.as_ref())
+    }
+
+    #[must_use]
+    pub fn prototype_weathering(&self) -> Option<&[[f32; 7]]> {
+        self.prototype_geometry
+            .as_ref()
+            .map(|geometry| geometry.weathering_masks.as_ref())
+    }
+
+    #[must_use]
+    pub fn has_prototype_geometry(&self) -> bool {
+        self.prototype_geometry.is_some()
+    }
+
+    #[must_use]
+    pub fn prototype_geometry_strong_count(&self) -> usize {
+        self.prototype_geometry
+            .as_ref()
+            .map_or(0, std::sync::Arc::strong_count)
+    }
+
+    #[must_use]
+    pub fn prototype_geometry_bytes(&self) -> usize {
+        self.prototype_geometry.as_ref().map_or(0, |geometry| {
+            geometry.positions.len() * std::mem::size_of::<[f32; 3]>()
+                + geometry.indices.len() * std::mem::size_of::<[u32; 3]>()
+                + geometry.normals.len() * std::mem::size_of::<[f32; 3]>()
+                + geometry.uvs.len() * std::mem::size_of::<[f32; 2]>()
+                + geometry.material_ids.len() * std::mem::size_of::<u32>()
+                + geometry.construction_group_ids.len() * std::mem::size_of::<u32>()
+                + geometry.weathering_masks.len() * std::mem::size_of::<[f32; 7]>()
+        })
     }
 
     /// Opt this mesh out of the prototype de-index — see
@@ -496,6 +738,14 @@ impl HybridMesh {
         if material_ids.len() == tri_count {
             self.material_ids = material_ids;
             self.submesh_materials = submesh_materials;
+        }
+        self
+    }
+
+    /// Attach an authored per-triangle progressive-assembly rank stream.
+    pub fn with_construction_group_ids(mut self, group_ids: Vec<u32>) -> Self {
+        if group_ids.len() == self.indices().len() / 3 {
+            self.construction_group_ids = group_ids;
         }
         self
     }
@@ -2037,6 +2287,76 @@ mod tests {
     fn weathering_masks_non_aot_ignores_malformed_stream_for_diagnostics() {
         let mesh = weathering_test_mesh().with_weathering_masks(vec![0.0; 20]);
         assert!(mesh.weathering_masks.is_empty());
+    }
+
+    #[test]
+    fn frozen_prototype_clone_is_shared_and_instance_can_drop_geometry() {
+        let mut mesh = HybridMesh::from_rgb(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![0, 1, 2],
+            [0.5, 0.5, 0.5],
+            7,
+        );
+        mesh.normals = vec![[0.0, 0.0, 1.0]; 3];
+        mesh.uvs = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        mesh.weathering_masks = vec![0.0; 21];
+        let mesh = mesh.freeze_prototype_geometry();
+        assert!(mesh.positions.is_empty());
+        assert_eq!(mesh.positions().len(), 3);
+        assert_eq!(mesh.indices(), &[0, 1, 2]);
+        assert_eq!(mesh.prototype_geometry_strong_count(), 1);
+
+        let anchor = mesh.clone();
+        assert_eq!(mesh.prototype_geometry_strong_count(), 2);
+        assert_eq!(anchor.positions().len(), 3);
+
+        let mut instance = anchor.clone();
+        instance.strip_prototype_geometry();
+        assert!(instance.positions().is_empty());
+        assert!(!instance.has_prototype_geometry());
+        assert_eq!(mesh.prototype_geometry_strong_count(), 2);
+    }
+
+    #[test]
+    fn indexed_prototype_residency_stays_below_sixty_four_bytes_per_triangle() {
+        const SIDE: usize = 128;
+        let mut positions = Vec::with_capacity((SIDE + 1) * (SIDE + 1));
+        let mut normals = Vec::with_capacity((SIDE + 1) * (SIDE + 1));
+        let mut uvs = Vec::with_capacity((SIDE + 1) * (SIDE + 1));
+        for z in 0..=SIDE {
+            for x in 0..=SIDE {
+                positions.push([x as f32, 0.0, z as f32]);
+                normals.push([0.0, 1.0, 0.0]);
+                uvs.push([x as f32 / SIDE as f32, z as f32 / SIDE as f32]);
+            }
+        }
+        let mut indices = Vec::with_capacity(SIDE * SIDE * 6);
+        for z in 0..SIDE {
+            for x in 0..SIDE {
+                let a = (z * (SIDE + 1) + x) as u32;
+                let b = a + 1;
+                let c = a + (SIDE + 1) as u32;
+                let d = c + 1;
+                indices.extend_from_slice(&[a, c, b, b, c, d]);
+            }
+        }
+        let triangle_count = indices.len() / 3;
+        let vertex_count = positions.len();
+        let mut mesh = HybridMesh::from_rgb(positions, indices, [0.5; 3], 1);
+        mesh.normals = normals;
+        mesh.uvs = uvs;
+        mesh.material_ids = vec![0; triangle_count];
+        mesh.weathering_masks = vec![0.0; vertex_count * 7];
+        let mesh = mesh.freeze_prototype_geometry();
+        let bytes_per_triangle = mesh.prototype_geometry_bytes() as f64 / triangle_count as f64;
+        eprintln!(
+            "indexed_prototype triangles={triangle_count} vertices={vertex_count} bytes={} bytes_per_triangle={bytes_per_triangle:.2}",
+            mesh.prototype_geometry_bytes()
+        );
+        assert!(
+            bytes_per_triangle <= 64.0,
+            "indexed prototype uses {bytes_per_triangle:.2} B/triangle"
+        );
     }
 
     /// Regression for the far-plane all-or-nothing drop. A polygon with one vertex

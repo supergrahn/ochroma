@@ -511,6 +511,7 @@ pub fn meshes_to_instanced_scene_with_weathering_owned(
     let mut uvs: Vec<f32> = Vec::with_capacity(total_verts * 2);
     let mut indices: Vec<u32> = Vec::with_capacity(total_tris * 3);
     let mut tri_material_ids: Vec<u32> = Vec::with_capacity(total_tris);
+    let mut construction_group_ids: Vec<u32> = Vec::with_capacity(total_tris);
     // Capture small per-prototype bounds before consuming the source streams.
     let proto_aabbs: Vec<([f32; 3], [f32; 3])> =
         blas.iter().map(|b| (b.aabb_min, b.aabb_max)).collect();
@@ -655,6 +656,12 @@ pub fn meshes_to_instanced_scene_with_weathering_owned(
             #[cfg(not(feature = "aot-shaders"))]
             let mid = b.material_ids.get(ti).copied().unwrap_or(0);
             tri_material_ids.push(mid);
+            construction_group_ids.push(
+                b.construction_group_ids
+                    .get(ti)
+                    .copied()
+                    .unwrap_or(u32::MAX),
+            );
         }
         let vcount = b.positions.len() as u32;
         let tcount = b.indices.len() as u32;
@@ -718,6 +725,7 @@ pub fn meshes_to_instanced_scene_with_weathering_owned(
     scene.geometry.uvs = uvs;
     scene.geometry.indices = indices;
     scene.geometry.material_ids = tri_material_ids;
+    scene.geometry.construction_group_ids = construction_group_ids;
     scene.geometry.instance_count = instances.len();
     scene.geometry.instance_transforms = instance_transforms;
     scene.geometry.instance_material_base = instance_material_base;
@@ -790,6 +798,9 @@ pub fn append_instanced_scene_geometry(dst: &mut SceneState, mut src: SceneState
         .material_ids
         .append(&mut src.geometry.material_ids);
     dst.geometry
+        .construction_group_ids
+        .append(&mut src.geometry.construction_group_ids);
+    dst.geometry
         .weathering_masks
         .append(&mut src.geometry.weathering_masks);
     dst.geometry.proto_aabbs.append(&mut src.geometry.proto_aabbs);
@@ -841,6 +852,7 @@ pub fn append_unweathered_blas_geometry_owned(dst: &mut SceneState, blas: Vec<Bl
             uvs,
             indices,
             material_ids,
+            construction_group_ids,
             aabb_min,
             aabb_max,
             weathering_masks,
@@ -864,6 +876,10 @@ pub fn append_unweathered_blas_geometry_owned(dst: &mut SceneState, blas: Vec<Bl
             indices.len(),
             material_ids.len(),
             "streamed BLAS {proto_id} triangles/material ids mismatch"
+        );
+        assert!(
+            construction_group_ids.is_empty(),
+            "streamed unweathered BLAS {proto_id} unexpectedly carries construction groups"
         );
 
         let vertex_base = dst.geometry.vertex_count as u32;
@@ -922,6 +938,9 @@ pub fn append_unweathered_blas_geometry_owned(dst: &mut SceneState, blas: Vec<Bl
         }
         release_consumed_blas_pages();
         dst.geometry.material_ids.extend(material_ids);
+        dst.geometry
+            .construction_group_ids
+            .extend(std::iter::repeat_n(u32::MAX, triangle_count as usize));
         release_consumed_blas_pages();
 
         dst.geometry.proto_aabbs.push((aabb_min, aabb_max));
@@ -1032,6 +1051,7 @@ mod tests {
             uvs: vec![[0.0, 0.0]; 3],
             indices: vec![[0, 1, 2]],
             material_ids: vec![0],
+            construction_group_ids: vec![0],
             aabb_min: [0.0, 0.0, 0.0],
             aabb_max: [1.0, 1.0, 0.0],
             weathering_masks,
@@ -1248,6 +1268,7 @@ mod tests {
             uvs: vec![[0.0, 0.0]; 3],
             indices: vec![[0, 1, 2]],
             material_ids: vec![0],
+            construction_group_ids: vec![0],
             aabb_min: [0.0, 0.0, 0.0],
             aabb_max: [1.0, 1.0, 0.0],
             weathering_masks: vec![0.0; 3 * 7],
@@ -1265,6 +1286,7 @@ mod tests {
             uvs: vec![[0.0, 0.0]; 4],
             indices: vec![[0, 1, 2], [0, 2, 3]],
             material_ids: vec![0, 0],
+            construction_group_ids: vec![0, 0],
             aabb_min: [10.0, 0.0, 0.0],
             aabb_max: [12.0, 2.0, 0.0],
             weathering_masks: vec![0.0; 4 * 7],

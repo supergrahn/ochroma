@@ -70,6 +70,7 @@ fn cube_blas_desc() -> BlasDesc {
         uvs,
         indices,
         material_ids,
+        construction_group_ids: Vec::new(),
         aabb_min: [-h, -h, -h],
         aabb_max: [h, h, h],
         weathering_masks,
