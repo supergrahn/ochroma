@@ -75,10 +75,10 @@ pub struct RuntimeDetailPreparation {
     /// Coarsest hole-free prototype cut, merged without de-indexing. Backends
     /// that cannot yet instance an aggregate cluster cut natively use this one
     /// shared derived BLAS instead of multiplying cluster pages by placements.
-    pub prototype_root: Option<RuntimeDetailPrototypeMesh>,
+    pub prototype_root: Option<std::sync::Arc<RuntimeDetailPrototypeMesh>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeDetailPrototypeMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
@@ -86,6 +86,10 @@ pub struct RuntimeDetailPrototypeMesh {
     pub indices: Vec<[u32; 3]>,
     pub material_ids: Vec<u32>,
     pub weathering_masks: Vec<[f32; 7]>,
+    /// Conservative object-space simplification error for this aggregate cut.
+    /// Quantized page metadata is converted once at structural admission; the
+    /// renderer re-quantizes it with its backend-neutral fixed-point LOD law.
+    pub geometric_error: f32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -159,7 +163,7 @@ pub fn prepare_runtime_detail(
             cache_path: Some(cache_path),
             cache_hit: true,
             page_count,
-            prototype_root: Some(prototype_root),
+            prototype_root: Some(std::sync::Arc::new(prototype_root)),
         });
     }
     RUNTIME_DETAIL_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
@@ -181,7 +185,7 @@ pub fn prepare_runtime_detail(
         cache_path: Some(cache_path),
         cache_hit: false,
         page_count,
-        prototype_root: Some(prototype_root),
+        prototype_root: Some(std::sync::Arc::new(prototype_root)),
     })
 }
 
@@ -211,6 +215,13 @@ fn load_prototype_root(
         indices: Vec::new(),
         material_ids: Vec::new(),
         weathering_masks: Vec::new(),
+        geometric_error: roots
+            .iter()
+            .map(|page| page.geometric_error_q)
+            .max()
+            .unwrap_or(0)
+            .max(1) as f32
+            / 1024.0,
     };
     for page in roots {
         file.seek(std::io::SeekFrom::Start(page.source_offset))

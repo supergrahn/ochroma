@@ -339,6 +339,12 @@ pub struct HybridMesh {
     /// material carrier.
     #[serde(skip)]
     pub geometry_detail_material_index: Option<u32>,
+    /// One engine-derived aggregate prototype cut, shared by every placement
+    /// of this exact indexed prototype. Runtime-only: authored assets contain
+    /// one authoritative mesh and never carry camera-distance LODs.
+    #[serde(skip)]
+    pub runtime_detail_root:
+        Option<std::sync::Arc<crate::mesh_detail::RuntimeDetailPrototypeMesh>>,
     /// Runtime-only engine-generic identity for sparse progressive reveal.
     /// Games may map construction, repair, assembly, or excavation onto it;
     /// it is never serialized into authored/cooked mesh data.
@@ -504,6 +510,7 @@ impl HybridMesh {
             geometry_detail: None,
             geometry_detail_instance_transform: None,
             geometry_detail_material_index: None,
+            runtime_detail_root: None,
             progressive_reveal_key: None,
             progressive_reveal_frontier_key: None,
             progressive_reveal_frontier_base_transform: None,
@@ -572,6 +579,7 @@ impl HybridMesh {
         self.construction_group_ids = Vec::new();
         self.weathering_masks = Vec::new();
         self.prototype_geometry = None;
+        self.runtime_detail_root = None;
     }
 
     #[must_use]
