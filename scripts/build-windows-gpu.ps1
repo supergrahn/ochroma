@@ -77,6 +77,29 @@ $cudaBin = Join-Path $cuda "bin"
 $cudaBinX64 = Join-Path $cudaBin "x64"
 Write-Step "CUDA:     $cuda"
 
+# --- Vulkan SDK (headers + loader import library for native FSR) ----------
+$vulkanSdk = $env:VULKAN_SDK
+if (-not ($vulkanSdk -and
+           (Test-Path (Join-Path $vulkanSdk "Include\vulkan\vulkan.h")) -and
+           (Test-Path (Join-Path $vulkanSdk "Lib\vulkan-1.lib")))) {
+    $vulkanSdk = $null
+    $vulkanRoot = "C:\VulkanSDK"
+    if (Test-Path $vulkanRoot) {
+        $vulkanSdk = Get-ChildItem $vulkanRoot -Directory |
+            Where-Object {
+                (Test-Path (Join-Path $_.FullName "Include\vulkan\vulkan.h")) -and
+                (Test-Path (Join-Path $_.FullName "Lib\vulkan-1.lib"))
+            } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+}
+if (-not $vulkanSdk) {
+    Die "Vulkan SDK not found. The all-vendor Windows build requires Vulkan headers and vulkan-1.lib; set `$env:VULKAN_SDK or install KhronosGroup.VulkanSDK."
+}
+$env:VULKAN_SDK = $vulkanSdk
+Write-Step "Vulkan:   $vulkanSdk"
+
 # --- glslang (FSR permutation compiler) ----------------------------------
 # ffx-perm-gen must compile its Vulkan shader permutations even when this
 # Windows build will normally select CUDA/DLSS.  Its upstream default is the
@@ -186,7 +209,7 @@ if (Test-Path $vswhere2) {
 # --- Compose PATH + backend ----------------------------------------------
 # Order matters: slang\bin and CUDA\bin must precede the rest so Slang's PTX
 # pass-through finds nvcc and the slang DLLs resolve at link/runtime.
-$pathParts = @((Join-Path $SlangDir "bin"), $cudaBin)
+$pathParts = @((Join-Path $SlangDir "bin"), $cudaBin, (Join-Path $vulkanSdk "Bin"))
 if (Test-Path $cudaBinX64) { $pathParts += $cudaBinX64 }
 $pathParts += (Join-Path $env:USERPROFILE ".cargo\bin")
 $env:PATH = ($pathParts -join ";") + ";" + $env:PATH
