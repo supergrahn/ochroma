@@ -798,7 +798,9 @@ impl RuntimeGeometryRegistry {
                         .insert(key);
                 }
                 Err(RuntimeGeometryServiceError::QueueFull { .. }) => {
-                    return Err("runtime geometry capacity changed while admitting deferred source".into());
+                    return Err(
+                        "runtime geometry capacity changed while admitting deferred source".into(),
+                    );
                 }
                 Err(error) => {
                     self.failures.fetch_add(1, Ordering::Relaxed);
@@ -951,14 +953,16 @@ fn derive_product(source: &RuntimeGeometrySource) -> Result<RuntimeGeometryProdu
     let material_ids = source.source_material_ids();
     let weathering_masks = source.source_weathering_masks();
     let programs = match source.derivation {
-        RuntimeGeometryDerivation::ProgramsAndDetail => prepare_mesh_programs(MeshProgramInput {
-            positions,
-            indices,
-            uvs,
-            material_ids,
-        })
-        .map_err(|error| format!("derive exact programs: {error}"))?
-        .derivation,
+        RuntimeGeometryDerivation::ProgramsAndDetail => {
+            prepare_mesh_programs(MeshProgramInput {
+                positions,
+                indices,
+                uvs,
+                material_ids,
+            })
+            .map_err(|error| format!("derive exact programs: {error}"))?
+            .derivation
+        }
         RuntimeGeometryDerivation::DetailOnly => MeshProgramDerivation {
             payload: None,
             exact_quad_count: 0,
@@ -985,7 +989,7 @@ fn derive_product(source: &RuntimeGeometrySource) -> Result<RuntimeGeometryProdu
         residual_materials.push(material_ids[triangle]);
         residual_sources.push(triangle as u32);
     }
-    let detail = prepare_runtime_detail(
+    let mut detail = prepare_runtime_detail(
         positions,
         indices,
         DetailMeshInput {
@@ -997,9 +1001,22 @@ fn derive_product(source: &RuntimeGeometrySource) -> Result<RuntimeGeometryProdu
             weathering_masks,
         },
         &residual_sources,
+        matches!(
+            source.derivation,
+            RuntimeGeometryDerivation::ProgramsAndDetail
+        ),
         &[0.125, 0.25, 0.5, 1.0],
     )
     .map_err(|error| format!("derive continuous detail: {error}"))?;
+    if matches!(source.derivation, RuntimeGeometryDerivation::DetailOnly)
+        && let Some(root) = detail.prototype_root.as_ref()
+    {
+        // Keep the material-preserving root available as one shared resident
+        // prototype. The loaded asset is still the sole product authority: a
+        // derived representation keeps its indexed geometry, UVs, materials,
+        // and authored shading inputs instead of inventing proxy cards.
+        detail.prototype_resident_cut = Some(Arc::clone(root));
+    }
     Ok(RuntimeGeometryProduct { programs, detail })
 }
 
@@ -1148,8 +1165,7 @@ mod tests {
         let mut organic = source();
         organic.positions[5][2] = 0.37;
         let key = service.submit(organic.detail_only()).unwrap();
-        let RuntimeGeometryStatus::Ready(product) =
-            service.wait(key, Duration::from_secs(10))
+        let RuntimeGeometryStatus::Ready(product) = service.wait(key, Duration::from_secs(10))
         else {
             panic!("detail-only runtime geometry did not complete");
         };

@@ -579,18 +579,22 @@ impl RenderRuntime {
                 upload.channel_uv_scales.len() / vox_core::spray::CHANNEL_UV_FLOATS
             );
         }
-        self.renderer.set_ground_macro(
-            upload.ground_macro_slot,
-            upload.ground_macro_tile_m,
-            upload.ground_macro_luma_reference,
-            upload.ground_macro_blend,
+        self.renderer.set_map_surface(
+            upload.map_surface_slot,
+            upload.map_surface_origin,
+            upload.map_surface_extent,
+            upload.map_surface_blend_start_m,
+            upload.map_surface_blend_end_m,
+            upload.map_surface_close_chroma_strength,
         )?;
         eprintln!(
-            "[ground-macro] slot={} tile_m={:.1} luma_ref={:.4} blend={:.2}",
-            upload.ground_macro_slot,
-            upload.ground_macro_tile_m,
-            upload.ground_macro_luma_reference,
-            upload.ground_macro_blend
+            "[map-surface] slot={} origin={:?} extent={:?} blend={:.2}..{:.2} m/px close_chroma={:.2}",
+            upload.map_surface_slot,
+            upload.map_surface_origin,
+            upload.map_surface_extent,
+            upload.map_surface_blend_start_m,
+            upload.map_surface_blend_end_m,
+            upload.map_surface_close_chroma_strength,
         );
         self.renderer.set_slope_layers(
             upload.slope_rock_albedo,

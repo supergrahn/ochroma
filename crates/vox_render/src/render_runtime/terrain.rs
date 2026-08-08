@@ -28,17 +28,17 @@ pub struct TerrainUpload {
     /// beside the slots preserves each map-owned material's real-world scale;
     /// empty means the shader falls back to the terrain mesh scale.
     pub channel_uv_scales: Vec<f32>,
-    /// GROUND MACRO VARIATION: atlas slot of ONE global aerial-scale albedo the
-    /// ground lerps toward with distance (keeps meso-scale patchiness resolving
-    /// at aerial range where the ~1 m detail tile mips to a flat average). `-1`
-    /// = off (byte-identical). `tile_m` = world metres per macro tile; `blend` =
-    /// max lerp weight at full distance fade [0,1].
-    pub ground_macro_slot: i32,
-    pub ground_macro_tile_m: f32,
-    /// Linear-light average luma of the authored macro albedo. The shader divides
-    /// by this reference so the layer adds variation without changing exposure.
-    pub ground_macro_luma_reference: f32,
-    pub ground_macro_blend: f32,
+    /// MAP-OWNED ORTHOGRAPHIC SURFACE COLOUR. This texture covers the map once;
+    /// it is not another repeating material octave. `-1` disables it.
+    pub map_surface_slot: i32,
+    pub map_surface_origin: [f32; 2],
+    pub map_surface_extent: [f32; 2],
+    /// World metres per pixel over which ownership crosses from close PBR to the
+    /// map surface. The interval is authored beside the map texture.
+    pub map_surface_blend_start_m: f32,
+    pub map_surface_blend_end_m: f32,
+    /// Low-frequency map chroma retained while close PBR owns material detail.
+    pub map_surface_close_chroma_strength: f32,
     /// SLOPE-LAYER atlas slots (#33): steep-face ROCK + transition DIRT
     /// albedo/normal, resolved from the map's `TerrainSurfaceSet.cliff/transition`.
     /// `-1` = absent (that layer rolls back into the biome ground in the kernel).
@@ -139,12 +139,12 @@ impl Default for TerrainUpload {
             cell_size: 0.0,
             channel_slots: Vec::new(),
             channel_uv_scales: Vec::new(),
-            // Macro layer OFF by default (-1 slot / 0 blend) — byte-identical for
-            // any game that does not fill it.
-            ground_macro_slot: -1,
-            ground_macro_tile_m: 30.0,
-            ground_macro_luma_reference: 0.18,
-            ground_macro_blend: 0.0,
+            map_surface_slot: -1,
+            map_surface_origin: [0.0, 0.0],
+            map_surface_extent: [1.0, 1.0],
+            map_surface_blend_start_m: 0.0,
+            map_surface_blend_end_m: 0.0,
+            map_surface_close_chroma_strength: 0.0,
             slope_rock_albedo: cfg.slope_layers.rock_albedo_slot,
             slope_rock_normal: cfg.slope_layers.rock_normal_slot,
             slope_dirt_albedo: cfg.slope_layers.dirt_albedo_slot,

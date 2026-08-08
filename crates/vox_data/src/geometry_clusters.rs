@@ -11,8 +11,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const READY_GEOMETRY_CLUSTERS_SCHEMA: u32 = 1;
-pub const MAX_TRIANGLES_PER_SOURCE_CLUSTER: u32 = 256;
+pub const READY_GEOMETRY_CLUSTERS_SCHEMA: u32 = 2;
+/// Native acceleration partition, not a meshlet or I/O-sector size. A 256
+/// triangle ceiling multiplied a city into tens of thousands of BLASes on
+/// Vulkan/Metal and made acceleration metadata dominate memory and rays.
+/// Four thousand triangles remains a bounded, independently rebuildable RT
+/// unit while amortising BLAS/TLAS metadata and preserving useful QEM interiors.
+pub const MAX_TRIANGLES_PER_SOURCE_CLUSTER: u32 = 4096;
 pub const MIN_TRIANGLES_PER_SOURCE_CLUSTER: u32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

@@ -91,12 +91,23 @@ impl ProgressiveRevealCapRegistry {
             .map_err(|_| ProgressiveRevealCapError::TriangulationFailed)?
             .key();
         if let Some(&proto) = self.prototypes.get(&key) {
-            return Ok((ProgressiveRevealCapAdmission { key, proto, newly_admitted: false }, None));
+            return Ok((
+                ProgressiveRevealCapAdmission {
+                    key,
+                    proto,
+                    newly_admitted: false,
+                },
+                None,
+            ));
         }
         let proto = proto_ids.allocate();
         self.prototypes.insert(key, proto);
         Ok((
-            ProgressiveRevealCapAdmission { key, proto, newly_admitted: true },
+            ProgressiveRevealCapAdmission {
+                key,
+                proto,
+                newly_admitted: true,
+            },
             Some(SceneDelta::AddProto { proto, mesh }),
         ))
     }
@@ -189,30 +200,58 @@ pub fn progressive_reveal_frontier_prototype(
         return Err(ProgressiveRevealCapError::NonFiniteVertex);
     }
     let origin = vertices[0];
-    let sub = |a: [f32; 3], b: [f32; 3]| [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
-    let dot = |a: [f32; 3], b: [f32; 3]| a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
-    let cross3 = |a: [f32; 3], b: [f32; 3]| [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
-    let norm = |a: [f32; 3]| dot(a,a).sqrt();
+    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let cross3 = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let norm = |a: [f32; 3]| dot(a, a).sqrt();
     let edge = sub(vertices[1], origin);
     let edge_len = norm(edge);
-    if edge_len <= EPS as f32 { return Err(ProgressiveRevealCapError::DegenerateEdge); }
-    let u = [edge[0]/edge_len, edge[1]/edge_len, edge[2]/edge_len];
-    let mut normal = vertices.iter().skip(2).map(|&point| cross3(u, sub(point, origin)))
+    if edge_len <= EPS as f32 {
+        return Err(ProgressiveRevealCapError::DegenerateEdge);
+    }
+    let u = [edge[0] / edge_len, edge[1] / edge_len, edge[2] / edge_len];
+    let mut normal = vertices
+        .iter()
+        .skip(2)
+        .map(|&point| cross3(u, sub(point, origin)))
         .find(|candidate| norm(*candidate) > EPS as f32)
         .ok_or(ProgressiveRevealCapError::DegeneratePolygon)?;
     let normal_len = norm(normal);
-    normal = [normal[0]/normal_len, normal[1]/normal_len, normal[2]/normal_len];
-    let dominant = if normal[0].abs() >= normal[1].abs() && normal[0].abs() >= normal[2].abs() { normal[0] }
-        else if normal[1].abs() >= normal[2].abs() { normal[1] } else { normal[2] };
-    if dominant < 0.0 { normal = [-normal[0], -normal[1], -normal[2]]; }
-    if vertices.iter().any(|&point| dot(sub(point, origin), normal).abs() > 1.0e-4) {
+    normal = [
+        normal[0] / normal_len,
+        normal[1] / normal_len,
+        normal[2] / normal_len,
+    ];
+    let dominant = if normal[0].abs() >= normal[1].abs() && normal[0].abs() >= normal[2].abs() {
+        normal[0]
+    } else if normal[1].abs() >= normal[2].abs() {
+        normal[1]
+    } else {
+        normal[2]
+    };
+    if dominant < 0.0 {
+        normal = [-normal[0], -normal[1], -normal[2]];
+    }
+    if vertices
+        .iter()
+        .any(|&point| dot(sub(point, origin), normal).abs() > 1.0e-4)
+    {
         return Err(ProgressiveRevealCapError::NonPlanarPolygon);
     }
     let v = cross3(normal, u);
-    let projected = vertices.iter().map(|&point| {
-        let d = sub(point, origin);
-        [dot(d, u), dot(d, v)]
-    }).collect::<Vec<_>>();
+    let projected = vertices
+        .iter()
+        .map(|&point| {
+            let d = sub(point, origin);
+            [dot(d, u), dot(d, v)]
+        })
+        .collect::<Vec<_>>();
     for i in 0..projected.len() {
         let a = projected[i];
         let b = projected[(i + 1) % projected.len()];
@@ -262,8 +301,18 @@ pub fn progressive_reveal_frontier_prototype(
             .collect(),
         material_ids: vec![material_id; triangles.len()],
         indices: triangles,
-        aabb_min: std::array::from_fn(|axis| vertices.iter().map(|p| p[axis]).fold(f32::INFINITY, f32::min)),
-        aabb_max: std::array::from_fn(|axis| vertices.iter().map(|p| p[axis]).fold(f32::NEG_INFINITY, f32::max)),
+        aabb_min: std::array::from_fn(|axis| {
+            vertices
+                .iter()
+                .map(|p| p[axis])
+                .fold(f32::INFINITY, f32::min)
+        }),
+        aabb_max: std::array::from_fn(|axis| {
+            vertices
+                .iter()
+                .map(|p| p[axis])
+                .fold(f32::NEG_INFINITY, f32::max)
+        }),
     })
 }
 
@@ -397,13 +446,23 @@ mod tests {
     #[test]
     fn vertical_frontier_is_planar_and_faces_consistently() {
         let frontier = progressive_reveal_frontier_prototype(
-            &[[0.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 3.0, 4.0], [0.0, 0.0, 4.0]],
+            &[
+                [0.0, 0.0, 0.0],
+                [0.0, 3.0, 0.0],
+                [0.0, 3.0, 4.0],
+                [0.0, 0.0, 4.0],
+            ],
             9,
         )
         .unwrap();
         assert_eq!(frontier.indices.len(), 2);
         assert_eq!(frontier.material_ids, vec![9, 9]);
-        assert!(frontier.normals.iter().all(|normal| *normal == [1.0, 0.0, 0.0]));
+        assert!(
+            frontier
+                .normals
+                .iter()
+                .all(|normal| *normal == [1.0, 0.0, 0.0])
+        );
     }
 
     #[test]

@@ -913,21 +913,27 @@ impl ResidentSceneRenderer {
             .map_err(|e| format!("set_spray_field: {e:?}"))
     }
 
-    /// GROUND MACRO VARIATION LAYER. Forward ONE global aerial-scale albedo (an
-    /// texture slot) the ground albedo lerps toward with distance — keeps meso-scale
-    /// patchiness resolving at aerial range where the ~1 m detail tile mips to a
-    /// flat average ("textures are just colors"). `slot < 0` or `blend <= 0`
-    /// disables (byte-identical).
-    pub fn set_ground_macro(
+    /// Forward a map-owned orthographic surface texture and its exact world-space
+    /// coverage/fade contract. This is not a repeating material octave.
+    pub fn set_map_surface(
         &mut self,
         slot: i32,
-        tile_m: f32,
-        luma_reference: f32,
-        blend: f32,
+        origin: [f32; 2],
+        extent: [f32; 2],
+        blend_start_m: f32,
+        blend_end_m: f32,
+        close_chroma_strength: f32,
     ) -> Result<(), String> {
         self.renderer
-            .set_ground_macro(slot, tile_m, luma_reference, blend)
-            .map_err(|e| format!("set_ground_macro: {e:?}"))
+            .set_map_surface(
+                slot,
+                origin,
+                extent,
+                blend_start_m,
+                blend_end_m,
+                close_chroma_strength,
+            )
+            .map_err(|e| format!("set_map_surface: {e:?}"))
     }
 
     /// PER-PIXEL CURVATURE FIELD. Forward a world-space mean-curvature grid (1 f32/
@@ -2002,8 +2008,7 @@ impl ResidentSceneRenderer {
         &self,
         updates: &[(u32, f32)],
     ) -> Result<(), String> {
-        self.renderer
-            .update_geometry_visibility_parameters(updates)
+        self.renderer.update_geometry_visibility_parameters(updates)
     }
 
     pub fn geometry_parameter_update_stats(

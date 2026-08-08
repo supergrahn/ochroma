@@ -6,7 +6,9 @@
 //! every child triangle receives an affine barycentric map onto one
 //! orientation-compatible parent triangle of the same material.
 
-use crate::mesh_simplify::{MeshInput, MeshOutput, simplify_mesh};
+use crate::mesh_simplify::{
+    MeshInput, MeshOutput, simplify_mesh, simplify_mesh_with_locked_vertices,
+};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -76,6 +78,10 @@ pub struct RuntimeDetailPreparation {
     /// that cannot yet instance an aggregate cluster cut natively use this one
     /// shared derived BLAS instead of multiplying cluster pages by placements.
     pub prototype_root: Option<std::sync::Arc<RuntimeDetailPrototypeMesh>>,
+    /// Optional higher-fidelity shared cut retained for nearby instances.
+    /// Organic detail-only products use this as one instanced BLAS rather than
+    /// making every independent streaming hierarchy root mandatory.
+    pub prototype_resident_cut: Option<std::sync::Arc<RuntimeDetailPrototypeMesh>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -105,6 +111,24 @@ pub enum RuntimeDetailError {
     },
     #[error("runtime detail cache address space overflow")]
     AddressOverflow,
+    /// A page was built whose decoded block cannot be admitted by the renderer.
+    ///
+    /// Raised by the PRODUCER, at the point the counts are known, rather than
+    /// letting the page reach Spectra's admission check — which can only report
+    /// a page index and the fact that a bound was passed. Every field here is
+    /// something the producer has in hand and admission never sees.
+    #[error(
+        "geometry page group {group_id} would decode to {decoded_byte_count} bytes \
+         ({vertex_count} vertices + {primitive_count} primitives), over the \
+         {PAGE_MAX_DECODED_BYTES}-byte per-page decode bound — the partition must be \
+         split; a page this size cannot be admitted"
+    )]
+    PageExceedsDecodeBound {
+        group_id: u32,
+        vertex_count: u32,
+        primitive_count: u32,
+        decoded_byte_count: u32,
+    },
     #[error("runtime detail cache content failed deterministic verification")]
     CacheCorrupt,
 }
@@ -119,6 +143,7 @@ pub fn prepare_runtime_detail(
     full_indices: &[[u32; 3]],
     residual_input: DetailMeshInput<'_>,
     residual_source_triangles: &[u32],
+    preserve_open_boundaries: bool,
     ratios: &[f32],
 ) -> Result<RuntimeDetailPreparation, RuntimeDetailError> {
     let mut clusters = vox_data::geometry_clusters::ReadyGeometryClusters::from_source_mesh(
@@ -132,6 +157,7 @@ pub fn prepare_runtime_detail(
             cache_hit: true,
             page_count: 0,
             prototype_root: None,
+            prototype_resident_cut: None,
         });
     }
     validate_runtime_detail_request(
@@ -146,6 +172,7 @@ pub fn prepare_runtime_detail(
         full_indices,
         residual_input,
         residual_source_triangles,
+        preserve_open_boundaries,
         ratios,
     );
     let cache_root = runtime_detail_cache_root();
@@ -164,6 +191,7 @@ pub fn prepare_runtime_detail(
             cache_hit: true,
             page_count,
             prototype_root: Some(std::sync::Arc::new(prototype_root)),
+            prototype_resident_cut: None,
         });
     }
     RUNTIME_DETAIL_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
@@ -174,6 +202,7 @@ pub fn prepare_runtime_detail(
         residual_input,
         residual_source_triangles,
         full_indices.len(),
+        preserve_open_boundaries,
         ratios,
     )?;
     let runtime_pages = load_cache_runtime_pages(&cache_path, cache_key)?
@@ -186,6 +215,7 @@ pub fn prepare_runtime_detail(
         cache_hit: false,
         page_count,
         prototype_root: Some(std::sync::Arc::new(prototype_root)),
+        prototype_resident_cut: None,
     })
 }
 
@@ -326,15 +356,34 @@ fn remap_source_triangles(
 /// Build one independently streamable hierarchy per canonical source cluster.
 ///
 /// A whole-building page makes the largest building dictate every fixed GPU
-/// slot and forces unrelated city blocks to become resident together. Keeping
-/// the existing 256-triangle source partition as the page domain bounds decode
-/// storage, native rebuild work, and eviction granularity without changing the
-/// finished asset or accepting an authored LOD.
+/// slot and forces unrelated city blocks to become resident together. The
+/// canonical acceleration partition bounds decode storage, native rebuild
+/// work, and eviction granularity without changing the finished asset or
+/// accepting an authored LOD. Backend lowering may aggregate several bounded
+/// root pages into one native acceleration structure without changing this
+/// independently decodable page contract.
+const SOURCE_CLUSTERS_PER_AGGREGATE_ROOT: usize = 16;
+// Keep aggregate roots inside Spectra's finite 4 MiB decoded-page contract.
+// This is the exact canonical arena layout: 24 u32 words per vertex and
+// 20 u32 words per triangle (indices, material, source id, correspondence).
+const AGGREGATE_ROOT_MAX_DECODED_BYTES: u64 = PAGE_MAX_DECODED_BYTES;
+
+/// Spectra's hard per-page decoded-block bound, mirrored here so the producer
+/// checks against the SAME number the consumer enforces.
+///
+/// It is `spectra_scene_state::PAGE_MAX_DECODED_BYTES`. This crate does not
+/// depend on that one, so the value is duplicated — but it is duplicated ONCE,
+/// named, and used by every check in this file, instead of `4 << 20` appearing
+/// as a bare literal at each site. If the two ever diverge, pages become
+/// unadmissible in a way only a GPU run can discover.
+pub const PAGE_MAX_DECODED_BYTES: u64 = 4 << 20;
+
 fn for_each_clustered_detail_level(
     clusters: &vox_data::geometry_clusters::ReadyGeometryClusters,
     residual_input: DetailMeshInput<'_>,
     residual_source_triangles: &[u32],
     full_triangle_count: usize,
+    preserve_open_boundaries: bool,
     ratios: &[f32],
     mut emit: impl FnMut(DerivedDetailLevel) -> Result<(), RuntimeDetailError>,
 ) -> Result<usize, RuntimeDetailError> {
@@ -345,14 +394,107 @@ fn for_each_clustered_detail_level(
     for (local, &source) in residual_source_triangles.iter().enumerate() {
         residual_by_source[source as usize] = local;
     }
+    // A vertex belongs to the inter-cluster frontier iff residual triangles in
+    // more than one canonical cluster reference it. This is the exact set that
+    // must remain byte-identical on both independently simplified sides. Do not
+    // mistake every open edge for a cluster frontier: foliage contains millions
+    // of intentionally open leaf-card edges, and locking those would suppress
+    // almost all useful simplification.
+    let mut first_vertex_owner = vec![u32::MAX; residual_input.positions.len()];
+    let mut shared_cluster_vertices = vec![false; residual_input.positions.len()];
+    for (cluster_index, cluster) in clusters.clusters().iter().enumerate() {
+        let cluster_index =
+            u32::try_from(cluster_index).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+        let start = cluster.triangle_order_start() as usize;
+        let end = start
+            .checked_add(cluster.triangle_count() as usize)
+            .ok_or(RuntimeDetailError::AddressOverflow)?;
+        for &source_triangle in clusters
+            .triangle_order()
+            .get(start..end)
+            .ok_or(DetailDerivationError::InvalidSource)?
+        {
+            let local = *residual_by_source
+                .get(source_triangle as usize)
+                .ok_or(DetailDerivationError::InvalidSource)?;
+            if local == usize::MAX {
+                continue;
+            }
+            for &vertex in &residual_input.indices[local] {
+                let owner = first_vertex_owner
+                    .get_mut(vertex as usize)
+                    .ok_or(DetailDerivationError::InvalidSource)?;
+                if *owner == u32::MAX {
+                    *owner = cluster_index;
+                } else if *owner != cluster_index {
+                    shared_cluster_vertices[vertex as usize] = true;
+                }
+            }
+        }
+    }
+    if preserve_open_boundaries {
+        // Architectural/world surfaces are often emitted as one mesh per
+        // material bucket. The neighbour on the other side of such an edge is
+        // therefore not in this source at all, so the inter-cluster test above
+        // cannot see it. Moving that open contour independently makes terrain
+        // material islands separate into literal black holes.
+        //
+        // Count canonical source-index edges globally and lock only edges with
+        // one incident residual triangle. A packed/sorted Vec is deterministic
+        // and materially smaller than a tree node per edge. Organic DetailOnly
+        // sources do not request this policy, so millions of intentional leaf-
+        // card boundaries remain free to simplify.
+        let edge_capacity = residual_input
+            .indices
+            .len()
+            .checked_mul(3)
+            .ok_or(RuntimeDetailError::AddressOverflow)?;
+        let mut edges = Vec::with_capacity(edge_capacity);
+        for triangle in residual_input.indices {
+            for edge in [
+                (triangle[0], triangle[1]),
+                (triangle[1], triangle[2]),
+                (triangle[2], triangle[0]),
+            ] {
+                let (lo, hi) = if edge.0 < edge.1 {
+                    edge
+                } else {
+                    (edge.1, edge.0)
+                };
+                edges.push((u64::from(lo) << 32) | u64::from(hi));
+            }
+        }
+        edges.sort_unstable();
+        let mut start = 0usize;
+        while start < edges.len() {
+            let mut end = start + 1;
+            while end < edges.len() && edges[end] == edges[start] {
+                end += 1;
+            }
+            if end - start == 1 {
+                let lo = (edges[start] >> 32) as usize;
+                let hi = edges[start] as u32 as usize;
+                *shared_cluster_vertices
+                    .get_mut(lo)
+                    .ok_or(DetailDerivationError::InvalidSource)? = true;
+                *shared_cluster_vertices
+                    .get_mut(hi)
+                    .ok_or(DetailDerivationError::InvalidSource)? = true;
+            }
+            start = end;
+        }
+    }
     let mut emitted = 0usize;
-    // Cluster simplification is independent. Derive a bounded wave in
-    // parallel, then publish it in canonical cluster order so cache bytes and
-    // group ids remain deterministic across core counts. The wave bound avoids
-    // retaining a complete city-scale decoded hierarchy before it is written.
-    let wave_size = rayon::current_num_threads().max(1) * 4;
-    for wave in clusters.clusters().chunks(wave_size) {
-        let hierarchies = wave
+    // Derive a small Morton-contiguous aggregate at a time. Its child cluster
+    // pages remain independently decodable; the new root is the exact union of
+    // their coarsest cuts, so it adds no approximation and needs no source-mesh
+    // de-indexing. Parallel work stays inside the bounded aggregate and publish
+    // order is canonical across core counts.
+    for aggregate_clusters in clusters
+        .clusters()
+        .chunks(SOURCE_CLUSTERS_PER_AGGREGATE_ROOT)
+    {
+        let hierarchies = aggregate_clusters
             .par_iter()
             .map(|cluster| {
                 derive_cluster_detail_hierarchy(
@@ -360,30 +502,33 @@ fn for_each_clustered_detail_level(
                     clusters.triangle_order(),
                     residual_input,
                     &residual_by_source,
+                    &shared_cluster_vertices,
                     full_triangle_count,
                     ratios,
                 )
             })
             .collect::<Result<Vec<_>, RuntimeDetailError>>()?;
-        for hierarchy in hierarchies.into_iter().flatten() {
-            let group_base =
-                u32::try_from(emitted).map_err(|_| RuntimeDetailError::AddressOverflow)?;
-            for mut level in hierarchy.levels {
-                level.group_id = level
-                    .group_id
-                    .checked_add(group_base)
-                    .ok_or(RuntimeDetailError::AddressOverflow)?;
-                level.parent_group_id = match level.parent_group_id {
-                    Some(parent) => Some(
-                        parent
-                            .checked_add(group_base)
-                            .ok_or(RuntimeDetailError::AddressOverflow)?,
-                    ),
-                    None => None,
-                };
-                emit(level)?;
-                emitted += 1;
+        let hierarchies = hierarchies.into_iter().flatten().collect::<Vec<_>>();
+        let mut start = 0usize;
+        while start < hierarchies.len() {
+            let mut end = start;
+            let mut decoded_bytes = 0u64;
+            while end < hierarchies.len() {
+                let root = &hierarchies[end].levels[0];
+                let root_bytes = detail_level_decoded_bytes(root)?;
+                if root_bytes > AGGREGATE_ROOT_MAX_DECODED_BYTES {
+                    return Err(RuntimeDetailError::CacheCorrupt);
+                }
+                if end > start
+                    && decoded_bytes.saturating_add(root_bytes) > AGGREGATE_ROOT_MAX_DECODED_BYTES
+                {
+                    break;
+                }
+                decoded_bytes += root_bytes;
+                end += 1;
             }
+            emit_aggregate_hierarchy_group(&hierarchies[start..end], &mut emitted, &mut emit)?;
+            start = end;
         }
     }
     if emitted == 0 {
@@ -392,11 +537,156 @@ fn for_each_clustered_detail_level(
     Ok(emitted)
 }
 
+fn detail_level_decoded_bytes(level: &DerivedDetailLevel) -> Result<u64, RuntimeDetailError> {
+    (level.mesh.positions.len() as u64)
+        .checked_mul(24 * 4)
+        .and_then(|vertices| {
+            (level.mesh.indices.len() as u64)
+                .checked_mul(20 * 4)
+                .and_then(|triangles| vertices.checked_add(triangles))
+        })
+        .ok_or(RuntimeDetailError::AddressOverflow)
+}
+
+fn emit_aggregate_hierarchy_group(
+    hierarchies: &[DerivedDetailHierarchy],
+    emitted: &mut usize,
+    emit: &mut impl FnMut(DerivedDetailLevel) -> Result<(), RuntimeDetailError>,
+) -> Result<(), RuntimeDetailError> {
+    if hierarchies.is_empty() {
+        return Ok(());
+    }
+    let aggregate_group_id =
+        u32::try_from(*emitted).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+    let mut aggregate = DerivedDetailLevel {
+        group_id: aggregate_group_id,
+        parent_group_id: None,
+        mesh: MeshOutput {
+            positions: Vec::new(),
+            uvs: Vec::new(),
+            indices: Vec::new(),
+            material_ids: Vec::new(),
+            source_triangle_indices: Vec::new(),
+        },
+        normals: Vec::new(),
+        tangents: Vec::new(),
+        weathering_masks: Vec::new(),
+        accumulated_world_error: 0.0,
+        root_triangle_count: 0,
+        correspondence_to_parent: Vec::new(),
+        correspondence_to_root: Vec::new(),
+    };
+    let mut root_triangle_offsets = Vec::with_capacity(hierarchies.len());
+    for hierarchy in hierarchies {
+        let root = hierarchy
+            .levels
+            .first()
+            .ok_or(RuntimeDetailError::CacheCorrupt)?;
+        root_triangle_offsets.push(
+            u32::try_from(aggregate.mesh.indices.len())
+                .map_err(|_| RuntimeDetailError::AddressOverflow)?,
+        );
+        let vertex_base = u32::try_from(aggregate.mesh.positions.len())
+            .map_err(|_| RuntimeDetailError::AddressOverflow)?;
+        aggregate
+            .mesh
+            .positions
+            .extend_from_slice(&root.mesh.positions);
+        aggregate.mesh.uvs.extend_from_slice(&root.mesh.uvs);
+        let rebased_indices = root
+            .mesh
+            .indices
+            .iter()
+            .map(|triangle| {
+                Ok([
+                    triangle[0]
+                        .checked_add(vertex_base)
+                        .ok_or(RuntimeDetailError::AddressOverflow)?,
+                    triangle[1]
+                        .checked_add(vertex_base)
+                        .ok_or(RuntimeDetailError::AddressOverflow)?,
+                    triangle[2]
+                        .checked_add(vertex_base)
+                        .ok_or(RuntimeDetailError::AddressOverflow)?,
+                ])
+            })
+            .collect::<Result<Vec<_>, RuntimeDetailError>>()?;
+        aggregate.mesh.indices.extend(rebased_indices);
+        aggregate
+            .mesh
+            .material_ids
+            .extend_from_slice(&root.mesh.material_ids);
+        aggregate
+            .mesh
+            .source_triangle_indices
+            .extend_from_slice(&root.mesh.source_triangle_indices);
+        aggregate.normals.extend_from_slice(&root.normals);
+        aggregate.tangents.extend_from_slice(&root.tangents);
+        aggregate
+            .weathering_masks
+            .extend_from_slice(&root.weathering_masks);
+        aggregate.accumulated_world_error = aggregate
+            .accumulated_world_error
+            .max(root.accumulated_world_error);
+    }
+    aggregate.root_triangle_count = u32::try_from(aggregate.mesh.indices.len())
+        .map_err(|_| RuntimeDetailError::AddressOverflow)?;
+    if detail_level_decoded_bytes(&aggregate)? > AGGREGATE_ROOT_MAX_DECODED_BYTES {
+        return Err(RuntimeDetailError::CacheCorrupt);
+    }
+    let aggregate_root_triangle_count = aggregate.root_triangle_count;
+    emit(aggregate)?;
+    *emitted += 1;
+
+    for (hierarchy, &root_offset) in hierarchies.iter().zip(&root_triangle_offsets) {
+        let mut previous_group = aggregate_group_id;
+        for (level_index, source_level) in hierarchy.levels.iter().enumerate() {
+            let mut level = source_level.clone();
+            level.group_id =
+                u32::try_from(*emitted).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+            level.parent_group_id = Some(previous_group);
+            level.root_triangle_count = aggregate_root_triangle_count;
+            if level_index == 0 {
+                let mut exact = Vec::with_capacity(level.mesh.material_ids.len());
+                for (triangle, &material_id) in level.mesh.material_ids.iter().enumerate() {
+                    let child_triangle =
+                        u32::try_from(triangle).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+                    exact.push(TriangleSurfaceCorrespondence {
+                        child_triangle,
+                        parent_triangle: root_offset
+                            .checked_add(child_triangle)
+                            .ok_or(RuntimeDetailError::AddressOverflow)?,
+                        parent_barycentric: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        max_position_error: 0.0,
+                        max_uv_error: 0.0,
+                        orientation_dot: 1.0,
+                        material_id,
+                    });
+                }
+                level.correspondence_to_parent = exact;
+                level.correspondence_to_root = level.correspondence_to_parent.clone();
+            } else {
+                for correspondence in &mut level.correspondence_to_root {
+                    correspondence.parent_triangle = correspondence
+                        .parent_triangle
+                        .checked_add(root_offset)
+                        .ok_or(RuntimeDetailError::AddressOverflow)?;
+                }
+            }
+            previous_group = level.group_id;
+            emit(level)?;
+            *emitted += 1;
+        }
+    }
+    Ok(())
+}
+
 fn derive_cluster_detail_hierarchy(
     cluster: &vox_data::geometry_clusters::ReadyGeometryCluster,
     triangle_order: &[u32],
     residual_input: DetailMeshInput<'_>,
     residual_by_source: &[usize],
+    shared_cluster_vertices: &[bool],
     full_triangle_count: usize,
     ratios: &[f32],
 ) -> Result<Option<DerivedDetailHierarchy>, RuntimeDetailError> {
@@ -424,7 +714,7 @@ fn derive_cluster_detail_hierarchy(
     if local_indices.is_empty() {
         return Ok(None);
     }
-    let mut hierarchy = derive_detail_hierarchy(
+    let mut hierarchy = derive_cluster_detail_hierarchy_locked(
         DetailMeshInput {
             positions: residual_input.positions,
             normals: residual_input.normals,
@@ -434,6 +724,7 @@ fn derive_cluster_detail_hierarchy(
             weathering_masks: residual_input.weathering_masks,
         },
         ratios,
+        shared_cluster_vertices,
     )?;
     remap_source_triangles(&mut hierarchy, &local_sources, full_triangle_count)?;
     Ok(Some(hierarchy))
@@ -451,6 +742,7 @@ fn runtime_detail_source_key(
     full_indices: &[[u32; 3]],
     residual_input: DetailMeshInput<'_>,
     residual_source_triangles: &[u32],
+    preserve_open_boundaries: bool,
     ratios: &[f32],
 ) -> [u8; 32] {
     let mut hash = Sha256::new();
@@ -466,6 +758,12 @@ fn runtime_detail_source_key(
     hash_u32s(&mut hash, residual_input.material_ids);
     hash_f32_arrays(&mut hash, residual_input.weathering_masks);
     hash_u32s(&mut hash, residual_source_triangles);
+    // DetailOnly organic sources keep their schema-9 identity: their narrowed
+    // inter-cluster policy is unchanged and those multi-million-triangle caches
+    // remain valid. Only contour-preserving sources receive a new identity.
+    if preserve_open_boundaries {
+        hash.update(b"PRESERVE_OPEN_BOUNDARIES_V1");
+    }
     hash.update((ratios.len() as u64).to_le_bytes());
     for ratio in ratios {
         hash.update(ratio.to_bits().to_le_bytes());
@@ -500,8 +798,16 @@ const DETAIL_CACHE_MAGIC: [u8; 4] = *b"MGCF";
 // page before a single page could be admitted. That is not a cache: it made a
 // 28 GiB body pack part of scene startup. Page bodies are now validated lazily
 // by Spectra when the indexed range is admitted.
-const DETAIL_CACHE_SCHEMA: u32 = 3;
-const DETAIL_CACHE_FIXED_HEADER: usize = 4 + 4 + 32 + 4;
+// Schema 9 locks true inter-cluster and material frontiers. Contour-preserving
+// sources add a policy tag to their source key and also lock their global open
+// boundary; organic DetailOnly sources retain the schema-9 identity and keep
+// intentional leaf-card edges collapsible. Schema 7 pages could move shared
+// vertices independently; schema 8 over-locked every leaf-card edge.
+const DETAIL_CACHE_SCHEMA: u32 = 9;
+// magic + schema + source key + live page count + reserved table capacity.
+// Capacity lets derivation stream bounded page bodies once while the number of
+// aggregate roots is decided from their exact decoded sizes.
+const DETAIL_CACHE_FIXED_HEADER: usize = 4 + 4 + 32 + 4 + 4;
 const DETAIL_CACHE_TABLE_ENTRY: usize = 8 + 32 + 6 * 4 + 6 * 4;
 
 #[cfg(test)]
@@ -572,17 +878,18 @@ fn load_cache_runtime_pages(
     }
     let page_count =
         u32::from_le_bytes(fixed[40..44].try_into().expect("four-byte page count")) as usize;
-    if page_count == 0 {
+    let table_capacity =
+        u32::from_le_bytes(fixed[44..48].try_into().expect("four-byte table capacity")) as usize;
+    if page_count == 0 || table_capacity < page_count {
         return Ok(None);
     }
-    let table_bytes = page_count
+    let table_bytes = table_capacity
         .checked_mul(DETAIL_CACHE_TABLE_ENTRY)
         .ok_or(RuntimeDetailError::AddressOverflow)?;
     let first_page_offset = DETAIL_CACHE_FIXED_HEADER
         .checked_add(table_bytes)
         .ok_or(RuntimeDetailError::AddressOverflow)?;
-    if u64::try_from(first_page_offset).map_err(|_| RuntimeDetailError::AddressOverflow)?
-        > file_len
+    if u64::try_from(first_page_offset).map_err(|_| RuntimeDetailError::AddressOverflow)? > file_len
     {
         return Ok(None);
     }
@@ -653,8 +960,8 @@ fn load_cache_runtime_pages(
     let runtime_pages = summaries
         .iter()
         .enumerate()
-        .map(|(index, summary)| {
-            vox_data::mega_geometry::RuntimeGeometryPage {
+        .map(
+            |(index, summary)| vox_data::mega_geometry::RuntimeGeometryPage {
                 page_id: index as u32,
                 kind: vox_data::mega_geometry::GEOMETRY_PAGE_KIND_TRIANGLE_DETAIL,
                 group_id: summary.group_id,
@@ -673,8 +980,8 @@ fn load_cache_runtime_pages(
                 codec_version: DETAIL_PAGE_SCHEMA,
                 flags: 0,
                 content_hash: summary.content_hash,
-            }
-        })
+            },
+        )
         .collect();
     Ok(Some(runtime_pages))
 }
@@ -686,12 +993,19 @@ fn derive_and_write_cache_atomically(
     residual_input: DetailMeshInput<'_>,
     residual_source_triangles: &[u32],
     full_triangle_count: usize,
+    preserve_open_boundaries: bool,
     ratios: &[f32],
 ) -> Result<u32, RuntimeDetailError> {
-    let residual_sources = residual_source_triangles
-        .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
+    // Source ids are dense. A byte table is deterministic and bounded to one
+    // byte per authoritative triangle; the former BTreeSet allocated one node
+    // per residual triangle and became a multi-hundred-MiB transient on terrain.
+    let mut residual_sources = vec![false; full_triangle_count];
+    for &source in residual_source_triangles {
+        let slot = residual_sources
+            .get_mut(source as usize)
+            .ok_or(DetailDerivationError::InvalidSource)?;
+        *slot = true;
+    }
     let active_clusters = clusters
         .clusters()
         .iter()
@@ -704,19 +1018,19 @@ fn derive_and_write_cache_atomically(
                 .is_some_and(|triangles| {
                     triangles
                         .iter()
-                        .any(|triangle| residual_sources.contains(triangle))
+                        .any(|triangle| residual_sources[*triangle as usize])
                 })
         })
         .count();
-    let page_count = active_clusters
-        .checked_mul(ratios.len())
+    let table_capacity = active_clusters
+        .checked_mul(ratios.len().saturating_add(1))
         .ok_or(RuntimeDetailError::AddressOverflow)?;
-    if page_count == 0 {
+    if table_capacity == 0 {
         return Err(DetailDerivationError::EmptyLevel.into());
     }
-    let page_count_u32 =
-        u32::try_from(page_count).map_err(|_| RuntimeDetailError::AddressOverflow)?;
-    let table_bytes = page_count
+    let table_capacity_u32 =
+        u32::try_from(table_capacity).map_err(|_| RuntimeDetailError::AddressOverflow)?;
+    let table_bytes = table_capacity
         .checked_mul(DETAIL_CACHE_TABLE_ENTRY)
         .ok_or(RuntimeDetailError::AddressOverflow)?;
     let first_page_offset = DETAIL_CACHE_FIXED_HEADER
@@ -756,8 +1070,8 @@ fn derive_and_write_cache_atomically(
         source,
     })?;
 
-    let mut summaries: Vec<CachedPageSummary> = Vec::with_capacity(page_count);
-    let mut root_bounds = vec![([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]); page_count];
+    let mut summaries: Vec<CachedPageSummary> = Vec::with_capacity(table_capacity);
+    let mut root_bounds = vec![([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]); table_capacity];
     let mut source_offset =
         u64::try_from(first_page_offset).map_err(|_| RuntimeDetailError::AddressOverflow)?;
     let emitted = for_each_clustered_detail_level(
@@ -765,6 +1079,7 @@ fn derive_and_write_cache_atomically(
         residual_input,
         residual_source_triangles,
         full_triangle_count,
+        preserve_open_boundaries,
         ratios,
         |level| {
             let page = encode_detail_page(&level)?;
@@ -794,6 +1109,30 @@ fn derive_and_write_cache_atomically(
                 })
                 .and_then(|bytes| u32::try_from(bytes).ok())
                 .ok_or(RuntimeDetailError::AddressOverflow)?;
+            // THE PRODUCER PROVES ITS OWN PAGES ARE ADMISSIBLE.
+            //
+            // Spectra's page pool rejects any page whose decoded block exceeds
+            // `PAGE_MAX_DECODED_BYTES` (4 MiB) — a hard finite-work invariant:
+            // one page decodes into a fixed transient arena of exactly that size.
+            // Admission is right to refuse it. But it refuses at GPU time with
+            // "page N decoded block exceeds the fixed per-page decode bound" and
+            // nothing more — no counts, no group, no indication which of
+            // thousands of pages or why.
+            //
+            // Measured 2026-08-07: that message was the ENTIRE diagnostic
+            // available after adding sub-cell terrain structure, and it survived
+            // halving the relief, so it could not be attributed to amplitude
+            // without guessing. A producer that emits a page whose size it has
+            // just computed, without checking it against a bound it already
+            // knows, is the defect. Fail HERE, where the counts exist.
+            if u64::from(decoded_byte_count) > PAGE_MAX_DECODED_BYTES {
+                return Err(RuntimeDetailError::PageExceedsDecodeBound {
+                    group_id: level.group_id,
+                    vertex_count,
+                    primitive_count,
+                    decoded_byte_count,
+                });
+            }
             let byte_count =
                 u32::try_from(page.len()).map_err(|_| RuntimeDetailError::AddressOverflow)?;
             file.write_all(&page)
@@ -823,9 +1162,10 @@ fn derive_and_write_cache_atomically(
             Ok(())
         },
     )?;
-    if emitted != page_count {
+    if emitted == 0 || emitted > table_capacity || emitted != summaries.len() {
         return Err(RuntimeDetailError::CacheCorrupt);
     }
+    let page_count_u32 = u32::try_from(emitted).map_err(|_| RuntimeDetailError::AddressOverflow)?;
     for summary in &mut summaries {
         let bounds = root_bounds[summary.root_index];
         summary.bounds_min = bounds.0;
@@ -840,6 +1180,7 @@ fn derive_and_write_cache_atomically(
         .and_then(|_| file.write_all(&DETAIL_CACHE_SCHEMA.to_le_bytes()))
         .and_then(|_| file.write_all(&source_key))
         .and_then(|_| file.write_all(&page_count_u32.to_le_bytes()))
+        .and_then(|_| file.write_all(&table_capacity_u32.to_le_bytes()))
         .map_err(|source| RuntimeDetailError::Io {
             path: temp.clone(),
             source,
@@ -1022,6 +1363,11 @@ fn encode_cache_file(
             .map_err(|_| RuntimeDetailError::AddressOverflow)?
             .to_le_bytes(),
     );
+    out.extend_from_slice(
+        &u32::try_from(pages.len())
+            .map_err(|_| RuntimeDetailError::AddressOverflow)?
+            .to_le_bytes(),
+    );
     for summary in &summaries {
         out.extend_from_slice(&u64::from(summary.byte_count).to_le_bytes());
         out.extend_from_slice(&summary.content_hash);
@@ -1065,7 +1411,8 @@ fn decode_cache_file(
     }
     cursor = key_end;
     let page_count = read_cache_u32(bytes, &mut cursor)? as usize;
-    if page_count == 0 {
+    let table_capacity = read_cache_u32(bytes, &mut cursor)? as usize;
+    if page_count == 0 || table_capacity < page_count {
         return Err(RuntimeDetailError::CacheCorrupt);
     }
     let mut records = Vec::with_capacity(page_count);
@@ -1086,6 +1433,14 @@ fn decode_cache_file(
             .ok_or(RuntimeDetailError::CacheCorrupt)?;
         records.push((len, hash));
     }
+    cursor = DETAIL_CACHE_FIXED_HEADER
+        .checked_add(
+            table_capacity
+                .checked_mul(DETAIL_CACHE_TABLE_ENTRY)
+                .ok_or(RuntimeDetailError::AddressOverflow)?,
+        )
+        .filter(|offset| *offset <= bytes.len())
+        .ok_or(RuntimeDetailError::CacheCorrupt)?;
     let mut levels = Vec::with_capacity(page_count);
     let mut pages = Vec::with_capacity(page_count);
     let mut page_offsets = Vec::with_capacity(page_count);
@@ -1509,21 +1864,62 @@ pub fn derive_detail_hierarchy(
     input: DetailMeshInput<'_>,
     ratios: &[f32],
 ) -> Result<DerivedDetailHierarchy, DetailDerivationError> {
+    derive_detail_hierarchy_inner(input, ratios, None)
+}
+
+/// Derive one independently streamable cluster while preserving only the source
+/// vertices shared with another cluster (plus material-seam duplicates).
+/// Adjacent pages share those positions; allowing either side to collapse or
+/// move them creates literal cracks in the fully resident native root cut.
+fn derive_cluster_detail_hierarchy_locked(
+    input: DetailMeshInput<'_>,
+    ratios: &[f32],
+    shared_source_vertices: &[bool],
+) -> Result<DerivedDetailHierarchy, DetailDerivationError> {
+    derive_detail_hierarchy_inner(input, ratios, Some(shared_source_vertices))
+}
+
+fn derive_detail_hierarchy_inner(
+    input: DetailMeshInput<'_>,
+    ratios: &[f32],
+    shared_source_vertices: Option<&[bool]>,
+) -> Result<DerivedDetailHierarchy, DetailDerivationError> {
     DETAIL_DERIVATION_CALLS.fetch_add(1, Ordering::Relaxed);
     validate_input(input)?;
     validate_ratios(ratios)?;
     let split = split_material_seams(input)?;
+    let locked_vertices = match shared_source_vertices {
+        Some(shared) if shared.len() == input.positions.len() => {
+            // `split_material_seams` duplicates one source vertex for every
+            // material domain. Those duplicates are another independently
+            // simplified frontier and therefore stay coincident as well.
+            let mut split_uses = vec![0u32; input.positions.len()];
+            for &source in &split.source_vertices {
+                split_uses[source as usize] += 1;
+            }
+            split
+                .source_vertices
+                .iter()
+                .map(|&source| shared[source as usize] || split_uses[source as usize] > 1)
+                .collect::<Vec<_>>()
+        }
+        Some(_) => return Err(DetailDerivationError::InvalidSource),
+        None => Vec::new(),
+    };
+    let lock_frontiers = shared_source_vertices.is_some();
     let mut levels = Vec::with_capacity(ratios.len());
     for (level_index, &ratio) in ratios.iter().enumerate() {
-        let mesh = simplify_mesh(
-            &MeshInput {
-                positions: &split.positions,
-                uvs: &split.uvs,
-                indices: &split.indices,
-                material_ids: &split.material_ids,
-            },
-            ratio,
-        );
+        let mesh_input = MeshInput {
+            positions: &split.positions,
+            uvs: &split.uvs,
+            indices: &split.indices,
+            material_ids: &split.material_ids,
+        };
+        let mesh = if lock_frontiers {
+            simplify_mesh_with_locked_vertices(&mesh_input, ratio, &locked_vertices)
+        } else {
+            simplify_mesh(&mesh_input, ratio)
+        };
         if mesh.indices.is_empty() {
             return Err(DetailDerivationError::EmptyLevel);
         }
@@ -1671,6 +2067,8 @@ fn promote_child_triangle(
 
 struct SplitMesh {
     positions: Vec<[f32; 3]>,
+    /// Original source vertex for every material-split vertex.
+    source_vertices: Vec<u32>,
     normals: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
     indices: Vec<[u32; 3]>,
@@ -1720,6 +2118,7 @@ fn validate_ratios(ratios: &[f32]) -> Result<(), DetailDerivationError> {
 
 fn split_material_seams(input: DetailMeshInput<'_>) -> Result<SplitMesh, DetailDerivationError> {
     let mut positions = Vec::new();
+    let mut source_vertices = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
     let mut weathering_masks = Vec::new();
@@ -1733,6 +2132,7 @@ fn split_material_seams(input: DetailMeshInput<'_>) -> Result<SplitMesh, DetailD
             out[corner] = *remap.entry((source, material)).or_insert_with(|| {
                 let id = positions.len() as u32;
                 positions.push(input.positions[source as usize]);
+                source_vertices.push(source);
                 normals.push(input.normals[source as usize]);
                 if !input.uvs.is_empty() {
                     uvs.push(input.uvs[source as usize]);
@@ -1752,6 +2152,7 @@ fn split_material_seams(input: DetailMeshInput<'_>) -> Result<SplitMesh, DetailD
     }
     Ok(SplitMesh {
         positions,
+        source_vertices,
         normals,
         uvs,
         indices,
@@ -2444,6 +2845,74 @@ mod tests {
     }
 
     #[test]
+    fn independently_streamed_grid_clusters_keep_identical_shared_frontier() {
+        const WIDTH: u32 = 8;
+        const HEIGHT: u32 = 8;
+        const SEAM_X: u32 = 4;
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut uvs = Vec::new();
+        for z in 0..=HEIGHT {
+            for x in 0..=WIDTH {
+                positions.push([x as f32, (x * z) as f32 * 0.01, z as f32]);
+                normals.push([0.0, 1.0, 0.0]);
+                uvs.push([x as f32 / WIDTH as f32, z as f32 / HEIGHT as f32]);
+            }
+        }
+        let mut left_indices = Vec::new();
+        let mut right_indices = Vec::new();
+        for z in 0..HEIGHT {
+            for x in 0..WIDTH {
+                let a = z * (WIDTH + 1) + x;
+                let b = a + 1;
+                let c = a + WIDTH + 1;
+                let d = c + 1;
+                let target = if x < SEAM_X {
+                    &mut left_indices
+                } else {
+                    &mut right_indices
+                };
+                target.extend_from_slice(&[[a, c, b], [b, c, d]]);
+            }
+        }
+        let derive = |indices: &[[u32; 3]]| {
+            let materials = vec![0; indices.len()];
+            let mut shared = vec![false; positions.len()];
+            for z in 0..=HEIGHT {
+                shared[(z * (WIDTH + 1) + SEAM_X) as usize] = true;
+            }
+            derive_cluster_detail_hierarchy_locked(
+                DetailMeshInput {
+                    positions: &positions,
+                    normals: &normals,
+                    uvs: &uvs,
+                    indices,
+                    material_ids: &materials,
+                    weathering_masks: &[],
+                },
+                &[0.25, 1.0],
+                &shared,
+            )
+            .unwrap()
+        };
+        let left = derive(&left_indices);
+        let right = derive(&right_indices);
+        let left_root = &left.levels[0].mesh.positions;
+        let right_root = &right.levels[0].mesh.positions;
+        for z in 0..=HEIGHT {
+            let source = positions[(z * (WIDTH + 1) + SEAM_X) as usize];
+            assert!(
+                left_root.contains(&source),
+                "left cluster moved or removed shared frontier {source:?}"
+            );
+            assert!(
+                right_root.contains(&source),
+                "right cluster moved or removed shared frontier {source:?}"
+            );
+        }
+    }
+
+    #[test]
     fn every_fine_triangle_has_a_bounded_affine_parent_map() {
         let (p, n, uv, i, m) = cube();
         let hierarchy = derive_detail_hierarchy(
@@ -2704,12 +3173,12 @@ mod tests {
         };
         let sources = (0..i.len() as u32).collect::<Vec<_>>();
         let ratios = [0.5, 1.0];
-        let key = runtime_detail_source_key(&p, &i, input, &sources, &ratios);
+        let key = runtime_detail_source_key(&p, &i, input, &sources, true, &ratios);
         let path = runtime_detail_cache_root().join(format!("{}.mgc", hex_hash(key)));
         let _ = std::fs::remove_file(&path);
 
-        let first = prepare_runtime_detail(&p, &i, input, &sources, &ratios).unwrap();
-        let second = prepare_runtime_detail(&p, &i, input, &sources, &ratios).unwrap();
+        let first = prepare_runtime_detail(&p, &i, input, &sources, true, &ratios).unwrap();
+        let second = prepare_runtime_detail(&p, &i, input, &sources, true, &ratios).unwrap();
 
         assert!(!first.cache_hit);
         assert!(second.cache_hit);
@@ -2724,8 +3193,8 @@ mod tests {
 
     #[test]
     fn runtime_pages_follow_bounded_source_clusters_not_whole_buildings() {
-        let width = 20_u32;
-        let height = 15_u32;
+        let width = 65_u32;
+        let height = 32_u32;
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut uvs = Vec::new();
@@ -2746,7 +3215,7 @@ mod tests {
                 indices.extend_from_slice(&[[a, c, b], [b, c, d]]);
             }
         }
-        assert_eq!(indices.len(), 600);
+        assert_eq!(indices.len(), 4_160);
         let materials = vec![0; indices.len()];
         let sources = (0..indices.len() as u32).collect::<Vec<_>>();
         let input = DetailMeshInput {
@@ -2757,25 +3226,28 @@ mod tests {
             material_ids: &materials,
             weathering_masks: &[],
         };
-        let prepared =
-            prepare_runtime_detail(&positions, &indices, input, &sources, &[0.5, 1.0]).unwrap();
+        let prepared = prepare_runtime_detail(
+            &positions,
+            &indices,
+            input,
+            &sources,
+            true,
+            &[0.5, 1.0],
+        )
+        .unwrap();
         let pages = prepared.clusters.runtime_pages();
         let roots = pages
             .iter()
             .filter(|page| page.parent_page_id.is_none())
             .count();
-        assert_eq!(roots, prepared.clusters.clusters().len());
-        assert_eq!(pages.len(), roots * 2);
+        assert!(prepared.clusters.clusters().len() > 1);
+        assert_eq!(roots, 1);
+        assert_eq!(pages.len(), prepared.clusters.clusters().len() * 2 + roots);
         assert!(pages.iter().all(|page| page.flags & 1 == 0));
-        assert!(
-            pages.iter().all(|page| page.primitive_count
-                <= vox_data::geometry_clusters::MAX_TRIANGLES_PER_SOURCE_CLUSTER)
-        );
-        assert!(
-            pages
-                .iter()
-                .all(|page| page.decoded_byte_count <= 256 * 3 * 24 * 4 + 256 * 20 * 4)
-        );
+        assert!(pages.iter().all(|page| {
+            page.decoded_byte_count == page.vertex_count * 24 * 4 + page.primitive_count * 20 * 4
+                && u64::from(page.decoded_byte_count) <= AGGREGATE_ROOT_MAX_DECODED_BYTES
+        }));
         if let Some(path) = prepared.cache_path {
             let _ = std::fs::remove_file(path);
         }

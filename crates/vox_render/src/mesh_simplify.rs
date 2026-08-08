@@ -107,8 +107,22 @@ pub struct MeshOutput {
 /// - `material_ids`: if non-empty it MUST be parallel to `indices`; a mismatched
 ///   length is treated as all-zero (single material) for the same safety reason.
 pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
+    simplify_mesh_with_locked_vertices(input, target_ratio, &[])
+}
+
+/// Variant used by independently streamable cluster hierarchies. A locked
+/// vertex is never an endpoint of a collapse, so two adjacent clusters retain
+/// byte-identical positions along their shared frontier. `locked_vertices` is
+/// optional; a non-parallel slice is treated as all-unlocked.
+pub fn simplify_mesh_with_locked_vertices(
+    input: &MeshInput<'_>,
+    target_ratio: f32,
+    locked_vertices: &[bool],
+) -> MeshOutput {
     let n_verts = input.positions.len();
     let n_tris = input.indices.len();
+    let have_locks = locked_vertices.len() == n_verts;
+    let locked = |vertex: usize| have_locks && locked_vertices[vertex];
 
     // UVs are only honored when parallel to positions; otherwise treat untextured.
     let have_uvs = !input.uvs.is_empty() && input.uvs.len() == n_verts;
@@ -277,7 +291,7 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
                 let e = if a < b { (a, b) } else { (b, a) };
-                if seen.insert(e) {
+                if seen.insert(e) && !locked(e.0 as usize) && !locked(e.1 as usize) {
                     push_edge(&mut heap, &quad, &pos, &version, e.0, e.1);
                 }
             }
@@ -357,7 +371,9 @@ pub fn simplify_mesh(input: &MeshInput<'_>, target_ratio: f32) -> MeshOutput {
             }
         }
         for v in ring {
-            push_edge(&mut heap, &quad, &pos, &version, v0 as u32, v);
+            if !locked(v0) && !locked(v as usize) {
+                push_edge(&mut heap, &quad, &pos, &version, v0 as u32, v);
+            }
         }
     }
 
@@ -837,6 +853,32 @@ mod tests {
             a, b,
             "two runs on identical input must be byte-identical (replay-safe)"
         );
+    }
+
+    #[test]
+    fn locked_cluster_frontier_vertices_remain_exact() {
+        let (pos, uv, idx) = grid_plane(16);
+        let mats = vec![0u32; idx.len()];
+        let input = MeshInput {
+            positions: &pos,
+            uvs: &uv,
+            indices: &idx,
+            material_ids: &mats,
+        };
+        let mut locked = vec![false; pos.len()];
+        for y in 0..=16 {
+            locked[y * 17 + 8] = true;
+        }
+        let out = simplify_mesh_with_locked_vertices(&input, 0.1, &locked);
+        assert!(out.indices.len() < idx.len());
+        for (source, &is_locked) in pos.iter().zip(&locked) {
+            if is_locked {
+                assert!(
+                    out.positions.contains(source),
+                    "locked frontier vertex {source:?} moved or disappeared"
+                );
+            }
+        }
     }
 
     #[test]

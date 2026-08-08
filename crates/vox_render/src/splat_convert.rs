@@ -784,8 +784,7 @@ pub fn append_instanced_scene_geometry(dst: &mut SceneState, mut src: SceneState
     // as either chunk carries derived aggregate levels, expand the other side
     // to explicit one-level chains so the merged arrays remain parallel to the
     // merged prototype table.
-    if !dst.geometry.proto_detail_ranges.is_empty()
-        || !src.geometry.proto_detail_ranges.is_empty()
+    if !dst.geometry.proto_detail_ranges.is_empty() || !src.geometry.proto_detail_ranges.is_empty()
     {
         materialise_exact_proto_detail_chains(&mut dst.geometry);
         materialise_exact_proto_detail_chains(&mut src.geometry);
@@ -813,7 +812,9 @@ pub fn append_instanced_scene_geometry(dst: &mut SceneState, mut src: SceneState
     dst.geometry
         .weathering_masks
         .append(&mut src.geometry.weathering_masks);
-    dst.geometry.proto_aabbs.append(&mut src.geometry.proto_aabbs);
+    dst.geometry
+        .proto_aabbs
+        .append(&mut src.geometry.proto_aabbs);
     dst.geometry
         .proto_ranges
         .extend(src.geometry.proto_ranges.drain(..).map(
@@ -874,6 +875,18 @@ fn materialise_exact_proto_detail_chains(geometry: &mut spectra_scene_state::Geo
 #[cfg(feature = "spectra-native")]
 pub fn append_unweathered_blas_geometry_owned(dst: &mut SceneState, blas: Vec<BlasDesc>) {
     for b in blas {
+        let source_bytes = b.positions.len() * std::mem::size_of::<[f32; 3]>()
+            + b.normals.len() * std::mem::size_of::<[f32; 3]>()
+            + b.uvs.len() * std::mem::size_of::<[f32; 2]>()
+            + b.indices.len() * std::mem::size_of::<[u32; 3]>()
+            + b.material_ids.len() * std::mem::size_of::<u32>()
+            + b.weathering_masks.len() * std::mem::size_of::<f32>();
+        // A process-wide malloc_trim is valuable while consuming a huge source
+        // prototype, but catastrophic for thousands of small cell BLASes: five
+        // trims per cluster turned linear scene packing into minutes of heap
+        // scans. Small allocations are amortized and trimmed once after the
+        // complete batch below.
+        let trim_between_streams = source_bytes >= 8 * 1024 * 1024;
         let BlasDesc {
             proto_id,
             positions,
@@ -919,8 +932,7 @@ pub fn append_unweathered_blas_geometry_owned(dst: &mut SceneState, blas: Vec<Bl
         let triangle_count = indices.len() as u32;
 
         let partition = vox_data::geometry_clusters::ReadyGeometryClusters::from_source_mesh(
-            &positions,
-            &indices,
+            &positions, &indices,
         )
         .unwrap_or_else(|error| {
             panic!(
@@ -949,15 +961,21 @@ pub fn append_unweathered_blas_geometry_owned(dst: &mut SceneState, blas: Vec<Bl
         for position in positions {
             dst.geometry.positions.extend_from_slice(&position);
         }
-        release_consumed_blas_pages();
+        if trim_between_streams {
+            release_consumed_blas_pages();
+        }
         for normal in normals {
             dst.geometry.normals.extend_from_slice(&normal);
         }
-        release_consumed_blas_pages();
+        if trim_between_streams {
+            release_consumed_blas_pages();
+        }
         for uv in uvs {
             dst.geometry.uvs.extend_from_slice(&uv);
         }
-        release_consumed_blas_pages();
+        if trim_between_streams {
+            release_consumed_blas_pages();
+        }
         for triangle in indices {
             dst.geometry.indices.extend_from_slice(&[
                 vertex_base + triangle[0],
@@ -965,20 +983,21 @@ pub fn append_unweathered_blas_geometry_owned(dst: &mut SceneState, blas: Vec<Bl
                 vertex_base + triangle[2],
             ]);
         }
-        release_consumed_blas_pages();
+        if trim_between_streams {
+            release_consumed_blas_pages();
+        }
         dst.geometry.material_ids.extend(material_ids);
         dst.geometry
             .construction_group_ids
             .extend(std::iter::repeat_n(u32::MAX, triangle_count as usize));
-        release_consumed_blas_pages();
+        if trim_between_streams {
+            release_consumed_blas_pages();
+        }
 
         dst.geometry.proto_aabbs.push((aabb_min, aabb_max));
-        dst.geometry.proto_ranges.push((
-            vertex_base,
-            vertex_count,
-            triangle_base,
-            triangle_count,
-        ));
+        dst.geometry
+            .proto_ranges
+            .push((vertex_base, vertex_count, triangle_base, triangle_count));
         if !dst.geometry.proto_detail_ranges.is_empty() {
             dst.geometry.proto_detail_ranges.push((proto_index, 1));
             dst.geometry.proto_detail_errors.push(0.0);
@@ -986,6 +1005,7 @@ pub fn append_unweathered_blas_geometry_owned(dst: &mut SceneState, blas: Vec<Bl
         dst.geometry.vertex_count += vertex_count as usize;
         dst.geometry.triangle_count += triangle_count as usize;
     }
+    release_consumed_blas_pages();
     dst.mark_geometry_changed();
 }
 

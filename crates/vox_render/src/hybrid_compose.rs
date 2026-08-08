@@ -343,8 +343,7 @@ pub struct HybridMesh {
     /// of this exact indexed prototype. Runtime-only: authored assets contain
     /// one authoritative mesh and never carry camera-distance LODs.
     #[serde(skip)]
-    pub runtime_detail_root:
-        Option<std::sync::Arc<crate::mesh_detail::RuntimeDetailPrototypeMesh>>,
+    pub runtime_detail_root: Option<std::sync::Arc<crate::mesh_detail::RuntimeDetailPrototypeMesh>>,
     /// Runtime-only engine-generic identity for sparse progressive reveal.
     /// Games may map construction, repair, assembly, or excavation onto it;
     /// it is never serialized into authored/cooked mesh data.
@@ -623,10 +622,11 @@ impl HybridMesh {
 
     #[must_use]
     pub fn construction_group_ids(&self) -> &[u32] {
-        self.prototype_geometry.as_ref().map_or(
-            self.construction_group_ids.as_slice(),
-            |geometry| geometry.construction_group_ids(),
-        )
+        self.prototype_geometry
+            .as_ref()
+            .map_or(self.construction_group_ids.as_slice(), |geometry| {
+                geometry.construction_group_ids()
+            })
     }
 
     #[must_use]
