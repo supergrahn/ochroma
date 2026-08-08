@@ -111,6 +111,35 @@ if ($glslang) {
     Die "glslangValidator.exe not found. The all-vendor Windows build includes FSR; set `$env:FFX_GLSLANG or install glslang under `$env:USERPROFILE\glslang."
 }
 
+# --- CMake (native FidelityFX libraries) ---------------------------------
+$cmake = $env:CMAKE
+if (-not ($cmake -and (Test-Path $cmake))) {
+    $cmake = $null
+    $cmakeCommand = Get-Command cmake.exe -ErrorAction SilentlyContinue
+    if ($cmakeCommand) { $cmake = $cmakeCommand.Source }
+}
+if (-not $cmake) {
+    $cmakeCandidates = @((Join-Path $env:ProgramFiles "CMake\bin\cmake.exe"))
+    $vswhereCmake = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhereCmake) {
+        $vsCmakeRoot = & $vswhereCmake -latest -products * -property installationPath 2>$null
+        if ($vsCmakeRoot) {
+            $cmakeCandidates += (Join-Path $vsCmakeRoot "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe")
+        }
+    }
+    foreach ($candidate in $cmakeCandidates) {
+        if (Test-Path $candidate) {
+            $cmake = (Resolve-Path $candidate).Path
+            break
+        }
+    }
+}
+if (-not $cmake) {
+    Die "cmake.exe not found. The FSR native libraries require CMake; set `$env:CMAKE or install the Visual Studio CMake component."
+}
+$env:CMAKE = $cmake
+Write-Step "CMake:    $cmake"
+
 # --- libclang (bindgen) via VS LLVM --------------------------------------
 $libclangDir = $env:LIBCLANG_PATH
 if (-not ($libclangDir -and (Test-Path (Join-Path $libclangDir "libclang.dll")))) {
