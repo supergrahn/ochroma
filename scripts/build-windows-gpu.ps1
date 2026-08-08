@@ -206,6 +206,22 @@ if (Test-Path $vswhere2) {
     }
 }
 
+# vcvars64 establishes the MSVC library search path, but it cannot know about
+# the separately installed Vulkan SDK.  ash links ash's loader import by its
+# canonical name (`vulkan-1.lib`), so make the SDK import library visible to
+# every Rust/native link invoked below.  Do this after vcvars64 because vcvars
+# replaces LIB rather than extending an earlier value.
+$vulkanLibDir = Join-Path $vulkanSdk "Lib"
+$libEntries = if ($env:LIB) { @($env:LIB -split ';') } else { @() }
+if (-not ($libEntries | Where-Object { $_ -ieq $vulkanLibDir })) {
+    $env:LIB = if ($env:LIB) {
+        $vulkanLibDir + ";" + $env:LIB
+    } else {
+        $vulkanLibDir
+    }
+}
+Write-Step "Vulkan LIB: $vulkanLibDir"
+
 # --- Compose PATH + backend ----------------------------------------------
 # Order matters: slang\bin and CUDA\bin must precede the rest so Slang's PTX
 # pass-through finds nvcc and the slang DLLs resolve at link/runtime.
