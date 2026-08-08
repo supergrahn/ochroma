@@ -69,6 +69,7 @@ if ($env:CUDA_PATH -and (Test-Path (Join-Path $env:CUDA_PATH "bin\nvcc.exe"))) {
 }
 if (-not $cuda) { Die "CUDA Toolkit (nvcc.exe) not found under '$cudaRoot'. Install the CUDA Toolkit." }
 $env:CUDA_PATH = $cuda
+$env:SPECTRA_NVCC = Join-Path $cuda "bin\nvcc.exe"
 # nvcc lives in bin\; the nvrtc + cudart runtime DLLs live in bin\x64 on CUDA 13+.
 # Slang's CUDA->PTX pass-through dynamically loads nvrtc, so bin\x64 MUST be on PATH
 # or every kernel fails with `error[E52002]: pass-through compiler not found`.
