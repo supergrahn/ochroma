@@ -76,6 +76,40 @@ $cudaBin = Join-Path $cuda "bin"
 $cudaBinX64 = Join-Path $cudaBin "x64"
 Write-Step "CUDA:     $cuda"
 
+# --- glslang (FSR permutation compiler) ----------------------------------
+# ffx-perm-gen must compile its Vulkan shader permutations even when this
+# Windows build will normally select CUDA/DLSS.  Its upstream default is the
+# Linux-only path `/usr/bin/glslangValidator`; the vendored ffx-sys bridge
+# accepts the platform-correct executable through FFX_GLSLANG.  Resolve it once
+# here, where every other build tool is discovered, and fail before a long
+# cargo build if the all-vendor binary requested `fsr` without it.
+$glslang = $env:FFX_GLSLANG
+if (-not ($glslang -and (Test-Path $glslang))) {
+    $glslang = $null
+    $glslangCommand = Get-Command glslangValidator.exe -ErrorAction SilentlyContinue
+    if ($glslangCommand) { $glslang = $glslangCommand.Source }
+}
+if (-not $glslang) {
+    $glslangCandidates = @(
+        (Join-Path $env:USERPROFILE "glslang\bin\glslangValidator.exe")
+    )
+    if ($env:VULKAN_SDK) {
+        $glslangCandidates += (Join-Path $env:VULKAN_SDK "Bin\glslangValidator.exe")
+    }
+    foreach ($candidate in $glslangCandidates) {
+        if (Test-Path $candidate) {
+            $glslang = (Resolve-Path $candidate).Path
+            break
+        }
+    }
+}
+if ($glslang) {
+    $env:FFX_GLSLANG = $glslang
+    Write-Step "glslang:  $glslang"
+} elseif ($Features -and (($Features -split ',') -contains 'fsr')) {
+    Die "glslangValidator.exe not found. The all-vendor Windows build includes FSR; set `$env:FFX_GLSLANG or install glslang under `$env:USERPROFILE\glslang."
+}
+
 # --- libclang (bindgen) via VS LLVM --------------------------------------
 $libclangDir = $env:LIBCLANG_PATH
 if (-not ($libclangDir -and (Test-Path (Join-Path $libclangDir "libclang.dll")))) {
